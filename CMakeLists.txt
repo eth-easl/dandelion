@@ -21,4 +21,7 @@ endif()
 
 project(dandelion)
 
+# add main server directory
 add_subdirectory(server)
+# add function libaries used for testing
+add_subdirectory(functions)
