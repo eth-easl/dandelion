@@ -1,0 +1,22 @@
+# set system locations
+set(CMAKE_SYSROOT /mnt/local/kuchlert-easl/cheri-output/rootfs-morello-purecap)
+if(NOT DEFINED CMAKE_SYSROOT)
+  message(FATAL_ERROR "cmake sysroot not set in toolchain file")
+endif()
+
+# set toolchain paths
+set(CMAKE_C_COMPILER /mnt/local/kuchlert-easl/cheri-output/morello-sdk/bin/clang)
+if(NOT DEFINED CMAKE_C_COMPILER)
+  message(FATAL_ERROR "cmake compiler path for cross compilation not set")
+endif()
+
+# clang tripple:
+set(tripple aarch64-unknown-freebsd13)
+set(CMAKE_C_COMPILER_TARGET ${tripple})
+set(CMAKE_CXX_COMPILER_TARGET ${tripple})
+
+# make sure it does not use local root path
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
