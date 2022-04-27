@@ -1,4 +1,4 @@
-SET(CMAKE_VERSION 3.10)
+SET(CMAKE_VERSION 3.13)
 cmake_minimum_required(VERSION ${CMAKE_VERSION})
 
 # prevent in-source builds
@@ -8,7 +8,7 @@ endif()
 
 # set path to the compiler to be used
 if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
-  message(WARNING "No toolchainfile given, compiling in native mode")
+  message(ERROR "No toolchainfile given, compiling in native mode")
 else()
   # compile library instead of executable
   # because cross compiled code can't be executed
@@ -17,10 +17,11 @@ else()
   set(tripple aarch64-unknown-freebsd13)
   set(CMAKE_C_COMPILER_TARGET ${triple})
   set(CMAKE_CXX_COMPILER_TARGET ${triple})
-  # enable morello architecture
-  set(CMAKE_EXE_LINKER_FLAGS_INIT "-march=morello+c64 -mabi=purecap -fuse-ld=lld")
-  set(CMAKE_MODULE_LINKER_FLAGS_INIT "-march=morello+c64 -mabi=purecap -fuse-ld=lld")
-  set(CMAKE_SHARED_LINKER_FLAGS_INIT "-march=morello+c64 -mabi=purecap -fuse-ld=lld")
+  # set flag combinations for use on different targets
+  set(PURECAP_COMPILE_FLAGS -march=morello+c64 -mabi=purecap)
+  set(PURECAP_LINK_FLAGS -march=morello+c64 -mabi=purecap -fuse-ld=lld)
+  set(NOCAP_COMPILE_FLAGS -march=morello)
+  set(NOCAP_LINK_FLAGS -march=morello)
 endif()
 
 project(dandelion)
@@ -29,3 +30,5 @@ project(dandelion)
 add_subdirectory(server)
 # add function libaries used for testing
 add_subdirectory(functions)
+# compartment setup and execution codes
+add_subdirectory(compartment)

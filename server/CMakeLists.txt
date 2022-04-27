@@ -7,4 +7,5 @@ set(EXECUTABLE "server")
 add_executable(${EXECUTABLE}
   server.c
 )
-target_compile_options(${EXECUTABLE} PRIVATE -march=morello+c64 -mabi=purecap)
+target_compile_options(${EXECUTABLE} PRIVATE ${PURECAP_COMPILE_FLAGS})
+target_link_options(${EXECUTABLE} PRIVATE ${PURECAP_LINK_FLAGS})
