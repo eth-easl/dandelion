@@ -1,4 +1,4 @@
-set(SDK_LOCATION /mnt/local/kuchlert-easl/cheri-output/morello-sdk)
+set(SDK_LOCATION /local/cheri/cheri-output/morello-sdk)
 if(NOT DEFINED SDK_LOCATION)
   message(FATAL_ERROR "SDK location for cross compilation not set")
 endif()
