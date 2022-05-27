@@ -7,7 +7,7 @@ int main(int argc, char const *argv[]) {
   printf("Server Hello\n");
 
   // open libary file
-  char basicPath[] = "../functions/libbasic.so";
+  char basicPath[] = "./libbasic.so";
   // set options:
   // all external function references are bound immediately
   int basicMode = RTLD_NOW;
