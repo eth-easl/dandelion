@@ -2,7 +2,7 @@
 #define DANDELION_COMPARTMENT_H_
 
 // 31 normal registers, stack pointer, ddc, compartment ID
-#define NUM_REGS 32
+#define NUM_REGS 36
 
 #define STRING(arg) #arg
 #define MULTISTRING(arg) STRING(arg)
