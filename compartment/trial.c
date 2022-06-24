@@ -1,13 +1,12 @@
 // include for printing
 #include <stdio.h>
 #include <sys/mman.h>
-
-// #include "sys/cheri/cheric.h"
+#include <stdlib.h>
 
 #include "compartment.h"
 
 int main(int argc, char const *argv[]) {
-  __label__ returnLabel, PCCLabel;
+  __label__ returnLabel;
 
   // open the libarary file
   FILE* basicLib = fopen("./libbasic.so","r");
@@ -16,7 +15,7 @@ int main(int argc, char const *argv[]) {
   }
   // go to the libarary function
   int offset = 0x106d8 - 0x10644 +  0x644;
-  const int instructions = 4; // 0x10 / 4
+  const int instructions = 7; // 0x1c / 4
   if(fseek(basicLib, offset, SEEK_SET)){
     printf("There was an error with seeking the libarary\n");
   }
@@ -39,7 +38,7 @@ int main(int argc, char const *argv[]) {
   // }
 
   // make a function pointer from it.
-  int(* __capability wrappedFunction)(int);
+  void(* __capability wrappedFunction)(void);
   __asm__ volatile (
     "cvtp %x[functionCap], %x[functionPointer] \n"
     : [functionCap] "+r" (wrappedFunction)
@@ -51,52 +50,52 @@ int main(int argc, char const *argv[]) {
   int testInt = 7;
 
   // prepare environment
-  const int functionMemSize = 0;
+  const int argumentSize = sizeof(int);
+  const int functionMemSize = argumentSize + sizeof(char* __capability);
   void* functionMemory =
-    mmap(NULL, functionMemSize + 16, PROT_READ | PROT_WRITE, MAP_ANONYMOUS, -1, 0);
+    mmap(NULL, functionMemSize, PROT_READ | PROT_WRITE, MAP_ANONYMOUS, -1, 0);
   // make capabilities
   char* __capability functionMemoryCap;
-  char* __capability returnPair[2];
+  char* __capability * __capability returnPair =
+    (__cheri_tocap char* __capability * __capability) malloc(sizeof(char*__capability)*2);
   char* returnAddress = &&returnLabel;
   char* __capability returnCap;
   __asm__ volatile (
     "cvtd %x[memCap], %x[memPointer] \n"
-    "cvtp %x[returnCap], %x[returnPointer] \n"
+    "cvtp %x[returnCap], %x[returnAddress] \n"
     : [memCap] "+r" (functionMemoryCap),
     [returnCap] "+r" (returnCap)
     : [memPointer] "r" (functionMemory),
     [returnAddress] "r" (returnAddress)
   );
-  // returnCap = __builtin_cheri_program_counter_get();
-  char* __capability contextSpaceCap[NUM_REGS];
-  returnPair[0] = contextSpaceCap;
+
+  char* __capability * __capability contextSpaceCap =
+    (__cheri_tocap char* __capability * __capability) malloc(sizeof(char*__capability)*NUM_REGS);
+
+  returnPair[0] = (char* __capability) contextSpaceCap;
   returnPair[1] = returnCap;
 
-  // store current context
-  storeContext(contextSpaceCap);
   // seal and store context capability and return capability in function mem
   __asm__ volatile (
     "seal %x[returnPair], %x[returnPair], lpb \n"
-    : [returnPair] "+r" (*returnPair)
+    : [returnPair] "+r" (returnPair)
   );
-  ((char* __capability * __capability) functionMemoryCap)[0] = returnPair;
+
+  ((char* __capability * __capability) functionMemoryCap)[0] = (char* __capability) returnPair;
   // Prepare arguments
-  // TODO
+  char* __capability argstart = functionMemoryCap + sizeof(char* __capability);
+  ((int* __capability)argstart)[0] = testInt;
+
+  // store current context
+  storeContext(contextSpaceCap);
   // clean up context and jump
-  // TODO
-  __asm__ volatile (
-    "msr ddc, %x[memCap] \n"
-    : : [memCap] "r" (functionMemoryCap)
-  );
-
-  testInt = wrappedFunction(testInt);
-
-  // read arguments
+  prepareContextAndJump(functionMemoryCap, wrappedFunction);
 
   returnLabel:
-  // restore context
-  restoreContext(contextSpaceCap);
+  // restore context needs context cap in c0.
+  restoreContext();
   // read out results
+  testInt = ((int* __capability)argstart)[0];
 
   printf("test_move is now: %d \n", testInt);
 

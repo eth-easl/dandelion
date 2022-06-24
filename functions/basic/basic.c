@@ -20,8 +20,14 @@ void preWrapped(void){
   // puts the contex capability in c0
   __asm__ volatile(
     "mrs c0, ddc \n"
+    // load add 1 and store on the value after the return cap to check that this
+    // code executed
+    "ldr w1, [c0, #16] \n"
+    "add w1, w1, #1 \n"
+    "str w1, [c0, #16] \n"
+    // return to cap at bottom of ddc
     "ldr c0, [c0] \n"
-    "ldpbr c0, [c0] \n"
-    : : : "c0"
+    "ldpbr c29, [c0] \n"
+    : : : "c0", "w1"
   );
 }
