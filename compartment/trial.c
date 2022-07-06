@@ -4,10 +4,6 @@
 #include <stdlib.h>
 #include <sys/mman.h>
 
-#include <sys/param.h>
-#include <sys/systm.h>
-#include <machine/cpu.h>
-
 #include "compartment.h"
 
 int main(int argc, char const *argv[]) {
