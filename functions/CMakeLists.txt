@@ -1,7 +1,5 @@
 cmake_minimum_required(VERSION ${CMAKE_VERSION})
 
-project(FunctionLibs)
-
 set(LIBRARY_BASIC "basic")
 
 add_library(${LIBRARY_BASIC} SHARED

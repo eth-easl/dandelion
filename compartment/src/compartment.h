@@ -1,25 +1,9 @@
-#ifndef DANDELION_COMPARTMENT_H_
-#define DANDELION_COMPARTMENT_H_
+#ifndef DANDELION_COMPARTMENT_COMPARTMENT_H_
+#define DANDELION_COMPARTMENT_COMPARTMENT_H_
 
 // 31 normal registers, stack pointer, ddc, compartment ID
 #define NUM_REGS 36
 
-#define STRING(arg) #arg
-#define MULTISTRING(arg) STRING(arg)
-
-struct functionEnvironment {
-  // pointer or capability to the code for the function
-  void* codePointer;
-  // size of the code segment belonging to function
-  int codeSize;
-  // pointer to memory containing data that needs to be copied in to the memory
-  // of the function at start (globals, capabilities to other functions, etc.)
-  void* dataPointer;
-  // size of the object at the data pointer
-  int dataSize;
-  // requested memory size for the function
-  int memorySize;
-};
 static inline void storeContext(void* __capability storeCap)
   __attribute__((always_inline));
 static inline void storeContext(void* __capability storeCap) {
@@ -184,4 +168,4 @@ static inline void restoreContext(){
     );
 }
 
-#endif
+#endif // DANDELION_COMPARTMENT_COMPARTMENT_H_

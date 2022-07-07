@@ -3,6 +3,10 @@
 This project is aiming to build a workernode for serverless computing with
 minimal, secure isolation.
 
+## Dependencies:
+
+For testing we are using unity which is included directly in the project.
+
 ## Cheri setup:
 
 First clone the Cheribuild repository onto a local disk.

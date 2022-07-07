@@ -24,7 +24,7 @@ else()
   set(NOCAP_LINK_FLAGS -march=morello)
 endif()
 
-project(dandelion)
+project(dandelion LANGUAGES C)
 
 # add main server directory
 add_subdirectory(server)
@@ -32,3 +32,8 @@ add_subdirectory(server)
 add_subdirectory(functions)
 # compartment setup and execution codes
 add_subdirectory(compartment)
+# testing framework
+add_subdirectory(unity)
+
+# enable testing everythere in the project
+enable_testing()
