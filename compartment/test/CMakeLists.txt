@@ -6,7 +6,6 @@ set(TEST compartmentTest)
 # add an executable for the test
 add_executable(${TEST}
   test.c
-  ../src/compartment.h
 )
 
 # include libraries

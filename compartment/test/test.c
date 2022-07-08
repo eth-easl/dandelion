@@ -6,15 +6,17 @@
 #include "unity.h"
 // Project Internal Libraries
 
+// functions to call before and after each test
 void setUp(void){}
 void tearDown(void){}
 
-void testRegisterSanitation(void){
-  TEST_ASSERT_TRUE(1);
+void testRegisterRestoring(void){
+  // set up all registers
+  TEST_ASSERT_TRUE_MESSAGE(0, "Not yet implemented");
 }
 
 int main(int argc, char const *argv[]) {
   UNITY_BEGIN();
-  RUN_TEST(testRegisterSanitation);
+  RUN_TEST(testRegisterRestoring);
   return UNITY_END();
 }

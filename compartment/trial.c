@@ -7,7 +7,6 @@
 #include "compartment.h"
 
 int main(int argc, char const *argv[]) {
-  __label__ returnLabel;
 
   // test arguments
   int testInt = 7;
@@ -44,53 +43,23 @@ int main(int argc, char const *argv[]) {
     : [functionPointer] "r" (functionCode)
   );
 
-  // make a return capability
-  char* returnAddress = &&returnLabel;
-  char* __capability returnCap;
-  __asm__ volatile (
-    "cvtp %x[returnCap], %x[returnAddress] \n"
-    : [returnCap] "+r" (returnCap)
-    : [returnAddress] "r" (returnAddress)
-  );
-
   // prepare allocations
   const int argumentSize = sizeof(int);
   const int functionMemSize = argumentSize + sizeof(char* __capability);
   char* __capability functionMemoryCap =
   (__cheri_tocap char* __capability) malloc(functionMemSize);
-  char* __capability * __capability returnPair =
-  (__cheri_tocap char* __capability * __capability) malloc(sizeof(char*__capability)*2);
-  char* __capability * __capability contextSpaceCap =
-  (__cheri_tocap char* __capability * __capability) malloc(sizeof(char*__capability)*NUM_REGS);
 
   uint64_t start, end;
   __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(start));
-  for(int repetitions = 0; repetitions < 1000000; repetitions++){
-
-  // for measurement Loop
-  char* __capability * __capability returnPairCap = returnPair;
-
-  // prepare and seal return pair
-  returnPairCap[0] = (char* __capability) contextSpaceCap;
-  returnPairCap[1] = returnCap;
-  __asm__ volatile (
-    "seal %x[returnPairCap], %x[returnPairCap], lpb \n"
-    : [returnPairCap] "+r" (returnPairCap)
-  );
-  ((char* __capability * __capability) functionMemoryCap)[0] = (char* __capability) returnPairCap;
+  for(int repetitions = 0; repetitions < 1000; repetitions++){
 
   // Prepare arguments
   char* __capability argstart = functionMemoryCap + sizeof(char* __capability);
   ((int* __capability)argstart)[0] = testInt;
 
-  // store current context
-  storeContext(contextSpaceCap);
-  // clean up context and jump
-  prepareContextAndJump(functionMemoryCap, wrappedFunction);
+  // perform function call
+  sandboxedCall(wrappedFunction, functionMemoryCap);
 
-  returnLabel:
-  // restore context needs context cap in c0.
-  restoreContext();
   // read out results
   testInt = ((int* __capability)argstart)[0];
   }
@@ -98,8 +67,6 @@ int main(int argc, char const *argv[]) {
 
   // free memory
   free((__cheri_fromcap void*) functionMemoryCap);
-  free((__cheri_fromcap void*) returnPair);
-  free((__cheri_fromcap void*) contextSpaceCap);
 
   printf("start %lu\n", start);
   printf("end %lu\n", end);

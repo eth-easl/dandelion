@@ -1,5 +1,5 @@
-#ifndef DANDELION_COMPARTMENT_COMPARTMENT_H_
-#define DANDELION_COMPARTMENT_COMPARTMENT_H_
+#ifndef DANDELION_COMPARTMENT_CONTEXT_H_
+#define DANDELION_COMPARTMENT_CONTEXT_H_
 
 // 31 normal registers, stack pointer, ddc, compartment ID
 #define NUM_REGS 36
