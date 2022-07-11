@@ -7,6 +7,9 @@
 // Project Internal Libraries
 #include "compartment.h"
 
+// test function definitions
+extern void overwriteAll(void);
+
 // functions to call before and after each test
 void setUp(void){}
 void tearDown(void){}
@@ -49,7 +52,7 @@ void testCapabiltyEquality(
 }
 
 void testStackCapability(void){
-  void* __capability wrappedNoOp = wrapCode(NULL, 0);
+  void* __capability wrappedOverwrite = wrapCode(overwriteAll, 39);
   char* __capability functionMemoryCap =
   (__cheri_tocap char* __capability) malloc(sizeof(void* __capability));
 
@@ -58,7 +61,7 @@ void testStackCapability(void){
     "cpy %x[stackCap], CSP \n" : [stackCap] "=r" (stackCap)
   );
 
-  sandboxedCall(wrappedNoOp, functionMemoryCap);
+  sandboxedCall(wrappedOverwrite, functionMemoryCap);
 
   void* __capability stackCapAfter;
   __asm__ volatile(
@@ -69,7 +72,7 @@ void testStackCapability(void){
 }
 
 void testDDC(void){
-  void* __capability wrappedNoOp = wrapCode(NULL, 0);
+  void* __capability wrappedNoOp = wrapCode(overwriteAll, 39);
   char* __capability functionMemoryCap =
   (__cheri_tocap char* __capability) malloc(sizeof(void* __capability));
 
@@ -90,7 +93,7 @@ void testDDC(void){
 }
 
 void testCompartmentId(void){
-  void* __capability wrappedNoOp = wrapCode(NULL, 0);
+  void* __capability wrappedNoOp = wrapCode(overwriteAll, 39);
   char* __capability functionMemoryCap =
   (__cheri_tocap char* __capability) malloc(sizeof(void* __capability));
 
@@ -110,7 +113,7 @@ void testCompartmentId(void){
 }
 
 void testThreadId(void){
-  void* __capability wrappedNoOp = wrapCode(NULL, 0);
+  void* __capability wrappedNoOp = wrapCode(overwriteAll, 39);
   char* __capability functionMemoryCap =
   (__cheri_tocap char* __capability) malloc(sizeof(void* __capability));
 
@@ -130,7 +133,7 @@ void testThreadId(void){
 }
 
 void testRestrictedThreadId(void){
-  void* __capability wrappedNoOp = wrapCode(NULL, 0);
+  void* __capability wrappedNoOp = wrapCode(overwriteAll, 39);
   char* __capability functionMemoryCap =
   (__cheri_tocap char* __capability) malloc(sizeof(void* __capability));
 
