@@ -69,7 +69,7 @@ static inline void prepareContextAndJump(void* __capability ddc, void* __capabil
     "msr ddc, %x[ddc] \n"
     // prepare stack pointer: TODO set non zero
     "mov x0, #0 \n"
-    "cpy c0, CSP \n"
+    "cpy CSP, c0 \n"
     // zero out system registers
     // compartment ID
     "msr CID_EL0, c0 \n"
@@ -132,7 +132,7 @@ static inline void restoreContext(){
       "msr DDC, c1 \n"
       // store the stack capability
       "ldr c1, [c0, #496] \n"
-      "cpy c1, CSP \n"
+      "cpy CSP, c1 \n"
       // store the contents of all normal registers
       "ldr c30, [c0, #480] \n"
       "ldr c29, [c0, #464] \n"

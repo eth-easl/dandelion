@@ -2,12 +2,47 @@
 #include "compartment.h"
 // System Headers
 #include <stdlib.h>
+#include <sys/mman.h>
+#include <stdio.h> // TODO remove
 // Standard Libraries
 
 // Project External Libraries
 
 // Project Internal Libraries
 #include "context.h"
+
+// assembly import
+#define WRAPPER_SIZE 5
+#define WRAPPER_BYTES (WRAPPER_SIZE * 4)
+extern void wrapperCode();
+
+void* __capability wrapCode(void* functionCode, int size){
+  // get memory to copy to
+  int* wrappedCode = (int*) mmap(NULL,
+    WRAPPER_BYTES + size,
+    PROT_EXEC | PROT_READ | PROT_WRITE,
+    MAP_ANONYMOUS,
+    -1,
+    0
+  );
+  // write wrapper at the start
+  for(int i = 0; i < WRAPPER_SIZE; i++){
+    wrappedCode[i] = ((int*)wrapperCode)[i];
+  }
+  // overwrite wrapper return
+  // TODO make sure capabilities are copied properly if we allow capabilities to be there
+  for(int i = 0; i < size; i++){
+    wrappedCode[WRAPPER_SIZE-1 + i] = ((int*)functionCode)[i];
+  }
+  void(* __capability wrappedFunction)(void);
+  __asm__ volatile (
+    "cvtp %x[functionCap], %x[functionPointer] \n"
+    : [functionCap] "+r" (wrappedFunction)
+    : [functionPointer] "r" (wrappedCode)
+  );
+
+  return wrappedFunction;
+}
 
 void sandboxedCall(
   void* __capability functionCode,

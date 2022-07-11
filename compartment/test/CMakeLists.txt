@@ -15,6 +15,8 @@ target_link_libraries(${TEST}
   # test library
   unityHybridCap
 )
+target_compile_options(${TEST} PRIVATE ${NOCAP_COMPILE_FLAGS})
+target_link_options(${TEST} PRIVATE ${NOCAP_LINK_FLAGS})
 
 # add exeutable as test
 add_test(${TEST} ${TEST})

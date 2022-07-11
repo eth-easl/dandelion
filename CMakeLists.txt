@@ -13,18 +13,17 @@ else()
   # compile library instead of executable
   # because cross compiled code can't be executed
   set(CMAKE_TRY_COMPILE_TARGET_TYPE "STATIC_LIBRARY")
-  # clang tripple:
-  set(tripple aarch64-unknown-freebsd13)
-  set(CMAKE_C_COMPILER_TARGET ${triple})
-  set(CMAKE_CXX_COMPILER_TARGET ${triple})
+
   # set flag combinations for use on different targets
   set(PURECAP_COMPILE_FLAGS -march=morello+c64 -mabi=purecap)
   set(PURECAP_LINK_FLAGS -march=morello+c64 -mabi=purecap -fuse-ld=lld)
   set(NOCAP_COMPILE_FLAGS -march=morello)
   set(NOCAP_LINK_FLAGS -march=morello)
+
+  set(CMAKE_ASM_FLAGS "${CFLAGS} -x assembler-with-cpp")
 endif()
 
-project(dandelion LANGUAGES C)
+project(dandelion LANGUAGES C ASM)
 
 # add main server directory
 add_subdirectory(server)

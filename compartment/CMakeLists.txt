@@ -20,8 +20,9 @@ target_link_options(${MEASURE_TEST} PRIVATE ${NOCAP_LINK_FLAGS})
 
 # target for compartment library
 add_library(${LIBRARY} STATIC
-  src/context.h
+  src/assembly.asm
   src/compartment.c
+  src/context.h
 )
 # export include directory
 target_include_directories(${LIBRARY} PUBLIC include)
