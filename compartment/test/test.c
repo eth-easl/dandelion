@@ -17,8 +17,7 @@ void tearDown(void){}
 void testCapabiltyEquality(
   void* __capability expected,
   void* __capability actual
-)
-{
+){
   TEST_ASSERT_EQUAL_INT64_MESSAGE(
     __builtin_cheri_tag_get(expected),
     __builtin_cheri_tag_get(actual),
@@ -55,13 +54,15 @@ void testStackCapability(void){
   void* __capability wrappedOverwrite = wrapCode(overwriteAll, 39);
   char* __capability functionMemoryCap =
   (__cheri_tocap char* __capability) malloc(sizeof(void* __capability));
+  char* __capability functionStackCap =
+    &(functionMemoryCap[sizeof(void* __capability)]);
 
   void* __capability stackCap;
   __asm__ volatile(
     "cpy %x[stackCap], CSP \n" : [stackCap] "=r" (stackCap)
   );
 
-  sandboxedCall(wrappedOverwrite, functionMemoryCap);
+  sandboxedCall(wrappedOverwrite, functionMemoryCap, functionStackCap);
 
   void* __capability stackCapAfter;
   __asm__ volatile(
@@ -75,13 +76,15 @@ void testDDC(void){
   void* __capability wrappedNoOp = wrapCode(overwriteAll, 39);
   char* __capability functionMemoryCap =
   (__cheri_tocap char* __capability) malloc(sizeof(void* __capability));
+  char* __capability functionStackCap =
+    &(functionMemoryCap[sizeof(void* __capability)]);
 
   void* __capability defaultCap;
   __asm__ volatile(
     "mrs %x[defaultCap], DDC \n" : [defaultCap] "=r" (defaultCap)
   );
 
-  sandboxedCall(wrappedNoOp, functionMemoryCap);
+  sandboxedCall(wrappedNoOp, functionMemoryCap, functionStackCap);
 
   void* __capability defaultCapAfter;
 
@@ -96,13 +99,15 @@ void testCompartmentId(void){
   void* __capability wrappedNoOp = wrapCode(overwriteAll, 39);
   char* __capability functionMemoryCap =
   (__cheri_tocap char* __capability) malloc(sizeof(void* __capability));
+  char* __capability functionStackCap =
+    &(functionMemoryCap[sizeof(void* __capability)]);
 
   void* __capability compartementId;
   __asm__ volatile(
     "mrs %x[CID], CID_EL0 \n" : [CID] "=r" (compartementId)
   );
 
-  sandboxedCall(wrappedNoOp, functionMemoryCap);
+  sandboxedCall(wrappedNoOp, functionMemoryCap, functionStackCap);
 
   void* __capability compartementIdAfter;
   __asm__ volatile(
@@ -116,13 +121,15 @@ void testThreadId(void){
   void* __capability wrappedNoOp = wrapCode(overwriteAll, 39);
   char* __capability functionMemoryCap =
   (__cheri_tocap char* __capability) malloc(sizeof(void* __capability));
+  char* __capability functionStackCap =
+    &(functionMemoryCap[sizeof(void* __capability)]);
 
   void* __capability threadId;
   __asm__ volatile(
     "mrs %x[threadId], CTPIDR_EL0 \n" : [threadId] "=r" (threadId)
   );
 
-  sandboxedCall(wrappedNoOp, functionMemoryCap);
+  sandboxedCall(wrappedNoOp, functionMemoryCap, functionStackCap);
 
   void* __capability threadIdAfter;
   __asm__ volatile(
@@ -136,13 +143,14 @@ void testRestrictedThreadId(void){
   void* __capability wrappedNoOp = wrapCode(overwriteAll, 39);
   char* __capability functionMemoryCap =
   (__cheri_tocap char* __capability) malloc(sizeof(void* __capability));
-
+  char* __capability functionStackCap =
+    &(functionMemoryCap[sizeof(void* __capability)]);
   void* __capability restrictedId;
   __asm__ volatile(
     "mrs %x[RID], RCTPIDR_EL0 \n" : [RID] "=r" (restrictedId)
   );
 
-  sandboxedCall(wrappedNoOp, functionMemoryCap);
+  sandboxedCall(wrappedNoOp, functionMemoryCap, functionStackCap);
 
   void* __capability restrictedIdAfter;
   __asm__ volatile(
@@ -160,5 +168,7 @@ int main(int argc, char const *argv[]) {
   RUN_TEST(testCompartmentId);
   RUN_TEST(testThreadId);
   RUN_TEST(testRestrictedThreadId);
+  // check registers after function entry
+
   return UNITY_END();
 }

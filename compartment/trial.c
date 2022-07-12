@@ -48,6 +48,7 @@ int main(int argc, char const *argv[]) {
   const int functionMemSize = argumentSize + sizeof(char* __capability);
   char* __capability functionMemoryCap =
   (__cheri_tocap char* __capability) malloc(functionMemSize);
+  char* __capability stackPointer = &(functionMemoryCap[functionMemSize]);
 
   uint64_t start, end;
   __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(start));
@@ -58,7 +59,7 @@ int main(int argc, char const *argv[]) {
   ((int* __capability)argstart)[0] = testInt;
 
   // perform function call
-  sandboxedCall(wrappedFunction, functionMemoryCap);
+  sandboxedCall(wrappedFunction, functionMemoryCap, stackPointer);
 
   // read out results
   testInt = ((int* __capability)argstart)[0];

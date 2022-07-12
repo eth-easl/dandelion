@@ -46,7 +46,8 @@ void* __capability wrapCode(void* functionCode, int size){
 
 void sandboxedCall(
   void* __capability functionCode,
-  char* __capability functionMemory
+  char* __capability functionMemory,
+  char* __capability functionStackPointer
 ){
     __label__ returnLabel;
   // allocate space for context
@@ -78,7 +79,7 @@ void sandboxedCall(
   // store current context
   storeContext(contextSpaceCap);
   // clean up context and jump
-  prepareContextAndJump(functionMemory, functionCode);
+  prepareContextAndJump(functionMemory, functionStackPointer, functionCode);
 
   returnLabel:
   // restore context needs context cap in c0.

@@ -59,17 +59,22 @@ static inline void storeContext(void* __capability storeCap) {
 }
 
 
-static inline void prepareContextAndJump(void* __capability ddc, void* __capability target)
+static inline void prepareContextAndJump(
+  void* __capability ddc,
+  void* __capability stackPointer,
+  void* __capability target)
   __attribute__((always_inline));
-static inline void prepareContextAndJump(void* __capability ddc, void* __capability target){
+static inline void prepareContextAndJump(
+  void* __capability ddc,
+  void* __capability stackPointer,
+  void* __capability target){
   __asm__ volatile(
     // move target to c30 for the jump, c30 is arbitrary choice
     "mov c30, %x[target] \n"
     // prepare DDC:
     "msr ddc, %x[ddc] \n"
-    // prepare stack pointer: TODO set non zero
-    "mov x0, #0 \n"
-    "cpy CSP, c0 \n"
+    // prepare stack pointer
+    "cpy CSP, %x[SP] \n"
     // zero out system registers
     // compartment ID
     "msr CID_EL0, c0 \n"
@@ -108,8 +113,10 @@ static inline void prepareContextAndJump(void* __capability ddc, void* __capabil
     "mov x28, #0 \n"
     "mov x29, #0 \n"
     "br c30 \n"
-    : : [ddc] "r" (ddc), [target] "r" (target) :
-    "c0"
+    : : [ddc] "r" (ddc),
+    [target] "r" (target),
+    [SP] "r" (stackPointer)
+    : "c0"
   );
 }
 
