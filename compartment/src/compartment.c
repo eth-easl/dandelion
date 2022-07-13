@@ -47,7 +47,7 @@ void* __capability wrapCode(void* functionCode, int size){
 void sandboxedCall(
   void* __capability functionCode,
   char* __capability functionMemory,
-  char* __capability functionStackPointer
+  void* functionStackPointer
 ){
     __label__ returnLabel;
   // allocate space for context

@@ -21,7 +21,7 @@ Input:
 void sandboxedCall(
     void* __capability functionCode,
     char* __capability functionMemory,
-    char* __capability functionStackPointer
+    void* functionStackPointer
   );
 
 #endif // DANDELION_COMPARTMENT_COMPARTMENT_H_
