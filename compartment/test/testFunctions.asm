@@ -2,6 +2,9 @@
 .global overwriteAllEnd
 .global safeAll
 .global safeAllEnd
+.global sandboxedCallWrapped
+
+.extern sandboxedCall
 
 # overwrite all normal and status registers
 # can't overwrite ddc and register 30 as they are needed to return.
@@ -95,3 +98,106 @@ overwriteAllEnd: ret
     str c3, [SP, 544]
     str c4, [SP, 560]
 safeAllEnd:  ret
+
+# takes arguments for sanboxed call in regs c0,c1,c2 and pointer where to safe
+# the state in c3, this can then be copied to r19 which is a callee-saved
+# register and thus can be used to store it.
+# Additionally the return register c30 needs to be safed, for which we use c20.
+# The registers c19 and c20 are thus expected to hold the same values after
+# return from the sandboxed call and are restored by the wrapper.
+sandboxedCallWrapped:
+  str c0, [x3]
+  str c1, [x3, 16]
+  str c2, [x3, 32]
+  str c3, [x3, 48]
+  str c4, [x3, 64]
+  str c5, [x3, 80]
+  str c6, [x3, 96]
+  str c7, [x3, 112]
+  str c8, [x3, 128]
+  str c9, [x3, 144]
+  str c10, [x3, 160]
+  str c11, [x3, 176]
+  str c12, [x3, 192]
+  str c13, [x3, 208]
+  str c14, [x3, 224]
+  str c15, [x3, 240]
+  str c16, [x3, 256]
+  str c17, [x3, 272]
+  str c18, [x3, 288]
+  str c19, [x3, 304]
+  str c20, [x3, 320]
+  str c21, [x3, 336]
+  str c22, [x3, 352]
+  str c23, [x3, 368]
+  str c24, [x3, 384]
+  str c25, [x3, 400]
+  str c26, [x3, 416]
+  str c27, [x3, 432]
+  str c28, [x3, 448]
+  str c29, [x3, 464]
+  str c30, [x3, 480]
+  cpy c5, CSP
+  str c5, [x3, 496]
+  mrs c5, DDC
+  str c5, [x3, 512]
+  mrs c5, CID_EL0
+  str c5, [x3, 528]
+  mrs c5, CTPIDR_EL0
+  str c5, [x3, 544]
+  mrs c5, RCTPIDR_EL0
+  str c5, [x3, 560]
+  ldr c5, [x3, 80]
+  cpy c19, c3
+  cpy c20, c30
+  bl sandboxedCall
+  str c0, [x19, 576]
+  str c1, [x19, 592]
+  str c2, [x19, 608]
+  str c3, [x19, 624]
+  str c4, [x19, 640]
+  str c5, [x19, 656]
+  str c6, [x19, 672]
+  str c7, [x19, 688]
+  str c8, [x19, 704]
+  str c9, [x19, 720]
+  str c10, [x19, 736]
+  str c11, [x19, 752]
+  str c12, [x19, 768]
+  str c13, [x19, 784]
+  str c14, [x19, 800]
+  str c15, [x19, 816]
+  str c16, [x19, 832]
+  str c17, [x19, 848]
+  str c18, [x19, 864]
+  str c19, [x19, 880]
+  str c20, [x19, 896]
+  str c21, [x19, 912]
+  str c22, [x19, 928]
+  str c23, [x19, 944]
+  str c24, [x19, 960]
+  str c25, [x19, 976]
+  str c26, [x19, 992]
+  str c27, [x19, 1008]
+  str c28, [x19, 1024]
+  str c29, [x19, 1040]
+  str c30, [x19, 1056]
+  cpy c0, CSP
+  mrs c1, DDC
+  mrs c2, CID_EL0
+  mrs c3, CTPIDR_EL0
+  mrs c4, RCTPIDR_EL0
+  str c0, [x19, 1072]
+  str c1, [x19, 1088]
+  str c2, [x19, 1104]
+  str c3, [x19, 1120]
+  str c4, [x19, 1136]
+  ldr c0, [x19, 576]
+  ldr c1, [x19, 592]
+  ldr c2, [x19, 608]
+  ldr c3, [x19, 624]
+  ldr c4, [x19, 640]
+  cpy c30, c20
+  ldr c20, [x19, 320]
+  ldr c19, [x19, 304]
+  ret

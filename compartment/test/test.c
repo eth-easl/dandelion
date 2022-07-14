@@ -16,7 +16,12 @@ int overwriteSize;
 extern void safeAll(void);
 extern void safeAllEnd(void);
 int safeAllSize;
-
+extern void sandboxedCallWrapped(
+  void*__capability func,
+  char* __capability mem,
+  void* stackPointer,
+  StatePair* regState
+);
 
 // functions to call before and after each test
 void setUp(void){
@@ -61,7 +66,12 @@ void testCapabiltyEquality(
   );
 }
 
- StatePair getSandboxEntryState(void){
+// Returns a struct with the expected state and actual state of registers after
+// sandbox entry.
+// The expected state should be all 0 except for the expected ddc and sp
+// The actual state should be all 0 except for the ddc, sp and c30 which,
+// which contains a register return address.
+StatePair getSandboxEntryState(void){
    void* __capability wrappedSafeAll = wrapCode(safeAll, safeAllSize);
    const int capSize = sizeof(void* __capability);
    // round up to next 16 bytes
@@ -87,117 +97,64 @@ void testCapabiltyEquality(
    return regState;
 }
 
-void testStackCapability(void){
+/*
+ Returns a struct with a pair of register states
+ The expected pair is captured on entry by a shim that gets the pointer to
+ the pair as additional argument.
+ c19 and c20 are restored by the shim, as it is a callee-saved register and
+ used to store the pointer to the pair and therefore always should be correct.
+ given the Arm procedure call conventions not all actual registers need to
+ be equal to the expected for the sandbox to be correct.
+*/
+StatePair getSandboxExitState(void){
   void* __capability wrappedOverwrite = wrapCode(overwriteAll, 39);
   char* __capability functionMemoryCap =
   (__cheri_tocap char* __capability) malloc(sizeof(void* __capability));
   char* stackPointer =
     &(((__cheri_fromcap char*)functionMemoryCap)[sizeof(void* __capability)]);
 
-  void* __capability stackCap;
-  __asm__ volatile(
-    "cpy %x[stackCap], CSP \n" : [stackCap] "=r" (stackCap)
-  );
+  StatePair regState = {};
 
-  sandboxedCall(wrappedOverwrite, functionMemoryCap, stackPointer);
+  sandboxedCallWrapped(
+    wrappedOverwrite, functionMemoryCap, stackPointer, &regState);
 
-  void* __capability stackCapAfter;
-  __asm__ volatile(
-    "cpy %x[stackCap], CSP \n" : [stackCap] "=r" (stackCapAfter)
-  );
+  free((__cheri_fromcap void*)functionMemoryCap);
+  free((__cheri_fromcap void*)wrappedOverwrite);
 
-  testCapabiltyEquality(stackCap, stackCapAfter);
+  return regState;
+}
+
+void testStackCapability(void){
+  StatePair regState = getSandboxExitState();
+
+  testCapabiltyEquality(regState.expected.csp , regState.actual.csp);
 }
 
 void testDDC(void){
-  void* __capability wrappedNoOp = wrapCode(overwriteAll, 39);
-  char* __capability functionMemoryCap =
-  (__cheri_tocap char* __capability) malloc(sizeof(void* __capability));
-  char* stackPointer =
-    &(((__cheri_fromcap char*)functionMemoryCap)[sizeof(void* __capability)]);
+  StatePair regState = getSandboxExitState();
 
-  void* __capability defaultCap;
-  __asm__ volatile(
-    "mrs %x[defaultCap], DDC \n" : [defaultCap] "=r" (defaultCap)
-  );
-
-  sandboxedCall(wrappedNoOp, functionMemoryCap, stackPointer);
-
-  void* __capability defaultCapAfter;
-
-  __asm__ volatile(
-    "mrs %x[defaultCap], DDC \n" : [defaultCap] "=r" (defaultCapAfter)
-  );
-
-  testCapabiltyEquality(defaultCap, defaultCapAfter);
+  testCapabiltyEquality(regState.expected.ddc , regState.actual.ddc);
 }
 
 void testCompartmentId(void){
-  void* __capability wrappedNoOp = wrapCode(overwriteAll, 39);
-  char* __capability functionMemoryCap =
-  (__cheri_tocap char* __capability) malloc(sizeof(void* __capability));
-  char* stackPointer =
-    &(((__cheri_fromcap char*)functionMemoryCap)[sizeof(void* __capability)]);
+  StatePair regState = getSandboxExitState();
 
-  void* __capability compartementId;
-  __asm__ volatile(
-    "mrs %x[CID], CID_EL0 \n" : [CID] "=r" (compartementId)
-  );
-
-  sandboxedCall(wrappedNoOp, functionMemoryCap, stackPointer);
-
-  void* __capability compartementIdAfter;
-  __asm__ volatile(
-    "mrs %x[CID], CID_EL0 \n" : [CID] "=r" (compartementIdAfter)
-  );
-
-  testCapabiltyEquality(compartementId, compartementIdAfter);
+  testCapabiltyEquality(regState.expected.cid , regState.actual.cid);
 }
 
 void testThreadId(void){
-  void* __capability wrappedNoOp = wrapCode(overwriteAll, 39);
-  char* __capability functionMemoryCap =
-  (__cheri_tocap char* __capability) malloc(sizeof(void* __capability));
-  char* stackPointer =
-    &(((__cheri_fromcap char*)functionMemoryCap)[sizeof(void* __capability)]);
+  StatePair regState = getSandboxExitState();
 
-  void* __capability threadId;
-  __asm__ volatile(
-    "mrs %x[threadId], CTPIDR_EL0 \n" : [threadId] "=r" (threadId)
-  );
-
-  sandboxedCall(wrappedNoOp, functionMemoryCap, stackPointer);
-
-  void* __capability threadIdAfter;
-  __asm__ volatile(
-    "mrs %x[threadId], CTPIDR_EL0 \n" : [threadId] "=r" (threadIdAfter)
-  );
-
-  testCapabiltyEquality(threadId, threadIdAfter);
+  testCapabiltyEquality(regState.expected.ctpidr , regState.actual.ctpidr);
 }
 
 void testRestrictedThreadId(void){
-  void* __capability wrappedNoOp = wrapCode(overwriteAll, 39);
-  char* __capability functionMemoryCap =
-  (__cheri_tocap char* __capability) malloc(sizeof(void* __capability));
-  char* stackPointer =
-    &(((__cheri_fromcap char*)functionMemoryCap)[sizeof(void* __capability)]);
-  void* __capability restrictedId;
-  __asm__ volatile(
-    "mrs %x[RID], RCTPIDR_EL0 \n" : [RID] "=r" (restrictedId)
-  );
+  StatePair regState = getSandboxExitState();
 
-  sandboxedCall(wrappedNoOp, functionMemoryCap, stackPointer);
-
-  void* __capability restrictedIdAfter;
-  __asm__ volatile(
-    "mrs %x[RID], RCTPIDR_EL0 \n" : [RID] "=r" (restrictedIdAfter)
-  );
-
-  testCapabiltyEquality(restrictedId, restrictedIdAfter);
+  testCapabiltyEquality(regState.expected.rctpidr , regState.actual.rctpidr);
 }
 
-void testSanitation(void){
+void testSystemSanitation(void){
 
   StatePair regState = getSandboxEntryState();
 
@@ -213,6 +170,6 @@ int main(int argc, char const *argv[]) {
   RUN_TEST(testThreadId);
   RUN_TEST(testRestrictedThreadId);
   // check registers after function entry
-  RUN_TEST(testSanitation);
+  RUN_TEST(testSystemSanitation);
   return UNITY_END();
 }
