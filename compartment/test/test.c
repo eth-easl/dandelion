@@ -66,11 +66,13 @@ void testCapabiltyEquality(
   );
 }
 
-// Returns a struct with the expected state and actual state of registers after
-// sandbox entry.
-// The expected state should be all 0 except for the expected ddc and sp
-// The actual state should be all 0 except for the ddc, sp and c30 which,
-// which contains a register return address.
+/*
+  Returns a struct with the expected state and actual state of registers after
+  sandbox entry.
+  The expected state should be all 0 except for the expected ddc and sp
+  The actual state should be all 0 except for the ddc, sp and c30 which,
+  which contains a register return address.
+*/
 StatePair getSandboxEntryState(void){
    void* __capability wrappedSafeAll = wrapCode(safeAll, safeAllSize);
    const int capSize = sizeof(void* __capability);
@@ -124,52 +126,116 @@ StatePair getSandboxExitState(void){
   return regState;
 }
 
-void testStackCapability(void){
+void testStackCapabilityRestoration(void){
   StatePair regState = getSandboxExitState();
 
   testCapabiltyEquality(regState.expected.csp , regState.actual.csp);
 }
 
-void testDDC(void){
+void testDDCRestoration(void){
   StatePair regState = getSandboxExitState();
 
   testCapabiltyEquality(regState.expected.ddc , regState.actual.ddc);
 }
 
-void testCompartmentId(void){
+void testCompartmentIdRestoration(void){
   StatePair regState = getSandboxExitState();
 
   testCapabiltyEquality(regState.expected.cid , regState.actual.cid);
 }
 
-void testThreadId(void){
+void testThreadIdRestoration(void){
   StatePair regState = getSandboxExitState();
 
   testCapabiltyEquality(regState.expected.ctpidr , regState.actual.ctpidr);
 }
 
-void testRestrictedThreadId(void){
+void testRestrictedThreadIdRestoration(void){
   StatePair regState = getSandboxExitState();
 
   testCapabiltyEquality(regState.expected.rctpidr , regState.actual.rctpidr);
 }
 
-void testSystemSanitation(void){
+void testRegisterSanitation(void){
 
   StatePair regState = getSandboxEntryState();
 
-  // todo implement sanitation tests
+  testCapabiltyEquality(regState.expected.c0 , regState.actual.c0);
+  testCapabiltyEquality(regState.expected.c1 , regState.actual.c1);
+  testCapabiltyEquality(regState.expected.c2 , regState.actual.c2);
+  testCapabiltyEquality(regState.expected.c3 , regState.actual.c3);
+  testCapabiltyEquality(regState.expected.c4 , regState.actual.c4);
+  testCapabiltyEquality(regState.expected.c5 , regState.actual.c5);
+  testCapabiltyEquality(regState.expected.c6 , regState.actual.c6);
+  testCapabiltyEquality(regState.expected.c7 , regState.actual.c7);
+  testCapabiltyEquality(regState.expected.c8 , regState.actual.c8);
+  testCapabiltyEquality(regState.expected.c9 , regState.actual.c9);
+  testCapabiltyEquality(regState.expected.c10 , regState.actual.c10);
+  testCapabiltyEquality(regState.expected.c11 , regState.actual.c11);
+  testCapabiltyEquality(regState.expected.c12 , regState.actual.c12);
+  testCapabiltyEquality(regState.expected.c13 , regState.actual.c13);
+  testCapabiltyEquality(regState.expected.c14 , regState.actual.c14);
+  testCapabiltyEquality(regState.expected.c15 , regState.actual.c15);
+  testCapabiltyEquality(regState.expected.c16 , regState.actual.c16);
+  testCapabiltyEquality(regState.expected.c17 , regState.actual.c17);
+  testCapabiltyEquality(regState.expected.c18 , regState.actual.c18);
+  testCapabiltyEquality(regState.expected.c19 , regState.actual.c19);
+  testCapabiltyEquality(regState.expected.c20 , regState.actual.c20);
+  testCapabiltyEquality(regState.expected.c21 , regState.actual.c21);
+  testCapabiltyEquality(regState.expected.c22 , regState.actual.c22);
+  testCapabiltyEquality(regState.expected.c23 , regState.actual.c23);
+  testCapabiltyEquality(regState.expected.c24 , regState.actual.c24);
+  testCapabiltyEquality(regState.expected.c25 , regState.actual.c25);
+  testCapabiltyEquality(regState.expected.c26 , regState.actual.c26);
+  testCapabiltyEquality(regState.expected.c27 , regState.actual.c27);
+  testCapabiltyEquality(regState.expected.c28 , regState.actual.c28);
+  testCapabiltyEquality(regState.expected.c29 , regState.actual.c29);
+}
+
+void testStackPointerSanitation(void){
+  StatePair regState = getSandboxExitState();
+
+  testCapabiltyEquality(regState.expected.csp , regState.actual.csp);
+}
+
+void testDDCSanitation(void){
+  StatePair regState = getSandboxExitState();
+
+  testCapabiltyEquality(regState.expected.ddc , regState.actual.ddc);
+}
+
+void testCompartmentIdSanitation(void){
+  StatePair regState = getSandboxExitState();
+
+  testCapabiltyEquality(regState.expected.cid , regState.actual.cid);
+}
+
+void testThreadIdSanitation(void){
+  StatePair regState = getSandboxExitState();
+
+  testCapabiltyEquality(regState.expected.ctpidr , regState.actual.ctpidr);
+}
+
+void testRestrictedThreadIdSanitation(void){
+  StatePair regState = getSandboxExitState();
+
+  testCapabiltyEquality(regState.expected.rctpidr , regState.actual.rctpidr);
 }
 
 int main(int argc, char const *argv[]) {
   UNITY_BEGIN();
-  // test for EL0 system registers
-  RUN_TEST(testStackCapability);
-  RUN_TEST(testDDC);
-  RUN_TEST(testCompartmentId);
-  RUN_TEST(testThreadId);
-  RUN_TEST(testRestrictedThreadId);
+  // test register restoring
+  RUN_TEST(testStackCapabilityRestoration);
+  RUN_TEST(testDDCRestoration);
+  RUN_TEST(testCompartmentIdRestoration);
+  RUN_TEST(testThreadIdRestoration);
+  RUN_TEST(testRestrictedThreadIdRestoration);
   // check registers after function entry
-  RUN_TEST(testSystemSanitation);
+  RUN_TEST(testRegisterSanitation);
+  RUN_TEST(testStackPointerSanitation);
+  RUN_TEST(testDDCSanitation);
+  RUN_TEST(testCompartmentIdSanitation);
+  RUN_TEST(testThreadIdSanitation);
+  RUN_TEST(testRestrictedThreadIdSanitation);
   return UNITY_END();
 }
