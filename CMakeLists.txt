@@ -18,7 +18,7 @@ else()
   set(PURECAP_COMPILE_FLAGS -march=morello+c64 -mabi=purecap)
   set(PURECAP_LINK_FLAGS -march=morello+c64 -mabi=purecap -fuse-ld=lld)
   set(NOCAP_COMPILE_FLAGS -march=morello)
-  set(NOCAP_LINK_FLAGS -march=morello)
+  set(NOCAP_LINK_FLAGS -march=morello -fuse-ld=lld)
 
   set(CMAKE_ASM_FLAGS "${CFLAGS} -x assembler-with-cpp")
 endif()
