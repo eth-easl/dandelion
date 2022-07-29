@@ -9,3 +9,12 @@ target_include_directories(${LIBRARY_BASIC} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/b
 # compile options, set O0 to make sure the code is not unexpectedly optimized
 target_compile_options(${LIBRARY_BASIC} PRIVATE ${NOCAP_COMPILE_FLAGS} -O0)
 target_link_options(${LIBRARY_BASIC} PRIVATE ${NOCAP_LINK_FLAGS})
+
+set(EXECUTABLE "wrapper")
+add_executable(${EXECUTABLE}
+  wrapper/wrapperMain.c
+)
+
+target_compile_options(${EXECUTABLE} PRIVATE ${NOCAP_COMPILE_FLAGS} -static)
+target_link_options(${EXECUTABLE} PRIVATE ${NOCAP_LINK_FLAGS} -static )
+# target_link_libraries(${EXECUTABLE} PRIVATE ioLib)
