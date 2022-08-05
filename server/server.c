@@ -55,6 +55,16 @@ int main(int argc, char const *argv[]) {
     perror(strerror(errno));
     return -1;
   }
+  // read the program section header table from the file
+  Elf_Off shtOffset = header.e_shoff;
+  Elf_Half shtEntryQuantity = header.e_shnum;
+  Elf_Half shtEntrySize = header.e_shentsize;
+  long int shtSize = shtEntryQuantity*shtEntrySize;
+  Elf_Shdr* shTable = malloc(shtSize);
+  if(pread(elf_file, shTable, shtSize, shtOffset) != shtSize){
+    perror(strerror(errno));
+    return -1;
+  }
 
   // allocate space for the process to execute in
   size_t memorySize = 1L<<32;
@@ -69,11 +79,6 @@ int main(int argc, char const *argv[]) {
     (__cheri_tocap void*__capability) functionMemoryAddress;
   functionMemory = __builtin_cheri_bounds_set(functionMemory, memorySize);
 
-  printf("functionMemory perms: %ld\n", __builtin_cheri_perms_get(functionMemory));
-  printf("functionMemory addr: %ld\n", __builtin_cheri_address_get(functionMemory));
-  printf("functionMemory base: %ld\n", __builtin_cheri_base_get(functionMemory));
-  printf("functionMemory length: %ld\n", __builtin_cheri_length_get(functionMemory));
-
   // printf("PT_PHDR %d\n", PT_PHDR);
   // printf("PT_LOAD %d\n", PT_LOAD);
   for (size_t headerIndex = 0; headerIndex < phtEntryQuantity; headerIndex++) {
@@ -84,7 +89,9 @@ int main(int argc, char const *argv[]) {
       Elf_Off fileOffset = loadedHeader.p_offset;
       Elf_Addr virtualAddress = loadedHeader.p_vaddr;
       Elf_Word loadSize = loadedHeader.p_filesz;
-      pread(elf_file, (__cheri_fromcap void *)functionMemory+virtualAddress, loadSize, fileOffset);
+      printf("Loading Address %lu\n", virtualAddress);
+      printf("Loading Size    %lu\n", loadSize);
+      pread(elf_file, functionMemoryAddress+virtualAddress, loadSize, fileOffset);
     }
   }
 
@@ -93,12 +100,79 @@ int main(int argc, char const *argv[]) {
   pcc = __builtin_cheri_address_set(pcc, (unsigned long)functionMemoryAddress);
   pcc = __builtin_cheri_bounds_set(pcc, memorySize);
   pcc = pcc + entryPoint;
-  printf("pcc perms: %ld\n", __builtin_cheri_perms_get(pcc));
-  printf("pcc addr: %ld\n", __builtin_cheri_address_get(pcc));
-  printf("pcc base: %ld\n", __builtin_cheri_base_get(pcc));
-  printf("pcc length: %ld\n", __builtin_cheri_length_get(pcc));
+
+  // load symbol table
+  int symTabIndex = 0;
+  while(symTabIndex < shtEntryQuantity && shTable[symTabIndex].sh_type != SHT_SYMTAB){
+    symTabIndex++;
+  }
+  if(symTabIndex == shtEntryQuantity){
+    printf("No symtab found\n");
+    return -1;
+  }
+
+  Elf_Off symTabOffset = shTable[symTabIndex].sh_offset;
+  Elf_Word symTabSize = shTable[symTabIndex].sh_size;
+  Elf_Word symTabEntrySize = shTable[symTabIndex].sh_entsize;
+  int symTabEntryQuantity = symTabSize/symTabEntrySize;
+
+   Elf_Sym* symTable = malloc(symTabSize);
+   if(pread(elf_file, symTable, symTabSize, symTabOffset) != symTabSize){
+     perror(strerror(errno));
+     return -1;
+   }
+
+   // load section name string table
+   Elf_Half sectionNameTableIndex = header.e_shstrndx;
+   Elf_Off sectionNameTableOffset = shTable[sectionNameTableIndex].sh_offset;
+   Elf_Word sectionNameTableSize = shTable[sectionNameTableIndex].sh_size;
+   char* sectionNameTable = malloc(sectionNameTableSize);
+   if(pread(elf_file, sectionNameTable, sectionNameTableSize, sectionNameTableOffset) != sectionNameTableSize){
+     perror(strerror(errno));
+     return -1;
+   }
+
+   printf("index %d\n", symTabIndex);
+   printf("index %d\n", shTable[symTabIndex].sh_name);
+   printf("index %s\n", sectionNameTable+shTable[symTabIndex].sh_name);
+
+   // load symbol name table
+   int symbolStringTableIndex = 0;
+   while(symbolStringTableIndex < shtEntryQuantity){
+     int comparison = strcmp(".strtab",
+      sectionNameTable + shTable[symbolStringTableIndex].sh_name);
+     if(comparison == 0){break;}
+     symbolStringTableIndex++;
+   }
+
+   Elf_Word symStringTabSize = shTable[symbolStringTableIndex].sh_size;
+   Elf_Word symStringTabOffset = shTable[symbolStringTableIndex].sh_offset;
+   char* symbolStringTable = malloc(symStringTabSize);
+   if(pread(elf_file, symbolStringTable, symStringTabSize, symStringTabOffset) != symStringTabSize){
+     perror(strerror(errno));
+     return -1;
+   }
+
+   printf("symbolStringTable %s\n", sectionNameTable+shTable[symbolStringTableIndex].sh_name);
+
+   for(int i = symTabEntryQuantity-2; i<symTabEntryQuantity; i++){
+     printf("Symbol: %s\n", symbolStringTable+symTable[i].st_name);
+     printf("value: %lu\n", symTable[i].st_value);
+     printf("size: %lu\n", symTable[i].st_size);
+     printf("mem value %d\n", *((char*)functionMemoryAddress + symTable[i].st_value));
+   }
 
   sandboxedCall(pcc, functionMemory, (void*) memorySize -16);
+
+   printf("symbolStringTable %s\n", sectionNameTable+shTable[symbolStringTableIndex].sh_name);
+
+   for(int i = symTabEntryQuantity-2; i<symTabEntryQuantity; i++){
+     printf("Symbol: %s\n", symbolStringTable+symTable[i].st_name);
+     printf("value: %lu\n", symTable[i].st_value);
+     printf("size: %lu\n", symTable[i].st_size);
+     printf("mem value %d\n", *((char*)functionMemoryAddress + symTable[i].st_value));
+   }
+
 
   printf("Server Goodbye\n");
 
