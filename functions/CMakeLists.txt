@@ -15,6 +15,6 @@ add_executable(${EXECUTABLE}
   wrapper/wrapperMain.c
 )
 
-target_compile_options(${EXECUTABLE} PRIVATE ${NOCAP_COMPILE_FLAGS} -static)
-target_link_options(${EXECUTABLE} PRIVATE ${NOCAP_LINK_FLAGS} -static )
+target_compile_options(${EXECUTABLE} PRIVATE ${NOCAP_COMPILE_FLAGS} -static -O2)
+target_link_options(${EXECUTABLE} PRIVATE ${NOCAP_LINK_FLAGS} -static -fno-builtin -nostdlib -e main)
 # target_link_libraries(${EXECUTABLE} PRIVATE ioLib)

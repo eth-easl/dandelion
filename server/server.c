@@ -11,6 +11,8 @@
 #include <elf.h>
 #include <errno.h>
 #include <unistd.h>
+//
+#include "compartment.h"
 
 int main(int argc, char const *argv[]) {
   printf("Server Hello\n");
@@ -56,15 +58,18 @@ int main(int argc, char const *argv[]) {
 
   // allocate space for the process to execute in
   size_t memorySize = 1L<<32;
-  void*__capability functionMemory = mmap(NULL,
+  void* functionMemoryAddress = mmap(NULL,
     memorySize,
     PROT_EXEC | PROT_READ | PROT_WRITE,
     MAP_ANONYMOUS,
     -1,
     0
   );
+  void*__capability functionMemory =
+    (__cheri_tocap void*__capability) functionMemoryAddress;
+  functionMemory = __builtin_cheri_bounds_set(functionMemory, memorySize);
 
-  printf("functionMemory flags: %ld\n", __builtin_cheri_perms_get(functionMemory));
+  printf("functionMemory perms: %ld\n", __builtin_cheri_perms_get(functionMemory));
   printf("functionMemory addr: %ld\n", __builtin_cheri_address_get(functionMemory));
   printf("functionMemory base: %ld\n", __builtin_cheri_base_get(functionMemory));
   printf("functionMemory length: %ld\n", __builtin_cheri_length_get(functionMemory));
@@ -79,21 +84,21 @@ int main(int argc, char const *argv[]) {
       Elf_Off fileOffset = loadedHeader.p_offset;
       Elf_Addr virtualAddress = loadedHeader.p_vaddr;
       Elf_Word loadSize = loadedHeader.p_filesz;
-      pread(elf_file, functionMemory+virtualAddress, loadSize, fileOffset);
+      pread(elf_file, (__cheri_fromcap void *)functionMemory+virtualAddress, loadSize, fileOffset);
     }
   }
 
   // make ppc
-  void* __capability pcc = functionMemory + entryPoint;
-  printf("functionMemory flags: %ld\n", __builtin_cheri_perms_get(pcc));
-  printf("functionMemory addr: %ld\n", __builtin_cheri_address_get(pcc));
-  printf("functionMemory base: %ld\n", __builtin_cheri_base_get(pcc));
-  printf("functionMemory length: %ld\n", __builtin_cheri_length_get(pcc));
-  __asm__ volatile(
-    "msr ddc, %x0 \n"
-    "mov sp, %1 \n"
-    "blr %x2"
-    : : "r"(functionMemory), "r"(memorySize), "r"(pcc));
+  void* __capability pcc = __builtin_cheri_program_counter_get();
+  pcc = __builtin_cheri_address_set(pcc, (unsigned long)functionMemoryAddress);
+  pcc = __builtin_cheri_bounds_set(pcc, memorySize);
+  pcc = pcc + entryPoint;
+  printf("pcc perms: %ld\n", __builtin_cheri_perms_get(pcc));
+  printf("pcc addr: %ld\n", __builtin_cheri_address_get(pcc));
+  printf("pcc base: %ld\n", __builtin_cheri_base_get(pcc));
+  printf("pcc length: %ld\n", __builtin_cheri_length_get(pcc));
+
+  sandboxedCall(pcc, functionMemory, (void*) memorySize -16);
 
   printf("Server Goodbye\n");
 

@@ -5,6 +5,6 @@ set(EXECUTABLE "server")
 add_executable(${EXECUTABLE}
   server.c
 )
-target_compile_options(${EXECUTABLE} PRIVATE ${PURECAP_COMPILE_FLAGS})
-target_link_options(${EXECUTABLE} PRIVATE ${PURECAP_LINK_FLAGS})
-target_link_libraries(${EXECUTABLE} PRIVATE elf)
+target_compile_options(${EXECUTABLE} PRIVATE ${NOCAP_COMPILE_FLAGS})
+target_link_options(${EXECUTABLE} PRIVATE ${NOCAP_LINK_FLAGS})
+target_link_libraries(${EXECUTABLE} PRIVATE elf compartmentLib)

@@ -19,8 +19,15 @@ int main(void) {
   test_initialized = 7;
   test_uninitialized = 8;
   testFunc();
-  printf("%d\n", test_initialized);
-  printf("%d\n", test_uninitialized);
-  printf("%d\n", test_inFunc);
-  return 0;
+  // printf("%d\n", test_initialized);
+  // printf("%d\n", test_uninitialized);
+  // printf("%d\n", test_inFunc);
+  // return 7;
+
+  __asm__ volatile(
+    "mrs c0, ddc \n"
+    "ldr c0, [c0] \n"
+    "ldpbr c29, [c0] \n"
+  );
+  __builtin_unreachable();
 }
