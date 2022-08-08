@@ -25,12 +25,16 @@ endif()
 
 project(dandelion LANGUAGES C ASM)
 
+# compartment setup and execution code
+add_subdirectory(compartment)
+# libraries exposed to functions
+add_subdirectory(functionInterface)
+# functions used for testing
+add_subdirectory(functions)
+# function management libraries
+add_subdirectory(management)
 # add main server directory
 add_subdirectory(server)
-# add function libaries used for testing
-add_subdirectory(functions)
-# compartment setup and execution codes
-add_subdirectory(compartment)
 # testing framework
 add_subdirectory(unity)
 
