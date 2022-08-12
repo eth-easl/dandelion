@@ -40,11 +40,16 @@ int main(int argc, char const *argv[]) {
   if(populateElfDescriptor(elf_file, &elf) != 0){return -1;}
 
   // allocate space for the process to execute in
-  size_t memorySize = 2L<<22; // <-- needs to be lower than 24 in order for the in function access to work, TOOD: investigate
+  size_t memorySize = 2L<<23; // <-- needs to be lower than 24 in order for the in function access to work, TOOD: investigate
+  // round to representable length, seems to be always true
+  printf("%lu\n", memorySize);
+  __asm__ volatile("rrlen %0, %0" : "+r"(memorySize));
+  printf("%lu\n", memorySize);
+
   void* functionMemoryAddress = mmap(NULL,
     memorySize,
     PROT_EXEC | PROT_READ | PROT_WRITE,
-    MAP_ANONYMOUS,
+    MAP_ANONYMOUS | MAP_ALIGNED(12), // get anonymous, page alligned memory
     -1,
     0
   );
@@ -56,7 +61,14 @@ int main(int argc, char const *argv[]) {
 
   void*__capability functionMemory =
     (__cheri_tocap void*__capability) functionMemoryAddress;
+  printf("function memory base %p\n", (void*)__builtin_cheri_base_get(functionMemory));
+  printf("function memory length %lu\n", __builtin_cheri_length_get(functionMemory));
+  printf("function memory address %p\n", (void*)__builtin_cheri_address_get(functionMemory));
   functionMemory = __builtin_cheri_bounds_set(functionMemory, memorySize);
+  // TODO fix the bounds
+  printf("function memory base %p\n", (void*)__builtin_cheri_base_get(functionMemory));
+  printf("function memory length %lu\n", __builtin_cheri_length_get(functionMemory));
+  printf("function memory address %p\n", (void*)__builtin_cheri_address_get(functionMemory));
 
   // holds the uppermost virtual address that is already used
   // this will be the bottom address for the heap
@@ -73,8 +85,8 @@ int main(int argc, char const *argv[]) {
       if(virtSize + virtualAddress > topVirtualAddress){
         topVirtualAddress = virtSize + virtualAddress;
       }
-      printf("Loading Address %lu\n", virtualAddress);
-      printf("Loading Size    %u\n", virtSize);
+      // printf("Loading Address %lu\n", virtualAddress);
+      // printf("Loading Size    %u\n", virtSize);
       pread(elf_file, functionMemoryAddress+virtualAddress, loadSize, fileOffset);
     }
   }
@@ -84,6 +96,10 @@ int main(int argc, char const *argv[]) {
   pcc = __builtin_cheri_address_set(pcc, (unsigned long)functionMemoryAddress);
   pcc = __builtin_cheri_bounds_set(pcc, memorySize);
   pcc = pcc + elf.elfHeader.e_entry;
+
+  printf("pcc base %p\n", (void*)__builtin_cheri_base_get(pcc));
+  printf("pcc length %lu\n", __builtin_cheri_length_get(pcc));
+  printf("pcc address %p\n", (void*)__builtin_cheri_address_get(pcc));
 
   // set up dandelionIO
   Elf_Addr inputRootAddress = 0;
@@ -130,16 +146,19 @@ int main(int argc, char const *argv[]) {
   Elf_Addr debugOffset = 0;
   Elf_Word debugSize = 0;
   getSymbolAddress(&elf, "debugSymbol", &debugOffset, &debugSize);
-  printf("debug Symbol before %ld\n", *((long int*)(functionMemoryAddress + (size_t)debugOffset)));
   Elf_Addr debugOffset2 = 0;
   Elf_Word debugSize2 = 0;
   getSymbolAddress(&elf, "debugSymbol2", &debugOffset2, &debugSize2);
+
+  printf("debug Symbol before %p\n", *((void**)(functionMemoryAddress + (size_t)debugOffset)));
   printf("debug Symbol2 before %ld\n", *((long int*)(functionMemoryAddress + (size_t)debugOffset2)));
 
   sandboxedCall(pcc, functionMemory, (void*) memorySize);
 
-  printf("debug Symbol after %ld\n", *((long int*)(functionMemoryAddress + (size_t)debugOffset)));
+  printf("debug Symbol after %p\n", *((void**)(functionMemoryAddress + (size_t)debugOffset)));
   printf("debug Symbol2 after %ld\n", *((long int*)(functionMemoryAddress + (size_t)debugOffset2)));
+
+  printf("input address after %p\n", ((ioStruct*) (functionMemoryAddress+(size_t)*inputRootPointer))->address);
 
    // check output
    printf("output number %d\n", *((unsigned int*)(functionMemoryAddress+outputNumberAddress)));
