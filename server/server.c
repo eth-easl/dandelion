@@ -14,6 +14,7 @@
 // internal includes
 #include "compartment.h"
 #include "elfParsing.h"
+#include "dandelionIOInternal.h"
 
 int main(int argc, char const *argv[]) {
   printf("Server Hello\n");
@@ -39,7 +40,7 @@ int main(int argc, char const *argv[]) {
   if(populateElfDescriptor(elf_file, &elf) != 0){return -1;}
 
   // allocate space for the process to execute in
-  size_t memorySize = 1L<<32;
+  size_t memorySize = 2L<<22; // <-- needs to be lower than 24 in order for the in function access to work, TOOD: investigate
   void* functionMemoryAddress = mmap(NULL,
     memorySize,
     PROT_EXEC | PROT_READ | PROT_WRITE,
@@ -47,9 +48,19 @@ int main(int argc, char const *argv[]) {
     -1,
     0
   );
+  printf("functionMemoryAddress %p\n", functionMemoryAddress);
+  if(functionMemoryAddress == MAP_FAILED){
+    perror(strerror(errno));
+    return -1;
+  }
+
   void*__capability functionMemory =
     (__cheri_tocap void*__capability) functionMemoryAddress;
   functionMemory = __builtin_cheri_bounds_set(functionMemory, memorySize);
+
+  // holds the uppermost virtual address that is already used
+  // this will be the bottom address for the heap
+  Elf_Addr topVirtualAddress = 0;
 
   // process loadable headers
   for (size_t headerIndex = 0; headerIndex < elf.elfHeader.e_shnum; headerIndex++) {
@@ -58,8 +69,12 @@ int main(int argc, char const *argv[]) {
       Elf_Off fileOffset = loadedHeader.p_offset;
       Elf_Addr virtualAddress = loadedHeader.p_vaddr;
       Elf_Word loadSize = loadedHeader.p_filesz;
+      Elf_Word virtSize = loadedHeader.p_memsz;
+      if(virtSize + virtualAddress > topVirtualAddress){
+        topVirtualAddress = virtSize + virtualAddress;
+      }
       printf("Loading Address %lu\n", virtualAddress);
-      printf("Loading Size    %u\n", loadSize);
+      printf("Loading Size    %u\n", virtSize);
       pread(elf_file, functionMemoryAddress+virtualAddress, loadSize, fileOffset);
     }
   }
@@ -70,16 +85,68 @@ int main(int argc, char const *argv[]) {
   pcc = __builtin_cheri_bounds_set(pcc, memorySize);
   pcc = pcc + elf.elfHeader.e_entry;
 
-  Elf_Addr testAddr = 0;
-  Elf_Word testSize = 0;
-  getSymbolAddress(&elf, "test_initialized", &testAddr, &testSize);
-  printf("test_initialized address %lu\n", testAddr);
-  printf("test_initialized size %u\n", testSize);
-  printf("test_initialized value before %d\n", *(int*)(functionMemoryAddress+testAddr));
+  // set up dandelionIO
+  Elf_Addr inputRootAddress = 0;
+  Elf_Word inputRootSize = 0;
+  getSymbolAddress(&elf, "inputRoot", &inputRootAddress, &inputRootSize);
+  Elf_Addr outputRootAddress = 0;
+  Elf_Word outputRootSize = 0;
+  getSymbolAddress(&elf, "outputRoot", &outputRootAddress, &outputRootSize);
+  Elf_Addr inputNumberAddress = 0;
+  Elf_Word inputNumberSize = 0;
+  getSymbolAddress(&elf, "inputNumber", &inputNumberAddress, &inputNumberSize);
+  Elf_Addr outputNumberAddress = 0;
+  Elf_Word outputNumberSize = 0;
+  getSymbolAddress(&elf, "outputNumber", &outputNumberAddress, &outputNumberSize);
+  Elf_Addr maxOutputNumberAddress = 0;
+  Elf_Word maxOutputNumberSize = 0;
+  getSymbolAddress(&elf, "maxOutputNumber", &maxOutputNumberAddress, &maxOutputNumberSize);
 
-   sandboxedCall(pcc, functionMemory, (void*) memorySize -16);
+  // set up input root and structs for input
+  int inputNumber = 1;
+  *((int*)(functionMemoryAddress+inputNumberAddress)) = inputNumber;
+  ioStruct** inputRootPointer = (ioStruct**)(functionMemoryAddress+inputRootAddress);
+  *inputRootPointer = (ioStruct*) topVirtualAddress;
+  topVirtualAddress += sizeof(ioStruct)*inputNumber;
+  // printf("%lu\n", topVirtualAddress);
 
-   printf("test_initialized value after %d\n", *(int*)(functionMemoryAddress+testAddr));
+  int maxOutputNumber = 1;
+  *((int*)(functionMemoryAddress+maxOutputNumberAddress)) = maxOutputNumber;
+  ioStruct** outputRootPointer = (ioStruct**)(functionMemoryAddress+outputRootAddress);
+  *outputRootPointer = (ioStruct*) topVirtualAddress;
+  topVirtualAddress += sizeof(ioStruct)*maxOutputNumber;
+
+  // put input on the heap
+  int input = 8;
+  ((ioStruct*) (functionMemoryAddress+(size_t)*inputRootPointer))->size = 4;
+  ((ioStruct*) (functionMemoryAddress+(size_t)*inputRootPointer))->address = (void*) topVirtualAddress;
+  *((int*)(functionMemoryAddress+topVirtualAddress)) = input;
+  topVirtualAddress += sizeof(int);
+  printf("input number %d\n", inputNumber);
+  printf("input address %p\n", ((ioStruct*) (functionMemoryAddress+(size_t)*inputRootPointer))->address);
+  printf("input value %d\n", input);
+
+  // read debug symbol
+  Elf_Addr debugOffset = 0;
+  Elf_Word debugSize = 0;
+  getSymbolAddress(&elf, "debugSymbol", &debugOffset, &debugSize);
+  printf("debug Symbol before %ld\n", *((long int*)(functionMemoryAddress + (size_t)debugOffset)));
+  Elf_Addr debugOffset2 = 0;
+  Elf_Word debugSize2 = 0;
+  getSymbolAddress(&elf, "debugSymbol2", &debugOffset2, &debugSize2);
+  printf("debug Symbol2 before %ld\n", *((long int*)(functionMemoryAddress + (size_t)debugOffset2)));
+
+  sandboxedCall(pcc, functionMemory, (void*) memorySize);
+
+  printf("debug Symbol after %ld\n", *((long int*)(functionMemoryAddress + (size_t)debugOffset)));
+  printf("debug Symbol2 after %ld\n", *((long int*)(functionMemoryAddress + (size_t)debugOffset2)));
+
+   // check output
+   printf("output number %d\n", *((unsigned int*)(functionMemoryAddress+outputNumberAddress)));
+   void* outputAddress = ((ioStruct*)(functionMemoryAddress+(size_t)*outputRootPointer))[0].address;
+   printf("output address %p\n", outputAddress);
+   int output = *((int*) (functionMemoryAddress + (size_t)outputAddress));
+   printf("output value %d\n", output);
 
    freeElfDescriptor(&elf);
 
