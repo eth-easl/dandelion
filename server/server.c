@@ -40,16 +40,32 @@ int main(int argc, char const *argv[]) {
   if(populateElfDescriptor(elf_file, &elf) != 0){return -1;}
 
   // allocate space for the process to execute in
-  size_t memorySize = 2L<<23; // <-- needs to be lower than 24 in order for the in function access to work, TOOD: investigate
-  // round to representable length, seems to be always true
-  printf("%lu\n", memorySize);
-  __asm__ volatile("rrlen %0, %0" : "+r"(memorySize));
-  printf("%lu\n", memorySize);
+    size_t memorySize = 1L << 26;
+    size_t mask, rounded;
+    __asm__ volatile("RRMASK %0, %1" : "+r"(mask) : "r"(memorySize));
+    __asm__ volatile("RRLEN %0, %1" : "+r"(rounded) : "r"(memorySize));
+    printf("value %zx\n", memorySize);
+    printf("rounded %zx\n", rounded);
+    printf("mask %zx\n", mask);
+    // get position of first 0
+    int allignment = 63;
+    while(allignment > 0){
+      if(!((1L << allignment) & mask)){
+        break;
+      }
+      allignment--;
+    }
+    printf("pos %d\n", allignment);
+    // gives the left shift to first non 0, this means last 1 is +2
+    // 1 for correcting that we detect the first 0
+    // and 1 for accounting the original 1
+    allignment = allignment + 2;
+    memorySize = rounded;
 
   void* functionMemoryAddress = mmap(NULL,
     memorySize,
     PROT_EXEC | PROT_READ | PROT_WRITE,
-    MAP_ANONYMOUS | MAP_ALIGNED(12), // get anonymous, page alligned memory
+    MAP_ANONYMOUS | MAP_ALIGNED(allignment), // get anonymous, page alligned memory
     -1,
     0
   );

@@ -25,12 +25,12 @@ int main(void) {
   size_t inputSize = getInputSize(0);
   int* inputPointer = getInputPointer(0);
 
-  // addOutput();
-  // int outPutNumber = 11* (*inputPointer);
+  addOutput();
+  int outPutNumber = 11* (*inputPointer);
   debugSymbol = inputPointer;
   debugSymbol2 = test_uninitialized;
-  // setOutputSize(0, 4);
-  // setOutputPointer(0, &outPutNumber);
+  setOutputSize(0, 4);
+  setOutputPointer(0, &outPutNumber);
 
   // printf("%d\n", test_initialized);
   // printf("%d\n", test_uninitialized);
