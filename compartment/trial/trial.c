@@ -72,7 +72,7 @@ int main(int argc, char const *argv[]) {
   printf("stack  %p\n", stackPointer);
 
   // perform function call
-  sandboxedCall(wrappedFunction, functionMemoryCap, stackPointer);
+  sandboxedCall(wrappedFunction, functionMemoryCap, 0, stackPointer);
 
   // read out results
   testInt = ((int* __capability)argstart)[0];

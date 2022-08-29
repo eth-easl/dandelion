@@ -133,6 +133,9 @@ int main(int argc, char const *argv[]) {
   Elf_Addr maxOutputNumberAddress = 0;
   Elf_Word maxOutputNumberSize = 0;
   getSymbolAddress(&elf, "maxOutputNumber", &maxOutputNumberAddress, &maxOutputNumberSize);
+  Elf_Addr returnPairAddress = 0;
+  Elf_Word returnPairSize = 0;
+  getSymbolAddress(&elf, "returnPair", &returnPairAddress, &returnPairSize);
 
   // set up input root and structs for input
   int inputNumber = 1;
@@ -169,7 +172,7 @@ int main(int argc, char const *argv[]) {
   printf("debug Symbol before %p\n", *((void**)(functionMemoryAddress + (size_t)debugOffset)));
   printf("debug Symbol2 before %ld\n", *((long int*)(functionMemoryAddress + (size_t)debugOffset2)));
 
-  sandboxedCall(pcc, functionMemory, (void*) memorySize);
+  sandboxedCall(pcc, functionMemory, returnPairAddress, (void*) memorySize);
 
   printf("debug Symbol after %p\n", *((void**)(functionMemoryAddress + (size_t)debugOffset)));
   printf("debug Symbol2 after %ld\n", *((long int*)(functionMemoryAddress + (size_t)debugOffset2)));

@@ -1,6 +1,8 @@
 #ifndef DANDELION_COMPARTMENT_COMPARTMENT_H_
 #define DANDELION_COMPARTMENT_COMPARTMENT_H_
 
+#include <stdlib.h>
+
 /*
   Input:
     functionCode: pointer to the start of the code to be wrapped
@@ -21,6 +23,7 @@ Input:
 void sandboxedCall(
     void* __capability functionCode,
     char* __capability functionMemory,
+    size_t returnPairOffset,
     void* functionStackPointer
   );
 

@@ -85,7 +85,7 @@ StatePair getSandboxEntryState(void){
    // offsets
    char* stackPointer = (__cheri_fromcap char*)functionMemoryCap + capSize;
 
-   sandboxedCall(wrappedSafeAll, functionMemoryCap, stackPointer);
+   sandboxedCall(wrappedSafeAll, functionMemoryCap, 0, stackPointer);
 
    // copy values from stackpointer onward into registerState
    StatePair regState = { };

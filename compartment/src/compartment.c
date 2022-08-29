@@ -1,9 +1,7 @@
 // Implementing
 #include "compartment.h"
 // System Headers
-#include <stdlib.h>
 #include <sys/mman.h>
-#include <stdio.h> // TODO remove
 // Standard Libraries
 
 // Project External Libraries
@@ -47,6 +45,7 @@ void* __capability wrapCode(void* functionCode, int size){
 void sandboxedCall(
   void* __capability functionCode,
   char* __capability functionMemory,
+  size_t returnPairOffset,
   void* functionStackPointer
 ){
     __label__ returnLabel;
@@ -74,7 +73,8 @@ void sandboxedCall(
     "seal %x[returnPair], %x[returnPair], lpb \n"
     : [returnPair] "+r" (returnPair)
   );
-  ((char* __capability * __capability) functionMemory)[0] = (char* __capability) returnPair;
+  *((char* __capability * __capability) (functionMemory + returnPairOffset))
+    = (char* __capability) returnPair;
 
   // store current context
   storeContext(contextSpaceCap);

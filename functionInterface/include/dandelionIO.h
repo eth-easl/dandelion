@@ -20,4 +20,6 @@ size_t getOutputSize(unsigned int index);
 int setOutputPointer(unsigned int index, void* address);
 void* getOutputPointer(unsigned int index);
 
+void function_exit(void);
+
 #endif // DANDELION_FUNCTIONINTERFACE_DANDELIONIO_H_

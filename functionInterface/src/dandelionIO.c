@@ -16,6 +16,8 @@ static const unsigned int inputNumber;
 static unsigned int outputNumber = 0;
 static const unsigned int maxOutputNumber;
 
+static const void * __capability const returnPair;
+
 int getInputNumber(void){
   return inputNumber;
 }
@@ -58,4 +60,13 @@ int setOutputPointer(unsigned int index, void* address){
 void* getOutputPointer(unsigned int index){
   if(index < outputNumber) { return outputRoot[index].address; }
   else { return NULL; }
+}
+
+void function_exit(void){
+  __asm__ volatile(
+    // "ldr c0, %w[] \n"
+    "ldpbr c29, [%w[returnPair]] \n"
+    : : [returnPair] "r" (returnPair) : "c0", "c29"
+  );
+  __builtin_unreachable();
 }
