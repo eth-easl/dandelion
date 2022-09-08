@@ -10,8 +10,6 @@
 int test_initialized = 5;
 int test_uninitialized;
 int test_inFunc = 6;
-void* debugSymbol = NULL;
-long int debugSymbol2 = 2;
 
 void testFunc(void){
   test_inFunc = 9;
@@ -27,15 +25,8 @@ int main(void) {
 
   addOutput();
   int outPutNumber = 11* (*inputPointer);
-  debugSymbol = inputPointer;
-  debugSymbol2 = test_uninitialized;
   setOutputSize(0, 4);
   setOutputPointer(0, &outPutNumber);
-
-  // printf("%d\n", test_initialized);
-  // printf("%d\n", test_uninitialized);
-  // printf("%d\n", test_inFunc);
-  // return 7;
 
   function_exit();
 }

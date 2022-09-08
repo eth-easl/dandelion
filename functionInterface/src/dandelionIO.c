@@ -10,6 +10,8 @@
 // Project Internal Libraries
 
 // type to store meta information about inputs
+// TODO get malloc to work inside function to make dynamic
+// heap of iostructs, then update runStaticFunction
 static ioStruct* const inputRoot;
 static ioStruct* outputRoot;
 static const unsigned int inputNumber;

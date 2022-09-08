@@ -161,28 +161,9 @@ int main(int argc, char const *argv[]) {
   printf("input address %p\n", ((ioStruct*) (functionMemoryAddress+(size_t)*inputRootPointer))->address);
   printf("input value %d\n", input);
 
-  // read debug symbol
-  Elf_Addr debugOffset = 0;
-  Elf_Word debugSize = 0;
-  getSymbolAddress(&elf, "debugSymbol", &debugOffset, &debugSize);
-  Elf_Addr debugOffset2 = 0;
-  Elf_Word debugSize2 = 0;
-  getSymbolAddress(&elf, "debugSymbol2", &debugOffset2, &debugSize2);
-
-  printf("debug Symbol before %p\n", *((void**)(functionMemoryAddress + (size_t)debugOffset)));
-  printf("debug Symbol2 before %ld\n", *((long int*)(functionMemoryAddress + (size_t)debugOffset2)));
-
   sandboxedCall(pcc, functionMemory, returnPairAddress, (void*) memorySize);
 
-  printf("debug Symbol after %p\n", *((void**)(functionMemoryAddress + (size_t)debugOffset)));
-  printf("debug Symbol2 after %ld\n", *((long int*)(functionMemoryAddress + (size_t)debugOffset2)));
-
-  printf("input address after %p\n", ((ioStruct*) (functionMemoryAddress+(size_t)*inputRootPointer))->address);
-
    // check output
-   printf("output number %d\n", *((unsigned int*)(functionMemoryAddress+outputNumberAddress)));
-   void* outputAddress = ((ioStruct*)(functionMemoryAddress+(size_t)*outputRootPointer))[0].address;
-   printf("output address %p\n", outputAddress);
    int output = *((int*) (functionMemoryAddress + (size_t)outputAddress));
    printf("output value %d\n", output);
 
