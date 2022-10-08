@@ -24,9 +24,9 @@ int main(void) {
   int* inputPointer = getInputPointer(0);
 
   addOutput();
-  int outPutNumber = 11* (*inputPointer);
+  int outputNumber = 11* (*inputPointer);
   setOutputSize(0, 4);
-  setOutputPointer(0, &outPutNumber);
+  setOutputPointer(0, &outputNumber);
 
   function_exit();
 }
