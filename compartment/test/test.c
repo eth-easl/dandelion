@@ -17,16 +17,20 @@ extern void safeAll(void);
 extern void safeAllEnd(void);
 int safeAllSize;
 extern void sandboxedCallWrapped(
-  void*__capability func,
-  char* __capability mem,
+  void* func,
+  size_t codeSize,
+  size_t entryPointOffset,
+  char* mem,
+  size_t memorySize,
+  size_t returnPairOffset,
   void* stackPointer,
   StatePair* regState
 );
 
 // functions to call before and after each test
 void setUp(void){
-  overwriteSize = overwriteAllEnd - overwriteAll;
-  safeAllSize = safeAllEnd - safeAll;
+  overwriteSize = overwriteAllEnd - overwriteAll + 4;
+  safeAllSize = safeAllEnd - safeAll + 4;
 }
 void tearDown(void){}
 
@@ -74,27 +78,28 @@ void testCapabiltyEquality(
   which contains a register return address.
 */
 StatePair getSandboxEntryState(void){
-   void* __capability wrappedSafeAll = wrapCode(safeAll, safeAllSize);
-   const int capSize = sizeof(void* __capability);
+   const size_t capSize = sizeof(void* __capability);
    // round up to next 16 bytes
    int allocSize = ((capSize + sizeof(RegisterState) + 1)/capSize)*capSize;
-   char* __capability functionMemoryCap =
-   (__cheri_tocap char* __capability) malloc(allocSize);
+   char* functionMemory = malloc(allocSize);
    // normally stackpointer should be set at end, but set it at beginning because
    // the cap storing using the stack pointer register only works with positive
    // offsets
-   char* stackPointer = (__cheri_fromcap char*)functionMemoryCap + capSize;
+   char* stackPointer = functionMemory + capSize;
 
-   sandboxedCall(wrappedSafeAll, functionMemoryCap, 0, stackPointer);
+   sandboxedCall(safeAll, safeAllSize, 0,
+    functionMemory, allocSize,
+    0, (void*)capSize);
 
    // copy values from stackpointer onward into registerState
    StatePair regState = { };
    memcpy(&regState.actual, stackPointer, sizeof(RegisterState));
    regState.expected.csp = (void*__capability)stackPointer;
-   regState.expected.ddc = functionMemoryCap;
+   void* __capability ddc = (__cheri_tocap void*__capability) functionMemory;
+   ddc = __builtin_cheri_bounds_set(ddc, allocSize);
+   regState.expected.ddc = ddc;
 
-   free((__cheri_fromcap void*)functionMemoryCap);
-   free((__cheri_fromcap void*)wrappedSafeAll);
+   free(functionMemory);
 
    return regState;
 }
@@ -109,19 +114,17 @@ StatePair getSandboxEntryState(void){
  be equal to the expected for the sandbox to be correct.
 */
 StatePair getSandboxExitState(void){
-  void* __capability wrappedOverwrite = wrapCode(overwriteAll, 39);
-  char* __capability functionMemoryCap =
-  (__cheri_tocap char* __capability) malloc(sizeof(void* __capability));
-  char* stackPointer =
-    &(((__cheri_fromcap char*)functionMemoryCap)[sizeof(void* __capability)]);
+  char* functionMemory = malloc(sizeof(void* __capability));
+  char* stackPointer = functionMemory + sizeof(void* __capability);
 
   StatePair regState = {};
 
   sandboxedCallWrapped(
-    wrappedOverwrite, functionMemoryCap, stackPointer, &regState);
+    overwriteAll, overwriteSize, 0,
+    functionMemory, sizeof(void* __capability), 0,
+    stackPointer, &regState);
 
-  free((__cheri_fromcap void*)functionMemoryCap);
-  free((__cheri_fromcap void*)wrappedOverwrite);
+  free(functionMemory);
 
   return regState;
 }

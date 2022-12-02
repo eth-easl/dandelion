@@ -219,15 +219,11 @@ int runStaticFunction(staticFunctionEnvironment_t* env,
     // TODO check if correct
     codeEnd += input[inputIndex].size;
   }
-  // set up ddc and pcc
-  void* __capability ddc = (__cheri_tocap void*__capability) functionMemory;
-  ddc = __builtin_cheri_bounds_set(ddc, env->memorySize);
-  void* __capability pcc = __builtin_cheri_program_counter_get();
-  pcc = __builtin_cheri_address_set(pcc, (unsigned long)functionMemory);
-  pcc = __builtin_cheri_bounds_set(pcc, env->memorySize);
-  pcc = pcc + env->entryPoint;
+
   // make call to function
-  sandboxedCall(pcc, ddc, env->returnPairOffset, (void*) env->memorySize);
+  sandboxedCall(functionMemory, env->memorySize, env->entryPoint,
+    functionMemory, env->memorySize,
+    env->returnPairOffset, (void*) env->memorySize);
   // keep outputs
   *outputNumber = *(int*)((char*)functionMemory + env->outputNumberOffset);
   *output = calloc(*outputNumber,sizeof(ioStruct));

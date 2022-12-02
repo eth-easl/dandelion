@@ -21,8 +21,11 @@ Input:
     pair will be stored at the 0 offset to the pointer.
 */
 void sandboxedCall(
-    void* __capability functionCode,
-    char* __capability functionMemory,
+    void* functionCode,
+    size_t codeSize,
+    size_t entryPointOffset,
+    char* functionMemory,
+    size_t memorySize,
     size_t returnPairOffset,
     void* functionStackPointer
   );
