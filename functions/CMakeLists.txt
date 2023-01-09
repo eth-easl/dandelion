@@ -16,5 +16,5 @@ add_executable(${EXECUTABLE}
 )
 
 target_compile_options(${EXECUTABLE} PRIVATE ${NOCAP_COMPILE_FLAGS} -static -O2)
-target_link_options(${EXECUTABLE} PRIVATE ${NOCAP_LINK_FLAGS} -static -fno-builtin -nostdlib -e main)
+target_link_options(${EXECUTABLE} PRIVATE ${NOCAP_LINK_FLAGS} -static -fno-builtin -nostdlib -e main -T ${CMAKE_CURRENT_SOURCE_DIR}/link.ld LINKER:--noinhibit-exec)
 # target_link_libraries(${EXECUTABLE} PRIVATE ioLib)
