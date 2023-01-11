@@ -15,6 +15,18 @@ add_executable(${EXECUTABLE}
   wrapper/wrapperMain.c
 )
 
-target_compile_options(${EXECUTABLE} PRIVATE ${NOCAP_COMPILE_FLAGS} -static -O2)
-target_link_options(${EXECUTABLE} PRIVATE ${NOCAP_LINK_FLAGS} -static -fno-builtin -nostdlib -e main -T ${CMAKE_CURRENT_SOURCE_DIR}/link.ld LINKER:--noinhibit-exec)
+target_compile_options(${EXECUTABLE} PRIVATE ${NOCAP_COMPILE_FLAGS} -static -g
+	-fno-asynchronous-unwind-tables
+)
+target_link_options(${EXECUTABLE} PRIVATE ${NOCAP_LINK_FLAGS} -static -fno-builtin -nostdlib -e main)
 # target_link_libraries(${EXECUTABLE} PRIVATE ioLib)
+
+
+add_executable(wrapper2 wrapper/wrapperMain.c)
+target_compile_options(wrapper2 PRIVATE ${NOCAP_COMPILE_FLAGS} -static -g
+  -g
+	-fno-asynchronous-unwind-tables
+)
+target_link_options(wrapper2 PRIVATE ${NOCAP_LINK_FLAGS} -static -fno-builtin -nostdlib -e main 
+	-T ${CMAKE_CURRENT_SOURCE_DIR}/link.ld LINKER:--noinhibit-exec
+)

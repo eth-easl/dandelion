@@ -6,6 +6,7 @@
 #include <sys/param.h>
 #include <sys/module.h>
 #include <sys/mman.h>
+#include <cheriintrin.h>
 // include to use cheribsd dynamic loader
 #include <fcntl.h>
 #include <elf.h>
@@ -13,6 +14,8 @@
 #include <unistd.h>
 //
 #include "compartment.h"
+
+#define DDC_SIZE_EXPONENT 32u
 
 int main(int argc, char const *argv[]) {
   printf("Server Hello\n");
@@ -32,7 +35,17 @@ int main(int argc, char const *argv[]) {
   syscall(stat.data.intval);
 
   // open file
-  int elf_file = open("wrapper", O_RDONLY);
+  const char* filename;
+  if (argc > 1) {
+	  filename = argv[1];
+  } else {
+	  filename = "wrapper";
+  }
+  int elf_file = open(filename, O_RDONLY);
+  if (elf_file < 0) {
+	  printf("could not open file: %s\n", filename);
+	  return 1;
+  }
 
   // read the elf Header
   Elf_Ehdr header = {};
@@ -80,7 +93,7 @@ int main(int argc, char const *argv[]) {
   }
 
   // by default, choose a large memory size so that we can fit heap and stack
-  size_t memorySize = 1L<<32;
+  size_t memorySize = 1ull << 32;
 
   void* code_ptr = mmap(NULL,
     max_code_addr,
@@ -93,7 +106,7 @@ int main(int argc, char const *argv[]) {
   void* data_ptr = mmap(NULL,
     memorySize,
     PROT_READ | PROT_WRITE,
-    MAP_ANONYMOUS,
+    MAP_ANONYMOUS | MAP_ALIGNED(DDC_SIZE_EXPONENT),
     -1,
     0
   );
@@ -127,18 +140,27 @@ int main(int argc, char const *argv[]) {
 
   void*__capability ddc =
     (__cheri_tocap void*__capability) data_ptr;
-  ddc = __builtin_cheri_bounds_set(ddc, memorySize);
 
-  printf("pcc perms : %ld\n", __builtin_cheri_perms_get(pcc));
-  printf("pcc addr  : %ld\n", __builtin_cheri_address_get(pcc));
-  printf("pcc base  : %ld\n", __builtin_cheri_base_get(pcc));
-  printf("pcc length: %ld\n", __builtin_cheri_length_get(pcc));
+  ddc = __builtin_cheri_bounds_set_exact(ddc, memorySize);
+  // size_t required_alignment = ~cheri_representable_alignment_mask(memorySize) + 1;
+  // size_t rounded_len = cheri_representable_length(memorySize);
+  // ddc = __builtin_align_up(ddc, required_alignment);
+  // ddc = __builtin_cheri_bounds_set_exact(ddc, rounded_len);
 
-  printf("ddc perms : %ld\n", __builtin_cheri_perms_get(ddc));
-  printf("ddc addr  : %ld\n", __builtin_cheri_address_get(ddc));
-  printf("ddc base  : %ld\n", __builtin_cheri_base_get(ddc));
-  printf("ddc length: %ld\n", __builtin_cheri_length_get(ddc));
+  printf("pcc perms : %lx\n", __builtin_cheri_perms_get(pcc));
+  printf("pcc addr  : %lx\n", __builtin_cheri_address_get(pcc));
+  printf("pcc base  : %lx\n", __builtin_cheri_base_get(pcc));
+  printf("pcc length: %lx\n", __builtin_cheri_length_get(pcc));
 
+  printf("ddc perms : %lx\n", __builtin_cheri_perms_get(ddc));
+  printf("ddc addr  : %lx\n", __builtin_cheri_address_get(ddc));
+  printf("ddc base  : %lx\n", __builtin_cheri_base_get(ddc));
+  printf("ddc length: %lx\n", __builtin_cheri_length_get(ddc));
+
+
+  // TODO: select the correct size for the stack.
+  // the following does not work when the region needed to be
+  // separately aligned
   sandboxedCall(pcc, ddc, (void*) memorySize - 16);
 
   printf("Server Goodbye\n");
