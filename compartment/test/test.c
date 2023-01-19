@@ -89,7 +89,7 @@ StatePair getSandboxEntryState(void){
 
    sandboxedCall(safeAll, safeAllSize, 0,
     functionMemory, allocSize,
-    0, (void*)capSize);
+    0, stackPointer);
 
    // copy values from stackpointer onward into registerState
    StatePair regState = { };

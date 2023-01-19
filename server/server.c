@@ -6,6 +6,7 @@
 #include <sys/param.h>
 #include <sys/module.h>
 #include <sys/mman.h>
+#include <sys/cpuset.h>
 // include to use cheribsd dynamic loader
 #include <fcntl.h>
 #include <elf.h>
@@ -20,6 +21,15 @@
 int main(int argc, char const *argv[]) {
   printf("Server Hello\n");
 
+  // restrict server process to run on only one cpu for now
+  // to make sure we are running on the cpu where the syscall set up the registers
+  cpuset_t cpuMask;
+  cpuset_getaffinity(CPU_LEVEL_WHICH, CPU_WHICH_PID, -1, sizeof(cpuMask), &cpuMask);
+  printf("Can access %d CPUs\n", CPU_COUNT(&cpuMask));
+  cpuset_t cpuNew;
+  CPU_SETOF(CPU_FFS(&cpuMask)-1, &cpuNew);
+  printf("Can access %d CPUs\n", CPU_COUNT(&cpuNew));
+  cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_PID, -1, sizeof(cpuNew), &cpuNew);
   int syscallId = modfind("sys/dandelionCPUSettings");
   if(syscallId == -1){
     printf("could not find dandelionCPUSettings\n");

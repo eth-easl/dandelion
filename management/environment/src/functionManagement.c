@@ -81,8 +81,7 @@ int addFunctionFromStaticElf(int id, int fileDescriptor, size_t maxMemory,
   staticFunctionEnvironment_t* newNode = malloc(sizeof(staticFunctionEnvironment_t));
   *newNode = (staticFunctionEnvironment_t){};
   // rount up max memory size to the next bigger representable one
-  __asm__ volatile ("RRLEN %0, %0" : "+r"(maxMemory));
-  newNode->memorySize = maxMemory;
+  newNode->memorySize = sandboxSizeRounding(maxMemory);
 
   // read the elf file
   elfDescriptor elf = {};
@@ -171,20 +170,7 @@ int runStaticFunction(staticFunctionEnvironment_t* env,
   ioStruct* input, int inputNumber,
   ioStruct** output, int* outputNumber){
   // allocate the entire memory
-  size_t mask;
-  int allignment = 63;
-  __asm__ volatile("RRMASK %0, %1" : "+r"(mask) : "r"(env->memorySize));
-  // find position of most significant 0
-  while(allignment > 0){
-    if(!((1L << allignment) & mask)){
-      break;
-    }
-    allignment--;
-  }
-  // gives the left shift to first non 0, this means last 1 is +2
-  // 1 for correcting that we detect the first 0
-  // and 1 for accounting the original 1
-  allignment += 2;
+  int allignment = sandboxSizeAlignment(env->memorySize);
 
   void* functionMemory = mmap(NULL,
     env->memorySize,

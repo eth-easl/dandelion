@@ -46,6 +46,28 @@ void* __capability wrapCode(void* functionCode, int size){
   return wrappedFunction;
 }
 
+size_t sandboxSizeRounding(size_t size){
+  __asm__ volatile ("RRLEN %0, %0" : "+r"(size));
+  return size;
+}
+// TODO optimize
+unsigned char sandboxSizeAlignment(size_t size){
+  size_t mask;
+  __asm__ volatile("RRMASK %0, %1" : "+r"(mask) : "r"(size));
+  int allignment = 63;
+  while(allignment > 0){
+    if(!((1L << allignment) & mask)){
+      break;
+    }
+    allignment--;
+  }
+  // gives the left shift to first non 0, this means last 1 is +2
+  // 1 for correcting that we detect the first 0
+  // and 1 for accounting the original 1
+  allignment += 2;
+  return allignment;
+}
+
 void sandboxedCall(
   void* functionCode,
   size_t codeSize,

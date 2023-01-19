@@ -13,6 +13,27 @@
 */
 void* __capability wrapCode(void* functionCode, int size);
 
+/* 
+  Input:
+    initial size for object that needs to be isolated
+  Output:
+    Minimal size of object that can be isolated that can contain initial size
+  Example:
+    For page table based isolation the size is rounded up to the physical page size
+*/
+size_t sandboxSizeRounding(size_t size);
+
+
+/* 
+  Input:
+    initial size for object that needs to be isolated
+  Output:
+    Exponent of minimal power of two that objects need to be alligned at
+  Example:
+    For page table based isolation the allignment is the two logarithm of the page size
+*/
+unsigned char sandboxSizeAlignment(size_t size);
+
 /*
 Input:
   functionCode: function code to be jumped to, expect that function uses
