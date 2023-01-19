@@ -5,7 +5,7 @@
 // Project External Libraries
 
 // Project Internal Libraries
-// #include "dandelionIO.h"
+#include "dandelionIO.h"
 
 int test_initialized = 5;
 int test_uninitialized;
@@ -19,15 +19,14 @@ int main(void) {
   test_initialized = 7;
   test_uninitialized = 8;
   testFunc();
-  // printf("%d\n", test_initialized);
-  // printf("%d\n", test_uninitialized);
-  // printf("%d\n", test_inFunc);
-  // return 7;
 
-  __asm__ volatile(
-    "mrs c0, ddc \n"
-    "ldr c0, [c0] \n"
-    "ldpbr c29, [c0] \n"
-  );
-  __builtin_unreachable();
+  size_t inputSize = getInputSize(0);
+  int* inputPointer = getInputPointer(0);
+
+  addOutput();
+  int outputNumber = 11* (*inputPointer);
+  setOutputSize(0, 4);
+  setOutputPointer(0, &outputNumber);
+
+  function_exit();
 }

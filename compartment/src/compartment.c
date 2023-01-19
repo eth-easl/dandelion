@@ -1,9 +1,7 @@
 // Implementing
 #include "compartment.h"
 // System Headers
-#include <stdlib.h>
 #include <sys/mman.h>
-#include <stdio.h> // TODO remove
 // Standard Libraries
 
 // Project External Libraries
@@ -15,6 +13,10 @@
 #define WRAPPER_SIZE 5
 #define WRAPPER_BYTES (WRAPPER_SIZE * 4)
 extern void wrapperCode();
+
+// cheri permissions
+static const int codePermissions =    0x08002;
+static const int memoryPermissions =  0x34000;
 
 void* __capability wrapCode(void* functionCode, int size){
   // get memory to copy to
@@ -44,12 +46,53 @@ void* __capability wrapCode(void* functionCode, int size){
   return wrappedFunction;
 }
 
+size_t sandboxSizeRounding(size_t size){
+  __asm__ volatile ("RRLEN %0, %0" : "+r"(size));
+  return size;
+}
+// TODO optimize
+unsigned char sandboxSizeAlignment(size_t size){
+  size_t mask;
+  __asm__ volatile("RRMASK %0, %1" : "+r"(mask) : "r"(size));
+  int allignment = 63;
+  while(allignment > 0){
+    if(!((1L << allignment) & mask)){
+      break;
+    }
+    allignment--;
+  }
+  // gives the left shift to first non 0, this means last 1 is +2
+  // 1 for correcting that we detect the first 0
+  // and 1 for accounting the original 1
+  allignment += 2;
+  return allignment;
+}
+
 void sandboxedCall(
-  void* __capability functionCode,
-  char* __capability functionMemory,
+  void* functionCode,
+  size_t codeSize,
+  size_t entryPointOffset,
+  char* functionMemory,
+  size_t memorySize,
+  size_t returnPairOffset,
   void* functionStackPointer
 ){
-    __label__ returnLabel;
+  __label__ returnLabel;
+  // TODO debug checks for proper alignment
+  
+  // set up capability for code
+  void* __capability pcc = __builtin_cheri_program_counter_get();
+  pcc = __builtin_cheri_address_set(pcc, (unsigned long)functionCode);
+  pcc = __builtin_cheri_bounds_set(pcc, codeSize);
+  pcc = pcc + entryPointOffset;
+  // restrict capability to only be fetch, and executive (executive could be removed in future)
+  const unsigned long pccPermissionMask = ~(codePermissions);
+  __asm__ volatile("clrperm %w0, %w0, %1" : "+r"(pcc) : "r"(pccPermissionMask));
+  // set up capability for memory
+  void* __capability ddc = (__cheri_tocap void*__capability) functionMemory;
+  ddc = __builtin_cheri_bounds_set(ddc, memorySize);
+  const unsigned long ddcPermissionMask = ~(memoryPermissions);
+  __asm__ volatile("clrperm %w0, %w0, %1" : "+r"(ddc) : "r"(ddcPermissionMask));
   // allocate space for context
   char* __capability * __capability contextSpaceCap =
   (__cheri_tocap char* __capability * __capability) malloc(sizeof(char*__capability)*NUM_REGS);
@@ -74,12 +117,13 @@ void sandboxedCall(
     "seal %x[returnPair], %x[returnPair], lpb \n"
     : [returnPair] "+r" (returnPair)
   );
-  ((char* __capability * __capability) functionMemory)[0] = (char* __capability) returnPair;
+  *((char* __capability *) (functionMemory + returnPairOffset))
+    = (char* __capability) returnPair;
 
   // store current context
   storeContext(contextSpaceCap);
   // clean up context and jump
-  prepareContextAndJump(functionMemory, functionStackPointer, functionCode);
+  prepareContextAndJump(ddc, functionStackPointer, pcc);
 
   returnLabel:
   // restore context needs context cap in c0.

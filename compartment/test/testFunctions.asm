@@ -49,13 +49,49 @@
     mov x27, 0xCA27
     mov x28, 0xCA28
     mov x29, 0xCA29
-overwriteAllEnd: ret
+    # load the ddc into a register so it can be used for a capability load
+    mrs c0, DDC
+    ldr c0, [c0]
+    # jump using sealed pair at DDC[0]
+overwriteAllEnd: ldpbr c29, [c0]
+
 
 # safe all registers the function can read to the ddc with offset of 16 bytes,
 # to not overwrite the return pair capability
 .align 8
 .text
   safeAll:
+    clrtag c0, c0
+    clrtag c1, c1
+    clrtag c2, c2
+    clrtag c3, c3
+    clrtag c4, c4
+    clrtag c5, c5
+    clrtag c6, c6
+    clrtag c7, c7
+    clrtag c8, c8
+    clrtag c9, c9
+    clrtag c10, c10
+    clrtag c11, c11
+    clrtag c12, c12
+    clrtag c13, c13
+    clrtag c14, c14
+    clrtag c15, c15
+    clrtag c16, c16
+    clrtag c17, c17
+    clrtag c18, c18
+    clrtag c19, c19
+    clrtag c20, c20
+    clrtag c21, c21
+    clrtag c22, c22
+    clrtag c23, c23
+    clrtag c24, c24
+    clrtag c25, c25
+    clrtag c26, c26
+    clrtag c27, c27
+    clrtag c28, c28
+    clrtag c29, c29
+    clrtag c30, c30
     str c0, [SP]
     str c1, [SP, 16]
     str c2, [SP, 32]
@@ -92,12 +128,21 @@ overwriteAllEnd: ret
     mrs c2, CID_EL0
     mrs c3, CTPIDR_EL0
     mrs c4, RCTPIDR_EL0
+    clrtag c0, c0
+    clrtag c1, c1
+    clrtag c2, c2
+    clrtag c3, c3
+    clrtag c4, c4
     str c0, [SP, 496]
     str c1, [SP, 512]
     str c2, [SP, 528]
     str c3, [SP, 544]
     str c4, [SP, 560]
-safeAllEnd:  ret
+    # load the ddc into a register so it can be used for a capability load
+    mrs c0, DDC
+    ldr c0, [c0]
+    # jump using sealed pair at DDC[0]
+safeAllEnd: ldpbr c29, [c0]
 
 # takes arguments for sanboxed call in regs c0,c1,c2 and pointer where to safe
 # the state in c3, this can then be copied to r19 which is a callee-saved
@@ -106,49 +151,49 @@ safeAllEnd:  ret
 # The registers c19 and c20 are thus expected to hold the same values after
 # return from the sandboxed call and are restored by the wrapper.
 sandboxedCallWrapped:
-  str c0, [x3]
-  str c1, [x3, 16]
-  str c2, [x3, 32]
-  str c3, [x3, 48]
-  str c4, [x3, 64]
-  str c5, [x3, 80]
-  str c6, [x3, 96]
-  str c7, [x3, 112]
-  str c8, [x3, 128]
-  str c9, [x3, 144]
-  str c10, [x3, 160]
-  str c11, [x3, 176]
-  str c12, [x3, 192]
-  str c13, [x3, 208]
-  str c14, [x3, 224]
-  str c15, [x3, 240]
-  str c16, [x3, 256]
-  str c17, [x3, 272]
-  str c18, [x3, 288]
-  str c19, [x3, 304]
-  str c20, [x3, 320]
-  str c21, [x3, 336]
-  str c22, [x3, 352]
-  str c23, [x3, 368]
-  str c24, [x3, 384]
-  str c25, [x3, 400]
-  str c26, [x3, 416]
-  str c27, [x3, 432]
-  str c28, [x3, 448]
-  str c29, [x3, 464]
-  str c30, [x3, 480]
+  str c0, [x7]
+  str c1, [x7, 16]
+  str c2, [x7, 32]
+  str c3, [x7, 48]
+  str c4, [x7, 64]
+  str c5, [x7, 80]
+  str c6, [x7, 96]
+  str c7, [x7, 112]
+  str c8, [x7, 128]
+  str c9, [x7, 144]
+  str c10, [x7, 160]
+  str c11, [x7, 176]
+  str c12, [x7, 192]
+  str c13, [x7, 208]
+  str c14, [x7, 224]
+  str c15, [x7, 240]
+  str c16, [x7, 256]
+  str c17, [x7, 272]
+  str c18, [x7, 288]
+  str c19, [x7, 304]
+  str c20, [x7, 320]
+  str c21, [x7, 336]
+  str c22, [x7, 352]
+  str c23, [x7, 368]
+  str c24, [x7, 384]
+  str c25, [x7, 400]
+  str c26, [x7, 416]
+  str c27, [x7, 432]
+  str c28, [x7, 448]
+  str c29, [x7, 464]
+  str c30, [x7, 480]
   cpy c5, CSP
-  str c5, [x3, 496]
+  str c5, [x7, 496]
   mrs c5, DDC
-  str c5, [x3, 512]
+  str c5, [x7, 512]
   mrs c5, CID_EL0
-  str c5, [x3, 528]
+  str c5, [x7, 528]
   mrs c5, CTPIDR_EL0
-  str c5, [x3, 544]
+  str c5, [x7, 544]
   mrs c5, RCTPIDR_EL0
-  str c5, [x3, 560]
-  ldr c5, [x3, 80]
-  cpy c19, c3
+  str c5, [x7, 560]
+  ldr c5, [x7, 80]
+  cpy c19, c7
   cpy c20, c30
   bl sandboxedCall
   str c0, [x19, 576]

@@ -47,40 +47,36 @@ int main(int argc, char const *argv[]) {
   );
   */
 
-  void* __capability wrappedFunction = wrapCode(trialFunction, 5);
-
   // prepare allocations
   const int capSize = sizeof(void*__capability);
   const int argumentSize = ((2*sizeof(int)+capSize-1)/capSize)*capSize;
-  const int functionMemSize = argumentSize + capSize;
-  char* __capability functionMemoryCap =
-  (__cheri_tocap char* __capability) malloc(functionMemSize);
-  char* stackPointer =
-    &(((__cheri_fromcap char*)functionMemoryCap)[functionMemSize]);
+  const size_t functionMemSize = argumentSize + capSize;
+  char* functionMemory = malloc(functionMemSize);
+  void* stackPointer = (void*)functionMemSize;
 
   uint64_t start, end;
   __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(start));
   for(int repetitions = 0; repetitions < 1; repetitions++){
 
   // Prepare arguments
-  char* __capability argstart = functionMemoryCap + sizeof(char* __capability);
-  ((int* __capability)argstart)[0] = testInt;
+  int* argstart = (int*) functionMemory + sizeof(char* __capability);
+  argstart[0] = testInt;
 
-  printf("m add %p\n", __builtin_cheri_address_get(functionMemoryCap));
-  printf("m bas %p\n", __builtin_cheri_base_get(functionMemoryCap));
-  printf("m len %lu\n", __builtin_cheri_length_get(functionMemoryCap));
+  printf("functionMemory  %p\n", functionMemory);
   printf("stack  %p\n", stackPointer);
 
   // perform function call
-  sandboxedCall(wrappedFunction, functionMemoryCap, stackPointer);
+  sandboxedCall(trialFunction, 28, 0,
+    functionMemory, functionMemSize, 0,
+    stackPointer);
 
   // read out results
-  testInt = ((int* __capability)argstart)[0];
+  testInt = argstart[0];
   }
   __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(end));
 
   // free memory
-  free((__cheri_fromcap void*) functionMemoryCap);
+  free(functionMemory);
 
   printf("start %lu\n", start);
   printf("end %lu\n", end);

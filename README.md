@@ -70,3 +70,12 @@ cmake -DCMAKE_TOOLCHAIN_FILE=../morello-toolchain.txt ..
 make
 ```
 For native builds the toolchain specification can be omitted.
+
+## Kernel module build
+The kernel modules needed are in the kernelModule folder.
+They can be built with a normal make command, but have the following requirements:
+- the /usr/src folder contains the OS source
+
+### Known issues:
+- make: "/usr/src/sys/conf/kmod.mk" line 549: is ZFSTOP set?
+    - solution `export ZFSTOP=/usr/src/sys/contrib/openzfs`

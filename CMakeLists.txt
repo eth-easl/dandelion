@@ -6,10 +6,11 @@ if(${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_BINARY_DIR})
   message(FATAL_ERROR "In-source build detected")
 endif()
 
+project(dandelion LANGUAGES C ASM)
+
 # set path to the compiler to be used
-if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
-  message(ERROR "No toolchainfile given, compiling in native mode")
-else()
+if(DEFINED CMAKE_TOOLCHAIN_FILE OR ${CMAKE_SYSTEM_PROCESSOR} STREQUAL "aarch64c")
+  message(STATUS "Compiling with toolchain file or native")
   # compile library instead of executable
   # because cross compiled code can't be executed
   set(CMAKE_TRY_COMPILE_TARGET_TYPE "STATIC_LIBRARY")
@@ -17,20 +18,24 @@ else()
   # set flag combinations for use on different targets
   set(PURECAP_COMPILE_FLAGS -march=morello+c64 -mabi=purecap)
   set(PURECAP_LINK_FLAGS -march=morello+c64 -mabi=purecap -fuse-ld=lld)
-  set(NOCAP_COMPILE_FLAGS -march=morello)
-  set(NOCAP_LINK_FLAGS -march=morello -fuse-ld=lld)
+  set(NOCAP_COMPILE_FLAGS -march=morello -mabi=aapcs)
+  set(NOCAP_LINK_FLAGS -march=morello -mabi=aapcs -fuse-ld=lld)
 
   set(CMAKE_ASM_FLAGS "${CFLAGS} -x assembler-with-cpp")
+else()
+  message(WARNING "No toolchainfile given, compiling in native mode")
 endif()
 
-project(dandelion LANGUAGES C ASM)
-
+# compartment setup and execution code
+add_subdirectory(compartment)
+# libraries exposed to functions
+add_subdirectory(functionInterface)
+# functions used for testing
+add_subdirectory(functions)
+# function management libraries
+add_subdirectory(management)
 # add main server directory
 add_subdirectory(server)
-# add function libaries used for testing
-add_subdirectory(functions)
-# compartment setup and execution codes
-add_subdirectory(compartment)
 # testing framework
 add_subdirectory(unity)
 
