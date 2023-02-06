@@ -14,6 +14,7 @@ SECTIONS
     .rodata :
     {
         *(.rodata)
+	*(.rodata.*)
     } >ddc AT>pcc
     
     .eh_frame : 
@@ -26,6 +27,38 @@ SECTIONS
 	*(.eh_frame_hdr)
     } >ddc AT>pcc
 
+    .note :
+    {
+	*(.note.*)
+    } >ddc AT>pcc
+
+    .tdata :
+    {
+	*(.tdata)
+    } >ddc AT>pcc
+
+    .init_array :
+    {
+	*(.init_array)
+	*(.init_array.*)
+    } >ddc AT>pcc
+
+    .fini_array :
+    {
+	*(.fini_array)
+	*(.fini_array.*)
+    } >ddc AT>pcc
+
+    .got :
+    {
+	*(.got)
+    } >ddc AT>pcc
+
+    .jcr :
+    {
+	*(.jcr)
+    } >ddc AT>pcc
+
     .data :
     {
         *(.data)
@@ -35,4 +68,10 @@ SECTIONS
     {
         *(.bss)
     } >ddc AT>pcc
+
+    .tbss :
+    {
+	*(.tbss)
+    } >ddc AT>pcc
+
 }
