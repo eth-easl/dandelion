@@ -34,6 +34,8 @@ add_subdirectory(functionInterface)
 add_subdirectory(functions)
 # function management libraries
 add_subdirectory(management)
+# libary for http server
+add_subdirectory(net)
 # add main server directory
 add_subdirectory(server)
 # testing framework

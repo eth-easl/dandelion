@@ -1,3 +1,6 @@
 [submodule "unity/source"]
 	path = unity/source
 	url = git@github.com:ThrowTheSwitch/Unity.git
+[submodule "http"]
+	path = net/http
+	url = https://github.com/cesanta/mongoose.git

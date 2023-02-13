@@ -4,7 +4,6 @@ set(LIBRARY "compartmentLib")
 
 # target for compartment library
 add_library(${LIBRARY} STATIC
-  src/assembly.asm
   src/compartment.c
   src/context.h
 )
@@ -12,6 +11,7 @@ add_library(${LIBRARY} STATIC
 target_include_directories(${LIBRARY} PUBLIC include)
 target_compile_options(${LIBRARY} PRIVATE ${NOCAP_COMPILE_FLAGS})
 target_link_options(${LIBRARY} PRIVATE ${NOCAP_LINK_FLAGS})
+target_link_libraries(${LIBRARY} PRIVATE pthread)
 
 # add testing directory
 add_subdirectory(test)

@@ -75,9 +75,8 @@ functionNode_t* getNode(int id){
   return returnNode;
 }
 
-// TODO add error checking
-int addFunctionFromStaticElf(int id, int fileDescriptor, size_t maxMemory,
-  int maxOutputs){
+staticFunctionEnvironment_t* getStaticNode
+  (int fileDescriptor, size_t maxMemory, int maxOutputs){
   staticFunctionEnvironment_t* newNode = malloc(sizeof(staticFunctionEnvironment_t));
   *newNode = (staticFunctionEnvironment_t){};
   // rount up max memory size to the next bigger representable one
@@ -85,7 +84,10 @@ int addFunctionFromStaticElf(int id, int fileDescriptor, size_t maxMemory,
 
   // read the elf file
   elfDescriptor elf = {};
-  if(populateElfDescriptor(fileDescriptor, &elf) != 0){return -1;}
+  if(populateElfDescriptor(fileDescriptor, &elf) != 0){
+    printf("%s: failed to populate elf\n", __func__);
+    return NULL;
+  }
   newNode->entryPoint = elf.elfHeader.e_entry;
   // determine size needed for code
   Elf_Addr topVirtualAddress = 0;
@@ -143,9 +145,23 @@ int addFunctionFromStaticElf(int id, int fileDescriptor, size_t maxMemory,
   newNode->maxOutputNumberOffset = maxOutputNumberAddress;
   // set the max output number
   *((int*)((char*) functionCode + maxOutputNumberAddress)) = maxOutputs;
-  int retval = addNode(id, staticElf, newNode);
   freeElfDescriptor(&elf);
-  return retval;
+  return newNode;
+}
+
+// TODO add error checking
+int addFunctionFromElf(int id, int fileDescriptor, size_t maxMemory,
+  int maxOutputs, environment_t env){
+  switch (env)
+  {
+  case staticElf:
+    {staticFunctionEnvironment_t* newNode =
+      getStaticNode(fileDescriptor, maxMemory, maxOutputs);
+    if (newNode == NULL){ return -1; }
+    return addNode(id, env, newNode);}
+  default:
+    return -1;
+  }
 }
 
 int runFunction(

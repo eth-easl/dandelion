@@ -13,6 +13,9 @@
 
 // Project Internal Libraries
 
+// TODO: for all perrors of subfunctions introduce special case for reading end of file.
+// Special case is needed, as reading eof will not set errno and have empty string for error.
+// This means that no error will be logged.
 int populateElfDescriptor(int file, elfDescriptor* descriptor){
   int returnValue = populateElfHeader(file,descriptor);
   if(returnValue != 0){return returnValue;}

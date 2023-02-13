@@ -79,3 +79,4 @@ They can be built with a normal make command, but have the following requirement
 ### Known issues:
 - make: "/usr/src/sys/conf/kmod.mk" line 549: is ZFSTOP set?
     - solution `export ZFSTOP=/usr/src/sys/contrib/openzfs`
+- currently syscall seems not to work, but loading does, with cpuset -l <core> a specific core can be setup. repeat for each core on machine to set up entire machine.

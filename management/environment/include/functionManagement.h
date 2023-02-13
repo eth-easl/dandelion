@@ -39,8 +39,11 @@ int removeNode(int id);
 
 functionNode_t* getNode(int id);
 
-int addFunctionFromStaticElf(int id, int fileDescriptor, size_t maxMemory,
-  int maxOutputs);
+staticFunctionEnvironment_t* getStaticNode
+  (int fileDescriptor, size_t maxMemory, int maxOutputs);
+
+int addFunctionFromElf(int id, int fileDescriptor, size_t maxMemory,
+  int maxOutputs, environment_t env);
 
 int runFunction(int id, ioStruct* input, int inputNumber,
   ioStruct** output, int* outputNumber);
