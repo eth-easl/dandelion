@@ -29,9 +29,7 @@ endif()
 # compartment setup and execution code
 add_subdirectory(compartment)
 # libraries exposed to functions
-add_subdirectory(functionInterface)
-# functions used for testing
-add_subdirectory(functions)
+add_subdirectory(dandelionFunctionInterface/functionInterface)
 # function management libraries
 add_subdirectory(management)
 # libary for http server
