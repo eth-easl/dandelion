@@ -85,8 +85,8 @@ mod hardware_interface {
         fn tearDownFunctionCode(config : functionConfig) -> Result<()>;
         TODO callback also needs to be able to communicate error codes.
         fn run(id : u32, code : functionConfig, domain : memory_domain, inputPositions : Vec<DataItem>,
-            callback : impl FnOnce(memory_domain, Vec<DataItem>)->()) -> Result<()>;
-        fn stop(id : u32, callback : impl FnOnce(memory_domain)->()) -> Result<()>;
+            callback : impl FnOnce(Result<(memory_domain, Vec<DataItem>)>)->()) -> Result<()>;
+        fn stop(id : u32, callback : impl FnOnce(Result<memory_domain>)->()) -> Result<()>;
     }
 
 // Todo force all controllers to implement deallocation on dropping
