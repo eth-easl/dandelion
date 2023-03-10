@@ -1,6 +1,4 @@
-use crate::hardware_interface::ControllerError;
-
-use super::super::HwResult;
+use super::super::{ControllerError, HwResult};
 use super::{MemoryDomain, MemoryDomainController, MemoryDomainTuple};
 
 #[derive(Debug)]
