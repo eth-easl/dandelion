@@ -1,29 +1,72 @@
-use libc::size_t;
+use std::u8;
 
-#[repr(C)]
-struct cheri_cap {
-    cap: [i8; 16],
-}
+use libc::{c_void, size_t};
+
+// #[repr(C)]
+// struct cheri_cap {
+//     cap: [i8; 16],
+// }
 
 #[link(name = "cheri_mem")]
 extern "C" {
-    fn cheri_alloc(size: size_t) -> *const cheri_cap;
-    fn cheri_free(cap: *const cheri_cap) -> ();
+    fn cheri_alloc(size: size_t) -> *mut c_void;
+    fn cheri_free(context: *const c_void, size: size_t) -> ();
+    fn cheri_write_context(
+        context: *mut c_void,
+        source_pointer: *const u8,
+        context_offset: size_t,
+        size: size_t,
+    ) -> ();
+    fn cheri_read_context(
+        context: *mut c_void,
+        destination_pointer: *mut u8,
+        context_offset: size_t,
+        size: size_t,
+        sanitize: i8,
+    ) -> ();
 }
 
 use super::super::{HardwareError, HwResult};
 use super::{Context, ContextTrait, MemoryDomain};
 
 pub struct CheriContext {
-    capability: [i8; 16],
+    context: *mut c_void,
+    size: usize,
 }
+// TODO implement drop
 
 impl ContextTrait for CheriContext {
     fn write(&mut self, offset: usize, data: Vec<u8>) -> HwResult<()> {
-        Err(HardwareError::Default)
+        // perform size checks
+        if data.len() + offset > self.size {
+            return Err(HardwareError::InvalidWrite);
+        }
+        unsafe {
+            cheri_write_context(self.context, data.as_ptr(), offset, data.len());
+        }
+        Ok(())
     }
     fn read(&mut self, offset: usize, read_size: usize, sanitize: bool) -> HwResult<Vec<u8>> {
-        Err(HardwareError::Default)
+        // perform size checks
+        if read_size + offset > self.size {
+            return Err(HardwareError::InvalidRead);
+        }
+        // try to allocate space for read values
+        let mut result_vec = Vec::<u8>::new();
+        if let Err(_) = result_vec.try_reserve(read_size) {
+            return Err(HardwareError::OutOfMemory);
+        }
+        result_vec.resize(read_size, 0);
+        unsafe {
+            cheri_read_context(
+                self.context,
+                result_vec.as_mut_ptr(),
+                offset,
+                read_size,
+                sanitize as i8,
+            )
+        }
+        Ok(result_vec)
     }
 }
 
@@ -34,18 +77,26 @@ impl MemoryDomain for CheriMemoryDomain {
         Ok(Box::new(CheriMemoryDomain {}))
     }
     fn acquire_context(&self, size: usize) -> HwResult<Context> {
-        let mut mem_space = Vec::new();
-        if (mem_space.try_reserve_exact(size)) != Ok(()) {
+        let mut new_context: Box<CheriContext> = Box::new(CheriContext {
+            context: std::ptr::null_mut(),
+            size: size,
+        });
+        unsafe {
+            new_context.context = cheri_alloc(size);
+        }
+        if new_context.context == std::ptr::null_mut() {
             return Err(HardwareError::OutOfMemory);
         }
-        mem_space.resize(size, 0);
-        Ok(Context::Cheri(Box::new(CheriContext {
-            capability: [0; 16],
-        })))
+        Ok(Context::Cheri(new_context))
     }
     fn release_context(&self, context: Context) -> HwResult<()> {
         match context {
-            Context::Cheri(_) => Ok(()),
+            Context::Cheri(context) => {
+                unsafe {
+                    cheri_free(context.context, context.size);
+                }
+                Ok(())
+            }
             _ => Err(HardwareError::ContextMissmatch),
         }
     }

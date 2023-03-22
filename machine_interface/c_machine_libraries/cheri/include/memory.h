@@ -5,10 +5,18 @@
 #include <stdlib.h>
 
 typedef struct {
-    uint8_t cap[16];
-} cheri_cap;
+  char* __capability cap;
+  size_t size;
+} cheri_context;
 
-cheri_cap* cheri_alloc(size_t size);
-void cheri_free(cheri_cap* cap);
+// allocation functions
+cheri_context* cheri_alloc(size_t size);
+void cheri_free(cheri_context* context, size_t size);
 
+// interaction functions
+void cheri_write_context(cheri_context* context, unsigned char* source_pointer,
+                         size_t context_offset, size_t size);
+void cheri_read_context(cheri_context* context,
+                        unsigned char* destination_pointer,
+                        size_t context_offset, size_t size, char sanitize);
 #endif

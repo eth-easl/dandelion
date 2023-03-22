@@ -5,7 +5,6 @@ fn main() {
     let dst = Config::new("c_machine_libraries")
         // .define("CMAKE_TOOLCHAIN_FILE", "morello-toolchain.txt")
         // .define("CMAKE_C_COMPILER", "cc")
-        .very_verbose(true)
         .build();
     // passing cmake information to cargo
     println!("cargo:warning={}", dst.display());
