@@ -1,21 +1,21 @@
 // separate file for memory domain enum definition and transfer functions
 pub mod memory_domain;
-use self::memory_domain::MemoryDomain;
+use self::memory_domain::{Context, MemoryDomain};
 
 // define all interfaces to hardware dependent part of dandelion
 use std::vec::Vec;
 // TODO define error types, possibly better printing than debug
 #[derive(Debug, PartialEq)]
-pub enum ControllerError {
+pub enum HardwareError {
     Default,
-    // domain errors
-    InvalidDomain, // trying to perform domain actions on a None domain.
-    OutOfMemory,   // domain could not be allocated because there is no space available
-    InvalidRead,   // tried to read from domain outside of domain bounds
-    InvalidWrite,  // tried to write to domain ouside of domain bounds
+    // memory errors
+    ContextMissmatch, // context handed to context specific function was wrong type
+    OutOfMemory,      // domain could not be allocated because there is no space available
+    InvalidRead,      // tried to read from domain outside of domain bounds
+    InvalidWrite,     // tried to write to domain ouside of domain bounds
 }
 
-pub type HwResult<T> = std::result::Result<T, ControllerError>;
+pub type HwResult<T> = std::result::Result<T, HardwareError>;
 
 enum RequirementType {
     StaticData,
@@ -39,8 +39,8 @@ struct DataRequirement {
     size: Option<SizeRequirement>,
 }
 
-struct DataRequirementList<'controller> {
-    domain_type: MemoryDomain<'controller>,
+struct DataRequirementList {
+    domain_id: i32,
     requirements: Vec<DataRequirement>,
 }
 
@@ -59,28 +59,27 @@ pub struct DataItem {
     item_type: DataItemType,
 }
 
-// todo find better name
-pub trait ComputeController {
-    // required parts of the trait
-    type FunctionConfig;
-    // initialization and shutdown
-    fn start_compute_controller(config: Vec<u8>) -> HwResult<Box<Self>>;
-    fn stop_compute_controller(self) -> HwResult<()>;
-    // compute unit setup
-    fn take_computer(id: u32) -> HwResult<()>;
-    fn yield_computer(id: u32) -> HwResult<()>;
-    // code setup
-    fn setup_function_code(code: Vec<u8>) -> HwResult<Self::FunctionConfig>;
-    fn teardown_function_code(config: Self::FunctionConfig) -> HwResult<()>;
+pub trait Engine {
     fn run(
-        id: u32,
-        code: Self::FunctionConfig,
-        domain: MemoryDomain,
-        input_positions: Vec<DataItem>,
-        callback: impl FnOnce(HwResult<(MemoryDomain, Vec<DataItem>)>) -> (),
+        self,
+        // code: Self::FunctionConfig,
+        // contexts: Vec<dyn Context>,
+        layout: Vec<DataItem>,
+        // callback: impl FnOnce(HwResult<(Vec<dyn Context>, Vec<DataItem>)>) -> (),
     ) -> HwResult<()>;
-    fn stop(id: u32, callback: impl FnOnce(HwResult<MemoryDomain>) -> ()) -> HwResult<()>;
+    // fn abort(id: u32, callback: impl FnOnce(HwResult<Vec<dyn Context>>) -> ()) -> HwResult<()>;
 }
+
+// todo find better name
+pub trait Driver {
+    // required parts of the trait
+    type E: Engine;
+    // take or release one of the available engines
+    fn start_engine() -> HwResult<Self::E>;
+    fn stop_engine(self) -> HwResult<()>;
+}
+
+pub trait Navigator {}
 
 // Todo implement dropping behaviour for compute controller
 // impl Drop for ExecutionUnit {

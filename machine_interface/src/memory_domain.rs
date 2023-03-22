@@ -1,125 +1,70 @@
 // list of memory domain implementations
+mod cheri;
 mod malloc;
 
 // import parent for depenencies
-use super::{ControllerError, HwResult};
+use super::HwResult;
 
-pub trait MemoryDomainController {
-    type ControllerMemoryDomain;
-    // initialization and shutdown
-    fn start_domain_controller(domain_config: Vec<u8>) -> HwResult<Box<Self>>;
-    fn stop_domain_controller(self) -> HwResult<()>;
-    // allocation and distruction
-    fn alloc_memory_subdomain(&self, size: usize) -> HwResult<MemoryDomain>;
-    fn free_memory_subdomain(&self, domain: Self::ControllerMemoryDomain) -> HwResult<()>;
-    // direct access
-    fn write(
-        &self,
-        domain: &mut Self::ControllerMemoryDomain,
-        offset: usize,
-        data: Vec<u8>,
-    ) -> HwResult<()>;
-    fn read(
-        &self,
-        domain: &mut Self::ControllerMemoryDomain,
-        offset: usize,
-        read_size: usize,
-        sanitize: bool,
-    ) -> HwResult<Vec<u8>>;
+// https://docs.rs/enum_dispatch/latest/enum_dispatch/index.html
+// check if this would be better way to do it
+pub enum Context {
+    Malloc(Box<malloc::MallocContext>),
+    Cheri(Box<cheri::CheriContext>),
 }
 
-// Todo implement dropping behaviour for memory controller
-// impl Drop for MemoryDomainController {
-//     fn drop(& mut self){
-//         self.removeEU();
-//     }
-// }
-
-// structure to hold a domain with a reference to the associated controller
-#[derive(Debug)]
-pub struct MemoryDomainTuple<'controller, T: MemoryDomainController> {
-    controller: &'controller T,
-    domain: Option<T::ControllerMemoryDomain>,
-}
-// make sure domains are dropped correctly by notifying the associated controller
-impl<'controller, T: MemoryDomainController> Drop for MemoryDomainTuple<'controller, T> {
-    fn drop(&mut self) {
-        let mut owned_domain = None;
-        core::mem::swap(&mut owned_domain, &mut self.domain);
-        let result = match owned_domain {
-            Some(domain) => self.controller.free_memory_subdomain(domain),
-            None => Ok(()),
-        };
-        result.unwrap()
-    }
+pub trait ContextTrait {
+    fn write(&mut self, offset: usize, data: Vec<u8>) -> HwResult<()>;
+    fn read(&mut self, offset: usize, read_size: usize, sanitize: bool) -> HwResult<Vec<u8>>;
 }
 
-// Memory domain has a reference to the associated controller and an option to a domain.
-#[derive(Debug)]
-pub enum MemoryDomain<'controller> {
-    Blackhole,
-    Malloc(MemoryDomainTuple<'controller, malloc::MallocMemoryController>),
-    // CheriDomain(Option<MemoryDomainTuple<cheriController>>),
-}
-
-impl<'controller> MemoryDomain<'controller> {
+impl ContextTrait for Context {
     fn write(&mut self, offset: usize, data: Vec<u8>) -> HwResult<()> {
         match self {
-            MemoryDomain::Blackhole => Ok(()),
-            MemoryDomain::Malloc(tuple) => {
-                if let Some(domain) = &mut tuple.domain {
-                    tuple.controller.write(domain, offset, data)
-                } else {
-                    Err(ControllerError::InvalidDomain)
-                }
-            }
+            Context::Malloc(context) => context.write(offset, data),
+            Context::Cheri(context) => context.write(offset, data),
         }
     }
     fn read(&mut self, offset: usize, read_size: usize, sanitize: bool) -> HwResult<Vec<u8>> {
         match self {
-            MemoryDomain::Malloc(tuple) => {
-                if let Some(domain) = &mut tuple.domain {
-                    tuple.controller.read(domain, offset, read_size, sanitize)
-                } else {
-                    Err(ControllerError::InvalidDomain)
-                }
-            }
-            MemoryDomain::Blackhole => {
-                let mut result = Vec::<u8>::new();
-                if result.try_reserve(read_size) == Ok(()) {
-                    Ok(result)
-                } else {
-                    Err(ControllerError::InvalidRead)
-                }
-            }
+            Context::Malloc(context) => context.read(offset, read_size, sanitize),
+            Context::Cheri(context) => context.read(offset, read_size, sanitize),
         }
     }
 }
 
+pub trait MemoryDomain {
+    // allocation and distruction
+    fn init(config: Vec<u8>) -> HwResult<Box<Self>>;
+    fn acquire_context(&self, size: usize) -> HwResult<Context>;
+    fn release_context(&self, context: Context) -> HwResult<()>;
+}
+
 // Code to specialize transfers between different domains
 pub fn transefer_memory(
-    mut destination: MemoryDomain,
-    mut source: MemoryDomain,
+    mut destination: Context,
+    mut source: Context,
     destination_offset: usize,
     source_offset: usize,
     size: usize,
     sanitize: bool,
-    callback: impl FnOnce(HwResult<()>, MemoryDomain, MemoryDomain) -> (),
+    callback: impl FnOnce(HwResult<()>, Context, Context) -> (),
 ) {
     let result = match (&mut destination, &mut source) {
-        (MemoryDomain::Malloc(destination_tuple), MemoryDomain::Malloc(source_tuple)) => {
-            malloc::malloc_transfer(&source_tuple, &destination_tuple)
-        }
-        // (MemoryDomain::CheriDomain, MemoryDomain::CheriDomain) => println!("Not yet implemented cheri mem transfer"),
-        (MemoryDomain::Blackhole, MemoryDomain::Blackhole) => {
-            println!("From the hole it comes to the hole it goes");
-            Ok(())
+        (Context::Malloc(destination_ctxt), Context::Malloc(source_ctxt)) => {
+            malloc::malloc_transfer(
+                destination_ctxt,
+                source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+                sanitize,
+            )
         }
         // default implementation using reads and writes
-        (dst, src) => {
-            let read_result = src.read(source_offset, size, sanitize);
+        (destination, source) => {
+            let read_result = source.read(source_offset, size, sanitize);
             match read_result {
-                Ok(read_value) => dst.write(destination_offset, read_value),
+                Ok(read_value) => destination.write(destination_offset, read_value),
                 Err(err) => Err(err),
             }
         }
