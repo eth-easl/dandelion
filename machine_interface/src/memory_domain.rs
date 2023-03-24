@@ -1,6 +1,7 @@
 // list of memory domain implementations
 mod cheri;
 mod malloc;
+mod pagetable;
 
 // import parent for depenencies
 use super::HwResult;
@@ -10,6 +11,7 @@ use super::HwResult;
 pub enum Context {
     Malloc(Box<malloc::MallocContext>),
     Cheri(Box<cheri::CheriContext>),
+    Pagetable(Box<pagetable::PagetableContext>),
 }
 
 pub trait ContextTrait {
@@ -22,12 +24,14 @@ impl ContextTrait for Context {
         match self {
             Context::Malloc(context) => context.write(offset, data),
             Context::Cheri(context) => context.write(offset, data),
+            Context::Pagetable(context) => context.write(offset, data),
         }
     }
     fn read(&mut self, offset: usize, read_size: usize, sanitize: bool) -> HwResult<Vec<u8>> {
         match self {
             Context::Malloc(context) => context.read(offset, read_size, sanitize),
             Context::Cheri(context) => context.read(offset, read_size, sanitize),
+            Context::Pagetable(context) => context.read(offset, read_size, sanitize),
         }
     }
 }

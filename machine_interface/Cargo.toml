@@ -9,3 +9,4 @@ cmake = "0.1"
 [dependencies]
 # FFI dependencies
 libc = "0.2"
+shared_memory = { git = "https://github.com/elast0ny/shared_memory" }
