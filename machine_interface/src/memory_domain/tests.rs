@@ -5,6 +5,36 @@ use super::{ContextTrait, MemoryDomain};
 // produces binary pattern 0b0101_01010 or 0x55
 const BYTEPATTERN: u8 = 85;
 
+fn acquire_single<D: MemoryDomain>(arg: Vec<u8>) -> () {
+    let init_result = D::init(arg);
+    let domain = init_result.expect("should have initialized memory domain");
+    let context_result = domain.acquire_context(1);
+    match context_result {
+        Ok(_) => assert!(true),
+        Err(err) => assert!(false, "found {:?} when acquiring minimal context", err),
+    }
+}
+
+fn acquire_too_much<D: MemoryDomain>(arg: Vec<u8>) -> () {
+    let alloc_size = usize::MAX;
+    let init_result = D::init(arg);
+    let domain = init_result.expect("should have initialized memory domain");
+    let context_result = domain.acquire_context(alloc_size);
+    match context_result {
+        Err(HardwareError::OutOfMemory) => assert!(true),
+        Ok(_) => assert!(
+            false,
+            "Got okay for allocating context with size {}",
+            alloc_size
+        ),
+        Err(err) => assert!(
+            false,
+            "Got wrong error for allocating context with size {}: {:?}",
+            alloc_size, err
+        ),
+    }
+}
+
 fn init_domain<D: MemoryDomain>(arg: Vec<u8>) -> Box<D> {
     let init_result = D::init(arg);
     let domain = init_result.expect("memory domain should have been initialized");
@@ -87,39 +117,49 @@ fn read_single_sanitize<D: MemoryDomain>(arg: Vec<u8>) {
     assert_eq!(vec![0], sanitized_val);
 }
 
-macro_rules! controllerReadWriteTests {
-    ($name : ident ; $controller : ty ; $init : expr) => {
+macro_rules! domainTests {
+    ($name : ident ; $domain : ty ; $init : expr) => {
         mod $name {
             use super::*;
+            // domain tests
+            #[test]
+            fn test_aquire_single() {
+                acquire_single::<$domain>($init);
+            }
+            #[test]
+            fn test_aquire_too_much() {
+                acquire_too_much::<$domain>($init);
+            }
+            // context tests
             #[test]
             fn test_write_single_oob_offset() {
-                write_single_oob_offset::<$controller>($init);
+                write_single_oob_offset::<$domain>($init);
             }
             #[test]
             fn test_write_single_oob_size() {
-                write_single_oob_size::<$controller>($init);
+                write_single_oob_size::<$domain>($init);
             }
             #[test]
             fn test_read_single_success() {
-                read_single_success::<$controller>($init);
+                read_single_success::<$domain>($init);
             }
             #[test]
             fn test_read_single_oob_offset() {
-                read_single_oob_offset::<$controller>($init);
+                read_single_oob_offset::<$domain>($init);
             }
             #[test]
             fn test_read_single_oob_size() {
-                read_single_oob_size::<$controller>($init);
+                read_single_oob_size::<$domain>($init);
             }
             #[test]
             fn test_read_single_sanitize() {
-                read_single_sanitize::<$controller>($init);
+                read_single_sanitize::<$domain>($init);
             }
             // TODO longer writes and reads, as well as partial writes and reads
         }
     };
 }
 use super::malloc::MallocMemoryDomain as mallocType;
-controllerReadWriteTests!(Malloc; mallocType; Vec::new());
+domainTests!(malloc; mallocType; Vec::new());
 use super::cheri::CheriMemoryDomain as cheriType;
-controllerReadWriteTests!(Cheri; cheriType; Vec::new());
+domainTests!(cheri; cheriType; Vec::new());

@@ -4,10 +4,16 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+int32_t is_null(void* ptr);
+
 typedef struct {
   char* __capability cap;
   size_t size;
 } cheri_context;
+
+// cheri permissions
+static const int code_permissions = 0x08002;
+static const int memory_permissions = 0x34000;
 
 // allocation functions
 cheri_context* cheri_alloc(size_t size);
@@ -19,4 +25,11 @@ void cheri_write_context(cheri_context* context, unsigned char* source_pointer,
 void cheri_read_context(cheri_context* context,
                         unsigned char* destination_pointer,
                         size_t context_offset, size_t size, char sanitize);
+
+// auxilliary functions for internal use
+static size_t sandbox_size_rounding(size_t size) {
+  __asm__ volatile("RRLEN %0, %0" : "+r"(size));
+  return size;
+}
+
 #endif

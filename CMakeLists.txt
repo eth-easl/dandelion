@@ -37,7 +37,7 @@ add_subdirectory(net)
 # add main server directory
 add_subdirectory(server)
 # testing framework
-add_subdirectory(unity)
+# add_subdirectory(unity)
 
 # enable testing everythere in the project
 enable_testing()

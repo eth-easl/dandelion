@@ -1,24 +1,26 @@
 use std::u8;
 
-use libc::{c_void, size_t};
+use libc::size_t;
 
-// #[repr(C)]
-// struct cheri_cap {
-//     cap: [i8; 16],
-// }
+// opaque type to allow type enforcement on pointer
+#[repr(C)]
+struct cheri_c_context {
+    _data: [u8; 0],
+    _marker: core::marker::PhantomData<(*mut u8, core::marker::PhantomPinned)>,
+}
 
 #[link(name = "cheri_mem")]
 extern "C" {
-    fn cheri_alloc(size: size_t) -> *mut c_void;
-    fn cheri_free(context: *const c_void, size: size_t) -> ();
+    fn cheri_alloc(size: size_t) -> *const cheri_c_context;
+    fn cheri_free(context: *const cheri_c_context, size: size_t) -> ();
     fn cheri_write_context(
-        context: *mut c_void,
+        context: *const cheri_c_context,
         source_pointer: *const u8,
         context_offset: size_t,
         size: size_t,
     ) -> ();
     fn cheri_read_context(
-        context: *mut c_void,
+        context: *const cheri_c_context,
         destination_pointer: *mut u8,
         context_offset: size_t,
         size: size_t,
@@ -30,7 +32,7 @@ use super::super::{HardwareError, HwResult};
 use super::{Context, ContextTrait, MemoryDomain};
 
 pub struct CheriContext {
-    context: *mut c_void,
+    context: *const cheri_c_context,
     size: usize,
 }
 // TODO implement drop
@@ -73,7 +75,7 @@ impl ContextTrait for CheriContext {
 pub struct CheriMemoryDomain {}
 
 impl MemoryDomain for CheriMemoryDomain {
-    fn init(config: Vec<u8>) -> HwResult<Box<Self>> {
+    fn init(_config: Vec<u8>) -> HwResult<Box<Self>> {
         Ok(Box::new(CheriMemoryDomain {}))
     }
     fn acquire_context(&self, size: usize) -> HwResult<Context> {
@@ -84,7 +86,8 @@ impl MemoryDomain for CheriMemoryDomain {
         unsafe {
             new_context.context = cheri_alloc(size);
         }
-        if new_context.context == std::ptr::null_mut() {
+        println!("context pointer {}", new_context.context as usize);
+        if new_context.context.is_null() {
             return Err(HardwareError::OutOfMemory);
         }
         Ok(Context::Cheri(new_context))

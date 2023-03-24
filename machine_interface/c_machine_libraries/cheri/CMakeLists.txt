@@ -13,5 +13,16 @@ target_link_options(${LIBRARY} PRIVATE ${NOCAP_LINK_FLAGS})
 # install rules
 install(TARGETS ${LIBRARY} DESTINATION ${CMAKE_INSTALL_PREFIX})
 
-# test directory
-# add_subdirectory(test)
+# set tests
+set(TEST cheri_test)
+add_executable(${TEST}
+    test/test.c
+)
+target_link_libraries(${TEST}
+    ${LIBRARY}
+    unityHybridCap
+)
+target_compile_options(${TEST} PRIVATE ${NOCAP_COMPILE_FLAGS})
+target_link_options(${TEST} PRIVATE ${NOCAP_LINK_FLAGS})
+# register test
+add_test(${TEST} ${TEST})

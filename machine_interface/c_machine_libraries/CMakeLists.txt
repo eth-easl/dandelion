@@ -26,4 +26,7 @@ else()
   message(WARNING "No toolchainfile given, compiling in native mode")
 endif()
 
+enable_testing()
+
 add_subdirectory(cheri)
+add_subdirectory(unity)

@@ -1,5 +1,5 @@
 [submodule "unity/source"]
-	path = unity/source
+	path = machine_interface/c_machine_libraries/unity/source
 	url = git@github.com:ThrowTheSwitch/Unity.git
 [submodule "http"]
 	path = net/http

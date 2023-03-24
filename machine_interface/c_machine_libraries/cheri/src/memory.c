@@ -8,8 +8,9 @@
 // External Libraries
 
 // Internal Libraries
+
 // TODO? optimize
-unsigned char sandboxSizeAlignment(size_t size) {
+unsigned char sandbox_size_alignment(size_t size) {
   size_t mask;
   __asm__ volatile("RRMASK %0, %1" : "+r"(mask) : "r"(size));
   int allignment = 63;
@@ -27,12 +28,26 @@ unsigned char sandboxSizeAlignment(size_t size) {
 }
 
 cheri_context *cheri_alloc(size_t size) {
-  int allignment = sandboxSizeAlignment(size);
-  char *__capability context_space = (__cheri_tocap char *__capability)mmap(
-      NULL, size, PROT_EXEC | PROT_READ | PROT_WRITE,
-      MAP_ANONYMOUS | MAP_ALIGNED(allignment), -1, 0);
+  // setup configure size and allignment
+  size_t allocation_size = sandbox_size_rounding(size);
+  // check if when rounded to representable lenght is still larger then
+  // requested
+  if (allocation_size < size) return NULL;
+  int allignment = sandbox_size_alignment(allocation_size);
+  char *context_space_addr =
+      mmap(NULL, size, PROT_EXEC | PROT_READ | PROT_WRITE,
+           MAP_ANONYMOUS | MAP_ALIGNED(allignment), -1, 0);
+  if (context_space_addr == MAP_FAILED) return NULL;
+  char *__capability context_space =
+      (__cheri_tocap char *__capability)context_space_addr;
+  context_space = __builtin_cheri_bounds_set(context_space, allocation_size);
+  // adjust permissions
+  const size_t permission_mask = ~(memory_permissions);
+  __asm__ volatile("clrperm %w0, %w0, %1"
+                   : "+r"(context_space)
+                   : "r"(permission_mask));
   cheri_context *context = malloc(sizeof(cheri_context));
-  context->size = size;
+  context->size = allocation_size;
   context->cap = context_space;
   return context;
 }
