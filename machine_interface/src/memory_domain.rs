@@ -1,7 +1,8 @@
 // list of memory domain implementations
-mod cheri;
-mod malloc;
-mod pagetable;
+#[cfg(target_arch = "aarch64c")]
+pub mod cheri;
+pub mod malloc;
+pub mod pagetable;
 
 // import parent for depenencies
 use super::HwResult;
@@ -10,6 +11,7 @@ use super::HwResult;
 // check if this would be better way to do it
 pub enum Context {
     Malloc(Box<malloc::MallocContext>),
+    #[cfg(target_arch = "aarch64c")]
     Cheri(Box<cheri::CheriContext>),
     Pagetable(Box<pagetable::PagetableContext>),
 }
@@ -23,6 +25,7 @@ impl ContextTrait for Context {
     fn write(&mut self, offset: usize, data: Vec<u8>) -> HwResult<()> {
         match self {
             Context::Malloc(context) => context.write(offset, data),
+            #[cfg(target_arch = "aarch64c")]
             Context::Cheri(context) => context.write(offset, data),
             Context::Pagetable(context) => context.write(offset, data),
         }
@@ -30,6 +33,7 @@ impl ContextTrait for Context {
     fn read(&mut self, offset: usize, read_size: usize, sanitize: bool) -> HwResult<Vec<u8>> {
         match self {
             Context::Malloc(context) => context.read(offset, read_size, sanitize),
+            #[cfg(target_arch = "aarch64c")]
             Context::Cheri(context) => context.read(offset, read_size, sanitize),
             Context::Pagetable(context) => context.read(offset, read_size, sanitize),
         }
@@ -38,7 +42,9 @@ impl ContextTrait for Context {
 
 pub trait MemoryDomain {
     // allocation and distruction
-    fn init(config: Vec<u8>) -> HwResult<Box<Self>>;
+    fn init(config: Vec<u8>) -> HwResult<Box<Self>>
+    where
+        Self: Sized;
     fn acquire_context(&self, size: usize) -> HwResult<Context>;
     fn release_context(&self, context: Context) -> HwResult<()>;
 }

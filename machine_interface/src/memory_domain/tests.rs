@@ -161,5 +161,9 @@ macro_rules! domainTests {
 }
 use super::malloc::MallocMemoryDomain as mallocType;
 domainTests!(malloc; mallocType; Vec::new());
+#[cfg(target_arch = "aarch64c")]
 use super::cheri::CheriMemoryDomain as cheriType;
+#[cfg(target_arch = "aarch64c")]
 domainTests!(cheri; cheriType; Vec::new());
+use super::pagetable::PagetableMemoryDomain as pagetableType;
+domainTests!(pagetable; pagetableType; Vec::new());

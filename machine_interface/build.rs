@@ -1,6 +1,6 @@
 use cmake::Config;
 
-fn main() {
+fn cmake_libraries() -> () {
     // cmake configure and build all
     let _all = Config::new("c_machine_libraries")
         // .define("CMAKE_TOOLCHAIN_FILE", "morello-toolchain.txt")
@@ -17,4 +17,9 @@ fn main() {
     println!("cargo:warning={}", install.display());
     println!("cargo:rustc-link-search=native={}", install.display());
     println!("cargo:rustc-link-lib=static=cheri_mem");
+}
+
+fn main() {
+    #[cfg(target_arch = "aarch64c")]
+    cmake_libraries();
 }
