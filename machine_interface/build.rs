@@ -1,5 +1,7 @@
+#[cfg(target_arch = "aarch64c")]
 use cmake::Config;
 
+#[cfg(target_arch = "aarch64c")]
 fn cmake_libraries() -> () {
     // cmake configure and build all
     let _all = Config::new("c_machine_libraries")
