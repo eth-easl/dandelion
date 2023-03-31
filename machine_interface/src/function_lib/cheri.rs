@@ -1,11 +1,12 @@
-use super::super::function_lib::{DataItem, DataRequirementList, Navigator};
+use super::FunctionConfig;
+use crate::function_lib::{DataItem, DataRequirementList, Navigator};
 use crate::memory_domain::{Context, ContextTrait, MemoryDomain};
 use crate::util::elf_parser;
 use crate::HwResult;
 pub trait Engine {
     fn run(
         self,
-        // code: Self::FunctionConfig,
+        config: FunctionConfig,
         context: Context,
         layout: Vec<DataItem>,
         callback: impl FnOnce(HwResult<(Context, Vec<DataItem>)>) -> (),
@@ -28,11 +29,25 @@ impl Navigator for CheriNavigator {
     // returns the layout requirements and a context containing static data,
     //  and a layout description for it
     fn parse_function(
-        config: Vec<u8>,
+        function: Vec<u8>,
         static_domain: &dyn MemoryDomain,
-    ) -> HwResult<(DataRequirementList, Context, Vec<DataItem>)> {
-        let file = elf_parser::ParsedElf::new(&config)?;
-        let (requirements, source_layout) = file.get_layout_pair();
+    ) -> HwResult<(DataRequirementList, Context, Vec<DataItem>, FunctionConfig)> {
+        let elf = elf_parser::ParsedElf::new(&function)?;
+        let input_root = elf.get_symbol_by_name(&function, "inputRoot")?;
+        let input_number = elf.get_symbol_by_name(&function, "inputNumber")?;
+        let output_root = elf.get_symbol_by_name(&function, "outputRoot")?;
+        let output_number = elf.get_symbol_by_name(&function, "outputNumber")?;
+        let max_output_number = elf.get_symbol_by_name(&function, "maxOutputNumber")?;
+        let entry = elf.get_entry_point();
+        let config = FunctionConfig::ElfConfig(super::ElfConfig {
+            input_root: input_root,
+            input_number: input_number,
+            output_root: output_root,
+            output_number: output_number,
+            max_output_number: max_output_number,
+            entry_point: entry,
+        });
+        let (requirements, source_layout) = elf.get_layout_pair();
         // sum up all sizes
         let mut total_size = 0;
         for position in source_layout.iter() {
@@ -41,15 +56,22 @@ impl Navigator for CheriNavigator {
         let mut context = static_domain.acquire_context(total_size)?;
         // copy all
         let mut write_counter = 0;
-        for position in source_layout.iter() {
+        let mut static_layout = Vec::<DataItem>::new();
+        for (index, position) in source_layout.iter().enumerate() {
             context.write(
                 write_counter,
-                config[position.offset..position.offset + position.size].to_vec(),
+                function[position.offset..position.offset + position.size].to_vec(),
             )?;
+            static_layout.push(DataItem {
+                index: index as u32,
+                item_type: crate::DataItemType::Item(crate::Position {
+                    offset: write_counter,
+                    size: position.size,
+                }),
+            });
             write_counter += position.size;
         }
-        let static_layout = Vec::<DataItem>::new();
-        return Ok((requirements, context, static_layout));
+        return Ok((requirements, context, static_layout, config));
     }
 }
 

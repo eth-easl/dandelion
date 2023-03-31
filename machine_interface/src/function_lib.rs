@@ -4,10 +4,23 @@ use super::{DataItem, DataRequirementList, HwResult};
 // list of implementations
 mod cheri;
 
+pub struct ElfConfig {
+    input_root: (usize, usize),
+    input_number: (usize, usize),
+    output_root: (usize, usize),
+    output_number: (usize, usize),
+    max_output_number: (usize, usize),
+    entry_point: usize,
+}
+
+pub enum FunctionConfig {
+    ElfConfig(ElfConfig),
+}
+
 pub trait Engine {
     fn run(
         self,
-        // code: Self::FunctionConfig,
+        config: FunctionConfig,
         context: Context,
         layout: Vec<DataItem>,
         callback: impl FnOnce(HwResult<(Context, Vec<DataItem>)>) -> (),
@@ -29,7 +42,7 @@ pub trait Navigator {
     // returns the layout requirements and a context containing static data,
     //  and a layout description for it
     fn parse_function(
-        config: Vec<u8>,
+        function: Vec<u8>,
         static_domain: &dyn MemoryDomain,
-    ) -> HwResult<(DataRequirementList, Context, Vec<DataItem>)>;
+    ) -> HwResult<(DataRequirementList, Context, Vec<DataItem>, FunctionConfig)>;
 }

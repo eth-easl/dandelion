@@ -8,7 +8,7 @@ use super::ParsedElf;
 
 fn load_file(name: &str, fsize: usize) -> Vec<u8> {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push("src/util/elf_parser");
+    path.push("tests/data");
     path.push(name);
     let mut elf_file = File::open(path).expect("Should have found test file");
     let mut elf_buffer = Vec::<u8>::new();
@@ -53,4 +53,37 @@ fn check_layout_le_64() -> () {
         assert_eq!(file_offset_list[index], position.offset);
         assert_eq!(file_size_list[index], position.size);
     }
+}
+
+#[test]
+#[should_panic]
+fn check_find_symbol_failure() -> () {
+    let elf_buffer = load_file("test_elf_le_64", 10400);
+    let parsed_elf = ParsedElf::new(&elf_buffer).expect("Should be able to create parsed elf");
+    parsed_elf
+        .get_symbol_by_name(&elf_buffer, "test")
+        .expect("Should fail as there is no such symbol");
+}
+
+#[test]
+fn check_find_symbol_success() -> () {
+    let elf_buffer = load_file("test_elf_le_64", 10400);
+    let parsed_elf = ParsedElf::new(&elf_buffer).expect("Should be able to create parsed elf");
+    let (symbol_offset, symbol_size) = parsed_elf
+        .get_symbol_by_name(&elf_buffer, "main")
+        .expect("Should have symbol main");
+    assert_eq!(0x401000, symbol_offset);
+    assert_eq!(0x16a, symbol_size);
+    let (symbol_offset, symbol_size) = parsed_elf
+        .get_symbol_by_name(&elf_buffer, "getInputPointer")
+        .expect("Should have symbol getInputPointer");
+    assert_eq!(0x4011a9, symbol_offset);
+    assert_eq!(0x31, symbol_size);
+}
+
+#[test]
+fn check_entry() -> () {
+    let elf_buffer = load_file("test_elf_le_64", 10400);
+    let parsed_elf = ParsedElf::new(&elf_buffer).expect("Should be able to create parsed elf");
+    assert_eq!(0x401000, parsed_elf.get_entry_point());
 }
