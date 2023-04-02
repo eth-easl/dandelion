@@ -1,5 +1,5 @@
 // list of memory domain implementations
-#[cfg(target_arch = "aarch64c")]
+#[cfg(feature = "cheri")]
 pub mod cheri;
 pub mod malloc;
 
@@ -10,7 +10,7 @@ use super::HwResult;
 // check if this would be better way to do it
 pub enum Context {
     Malloc(Box<malloc::MallocContext>),
-    #[cfg(target_arch = "aarch64c")]
+    #[cfg(feature = "cheri")]
     Cheri(Box<cheri::CheriContext>),
 }
 
@@ -23,14 +23,14 @@ impl ContextTrait for Context {
     fn write(&mut self, offset: usize, data: Vec<u8>) -> HwResult<()> {
         match self {
             Context::Malloc(context) => context.write(offset, data),
-            #[cfg(target_arch = "aarch64c")]
+            #[cfg(feature = "cheri")]
             Context::Cheri(context) => context.write(offset, data),
         }
     }
     fn read(&mut self, offset: usize, read_size: usize, sanitize: bool) -> HwResult<Vec<u8>> {
         match self {
             Context::Malloc(context) => context.read(offset, read_size, sanitize),
-            #[cfg(target_arch = "aarch64c")]
+            #[cfg(feature = "cheri")]
             Context::Cheri(context) => context.read(offset, read_size, sanitize),
         }
     }

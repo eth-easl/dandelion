@@ -161,7 +161,7 @@ macro_rules! domainTests {
 }
 use super::malloc::MallocMemoryDomain as mallocType;
 domainTests!(malloc; mallocType; Vec::new());
-#[cfg(target_arch = "aarch64c")]
+#[cfg(feature = "cheri")]
 use super::cheri::CheriMemoryDomain as cheriType;
-#[cfg(target_arch = "aarch64c")]
+#[cfg(feature = "cheri")]
 domainTests!(cheri; cheriType; Vec::new());

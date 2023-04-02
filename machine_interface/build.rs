@@ -1,7 +1,6 @@
-#[cfg(target_arch = "aarch64c")]
 use cmake::Config;
+use std::process::Command;
 
-#[cfg(target_arch = "aarch64c")]
 fn cmake_libraries() -> () {
     // cmake configure and build all
     let _all = Config::new("c_machine_libraries")
@@ -22,6 +21,16 @@ fn cmake_libraries() -> () {
 }
 
 fn main() {
-    #[cfg(target_arch = "aarch64c")]
-    cmake_libraries();
+    // detect cheri via uname (since cargo does not detect the feature yet)
+    let output = Command::new("uname")
+        .arg("-p")
+        .output()
+        .expect("Uname should be available");
+    let processor_string = std::str::from_utf8(&output.stdout).unwrap();
+    println!("cargo:warning=Uname is : {}", processor_string);
+    let is_cheri = processor_string == "aarch64c\n";
+    if is_cheri {
+        println!("cargo:rustc-cfg=feature=\"cheri\"");
+        cmake_libraries();
+    }
 }
