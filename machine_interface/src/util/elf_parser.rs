@@ -1,7 +1,4 @@
-use crate::{
-    DataRequirement, DataRequirementList, HardwareError, HwResult, OffsetOrAlignment, Position,
-    RequirementType, SizeRequirement,
-};
+use crate::{HardwareError, HwResult, Position};
 
 macro_rules! parser_code {
     ($name: ident; $in_type: ty; $out_type: ty; $parser: ident; $increment: literal) => {
@@ -43,7 +40,7 @@ struct ElfEhdr {
     e_phnum: u16,
     e_shentsize: u16,
     e_shnum: u16,
-    _e_shstrndx: u16,
+    e_shstrndx: u16,
 }
 
 fn parse_ehdr(file: &Vec<u8>, pf: &ParserFuncs) -> ElfEhdr {
@@ -61,7 +58,7 @@ fn parse_ehdr(file: &Vec<u8>, pf: &ParserFuncs) -> ElfEhdr {
         e_phnum: (pf.parse_half)(file, &mut counter),
         e_shentsize: (pf.parse_half)(file, &mut counter),
         e_shnum: (pf.parse_half)(file, &mut counter),
-        _e_shstrndx: (pf.parse_half)(file, &mut counter),
+        e_shstrndx: (pf.parse_half)(file, &mut counter),
     }
 }
 
@@ -117,7 +114,7 @@ fn parse_phdr_table(
 }
 
 struct ElfShdr {
-    _sh_name: u32,
+    sh_name: u32,
     sh_type: u32,
     _sh_flags: u64,
     _sh_addr: u64,
@@ -138,7 +135,7 @@ fn parse_shrd_table(file: &Vec<u8>, pf: &ParserFuncs, ehdr: &ElfEhdr) -> HwResul
     for entry in 0..entries {
         let mut offset: usize = (ehdr.e_shoff + (entry * ehdr.e_shentsize) as u64) as usize;
         shdr_table.push(ElfShdr {
-            _sh_name: (pf.parse_word)(file, &mut offset),
+            sh_name: (pf.parse_word)(file, &mut offset),
             sh_type: (pf.parse_word)(file, &mut offset),
             _sh_flags: (pf.parse_offset)(file, &mut offset),
             _sh_addr: (pf.parse_offset)(file, &mut offset),
@@ -279,9 +276,9 @@ impl ParsedElf {
             symbol_table: sym_table,
         });
     }
-    pub fn get_layout_pair(self) -> (DataRequirementList, Vec<Position>) {
+    pub fn get_layout_pair(self) -> (Vec<Position>, Vec<Position>) {
         let mut items = Vec::<Position>::new();
-        let mut requirements = Vec::<DataRequirement>::new();
+        let mut requirements = Vec::<Position>::new();
         let mut item_counter = 0;
         // go through sections and find the ones that need to be loaded
         for programm_header in self.program_header_table {
@@ -291,27 +288,35 @@ impl ParsedElf {
                     offset: programm_header.p_offset as usize,
                     size: programm_header.p_filesz as usize,
                 });
-                requirements.push(DataRequirement {
-                    id: item_counter,
-                    req_type: RequirementType::StaticData,
-                    position: Some(OffsetOrAlignment::Offset(programm_header.p_vaddr as usize)),
-                    size: Some(SizeRequirement::Range(
-                        programm_header.p_memsz as usize,
-                        programm_header.p_memsz as usize,
-                    )),
+                requirements.push(Position {
+                    offset: programm_header.p_vaddr as usize,
+                    size: programm_header.p_memsz as usize,
                 });
                 item_counter += 1;
             }
         }
 
-        return (DataRequirementList { requirements }, items);
+        return (requirements, items);
     }
 
     pub fn get_symbol_by_name(&self, file: &Vec<u8>, name: &str) -> HwResult<(usize, usize)> {
+        // find section header string table
+        let section_name_entry = &self.section_header_table[self.ehdr.e_shstrndx as usize];
+        let section_names_start = section_name_entry.sh_offset as usize;
+        let section_names_end = section_names_start + section_name_entry.sh_size as usize;
+        let section_name_string =
+            match std::str::from_utf8(&file[section_names_start..section_names_end]) {
+                Ok(str) => str,
+                Err(_) => return Err(HardwareError::MalformedConfig),
+            };
+        let string_table_index = match section_name_string.find(".strtab") {
+            Some(index) => index,
+            None => return Err(HardwareError::MalformedConfig),
+        };
         let string_table_section_opt = self
             .section_header_table
             .iter()
-            .find(|x| x.sh_type == SHT_STRTAB);
+            .find(|x| x.sh_type == SHT_STRTAB && x.sh_name as usize == string_table_index);
         let string_table_section = match string_table_section_opt {
             Some(section) => section,
             None => return Err(HardwareError::MalformedConfig),
@@ -327,7 +332,7 @@ impl ParsedElf {
         let string_table_index = string_table_string.find(name);
         let name_index = match string_table_index {
             Some(index) => index,
-            None => return Err(HardwareError::MalformedConfig),
+            None => return Err(HardwareError::UnknownSymbol),
         };
         let symbol = self
             .symbol_table

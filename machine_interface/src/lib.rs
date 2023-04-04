@@ -8,6 +8,7 @@ pub enum HardwareError {
     Default,
     // errors in configurations
     MalformedConfig, // configuration vector was malformed
+    UnknownSymbol,
     // memory errors
     ContextMissmatch, // context handed to context specific function was wrong type
     OutOfMemory,      // domain could not be allocated because there is no space available
