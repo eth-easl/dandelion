@@ -45,8 +45,8 @@ impl ContextTrait for MallocContext {
 pub struct MallocMemoryDomain {}
 
 impl MemoryDomain for MallocMemoryDomain {
-    fn init(config: Vec<u8>) -> HwResult<Box<Self>> {
-        Ok(Box::new(MallocMemoryDomain {}))
+    fn init(_config: Vec<u8>) -> HwResult<Self> {
+        Ok(MallocMemoryDomain {})
     }
     fn acquire_context(&self, size: usize) -> HwResult<Context> {
         let mut mem_space = Vec::new();
@@ -74,5 +74,17 @@ pub fn malloc_transfer(
     size: usize,
     sanitize: bool,
 ) -> HwResult<()> {
+    // check if there is space in both contexts
+    if source.storage.len() < source_offset + size {
+        return Err(HardwareError::InvalidRead);
+    }
+    if destination.storage.len() < destination_offset + size {
+        return Err(HardwareError::InvalidWrite);
+    }
+    destination.storage[destination_offset..destination_offset + size]
+        .copy_from_slice(&source.storage[source_offset..source_offset + size]);
+    if sanitize {
+        source.storage[source_offset..source_offset + size].fill(0);
+    }
     Ok(())
 }

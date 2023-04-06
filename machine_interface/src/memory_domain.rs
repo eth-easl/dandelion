@@ -74,7 +74,7 @@ pub fn transefer_memory(
             }
         }
     };
-    (Ok(()), destination, source)
+    (result, destination, source)
 }
 
 #[cfg(test)]
