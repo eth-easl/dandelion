@@ -1,7 +1,8 @@
 use super::memory_domain::{Context, MemoryDomain};
-use super::{DataItem, DataRequirementList, HwResult};
+use super::{DataItem, DataRequirementList, HwResult, Position};
 
 // list of implementations
+#[cfg(feature = "cheri")]
 mod cheri;
 
 pub struct ElfConfig {
@@ -10,6 +11,7 @@ pub struct ElfConfig {
     output_root: (usize, usize),
     output_number: (usize, usize),
     max_output_number: (usize, usize),
+    return_offset: (usize, usize),
     entry_point: usize,
 }
 
@@ -23,18 +25,20 @@ pub trait Engine {
         config: FunctionConfig,
         context: Context,
         layout: Vec<DataItem>,
-        callback: impl FnOnce(HwResult<(Context, Vec<DataItem>)>) -> (),
-    ) -> HwResult<()>;
-    fn abort(id: u32, callback: impl FnOnce(HwResult<Context>) -> ()) -> HwResult<()>;
+    ) -> (HwResult<()>, Context, Vec<DataItem>);
+    fn abort(self) -> HwResult<Context>;
 }
 
 // todo find better name
 pub trait Driver {
     // required parts of the trait
     type E: Engine;
+    fn new(config: Vec<u8>) -> HwResult<Self>
+    where
+        Self: Sized;
     // take or release one of the available engines
-    fn start_engine() -> HwResult<Self::E>;
-    fn stop_engine(self) -> HwResult<()>;
+    fn start_engine(self, id: u8) -> HwResult<Self::E>;
+    fn stop_engine(self, engine: Self::E) -> HwResult<()>;
 }
 
 pub trait Navigator {
@@ -44,5 +48,5 @@ pub trait Navigator {
     fn parse_function(
         function: Vec<u8>,
         static_domain: &dyn MemoryDomain,
-    ) -> HwResult<(DataRequirementList, Context, Vec<DataItem>, FunctionConfig)>;
+    ) -> HwResult<(DataRequirementList, Context, Vec<Position>, FunctionConfig)>;
 }

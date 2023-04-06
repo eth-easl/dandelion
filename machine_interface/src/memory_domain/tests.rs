@@ -35,14 +35,14 @@ fn acquire_too_much<D: MemoryDomain>(arg: Vec<u8>) -> () {
     }
 }
 
-fn init_domain<D: MemoryDomain>(arg: Vec<u8>) -> Box<D> {
+fn init_domain<D: MemoryDomain>(arg: Vec<u8>) -> D {
     let init_result = D::init(arg);
     let domain = init_result.expect("memory domain should have been initialized");
     return domain;
 }
 
 fn write_single_oob_offset<D: MemoryDomain>(arg: Vec<u8>) {
-    let domain: Box<D> = init_domain(arg);
+    let domain = init_domain::<D>(arg);
     let mut context = domain
         .acquire_context(1)
         .expect("Single byte context should always be allocatable");
@@ -53,7 +53,7 @@ fn write_single_oob_offset<D: MemoryDomain>(arg: Vec<u8>) {
 }
 
 fn write_single_oob_size<D: MemoryDomain>(arg: Vec<u8>) {
-    let domain: Box<D> = init_domain(arg);
+    let domain = init_domain::<D>(arg);
     let mut context = domain
         .acquire_context(1)
         .expect("Single byte context should always be allocatable");
@@ -64,7 +64,7 @@ fn write_single_oob_size<D: MemoryDomain>(arg: Vec<u8>) {
 }
 
 fn read_single_success<D: MemoryDomain>(arg: Vec<u8>) {
-    let domain: Box<D> = init_domain(arg);
+    let domain = init_domain::<D>(arg);
     let mut context = domain
         .acquire_context(1)
         .expect("Single byte context should always be allocatable");
@@ -78,7 +78,7 @@ fn read_single_success<D: MemoryDomain>(arg: Vec<u8>) {
 }
 
 fn read_single_oob_offset<D: MemoryDomain>(arg: Vec<u8>) {
-    let domain: Box<D> = init_domain(arg);
+    let domain = init_domain::<D>(arg);
     let mut context = domain
         .acquire_context(1)
         .expect("Single byte context should always be allocatable");
@@ -89,7 +89,7 @@ fn read_single_oob_offset<D: MemoryDomain>(arg: Vec<u8>) {
 }
 
 fn read_single_oob_size<D: MemoryDomain>(arg: Vec<u8>) {
-    let domain: Box<D> = init_domain(arg);
+    let domain = init_domain::<D>(arg);
     let mut context = domain
         .acquire_context(1)
         .expect("Single byte context should always be allocatable");
@@ -100,7 +100,7 @@ fn read_single_oob_size<D: MemoryDomain>(arg: Vec<u8>) {
 }
 
 fn read_single_sanitize<D: MemoryDomain>(arg: Vec<u8>) {
-    let domain: Box<D> = init_domain(arg);
+    let domain = init_domain::<D>(arg);
     let mut context = domain
         .acquire_context(1)
         .expect("Single byte context should always be allocatable");

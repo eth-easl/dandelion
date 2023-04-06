@@ -4,12 +4,12 @@ use libc::size_t;
 
 // opaque type to allow type enforcement on pointer
 #[repr(C)]
-struct cheri_c_context {
+pub struct cheri_c_context {
     _data: [u8; 0],
     _marker: core::marker::PhantomData<(*mut u8, core::marker::PhantomPinned)>,
 }
 
-#[link(name = "cheri_mem")]
+#[link(name = "cheri_lib")]
 extern "C" {
     fn cheri_alloc(size: size_t) -> *const cheri_c_context;
     fn cheri_free(context: *const cheri_c_context, size: size_t) -> ();
@@ -32,8 +32,8 @@ use super::super::{HardwareError, HwResult};
 use super::{Context, ContextTrait, MemoryDomain};
 
 pub struct CheriContext {
-    context: *const cheri_c_context,
-    size: usize,
+    pub context: *const cheri_c_context,
+    pub size: usize,
 }
 // TODO implement drop
 
@@ -75,8 +75,8 @@ impl ContextTrait for CheriContext {
 pub struct CheriMemoryDomain {}
 
 impl MemoryDomain for CheriMemoryDomain {
-    fn init(_config: Vec<u8>) -> HwResult<Box<Self>> {
-        Ok(Box::new(CheriMemoryDomain {}))
+    fn init(_config: Vec<u8>) -> HwResult<Self> {
+        Ok(CheriMemoryDomain {})
     }
     fn acquire_context(&self, size: usize) -> HwResult<Context> {
         let mut new_context: Box<CheriContext> = Box::new(CheriContext {
@@ -86,7 +86,6 @@ impl MemoryDomain for CheriMemoryDomain {
         unsafe {
             new_context.context = cheri_alloc(size);
         }
-        println!("context pointer {}", new_context.context as usize);
         if new_context.context.is_null() {
             return Err(HardwareError::OutOfMemory);
         }

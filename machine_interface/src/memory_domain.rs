@@ -38,7 +38,7 @@ impl ContextTrait for Context {
 
 pub trait MemoryDomain {
     // allocation and distruction
-    fn init(config: Vec<u8>) -> HwResult<Box<Self>>
+    fn init(config: Vec<u8>) -> HwResult<Self>
     where
         Self: Sized;
     fn acquire_context(&self, size: usize) -> HwResult<Context>;
@@ -53,8 +53,7 @@ pub fn transefer_memory(
     source_offset: usize,
     size: usize,
     sanitize: bool,
-    callback: impl FnOnce(HwResult<()>, Context, Context) -> (),
-) {
+) -> (HwResult<()>, Context, Context) {
     let result = match (&mut destination, &mut source) {
         (Context::Malloc(destination_ctxt), Context::Malloc(source_ctxt)) => {
             malloc::malloc_transfer(
@@ -75,7 +74,7 @@ pub fn transefer_memory(
             }
         }
     };
-    callback(result, destination, source);
+    (Ok(()), destination, source)
 }
 
 #[cfg(test)]

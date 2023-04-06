@@ -1,27 +1,87 @@
+use libc::size_t;
+
 use super::FunctionConfig;
-use crate::function_lib::{DataItem, DataRequirementList, Navigator};
+use crate::function_lib::{DataItem, DataRequirementList, Driver, Engine, Navigator};
+use crate::memory_domain::cheri::cheri_c_context;
 use crate::memory_domain::{Context, ContextTrait, MemoryDomain};
 use crate::util::elf_parser;
-use crate::HwResult;
-pub trait Engine {
+use crate::{DataRequirement, HardwareError, HwResult, Position};
+
+#[link(name = "cheri_lib")]
+extern "C" {
+    fn cheri_run_static(
+        context: *const cheri_c_context,
+        entry_point: size_t,
+        return_pair_offset: size_t,
+        stack_pointer: size_t,
+    ) -> i8;
+}
+
+fn setup_input_structs(context: &mut Context) -> () {}
+
+struct CheriEngine {
+    function_context: Option<Context>,
+}
+
+impl Engine for CheriEngine {
     fn run(
         self,
         config: FunctionConfig,
-        context: Context,
+        mut context: Context,
         layout: Vec<DataItem>,
-        callback: impl FnOnce(HwResult<(Context, Vec<DataItem>)>) -> (),
-    ) -> HwResult<()>;
-    fn abort(id: u32, callback: impl FnOnce(HwResult<Context>) -> ()) -> HwResult<()>;
+    ) -> (HwResult<()>, Context, Vec<DataItem>) {
+        let output_layout = Vec::<DataItem>::new();
+        // setup input structs
+        setup_input_structs(&mut context);
+        // TODO maybe reverse order to fail faster?
+        let cheri_context = match context {
+            Context::Cheri(ref cheri_context) => cheri_context,
+            _ => return (Err(HardwareError::ContextMissmatch), context, output_layout),
+        };
+        let elf_config = match config {
+            FunctionConfig::ElfConfig(conf) => conf,
+            _ => return (Err(HardwareError::ConfigMissmatch), context, output_layout),
+        };
+        let cheri_error;
+        unsafe {
+            cheri_error = cheri_run_static(
+                cheri_context.context,
+                elf_config.entry_point,
+                elf_config.return_offset.0,
+                cheri_context.size,
+            );
+        }
+        // TODO handle cheri error
+        (Ok(()), context, output_layout)
+    }
+    fn abort(self) -> HwResult<Context> {
+        match self.function_context {
+            Some(context) => Ok(context),
+            None => Err(HardwareError::NoRunningFunction),
+        }
+    }
 }
 
-// todo find better name
-pub trait Driver {
+struct CheriDriver {}
+
+impl Driver for CheriDriver {
     // required parts of the trait
-    // type E: Engine;
+    type E = CheriEngine;
+    fn new(config: Vec<u8>) -> HwResult<Self> {
+        return Ok(CheriDriver {});
+    }
     // // take or release one of the available engines
-    // fn start_engine() -> HwResult<Self::E>;
-    // fn stop_engine(self) -> HwResult<()>;
+    fn start_engine(self, id: u8) -> HwResult<Self::E> {
+        return Ok(CheriEngine {
+            function_context: None,
+        });
+    }
+    fn stop_engine(self, engine: Self::E) -> HwResult<()> {
+        return Ok(());
+    }
 }
+
+const DEFAULT_SPACE_SIZE: usize = 0x40_0000; // 4MiB
 
 struct CheriNavigator {}
 impl Navigator for CheriNavigator {
@@ -31,13 +91,14 @@ impl Navigator for CheriNavigator {
     fn parse_function(
         function: Vec<u8>,
         static_domain: &dyn MemoryDomain,
-    ) -> HwResult<(DataRequirementList, Context, Vec<DataItem>, FunctionConfig)> {
+    ) -> HwResult<(DataRequirementList, Context, Vec<Position>, FunctionConfig)> {
         let elf = elf_parser::ParsedElf::new(&function)?;
         let input_root = elf.get_symbol_by_name(&function, "inputRoot")?;
         let input_number = elf.get_symbol_by_name(&function, "inputNumber")?;
         let output_root = elf.get_symbol_by_name(&function, "outputRoot")?;
         let output_number = elf.get_symbol_by_name(&function, "outputNumber")?;
         let max_output_number = elf.get_symbol_by_name(&function, "maxOutputNumber")?;
+        let return_offset = elf.get_symbol_by_name(&function, "returnPair")?;
         let entry = elf.get_entry_point();
         let config = FunctionConfig::ElfConfig(super::ElfConfig {
             input_root: input_root,
@@ -45,9 +106,16 @@ impl Navigator for CheriNavigator {
             output_root: output_root,
             output_number: output_number,
             max_output_number: max_output_number,
+            return_offset: return_offset,
             entry_point: entry,
         });
-        let (requirements, source_layout) = elf.get_layout_pair();
+        let (static_requirements, source_layout) = elf.get_layout_pair();
+        // set default size to 128KiB
+        let requirements = DataRequirementList {
+            size: DEFAULT_SPACE_SIZE,
+            input_requirements: Vec::<DataRequirement>::new(),
+            static_requirements: static_requirements,
+        };
         // sum up all sizes
         let mut total_size = 0;
         for position in source_layout.iter() {
@@ -56,18 +124,15 @@ impl Navigator for CheriNavigator {
         let mut context = static_domain.acquire_context(total_size)?;
         // copy all
         let mut write_counter = 0;
-        let mut static_layout = Vec::<DataItem>::new();
-        for (index, position) in source_layout.iter().enumerate() {
+        let mut static_layout = Vec::<Position>::new();
+        for position in source_layout.iter() {
             context.write(
                 write_counter,
                 function[position.offset..position.offset + position.size].to_vec(),
             )?;
-            static_layout.push(DataItem {
-                index: index as u32,
-                item_type: crate::DataItemType::Item(crate::Position {
-                    offset: write_counter,
-                    size: position.size,
-                }),
+            static_layout.push(Position {
+                offset: write_counter,
+                size: position.size,
             });
             write_counter += position.size;
         }
