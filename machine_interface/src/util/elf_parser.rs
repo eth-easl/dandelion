@@ -279,7 +279,6 @@ impl ParsedElf {
     pub fn get_layout_pair(self) -> (Vec<Position>, Vec<Position>) {
         let mut items = Vec::<Position>::new();
         let mut requirements = Vec::<Position>::new();
-        let mut item_counter = 0;
         // go through sections and find the ones that need to be loaded
         for programm_header in self.program_header_table {
             // check if section occupies memory during execution
@@ -292,7 +291,6 @@ impl ParsedElf {
                     offset: programm_header.p_vaddr as usize,
                     size: programm_header.p_memsz as usize,
                 });
-                item_counter += 1;
             }
         }
 
