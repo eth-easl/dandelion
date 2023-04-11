@@ -148,8 +148,8 @@ fn test_navigator_basic() {
 fn load_static(
     mut function_context: Context,
     mut static_context: Context,
-    requirement_list: DataRequirementList,
-) -> Context {
+    requirement_list: &DataRequirementList,
+) -> (Context, Context) {
     let layout = static_context.static_data.to_vec();
     assert_eq!(
         layout.len(),
@@ -179,7 +179,7 @@ fn load_static(
             size: requirement.size,
         });
     }
-    function_context
+    (function_context, static_context)
 }
 
 #[test]
@@ -188,11 +188,12 @@ fn test_engine_minimal() {
     let elf_buffer = read_file("test_elf_aarch64c_basic", 3240);
     let domain = CheriMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new cheri domain");
-    let (req_list, static_context, config) = CheriNavigator::parse_function(elf_buffer, &domain)
-        .expect("Empty string should return error");
+    let (req_list, mut static_context, config) =
+        CheriNavigator::parse_function(elf_buffer, &domain)
+            .expect("Empty string should return error");
 
     let driver = CheriDriver::new(Vec::<u8>::new()).expect("Should be able to create driver");
-    let engine = driver
+    let mut engine = driver
         .start_engine(0)
         .expect("Should be able to start engine 0");
     // set up context
@@ -200,22 +201,29 @@ fn test_engine_minimal() {
         .acquire_context(req_list.size)
         .expect("Should be able to acquire context");
     // fill in static requirements
-    function_context = load_static(function_context, static_context, req_list);
-    let (result, _) = engine.run(config, function_context);
+    (function_context, static_context) = load_static(function_context, static_context, &req_list);
+    let (result, function_context) = engine.run(&config, function_context);
     result.expect("Engine should run ok with basic function");
+    domain
+        .release_context(function_context)
+        .expect("Should release context");
+    domain
+        .release_context(static_context)
+        .expect("Should release context");
 }
 
 #[test]
-fn test_engine_matmul_1() {
+fn test_engine_matmul_single() {
     // load elf file
-    let elf_buffer = read_file("test_elf_aarch64c_matmul", 3600);
+    let elf_buffer = read_file("test_elf_aarch64c_matmul", 3648);
     let domain = CheriMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new cheri domain");
-    let (req_list, static_context, config) = CheriNavigator::parse_function(elf_buffer, &domain)
-        .expect("Empty string should return error");
+    let (req_list, mut static_context, config) =
+        CheriNavigator::parse_function(elf_buffer, &domain)
+            .expect("Empty string should return error");
 
     let driver = CheriDriver::new(Vec::<u8>::new()).expect("Should be able to create driver");
-    let engine = driver
+    let mut engine = driver
         .start_engine(0)
         .expect("Should be able to start engine 0");
     // set up context
@@ -223,8 +231,21 @@ fn test_engine_matmul_1() {
         .acquire_context(req_list.size)
         .expect("Should be able to acquire context");
     // fill in static requirements
-    function_context = load_static(function_context, static_context, req_list);
+    (function_context, static_context) = load_static(function_context, static_context, &req_list);
     // add inputs
+    let in_size_offset = function_context
+        .get_free_space(8, 8)
+        .expect("Should have space for single i64");
+    function_context
+        .write(in_size_offset, i64::to_ne_bytes(1).to_vec())
+        .expect("Write should go through");
+    function_context.dynamic_data.push(DataItem {
+        index: 0,
+        item_type: DataItemType::Item(Position {
+            offset: in_size_offset,
+            size: 8,
+        }),
+    });
     let in_mat_offset = function_context
         .get_free_space(8, 8)
         .expect("Should have space for single i64");
@@ -248,7 +269,7 @@ fn test_engine_matmul_1() {
             size: 8,
         }),
     });
-    let (result, mut result_context) = engine.run(config, function_context);
+    let (result, mut result_context) = engine.run(&config, function_context);
     result.expect("Engine should run ok with basic function");
     // check that result is 4
     assert_eq!(1, result_context.dynamic_data.len());
@@ -263,10 +284,127 @@ fn test_engine_matmul_1() {
         .context
         .read(position.offset, position.size, false)
         .expect("Should succeed in reading");
-    let converted_output = u64::from_ne_bytes(
+    let converted_output = i64::from_ne_bytes(
         raw_output[0..8]
             .try_into()
             .expect("Should have correct length"),
     );
     assert_eq!(4, converted_output);
+    domain
+        .release_context(result_context)
+        .expect("Should release context");
+    domain
+        .release_context(static_context)
+        .expect("Should release context");
+}
+
+const LOWER_SIZE_BOUND: usize = 2;
+const UPPER_SIZE_BOUND: usize = 16;
+
+fn get_expected_mat(size: usize) -> Vec<i64> {
+    let mut in_mat_vec = Vec::<i64>::new();
+    for i in 0..(size * size) {
+        in_mat_vec.push(i as i64);
+    }
+    let mut out_mat_vec = vec![0 as i64; size * size];
+    for i in 0..size {
+        for j in 0..size {
+            for k in 0..size {
+                out_mat_vec[i * size + j] += in_mat_vec[i * size + k] * in_mat_vec[j * size + k];
+            }
+        }
+    }
+    return out_mat_vec;
+}
+#[test]
+fn test_engine_matmul_size_sweep() {
+    // load elf file
+    let elf_buffer = read_file("test_elf_aarch64c_matmul", 3648);
+    let domain = CheriMemoryDomain::init(Vec::<u8>::new())
+        .expect("Should have initialized new cheri domain");
+    let (req_list, mut static_context, config) =
+        CheriNavigator::parse_function(elf_buffer, &domain)
+            .expect("Empty string should return error");
+
+    let driver = CheriDriver::new(Vec::<u8>::new()).expect("Should be able to create driver");
+    let mut engine = driver
+        .start_engine(0)
+        .expect("Should be able to start engine 0");
+    for mat_size in LOWER_SIZE_BOUND..UPPER_SIZE_BOUND {
+        // set up context
+        let mut function_context = domain
+            .acquire_context(req_list.size)
+            .expect("Should be able to acquire context");
+        // fill in static requirements
+        (function_context, static_context) =
+            load_static(function_context, static_context, &req_list);
+        // add inputs
+        let in_size_offset = function_context
+            .get_free_space(8, 8)
+            .expect("Should have space for single i64");
+        function_context
+            .write(in_size_offset, i64::to_ne_bytes(mat_size as i64).to_vec())
+            .expect("Write should go through");
+        function_context.dynamic_data.push(DataItem {
+            index: 0,
+            item_type: DataItemType::Item(Position {
+                offset: in_size_offset,
+                size: 8,
+            }),
+        });
+        let input_size = 8 * mat_size * mat_size;
+        let in_mat_offset = function_context
+            .get_free_space(input_size, 8)
+            .expect("Should have space for single i64");
+        let mut mat_vec = Vec::<u8>::new();
+        for i in 0..(mat_size * mat_size) {
+            mat_vec.append(&mut i64::to_ne_bytes(i as i64).to_vec());
+        }
+        function_context
+            .write(in_mat_offset, mat_vec)
+            .expect("Write should go through");
+        function_context.dynamic_data.push(DataItem {
+            index: 1,
+            item_type: DataItemType::Item(Position {
+                offset: in_mat_offset,
+                size: input_size,
+            }),
+        });
+        let out_mat_offset = function_context
+            .get_free_space(input_size, 8)
+            .expect("Should have space for single i64");
+        function_context.dynamic_data.push(DataItem {
+            index: 2,
+            item_type: DataItemType::Item(Position {
+                offset: out_mat_offset,
+                size: input_size,
+            }),
+        });
+        let (result, mut result_context) = engine.run(&config, function_context);
+        result.expect("Engine should run ok with basic function");
+        // check that result is 4
+        assert_eq!(1, result_context.dynamic_data.len());
+        let output_item = &result_context.dynamic_data[0];
+        assert_eq!(0, output_item.index);
+        let position = match &output_item.item_type {
+            DataItemType::Item(pos) => pos,
+            DataItemType::Set(_) => panic!("Output type should not be set"),
+        };
+        assert_eq!(input_size, position.size, "Checking for size of output");
+        let raw_output = result_context
+            .context
+            .read(position.offset, position.size, false)
+            .expect("Should succeed in reading");
+        let expected = get_expected_mat(mat_size);
+        for (index, chunk) in raw_output.chunks_exact(8).enumerate() {
+            let value = i64::from_ne_bytes(chunk.try_into().expect("Should have correct length"));
+            assert_eq!(expected[index], value);
+        }
+        domain
+            .release_context(result_context)
+            .expect("Should release context");
+    }
+    domain
+        .release_context(static_context)
+        .expect("Should release context");
 }

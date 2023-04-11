@@ -123,7 +123,7 @@ struct CheriEngine {
 }
 
 impl Engine for CheriEngine {
-    fn run(self, config: FunctionConfig, mut context: Context) -> (HwResult<()>, Context) {
+    fn run(&mut self, config: &FunctionConfig, mut context: Context) -> (HwResult<()>, Context) {
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
             _ => return (Err(HardwareError::ConfigMissmatch), context),
@@ -131,6 +131,7 @@ impl Engine for CheriEngine {
         if let Err(err) = setup_input_structs(&mut context, &elf_config) {
             return (Err(err), context);
         }
+        // TODO set self.function context
         // TODO maybe reverse order to fail faster?
         let cheri_context = match context.context {
             ContextType::Cheri(ref cheri_context) => cheri_context,
@@ -150,7 +151,6 @@ impl Engine for CheriEngine {
             1 => return (Err(HardwareError::OutOfMemory), context),
             _ => return (Err(HardwareError::NotImplemented), context),
         }
-        // TODO handle cheri error
         // erase all assumptions on context internal layout
         context.dynamic_data.clear();
         context.static_data.clear();
@@ -158,8 +158,9 @@ impl Engine for CheriEngine {
         let result = get_output_layout(&mut context, &elf_config);
         (result, context)
     }
-    fn abort(self) -> HwResult<Context> {
-        match self.function_context {
+    fn abort(&mut self) -> HwResult<Context> {
+        let previous_context = self.function_context.take();
+        match previous_context {
             Some(context) => Ok(context),
             None => Err(HardwareError::NoRunningFunction),
         }

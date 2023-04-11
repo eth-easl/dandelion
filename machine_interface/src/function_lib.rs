@@ -21,8 +21,8 @@ pub enum FunctionConfig {
 }
 
 pub trait Engine {
-    fn run(self, config: FunctionConfig, context: Context) -> (HwResult<()>, Context);
-    fn abort(self) -> HwResult<Context>;
+    fn run(&mut self, config: &FunctionConfig, context: Context) -> (HwResult<()>, Context);
+    fn abort(&mut self) -> HwResult<Context>;
 }
 
 // todo find better name
