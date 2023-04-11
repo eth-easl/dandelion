@@ -1,11 +1,12 @@
 use super::memory_domain::{Context, MemoryDomain};
-use super::{DataItem, DataRequirementList, HwResult};
+use super::{DataRequirementList, HwResult};
 
 // list of implementations
 #[cfg(feature = "cheri")]
 mod cheri;
 
 pub struct ElfConfig {
+    // TODO change to positions
     input_root: (usize, usize),
     input_number: (usize, usize),
     output_root: (usize, usize),

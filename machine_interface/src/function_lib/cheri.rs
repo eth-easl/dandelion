@@ -1,11 +1,13 @@
 use libc::size_t;
 
 use super::FunctionConfig;
-use crate::function_lib::{DataItem, DataRequirementList, Driver, Engine, Navigator};
+use crate::function_lib::{Driver, ElfConfig, Engine, Navigator};
 use crate::memory_domain::cheri::cheri_c_context;
 use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
 use crate::util::elf_parser;
-use crate::{DataRequirement, HardwareError, HwResult, Position};
+use crate::{
+    DataItem, DataItemType, DataRequirement, DataRequirementList, HardwareError, HwResult, Position,
+};
 
 #[link(name = "cheri_lib")]
 extern "C" {
@@ -18,11 +20,103 @@ extern "C" {
 }
 
 const IO_STRUCT_SIZE: usize = 16;
+const MAX_OUTPUTS: u32 = 16;
 
-// fn setup_input_structs(context: &mut Context, max_output_number: u32) -> () {
-//     // size of array with input struct array
-//     let input_array_size = input_layout.len() * IO_STRUCT_SIZE;
-// }
+fn setup_input_structs(context: &mut Context, config: &ElfConfig) -> HwResult<()> {
+    // size of array with input struct array
+    let input_number_option = context
+        .dynamic_data
+        .iter()
+        .max_by(|a, b| a.index.cmp(&b.index));
+    let input_number = match input_number_option {
+        Some(num) => num.index + 1,
+        None => return Ok(()),
+    };
+    let input_struct_size = input_number as usize * IO_STRUCT_SIZE;
+    let input_offset = context.get_free_space(input_struct_size, 8)?;
+    for input in &context.dynamic_data {
+        let pos = match &input.item_type {
+            DataItemType::Item(position) => position,
+            _ => return Err(HardwareError::NotImplemented),
+        };
+        let struct_offset = input_offset + IO_STRUCT_SIZE * input.index as usize;
+        let mut io_struct = Vec::<u8>::new();
+        io_struct.append(&mut usize::to_ne_bytes(pos.size).to_vec());
+        io_struct.append(&mut usize::to_ne_bytes(pos.offset).to_vec());
+        context.context.write(struct_offset, io_struct)?;
+    }
+    context.static_data.push(Position {
+        offset: input_offset,
+        size: input_struct_size,
+    });
+    // find space for output structs
+    let output_struct_size = IO_STRUCT_SIZE * MAX_OUTPUTS as usize;
+    let output_offset = context.get_free_space(output_struct_size, 8)?;
+    context.static_data.push(Position {
+        offset: output_offset,
+        size: output_struct_size,
+    });
+    // fill in values
+    context.write(
+        config.input_root.0,
+        usize::to_ne_bytes(input_offset).to_vec(),
+    )?;
+    context.write(
+        config.input_number.0,
+        u32::to_ne_bytes(input_number).to_vec(),
+    )?;
+    context.write(
+        config.output_root.0,
+        usize::to_ne_bytes(output_offset).to_vec(),
+    )?;
+    context.write(config.output_number.0, u32::to_ne_bytes(0).to_vec())?;
+    context.write(
+        config.max_output_number.0,
+        u32::to_ne_bytes(MAX_OUTPUTS).to_vec(),
+    )?;
+    return Ok(());
+}
+
+fn get_output_layout(context: &mut Context, config: &ElfConfig) -> HwResult<()> {
+    // get output number
+    let output_number_vec = context.read(config.output_number.0, config.output_number.1, false)?;
+    // TODO make this dependent on the actual size of the values
+    // TODO use as_chunks when it stabilizes
+    let output_number_slice: [u8; 4] = output_number_vec[0..4]
+        .try_into()
+        .expect("Should have correct length");
+    let output_number = u32::min(u32::from_ne_bytes(output_number_slice), MAX_OUTPUTS);
+    let mut output_structs = Vec::<DataItem>::new();
+    let output_root_vec = context.read(config.output_root.0, 8, false)?;
+    let output_root_offset = usize::from_ne_bytes(
+        output_root_vec[0..8]
+            .try_into()
+            .expect("Should have correct length"),
+    );
+    for output_index in 0..output_number {
+        let read_offset = output_root_offset + IO_STRUCT_SIZE * output_index as usize;
+        let out_struct = context.read(read_offset, IO_STRUCT_SIZE as usize, false)?;
+        let size = usize::from_ne_bytes(
+            out_struct[0..8]
+                .try_into()
+                .expect("Should have correct length"),
+        );
+        let offset = usize::from_ne_bytes(
+            out_struct[8..16]
+                .try_into()
+                .expect("Should have correct length"),
+        );
+        output_structs.push(DataItem {
+            index: output_index,
+            item_type: DataItemType::Item(Position {
+                offset: offset,
+                size: size,
+            }),
+        })
+    }
+    context.dynamic_data = output_structs;
+    Ok(())
+}
 
 struct CheriEngine {
     function_context: Option<Context>,
@@ -30,17 +124,17 @@ struct CheriEngine {
 
 impl Engine for CheriEngine {
     fn run(self, config: FunctionConfig, mut context: Context) -> (HwResult<()>, Context) {
-        // let output_layout = Vec::<DataItem>::new();
-        // setup input structs
-        // setup_input_structs(&mut context, _);
+        let elf_config = match config {
+            FunctionConfig::ElfConfig(conf) => conf,
+            _ => return (Err(HardwareError::ConfigMissmatch), context),
+        };
+        if let Err(err) = setup_input_structs(&mut context, &elf_config) {
+            return (Err(err), context);
+        }
         // TODO maybe reverse order to fail faster?
         let cheri_context = match context.context {
             ContextType::Cheri(ref cheri_context) => cheri_context,
             _ => return (Err(HardwareError::ContextMissmatch), context),
-        };
-        let elf_config = match config {
-            FunctionConfig::ElfConfig(conf) => conf,
-            _ => return (Err(HardwareError::ConfigMissmatch), context),
         };
         let cheri_error;
         unsafe {
@@ -51,8 +145,18 @@ impl Engine for CheriEngine {
                 cheri_context.size,
             );
         }
+        match cheri_error {
+            0 => (),
+            1 => return (Err(HardwareError::OutOfMemory), context),
+            _ => return (Err(HardwareError::NotImplemented), context),
+        }
         // TODO handle cheri error
-        (Ok(()), context)
+        // erase all assumptions on context internal layout
+        context.dynamic_data.clear();
+        context.static_data.clear();
+        // read outputs
+        let result = get_output_layout(&mut context, &elf_config);
+        (result, context)
     }
     fn abort(self) -> HwResult<Context> {
         match self.function_context {

@@ -5,13 +5,14 @@ mod util;
 // TODO define error types, possibly better printing than debug
 #[derive(Debug, PartialEq)]
 pub enum HardwareError {
-    Default,
+    NotImplemented, // trying to use a feature that is not yet implemented
     // errors in configurations
     MalformedConfig, // configuration vector was malformed
     UnknownSymbol,
     // memory errors
     ContextMissmatch, // context handed to context specific function was wrong type
     OutOfMemory,      // domain could not be allocated because there is no space available
+    ContextFull,      // context can't fit additional memory
     InvalidRead,      // tried to read from domain outside of domain bounds
     InvalidWrite,     // tried to write to domain ouside of domain bounds
     // engine errors
@@ -47,17 +48,19 @@ pub struct DataRequirementList {
     pub static_requirements: Vec<Position>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Position {
     pub offset: usize,
     pub size: usize,
 }
 
+#[derive(Debug)]
 pub enum DataItemType {
     Item(Position),
     Set(Vec<Position>),
 }
 
+#[derive(Debug)]
 pub struct DataItem {
     pub index: u32,
     pub item_type: DataItemType,

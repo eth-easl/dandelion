@@ -1,9 +1,5 @@
 #include "cpu.h"
 
-// erorr values
-#define SUCCESS 0x0       // success inidication
-#define MALLOC_ERROR 0x1  // for failure to allocate memory
-
 char cheri_run_static(cheri_context* context, size_t entry_point,
                       size_t return_pair_offset, size_t stack_pointer) {
   void* __capability context_cap = context->cap;

@@ -28,8 +28,8 @@ extern "C" {
     ) -> ();
 }
 
-use super::super::{HardwareError, HwResult};
-use super::{Context, ContextTrait, MemoryDomain};
+use super::super::{DataItem, HardwareError, HwResult, Position};
+use super::{Context, ContextTrait, ContextType, MemoryDomain};
 
 pub struct CheriContext {
     pub context: *const cheri_c_context,
@@ -89,13 +89,17 @@ impl MemoryDomain for CheriMemoryDomain {
         if new_context.context.is_null() {
             return Err(HardwareError::OutOfMemory);
         }
-        Ok(Context::Cheri(new_context))
+        Ok(Context {
+            context: ContextType::Cheri(new_context),
+            dynamic_data: Vec::<DataItem>::new(),
+            static_data: Vec::<Position>::new(),
+        })
     }
     fn release_context(&self, context: Context) -> HwResult<()> {
-        match context {
-            Context::Cheri(context) => {
+        match context.context {
+            ContextType::Cheri(cheri_context) => {
                 unsafe {
-                    cheri_free(context.context, context.size);
+                    cheri_free(cheri_context.context, cheri_context.size);
                 }
                 Ok(())
             }

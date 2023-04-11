@@ -4,6 +4,10 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+// erorr values
+#define SUCCESS 0x0       // success inidication
+#define MALLOC_ERROR 0x1  // for failure to allocate memory
+
 int32_t is_null(void* ptr);
 
 typedef struct {
