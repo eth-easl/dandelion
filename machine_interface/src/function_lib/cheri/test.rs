@@ -36,9 +36,8 @@ fn test_navigator_basic() {
             .expect("Should be able to read entire file")
     );
     let malloc_domain = MallocMemoryDomain {};
-    let (req_list, _context, layout, config) =
-        CheriNavigator::parse_function(elf_buffer, &malloc_domain)
-            .expect("Should correctly parse elf file");
+    let (req_list, context, config) = CheriNavigator::parse_function(elf_buffer, &malloc_domain)
+        .expect("Should correctly parse elf file");
     // check requirement list
     let expected_requirements = vec![
         Position {
@@ -83,6 +82,7 @@ fn test_navigator_basic() {
     }
     // check layout
     let mut expected_offset = 0;
+    let layout = &context.static_data;
     for (index, position) in layout.into_iter().enumerate() {
         assert_eq!(
             expected_offset, position.offset,
@@ -152,7 +152,7 @@ fn test_engine_minimal() {
         .expect("Should be able to read entire file");
     let domain = CheriMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new cheri domain");
-    let (req_list, mut static_context, layout, config) =
+    let (req_list, mut static_context, config) =
         CheriNavigator::parse_function(elf_buffer, &domain)
             .expect("Empty string should return error");
 
@@ -165,6 +165,7 @@ fn test_engine_minimal() {
         .acquire_context(req_list.size)
         .expect("Should be able to acquire context");
     // fill in static requirements
+    let layout = static_context.static_data.to_vec();
     assert_eq!(
         layout.len(),
         req_list.static_requirements.len(),
@@ -195,27 +196,6 @@ fn test_engine_minimal() {
             max_address = end;
         }
     }
-    function_context
-        .write(max_address, i32::to_ne_bytes(1).to_vec())
-        .expect("Writing should succeed");
-    function_context
-        .write(max_address + 4, i64::to_be_bytes(2).to_vec())
-        .expect("Writing should succeed");
-    let mut input_layout = Vec::<DataItem>::new();
-    input_layout.push(DataItem {
-        index: 0,
-        item_type: DataItemType::Item(Position {
-            offset: max_address,
-            size: 4,
-        }),
-    });
-    input_layout.push(DataItem {
-        index: 1,
-        item_type: DataItemType::Item(Position {
-            offset: max_address + 4,
-            size: 8,
-        }),
-    });
-    let (result, _, _) = engine.run(config, function_context, input_layout);
+    let (result, _) = engine.run(config, function_context);
     result.expect("Engine should run ok with basic function");
 }

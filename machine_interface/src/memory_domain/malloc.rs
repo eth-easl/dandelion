@@ -1,5 +1,7 @@
+use crate::{DataItem, Position};
+
 use super::super::{HardwareError, HwResult};
-use super::{Context, ContextTrait, MemoryDomain};
+use super::{Context, ContextTrait, ContextType, MemoryDomain};
 
 #[derive(Debug)]
 pub struct MallocContext {
@@ -54,13 +56,15 @@ impl MemoryDomain for MallocMemoryDomain {
             return Err(HardwareError::OutOfMemory);
         }
         mem_space.resize(size, 0);
-        Ok(Context::Malloc(Box::new(MallocContext {
-            storage: mem_space,
-        })))
+        Ok(Context {
+            context: ContextType::Malloc(Box::new(MallocContext { storage: mem_space })),
+            dynamic_data: Vec::<DataItem>::new(),
+            static_data: Vec::<Position>::new(),
+        })
     }
     fn release_context(&self, context: Context) -> HwResult<()> {
-        match context {
-            Context::Malloc(_) => Ok(()),
+        match context.context {
+            ContextType::Malloc(_) => Ok(()),
             _ => Err(HardwareError::ContextMissmatch),
         }
     }

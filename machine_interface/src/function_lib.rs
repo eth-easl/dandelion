@@ -1,5 +1,5 @@
 use super::memory_domain::{Context, MemoryDomain};
-use super::{DataItem, DataRequirementList, HwResult, Position};
+use super::{DataItem, DataRequirementList, HwResult};
 
 // list of implementations
 #[cfg(feature = "cheri")]
@@ -20,12 +20,7 @@ pub enum FunctionConfig {
 }
 
 pub trait Engine {
-    fn run(
-        self,
-        config: FunctionConfig,
-        context: Context,
-        layout: Vec<DataItem>,
-    ) -> (HwResult<()>, Context, Vec<DataItem>);
+    fn run(self, config: FunctionConfig, context: Context) -> (HwResult<()>, Context);
     fn abort(self) -> HwResult<Context>;
 }
 
@@ -48,5 +43,5 @@ pub trait Navigator {
     fn parse_function(
         function: Vec<u8>,
         static_domain: &dyn MemoryDomain,
-    ) -> HwResult<(DataRequirementList, Context, Vec<Position>, FunctionConfig)>;
+    ) -> HwResult<(DataRequirementList, Context, FunctionConfig)>;
 }

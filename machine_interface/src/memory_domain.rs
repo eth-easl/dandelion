@@ -3,15 +3,23 @@
 pub mod cheri;
 pub mod malloc;
 
+use crate::{DataItem, Position};
+
 // import parent for depenencies
 use super::HwResult;
 
 // https://docs.rs/enum_dispatch/latest/enum_dispatch/index.html
 // check if this would be better way to do it
-pub enum Context {
+pub enum ContextType {
     Malloc(Box<malloc::MallocContext>),
     #[cfg(feature = "cheri")]
     Cheri(Box<cheri::CheriContext>),
+}
+
+pub struct Context {
+    pub context: ContextType,
+    pub dynamic_data: Vec<DataItem>,
+    pub static_data: Vec<Position>,
 }
 
 pub trait ContextTrait {
@@ -19,20 +27,29 @@ pub trait ContextTrait {
     fn read(&mut self, offset: usize, read_size: usize, sanitize: bool) -> HwResult<Vec<u8>>;
 }
 
-impl ContextTrait for Context {
+impl ContextTrait for ContextType {
     fn write(&mut self, offset: usize, data: Vec<u8>) -> HwResult<()> {
         match self {
-            Context::Malloc(context) => context.write(offset, data),
+            ContextType::Malloc(context) => context.write(offset, data),
             #[cfg(feature = "cheri")]
-            Context::Cheri(context) => context.write(offset, data),
+            ContextType::Cheri(context) => context.write(offset, data),
         }
     }
     fn read(&mut self, offset: usize, read_size: usize, sanitize: bool) -> HwResult<Vec<u8>> {
         match self {
-            Context::Malloc(context) => context.read(offset, read_size, sanitize),
+            ContextType::Malloc(context) => context.read(offset, read_size, sanitize),
             #[cfg(feature = "cheri")]
-            Context::Cheri(context) => context.read(offset, read_size, sanitize),
+            ContextType::Cheri(context) => context.read(offset, read_size, sanitize),
         }
+    }
+}
+
+impl ContextTrait for Context {
+    fn write(&mut self, offset: usize, data: Vec<u8>) -> HwResult<()> {
+        self.context.write(offset, data)
+    }
+    fn read(&mut self, offset: usize, read_size: usize, sanitize: bool) -> HwResult<Vec<u8>> {
+        self.context.read(offset, read_size, sanitize)
     }
 }
 
@@ -54,8 +71,8 @@ pub fn transefer_memory(
     size: usize,
     sanitize: bool,
 ) -> (HwResult<()>, Context, Context) {
-    let result = match (&mut destination, &mut source) {
-        (Context::Malloc(destination_ctxt), Context::Malloc(source_ctxt)) => {
+    let result = match (&mut destination.context, &mut source.context) {
+        (ContextType::Malloc(destination_ctxt), ContextType::Malloc(source_ctxt)) => {
             malloc::malloc_transfer(
                 destination_ctxt,
                 source_ctxt,
@@ -65,6 +82,7 @@ pub fn transefer_memory(
                 sanitize,
             )
         }
+        // TODO add cheri transfer
         // default implementation using reads and writes
         (destination, source) => {
             let read_result = source.read(source_offset, size, sanitize);

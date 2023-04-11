@@ -3,7 +3,7 @@ use libc::size_t;
 use super::FunctionConfig;
 use crate::function_lib::{DataItem, DataRequirementList, Driver, Engine, Navigator};
 use crate::memory_domain::cheri::cheri_c_context;
-use crate::memory_domain::{Context, ContextTrait, MemoryDomain};
+use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
 use crate::util::elf_parser;
 use crate::{DataRequirement, HardwareError, HwResult, Position};
 
@@ -17,30 +17,30 @@ extern "C" {
     ) -> i8;
 }
 
-fn setup_input_structs(context: &mut Context) -> () {}
+const IO_STRUCT_SIZE: usize = 16;
+
+// fn setup_input_structs(context: &mut Context, max_output_number: u32) -> () {
+//     // size of array with input struct array
+//     let input_array_size = input_layout.len() * IO_STRUCT_SIZE;
+// }
 
 struct CheriEngine {
     function_context: Option<Context>,
 }
 
 impl Engine for CheriEngine {
-    fn run(
-        self,
-        config: FunctionConfig,
-        mut context: Context,
-        layout: Vec<DataItem>,
-    ) -> (HwResult<()>, Context, Vec<DataItem>) {
-        let output_layout = Vec::<DataItem>::new();
+    fn run(self, config: FunctionConfig, mut context: Context) -> (HwResult<()>, Context) {
+        // let output_layout = Vec::<DataItem>::new();
         // setup input structs
-        setup_input_structs(&mut context);
+        // setup_input_structs(&mut context, _);
         // TODO maybe reverse order to fail faster?
-        let cheri_context = match context {
-            Context::Cheri(ref cheri_context) => cheri_context,
-            _ => return (Err(HardwareError::ContextMissmatch), context, output_layout),
+        let cheri_context = match context.context {
+            ContextType::Cheri(ref cheri_context) => cheri_context,
+            _ => return (Err(HardwareError::ContextMissmatch), context),
         };
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
-            _ => return (Err(HardwareError::ConfigMissmatch), context, output_layout),
+            _ => return (Err(HardwareError::ConfigMissmatch), context),
         };
         let cheri_error;
         unsafe {
@@ -52,7 +52,7 @@ impl Engine for CheriEngine {
             );
         }
         // TODO handle cheri error
-        (Ok(()), context, output_layout)
+        (Ok(()), context)
     }
     fn abort(self) -> HwResult<Context> {
         match self.function_context {
@@ -91,7 +91,7 @@ impl Navigator for CheriNavigator {
     fn parse_function(
         function: Vec<u8>,
         static_domain: &dyn MemoryDomain,
-    ) -> HwResult<(DataRequirementList, Context, Vec<Position>, FunctionConfig)> {
+    ) -> HwResult<(DataRequirementList, Context, FunctionConfig)> {
         let elf = elf_parser::ParsedElf::new(&function)?;
         let input_root = elf.get_symbol_by_name(&function, "inputRoot")?;
         let input_number = elf.get_symbol_by_name(&function, "inputNumber")?;
@@ -136,7 +136,8 @@ impl Navigator for CheriNavigator {
             });
             write_counter += position.size;
         }
-        return Ok((requirements, context, static_layout, config));
+        context.static_data = static_layout;
+        return Ok((requirements, context, config));
     }
 }
 
