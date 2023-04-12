@@ -1,12 +1,20 @@
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{channel, Receiver, Sender},
+    },
+    thread::{spawn, JoinHandle},
+};
+
+use core_affinity;
 use libc::size_t;
 
-use super::FunctionConfig;
-use crate::function_lib::{Driver, ElfConfig, Engine, Navigator};
-use crate::memory_domain::cheri::cheri_c_context;
-use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
-use crate::util::elf_parser;
 use crate::{
-    DataItem, DataItemType, DataRequirement, DataRequirementList, HardwareError, HwResult, Position,
+    function_lib::{Driver, ElfConfig, Engine, FunctionConfig, Navigator},
+    memory_domain::{cheri::cheri_c_context, Context, ContextTrait, ContextType, MemoryDomain},
+    util::elf_parser,
+    DataItem, DataItemType, DataRequirement, DataRequirementList, HardwareError, HwResult,
+    Position,
 };
 
 #[link(name = "cheri_lib")]
@@ -118,70 +126,151 @@ fn get_output_layout(context: &mut Context, config: &ElfConfig) -> HwResult<()> 
     Ok(())
 }
 
+struct CheriCommand {
+    context: *const cheri_c_context,
+    entry_point: size_t,
+    return_pair_offset: size_t,
+    stack_pointer: size_t,
+}
+unsafe impl Send for CheriCommand {}
+
 struct CheriEngine {
-    function_context: Option<Context>,
+    is_running: AtomicBool,
+    cpu_slot: u8,
+    command_sender: Sender<CheriCommand>,
+    result_receiver: Receiver<HwResult<()>>,
+    thread_handle: JoinHandle<()>,
+}
+
+fn run_thread(
+    core_id: u8,
+    command_receiver: Receiver<CheriCommand>,
+    result_sender: Sender<HwResult<()>>,
+) -> () {
+    // set core
+    if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
+        return;
+    };
+    for command in command_receiver.iter() {
+        let cheri_error;
+        unsafe {
+            cheri_error = cheri_run_static(
+                command.context,
+                command.entry_point,
+                command.return_pair_offset,
+                command.stack_pointer,
+            );
+        }
+        let message = match cheri_error {
+            0 => Ok(()),
+            1 => Err(HardwareError::OutOfMemory),
+            _ => Err(HardwareError::NotImplemented),
+        };
+        if result_sender.send(message).is_err() {
+            return;
+        }
+    }
 }
 
 impl Engine for CheriEngine {
     fn run(&mut self, config: &FunctionConfig, mut context: Context) -> (HwResult<()>, Context) {
+        if self.is_running.swap(true, Ordering::AcqRel) {
+            return (Err(HardwareError::EngineAlreadyRunning), context);
+        }
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
             _ => return (Err(HardwareError::ConfigMissmatch), context),
         };
-        if let Err(err) = setup_input_structs(&mut context, &elf_config) {
-            return (Err(err), context);
-        }
-        // TODO set self.function context
-        // TODO maybe reverse order to fail faster?
-        let cheri_context = match context.context {
+        let cheri_context = match &context.context {
             ContextType::Cheri(ref cheri_context) => cheri_context,
             _ => return (Err(HardwareError::ContextMissmatch), context),
         };
-        let cheri_error;
-        unsafe {
-            cheri_error = cheri_run_static(
-                cheri_context.context,
-                elf_config.entry_point,
-                elf_config.return_offset.0,
-                cheri_context.size,
-            );
+        let command = CheriCommand {
+            context: cheri_context.context,
+            entry_point: elf_config.entry_point,
+            return_pair_offset: elf_config.return_offset.0,
+            stack_pointer: cheri_context.size,
+        };
+        if let Err(err) = setup_input_structs(&mut context, &elf_config) {
+            return (Err(err), context);
         }
-        match cheri_error {
-            0 => (),
-            1 => return (Err(HardwareError::OutOfMemory), context),
-            _ => return (Err(HardwareError::NotImplemented), context),
+        match self.command_sender.send(command) {
+            Err(_) => return (Err(HardwareError::EngineError), context),
+            Ok(_) => (),
+        }
+        match self.result_receiver.recv() {
+            Err(_) => return (Err(HardwareError::EngineError), context),
+            Ok(Err(err)) => return (Err(err), context),
+            Ok(Ok(())) => (),
         }
         // erase all assumptions on context internal layout
         context.dynamic_data.clear();
         context.static_data.clear();
         // read outputs
         let result = get_output_layout(&mut context, &elf_config);
+        self.is_running.store(false, Ordering::Release);
         (result, context)
     }
-    fn abort(&mut self) -> HwResult<Context> {
-        let previous_context = self.function_context.take();
-        match previous_context {
-            Some(context) => Ok(context),
-            None => Err(HardwareError::NoRunningFunction),
+    fn abort(&mut self) -> HwResult<()> {
+        if !self.is_running.load(Ordering::Acquire) {
+            return Err(HardwareError::NoRunningFunction);
         }
+        Ok(())
     }
 }
 
-struct CheriDriver {}
+struct CheriDriver {
+    cpu_slots: Vec<u8>,
+}
 
 impl Driver for CheriDriver {
     // required parts of the trait
     type E = CheriEngine;
     fn new(config: Vec<u8>) -> HwResult<Self> {
-        return Ok(CheriDriver {});
+        // each entry in config is expected to be a core id for a cpu to use
+        // check that each one is available
+        let available_cores = match core_affinity::get_core_ids() {
+            None => return Err(HardwareError::EngineError),
+            Some(cores) => cores,
+        };
+        for core in config.iter() {
+            let found = available_cores
+                .iter()
+                .find(|x| x.id == core.clone().into())
+                .is_some();
+            if !found {
+                return Err(HardwareError::MalformedConfig);
+            }
+        }
+        return Ok(CheriDriver { cpu_slots: config });
     }
     // // take or release one of the available engines
-    fn start_engine(self, id: u8) -> HwResult<Self::E> {
+    fn start_engine(&mut self) -> HwResult<Self::E> {
+        let cpu_slot = match self.cpu_slots.pop() {
+            Some(core_id) => core_id,
+            None => return Err(HardwareError::NoEngineAvailable),
+        };
+        let (command_sender, command_receiver) = channel();
+        let (result_sender, result_receiver) = channel();
+        let thread_handle = spawn(move || run_thread(cpu_slot, command_receiver, result_sender));
+        let is_running = AtomicBool::new(false);
         return Ok(CheriEngine {
-            function_context: None,
+            cpu_slot,
+            command_sender,
+            result_receiver,
+            thread_handle,
+            is_running,
         });
     }
-    fn stop_engine(self, engine: Self::E) -> HwResult<()> {
+    fn stop_engine(&mut self, engine: Self::E) -> HwResult<()> {
+        drop(engine.command_sender);
+        drop(engine.result_receiver);
+        // TODO check if expect makes sense
+        engine
+            .thread_handle
+            .join()
+            .expect("Expecting cheri thread handle to be joinable");
+        self.cpu_slots.push(engine.cpu_slot);
         return Ok(());
     }
 }

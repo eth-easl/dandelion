@@ -3,7 +3,7 @@ use std::vec;
 use crate::{
     function_lib::{Driver, Engine, FunctionConfig, Navigator},
     memory_domain::{transefer_memory, Context, ContextTrait, MemoryDomain},
-    DataItem, DataItemType, DataRequirementList, Position,
+    DataItem, DataItemType, DataRequirementList, HardwareError, Position,
 };
 
 use super::{CheriDriver, CheriNavigator};
@@ -143,7 +143,38 @@ fn test_navigator_basic() {
     );
 }
 
-// TODO driver tests
+#[test]
+fn test_driver() {
+    let mut no_engine_driver =
+        CheriDriver::new(Vec::<u8>::new()).expect("Should be able to create driver");
+    let no_engine = no_engine_driver.start_engine();
+    match no_engine {
+        Ok(_) => panic!("Should not be able to get engine"),
+        Err(err) => assert_eq!(HardwareError::NoEngineAvailable, err),
+    }
+    drop(no_engine_driver);
+    let wrong_engine_driver = CheriDriver::new(vec![4]);
+    match wrong_engine_driver {
+        Ok(driver) => {
+            drop(driver);
+            panic!("Should not be able to get engine")
+        }
+        Err(err) => assert_eq!(HardwareError::MalformedConfig, err),
+    }
+    let mut some_engines_driver =
+        CheriDriver::new(vec![0, 1, 2, 3]).expect("Should be able to create driver");
+    for i in 0..5 {
+        let engine = some_engines_driver.start_engine();
+        if i < 4 {
+            engine.expect("Should be able to get engine");
+        } else {
+            match engine {
+                Ok(_) => panic!("Should not be able to get more engines than expected"),
+                Err(err) => assert_eq!(HardwareError::NoEngineAvailable, err),
+            }
+        };
+    }
+}
 
 fn load_static(
     mut function_context: Context,
@@ -192,10 +223,10 @@ fn test_engine_minimal() {
         CheriNavigator::parse_function(elf_buffer, &domain)
             .expect("Empty string should return error");
 
-    let driver = CheriDriver::new(Vec::<u8>::new()).expect("Should be able to create driver");
+    let mut driver = CheriDriver::new(vec![1]).expect("Should be able to create driver");
     let mut engine = driver
-        .start_engine(0)
-        .expect("Should be able to start engine 0");
+        .start_engine()
+        .expect("Should be able to start engine");
     // set up context
     let mut function_context = domain
         .acquire_context(req_list.size)
@@ -210,6 +241,9 @@ fn test_engine_minimal() {
     domain
         .release_context(static_context)
         .expect("Should release context");
+    driver
+        .stop_engine(engine)
+        .expect("Should be able to stop engine");
 }
 
 #[test]
@@ -222,10 +256,10 @@ fn test_engine_matmul_single() {
         CheriNavigator::parse_function(elf_buffer, &domain)
             .expect("Empty string should return error");
 
-    let driver = CheriDriver::new(Vec::<u8>::new()).expect("Should be able to create driver");
+    let mut driver = CheriDriver::new(vec![1]).expect("Should be able to create driver");
     let mut engine = driver
-        .start_engine(0)
-        .expect("Should be able to start engine 0");
+        .start_engine()
+        .expect("Should be able to start engine");
     // set up context
     let mut function_context = domain
         .acquire_context(req_list.size)
@@ -296,6 +330,9 @@ fn test_engine_matmul_single() {
     domain
         .release_context(static_context)
         .expect("Should release context");
+    driver
+        .stop_engine(engine)
+        .expect("Should be able to stop engine");
 }
 
 const LOWER_SIZE_BOUND: usize = 2;
@@ -326,9 +363,9 @@ fn test_engine_matmul_size_sweep() {
         CheriNavigator::parse_function(elf_buffer, &domain)
             .expect("Empty string should return error");
 
-    let driver = CheriDriver::new(Vec::<u8>::new()).expect("Should be able to create driver");
+    let mut driver = CheriDriver::new(vec![1]).expect("Should be able to create driver");
     let mut engine = driver
-        .start_engine(0)
+        .start_engine()
         .expect("Should be able to start engine 0");
     for mat_size in LOWER_SIZE_BOUND..UPPER_SIZE_BOUND {
         // set up context
@@ -407,4 +444,7 @@ fn test_engine_matmul_size_sweep() {
     domain
         .release_context(static_context)
         .expect("Should release context");
+    driver
+        .stop_engine(engine)
+        .expect("Should be able to stop engine");
 }

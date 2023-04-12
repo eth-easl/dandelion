@@ -22,7 +22,7 @@ pub enum FunctionConfig {
 
 pub trait Engine {
     fn run(&mut self, config: &FunctionConfig, context: Context) -> (HwResult<()>, Context);
-    fn abort(&mut self) -> HwResult<Context>;
+    fn abort(&mut self) -> HwResult<()>;
 }
 
 // todo find better name
@@ -33,8 +33,8 @@ pub trait Driver {
     where
         Self: Sized;
     // take or release one of the available engines
-    fn start_engine(self, id: u8) -> HwResult<Self::E>;
-    fn stop_engine(self, engine: Self::E) -> HwResult<()>;
+    fn start_engine(&mut self) -> HwResult<Self::E>;
+    fn stop_engine(&mut self, engine: Self::E) -> HwResult<()>;
 }
 
 pub trait Navigator {

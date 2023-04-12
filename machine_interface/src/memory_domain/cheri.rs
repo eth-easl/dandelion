@@ -1,5 +1,3 @@
-use std::u8;
-
 use libc::size_t;
 
 // opaque type to allow type enforcement on pointer

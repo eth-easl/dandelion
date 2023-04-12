@@ -18,6 +18,9 @@ pub enum HardwareError {
     // engine errors
     ConfigMissmatch, // missmatch between the function config the engine expects and the one given
     NoRunningFunction, // attempted abort when no function was running
+    EngineAlreadyRunning, // attempted to run on already busy engine
+    EngineError,     // there was a non recoverable issue with the engine
+    NoEngineAvailable, // asked driver for engine, but there are no more available
 }
 
 pub type HwResult<T> = std::result::Result<T, HardwareError>;
