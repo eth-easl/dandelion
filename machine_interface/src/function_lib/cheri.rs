@@ -10,7 +10,7 @@ use core_affinity;
 use libc::size_t;
 
 use crate::{
-    function_lib::{Driver, ElfConfig, Engine, FunctionConfig, Navigator},
+    function_lib::{Driver, ElfConfig, Engine, FunctionConfig, Loader},
     memory_domain::{cheri::cheri_c_context, Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
     DataItem, DataItemType, DataRequirement, DataRequirementList, HardwareError, HwResult,
@@ -277,8 +277,8 @@ impl Driver for CheriDriver {
 
 const DEFAULT_SPACE_SIZE: usize = 0x40_0000; // 4MiB
 
-struct CheriNavigator {}
-impl Navigator for CheriNavigator {
+struct CheriLoader {}
+impl Loader for CheriLoader {
     // parses an executable,
     // returns the layout requirements and a context containing static data,
     //  and a layout description for it

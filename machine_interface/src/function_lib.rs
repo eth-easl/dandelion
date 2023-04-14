@@ -39,7 +39,7 @@ pub trait Driver {
     fn stop_engine(&mut self, engine: Self::E) -> HwResult<()>;
 }
 
-pub trait Navigator {
+pub trait Loader {
     // parses an executable,
     // returns the layout requirements and a context containing static data,
     //  and a layout description for it
