@@ -50,7 +50,7 @@ impl MemoryDomain for MallocMemoryDomain {
     fn init(_config: Vec<u8>) -> HwResult<Self> {
         Ok(MallocMemoryDomain {})
     }
-    fn acquire_context(&self, size: usize) -> HwResult<Context> {
+    fn acquire_context(&mut self, size: usize) -> HwResult<Context> {
         let mut mem_space = Vec::new();
         if (mem_space.try_reserve_exact(size)) != Ok(()) {
             return Err(HardwareError::OutOfMemory);
@@ -62,7 +62,7 @@ impl MemoryDomain for MallocMemoryDomain {
             static_data: Vec::<Position>::new(),
         })
     }
-    fn release_context(&self, context: Context) -> HwResult<()> {
+    fn release_context(&mut self, context: Context) -> HwResult<()> {
         match context.context {
             ContextType::Malloc(_) => Ok(()),
             _ => Err(HardwareError::ContextMissmatch),

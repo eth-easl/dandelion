@@ -5,6 +5,8 @@ use super::{DataRequirementList, HwResult};
 #[cfg(feature = "cheri")]
 mod cheri;
 
+mod util;
+
 pub struct ElfConfig {
     // TODO change to positions
     input_root: (usize, usize),
@@ -43,6 +45,6 @@ pub trait Navigator {
     //  and a layout description for it
     fn parse_function(
         function: Vec<u8>,
-        static_domain: &dyn MemoryDomain,
+        static_domain: &mut dyn MemoryDomain,
     ) -> HwResult<(DataRequirementList, Context, FunctionConfig)>;
 }

@@ -1,9 +1,9 @@
 use std::vec;
 
 use crate::{
-    function_lib::{Driver, Engine, FunctionConfig, Navigator},
-    memory_domain::{transefer_memory, Context, ContextTrait, MemoryDomain},
-    DataItem, DataItemType, DataRequirementList, HardwareError, Position,
+    function_lib::{util::load_static, Driver, Engine, FunctionConfig, Navigator},
+    memory_domain::{ContextTrait, MemoryDomain},
+    DataItem, DataItemType, HardwareError, Position,
 };
 
 use super::{CheriDriver, CheriNavigator};
@@ -16,8 +16,8 @@ use crate::memory_domain::malloc::MallocMemoryDomain;
 fn test_navigator_empty() {
     // load elf file
     let elf_file = Vec::<u8>::new();
-    let malloc_domain = MallocMemoryDomain {};
-    CheriNavigator::parse_function(elf_file, &malloc_domain)
+    let mut malloc_domain = MallocMemoryDomain {};
+    CheriNavigator::parse_function(elf_file, &mut malloc_domain)
         .expect("Empty string should return error");
 }
 
@@ -41,9 +41,10 @@ fn read_file(name: &str, expected_size: usize) -> Vec<u8> {
 #[test]
 fn test_navigator_basic() {
     let elf_buffer = read_file("test_elf_aarch64c_basic", 3240);
-    let malloc_domain = MallocMemoryDomain {};
-    let (req_list, context, config) = CheriNavigator::parse_function(elf_buffer, &malloc_domain)
-        .expect("Should correctly parse elf file");
+    let mut malloc_domain = MallocMemoryDomain {};
+    let (req_list, context, config) =
+        CheriNavigator::parse_function(elf_buffer, &mut malloc_domain)
+            .expect("Should correctly parse elf file");
     // check requirement list
     let expected_requirements = vec![
         Position {
@@ -176,63 +177,26 @@ fn test_driver() {
     }
 }
 
-fn load_static(
-    mut function_context: Context,
-    mut static_context: Context,
-    requirement_list: &DataRequirementList,
-) -> (Context, Context) {
-    let layout = static_context.static_data.to_vec();
-    assert_eq!(
-        layout.len(),
-        requirement_list.static_requirements.len(),
-        "Expected layout and static requirements to have same length"
-    );
-    let static_pairs = layout
-        .iter()
-        .zip(requirement_list.static_requirements.iter());
-    for (position, requirement) in static_pairs {
-        assert!(
-            requirement.size >= position.size,
-            "Expect requirement size to be larger or equal"
-        );
-        let result;
-        (result, function_context, static_context) = transefer_memory(
-            function_context,
-            static_context,
-            requirement.offset,
-            position.offset,
-            position.size,
-            false,
-        );
-        assert_eq!(Ok(()), result, "Transfer should succeed");
-        function_context.static_data.push(Position {
-            offset: requirement.offset,
-            size: requirement.size,
-        });
-    }
-    (function_context, static_context)
-}
-
 #[test]
 fn test_engine_minimal() {
     // load elf file
     let elf_buffer = read_file("test_elf_aarch64c_basic", 3240);
-    let domain = CheriMemoryDomain::init(Vec::<u8>::new())
+    let mut domain = CheriMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new cheri domain");
     let (req_list, mut static_context, config) =
-        CheriNavigator::parse_function(elf_buffer, &domain)
+        CheriNavigator::parse_function(elf_buffer, &mut domain)
             .expect("Empty string should return error");
 
     let mut driver = CheriDriver::new(vec![1]).expect("Should be able to create driver");
     let mut engine = driver
         .start_engine()
         .expect("Should be able to start engine");
-    // set up context
-    let mut function_context = domain
-        .acquire_context(req_list.size)
-        .expect("Should be able to acquire context");
-    // fill in static requirements
-    (function_context, static_context) = load_static(function_context, static_context, &req_list);
+    // set up context and fill in static requirements
+    let function_context_result = load_static(&mut domain, &mut static_context, &req_list);
+    let function_context = match function_context_result {
+        Ok(c) => c,
+        Err(err) => panic!("Expect static loading to succeed, failed with {:?}", err),
+    };
     let (result, function_context) = engine.run(&config, function_context);
     result.expect("Engine should run ok with basic function");
     domain
@@ -250,22 +214,22 @@ fn test_engine_minimal() {
 fn test_engine_matmul_single() {
     // load elf file
     let elf_buffer = read_file("test_elf_aarch64c_matmul", 3648);
-    let domain = CheriMemoryDomain::init(Vec::<u8>::new())
+    let mut domain = CheriMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new cheri domain");
     let (req_list, mut static_context, config) =
-        CheriNavigator::parse_function(elf_buffer, &domain)
+        CheriNavigator::parse_function(elf_buffer, &mut domain)
             .expect("Empty string should return error");
 
     let mut driver = CheriDriver::new(vec![1]).expect("Should be able to create driver");
     let mut engine = driver
         .start_engine()
         .expect("Should be able to start engine");
-    // set up context
-    let mut function_context = domain
-        .acquire_context(req_list.size)
-        .expect("Should be able to acquire context");
-    // fill in static requirements
-    (function_context, static_context) = load_static(function_context, static_context, &req_list);
+    // set up context and fill in static requirements
+    let function_context_result = load_static(&mut domain, &mut static_context, &req_list);
+    let mut function_context = match function_context_result {
+        Ok(c) => c,
+        Err(err) => panic!("Expect static loading to succeed, failed with {:?}", err),
+    };
     // add inputs
     let in_size_offset = function_context
         .get_free_space(8, 8)
@@ -357,10 +321,10 @@ fn get_expected_mat(size: usize) -> Vec<i64> {
 fn test_engine_matmul_size_sweep() {
     // load elf file
     let elf_buffer = read_file("test_elf_aarch64c_matmul", 3648);
-    let domain = CheriMemoryDomain::init(Vec::<u8>::new())
+    let mut domain = CheriMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new cheri domain");
     let (req_list, mut static_context, config) =
-        CheriNavigator::parse_function(elf_buffer, &domain)
+        CheriNavigator::parse_function(elf_buffer, &mut domain)
             .expect("Empty string should return error");
 
     let mut driver = CheriDriver::new(vec![1]).expect("Should be able to create driver");
@@ -368,13 +332,12 @@ fn test_engine_matmul_size_sweep() {
         .start_engine()
         .expect("Should be able to start engine 0");
     for mat_size in LOWER_SIZE_BOUND..UPPER_SIZE_BOUND {
-        // set up context
-        let mut function_context = domain
-            .acquire_context(req_list.size)
-            .expect("Should be able to acquire context");
-        // fill in static requirements
-        (function_context, static_context) =
-            load_static(function_context, static_context, &req_list);
+        // set up context and fill in static requirements
+        let function_context_result = load_static(&mut domain, &mut static_context, &req_list);
+        let mut function_context = match function_context_result {
+            Ok(c) => c,
+            Err(err) => panic!("Expect static loading to succeed, failed with {:?}", err),
+        };
         // add inputs
         let in_size_offset = function_context
             .get_free_space(8, 8)

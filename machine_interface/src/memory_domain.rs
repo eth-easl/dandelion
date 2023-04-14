@@ -101,19 +101,19 @@ pub trait MemoryDomain {
     fn init(config: Vec<u8>) -> HwResult<Self>
     where
         Self: Sized;
-    fn acquire_context(&self, size: usize) -> HwResult<Context>;
-    fn release_context(&self, context: Context) -> HwResult<()>;
+    fn acquire_context(&mut self, size: usize) -> HwResult<Context>;
+    fn release_context(&mut self, context: Context) -> HwResult<()>;
 }
 
 // Code to specialize transfers between different domains
 pub fn transefer_memory(
-    mut destination: Context,
-    mut source: Context,
+    destination: &mut Context,
+    source: &mut Context,
     destination_offset: usize,
     source_offset: usize,
     size: usize,
     sanitize: bool,
-) -> (HwResult<()>, Context, Context) {
+) -> HwResult<()> {
     let result = match (&mut destination.context, &mut source.context) {
         (ContextType::Malloc(destination_ctxt), ContextType::Malloc(source_ctxt)) => {
             malloc::malloc_transfer(
@@ -135,7 +135,7 @@ pub fn transefer_memory(
             }
         }
     };
-    (result, destination, source)
+    result
 }
 
 #[cfg(test)]

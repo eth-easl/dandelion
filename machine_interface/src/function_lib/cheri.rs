@@ -284,7 +284,7 @@ impl Navigator for CheriNavigator {
     //  and a layout description for it
     fn parse_function(
         function: Vec<u8>,
-        static_domain: &dyn MemoryDomain,
+        static_domain: &mut dyn MemoryDomain,
     ) -> HwResult<(DataRequirementList, Context, FunctionConfig)> {
         let elf = elf_parser::ParsedElf::new(&function)?;
         let input_root = elf.get_symbol_by_name(&function, "inputRoot")?;
