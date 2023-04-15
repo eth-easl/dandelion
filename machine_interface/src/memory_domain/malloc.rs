@@ -1,5 +1,7 @@
+use crate::{DataItem, Position};
+
 use super::super::{HardwareError, HwResult};
-use super::{Context, ContextTrait, MemoryDomain};
+use super::{Context, ContextTrait, ContextType, MemoryDomain};
 
 #[derive(Debug)]
 pub struct MallocContext {
@@ -45,22 +47,24 @@ impl ContextTrait for MallocContext {
 pub struct MallocMemoryDomain {}
 
 impl MemoryDomain for MallocMemoryDomain {
-    fn init(config: Vec<u8>) -> HwResult<Box<Self>> {
-        Ok(Box::new(MallocMemoryDomain {}))
+    fn init(_config: Vec<u8>) -> HwResult<Self> {
+        Ok(MallocMemoryDomain {})
     }
-    fn acquire_context(&self, size: usize) -> HwResult<Context> {
+    fn acquire_context(&mut self, size: usize) -> HwResult<Context> {
         let mut mem_space = Vec::new();
         if (mem_space.try_reserve_exact(size)) != Ok(()) {
             return Err(HardwareError::OutOfMemory);
         }
         mem_space.resize(size, 0);
-        Ok(Context::Malloc(Box::new(MallocContext {
-            storage: mem_space,
-        })))
+        Ok(Context {
+            context: ContextType::Malloc(Box::new(MallocContext { storage: mem_space })),
+            dynamic_data: Vec::<DataItem>::new(),
+            static_data: Vec::<Position>::new(),
+        })
     }
-    fn release_context(&self, context: Context) -> HwResult<()> {
-        match context {
-            Context::Malloc(_) => Ok(()),
+    fn release_context(&mut self, context: Context) -> HwResult<()> {
+        match context.context {
+            ContextType::Malloc(_) => Ok(()),
             _ => Err(HardwareError::ContextMissmatch),
         }
     }
@@ -74,5 +78,17 @@ pub fn malloc_transfer(
     size: usize,
     sanitize: bool,
 ) -> HwResult<()> {
+    // check if there is space in both contexts
+    if source.storage.len() < source_offset + size {
+        return Err(HardwareError::InvalidRead);
+    }
+    if destination.storage.len() < destination_offset + size {
+        return Err(HardwareError::InvalidWrite);
+    }
+    destination.storage[destination_offset..destination_offset + size]
+        .copy_from_slice(&source.storage[source_offset..source_offset + size]);
+    if sanitize {
+        source.storage[source_offset..source_offset + size].fill(0);
+    }
     Ok(())
 }

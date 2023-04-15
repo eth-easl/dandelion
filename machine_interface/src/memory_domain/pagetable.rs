@@ -1,5 +1,7 @@
+use crate::{DataItem, Position};
+
 use super::super::{HardwareError, HwResult};
-use super::{Context, ContextTrait, MemoryDomain};
+use super::{Context, ContextTrait, ContextType, MemoryDomain};
 use shared_memory::{Shmem, ShmemConf};
 // use std::process::{Child, Command};
 
@@ -51,11 +53,11 @@ impl ContextTrait for PagetableContext {
 pub struct PagetableMemoryDomain {}
 
 impl MemoryDomain for PagetableMemoryDomain {
-    fn init(config: Vec<u8>) -> HwResult<Box<Self>> {
-        Ok(Box::new(PagetableMemoryDomain {}))
+    fn init(config: Vec<u8>) -> HwResult<Self> {
+        Ok(PagetableMemoryDomain {})
     }
 
-    fn acquire_context(&self, size: usize) -> HwResult<Context> {
+    fn acquire_context(&mut self, size: usize) -> HwResult<Context> {
         // create and map a shared memory region
         // this can be replaced with nix::sys::mman::{shm_open, mmap} for better flexibility
         let mem_space = match ShmemConf::new().size(size).create() {
@@ -73,20 +75,24 @@ impl MemoryDomain for PagetableMemoryDomain {
         // // one can write to its stdin later by:
         // // worker.stdin.unwrap().write_all(b"entry_point").unwrap();
 
-        Ok(Context::Pagetable(Box::new(PagetableContext {
-            storage: mem_space,
-            // process: worker,
-        })))
+        Ok(Context {
+            context: ContextType::Pagetable(Box::new(PagetableContext {
+                storage: mem_space,
+                // process: worker,
+            })),
+            dynamic_data: Vec::<DataItem>::new(),
+            static_data: Vec::<Position>::new(),
+        })
     }
 
-    fn release_context(&self, context: Context) -> HwResult<()> {
-        match context {
+    fn release_context(&mut self, context: Context) -> HwResult<()> {
+        match context.context {
             // Context::Pagetable(mut c) => c
             //     .process
             //     .wait()
             //     .map(|_| ())
             //     .map_err(|_| HardwareError::ContextMissmatch),
-            Context::Pagetable(_) => Ok(()),
+            ContextType::Pagetable(_) => Ok(()),
             _ => Err(HardwareError::ContextMissmatch),
         }
     }

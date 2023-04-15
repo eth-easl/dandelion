@@ -34,10 +34,14 @@ cheri_context *cheri_alloc(size_t size) {
   // requested
   if (allocation_size < size) return NULL;
   int allignment = sandbox_size_alignment(allocation_size);
+  // round up to at least page alligmnent
+  allignment = allignment > 12 ? allignment : 12;
   char *context_space_addr =
-      mmap(NULL, size, PROT_EXEC | PROT_READ | PROT_WRITE,
+      mmap(NULL, allocation_size, PROT_EXEC | PROT_READ | PROT_WRITE,
            MAP_ANONYMOUS | MAP_ALIGNED(allignment), -1, 0);
-  if (context_space_addr == MAP_FAILED) return NULL;
+  if (context_space_addr == MAP_FAILED) {
+    return NULL;
+  }
   char *__capability context_space =
       (__cheri_tocap char *__capability)context_space_addr;
   context_space = __builtin_cheri_bounds_set(context_space, allocation_size);
@@ -47,8 +51,12 @@ cheri_context *cheri_alloc(size_t size) {
                    : "+r"(context_space)
                    : "r"(permission_mask));
   cheri_context *context = malloc(sizeof(cheri_context));
-  context->size = allocation_size;
-  context->cap = context_space;
+  if (context != NULL) {
+    context->size = allocation_size;
+    context->cap = context_space;
+  } else {
+    munmap(context_space_addr, allocation_size);
+  }
   return context;
 }
 
