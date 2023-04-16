@@ -1,6 +1,6 @@
 pub mod function_lib;
 pub mod memory_domain;
-mod util;
+pub mod util;
 
 // TODO define error types, possibly better printing than debug
 #[derive(Debug, PartialEq)]

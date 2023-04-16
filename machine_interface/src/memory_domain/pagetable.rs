@@ -1,12 +1,13 @@
+use crate::util::shared_mem::SharedMem;
 use crate::{DataItem, Position};
+use nix::sys::mman::ProtFlags;
 
 use super::super::{HardwareError, HwResult};
 use super::{Context, ContextTrait, ContextType, MemoryDomain};
-use shared_memory::{Shmem, ShmemConf};
 // use std::process::{Child, Command};
 
 pub struct PagetableContext {
-    storage: Shmem,
+    storage: SharedMem,
     // process: Child,
 }
 
@@ -59,8 +60,8 @@ impl MemoryDomain for PagetableMemoryDomain {
 
     fn acquire_context(&mut self, size: usize) -> HwResult<Context> {
         // create and map a shared memory region
-        // this can be replaced with nix::sys::mman::{shm_open, mmap} for better flexibility
-        let mem_space = match ShmemConf::new().size(size).create() {
+        let mem_space = match SharedMem::create(size, ProtFlags::PROT_READ | ProtFlags::PROT_WRITE)
+        {
             Ok(v) => v,
             Err(_e) => return Err(HardwareError::OutOfMemory),
         };

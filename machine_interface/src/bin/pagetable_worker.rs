@@ -1,4 +1,5 @@
-use shared_memory::ShmemConf;
+use machine_interface::util::shared_mem::SharedMem;
+use nix::sys::mman::ProtFlags;
 use std::time::Duration;
 
 fn main() {
@@ -7,7 +8,7 @@ fn main() {
     let mem_id = &args[1];
 
     // get shared memory id from arguments
-    let mem = ShmemConf::new().os_id(mem_id).open().unwrap();
+    let mem = SharedMem::open(mem_id, ProtFlags::PROT_READ).unwrap();
 
     // just a "placeholder" here
     for _ in 0..3 {

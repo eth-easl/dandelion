@@ -10,4 +10,5 @@ cmake = "0.1"
 # FFI dependencies
 libc = "0.2"
 core_affinity = "0.8"
-shared_memory = { git = "https://github.com/elast0ny/shared_memory" }
+nix = "0.26"
+rand = "0.8"
