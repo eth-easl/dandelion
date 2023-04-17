@@ -7,7 +7,7 @@ use super::{Context, ContextTrait, ContextType, MemoryDomain};
 // use std::process::{Child, Command};
 
 pub struct PagetableContext {
-    storage: SharedMem,
+    pub storage: SharedMem,
     // process: Child,
 }
 
@@ -99,13 +99,13 @@ impl MemoryDomain for PagetableMemoryDomain {
     }
 }
 
-pub fn malloc_transfer(
-    destination: &mut PagetableContext,
-    source: &mut PagetableContext,
-    destination_offset: usize,
-    source_offset: usize,
-    size: usize,
-    sanitize: bool,
-) -> HwResult<()> {
-    Ok(())
-}
+// pub fn malloc_transfer(
+//     destination: &mut PagetableContext,
+//     source: &mut PagetableContext,
+//     destination_offset: usize,
+//     source_offset: usize,
+//     size: usize,
+//     sanitize: bool,
+// ) -> HwResult<()> {
+//     Ok(())
+// }

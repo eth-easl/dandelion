@@ -5,6 +5,7 @@ use super::{DataRequirementList, HwResult};
 #[cfg(feature = "cheri")]
 mod cheri;
 
+mod pagetable;
 mod util;
 
 pub struct ElfConfig {
