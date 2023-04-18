@@ -3,7 +3,7 @@ pub mod memory_domain;
 mod util;
 
 // TODO define error types, possibly better printing than debug
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum HardwareError {
     NotImplemented, // trying to use a feature that is not yet implemented
     // errors in configurations
