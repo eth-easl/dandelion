@@ -4,11 +4,9 @@ use nix::sys::mman::ProtFlags;
 
 use super::super::{HardwareError, HwResult};
 use super::{Context, ContextTrait, ContextType, MemoryDomain};
-// use std::process::{Child, Command};
 
 pub struct PagetableContext {
     pub storage: SharedMem,
-    // process: Child,
 }
 
 impl ContextTrait for PagetableContext {
@@ -66,21 +64,8 @@ impl MemoryDomain for PagetableMemoryDomain {
             Err(_e) => return Err(HardwareError::OutOfMemory),
         };
 
-        // // create a new address space (child process) and pass the shared memory
-        // // may move this part to run()
-        // let worker = Command::new("target/debug/pagetable_worker")
-        //     .arg(mem_space.get_os_id())
-        //     .env_clear()
-        //     .spawn()
-        //     .unwrap();
-        // // one can write to its stdin later by:
-        // // worker.stdin.unwrap().write_all(b"entry_point").unwrap();
-
         Ok(Context {
-            context: ContextType::Pagetable(Box::new(PagetableContext {
-                storage: mem_space,
-                // process: worker,
-            })),
+            context: ContextType::Pagetable(Box::new(PagetableContext { storage: mem_space })),
             dynamic_data: Vec::<DataItem>::new(),
             static_data: Vec::<Position>::new(),
         })
@@ -88,11 +73,6 @@ impl MemoryDomain for PagetableMemoryDomain {
 
     fn release_context(&mut self, context: Context) -> HwResult<()> {
         match context.context {
-            // Context::Pagetable(mut c) => c
-            //     .process
-            //     .wait()
-            //     .map(|_| ())
-            //     .map_err(|_| HardwareError::ContextMissmatch),
             ContextType::Pagetable(_) => Ok(()),
             _ => Err(HardwareError::ContextMissmatch),
         }

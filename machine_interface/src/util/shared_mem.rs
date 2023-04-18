@@ -76,6 +76,10 @@ impl SharedMem {
         Ok(shmem)
     }
 
+    pub fn id(&self) -> &str {
+        &self.unique_id
+    }
+
     pub fn len(&self) -> usize {
         self.size
     }

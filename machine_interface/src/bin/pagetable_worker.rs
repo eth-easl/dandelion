@@ -1,30 +1,35 @@
 use machine_interface::util::shared_mem::SharedMem;
 use nix::sys::mman::ProtFlags;
-use std::time::Duration;
 
 fn main() {
+    // get shared memory id from arguments
     let args: Vec<String> = std::env::args().collect();
     assert_eq!(args.len(), 2);
     let mem_id = &args[1];
+    eprintln!("worker started with shared memory {}", mem_id);
 
-    // get shared memory id from arguments
-    let mem = SharedMem::open(mem_id, ProtFlags::PROT_READ).unwrap();
+    // open and map a shared memory region
+    let mem = SharedMem::open(
+        mem_id,
+        ProtFlags::PROT_READ | ProtFlags::PROT_WRITE | ProtFlags::PROT_EXEC,
+    )
+    .unwrap();
+    eprintln!("shared memory loaded");
 
-    // just a "placeholder" here
-    for _ in 0..3 {
-        std::thread::sleep(Duration::from_secs(1));
-        unsafe {
-            println!("{}", mem.as_slice()[0]);
-        }
+    // send mapped address of shared memory to server
+    println!("{}", mem.as_ptr() as usize);
+
+    // receive the entry point of user's code from server
+    let mut buf: String = String::new();
+    std::io::stdin().read_line(&mut buf).unwrap();
+    let entry_point: usize = buf.trim().parse().unwrap();
+    eprintln!("get entry point {:x}", entry_point);
+
+    // jump to the entry point, then the process becomes untrusted
+    unsafe {
+        let user_main: fn() = std::mem::transmute(mem.as_ptr().offset(entry_point as isize));
+        user_main();
     }
-
-    // // todo: add useful functions, e.g. jumping to the designated entry point:
-    // let mut buf = String::new();
-    // std::io::stdin().read_line(&mut buf).unwrap();
-    // let entry_point: usize = buf.trim().parse().unwrap();
-    // unsafe {
-    //     let user_main: fn() = std::mem::transmute(entry_point);
-    //     user_main();
-    // }
+    eprintln!("function completed");
     // unreachable!();
 }

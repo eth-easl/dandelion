@@ -1,10 +1,10 @@
 use std::{
+    io::{Write, BufReader, BufRead},
+    process::{Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
     }
 };
-use nix::sys::mman::{mprotect, ProtFlags};
-use std::ffi::c_void;
 
 use core_affinity;
 
@@ -19,12 +19,12 @@ use crate::{
 const IO_STRUCT_SIZE: usize = 16;
 const MAX_OUTPUTS: u32 = 16;
 
-fn setup_input_structs(context: &mut Context, config: &ElfConfig) -> HwResult<()> {
+fn setup_input_structs(context: &mut Context, config: &ElfConfig, base_addr: usize) -> HwResult<()> {
     // size of array with input struct array
-    let pagetable_context = match &context.context {
-        ContextType::Pagetable(c) => c,
-        _ => return Err(HardwareError::ConfigMissmatch)
-    };
+    // let pagetable_context = match &context.context {
+    //     ContextType::Pagetable(c) => c,
+    //     _ => return Err(HardwareError::ConfigMissmatch)
+    // };
 
     let input_number_option = context
         .dynamic_data
@@ -36,7 +36,7 @@ fn setup_input_structs(context: &mut Context, config: &ElfConfig) -> HwResult<()
     };
     let input_struct_size = input_number as usize * IO_STRUCT_SIZE;
     let input_offset = context.get_free_space(input_struct_size, 8)?;
-    let base_addr = pagetable_context.storage.as_ptr();
+    // let base_addr = pagetable_context.storage.as_ptr();
 
     for input in &context.dynamic_data {
         let pos = match &input.item_type {
@@ -46,7 +46,7 @@ fn setup_input_structs(context: &mut Context, config: &ElfConfig) -> HwResult<()
         let struct_offset = input_offset + IO_STRUCT_SIZE * input.index as usize;
         let mut io_struct = Vec::<u8>::new();
         io_struct.append(&mut usize::to_ne_bytes(pos.size).to_vec());
-        io_struct.append(&mut usize::to_ne_bytes(unsafe { base_addr.offset(pos.offset as isize) as usize}).to_vec());
+        io_struct.append(&mut usize::to_ne_bytes(base_addr + pos.offset).to_vec());
         context.context.write(struct_offset, io_struct)?;
     }
     context.static_data.push(Position {
@@ -63,7 +63,7 @@ fn setup_input_structs(context: &mut Context, config: &ElfConfig) -> HwResult<()
     // fill in values
     context.write(
         config.input_root.0,
-        usize::to_ne_bytes(unsafe {base_addr.offset(input_offset as isize) } as usize).to_vec(),
+        usize::to_ne_bytes(base_addr + input_offset).to_vec(),
     )?;
     context.write(
         config.input_number.0,
@@ -71,7 +71,7 @@ fn setup_input_structs(context: &mut Context, config: &ElfConfig) -> HwResult<()
     )?;
     context.write(
         config.output_root.0,
-        usize::to_ne_bytes(unsafe {base_addr.offset(output_offset as isize) } as usize).to_vec(),
+        usize::to_ne_bytes(base_addr + output_offset).to_vec(),
     )?;
     context.write(config.output_number.0, u32::to_ne_bytes(0).to_vec())?;
     context.write(
@@ -81,7 +81,7 @@ fn setup_input_structs(context: &mut Context, config: &ElfConfig) -> HwResult<()
     return Ok(());
 }
 
-fn get_output_layout(context: &mut Context, config: &ElfConfig) -> HwResult<()> {
+fn get_output_layout(context: &mut Context, config: &ElfConfig, base_addr: usize) -> HwResult<()> {
     // get output number
     let output_number_vec = context.read(config.output_number.0, config.output_number.1, false)?;
     // TODO make this dependent on the actual size of the values
@@ -98,11 +98,11 @@ fn get_output_layout(context: &mut Context, config: &ElfConfig) -> HwResult<()> 
             .expect("Should have correct length"),
     );
 
-    let pagetable_context = match &context.context {
-        ContextType::Pagetable(c) => c,
-        _ => return Err(HardwareError::ConfigMissmatch)
-    };
-    let base_addr = pagetable_context.storage.as_ptr();
+    // let pagetable_context = match &context.context {
+    //     ContextType::Pagetable(c) => c,
+    //     _ => return Err(HardwareError::ConfigMissmatch)
+    // };
+    // let base_addr = pagetable_context.storage.as_ptr();
 
     for output_index in 0..output_number {
         // let read_offset = output_root_offset + IO_STRUCT_SIZE * output_index as usize;
@@ -196,11 +196,8 @@ impl Engine for PagetableEngine {
         //     stack_pointer: cheri_context.size,
         // };
         
-        let storage = pagetable_context.storage.as_ptr();
-        let storage_len = pagetable_context.storage.len();
-        if let Err(err) = setup_input_structs(&mut context, &elf_config) {
-            return (Err(err), context);
-        }
+        // let storage = pagetable_context.storage.as_ptr();
+        // let storage_len = pagetable_context.storage.len();
         // match self.command_sender.send(command) {
         //     Err(_) => return (Err(HardwareError::EngineError), context),
         //     Ok(_) => (),
@@ -211,25 +208,46 @@ impl Engine for PagetableEngine {
         //     Ok(Ok(())) => (),
         // }
 
-        unsafe {
-            mprotect(
-                storage as *mut c_void,
-                storage_len,
-                ProtFlags::PROT_READ | ProtFlags::PROT_WRITE | ProtFlags::PROT_EXEC,
-            )
+        // create a new address space (child process) and pass the shared memory
+        let mut worker = Command::new("target/debug/pagetable_worker")
+            .arg(pagetable_context.storage.id())
+            .env_clear()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
             .unwrap();
-            let entry_point = storage.offset(elf_config.entry_point as isize);
-            let user_main: fn() = std::mem::transmute(entry_point);
+        eprintln!("created a new process");
 
-            user_main();
+        // receive the shared memory address in worker's address space
+        let mut reader = BufReader::new(worker.stdout.take().unwrap());
+        let mut buf: String = String::new();
+        reader.read_line(&mut buf).unwrap();
+        let worker_base_addr: usize = buf.trim().parse().unwrap();
+        eprintln!("get worker base address {:x}", worker_base_addr);
+
+        if let Err(err) = setup_input_structs(&mut context, &elf_config, worker_base_addr) {
+            return (Err(err), context);
         }
 
-        
+
+        // send the entry point of user's code to worker
+        worker
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(elf_config.entry_point.to_string().as_bytes())
+            .unwrap();
+        eprintln!("wrote to its stdin");
+
+        // wait until the worker exits
+        let status = worker.wait().unwrap();
+        eprintln!("exit status = {}", status);
+
         // erase all assumptions on context internal layout
         context.dynamic_data.clear();
         context.static_data.clear();
         // read outputs
-        let result = get_output_layout(&mut context, &elf_config);
+        let result = get_output_layout(&mut context, &elf_config, worker_base_addr);
         self.is_running.store(false, Ordering::Release);
         (result, context)
     }
