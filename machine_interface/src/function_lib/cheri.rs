@@ -138,7 +138,7 @@ struct CheriCommand {
 }
 unsafe impl Send for CheriCommand {}
 
-struct CheriEngine {
+pub struct CheriEngine {
     is_running: AtomicBool,
     cpu_slot: u8,
     command_sender: std::sync::mpsc::Sender<CheriCommand>,
@@ -270,7 +270,7 @@ impl Engine for CheriEngine {
     }
 }
 
-struct CheriDriver {
+pub struct CheriDriver {
     cpu_slots: Vec<u8>,
 }
 
@@ -328,7 +328,7 @@ impl Driver for CheriDriver {
 
 const DEFAULT_SPACE_SIZE: usize = 0x40_0000; // 4MiB
 
-struct CheriLoader {}
+pub struct CheriLoader {}
 impl Loader for CheriLoader {
     // parses an executable,
     // returns the layout requirements and a context containing static data,

@@ -7,9 +7,9 @@ use std::future::Future;
 
 // list of implementations
 #[cfg(feature = "cheri")]
-mod cheri;
+pub mod cheri;
 
-mod util;
+pub mod util;
 
 pub struct ElfConfig {
     // TODO change to positions

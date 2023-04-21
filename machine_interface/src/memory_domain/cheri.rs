@@ -24,6 +24,14 @@ extern "C" {
         size: size_t,
         sanitize: i8,
     ) -> ();
+    fn cheri_transfer_context(
+        destination: *const cheri_c_context,
+        source: *const cheri_c_context,
+        destination_offset: size_t,
+        source_offset: size_t,
+        size: size_t,
+        sanitize: i8,
+    ) -> ();
 }
 
 use super::super::{DataItem, HardwareError, HwResult, Position};
@@ -104,4 +112,31 @@ impl MemoryDomain for CheriMemoryDomain {
             _ => Err(HardwareError::ContextMissmatch),
         }
     }
+}
+
+pub fn cheri_transfer(
+    destination: &mut CheriContext,
+    source: &mut CheriContext,
+    destination_offset: usize,
+    source_offset: usize,
+    size: usize,
+    sanitize: bool,
+) -> HwResult<()> {
+    if source_offset + size > source.size {
+        return Err(HardwareError::InvalidRead);
+    }
+    if destination_offset + size > destination.size {
+        return Err(HardwareError::InvalidWrite);
+    }
+    unsafe {
+        cheri_transfer_context(
+            destination.context,
+            source.context,
+            destination_offset,
+            source_offset,
+            size,
+            sanitize as i8,
+        );
+    }
+    Ok(())
 }
