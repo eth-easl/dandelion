@@ -2,6 +2,8 @@ pub mod function_lib;
 pub mod memory_domain;
 pub mod util;
 
+use serde::{Serialize, Deserialize};
+
 // TODO define error types, possibly better printing than debug
 #[derive(Debug, PartialEq)]
 pub enum HardwareError {
@@ -51,7 +53,7 @@ pub struct DataRequirementList {
     pub static_requirements: Vec<Position>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Position {
     pub offset: usize,
     pub size: usize,

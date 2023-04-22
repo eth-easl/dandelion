@@ -208,14 +208,17 @@ impl Engine for PagetableEngine {
         //     Ok(Ok(())) => (),
         // }
 
+        
         // create a new address space (child process) and pass the shared memory
         let mut worker = Command::new("target/debug/pagetable_worker")
             .arg(pagetable_context.storage.id())
+            .arg(serde_json::to_string(&context.protection_requirements).unwrap())
             .env_clear()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
+
         eprintln!("created a new process");
 
         // receive the shared memory address in worker's address space
@@ -241,6 +244,7 @@ impl Engine for PagetableEngine {
 
         // wait until the worker exits
         let status = worker.wait().unwrap();
+        assert!(status.success());
         eprintln!("exit status = {}", status);
 
         // erase all assumptions on context internal layout
@@ -276,7 +280,7 @@ impl Driver for PagetableDriver {
         for core in config.iter() {
             let found = available_cores
                 .iter()
-                .find(|x| x.id == core.clone().into())
+                .find(|x| x.id as u8 == core.clone())
                 .is_some();
             if !found {
                 return Err(HardwareError::MalformedConfig);
@@ -371,6 +375,8 @@ impl Loader for PagetableLoader {
             write_counter += position.size;
         }
         context.static_data = static_layout;
+
+        context.protection_requirements = elf.get_memory_protection_layout();
         return Ok((requirements, context, config));
     }
 }

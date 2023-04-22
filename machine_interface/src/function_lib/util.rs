@@ -33,5 +33,6 @@ pub fn load_static(
             size: requirement.size,
         });
     }
+    function_context.protection_requirements = static_context.protection_requirements.clone();
     return Ok(function_context);
 }

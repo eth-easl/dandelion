@@ -68,6 +68,8 @@ impl MemoryDomain for PagetableMemoryDomain {
             context: ContextType::Pagetable(Box::new(PagetableContext { storage: mem_space })),
             dynamic_data: Vec::<DataItem>::new(),
             static_data: Vec::<Position>::new(),
+            #[cfg(feature = "pagetable")]
+            protection_requirements: Vec::<(u32, Position)>::new(),
         })
     }
 

@@ -1,4 +1,5 @@
 use crate::{HardwareError, HwResult, Position};
+use crate::util::DEFAULT_ALIGNMENT;
 
 macro_rules! parser_code {
     ($name: ident; $in_type: ty; $out_type: ty; $parser: ident; $increment: literal) => {
@@ -276,25 +277,54 @@ impl ParsedElf {
             symbol_table: sym_table,
         });
     }
-    pub fn get_layout_pair(self) -> (Vec<Position>, Vec<Position>) {
+    pub fn get_layout_pair(&self) -> (Vec<Position>, Vec<Position>) {
         let mut items = Vec::<Position>::new();
         let mut requirements = Vec::<Position>::new();
         // go through sections and find the ones that need to be loaded
-        for programm_header in self.program_header_table {
+        for program_header in &self.program_header_table {
             // check if section occupies memory during execution
-            if programm_header.p_type == 0x1 {
+            if program_header.p_type == 0x1 {
                 items.push(Position {
-                    offset: programm_header.p_offset as usize,
-                    size: programm_header.p_filesz as usize,
+                    offset: program_header.p_offset as usize,
+                    size: program_header.p_filesz as usize,
                 });
+
+                let mut size = program_header.p_memsz as usize;
+                if size % DEFAULT_ALIGNMENT != 0 {
+                    size += DEFAULT_ALIGNMENT - size % DEFAULT_ALIGNMENT;
+                }
+
                 requirements.push(Position {
-                    offset: programm_header.p_vaddr as usize,
-                    size: programm_header.p_memsz as usize,
+                    offset: program_header.p_vaddr as usize,
+                    // size: programm_header.p_memsz as usize,
+                    size: size,
                 });
             }
         }
 
         return (requirements, items);
+    }
+
+    // pub fn get_memory_protection_layout(&self) -> (Vec<Position>, Vec<Position>) {
+        pub fn get_memory_protection_layout(&self) -> Vec<(u32, Position)> {
+        // let mut read_only = Vec::<Position>::new();
+        let mut executable = Vec::<(u32, Position)>::new();
+
+        for program_header in &self.program_header_table {
+            // check if section occupies memory during execution
+            if program_header.p_type == 0x1 {
+                let mut size = program_header.p_memsz as usize;
+                if size % DEFAULT_ALIGNMENT != 0 {
+                    size += DEFAULT_ALIGNMENT - size % DEFAULT_ALIGNMENT;
+                }
+                executable.push((program_header._p_flags, Position { 
+                    offset: program_header.p_vaddr as usize, 
+                    // size: program_header.p_memsz as usize 
+                    size: size
+                }));
+            }
+        }
+        executable
     }
 
     pub fn get_symbol_by_name(&self, file: &Vec<u8>, name: &str) -> HwResult<(usize, usize)> {

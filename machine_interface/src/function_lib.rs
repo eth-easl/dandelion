@@ -5,6 +5,7 @@ use super::{DataRequirementList, HwResult};
 #[cfg(feature = "cheri")]
 mod cheri;
 
+#[cfg(feature = "pagetable")]
 mod pagetable;
 mod util;
 

@@ -27,7 +27,8 @@ fn check_layout_le_64() -> () {
     assert_eq!(4, requirements.len());
     // checks on the requirements
     let virt_offset_list = vec![0x400000, 0x401000, 0x402000, 0x404000];
-    let virt_size_list = vec![0x244, 0x325, 0x184, 0x10];
+    // let virt_size_list = vec![0x244, 0x325, 0x184, 0x10];
+    let virt_size_list = vec![0x1000, 0x1000, 0x1000, 0x1000];
     for (index, requirement) in requirements.iter().enumerate() {
         assert_eq!(virt_offset_list[index], requirement.offset);
         assert_eq!(virt_size_list[index], requirement.size);

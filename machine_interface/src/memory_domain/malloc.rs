@@ -60,6 +60,9 @@ impl MemoryDomain for MallocMemoryDomain {
             context: ContextType::Malloc(Box::new(MallocContext { storage: mem_space })),
             dynamic_data: Vec::<DataItem>::new(),
             static_data: Vec::<Position>::new(),
+            #[cfg(feature = "pagetable")]
+            // protection_requirements: (Vec::<Position>::new(), Vec::<Position>::new()),
+            protection_requirements: Vec::<(u32, Position)>::new()
         })
     }
     fn release_context(&mut self, context: Context) -> HwResult<()> {

@@ -47,19 +47,23 @@ fn test_loader_basic() {
     let expected_requirements = vec![
         Position {
             offset: 0x400000,
-            size: 0x254,
+            // size: 0x254,
+            size: 0x1000,
         },
         Position {
             offset: 0x401000,
-            size: 0x197,
+            // size: 0x197,
+            size: 0x1000,
         },
         Position {
             offset: 0x402000,
-            size: 0x178,
+            // size: 0x178,
+            size: 0x1000,
         },
         Position {
             offset: 0x404000,
-            size: 0x20,
+            // size: 0x20,
+            size: 0x1000,
         },
     ];
     assert_eq!(

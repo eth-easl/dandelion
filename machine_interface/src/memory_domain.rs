@@ -2,6 +2,7 @@
 #[cfg(feature = "cheri")]
 pub mod cheri;
 pub mod malloc;
+#[cfg(feature = "pagetable")]
 pub mod pagetable;
 
 use crate::{DataItem, DataItemType, HardwareError, Position};
@@ -20,6 +21,7 @@ pub enum ContextType {
     Malloc(Box<malloc::MallocContext>),
     #[cfg(feature = "cheri")]
     Cheri(Box<cheri::CheriContext>),
+    #[cfg(feature = "pagetable")]
     Pagetable(Box<pagetable::PagetableContext>),
 }
 
@@ -29,6 +31,7 @@ impl ContextTrait for ContextType {
             ContextType::Malloc(context) => context.write(offset, data),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.write(offset, data),
+            #[cfg(feature = "pagetable")]
             ContextType::Pagetable(context) => context.write(offset, data),
         }
     }
@@ -37,6 +40,7 @@ impl ContextTrait for ContextType {
             ContextType::Malloc(context) => context.read(offset, read_size, sanitize),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.read(offset, read_size, sanitize),
+            #[cfg(feature = "pagetable")]
             ContextType::Pagetable(context) => context.read(offset, read_size, sanitize),
         }
     }
@@ -45,6 +49,9 @@ pub struct Context {
     pub context: ContextType,
     pub dynamic_data: Vec<DataItem>,
     pub static_data: Vec<Position>,
+    #[cfg(feature = "pagetable")]
+    // pub protection_requirements: (Vec<Position>, Vec<Position>),
+    pub protection_requirements: Vec<(u32, Position)>,
 }
 
 impl ContextTrait for Context {
