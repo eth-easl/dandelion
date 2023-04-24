@@ -25,6 +25,8 @@ pub enum HardwareError {
     NoEngineAvailable, // asked driver for engine, but there are no more available
     // proction errors
     UnauthorizedSyscall,
+    SegmentationFault,
+    OtherProctionError,
 }
 
 pub type HwResult<T> = std::result::Result<T, HardwareError>;

@@ -203,7 +203,7 @@ impl Engine for PagetableEngine {
         //     return_pair_offset: elf_config.return_offset.0,
         //     stack_pointer: cheri_context.size,
         // };
-        
+
         // let storage = pagetable_context.storage.as_ptr();
         // let storage_len = pagetable_context.storage.len();
         // match self.command_sender.send(command) {
@@ -216,7 +216,6 @@ impl Engine for PagetableEngine {
         //     Ok(Ok(())) => (),
         // }
 
-        
         // create a new address space (child process) and pass the shared memory
         let mut worker = Command::new("target/debug/pagetable_worker")
             .arg(pagetable_context.storage.id())
@@ -240,7 +239,6 @@ impl Engine for PagetableEngine {
             return (Err(err), context);
         }
 
-
         // send the entry point of user's code to worker
         worker
             .stdin
@@ -254,15 +252,15 @@ impl Engine for PagetableEngine {
         let pid = Pid::from_raw(worker.id() as i32);
         let status = wait::waitpid(pid, None).unwrap();
         assert_eq!(status, WaitStatus::Stopped(pid, Signal::SIGSTOP));
-        for i in 0..3 {
-            ptrace::syscall(pid, None).unwrap();
-            let status = wait::waitpid(pid, None).unwrap();
-            assert_eq!(status, WaitStatus::Stopped(pid, Signal::SIGTRAP));
-            let syscall_id = ptrace::getregs(pid).unwrap().orig_rax;
-            if i < 2 {
-                // rt_sigprocmask before jumping into user's code
-                assert_eq!(syscall_id, 14);
-            } else {
+        ptrace::syscall(pid, None).unwrap();
+
+        let status = wait::waitpid(pid, None).unwrap();
+        let WaitStatus::Stopped(pid, sig) = status else {
+            panic!("worker should be stopped (status = {:?})", status);
+        };
+        match sig {
+            Signal::SIGTRAP => {
+                let syscall_id = ptrace::getregs(pid).unwrap().orig_rax;
                 match syscall_id {
                     60 | 231 => {
                         eprintln!("detected exit syscall");
@@ -277,6 +275,14 @@ impl Engine for PagetableEngine {
                         return (Err(HardwareError::UnauthorizedSyscall), context);
                     }
                 }
+            }
+            Signal::SIGSEGV => {
+                eprintln!("detected segmentation fault");
+                return (Err(HardwareError::SegmentationFault), context);
+            }
+            s => {
+                eprintln!("detected {}", s);
+                return (Err(HardwareError::OtherProctionError), context);
             }
         }
 

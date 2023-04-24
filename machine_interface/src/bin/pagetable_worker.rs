@@ -3,7 +3,6 @@ use machine_interface::util::shared_mem::SharedMem;
 use nix::sys::{
     mman::{mprotect, ProtFlags},
     ptrace,
-    signal::{self, Signal},
 };
 use std::vec::Vec;
 use machine_interface::Position;
@@ -53,10 +52,13 @@ fn main() {
             ).expect("mprotect failed!");
         }
     }
-    
+
     // renounce ability to invoke syscalls by ptrace
     ptrace::traceme().unwrap();
-    signal::raise(Signal::SIGSTOP).unwrap();
+    unsafe {
+        let res = libc::kill(libc::getpid(), libc::SIGSTOP);
+        assert_eq!(res, 0);
+    }
 
     // jump to the entry point, then the process becomes untrusted
     unsafe {
