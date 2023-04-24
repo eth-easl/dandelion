@@ -7,6 +7,14 @@ use std::{
 };
 
 use core_affinity;
+use nix::{
+    sys::{
+        ptrace,
+        signal::Signal,
+        wait::{self, WaitStatus},
+    },
+    unistd::Pid,
+};
 
 use crate::{
     function_lib::{Driver, ElfConfig, Engine, FunctionConfig, Loader},
@@ -226,7 +234,7 @@ impl Engine for PagetableEngine {
         let mut buf: String = String::new();
         reader.read_line(&mut buf).unwrap();
         let worker_base_addr: usize = buf.trim().parse().unwrap();
-        eprintln!("get worker base address {:x}", worker_base_addr);
+        eprintln!("got base address {:x}", worker_base_addr);
 
         if let Err(err) = setup_input_structs(&mut context, &elf_config, worker_base_addr) {
             return (Err(err), context);
@@ -240,12 +248,37 @@ impl Engine for PagetableEngine {
             .unwrap()
             .write_all(elf_config.entry_point.to_string().as_bytes())
             .unwrap();
-        eprintln!("wrote to its stdin");
+        eprintln!("sent entry point");
 
-        // wait until the worker exits
-        let status = worker.wait().unwrap();
-        assert!(status.success());
-        eprintln!("exit status = {}", status);
+        // intercept worker's syscalls by ptrace
+        let pid = Pid::from_raw(worker.id() as i32);
+        let status = wait::waitpid(pid, None).unwrap();
+        assert_eq!(status, WaitStatus::Stopped(pid, Signal::SIGSTOP));
+        for i in 0..3 {
+            ptrace::syscall(pid, None).unwrap();
+            let status = wait::waitpid(pid, None).unwrap();
+            assert_eq!(status, WaitStatus::Stopped(pid, Signal::SIGTRAP));
+            let syscall_id = ptrace::getregs(pid).unwrap().orig_rax;
+            if i < 2 {
+                // rt_sigprocmask before jumping into user's code
+                assert_eq!(syscall_id, 14);
+            } else {
+                match syscall_id {
+                    60 | 231 => {
+                        eprintln!("detected exit syscall");
+                        ptrace::syscall(pid, None).unwrap();
+                        let status = worker.wait().unwrap();
+                        eprintln!("worker exited with code {}", status.code().unwrap());
+                    }
+                    _ => {
+                        eprintln!("detected unauthorized syscall with id {}", syscall_id);
+                        worker.kill().unwrap();
+                        eprintln!("worker killed");
+                        // TODO: return a protection error
+                    }
+                }
+            }
+        }
 
         // erase all assumptions on context internal layout
         context.dynamic_data.clear();

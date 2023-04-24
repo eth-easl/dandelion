@@ -1,6 +1,10 @@
 use libc::{c_void, PF_X, PF_W};
 use machine_interface::util::shared_mem::SharedMem;
-use nix::sys::mman::{mprotect, ProtFlags};
+use nix::sys::{
+    mman::{mprotect, ProtFlags},
+    ptrace,
+    signal::{self, Signal},
+};
 use std::vec::Vec;
 use machine_interface::Position;
 
@@ -10,8 +14,7 @@ fn main() {
     assert_eq!(args.len(), 3);
 
     let mem_id = &args[1];
-
-    eprintln!("worker started with shared memory {}", mem_id);
+    eprintln!("[worker] started with shared memory {}", mem_id);
 
     // open and map a shared memory region
     let mem = SharedMem::open(
@@ -19,8 +22,8 @@ fn main() {
         ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
     )
     .unwrap();
-    eprintln!("shared memory loaded");
-    
+    eprintln!("[worker] loaded shared memory");
+
     // send mapped address of shared memory to server
     println!("{}", mem.as_ptr() as usize);
 
@@ -28,7 +31,7 @@ fn main() {
     let mut buf: String = String::new();
     std::io::stdin().read_line(&mut buf).unwrap();
     let entry_point: usize = buf.trim().parse().unwrap();
-    eprintln!("get entry point {:x}", entry_point);
+    eprintln!("[worker] got entry point {:x}", entry_point);
 
     // let (read_only, executable): (Vec<Position>, Vec<Position>) = serde_json::from_str(&args[2]).unwrap();
     let mut executable: Vec<(u32, Position)> = serde_json::from_str(&args[2]).unwrap();
@@ -51,12 +54,14 @@ fn main() {
         }
     }
     
+    // renounce ability to invoke syscalls by ptrace
+    ptrace::traceme().unwrap();
+    signal::raise(Signal::SIGSTOP).unwrap();
 
     // jump to the entry point, then the process becomes untrusted
     unsafe {
         let user_main: fn() = std::mem::transmute(mem.as_ptr().offset(entry_point as isize));
         user_main();
+        libc::exit(0);
     }
-    eprintln!("function completed");
-    // unreachable!();
 }
