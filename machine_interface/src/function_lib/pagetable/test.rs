@@ -418,3 +418,36 @@ fn test_engine_matmul_size_sweep() {
         .stop_engine(engine)
         .expect("Should be able to stop engine");
 }
+
+#[test]
+fn test_engine_protection() {
+    // load elf file
+    let elf_buffer = read_file("test_elf_x86c_syscall", 14128);
+    let mut domain = PagetableMemoryDomain::init(Vec::<u8>::new())
+        .expect("Should have initialized new pagetable domain");
+    let (req_list, mut static_context, config) =
+        PagetableLoader::parse_function(elf_buffer, &mut domain)
+            .expect("Empty string should return error");
+
+    let mut driver = PagetableDriver::new(vec![0]).expect("Should be able to create driver");
+    let mut engine = driver
+        .start_engine()
+        .expect("Should be able to start engine");
+    // set up context and fill in static requirements
+    let function_context_result = load_static(&mut domain, &mut static_context, &req_list);
+    let function_context = match function_context_result {
+        Ok(c) => c,
+        Err(err) => panic!("Expect static loading to succeed, failed with {:?}", err),
+    };
+    let (result, function_context) = engine.run(&config, function_context);
+    assert_eq!(result, Err(HardwareError::UnauthorizedSyscall), "Should detect unauthorized syscall");
+    domain
+        .release_context(function_context)
+        .expect("Should release context");
+    domain
+        .release_context(static_context)
+        .expect("Should release context");
+    driver
+        .stop_engine(engine)
+        .expect("Should be able to stop engine");
+}

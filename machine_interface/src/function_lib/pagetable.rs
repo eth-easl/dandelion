@@ -274,7 +274,7 @@ impl Engine for PagetableEngine {
                         eprintln!("detected unauthorized syscall with id {}", syscall_id);
                         worker.kill().unwrap();
                         eprintln!("worker killed");
-                        // TODO: return a protection error
+                        return (Err(HardwareError::UnauthorizedSyscall), context);
                     }
                 }
             }

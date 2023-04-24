@@ -23,6 +23,8 @@ pub enum HardwareError {
     EngineAlreadyRunning, // attempted to run on already busy engine
     EngineError,     // there was a non recoverable issue with the engine
     NoEngineAvailable, // asked driver for engine, but there are no more available
+    // proction errors
+    UnauthorizedSyscall,
 }
 
 pub type HwResult<T> = std::result::Result<T, HardwareError>;
