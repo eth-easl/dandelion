@@ -7,6 +7,8 @@
 // erorr values
 #define SUCCESS 0x0       // success inidication
 #define MALLOC_ERROR 0x1  // for failure to allocate memory
+#define NO_SETUP 0x2      // for invalid setup
+#define INTERRUPTED 0x3   // interrupt was caught
 
 int32_t is_null(void* ptr);
 
@@ -29,6 +31,9 @@ void cheri_write_context(cheri_context* context, unsigned char* source_pointer,
 void cheri_read_context(cheri_context* context,
                         unsigned char* destination_pointer,
                         size_t context_offset, size_t size, char sanitize);
+void cheri_transfer_context(cheri_context* destination, cheri_context* source,
+                            size_t destination_offset, size_t source_offset,
+                            size_t size, char sanitize);
 
 // auxilliary functions for internal use
 static size_t sandbox_size_rounding(size_t size) {

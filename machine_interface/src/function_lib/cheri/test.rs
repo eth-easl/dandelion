@@ -283,6 +283,82 @@ fn test_engine_matmul_single() {
         .expect("Should release context");
 }
 
+// #[test]
+// fn test_engine_faults() {
+//     // load elf file
+//     let elf_buffer = read_file("access", 3416);
+//     let domain = CheriMemoryDomain::init(Vec::<u8>::new())
+//         .expect("Should have initialized new cheri domain");
+//     let (req_list, mut static_context, config) =
+//         CheriLoader::parse_function(elf_buffer, &domain)
+//             .expect("Empty string should return error");
+
+//     let mut driver = CheriDriver::new(vec![1]).expect("Should be able to create driver");
+//     let mut engine = driver
+//         .start_engine()
+//         .expect("Should be able to start engine");
+//     // set up context
+//     let mut function_context = domain
+//         .acquire_context(req_list.size)
+//         .expect("Should be able to acquire context");
+//     // fill in static requirements
+//     (function_context, static_context) = load_static(function_context, static_context, &req_list);
+//     // add inputs
+//     let read_pointer_offset = function_context
+//         .get_free_space(8, 8)
+//         .expect("Should have space for single i64");
+//     function_context
+//         .write(read_pointer_offset, i64::to_ne_bytes(i64::MAX).to_vec())
+//         .expect("Write should go through");
+//     function_context.dynamic_data.push(DataItem {
+//         index: 0,
+//         item_type: DataItemType::Item(Position {
+//             offset: read_pointer_offset,
+//             size: 8,
+//         }),
+//     });
+//     let write_space_offset = function_context
+//         .get_free_space(8, 8)
+//         .expect("Should have space for single i64");
+//     // function_context
+//     //     .write(in_mat_offset, i64::to_ne_bytes(0).to_vec())
+//     //     .expect("Write should go through");
+//     function_context.dynamic_data.push(DataItem {
+//         index: 1,
+//         item_type: DataItemType::Item(Position {
+//             offset: write_space_offset,
+//             size: 8,
+//         }),
+//     });
+//     let (result, mut result_context) = engine.run(&config, function_context);
+//     result.expect("Engine should run ok with basic function");
+//     // // check that result is 4
+//     // assert_eq!(1, result_context.dynamic_data.len());
+//     // let output_item = &result_context.dynamic_data[0];
+//     // assert_eq!(0, output_item.index);
+//     // let position = match &output_item.item_type {
+//     //     DataItemType::Item(pos) => pos,
+//     //     DataItemType::Set(_) => panic!("Output type should not be set"),
+//     // };
+//     // assert_eq!(8, position.size, "Checking for size of output");
+//     // let raw_output = result_context
+//     //     .context
+//     //     .read(position.offset, position.size, false)
+//     //     .expect("Should succeed in reading");
+//     // let converted_output = i64::from_ne_bytes(
+//     //     raw_output[0..8]
+//     //         .try_into()
+//     //         .expect("Should have correct length"),
+//     // );
+//     // assert_eq!(4, converted_output);
+//     domain
+//         .release_context(result_context)
+//         .expect("Should release context");
+//     domain
+//         .release_context(static_context)
+//         .expect("Should release context");
+// }
+
 const LOWER_SIZE_BOUND: usize = 2;
 const UPPER_SIZE_BOUND: usize = 16;
 

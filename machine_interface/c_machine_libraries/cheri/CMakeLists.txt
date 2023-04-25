@@ -9,6 +9,7 @@ add_library(${LIBRARY} STATIC
 target_include_directories(${LIBRARY} PUBLIC include)
 target_compile_options(${LIBRARY} PRIVATE ${NOCAP_COMPILE_FLAGS})
 target_link_options(${LIBRARY} PRIVATE ${NOCAP_LINK_FLAGS})
+target_link_libraries(${LIBRARY} PRIVATE pthread)
 
 # install rules
 install(TARGETS ${LIBRARY} DESTINATION ${CMAKE_INSTALL_PREFIX})
@@ -16,7 +17,7 @@ install(TARGETS ${LIBRARY} DESTINATION ${CMAKE_INSTALL_PREFIX})
 # set tests
 set(MEM_TEST cheri_mem_test)
 add_executable(${MEM_TEST}
-    test/test.c
+    test/mem_test.c
 )
 target_link_libraries(${MEM_TEST}
     ${LIBRARY}

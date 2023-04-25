@@ -81,3 +81,14 @@ void cheri_read_context(cheri_context *context,
     memset(src, 0, size);
   }
 }
+
+void cheri_transfer_context(cheri_context *destination, cheri_context *source,
+                            size_t destination_offset, size_t source_offset,
+                            size_t size, char sanitize) {
+  void *src = (__cheri_fromcap void *)source->cap + source_offset;
+  void *dst = (__cheri_fromcap void *)destination->cap + destination_offset;
+  memcpy(dst, src, size);
+  if (sanitize != 0) {
+    memset(src, 0, size);
+  }
+}

@@ -16,9 +16,9 @@ if(DEFINED CMAKE_TOOLCHAIN_FILE OR ${CMAKE_SYSTEM_PROCESSOR} STREQUAL "aarch64c"
   set(CMAKE_TRY_COMPILE_TARGET_TYPE "STATIC_LIBRARY")
 
   # set flag combinations for use on different targets
-  set(PURECAP_COMPILE_FLAGS -march=morello+c64 -mabi=purecap)
+  set(PURECAP_COMPILE_FLAGS -march=morello+c64 -mabi=purecap -O3)
   set(PURECAP_LINK_FLAGS -march=morello+c64 -mabi=purecap -fuse-ld=lld)
-  set(NOCAP_COMPILE_FLAGS -march=morello -mabi=aapcs)
+  set(NOCAP_COMPILE_FLAGS -march=morello -mabi=aapcs -O3)
   set(NOCAP_LINK_FLAGS -march=morello -mabi=aapcs -fuse-ld=lld)
 
   set(CMAKE_ASM_FLAGS "${CFLAGS} -x assembler-with-cpp")

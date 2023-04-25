@@ -19,6 +19,8 @@ use std::{
 
 #[link(name = "cheri_lib")]
 extern "C" {
+    fn cheri_setup() -> i32;
+    fn cheri_tear_down() -> i32;
     fn cheri_run_static(
         context: *const cheri_c_context,
         entry_point: size_t,
@@ -197,6 +199,14 @@ fn run_thread(
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
         return;
     };
+    let setup_err;
+    unsafe {
+        setup_err = cheri_setup();
+    }
+    match setup_err {
+        0 => (),
+        _ => return,
+    }
     'commandloop: for command in command_receiver.iter() {
         if command.cancel {
             break 'commandloop;
@@ -224,6 +234,9 @@ fn run_thread(
                 Err(_) => break 'commandloop,
             }
         }
+    }
+    unsafe {
+        cheri_tear_down();
     }
 }
 

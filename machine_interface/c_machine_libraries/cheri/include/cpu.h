@@ -4,6 +4,11 @@
 #include <stdlib.h>
 
 #include "memory.h"
+
+int cheri_setup();
+
+int cheri_tear_down();
+
 char cheri_run_static(cheri_context* context, size_t entry_point,
                       size_t return_pair_offset, size_t stack_pointer);
 char cheri_execute(char* __capability memory, void* __capability function,
@@ -176,7 +181,10 @@ static inline void restoreContext() {
       "ldr c3, [c0, #48] \n"
       "ldr c2, [c0, #32] \n"
       "ldr c1, [c0, #16] \n"
-      "ldr c0, [c0, #0] \n");
+      "ldr c0, [c0, #0] \n"
+      :
+      :
+      : "c0");
 }
 
 #endif

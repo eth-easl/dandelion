@@ -1,6 +1,6 @@
 
 // struct to hold all register state
-typedef struct{
+typedef struct {
   void* __capability c0;
   void* __capability c1;
   void* __capability c2;
