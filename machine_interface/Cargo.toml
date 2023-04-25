@@ -10,6 +10,7 @@ cmake = "0.1"
 criterion = "0.4"
 
 [dependencies]
+dandelion_commons = { path = "../dandelion_commons" }
 # FFI dependencies
 libc = "0.2"
 core_affinity = "0.8"

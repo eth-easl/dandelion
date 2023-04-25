@@ -5,4 +5,5 @@ edition = "2021"
 
 [dependencies]
 machine_interface = { path = "../machine_interface" }
+dandelion_commons = { path = "../dandelion_commons" }
 tokio = { version = "1", features = ["full"] }

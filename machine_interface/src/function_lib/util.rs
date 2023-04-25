@@ -1,24 +1,25 @@
 use crate::{
     memory_domain::{transefer_memory, Context, MemoryDomain},
-    DataRequirementList, HardwareError, HwResult, Position,
+    DataRequirementList, Position,
 };
+use dandelion_commons::{DandelionError, DandelionResult};
 
 pub fn load_static(
-    domain: &mut dyn MemoryDomain,
+    domain: &mut Box<dyn MemoryDomain>,
     static_context: &mut Context,
     requirement_list: &DataRequirementList,
-) -> HwResult<Context> {
+) -> DandelionResult<Context> {
     let mut function_context = domain.acquire_context(requirement_list.size)?;
     let layout = static_context.static_data.to_vec();
     if layout.len() != requirement_list.static_requirements.len() {
-        return Err(HardwareError::ConfigMissmatch);
+        return Err(DandelionError::ConfigMissmatch);
     }
     let static_pairs = layout
         .iter()
         .zip(requirement_list.static_requirements.iter());
     for (position, requirement) in static_pairs {
         if requirement.size < position.size {
-            return Err(HardwareError::ConfigMissmatch);
+            return Err(DandelionError::ConfigMissmatch);
         }
         transefer_memory(
             &mut function_context,

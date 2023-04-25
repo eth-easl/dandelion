@@ -2,14 +2,14 @@ use crate::{
     function_lib::{Driver, ElfConfig, Engine, FunctionConfig, Loader},
     memory_domain::{cheri::cheri_c_context, Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
-    DataItem, DataItemType, DataRequirement, DataRequirementList, HardwareError, HwResult,
-    Position,
+    DataItem, DataItemType, DataRequirement, DataRequirementList, Position,
 };
 use core::{
     future::{ready, Future},
     pin::Pin,
 };
 use core_affinity;
+use dandelion_commons::{DandelionError, DandelionResult};
 use futures::{task::Poll, Stream};
 use libc::size_t;
 use std::{
@@ -30,7 +30,7 @@ extern "C" {
 const IO_STRUCT_SIZE: usize = 16;
 const MAX_OUTPUTS: u32 = 16;
 
-fn setup_input_structs(context: &mut Context, config: &ElfConfig) -> HwResult<()> {
+fn setup_input_structs(context: &mut Context, config: &ElfConfig) -> DandelionResult<()> {
     // size of array with input struct array
     let input_number_option = context
         .dynamic_data
@@ -45,7 +45,7 @@ fn setup_input_structs(context: &mut Context, config: &ElfConfig) -> HwResult<()
     for input in &context.dynamic_data {
         let pos = match &input.item_type {
             DataItemType::Item(position) => position,
-            _ => return Err(HardwareError::NotImplemented),
+            _ => return Err(DandelionError::NotImplemented),
         };
         let struct_offset = input_offset + IO_STRUCT_SIZE * input.index as usize;
         let mut io_struct = Vec::<u8>::new();
@@ -89,7 +89,7 @@ fn get_output_layout(
     context: &mut Context,
     output_root: (usize, usize),
     output_number: (usize, usize),
-) -> HwResult<()> {
+) -> DandelionResult<()> {
     // get output number
     let output_number_vec = context.read(output_number.0, output_number.1, false)?;
     // TODO make this dependent on the actual size of the values
@@ -131,6 +131,7 @@ fn get_output_layout(
 }
 
 struct CheriCommand {
+    cancel: bool,
     context: *const cheri_c_context,
     entry_point: size_t,
     return_pair_offset: size_t,
@@ -140,10 +141,9 @@ unsafe impl Send for CheriCommand {}
 
 pub struct CheriEngine {
     is_running: AtomicBool,
-    cpu_slot: u8,
     command_sender: std::sync::mpsc::Sender<CheriCommand>,
-    result_receiver: futures::channel::mpsc::Receiver<HwResult<()>>,
-    thread_handle: JoinHandle<()>,
+    result_receiver: futures::channel::mpsc::Receiver<DandelionResult<()>>,
+    thread_handle: Option<JoinHandle<()>>,
 }
 
 struct CheriFuture<'a> {
@@ -157,7 +157,7 @@ struct CheriFuture<'a> {
 // or at least a way to ensure that the future is always initialized with a context,
 // so this can only happen when poll is called after it has already returned the context once
 impl Future for CheriFuture<'_> {
-    type Output = (HwResult<()>, Context);
+    type Output = (DandelionResult<()>, Context);
     fn poll(
         mut self: Pin<&mut Self>,
         cx: &mut futures::task::Context,
@@ -166,7 +166,7 @@ impl Future for CheriFuture<'_> {
             Poll::Pending => return Poll::Pending,
             Poll::Ready(None) => {
                 return Poll::Ready((
-                    Err(HardwareError::EngineError),
+                    Err(DandelionError::EngineError),
                     self.context.take().unwrap(),
                 ))
             }
@@ -191,13 +191,16 @@ impl Future for CheriFuture<'_> {
 fn run_thread(
     core_id: u8,
     command_receiver: std::sync::mpsc::Receiver<CheriCommand>,
-    mut result_sender: futures::channel::mpsc::Sender<HwResult<()>>,
+    mut result_sender: futures::channel::mpsc::Sender<DandelionResult<()>>,
 ) -> () {
     // set core
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
         return;
     };
     'commandloop: for command in command_receiver.iter() {
+        if command.cancel {
+            break 'commandloop;
+        }
         let cheri_error;
         unsafe {
             cheri_error = cheri_run_static(
@@ -209,8 +212,8 @@ fn run_thread(
         }
         let message = match cheri_error {
             0 => Ok(()),
-            1 => Err(HardwareError::OutOfMemory),
-            _ => Err(HardwareError::NotImplemented),
+            1 => Err(DandelionError::OutOfMemory),
+            _ => Err(DandelionError::NotImplemented),
         };
         // try sending until succeeds
         let mut not_sent = true;
@@ -229,19 +232,20 @@ impl Engine for CheriEngine {
         &mut self,
         config: &FunctionConfig,
         mut context: Context,
-    ) -> Pin<Box<dyn futures::Future<Output = (HwResult<()>, Context)> + '_>> {
+    ) -> Pin<Box<dyn futures::Future<Output = (DandelionResult<()>, Context)> + '_>> {
         if self.is_running.swap(true, Ordering::AcqRel) {
-            return Box::pin(ready((Err(HardwareError::EngineAlreadyRunning), context)));
+            return Box::pin(ready((Err(DandelionError::EngineAlreadyRunning), context)));
         }
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
-            _ => return Box::pin(ready((Err(HardwareError::ConfigMissmatch), context))),
+            _ => return Box::pin(ready((Err(DandelionError::ConfigMissmatch), context))),
         };
         let cheri_context = match &context.context {
             ContextType::Cheri(ref cheri_context) => cheri_context,
-            _ => return Box::pin(ready((Err(HardwareError::ContextMissmatch), context))),
+            _ => return Box::pin(ready((Err(DandelionError::ContextMissmatch), context))),
         };
         let command = CheriCommand {
+            cancel: false,
             context: cheri_context.context,
             entry_point: elf_config.entry_point,
             return_pair_offset: elf_config.return_offset.0,
@@ -251,7 +255,7 @@ impl Engine for CheriEngine {
             return Box::pin(ready((Err(err), context)));
         }
         match self.command_sender.send(command) {
-            Err(_) => return Box::pin(ready((Err(HardwareError::EngineError), context))),
+            Err(_) => return Box::pin(ready((Err(DandelionError::EngineError), context))),
             Ok(_) => (),
         }
         let function_future = Box::<CheriFuture>::pin(CheriFuture {
@@ -262,67 +266,62 @@ impl Engine for CheriEngine {
         });
         return function_future;
     }
-    fn abort(&mut self) -> HwResult<()> {
+    fn abort(&mut self) -> DandelionResult<()> {
         if !self.is_running.load(Ordering::Acquire) {
-            return Err(HardwareError::NoRunningFunction);
+            return Err(DandelionError::NoRunningFunction);
         }
+        // TODO actually abort
         Ok(())
     }
 }
 
-pub struct CheriDriver {
-    cpu_slots: Vec<u8>,
+impl Drop for CheriEngine {
+    fn drop(&mut self) {
+        if let Some(handle) = self.thread_handle.take() {
+            // drop channel
+            let _res = self.command_sender.send(CheriCommand {
+                cancel: true,
+                context: std::ptr::null(),
+                entry_point: 0,
+                return_pair_offset: 0,
+                stack_pointer: 0,
+            });
+            handle.join().expect("Cheri thread should not panic");
+        }
+    }
 }
 
+pub struct CheriDriver {}
+
 impl Driver for CheriDriver {
-    // required parts of the trait
-    type E = CheriEngine;
-    fn new(config: Vec<u8>) -> HwResult<Self> {
-        // each entry in config is expected to be a core id for a cpu to use
-        // check that each one is available
+    // // take or release one of the available engines
+    fn start_engine(config: Vec<u8>) -> DandelionResult<Box<dyn Engine>> {
+        if config.len() != 1 {
+            return Err(DandelionError::ConfigMissmatch);
+        }
+        let cpu_slot: u8 = config[0];
+        // check that core is available
         let available_cores = match core_affinity::get_core_ids() {
-            None => return Err(HardwareError::EngineError),
+            None => return Err(DandelionError::EngineError),
             Some(cores) => cores,
         };
-        for core in config.iter() {
-            let found = available_cores
-                .iter()
-                .find(|x| x.id == core.clone().into())
-                .is_some();
-            if !found {
-                return Err(HardwareError::MalformedConfig);
-            }
+        if !available_cores
+            .iter()
+            .find(|x| x.id == usize::from(cpu_slot))
+            .is_some()
+        {
+            return Err(DandelionError::MalformedConfig);
         }
-        return Ok(CheriDriver { cpu_slots: config });
-    }
-    // // take or release one of the available engines
-    fn start_engine(&mut self) -> HwResult<Self::E> {
-        let cpu_slot = match self.cpu_slots.pop() {
-            Some(core_id) => core_id,
-            None => return Err(HardwareError::NoEngineAvailable),
-        };
         let (command_sender, command_receiver) = std::sync::mpsc::channel();
         let (result_sender, result_receiver) = futures::channel::mpsc::channel(0);
         let thread_handle = spawn(move || run_thread(cpu_slot, command_receiver, result_sender));
         let is_running = AtomicBool::new(false);
-        return Ok(CheriEngine {
-            cpu_slot,
+        return Ok(Box::new(CheriEngine {
             command_sender,
             result_receiver,
-            thread_handle,
+            thread_handle: Some(thread_handle),
             is_running,
-        });
-    }
-    fn stop_engine(&mut self, engine: Self::E) -> HwResult<()> {
-        drop(engine.command_sender);
-        drop(engine.result_receiver);
-        // TODO check if expect makes sense
-        engine
-            .thread_handle
-            .join()
-            .expect("Expecting cheri thread handle to be joinable");
-        self.cpu_slots.push(engine.cpu_slot);
-        return Ok(());
+        }));
     }
 }
 
@@ -336,7 +335,7 @@ impl Loader for CheriLoader {
     fn parse_function(
         function: Vec<u8>,
         static_domain: &mut dyn MemoryDomain,
-    ) -> HwResult<(DataRequirementList, Context, FunctionConfig)> {
+    ) -> DandelionResult<(DataRequirementList, Context, FunctionConfig)> {
         let elf = elf_parser::ParsedElf::new(&function)?;
         let input_root = elf.get_symbol_by_name(&function, "inputRoot")?;
         let input_number = elf.get_symbol_by_name(&function, "inputNumber")?;

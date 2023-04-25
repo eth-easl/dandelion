@@ -3,14 +3,13 @@
 pub mod cheri;
 pub mod malloc;
 
-use crate::{DataItem, DataItemType, HardwareError, Position};
-
-// import parent for depenencies
-use super::HwResult;
+use crate::{DataItem, DataItemType, Position};
+use dandelion_commons::{DandelionError, DandelionResult};
 
 pub trait ContextTrait {
-    fn write(&mut self, offset: usize, data: Vec<u8>) -> HwResult<()>;
-    fn read(&mut self, offset: usize, read_size: usize, sanitize: bool) -> HwResult<Vec<u8>>;
+    fn write(&mut self, offset: usize, data: Vec<u8>) -> DandelionResult<()>;
+    fn read(&mut self, offset: usize, read_size: usize, sanitize: bool)
+        -> DandelionResult<Vec<u8>>;
 }
 
 // https://docs.rs/enum_dispatch/latest/enum_dispatch/index.html
@@ -22,14 +21,19 @@ pub enum ContextType {
 }
 
 impl ContextTrait for ContextType {
-    fn write(&mut self, offset: usize, data: Vec<u8>) -> HwResult<()> {
+    fn write(&mut self, offset: usize, data: Vec<u8>) -> DandelionResult<()> {
         match self {
             ContextType::Malloc(context) => context.write(offset, data),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.write(offset, data),
         }
     }
-    fn read(&mut self, offset: usize, read_size: usize, sanitize: bool) -> HwResult<Vec<u8>> {
+    fn read(
+        &mut self,
+        offset: usize,
+        read_size: usize,
+        sanitize: bool,
+    ) -> DandelionResult<Vec<u8>> {
         match self {
             ContextType::Malloc(context) => context.read(offset, read_size, sanitize),
             #[cfg(feature = "cheri")]
@@ -44,16 +48,21 @@ pub struct Context {
 }
 
 impl ContextTrait for Context {
-    fn write(&mut self, offset: usize, data: Vec<u8>) -> HwResult<()> {
+    fn write(&mut self, offset: usize, data: Vec<u8>) -> DandelionResult<()> {
         self.context.write(offset, data)
     }
-    fn read(&mut self, offset: usize, read_size: usize, sanitize: bool) -> HwResult<Vec<u8>> {
+    fn read(
+        &mut self,
+        offset: usize,
+        read_size: usize,
+        sanitize: bool,
+    ) -> DandelionResult<Vec<u8>> {
         self.context.read(offset, read_size, sanitize)
     }
 }
 
 impl Context {
-    pub fn get_free_space(&self, size: usize, alignment: usize) -> HwResult<usize> {
+    pub fn get_free_space(&self, size: usize, alignment: usize) -> DandelionResult<usize> {
         let mut items = Vec::<Position>::new();
         for pos in &self.static_data {
             items.push(pos.clone());
@@ -72,7 +81,7 @@ impl Context {
         items.sort_unstable_by(|a, b| a.offset.cmp(&b.offset));
         // search for smallest space that is bigger than size
         // space start holds previous start
-        let mut space_start = Err(HardwareError::ContextFull);
+        let mut space_start = Err(DandelionError::ContextFull);
         let mut space_size = usize::MAX;
         let mut last_end = 0;
         if items.len() == 0 {
@@ -98,11 +107,11 @@ impl Context {
 
 pub trait MemoryDomain {
     // allocation and distruction
-    fn init(config: Vec<u8>) -> HwResult<Self>
+    fn init(config: Vec<u8>) -> DandelionResult<Self>
     where
         Self: Sized;
-    fn acquire_context(&mut self, size: usize) -> HwResult<Context>;
-    fn release_context(&mut self, context: Context) -> HwResult<()>;
+    fn acquire_context(&mut self, size: usize) -> DandelionResult<Context>;
+    fn release_context(&mut self, context: Context) -> DandelionResult<()>;
 }
 
 // Code to specialize transfers between different domains
@@ -113,7 +122,7 @@ pub fn transefer_memory(
     source_offset: usize,
     size: usize,
     sanitize: bool,
-) -> HwResult<()> {
+) -> DandelionResult<()> {
     let result = match (&mut destination.context, &mut source.context) {
         (ContextType::Malloc(destination_ctxt), ContextType::Malloc(source_ctxt)) => {
             malloc::malloc_transfer(

@@ -1,9 +1,7 @@
 use std::vec;
 
-use crate::{
-    memory_domain::{transefer_memory, ContextTrait, MemoryDomain},
-    HardwareError,
-};
+use crate::memory_domain::{transefer_memory, ContextTrait, MemoryDomain};
+use dandelion_commons::DandelionError;
 // produces binary pattern 0b0101_01010 or 0x55
 const BYTEPATTERN: u8 = 85;
 
@@ -23,7 +21,7 @@ fn acquire_too_much<D: MemoryDomain>(arg: Vec<u8>) -> () {
     let mut domain = init_result.expect("should have initialized memory domain");
     let context_result = domain.acquire_context(alloc_size);
     match context_result {
-        Err(HardwareError::OutOfMemory) => assert!(true),
+        Err(DandelionError::OutOfMemory) => assert!(true),
         Ok(_) => assert!(
             false,
             "Got okay for allocating context with size {}",
@@ -49,7 +47,7 @@ fn write_single_oob_offset<D: MemoryDomain>(arg: Vec<u8>) {
         .acquire_context(1)
         .expect("Single byte context should always be allocatable");
     assert_eq!(
-        Err(HardwareError::InvalidWrite),
+        Err(DandelionError::InvalidWrite),
         context.write(1, vec![BYTEPATTERN])
     );
 }
@@ -60,7 +58,7 @@ fn write_single_oob_size<D: MemoryDomain>(arg: Vec<u8>) {
         .acquire_context(1)
         .expect("Single byte context should always be allocatable");
     assert_eq!(
-        Err(HardwareError::InvalidWrite),
+        Err(DandelionError::InvalidWrite),
         context.write(0, vec![BYTEPATTERN, BYTEPATTERN])
     );
 }
@@ -87,7 +85,7 @@ fn read_single_oob_offset<D: MemoryDomain>(arg: Vec<u8>) {
     context
         .write(0, vec![BYTEPATTERN])
         .expect("Writing should succeed");
-    assert_eq!(Err(HardwareError::InvalidRead), context.read(1, 1, false));
+    assert_eq!(Err(DandelionError::InvalidRead), context.read(1, 1, false));
 }
 
 fn read_single_oob_size<D: MemoryDomain>(arg: Vec<u8>) {
@@ -98,7 +96,7 @@ fn read_single_oob_size<D: MemoryDomain>(arg: Vec<u8>) {
     context
         .write(0, vec![BYTEPATTERN])
         .expect("Writing should succeed");
-    assert_eq!(Err(HardwareError::InvalidRead), context.read(0, 2, false));
+    assert_eq!(Err(DandelionError::InvalidRead), context.read(0, 2, false));
 }
 
 fn read_single_sanitize<D: MemoryDomain>(arg: Vec<u8>) {
