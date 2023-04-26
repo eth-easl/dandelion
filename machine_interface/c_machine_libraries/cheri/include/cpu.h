@@ -176,7 +176,10 @@ static inline void restoreContext() {
       "ldr c3, [c0, #48] \n"
       "ldr c2, [c0, #32] \n"
       "ldr c1, [c0, #16] \n"
-      "ldr c0, [c0, #0] \n");
+      "ldr c0, [c0, #0] \n"
+      :
+      :
+      : "c0");
 }
 
 #endif

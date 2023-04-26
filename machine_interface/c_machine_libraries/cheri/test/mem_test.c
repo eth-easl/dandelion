@@ -50,7 +50,7 @@ void allocation_test(void) {
 void overallocation_test(void) {
   cheri_context* test_context = cheri_alloc(-1LL);
   TEST_ASSERT_EQUAL_HEX64(NULL, test_context);
-  test_context = cheri_alloc(18446744073709551615);
+  test_context = cheri_alloc(18446744073709551615U);
   TEST_ASSERT_EQUAL_HEX64(NULL, test_context);
 }
 

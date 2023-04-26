@@ -74,10 +74,15 @@ void cheri_write_context(cheri_context *context, unsigned char *source_pointer,
 
 void cheri_read_context(cheri_context *context,
                         unsigned char *destination_pointer,
-                        size_t context_offset, size_t size, char sanitize) {
+                        size_t context_offset, size_t size) {
   void *src = (__cheri_fromcap void *)context->cap + context_offset;
   memcpy(destination_pointer, src, size);
-  if (sanitize != 0) {
-    memset(src, 0, size);
-  }
+}
+
+void cheri_transfer_context(cheri_context *destination, cheri_context *source,
+                            size_t destination_offset, size_t source_offset,
+                            size_t size) {
+  void *src = (__cheri_fromcap void *)source->cap + source_offset;
+  void *dst = (__cheri_fromcap void *)destination->cap + destination_offset;
+  memcpy(dst, src, size);
 }

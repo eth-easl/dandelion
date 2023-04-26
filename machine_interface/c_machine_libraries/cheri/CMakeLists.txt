@@ -16,7 +16,7 @@ install(TARGETS ${LIBRARY} DESTINATION ${CMAKE_INSTALL_PREFIX})
 # set tests
 set(MEM_TEST cheri_mem_test)
 add_executable(${MEM_TEST}
-    test/test.c
+    test/mem_test.c
 )
 target_link_libraries(${MEM_TEST}
     ${LIBRARY}

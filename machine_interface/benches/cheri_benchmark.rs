@@ -3,10 +3,10 @@ use machine_interface::{
     function_lib::{
         cheri::{CheriDriver, CheriLoader},
         util::load_static,
-        Driver, Engine, Loader,
+        Driver, Loader,
     },
     memory_domain::{cheri::CheriMemoryDomain, ContextTrait, MemoryDomain},
-    DataItem, DataItemType, Position,
+    DataItem, Position,
 };
 
 fn context_benchmark(c: &mut Criterion) {
@@ -29,15 +29,15 @@ fn context_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+// TODO add extend to more benchmarks that check more detailed
+// TODO change to be instantiable with type to make it easier to collect for other engines
+
 fn matmul_sequential_benchmark(c: &mut Criterion) {
     const MAT_SIZE: usize = 128;
 
     let mut domain =
         CheriMemoryDomain::init(Vec::<u8>::new()).expect("Should be able to initialize");
-    let mut driver = CheriDriver::new(vec![1]).expect("Should be able to create driver");
-    let mut engine = driver
-        .start_engine()
-        .expect("Should have gotten one engine");
+    let mut engine = CheriDriver::start_engine(vec![1]).expect("Should be able to get one engine");
     let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push("tests/data/test_elf_aarch64c_matmul");
     let mut elf_file = std::fs::File::open(path).expect("Should have found test file");
@@ -59,13 +59,13 @@ fn matmul_sequential_benchmark(c: &mut Criterion) {
             function_context
                 .write(in_size_offset, i64::to_ne_bytes(MAT_SIZE as i64).to_vec())
                 .expect("Write should go through");
-            function_context.dynamic_data.push(DataItem {
-                index: 0,
-                item_type: DataItemType::Item(Position {
+            function_context.dynamic_data.insert(
+                0,
+                DataItem::Item(Position {
                     offset: in_size_offset,
                     size: 8,
                 }),
-            });
+            );
             let input_size = 8 * MAT_SIZE * MAT_SIZE;
             let in_mat_offset = function_context
                 .get_free_space(input_size, 8)
@@ -77,24 +77,24 @@ fn matmul_sequential_benchmark(c: &mut Criterion) {
             function_context
                 .write(in_mat_offset, mat_vec)
                 .expect("Write should go through");
-            function_context.dynamic_data.push(DataItem {
-                index: 1,
-                item_type: DataItemType::Item(Position {
+            function_context.dynamic_data.insert(
+                1,
+                DataItem::Item(Position {
                     offset: in_mat_offset,
                     size: input_size,
                 }),
-            });
+            );
             let out_mat_offset = function_context
                 .get_free_space(input_size, 8)
                 .expect("Should have space for single i64");
-            function_context.dynamic_data.push(DataItem {
-                index: 2,
-                item_type: DataItemType::Item(Position {
+            function_context.dynamic_data.insert(
+                2,
+                DataItem::Item(Position {
                     offset: out_mat_offset,
                     size: input_size,
                 }),
-            });
-            let (result, result_context) = tokio::runtime::Builder::new_current_thread()
+            );
+            let (_result, result_context) = tokio::runtime::Builder::new_current_thread()
                 .build()
                 .unwrap()
                 .block_on(engine.run(&config, function_context));

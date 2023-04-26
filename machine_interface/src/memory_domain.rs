@@ -3,13 +3,14 @@
 pub mod cheri;
 pub mod malloc;
 
-use crate::{DataItem, DataItemType, Position};
+use std::collections::HashMap;
+
+use crate::{DataItem, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
 
 pub trait ContextTrait {
     fn write(&mut self, offset: usize, data: Vec<u8>) -> DandelionResult<()>;
-    fn read(&mut self, offset: usize, read_size: usize, sanitize: bool)
-        -> DandelionResult<Vec<u8>>;
+    fn read(&self, offset: usize, read_size: usize) -> DandelionResult<Vec<u8>>;
 }
 
 // https://docs.rs/enum_dispatch/latest/enum_dispatch/index.html
@@ -28,22 +29,17 @@ impl ContextTrait for ContextType {
             ContextType::Cheri(context) => context.write(offset, data),
         }
     }
-    fn read(
-        &mut self,
-        offset: usize,
-        read_size: usize,
-        sanitize: bool,
-    ) -> DandelionResult<Vec<u8>> {
+    fn read(&self, offset: usize, read_size: usize) -> DandelionResult<Vec<u8>> {
         match self {
-            ContextType::Malloc(context) => context.read(offset, read_size, sanitize),
+            ContextType::Malloc(context) => context.read(offset, read_size),
             #[cfg(feature = "cheri")]
-            ContextType::Cheri(context) => context.read(offset, read_size, sanitize),
+            ContextType::Cheri(context) => context.read(offset, read_size),
         }
     }
 }
 pub struct Context {
     pub context: ContextType,
-    pub dynamic_data: Vec<DataItem>,
+    pub dynamic_data: HashMap<usize, DataItem>,
     pub static_data: Vec<Position>,
 }
 
@@ -51,13 +47,8 @@ impl ContextTrait for Context {
     fn write(&mut self, offset: usize, data: Vec<u8>) -> DandelionResult<()> {
         self.context.write(offset, data)
     }
-    fn read(
-        &mut self,
-        offset: usize,
-        read_size: usize,
-        sanitize: bool,
-    ) -> DandelionResult<Vec<u8>> {
-        self.context.read(offset, read_size, sanitize)
+    fn read(&self, offset: usize, read_size: usize) -> DandelionResult<Vec<u8>> {
+        self.context.read(offset, read_size)
     }
 }
 
@@ -68,10 +59,10 @@ impl Context {
             items.push(pos.clone());
         }
         // make single vector with all positions
-        for dyn_item in &self.dynamic_data {
-            match &dyn_item.item_type {
-                DataItemType::Item(item) => items.push(item.clone()),
-                DataItemType::Set(set) => {
+        for dyn_item in self.dynamic_data.values() {
+            match dyn_item {
+                DataItem::Item(item) => items.push(item.clone()),
+                DataItem::Set(set) => {
                     for pos in set {
                         items.push(pos.clone())
                     }
@@ -107,7 +98,7 @@ impl Context {
 
 pub trait MemoryDomain {
     // allocation and distruction
-    fn init(config: Vec<u8>) -> DandelionResult<Self>
+    fn init(config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>>
     where
         Self: Sized;
     fn acquire_context(&mut self, size: usize) -> DandelionResult<Context>;
@@ -117,13 +108,12 @@ pub trait MemoryDomain {
 // Code to specialize transfers between different domains
 pub fn transefer_memory(
     destination: &mut Context,
-    source: &mut Context,
+    source: &Context,
     destination_offset: usize,
     source_offset: usize,
     size: usize,
-    sanitize: bool,
 ) -> DandelionResult<()> {
-    let result = match (&mut destination.context, &mut source.context) {
+    let result = match (&mut destination.context, &source.context) {
         (ContextType::Malloc(destination_ctxt), ContextType::Malloc(source_ctxt)) => {
             malloc::malloc_transfer(
                 destination_ctxt,
@@ -131,7 +121,6 @@ pub fn transefer_memory(
                 destination_offset,
                 source_offset,
                 size,
-                sanitize,
             )
         }
         #[cfg(feature = "cheri")]
@@ -142,12 +131,11 @@ pub fn transefer_memory(
                 destination_offset,
                 source_offset,
                 size,
-                sanitize,
             )
         }
         // default implementation using reads and writes
         (destination, source) => {
-            let read_result = source.read(source_offset, size, sanitize);
+            let read_result = source.read(source_offset, size);
             match read_result {
                 Ok(read_value) => destination.write(destination_offset, read_value),
                 Err(err) => Err(err),

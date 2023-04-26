@@ -35,7 +35,7 @@ fn acquire_too_much<D: MemoryDomain>(arg: Vec<u8>) -> () {
     }
 }
 
-fn init_domain<D: MemoryDomain>(arg: Vec<u8>) -> D {
+fn init_domain<D: MemoryDomain>(arg: Vec<u8>) -> Box<dyn MemoryDomain> {
     let init_result = D::init(arg);
     let domain = init_result.expect("memory domain should have been initialized");
     return domain;
@@ -72,7 +72,7 @@ fn read_single_success<D: MemoryDomain>(arg: Vec<u8>) {
         .write(0, vec![BYTEPATTERN])
         .expect("Writing should succeed");
     let return_val = context
-        .read(0, 1, false)
+        .read(0, 1)
         .expect("context should return single value vector in range");
     assert_eq!(vec![BYTEPATTERN], return_val);
 }
@@ -85,7 +85,7 @@ fn read_single_oob_offset<D: MemoryDomain>(arg: Vec<u8>) {
     context
         .write(0, vec![BYTEPATTERN])
         .expect("Writing should succeed");
-    assert_eq!(Err(DandelionError::InvalidRead), context.read(1, 1, false));
+    assert_eq!(Err(DandelionError::InvalidRead), context.read(1, 1));
 }
 
 fn read_single_oob_size<D: MemoryDomain>(arg: Vec<u8>) {
@@ -96,28 +96,10 @@ fn read_single_oob_size<D: MemoryDomain>(arg: Vec<u8>) {
     context
         .write(0, vec![BYTEPATTERN])
         .expect("Writing should succeed");
-    assert_eq!(Err(DandelionError::InvalidRead), context.read(0, 2, false));
+    assert_eq!(Err(DandelionError::InvalidRead), context.read(0, 2));
 }
 
-fn read_single_sanitize<D: MemoryDomain>(arg: Vec<u8>) {
-    let mut domain = init_domain::<D>(arg);
-    let mut context = domain
-        .acquire_context(1)
-        .expect("Single byte context should always be allocatable");
-    context
-        .write(0, vec![BYTEPATTERN])
-        .expect("Writing should succeed");
-    let return_val = context
-        .read(0, 1, true)
-        .expect("context should return single value vector in range");
-    assert_eq!(vec![BYTEPATTERN], return_val);
-    let sanitized_val = context
-        .read(0, 1, false)
-        .expect("context should return single value vector in range");
-    assert_eq!(vec![0], sanitized_val);
-}
-
-fn transefer<D: MemoryDomain>(arg: Vec<u8>, size: usize, sanitize: bool) {
+fn transefer<D: MemoryDomain>(arg: Vec<u8>, size: usize) {
     let mut domain = init_domain::<D>(arg);
     let mut destination = domain
         .acquire_context(size)
@@ -128,18 +110,12 @@ fn transefer<D: MemoryDomain>(arg: Vec<u8>, size: usize, sanitize: bool) {
     source
         .write(0, vec![BYTEPATTERN; size])
         .expect("Writing should succeed");
-    transefer_memory(&mut destination, &mut source, 0, 0, size, sanitize)
+    transefer_memory(&mut destination, &mut source, 0, 0, size)
         .expect("Should successfully transfer");
     let return_val = destination
-        .read(0, size, sanitize)
+        .read(0, size)
         .expect("context should return single value vector in range");
     assert_eq!(vec![BYTEPATTERN; size], return_val);
-    if sanitize {
-        let sanitized_val = source
-            .read(0, size, false)
-            .expect("context should return single value vector in range");
-        assert_eq!(vec![0; size], sanitized_val);
-    }
 }
 
 macro_rules! domainTests {
@@ -176,26 +152,14 @@ macro_rules! domainTests {
             fn test_read_single_oob_size() {
                 read_single_oob_size::<$domain>($init);
             }
-            #[test]
-            fn test_read_single_sanitize() {
-                read_single_sanitize::<$domain>($init);
-            }
             // TODO longer writes and reads, as well as partial writes and reads
             #[test]
             fn test_transfer_single() {
-                transefer::<$domain>($init, 1, false);
-            }
-            #[test]
-            fn test_transfer_single_sanitize() {
-                transefer::<$domain>($init, 1, true);
+                transefer::<$domain>($init, 1);
             }
             #[test]
             fn test_transfer_page() {
-                transefer::<$domain>($init, 4096, false);
-            }
-            #[test]
-            fn test_transfer_page_sanitize() {
-                transefer::<$domain>($init, 4096, true);
+                transefer::<$domain>($init, 4096);
             }
         }
     };

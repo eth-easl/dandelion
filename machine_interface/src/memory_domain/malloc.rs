@@ -1,7 +1,6 @@
-use crate::{
-    memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
-    DataItem, Position,
-};
+use std::collections::HashMap;
+
+use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
 use dandelion_commons::{DandelionError, DandelionResult};
 
 #[derive(Debug)]
@@ -22,12 +21,7 @@ impl ContextTrait for MallocContext {
         }
         Ok(())
     }
-    fn read(
-        &mut self,
-        offset: usize,
-        read_size: usize,
-        sanitize: bool,
-    ) -> DandelionResult<Vec<u8>> {
+    fn read(&self, offset: usize, read_size: usize) -> DandelionResult<Vec<u8>> {
         let length = self.storage.len();
         if offset + read_size > length {
             return Err(DandelionError::InvalidRead);
@@ -41,9 +35,6 @@ impl ContextTrait for MallocContext {
         // read values, sanitize if necessary
         for (index, result) in result_vec.iter_mut().enumerate() {
             *result = self.storage[offset + index];
-            if sanitize {
-                self.storage[offset + index] = 0;
-            }
         }
         Ok(result_vec)
     }
@@ -53,8 +44,8 @@ impl ContextTrait for MallocContext {
 pub struct MallocMemoryDomain {}
 
 impl MemoryDomain for MallocMemoryDomain {
-    fn init(_config: Vec<u8>) -> DandelionResult<Self> {
-        Ok(MallocMemoryDomain {})
+    fn init(_config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>> {
+        Ok(Box::new(MallocMemoryDomain {}))
     }
     fn acquire_context(&mut self, size: usize) -> DandelionResult<Context> {
         let mut mem_space = Vec::new();
@@ -64,8 +55,8 @@ impl MemoryDomain for MallocMemoryDomain {
         mem_space.resize(size, 0);
         Ok(Context {
             context: ContextType::Malloc(Box::new(MallocContext { storage: mem_space })),
-            dynamic_data: Vec::<DataItem>::new(),
-            static_data: Vec::<Position>::new(),
+            dynamic_data: HashMap::new(),
+            static_data: Vec::new(),
         })
     }
     fn release_context(&mut self, context: Context) -> DandelionResult<()> {
@@ -78,11 +69,10 @@ impl MemoryDomain for MallocMemoryDomain {
 
 pub fn malloc_transfer(
     destination: &mut MallocContext,
-    source: &mut MallocContext,
+    source: &MallocContext,
     destination_offset: usize,
     source_offset: usize,
     size: usize,
-    sanitize: bool,
 ) -> DandelionResult<()> {
     // check if there is space in both contexts
     if source.storage.len() < source_offset + size {
@@ -93,8 +83,5 @@ pub fn malloc_transfer(
     }
     destination.storage[destination_offset..destination_offset + size]
         .copy_from_slice(&source.storage[source_offset..source_offset + size]);
-    if sanitize {
-        source.storage[source_offset..source_offset + size].fill(0);
-    }
     Ok(())
 }

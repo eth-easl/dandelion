@@ -35,13 +35,7 @@ pub struct Position {
 }
 
 #[derive(Debug)]
-pub enum DataItemType {
+pub enum DataItem {
     Item(Position),
     Set(Vec<Position>),
-}
-
-#[derive(Debug)]
-pub struct DataItem {
-    pub index: u32,
-    pub item_type: DataItemType,
 }
