@@ -3,10 +3,9 @@
 pub mod cheri;
 pub mod malloc;
 
-use std::collections::HashMap;
-
 use crate::{DataItem, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
+use std::collections::HashMap;
 
 pub trait ContextTrait {
     fn write(&mut self, offset: usize, data: Vec<u8>) -> DandelionResult<()>;
@@ -143,6 +142,93 @@ pub fn transefer_memory(
         }
     };
     result
+}
+
+pub fn transer_data_item(
+    destination: &mut Context,
+    source: &Context,
+    destionation_index: usize,
+    destination_allignment: usize,
+    source_index: usize,
+    source_sub_index: Option<usize>,
+) -> DandelionResult<()> {
+    // check if source has item
+    let source_item = match source.dynamic_data.get(&source_index) {
+        Some(i) => i,
+        None => return Err(DandelionError::InvalidRead),
+    };
+    // check destination is unoccupied, could be fused with insert in future with try insert
+    if destination.dynamic_data.contains_key(&destionation_index) {
+        return Err(DandelionError::InvalidWrite);
+    }
+    // get positions where to read from
+    let temp;
+    let source_positions = match (source_item, source_sub_index) {
+        (DataItem::Item(p), None) => {
+            temp = vec![p.clone()];
+            &temp
+        }
+        (DataItem::Item(_), Some(_)) => return Err(DandelionError::InvalidRead),
+        (DataItem::Set(s), None) => s,
+        (DataItem::Set(s), Some(i)) if i < s.len() => {
+            temp = vec![s[i].clone()];
+            &temp
+        }
+        (DataItem::Set(_), Some(_)) => return Err(DandelionError::InvalidRead),
+    };
+    // find positions to write to
+    let destination_positions_result: DandelionResult<Vec<Position>> = source_positions
+        .iter()
+        .map(|pos| {
+            let offset = destination.get_free_space(pos.size, destination_allignment)?;
+            Ok(Position {
+                size: pos.size,
+                offset,
+            })
+        })
+        .collect();
+    let destination_positions = destination_positions_result?;
+    if destination_positions.len() == 0 {
+        return Err(DandelionError::EmptyDataItemSet);
+    } else if destination_positions.len() == 1 {
+        let transfer_error = transefer_memory(
+            destination,
+            source,
+            destination_positions[0].offset,
+            source_positions[0].offset,
+            source_positions[0].size,
+        );
+        destination
+            .dynamic_data
+            .insert(destionation_index, DataItem::Item(destination_positions[0]));
+        return transfer_error;
+    } else {
+        // perform transfers
+        let position_pair = source_positions
+            .iter()
+            .zip(destination_positions.into_iter());
+        let mut destination_set = Vec::new();
+        if destination_set.try_reserve(source_positions.len()).is_err() {
+            return Err(DandelionError::OutOfMemory);
+        }
+        for (source_pos, destination_pos) in position_pair {
+            let transfer_error = transefer_memory(
+                destination,
+                source,
+                destination_pos.offset,
+                source_pos.offset,
+                source_pos.size,
+            );
+            destination_set.push(destination_pos);
+            if transfer_error.is_err() {
+                break;
+            }
+        }
+        destination
+            .dynamic_data
+            .insert(destionation_index, DataItem::Set(destination_set));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

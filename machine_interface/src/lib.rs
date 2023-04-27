@@ -28,7 +28,7 @@ pub struct DataRequirementList {
     pub static_requirements: Vec<Position>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Position {
     pub offset: usize,
     pub size: usize,
