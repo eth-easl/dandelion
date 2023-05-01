@@ -1,3 +1,4 @@
+use core_affinity::CoreId;
 use machine_interface::util::shared_mem::SharedMem;
 use nix::sys::{
     mman::{mprotect, ProtFlags},
@@ -15,10 +16,14 @@ const PF_R: u32 = 1 << 2;
 fn main() {
     // get shared memory id from arguments
     let args: Vec<String> = std::env::args().collect();
-    assert_eq!(args.len(), 3);
+    assert_eq!(args.len(), 4);
 
-    let mem_id = &args[1];
-    eprintln!("[worker] started with shared memory {}", mem_id);
+    let core_id: usize = args[1].parse().unwrap();
+    let mem_id = &args[2];
+    eprintln!("[worker] started with core {} and shared memory {}", core_id, mem_id);
+
+    // set cpu affinity
+    assert!(core_affinity::set_for_current(CoreId { id: core_id }));
 
     // open and map a shared memory region
     let mem = SharedMem::open(
@@ -37,8 +42,8 @@ fn main() {
     let entry_point: usize = buf.trim().parse().unwrap();
     eprintln!("[worker] got entry point {:x}", entry_point);
 
-    // let (read_only, executable): (Vec<Position>, Vec<Position>) = serde_json::from_str(&args[2]).unwrap();
-    let mut executable: Vec<(u32, Position)> = serde_json::from_str(&args[2]).unwrap();
+    // let (read_only, executable): (Vec<Position>, Vec<Position>) = serde_json::from_str(&args[3]).unwrap();
+    let mut executable: Vec<(u32, Position)> = serde_json::from_str(&args[3]).unwrap();
 
     for position in executable.iter_mut() {
         unsafe {
