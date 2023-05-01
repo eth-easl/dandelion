@@ -1,4 +1,3 @@
-use libc::{c_void, PF_X, PF_W};
 use machine_interface::util::shared_mem::SharedMem;
 use nix::sys::{
     mman::{mprotect, ProtFlags},
@@ -6,6 +5,12 @@ use nix::sys::{
 };
 use std::vec::Vec;
 use machine_interface::Position;
+
+// these flags are universal for elf files,
+// but for some reason only appear in libc crate on linux
+const PF_X: u32 = 1 << 0;
+const PF_W: u32 = 1 << 1;
+const PF_R: u32 = 1 << 2;
 
 fn main() {
     // get shared memory id from arguments
@@ -46,7 +51,7 @@ fn main() {
             }
 
             mprotect(mem.as_ptr().offset(
-                position.1.offset as isize) as *mut c_void, 
+                position.1.offset as isize) as *mut libc::c_void, 
                 position.1.size,
                 flags
             ).expect("mprotect failed!");
