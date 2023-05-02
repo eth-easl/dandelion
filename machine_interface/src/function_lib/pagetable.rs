@@ -1,20 +1,3 @@
-use std::{
-    io::{Write, BufReader, BufRead},
-    process::{Command, Stdio},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-    }
-};
-
-use core_affinity;
-use nix::{
-    sys::{
-        signal::Signal,
-        wait::{self, WaitStatus},
-    },
-    unistd::Pid,
-};
-
 use crate::{
     function_lib::{Driver, ElfConfig, Engine, FunctionConfig, Loader},
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
@@ -22,11 +5,30 @@ use crate::{
     DataItem, DataItemType, DataRequirement, DataRequirementList, HardwareError, HwResult,
     Position,
 };
+use core_affinity;
+use futures::future::ready;
+use nix::{
+    sys::{
+        signal::Signal,
+        wait::{self, WaitStatus},
+    },
+    unistd::Pid,
+};
+use std::{
+    io::{BufRead, BufReader, Write},
+    pin::Pin,
+    process::{Command, Stdio},
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 const IO_STRUCT_SIZE: usize = 16;
 const MAX_OUTPUTS: u32 = 16;
 
-fn setup_input_structs(context: &mut Context, config: &ElfConfig, base_addr: usize) -> HwResult<()> {
+fn setup_input_structs(
+    context: &mut Context,
+    config: &ElfConfig,
+    base_addr: usize,
+) -> HwResult<()> {
     // size of array with input struct array
     // let pagetable_context = match &context.context {
     //     ContextType::Pagetable(c) => c,
@@ -113,7 +115,8 @@ fn get_output_layout(context: &mut Context, config: &ElfConfig, base_addr: usize
 
     for output_index in 0..output_number {
         // let read_offset = output_root_offset + IO_STRUCT_SIZE * output_index as usize;
-        let read_offset = (output_root_offset + IO_STRUCT_SIZE * output_index as usize - base_addr as usize)as usize;
+        let read_offset = (output_root_offset + IO_STRUCT_SIZE * output_index as usize
+            - base_addr as usize) as usize;
         let out_struct = context.read(read_offset, IO_STRUCT_SIZE as usize, false)?;
         let size = usize::from_ne_bytes(
             out_struct[0..8]
@@ -233,17 +236,21 @@ fn check_syscall_non_exit(pid: libc::pid_t) -> Option<i64> {
 }
 
 impl Engine for PagetableEngine {
-    fn run(&mut self, config: &FunctionConfig, mut context: Context) -> (HwResult<()>, Context) {
+    fn run(
+        &mut self,
+        config: &FunctionConfig,
+        mut context: Context,
+    ) -> Pin<Box<dyn futures::Future<Output = (HwResult<()>, Context)> + '_>> {
         if self.is_running.swap(true, Ordering::AcqRel) {
-            return (Err(HardwareError::EngineAlreadyRunning), context);
+            return Box::pin(ready((Err(HardwareError::EngineAlreadyRunning), context)));
         }
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
-            _ => return (Err(HardwareError::ConfigMissmatch), context),
+            _ => return Box::pin(ready((Err(HardwareError::ConfigMissmatch), context))),
         };
         let pagetable_context = match &context.context {
             ContextType::Pagetable(pagetable_context) => pagetable_context,
-            _ => return (Err(HardwareError::ContextMissmatch), context),
+            _ => return Box::pin(ready((Err(HardwareError::ContextMissmatch), context))),
         };
         // let command = CheriCommand {
         //     context: cheri_context.context,
@@ -285,7 +292,7 @@ impl Engine for PagetableEngine {
         eprintln!("got base address {:x}", worker_base_addr);
 
         if let Err(err) = setup_input_structs(&mut context, &elf_config, worker_base_addr) {
-            return (Err(err), context);
+            return Box::pin(ready((Err(err), context)));
         }
 
         // send the entry point of user's code to worker
@@ -319,16 +326,16 @@ impl Engine for PagetableEngine {
                     eprintln!("detected unauthorized syscall with id {}", syscall_id);
                     worker.kill().unwrap();
                     eprintln!("worker killed");
-                    return (Err(HardwareError::UnauthorizedSyscall), context);
+                    return Box::pin(ready((Err(HardwareError::UnauthorizedSyscall), context)));
                 }
             },
             Signal::SIGSEGV => {
                 eprintln!("detected segmentation fault");
-                return (Err(HardwareError::SegmentationFault), context);
+                return Box::pin(ready((Err(HardwareError::SegmentationFault), context)));
             }
             s => {
                 eprintln!("detected {}", s);
-                return (Err(HardwareError::OtherProctionError), context);
+                return Box::pin(ready((Err(HardwareError::OtherProctionError), context)));
             }
         }
 
@@ -338,7 +345,7 @@ impl Engine for PagetableEngine {
         // read outputs
         let result = get_output_layout(&mut context, &elf_config, worker_base_addr);
         self.is_running.store(false, Ordering::Release);
-        (result, context)
+        Box::pin(ready((result, context)))
     }
     fn abort(&mut self) -> HwResult<()> {
         if !self.is_running.load(Ordering::Acquire) {

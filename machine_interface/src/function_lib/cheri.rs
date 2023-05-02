@@ -1,20 +1,20 @@
-use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc::{channel, Receiver, Sender},
-    },
-    thread::{spawn, JoinHandle},
-};
-
-use core_affinity;
-use libc::size_t;
-
 use crate::{
     function_lib::{Driver, ElfConfig, Engine, FunctionConfig, Loader},
     memory_domain::{cheri::cheri_c_context, Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
     DataItem, DataItemType, DataRequirement, DataRequirementList, HardwareError, HwResult,
     Position,
+};
+use core::{
+    future::{ready, Future},
+    pin::Pin,
+};
+use core_affinity;
+use futures::{task::Poll, Stream};
+use libc::size_t;
+use std::{
+    sync::atomic::{AtomicBool, Ordering},
+    thread::{spawn, JoinHandle},
 };
 
 #[link(name = "cheri_lib")]
@@ -85,9 +85,13 @@ fn setup_input_structs(context: &mut Context, config: &ElfConfig) -> HwResult<()
     return Ok(());
 }
 
-fn get_output_layout(context: &mut Context, config: &ElfConfig) -> HwResult<()> {
+fn get_output_layout(
+    context: &mut Context,
+    output_root: (usize, usize),
+    output_number: (usize, usize),
+) -> HwResult<()> {
     // get output number
-    let output_number_vec = context.read(config.output_number.0, config.output_number.1, false)?;
+    let output_number_vec = context.read(output_number.0, output_number.1, false)?;
     // TODO make this dependent on the actual size of the values
     // TODO use as_chunks when it stabilizes
     let output_number_slice: [u8; 4] = output_number_vec[0..4]
@@ -95,7 +99,7 @@ fn get_output_layout(context: &mut Context, config: &ElfConfig) -> HwResult<()> 
         .expect("Should have correct length");
     let output_number = u32::min(u32::from_ne_bytes(output_number_slice), MAX_OUTPUTS);
     let mut output_structs = Vec::<DataItem>::new();
-    let output_root_vec = context.read(config.output_root.0, 8, false)?;
+    let output_root_vec = context.read(output_root.0, 8, false)?;
     let output_root_offset = usize::from_ne_bytes(
         output_root_vec[0..8]
             .try_into()
@@ -137,21 +141,63 @@ unsafe impl Send for CheriCommand {}
 struct CheriEngine {
     is_running: AtomicBool,
     cpu_slot: u8,
-    command_sender: Sender<CheriCommand>,
-    result_receiver: Receiver<HwResult<()>>,
+    command_sender: std::sync::mpsc::Sender<CheriCommand>,
+    result_receiver: futures::channel::mpsc::Receiver<HwResult<()>>,
     thread_handle: JoinHandle<()>,
+}
+
+struct CheriFuture<'a> {
+    engine: &'a mut CheriEngine,
+    context: Option<Context>,
+    output_root: (usize, usize),
+    output_number: (usize, usize),
+}
+
+// TODO find better way than take unwrap to return context
+// or at least a way to ensure that the future is always initialized with a context,
+// so this can only happen when poll is called after it has already returned the context once
+impl Future for CheriFuture<'_> {
+    type Output = (HwResult<()>, Context);
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &mut futures::task::Context,
+    ) -> futures::task::Poll<Self::Output> {
+        match Pin::new(&mut self.engine.result_receiver).poll_next(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(None) => {
+                return Poll::Ready((
+                    Err(HardwareError::EngineError),
+                    self.context.take().unwrap(),
+                ))
+            }
+            Poll::Ready(Some(Err(err))) => {
+                return Poll::Ready((Err(err), self.context.take().unwrap()))
+            }
+            Poll::Ready(Some(Ok(()))) => (),
+        }
+        let mut context = self.context.take().unwrap();
+        // erase all assumptions on context internal layout
+        context.dynamic_data.clear();
+        context.static_data.clear();
+        // read outputs
+        let output_root = self.output_root.clone();
+        let output_number = self.output_number.clone();
+        let result = get_output_layout(&mut context, output_root, output_number);
+        self.engine.is_running.store(false, Ordering::Release);
+        Poll::Ready((result, context))
+    }
 }
 
 fn run_thread(
     core_id: u8,
-    command_receiver: Receiver<CheriCommand>,
-    result_sender: Sender<HwResult<()>>,
+    command_receiver: std::sync::mpsc::Receiver<CheriCommand>,
+    mut result_sender: futures::channel::mpsc::Sender<HwResult<()>>,
 ) -> () {
     // set core
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
         return;
     };
-    for command in command_receiver.iter() {
+    'commandloop: for command in command_receiver.iter() {
         let cheri_error;
         unsafe {
             cheri_error = cheri_run_static(
@@ -166,24 +212,34 @@ fn run_thread(
             1 => Err(HardwareError::OutOfMemory),
             _ => Err(HardwareError::NotImplemented),
         };
-        if result_sender.send(message).is_err() {
-            return;
+        // try sending until succeeds
+        let mut not_sent = true;
+        while not_sent {
+            not_sent = match result_sender.try_send(message.clone()) {
+                Ok(()) => false,
+                Err(err) if err.is_full() => true,
+                Err(_) => break 'commandloop,
+            }
         }
     }
 }
 
 impl Engine for CheriEngine {
-    fn run(&mut self, config: &FunctionConfig, mut context: Context) -> (HwResult<()>, Context) {
+    fn run(
+        &mut self,
+        config: &FunctionConfig,
+        mut context: Context,
+    ) -> Pin<Box<dyn futures::Future<Output = (HwResult<()>, Context)> + '_>> {
         if self.is_running.swap(true, Ordering::AcqRel) {
-            return (Err(HardwareError::EngineAlreadyRunning), context);
+            return Box::pin(ready((Err(HardwareError::EngineAlreadyRunning), context)));
         }
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
-            _ => return (Err(HardwareError::ConfigMissmatch), context),
+            _ => return Box::pin(ready((Err(HardwareError::ConfigMissmatch), context))),
         };
         let cheri_context = match &context.context {
             ContextType::Cheri(ref cheri_context) => cheri_context,
-            _ => return (Err(HardwareError::ContextMissmatch), context),
+            _ => return Box::pin(ready((Err(HardwareError::ContextMissmatch), context))),
         };
         let command = CheriCommand {
             context: cheri_context.context,
@@ -192,24 +248,19 @@ impl Engine for CheriEngine {
             stack_pointer: cheri_context.size,
         };
         if let Err(err) = setup_input_structs(&mut context, &elf_config) {
-            return (Err(err), context);
+            return Box::pin(ready((Err(err), context)));
         }
         match self.command_sender.send(command) {
-            Err(_) => return (Err(HardwareError::EngineError), context),
+            Err(_) => return Box::pin(ready((Err(HardwareError::EngineError), context))),
             Ok(_) => (),
         }
-        match self.result_receiver.recv() {
-            Err(_) => return (Err(HardwareError::EngineError), context),
-            Ok(Err(err)) => return (Err(err), context),
-            Ok(Ok(())) => (),
-        }
-        // erase all assumptions on context internal layout
-        context.dynamic_data.clear();
-        context.static_data.clear();
-        // read outputs
-        let result = get_output_layout(&mut context, &elf_config);
-        self.is_running.store(false, Ordering::Release);
-        (result, context)
+        let function_future = Box::<CheriFuture>::pin(CheriFuture {
+            engine: self,
+            context: Some(context),
+            output_root: elf_config.output_root,
+            output_number: elf_config.output_number,
+        });
+        return function_future;
     }
     fn abort(&mut self) -> HwResult<()> {
         if !self.is_running.load(Ordering::Acquire) {
@@ -250,8 +301,8 @@ impl Driver for CheriDriver {
             Some(core_id) => core_id,
             None => return Err(HardwareError::NoEngineAvailable),
         };
-        let (command_sender, command_receiver) = channel();
-        let (result_sender, result_receiver) = channel();
+        let (command_sender, command_receiver) = std::sync::mpsc::channel();
+        let (result_sender, result_receiver) = futures::channel::mpsc::channel(0);
         let thread_handle = spawn(move || run_thread(cpu_slot, command_receiver, result_sender));
         let is_running = AtomicBool::new(false);
         return Ok(CheriEngine {

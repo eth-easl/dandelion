@@ -41,8 +41,9 @@ fn read_file(name: &str, expected_size: usize) -> Vec<u8> {
 fn test_loader_basic() {
     let elf_buffer = read_file("test_elf_x86c_basic", 13952);
     let mut malloc_domain = PagetableMemoryDomain {};
-    let (req_list, context, config) = PagetableLoader::parse_function(elf_buffer, &mut malloc_domain)
-        .expect("Should correctly parse elf file");
+    let (req_list, context, config) =
+        PagetableLoader::parse_function(elf_buffer, &mut malloc_domain)
+            .expect("Should correctly parse elf file");
     // check requirement list
     let expected_requirements = vec![
         Position {
@@ -203,7 +204,10 @@ fn test_engine_minimal() {
         Ok(c) => c,
         Err(err) => panic!("Expect static loading to succeed, failed with {:?}", err),
     };
-    let (result, function_context) = engine.run(&config, function_context);
+    let (result, function_context) = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(engine.run(&config, function_context));
     result.expect("Engine should run ok with basic function");
     domain
         .release_context(function_context)
@@ -273,7 +277,10 @@ fn test_engine_matmul_single() {
             size: 8,
         }),
     });
-    let (result, mut result_context) = engine.run(&config, function_context);
+    let (result, mut result_context) = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(engine.run(&config, function_context));
     result.expect("Engine should run ok with basic function");
     // check that result is 4
     assert_eq!(1, result_context.dynamic_data.len());
@@ -387,7 +394,10 @@ fn test_engine_matmul_size_sweep() {
                 size: input_size,
             }),
         });
-        let (result, mut result_context) = engine.run(&config, function_context);
+        let (result, mut result_context) = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(engine.run(&config, function_context));
         result.expect("Engine should run ok with basic function");
         // check that result is 4
         assert_eq!(1, result_context.dynamic_data.len());
@@ -439,8 +449,15 @@ fn test_engine_protection() {
         Ok(c) => c,
         Err(err) => panic!("Expect static loading to succeed, failed with {:?}", err),
     };
-    let (result, function_context) = engine.run(&config, function_context);
-    assert_eq!(result, Err(HardwareError::UnauthorizedSyscall), "Should detect unauthorized syscall");
+    let (result, function_context) = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(engine.run(&config, function_context));
+    assert_eq!(
+        result,
+        Err(HardwareError::UnauthorizedSyscall),
+        "Should detect unauthorized syscall"
+    );
     domain
         .release_context(function_context)
         .expect("Should release context");

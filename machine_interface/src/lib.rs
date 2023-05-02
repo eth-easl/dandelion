@@ -2,10 +2,10 @@ pub mod function_lib;
 pub mod memory_domain;
 pub mod util;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 // TODO define error types, possibly better printing than debug
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum HardwareError {
     NotImplemented, // trying to use a feature that is not yet implemented
     // errors in configurations

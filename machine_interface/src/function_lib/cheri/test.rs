@@ -1,14 +1,16 @@
 use std::vec;
 
 use crate::{
-    function_lib::{util::load_static, Driver, Engine, FunctionConfig, Loader},
-    memory_domain::{ContextTrait, MemoryDomain},
+    function_lib::{
+        cheri::{CheriDriver, CheriLoader},
+        util::load_static,
+        Driver, Engine, FunctionConfig, Loader,
+    },
+    memory_domain::{
+        cheri::CheriMemoryDomain, malloc::MallocMemoryDomain, ContextTrait, MemoryDomain,
+    },
     DataItem, DataItemType, HardwareError, Position,
 };
-
-use super::{CheriDriver, CheriLoader};
-use crate::memory_domain::cheri::CheriMemoryDomain;
-use crate::memory_domain::malloc::MallocMemoryDomain;
 
 // basic loader test
 #[test]
@@ -196,7 +198,10 @@ fn test_engine_minimal() {
         Ok(c) => c,
         Err(err) => panic!("Expect static loading to succeed, failed with {:?}", err),
     };
-    let (result, function_context) = engine.run(&config, function_context);
+    let (result, function_context) = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(engine.run(&config, function_context));
     result.expect("Engine should run ok with basic function");
     domain
         .release_context(function_context)
@@ -266,7 +271,10 @@ fn test_engine_matmul_single() {
             size: 8,
         }),
     });
-    let (result, mut result_context) = engine.run(&config, function_context);
+    let (result, mut result_context) = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(engine.run(&config, function_context));
     result.expect("Engine should run ok with basic function");
     // check that result is 4
     assert_eq!(1, result_context.dynamic_data.len());
@@ -379,7 +387,10 @@ fn test_engine_matmul_size_sweep() {
                 size: input_size,
             }),
         });
-        let (result, mut result_context) = engine.run(&config, function_context);
+        let (result, mut result_context) = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(engine.run(&config, function_context));
         result.expect("Engine should run ok with basic function");
         // check that result is 4
         assert_eq!(1, result_context.dynamic_data.len());

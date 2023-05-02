@@ -1,5 +1,9 @@
-use super::memory_domain::{Context, MemoryDomain};
-use super::{DataRequirementList, HwResult};
+use crate::{
+    memory_domain::{Context, MemoryDomain},
+    DataRequirementList, HwResult,
+};
+use core::pin::Pin;
+use std::future::Future;
 
 // list of implementations
 #[cfg(feature = "cheri")]
@@ -25,7 +29,11 @@ pub enum FunctionConfig {
 }
 
 pub trait Engine {
-    fn run(&mut self, config: &FunctionConfig, context: Context) -> (HwResult<()>, Context);
+    fn run(
+        &mut self,
+        config: &FunctionConfig,
+        context: Context,
+    ) -> Pin<Box<dyn Future<Output = (HwResult<()>, Context)> + '_>>;
     fn abort(&mut self) -> HwResult<()>;
 }
 
