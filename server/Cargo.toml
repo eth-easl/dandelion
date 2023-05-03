@@ -6,4 +6,8 @@ edition = "2021"
 [dependencies]
 machine_interface = { path = "../machine_interface" }
 dandelion_commons = { path = "../dandelion_commons" }
+dispatcher = { path = "../dispatcher" }
+futures = { version = "0.3.28"}
 tokio = { version = "1", features = ["full"] }
+hyper = { version = "0.14", features = ["full"] }
+tower = { version = "0.4.13", features = ["make"] }
