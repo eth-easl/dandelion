@@ -10,7 +10,7 @@ const BYTEPATTERN: u8 = 85;
 
 fn acquire<D: MemoryDomain>(arg: Vec<u8>, acquisition_size: usize, expect_success: bool) -> () {
     let init_result = D::init(arg);
-    let mut domain = init_result.expect("should have initialized memory domain");
+    let domain = init_result.expect("should have initialized memory domain");
     let context_result = domain.acquire_context(acquisition_size);
     match (expect_success, context_result) {
         (true, Ok(_)) | (false, Err(DandelionError::OutOfMemory)) => assert!(true),
@@ -40,7 +40,7 @@ fn write<D: MemoryDomain>(
     size: usize,
     expect_success: bool,
 ) {
-    let mut domain = init_domain::<D>(arg);
+    let domain = init_domain::<D>(arg);
     let mut context = domain
         .acquire_context(context_size)
         .expect("Single byte context should always be allocatable");
@@ -59,7 +59,7 @@ fn read<D: MemoryDomain>(
     size: usize,
     expect_success: bool,
 ) {
-    let mut domain = init_domain::<D>(arg);
+    let domain = init_domain::<D>(arg);
     let mut context = domain
         .acquire_context(context_size)
         .expect("Context should always be allocatable");
@@ -76,7 +76,7 @@ fn read<D: MemoryDomain>(
 }
 
 fn transefer<D: MemoryDomain>(arg: Vec<u8>, size: usize) {
-    let mut domain = init_domain::<D>(arg);
+    let domain = init_domain::<D>(arg);
     let mut destination = domain
         .acquire_context(size)
         .expect("Context should be allocatable");
@@ -103,7 +103,7 @@ fn transfer_item<D: MemoryDomain>(
     destination_index: usize,
     expect_result: DandelionResult<()>,
 ) {
-    let mut domain = init_domain::<D>(arg);
+    let domain = init_domain::<D>(arg);
     let mut destination = domain
         .acquire_context(context_size)
         .expect("Context should be allocatable");

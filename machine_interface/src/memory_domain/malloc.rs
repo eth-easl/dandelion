@@ -47,7 +47,7 @@ impl MemoryDomain for MallocMemoryDomain {
     fn init(_config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>> {
         Ok(Box::new(MallocMemoryDomain {}))
     }
-    fn acquire_context(&mut self, size: usize) -> DandelionResult<Context> {
+    fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
         let mut mem_space = Vec::new();
         if (mem_space.try_reserve_exact(size)) != Ok(()) {
             return Err(DandelionError::OutOfMemory);
@@ -59,7 +59,7 @@ impl MemoryDomain for MallocMemoryDomain {
             static_data: Vec::new(),
         })
     }
-    fn release_context(&mut self, context: Context) -> DandelionResult<()> {
+    fn release_context(&self, context: Context) -> DandelionResult<()> {
         match context.context {
             ContextType::Malloc(_) => Ok(()),
             _ => Err(DandelionError::ContextMissmatch),

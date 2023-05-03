@@ -40,6 +40,8 @@ pub struct CheriContext {
     pub context: *const cheri_c_context,
     pub size: usize,
 }
+unsafe impl Send for CheriContext {}
+unsafe impl Sync for CheriContext {}
 // TODO implement drop
 
 impl ContextTrait for CheriContext {
@@ -75,7 +77,7 @@ impl MemoryDomain for CheriMemoryDomain {
     fn init(_config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>> {
         Ok(Box::new(CheriMemoryDomain {}))
     }
-    fn acquire_context(&mut self, size: usize) -> DandelionResult<Context> {
+    fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
         let mut new_context: Box<CheriContext> = Box::new(CheriContext {
             context: std::ptr::null_mut(),
             size: size,
@@ -92,7 +94,7 @@ impl MemoryDomain for CheriMemoryDomain {
             static_data: Vec::new(),
         })
     }
-    fn release_context(&mut self, context: Context) -> DandelionResult<()> {
+    fn release_context(&self, context: Context) -> DandelionResult<()> {
         match context.context {
             ContextType::Cheri(cheri_context) => {
                 unsafe {
