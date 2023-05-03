@@ -21,6 +21,7 @@ pub enum DandelionError {
     // dispatcher errors
     DispatcherConfigError, // error from resulting from assumptions based on config passed to dispatcher
     DispatcherUnavailableFunction, // dispatcher was asked to queue function it can't find
+    DispatcherChannelError, // dispatcher encountered an issue when trasmitting data between tasks
     // Gerneral util errors
     FileError, // error while performing IO on a file
 }
