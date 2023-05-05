@@ -1,3 +1,7 @@
+pub type EngineTypeId = u8;
+pub type ContextTypeId = u8;
+pub type FunctionId = u64;
+
 // TODO define error types, possibly better printing than debug
 #[derive(Debug, Clone, PartialEq)]
 pub enum DandelionError {
@@ -19,6 +23,7 @@ pub enum DandelionError {
     EngineError,     // there was a non recoverable issue with the engine
     NoEngineAvailable, // asked driver for engine, but there are no more available
     // dispatcher errors
+    DispatcherMissingLoader(EngineTypeId), // dispatcher does not find a loader for this engine type
     DispatcherConfigError, // error from resulting from assumptions based on config passed to dispatcher
     DispatcherUnavailableFunction, // dispatcher was asked to queue function it can't find
     DispatcherChannelError, // dispatcher encountered an issue when trasmitting data between tasks

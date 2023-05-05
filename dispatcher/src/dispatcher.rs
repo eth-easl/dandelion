@@ -1,5 +1,5 @@
-use crate::{function_registry::FunctionRegistry, ContextTypeId, EngineTypeId, FunctionId};
-use dandelion_commons::{DandelionError, DandelionResult};
+use crate::{function_registry::FunctionRegistry, resource_pool::ResourcePool};
+use dandelion_commons::{ContextTypeId, DandelionError, DandelionResult, EngineTypeId, FunctionId};
 use futures::{channel::oneshot, lock::Mutex};
 use machine_interface::{
     function_lib::{DriverFunction, Engine, FunctionConfig},
@@ -48,10 +48,11 @@ impl SchedulerQueue {
 // That have compile time size and static indexing
 pub struct Dispatcher {
     domains: HashMap<ContextTypeId, Box<dyn MemoryDomain>>,
-    drivers: HashMap<EngineTypeId, DriverFunction>,
+    _drivers: HashMap<EngineTypeId, DriverFunction>,
     engines: HashMap<EngineTypeId, SchedulerQueue>,
     type_map: HashMap<EngineTypeId, ContextTypeId>,
     function_registry: FunctionRegistry,
+    _resource_pool: ResourcePool,
 }
 
 impl Dispatcher {
@@ -60,14 +61,31 @@ impl Dispatcher {
         drivers: HashMap<EngineTypeId, DriverFunction>,
         type_map: HashMap<EngineTypeId, ContextTypeId>,
         function_registry: FunctionRegistry,
+        mut resource_pool: ResourcePool,
     ) -> DandelionResult<Dispatcher> {
-        let engines = HashMap::with_capacity(drivers.len());
+        let mut engines = HashMap::with_capacity(drivers.len());
+        // Use up all engine resources to start with
+        for (engine_id, driver) in drivers.iter() {
+            let mut engine_vec = Vec::new();
+            while let Ok(Some(resource)) =
+                resource_pool.sync_acquire_engine_resource(engine_id.clone())
+            {
+                if let Ok(engine) = driver(vec![resource]) {
+                    engine_vec.push(engine);
+                }
+            }
+            let engine_queue = SchedulerQueue {
+                internals: Mutex::new((engine_vec, VecDeque::new())),
+            };
+            engines.insert(engine_id.clone(), engine_queue);
+        }
         return Ok(Dispatcher {
             domains,
-            drivers,
+            _drivers: drivers,
             engines,
             type_map,
             function_registry,
+            _resource_pool: resource_pool,
         });
     }
     pub async fn queue_function(
@@ -88,27 +106,26 @@ impl Dispatcher {
                 return Err(DandelionError::DispatcherUnavailableFunction);
             }
         }
-
         let (context, config) = self
             .prepare_for_engine(function_id, engine_id, inputs)
             .await?;
         let (result, context) = self.run_on_engine(engine_id, config, context).await;
-        // match result {
-        //     Ok(()) => Ok(context),
-        //     Err(err) => {
-        //         let context_id = match self.type_map.get(&engine_id) {
-        //             Some(id) => id,
-        //             None => return Err(DandelionError::DispatcherConfigError),
-        //         };
-        //         let domain = match self.domains.get(context_id) {
-        //             Some(d) => d,
-        //             None => return Err(DandelionError::DispatcherConfigError),
-        //         };
-        //         let _release_result = domain.release_context(context);
-        //         Err(err)
-        //     }
-        // }
-        Err(DandelionError::NotImplemented)
+        match result {
+            Ok(()) => Ok(context),
+            Err(err) => {
+                let context_id = match self.type_map.get(&engine_id) {
+                    Some(id) => id,
+                    None => return Err(DandelionError::DispatcherConfigError),
+                };
+                let domain = match self.domains.get(context_id) {
+                    Some(d) => d,
+                    None => return Err(DandelionError::DispatcherConfigError),
+                };
+                let _release_result = domain.release_context(context);
+                Err(err)
+            }
+        }
+        // Err(DandelionError::NotImplemented)
     }
     async fn prepare_for_engine(
         &self,

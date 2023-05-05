@@ -1,6 +1,4 @@
-use crate::{EngineTypeId, FunctionId};
-use core::panic;
-use dandelion_commons::{DandelionError, DandelionResult};
+use dandelion_commons::{DandelionError, DandelionResult, EngineTypeId, FunctionId};
 use futures::lock::Mutex;
 use machine_interface::{
     function_lib::{
@@ -14,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 
 pub struct FunctionRegistry {
     engine_map: HashMap<FunctionId, HashSet<EngineTypeId>>,
-    loaders: HashMap<EngineTypeId, &'static LoaderFunction>,
+    loaders: HashMap<EngineTypeId, LoaderFunction>,
     // TODO replace with futures compatible RW lock if it becomes a bottleneck
     registry:
         Mutex<HashMap<(FunctionId, EngineTypeId), (DataRequirementList, Context, FunctionConfig)>>,
@@ -22,10 +20,10 @@ pub struct FunctionRegistry {
 }
 
 impl FunctionRegistry {
-    pub fn new() -> Self {
+    pub fn new(loaders: HashMap<EngineTypeId, LoaderFunction>) -> Self {
         return FunctionRegistry {
             engine_map: HashMap::new(),
-            loaders: HashMap::new(),
+            loaders,
             registry: Mutex::new(HashMap::new()),
             local_available: HashMap::new(),
         };
@@ -72,7 +70,7 @@ impl FunctionRegistry {
         // get loader
         let loader = match self.loaders.get(&engine_id) {
             Some(l) => l,
-            None => return Err(DandelionError::DispatcherConfigError),
+            None => return Err(DandelionError::DispatcherMissingLoader(engine_id)),
         };
         // get function code
         // TODO replace by queueing of pre added composition to fetch code by id
@@ -96,16 +94,19 @@ impl FunctionRegistry {
         domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<(Context, FunctionConfig)> {
         // check if function for the engine is in registry already
+        // need to chunk this into blocks to drop lock guard at right times
+        {
+            let lock_guard = self.registry.lock().await;
+            if let Some(tripple) = lock_guard.get(&(function_id, engine_id)) {
+                let function_context = load_static(domain, &tripple.1, &tripple.0)?;
+                return Ok((function_context, tripple.2));
+            }
+        }
+        self.load_local(function_id, engine_id, domain).await?;
         let lock_guard = self.registry.lock().await;
         let tripple = match lock_guard.get(&(function_id, engine_id)) {
             Some(t) => t,
-            None => {
-                self.load_local(function_id, engine_id, domain).await?;
-                match lock_guard.get(&(function_id, engine_id)) {
-                    Some(t) => t,
-                    None => panic!("Function not in registry even after Ok from loading"),
-                }
-            }
+            None => panic!("Function not in registry even after Ok from loading"),
         };
         let function_context = load_static(domain, &tripple.1, &tripple.0)?;
         return Ok((function_context, tripple.2));
