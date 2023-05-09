@@ -92,6 +92,7 @@ impl Dispatcher {
         &self,
         function_id: FunctionId,
         inputs: Vec<(&Context, Vec<(usize, Option<usize>, usize)>)>,
+        non_caching: bool,
     ) -> DandelionResult<Context> {
         // find an engine capable of running the function
         // TODO actual scheduling decisions
@@ -107,7 +108,7 @@ impl Dispatcher {
             }
         }
         let (context, config) = self
-            .prepare_for_engine(function_id, engine_id, inputs)
+            .prepare_for_engine(function_id, engine_id, inputs, non_caching)
             .await?;
         let (result, context) = self.run_on_engine(engine_id, config, context).await;
         match result {
@@ -134,6 +135,7 @@ impl Dispatcher {
         // vector with contexts that hold the inputs as well as assoziated tripples that say
         // the dynamic data index of the context, possible index into a set and index of the input in the new function
         inputs: Vec<(&Context, Vec<(usize, Option<usize>, usize)>)>,
+        non_caching: bool,
     ) -> DandelionResult<(Context, FunctionConfig)> {
         // get context and load static data
         let context_id = match self.type_map.get(&engine_type) {
@@ -147,7 +149,7 @@ impl Dispatcher {
         // start doing transfers
         let (mut function_context, function_config) = self
             .function_registry
-            .load(function_id, engine_type, domain)
+            .load(function_id, engine_type, domain, non_caching)
             .await?;
         for (input_context, index_map) in inputs {
             for (input_index, input_sub_index, function_index) in index_map {

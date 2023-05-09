@@ -61,12 +61,12 @@ impl FunctionRegistry {
                 set
             });
     }
-    async fn load_local(
+    fn load_local(
         &self,
         function_id: FunctionId,
         engine_id: EngineTypeId,
         domain: &Box<dyn MemoryDomain>,
-    ) -> DandelionResult<()> {
+    ) -> DandelionResult<(DataRequirementList, Context, FunctionConfig)> {
         // get loader
         let loader = match self.loaders.get(&engine_id) {
             Some(l) => l,
@@ -80,35 +80,33 @@ impl FunctionRegistry {
         };
         let function_buffer = load_u8_from_file(path.to_string())?;
         let tripple = loader(function_buffer, domain)?;
-        // panic on none since we checked before and was not available
-        let mut lock_guard = self.registry.lock().await;
-        if let Some(_) = lock_guard.insert((function_id, engine_id), tripple) {
-            panic!("Found value on insert that should not have been there");
-        }
-        return Ok(());
+        return Ok(tripple);
     }
     pub async fn load(
         &self,
         function_id: FunctionId,
         engine_id: EngineTypeId,
         domain: &Box<dyn MemoryDomain>,
+        non_caching: bool,
     ) -> DandelionResult<(Context, FunctionConfig)> {
         // check if function for the engine is in registry already
-        // need to chunk this into blocks to drop lock guard at right times
-        {
-            let lock_guard = self.registry.lock().await;
-            if let Some(tripple) = lock_guard.get(&(function_id, engine_id)) {
-                let function_context = load_static(domain, &tripple.1, &tripple.0)?;
-                return Ok((function_context, tripple.2));
-            }
+        let mut lock_guard = self.registry.lock().await;
+        if let Some(tripple) = lock_guard.get(&(function_id, engine_id)) {
+            let function_context = load_static(domain, &tripple.1, &tripple.0)?;
+            return Ok((function_context, tripple.2));
         }
-        self.load_local(function_id, engine_id, domain).await?;
-        let lock_guard = self.registry.lock().await;
-        let tripple = match lock_guard.get(&(function_id, engine_id)) {
-            Some(t) => t,
-            None => panic!("Function not in registry even after Ok from loading"),
-        };
+
+        let tripple = self.load_local(function_id, engine_id, domain)?;
         let function_context = load_static(domain, &tripple.1, &tripple.0)?;
-        return Ok((function_context, tripple.2));
+        let function_config = tripple.2;
+        if !non_caching {
+            if lock_guard
+                .insert((function_id, engine_id), tripple)
+                .is_some()
+            {
+                panic!("Function not in registry even after Ok from loading");
+            };
+        }
+        return Ok((function_context, function_config));
     }
 }
