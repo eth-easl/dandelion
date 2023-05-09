@@ -40,6 +40,7 @@ pub struct Context {
     pub context: ContextType,
     pub dynamic_data: HashMap<usize, DataItem>,
     pub static_data: Vec<Position>,
+    pub size: usize,
 }
 
 impl ContextTrait for Context {
@@ -73,23 +74,27 @@ impl Context {
         // space start holds previous start
         let mut space_start = Err(DandelionError::ContextFull);
         let mut space_size = usize::MAX;
-        let mut last_end = 0;
+        let mut next_free = 0;
         if items.len() == 0 {
             return Ok(0);
         };
         for item in items {
             let item_start = item.offset;
-            let free_space = item_start - last_end;
+            let free_space = item_start - next_free;
 
             if free_space >= size && free_space < space_size {
                 space_size = free_space;
-                space_start = Ok(last_end);
+                space_start = Ok(next_free);
             }
-            last_end = item_start + item.size;
+            next_free = item_start + item.size;
             // TODO use next_multiple_of as soon as it is stabilized
-            if last_end % alignment != 0 {
-                last_end += alignment - last_end % alignment;
+            if next_free % alignment != 0 {
+                next_free += alignment - next_free % alignment;
             }
+        }
+        // check after last item
+        if self.size - next_free >= size && self.size - next_free < space_size {
+            space_start = Ok(next_free);
         }
         return space_start;
     }

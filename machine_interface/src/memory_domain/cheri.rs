@@ -92,6 +92,7 @@ impl MemoryDomain for CheriMemoryDomain {
             context: ContextType::Cheri(new_context),
             dynamic_data: HashMap::new(),
             static_data: Vec::new(),
+            size,
         })
     }
     fn release_context(&self, context: Context) -> DandelionResult<()> {

@@ -57,6 +57,7 @@ impl MemoryDomain for MallocMemoryDomain {
             context: ContextType::Malloc(Box::new(MallocContext { storage: mem_space })),
             dynamic_data: HashMap::new(),
             static_data: Vec::new(),
+            size,
         })
     }
     fn release_context(&self, context: Context) -> DandelionResult<()> {
