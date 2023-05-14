@@ -24,3 +24,8 @@ tokio = { version = "1", features = ["full"] }
 # also needs to be disabled for criterion flags to work that are not available for tests
 [lib]
 bench = false
+
+[[bench]]
+# name = "cheri_benchmark"
+name = "pagetable_benchmark"
+harness = false
