@@ -1,13 +1,15 @@
 use std::vec;
 
 use crate::{
-    function_lib::{util::load_static, Driver, Engine, FunctionConfig, Loader},
-    memory_domain::{ContextTrait, MemoryDomain},
-    DataItem, DataItemType, HardwareError, Position,
+    function_lib::{
+        pagetable::{PagetableDriver, PagetableLoader},
+        util::load_static,
+        Driver, Engine, FunctionConfig, Loader,
+    },
+    memory_domain::{pagetable::PagetableMemoryDomain, ContextTrait, MemoryDomain},
+    DataItem, DataItemType, Position,
 };
-
-use super::{PagetableDriver, PagetableLoader};
-use crate::memory_domain::pagetable::PagetableMemoryDomain;
+use dandelion_commons::DandelionError;
 
 // basic loader test
 #[test]
@@ -153,34 +155,20 @@ fn test_loader_basic() {
 
 #[test]
 fn test_driver() {
-    let mut no_engine_driver =
-        PagetableDriver::new(Vec::<u8>::new()).expect("Should be able to create driver");
-    let no_engine = no_engine_driver.start_engine();
-    match no_engine {
+    let no_resource_engine = PagetableDriver::start_engine(Vec::<u8>::new());
+    match no_resource_engine {
         Ok(_) => panic!("Should not be able to get engine"),
-        Err(err) => assert_eq!(HardwareError::NoEngineAvailable, err),
+        Err(err) => assert_eq!(DandelionError::ConfigMissmatch, err),
     }
-    drop(no_engine_driver);
-    let wrong_engine_driver = PagetableDriver::new(vec![255]);
-    match wrong_engine_driver {
-        Ok(driver) => {
-            drop(driver);
-            panic!("Should not be able to get engine")
-        }
-        Err(err) => assert_eq!(HardwareError::MalformedConfig, err),
+    let wrong_resource_engine = PagetableDriver::start_engine(vec![4]);
+    match wrong_resource_engine {
+        Ok(_) => panic!("Should not be able to get engine"),
+        Err(err) => assert_eq!(DandelionError::MalformedConfig, err),
     }
-    let mut some_engines_driver =
-        PagetableDriver::new(vec![0]).expect("Should be able to create driver");
-    for i in 0..2 {
-        let engine = some_engines_driver.start_engine();
-        if i < 1 {
-            engine.expect("Should be able to get engine");
-        } else {
-            match engine {
-                Ok(_) => panic!("Should not be able to get more engines than expected"),
-                Err(err) => assert_eq!(HardwareError::NoEngineAvailable, err),
-            }
-        };
+
+    for i in 0..4 {
+        let engine = PagetableDriver::start_engine(vec![i]);
+        engine.expect("Should be able to get engine");
     }
 }
 
@@ -194,10 +182,8 @@ fn test_engine_minimal() {
         PagetableLoader::parse_function(elf_buffer, &mut domain)
             .expect("Empty string should return error");
 
-    let mut driver = PagetableDriver::new(vec![0]).expect("Should be able to create driver");
-    let mut engine = driver
-        .start_engine()
-        .expect("Should be able to start engine");
+    let mut engine =
+        PagetableDriver::start_engine(vec![1]).expect("Should be able to start engine");
     // set up context and fill in static requirements
     let function_context_result = load_static(&mut domain, &mut static_context, &req_list);
     let function_context = match function_context_result {
@@ -215,9 +201,6 @@ fn test_engine_minimal() {
     domain
         .release_context(static_context)
         .expect("Should release context");
-    driver
-        .stop_engine(engine)
-        .expect("Should be able to stop engine");
 }
 
 #[test]
@@ -230,10 +213,8 @@ fn test_engine_matmul_single() {
         PagetableLoader::parse_function(elf_buffer, &mut domain)
             .expect("Empty string should return error");
 
-    let mut driver = PagetableDriver::new(vec![0]).expect("Should be able to create driver");
-    let mut engine = driver
-        .start_engine()
-        .expect("Should be able to start engine");
+    let mut engine =
+        PagetableDriver::start_engine(vec![1]).expect("Should be able to start engine");
     // set up context and fill in static requirements
     let function_context_result = load_static(&mut domain, &mut static_context, &req_list);
     let mut function_context = match function_context_result {
@@ -307,9 +288,6 @@ fn test_engine_matmul_single() {
     domain
         .release_context(static_context)
         .expect("Should release context");
-    driver
-        .stop_engine(engine)
-        .expect("Should be able to stop engine");
 }
 
 const LOWER_SIZE_BOUND: usize = 2;
@@ -336,15 +314,13 @@ fn test_engine_matmul_size_sweep() {
     // load elf file
     let elf_buffer = read_file("test_elf_x86c_matmul", 13952);
     let mut domain = PagetableMemoryDomain::init(Vec::<u8>::new())
-        .expect("Should have initialized new cheri domain");
+        .expect("Should have initialized new pagetable domain");
     let (req_list, mut static_context, config) =
         PagetableLoader::parse_function(elf_buffer, &mut domain)
             .expect("Empty string should return error");
 
-    let mut driver = PagetableDriver::new(vec![0]).expect("Should be able to create driver");
-    let mut engine = driver
-        .start_engine()
-        .expect("Should be able to start engine 0");
+    let mut engine =
+        PagetableDriver::start_engine(vec![1]).expect("Should be able to start engine");
     for mat_size in LOWER_SIZE_BOUND..UPPER_SIZE_BOUND {
         // set up context and fill in static requirements
         let function_context_result = load_static(&mut domain, &mut static_context, &req_list);
@@ -424,9 +400,6 @@ fn test_engine_matmul_size_sweep() {
     domain
         .release_context(static_context)
         .expect("Should release context");
-    driver
-        .stop_engine(engine)
-        .expect("Should be able to stop engine");
 }
 
 #[test]
@@ -439,10 +412,8 @@ fn test_engine_protection() {
         PagetableLoader::parse_function(elf_buffer, &mut domain)
             .expect("Empty string should return error");
 
-    let mut driver = PagetableDriver::new(vec![0]).expect("Should be able to create driver");
-    let mut engine = driver
-        .start_engine()
-        .expect("Should be able to start engine");
+    let mut engine =
+        PagetableDriver::start_engine(vec![1]).expect("Should be able to start engine");
     // set up context and fill in static requirements
     let function_context_result = load_static(&mut domain, &mut static_context, &req_list);
     let function_context = match function_context_result {
@@ -455,7 +426,7 @@ fn test_engine_protection() {
         .block_on(engine.run(&config, function_context));
     assert_eq!(
         result,
-        Err(HardwareError::UnauthorizedSyscall),
+        Err(DandelionError::UnauthorizedSyscall),
         "Should detect unauthorized syscall"
     );
     domain
@@ -464,7 +435,4 @@ fn test_engine_protection() {
     domain
         .release_context(static_context)
         .expect("Should release context");
-    driver
-        .stop_engine(engine)
-        .expect("Should be able to stop engine");
 }

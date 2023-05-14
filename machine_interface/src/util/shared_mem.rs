@@ -7,6 +7,7 @@ use std::num::NonZeroUsize;
 use std::os::fd::RawFd;
 use std::ptr::null_mut;
 
+#[derive(Debug)]
 pub struct SharedMem {
     unique_id: String,
     size: usize,

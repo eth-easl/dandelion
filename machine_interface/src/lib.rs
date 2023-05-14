@@ -4,33 +4,6 @@ pub mod util;
 
 use serde::{Deserialize, Serialize};
 
-// TODO define error types, possibly better printing than debug
-#[derive(Debug, Clone, PartialEq)]
-pub enum HardwareError {
-    NotImplemented, // trying to use a feature that is not yet implemented
-    // errors in configurations
-    MalformedConfig, // configuration vector was malformed
-    UnknownSymbol,
-    // memory errors
-    ContextMissmatch, // context handed to context specific function was wrong type
-    OutOfMemory,      // domain could not be allocated because there is no space available
-    ContextFull,      // context can't fit additional memory
-    InvalidRead,      // tried to read from domain outside of domain bounds
-    InvalidWrite,     // tried to write to domain ouside of domain bounds
-    // engine errors
-    ConfigMissmatch, // missmatch between the function config the engine expects and the one given
-    NoRunningFunction, // attempted abort when no function was running
-    EngineAlreadyRunning, // attempted to run on already busy engine
-    EngineError,     // there was a non recoverable issue with the engine
-    NoEngineAvailable, // asked driver for engine, but there are no more available
-    // proction errors
-    UnauthorizedSyscall,
-    SegmentationFault,
-    OtherProctionError,
-}
-
-pub type HwResult<T> = std::result::Result<T, HardwareError>;
-
 #[derive(PartialEq, Debug)]
 pub enum OffsetOrAlignment {
     Offset(usize),

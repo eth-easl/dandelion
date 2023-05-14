@@ -1,7 +1,8 @@
-use crate::{DataItem, Position};
-
-use super::super::{HardwareError, HwResult};
-use super::{Context, ContextTrait, ContextType, MemoryDomain};
+use crate::{
+    memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
+    DataItem, Position,
+};
+use dandelion_commons::{DandelionError, DandelionResult};
 
 #[derive(Debug)]
 pub struct MallocContext {
@@ -9,11 +10,11 @@ pub struct MallocContext {
 }
 
 impl ContextTrait for MallocContext {
-    fn write(&mut self, offset: usize, data: Vec<u8>) -> HwResult<()> {
+    fn write(&mut self, offset: usize, data: Vec<u8>) -> DandelionResult<()> {
         // check if the write is within bounds
         let length = self.storage.capacity();
         if offset + data.len() > length {
-            return Err(HardwareError::InvalidWrite);
+            return Err(DandelionError::InvalidWrite);
         }
         // write values
         for (pos, value) in data.into_iter().enumerate() {
@@ -21,15 +22,20 @@ impl ContextTrait for MallocContext {
         }
         Ok(())
     }
-    fn read(&mut self, offset: usize, read_size: usize, sanitize: bool) -> HwResult<Vec<u8>> {
+    fn read(
+        &mut self,
+        offset: usize,
+        read_size: usize,
+        sanitize: bool,
+    ) -> DandelionResult<Vec<u8>> {
         let length = self.storage.len();
         if offset + read_size > length {
-            return Err(HardwareError::InvalidRead);
+            return Err(DandelionError::InvalidRead);
         }
         // try to allocate space for read values
         let mut result_vec = Vec::new();
         if let Err(_) = result_vec.try_reserve(read_size) {
-            return Err(HardwareError::OutOfMemory);
+            return Err(DandelionError::OutOfMemory);
         }
         result_vec.resize(read_size, 0);
         // read values, sanitize if necessary
@@ -47,13 +53,13 @@ impl ContextTrait for MallocContext {
 pub struct MallocMemoryDomain {}
 
 impl MemoryDomain for MallocMemoryDomain {
-    fn init(_config: Vec<u8>) -> HwResult<Self> {
+    fn init(_config: Vec<u8>) -> DandelionResult<Self> {
         Ok(MallocMemoryDomain {})
     }
-    fn acquire_context(&mut self, size: usize) -> HwResult<Context> {
+    fn acquire_context(&mut self, size: usize) -> DandelionResult<Context> {
         let mut mem_space = Vec::new();
         if (mem_space.try_reserve_exact(size)) != Ok(()) {
-            return Err(HardwareError::OutOfMemory);
+            return Err(DandelionError::OutOfMemory);
         }
         mem_space.resize(size, 0);
         Ok(Context {
@@ -65,10 +71,10 @@ impl MemoryDomain for MallocMemoryDomain {
             protection_requirements: Vec::<(u32, Position)>::new()
         })
     }
-    fn release_context(&mut self, context: Context) -> HwResult<()> {
+    fn release_context(&mut self, context: Context) -> DandelionResult<()> {
         match context.context {
             ContextType::Malloc(_) => Ok(()),
-            _ => Err(HardwareError::ContextMissmatch),
+            _ => Err(DandelionError::ContextMissmatch),
         }
     }
 }
@@ -80,13 +86,13 @@ pub fn malloc_transfer(
     source_offset: usize,
     size: usize,
     sanitize: bool,
-) -> HwResult<()> {
+) -> DandelionResult<()> {
     // check if there is space in both contexts
     if source.storage.len() < source_offset + size {
-        return Err(HardwareError::InvalidRead);
+        return Err(DandelionError::InvalidRead);
     }
     if destination.storage.len() < destination_offset + size {
-        return Err(HardwareError::InvalidWrite);
+        return Err(DandelionError::InvalidWrite);
     }
     destination.storage[destination_offset..destination_offset + size]
         .copy_from_slice(&source.storage[source_offset..source_offset + size]);

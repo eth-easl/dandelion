@@ -1,5 +1,6 @@
-use crate::{HardwareError, HwResult, Position};
 use crate::util::DEFAULT_ALIGNMENT;
+use crate::Position;
+use dandelion_commons::{DandelionError, DandelionResult};
 
 macro_rules! parser_code {
     ($name: ident; $in_type: ty; $out_type: ty; $parser: ident; $increment: literal) => {
@@ -79,11 +80,11 @@ fn parse_phdr_table(
     pf: &ParserFuncs,
     ehdr: &ElfEhdr,
     is_32_bit: bool,
-) -> HwResult<Vec<ElfPhdr>> {
+) -> DandelionResult<Vec<ElfPhdr>> {
     let mut phdr_table = Vec::<ElfPhdr>::new();
     let entries = ehdr.e_phnum;
     if (ehdr.e_phoff + (ehdr.e_phnum * ehdr.e_phentsize) as u64) as usize > file.len() {
-        return Err(HardwareError::MalformedConfig);
+        return Err(DandelionError::MalformedConfig);
     }
     for entry in 0..entries {
         let mut offset: usize = (ehdr.e_phoff + (entry * ehdr.e_phentsize) as u64) as usize;
@@ -127,11 +128,15 @@ struct ElfShdr {
     sh_entsize: u64,
 }
 
-fn parse_shrd_table(file: &Vec<u8>, pf: &ParserFuncs, ehdr: &ElfEhdr) -> HwResult<Vec<ElfShdr>> {
+fn parse_shrd_table(
+    file: &Vec<u8>,
+    pf: &ParserFuncs,
+    ehdr: &ElfEhdr,
+) -> DandelionResult<Vec<ElfShdr>> {
     let mut shdr_table = Vec::<ElfShdr>::new();
     let entries = ehdr.e_shnum;
     if (ehdr.e_shoff + (ehdr.e_shnum * ehdr.e_shentsize) as u64) as usize > file.len() {
-        return Err(HardwareError::MalformedConfig);
+        return Err(DandelionError::MalformedConfig);
     }
     for entry in 0..entries {
         let mut offset: usize = (ehdr.e_shoff + (entry * ehdr.e_shentsize) as u64) as usize;
@@ -166,22 +171,22 @@ fn parse_symbol_table(
     pf: &ParserFuncs,
     shdr_table: &Vec<ElfShdr>,
     is_32_bit: bool,
-) -> HwResult<Vec<ElfSym>> {
+) -> DandelionResult<Vec<ElfSym>> {
     let mut symbol_table = Vec::<ElfSym>::new();
     let symbol_table_section_opt = shdr_table.iter().find(|x| x.sh_type == SHT_SYMTAB);
     let symbol_table_section = match symbol_table_section_opt {
         Some(section) => section,
-        None => return Err(HardwareError::MalformedConfig),
+        None => return Err(DandelionError::MalformedConfig),
     };
     let table_start = symbol_table_section.sh_offset as usize;
     let table_end = table_start + symbol_table_section.sh_size as usize;
     let entry_size = symbol_table_section.sh_entsize as usize;
     if entry_size == 0 {
-        return Err(HardwareError::MalformedConfig);
+        return Err(DandelionError::MalformedConfig);
     }
     let entries = symbol_table_section.sh_size as usize / entry_size;
     if entries * entry_size + table_start != table_end {
-        return Err(HardwareError::MalformedConfig);
+        return Err(DandelionError::MalformedConfig);
     }
     let parse_uchar = |value: &mut usize| {
         *value += 1;
@@ -211,7 +216,7 @@ fn parse_symbol_table(
         }
         if counter > counter_start + entry_size {
             println!("Entry size: {}, counter: {}", entry_size, counter);
-            return Err(HardwareError::MalformedConfig);
+            return Err(DandelionError::MalformedConfig);
         }
     }
     return Ok(symbol_table);
@@ -228,18 +233,18 @@ const SHT_SYMTAB: u32 = 0x2;
 const SHT_STRTAB: u32 = 0x3;
 
 impl ParsedElf {
-    pub fn new(file: &Vec<u8>) -> HwResult<Self> {
+    pub fn new(file: &Vec<u8>) -> DandelionResult<Self> {
         if file.len() < 6 {
-            return Err(HardwareError::MalformedConfig);
+            return Err(DandelionError::MalformedConfig);
         }
         // check magic number
         if file[0] != 0x7F || file[1] != 0x45 || file[2] != 0x4c || file[3] != 0x46 {
-            return Err(HardwareError::MalformedConfig);
+            return Err(DandelionError::MalformedConfig);
         }
         let is_32_bit = file[0x4] == 1;
         let little_endian = file[0x5] == 1;
         if (is_32_bit && file.len() < 0x34) || (!is_32_bit && file.len() < 0x40) {
-            return Err(HardwareError::MalformedConfig);
+            return Err(DandelionError::MalformedConfig);
         }
         let pf = match (little_endian, is_32_bit) {
             (true, true) => ParserFuncs {
@@ -265,7 +270,7 @@ impl ParsedElf {
         };
         let ehdr = parse_ehdr(&file, &pf);
         if (is_32_bit && ehdr.e_ehsize != 0x34) || (!is_32_bit && ehdr.e_ehsize != 0x40) {
-            return Err(HardwareError::MalformedConfig);
+            return Err(DandelionError::MalformedConfig);
         }
         let phdr_table = parse_phdr_table(&file, &pf, &ehdr, is_32_bit)?;
         let shdr_table = parse_shrd_table(&file, &pf, &ehdr)?;
@@ -306,7 +311,7 @@ impl ParsedElf {
     }
 
     // pub fn get_memory_protection_layout(&self) -> (Vec<Position>, Vec<Position>) {
-        pub fn get_memory_protection_layout(&self) -> Vec<(u32, Position)> {
+    pub fn get_memory_protection_layout(&self) -> Vec<(u32, Position)> {
         // let mut read_only = Vec::<Position>::new();
         let mut executable = Vec::<(u32, Position)>::new();
 
@@ -317,17 +322,24 @@ impl ParsedElf {
                 if size % DEFAULT_ALIGNMENT != 0 {
                     size += DEFAULT_ALIGNMENT - size % DEFAULT_ALIGNMENT;
                 }
-                executable.push((program_header._p_flags, Position { 
-                    offset: program_header.p_vaddr as usize, 
-                    // size: program_header.p_memsz as usize 
-                    size: size
-                }));
+                executable.push((
+                    program_header._p_flags,
+                    Position {
+                        offset: program_header.p_vaddr as usize,
+                        // size: program_header.p_memsz as usize
+                        size: size,
+                    },
+                ));
             }
         }
         executable
     }
 
-    pub fn get_symbol_by_name(&self, file: &Vec<u8>, name: &str) -> HwResult<(usize, usize)> {
+    pub fn get_symbol_by_name(
+        &self,
+        file: &Vec<u8>,
+        name: &str,
+    ) -> DandelionResult<(usize, usize)> {
         // find section header string table
         let section_name_entry = &self.section_header_table[self.ehdr.e_shstrndx as usize];
         let section_names_start = section_name_entry.sh_offset as usize;
@@ -335,11 +347,11 @@ impl ParsedElf {
         let section_name_string =
             match std::str::from_utf8(&file[section_names_start..section_names_end]) {
                 Ok(str) => str,
-                Err(_) => return Err(HardwareError::MalformedConfig),
+                Err(_) => return Err(DandelionError::MalformedConfig),
             };
         let string_table_index = match section_name_string.find(".strtab") {
             Some(index) => index,
-            None => return Err(HardwareError::MalformedConfig),
+            None => return Err(DandelionError::MalformedConfig),
         };
         let string_table_section_opt = self
             .section_header_table
@@ -347,7 +359,7 @@ impl ParsedElf {
             .find(|x| x.sh_type == SHT_STRTAB && x.sh_name as usize == string_table_index);
         let string_table_section = match string_table_section_opt {
             Some(section) => section,
-            None => return Err(HardwareError::MalformedConfig),
+            None => return Err(DandelionError::MalformedConfig),
         };
 
         let string_table_start = string_table_section.sh_offset as usize;
@@ -355,12 +367,12 @@ impl ParsedElf {
         let string_table_string =
             match std::str::from_utf8(&file[string_table_start..string_table_end]) {
                 Ok(str) => str,
-                Err(_) => return Err(HardwareError::MalformedConfig),
+                Err(_) => return Err(DandelionError::MalformedConfig),
             };
         let string_table_index = string_table_string.find(name);
         let name_index = match string_table_index {
             Some(index) => index,
-            None => return Err(HardwareError::UnknownSymbol),
+            None => return Err(DandelionError::UnknownSymbol),
         };
         let symbol = self
             .symbol_table
@@ -368,7 +380,7 @@ impl ParsedElf {
             .find(|sym| sym.st_name as usize == name_index);
         return match symbol {
             Some(sym) => return Ok((sym.st_value as usize, sym.st_size as usize)),
-            None => Err(HardwareError::MalformedConfig),
+            None => Err(DandelionError::MalformedConfig),
         };
     }
 

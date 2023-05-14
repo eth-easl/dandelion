@@ -1,19 +1,21 @@
-use crate::util::shared_mem::SharedMem;
-use crate::{DataItem, Position};
+use crate::{
+    memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
+    util::shared_mem::SharedMem,
+    DataItem, Position,
+};
+use dandelion_commons::{DandelionError, DandelionResult};
 use nix::sys::mman::ProtFlags;
 
-use super::super::{HardwareError, HwResult};
-use super::{Context, ContextTrait, ContextType, MemoryDomain};
-
+#[derive(Debug)]
 pub struct PagetableContext {
     pub storage: SharedMem,
 }
 
 impl ContextTrait for PagetableContext {
-    fn write(&mut self, offset: usize, data: Vec<u8>) -> HwResult<()> {
+    fn write(&mut self, offset: usize, data: Vec<u8>) -> DandelionResult<()> {
         // check if the write is within bounds
         if offset + data.len() > self.storage.len() {
-            return Err(HardwareError::InvalidWrite);
+            return Err(DandelionError::InvalidWrite);
         }
 
         // write values
@@ -24,15 +26,20 @@ impl ContextTrait for PagetableContext {
         Ok(())
     }
 
-    fn read(&mut self, offset: usize, read_size: usize, sanitize: bool) -> HwResult<Vec<u8>> {
+    fn read(
+        &mut self,
+        offset: usize,
+        read_size: usize,
+        sanitize: bool,
+    ) -> DandelionResult<Vec<u8>> {
         if offset + read_size > self.storage.len() {
-            return Err(HardwareError::InvalidRead);
+            return Err(DandelionError::InvalidRead);
         }
 
         // try to allocate space for read values
         let mut result_vec = Vec::new();
         if let Err(_) = result_vec.try_reserve(read_size) {
-            return Err(HardwareError::OutOfMemory);
+            return Err(DandelionError::OutOfMemory);
         }
         result_vec.resize(read_size, 0);
 
@@ -52,16 +59,16 @@ impl ContextTrait for PagetableContext {
 pub struct PagetableMemoryDomain {}
 
 impl MemoryDomain for PagetableMemoryDomain {
-    fn init(config: Vec<u8>) -> HwResult<Self> {
+    fn init(config: Vec<u8>) -> DandelionResult<Self> {
         Ok(PagetableMemoryDomain {})
     }
 
-    fn acquire_context(&mut self, size: usize) -> HwResult<Context> {
+    fn acquire_context(&mut self, size: usize) -> DandelionResult<Context> {
         // create and map a shared memory region
         let mem_space = match SharedMem::create(size, ProtFlags::PROT_READ | ProtFlags::PROT_WRITE)
         {
             Ok(v) => v,
-            Err(_e) => return Err(HardwareError::OutOfMemory),
+            Err(_e) => return Err(DandelionError::OutOfMemory),
         };
 
         Ok(Context {
@@ -73,10 +80,10 @@ impl MemoryDomain for PagetableMemoryDomain {
         })
     }
 
-    fn release_context(&mut self, context: Context) -> HwResult<()> {
+    fn release_context(&mut self, context: Context) -> DandelionResult<()> {
         match context.context {
             ContextType::Pagetable(_) => Ok(()),
-            _ => Err(HardwareError::ContextMissmatch),
+            _ => Err(DandelionError::ContextMissmatch),
         }
     }
 }
@@ -88,13 +95,13 @@ pub fn pagetable_transfer(
     source_offset: usize,
     size: usize,
     sanitize: bool,
-) -> HwResult<()> {
+) -> DandelionResult<()> {
     // check if there is space in both contexts
     if source.storage.len() < source_offset + size {
-        return Err(HardwareError::InvalidRead);
+        return Err(DandelionError::InvalidRead);
     }
     if destination.storage.len() < destination_offset + size {
-        return Err(HardwareError::InvalidWrite);
+        return Err(DandelionError::InvalidWrite);
     }
     unsafe {
         destination.storage.as_slice_mut()[destination_offset..destination_offset + size]

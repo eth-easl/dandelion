@@ -2,10 +2,10 @@ use crate::{
     function_lib::{Driver, ElfConfig, Engine, FunctionConfig, Loader},
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
-    DataItem, DataItemType, DataRequirement, DataRequirementList, HardwareError, HwResult,
-    Position,
+    DataItem, DataItemType, DataRequirement, DataRequirementList, Position,
 };
 use core_affinity;
+use dandelion_commons::{DandelionError, DandelionResult};
 use futures::future::ready;
 use nix::{
     sys::{
@@ -28,11 +28,11 @@ fn setup_input_structs(
     context: &mut Context,
     config: &ElfConfig,
     base_addr: usize,
-) -> HwResult<()> {
+) -> DandelionResult<()> {
     // size of array with input struct array
     // let pagetable_context = match &context.context {
     //     ContextType::Pagetable(c) => c,
-    //     _ => return Err(HardwareError::ConfigMissmatch)
+    //     _ => return Err(DandelionError::ConfigMissmatch)
     // };
 
     let input_number_option = context
@@ -50,7 +50,7 @@ fn setup_input_structs(
     for input in &context.dynamic_data {
         let pos = match &input.item_type {
             DataItemType::Item(position) => position,
-            _ => return Err(HardwareError::NotImplemented),
+            _ => return Err(DandelionError::NotImplemented),
         };
         let struct_offset = input_offset + IO_STRUCT_SIZE * input.index as usize;
         let mut io_struct = Vec::<u8>::new();
@@ -90,7 +90,11 @@ fn setup_input_structs(
     return Ok(());
 }
 
-fn get_output_layout(context: &mut Context, config: &ElfConfig, base_addr: usize) -> HwResult<()> {
+fn get_output_layout(
+    context: &mut Context,
+    config: &ElfConfig,
+    base_addr: usize,
+) -> DandelionResult<()> {
     // get output number
     let output_number_vec = context.read(config.output_number.0, config.output_number.1, false)?;
     // TODO make this dependent on the actual size of the values
@@ -109,7 +113,7 @@ fn get_output_layout(context: &mut Context, config: &ElfConfig, base_addr: usize
 
     // let pagetable_context = match &context.context {
     //     ContextType::Pagetable(c) => c,
-    //     _ => return Err(HardwareError::ConfigMissmatch)
+    //     _ => return Err(DandelionError::ConfigMissmatch)
     // };
     // let base_addr = pagetable_context.storage.as_ptr();
 
@@ -152,14 +156,14 @@ pub struct PagetableEngine {
     is_running: AtomicBool,
     cpu_slot: u8,
     // command_sender: Sender<CheriCommand>,
-    // result_receiver: Receiver<HwResult<()>>,
+    // result_receiver: Receiver<DandelionResult<()>>,
     // thread_handle: JoinHandle<()>,
 }
 
 // fn run_thread(
 //     core_id: u8,
 //     // command_receiver: Receiver<CheriCommand>,
-//     result_sender: Sender<HwResult<()>>,
+//     result_sender: Sender<DandelionResult<()>>,
 // ) -> () {
 //     // set core
 //     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
@@ -177,8 +181,8 @@ pub struct PagetableEngine {
 //         }
 //         let message = match cheri_error {
 //             0 => Ok(()),
-//             1 => Err(HardwareError::OutOfMemory),
-//             _ => Err(HardwareError::NotImplemented),
+//             1 => Err(DandelionError::OutOfMemory),
+//             _ => Err(DandelionError::NotImplemented),
 //         };
 //         if result_sender.send(message).is_err() {
 //             return;
@@ -240,17 +244,17 @@ impl Engine for PagetableEngine {
         &mut self,
         config: &FunctionConfig,
         mut context: Context,
-    ) -> Pin<Box<dyn futures::Future<Output = (HwResult<()>, Context)> + '_>> {
+    ) -> Pin<Box<dyn futures::Future<Output = (DandelionResult<()>, Context)> + '_>> {
         if self.is_running.swap(true, Ordering::AcqRel) {
-            return Box::pin(ready((Err(HardwareError::EngineAlreadyRunning), context)));
+            return Box::pin(ready((Err(DandelionError::EngineAlreadyRunning), context)));
         }
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
-            _ => return Box::pin(ready((Err(HardwareError::ConfigMissmatch), context))),
+            _ => return Box::pin(ready((Err(DandelionError::ConfigMissmatch), context))),
         };
         let pagetable_context = match &context.context {
             ContextType::Pagetable(pagetable_context) => pagetable_context,
-            _ => return Box::pin(ready((Err(HardwareError::ContextMissmatch), context))),
+            _ => return Box::pin(ready((Err(DandelionError::ContextMissmatch), context))),
         };
         // let command = CheriCommand {
         //     context: cheri_context.context,
@@ -262,11 +266,11 @@ impl Engine for PagetableEngine {
         // let storage = pagetable_context.storage.as_ptr();
         // let storage_len = pagetable_context.storage.len();
         // match self.command_sender.send(command) {
-        //     Err(_) => return (Err(HardwareError::EngineError), context),
+        //     Err(_) => return (Err(DandelionError::EngineError), context),
         //     Ok(_) => (),
         // }
         // match self.result_receiver.recv() {
-        //     Err(_) => return (Err(HardwareError::EngineError), context),
+        //     Err(_) => return (Err(DandelionError::EngineError), context),
         //     Ok(Err(err)) => return (Err(err), context),
         //     Ok(Ok(())) => (),
         // }
@@ -326,16 +330,16 @@ impl Engine for PagetableEngine {
                     eprintln!("detected unauthorized syscall with id {}", syscall_id);
                     worker.kill().unwrap();
                     eprintln!("worker killed");
-                    return Box::pin(ready((Err(HardwareError::UnauthorizedSyscall), context)));
+                    return Box::pin(ready((Err(DandelionError::UnauthorizedSyscall), context)));
                 }
             },
             Signal::SIGSEGV => {
                 eprintln!("detected segmentation fault");
-                return Box::pin(ready((Err(HardwareError::SegmentationFault), context)));
+                return Box::pin(ready((Err(DandelionError::SegmentationFault), context)));
             }
             s => {
                 eprintln!("detected {}", s);
-                return Box::pin(ready((Err(HardwareError::OtherProctionError), context)));
+                return Box::pin(ready((Err(DandelionError::OtherProctionError), context)));
             }
         }
 
@@ -347,67 +351,46 @@ impl Engine for PagetableEngine {
         self.is_running.store(false, Ordering::Release);
         Box::pin(ready((result, context)))
     }
-    fn abort(&mut self) -> HwResult<()> {
+    fn abort(&mut self) -> DandelionResult<()> {
         if !self.is_running.load(Ordering::Acquire) {
-            return Err(HardwareError::NoRunningFunction);
+            return Err(DandelionError::NoRunningFunction);
         }
         Ok(())
     }
 }
 
-pub struct PagetableDriver {
-    cpu_slots: Vec<u8>,
-}
+pub struct PagetableDriver {}
 
 impl Driver for PagetableDriver {
-    // required parts of the trait
-    type E = PagetableEngine;
-    fn new(config: Vec<u8>) -> HwResult<Self> {
-        // each entry in config is expected to be a core id for a cpu to use
-        // check that each one is available
+    // // take or release one of the available engines
+    fn start_engine(config: Vec<u8>) -> DandelionResult<Box<dyn Engine>> {
+        if config.len() != 1 {
+            return Err(DandelionError::ConfigMissmatch);
+        }
+        let cpu_slot: u8 = config[0];
+        // check that core is available
         let available_cores = match core_affinity::get_core_ids() {
-            None => return Err(HardwareError::EngineError),
+            None => return Err(DandelionError::EngineError),
             Some(cores) => cores,
         };
-        for core in config.iter() {
-            let found = available_cores
-                .iter()
-                .find(|x| x.id as u8 == core.clone())
-                .is_some();
-            if !found {
-                return Err(HardwareError::MalformedConfig);
-            }
+        if !available_cores
+            .iter()
+            .find(|x| x.id == usize::from(cpu_slot))
+            .is_some()
+        {
+            return Err(DandelionError::MalformedConfig);
         }
-        return Ok(PagetableDriver { cpu_slots: config });
-    }
-    // // take or release one of the available engines
-    fn start_engine(&mut self) -> HwResult<Self::E> {
-        let cpu_slot = match self.cpu_slots.pop() {
-            Some(core_id) => core_id,
-            None => return Err(HardwareError::NoEngineAvailable),
-        };
         // let (command_sender, command_receiver) = channel();
         // let (result_sender, result_receiver) = channel();
         // let thread_handle = spawn(move || run_thread(cpu_slot, result_sender));
         let is_running = AtomicBool::new(false);
-        return Ok(PagetableEngine {
+        return Ok(Box::new(PagetableEngine {
             cpu_slot,
             // command_sender,
             // result_receiver,
             // thread_handle,
             is_running,
-        });
-    }
-    fn stop_engine(&mut self, engine: Self::E) -> HwResult<()> {
-        // drop(engine.command_sender);
-        // drop(engine.result_receiver);
-        // TODO check if expect makes sense
-        // engine
-        //     .thread_handle
-        //     .join()
-        //     .expect("Expecting cheri thread handle to be joinable");
-        self.cpu_slots.push(engine.cpu_slot);
-        return Ok(());
+        }));
     }
 }
 
@@ -421,7 +404,7 @@ impl Loader for PagetableLoader {
     fn parse_function(
         function: Vec<u8>,
         static_domain: &mut dyn MemoryDomain,
-    ) -> HwResult<(DataRequirementList, Context, FunctionConfig)> {
+    ) -> DandelionResult<(DataRequirementList, Context, FunctionConfig)> {
         let elf = elf_parser::ParsedElf::new(&function)?;
         let input_root = elf.get_symbol_by_name(&function, "inputRoot")?;
         let input_number = elf.get_symbol_by_name(&function, "inputNumber")?;

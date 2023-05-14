@@ -34,8 +34,11 @@ extern "C" {
     ) -> ();
 }
 
-use super::super::{DataItem, HardwareError, HwResult, Position};
-use super::{Context, ContextTrait, ContextType, MemoryDomain};
+use crate::{
+    memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
+    DataItem, Position,
+};
+use dandelion_commons::{DandelionError, DandelionResult};
 
 pub struct CheriContext {
     pub context: *const cheri_c_context,
@@ -44,25 +47,30 @@ pub struct CheriContext {
 // TODO implement drop
 
 impl ContextTrait for CheriContext {
-    fn write(&mut self, offset: usize, data: Vec<u8>) -> HwResult<()> {
+    fn write(&mut self, offset: usize, data: Vec<u8>) -> DandelionResult<()> {
         // perform size checks
         if data.len() + offset > self.size {
-            return Err(HardwareError::InvalidWrite);
+            return Err(DandelionError::InvalidWrite);
         }
         unsafe {
             cheri_write_context(self.context, data.as_ptr(), offset, data.len());
         }
         Ok(())
     }
-    fn read(&mut self, offset: usize, read_size: usize, sanitize: bool) -> HwResult<Vec<u8>> {
+    fn read(
+        &mut self,
+        offset: usize,
+        read_size: usize,
+        sanitize: bool,
+    ) -> DandelionResult<Vec<u8>> {
         // perform size checks
         if read_size + offset > self.size {
-            return Err(HardwareError::InvalidRead);
+            return Err(DandelionError::InvalidRead);
         }
         // try to allocate space for read values
         let mut result_vec = Vec::<u8>::new();
         if let Err(_) = result_vec.try_reserve(read_size) {
-            return Err(HardwareError::OutOfMemory);
+            return Err(DandelionError::OutOfMemory);
         }
         result_vec.resize(read_size, 0);
         unsafe {
@@ -81,10 +89,10 @@ impl ContextTrait for CheriContext {
 pub struct CheriMemoryDomain {}
 
 impl MemoryDomain for CheriMemoryDomain {
-    fn init(_config: Vec<u8>) -> HwResult<Self> {
+    fn init(_config: Vec<u8>) -> DandelionResult<Self> {
         Ok(CheriMemoryDomain {})
     }
-    fn acquire_context(&mut self, size: usize) -> HwResult<Context> {
+    fn acquire_context(&mut self, size: usize) -> DandelionResult<Context> {
         let mut new_context: Box<CheriContext> = Box::new(CheriContext {
             context: std::ptr::null_mut(),
             size: size,
@@ -93,7 +101,7 @@ impl MemoryDomain for CheriMemoryDomain {
             new_context.context = cheri_alloc(size);
         }
         if new_context.context.is_null() {
-            return Err(HardwareError::OutOfMemory);
+            return Err(DandelionError::OutOfMemory);
         }
         Ok(Context {
             context: ContextType::Cheri(new_context),
@@ -101,7 +109,7 @@ impl MemoryDomain for CheriMemoryDomain {
             static_data: Vec::<Position>::new(),
         })
     }
-    fn release_context(&mut self, context: Context) -> HwResult<()> {
+    fn release_context(&mut self, context: Context) -> DandelionResult<()> {
         match context.context {
             ContextType::Cheri(cheri_context) => {
                 unsafe {
@@ -109,7 +117,7 @@ impl MemoryDomain for CheriMemoryDomain {
                 }
                 Ok(())
             }
-            _ => Err(HardwareError::ContextMissmatch),
+            _ => Err(DandelionError::ContextMissmatch),
         }
     }
 }
@@ -121,12 +129,12 @@ pub fn cheri_transfer(
     source_offset: usize,
     size: usize,
     sanitize: bool,
-) -> HwResult<()> {
+) -> DandelionResult<()> {
     if source_offset + size > source.size {
-        return Err(HardwareError::InvalidRead);
+        return Err(DandelionError::InvalidRead);
     }
     if destination_offset + size > destination.size {
-        return Err(HardwareError::InvalidWrite);
+        return Err(DandelionError::InvalidWrite);
     }
     unsafe {
         cheri_transfer_context(
