@@ -136,7 +136,28 @@ pub fn transefer_memory(
                 sanitize,
             )
         }
-        // TODO add cheri transfer
+        #[cfg(feature = "cheri")]
+        (ContextType::Cheri(destination_ctxt), ContextType::Cheri(source_ctxt)) => {
+            cheri::cheri_transfer(
+                destination_ctxt,
+                source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+                sanitize,
+            )
+        }
+        #[cfg(feature = "pagetable")]
+        (ContextType::Pagetable(destination_ctxt), ContextType::Pagetable(source_ctxt)) => {
+            pagetable::pagetable_transfer(
+                destination_ctxt,
+                source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+                sanitize,
+            )
+        }
         // default implementation using reads and writes
         (destination, source) => {
             let read_result = source.read(source_offset, size, sanitize);

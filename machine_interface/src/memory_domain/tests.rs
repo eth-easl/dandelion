@@ -1,7 +1,9 @@
 use std::vec;
 
-use super::super::HardwareError;
-use super::{ContextTrait, MemoryDomain};
+use crate::{
+    memory_domain::{transefer_memory, ContextTrait, MemoryDomain},
+    HardwareError,
+};
 // produces binary pattern 0b0101_01010 or 0x55
 const BYTEPATTERN: u8 = 85;
 
@@ -117,6 +119,31 @@ fn read_single_sanitize<D: MemoryDomain>(arg: Vec<u8>) {
     assert_eq!(vec![0], sanitized_val);
 }
 
+fn transefer<D: MemoryDomain>(arg: Vec<u8>, size: usize, sanitize: bool) {
+    let mut domain = init_domain::<D>(arg);
+    let mut destination = domain
+        .acquire_context(size)
+        .expect("Single byte context should always be allocatable");
+    let mut source = domain
+        .acquire_context(size)
+        .expect("Single byte context should always be allocatable");
+    source
+        .write(0, vec![BYTEPATTERN; size])
+        .expect("Writing should succeed");
+    transefer_memory(&mut destination, &mut source, 0, 0, size, sanitize)
+        .expect("Should successfully transfer");
+    let return_val = destination
+        .read(0, size, sanitize)
+        .expect("context should return single value vector in range");
+    assert_eq!(vec![BYTEPATTERN; size], return_val);
+    if sanitize {
+        let sanitized_val = source
+            .read(0, size, false)
+            .expect("context should return single value vector in range");
+        assert_eq!(vec![0; size], sanitized_val);
+    }
+}
+
 macro_rules! domainTests {
     ($name : ident ; $domain : ty ; $init : expr) => {
         mod $name {
@@ -156,6 +183,22 @@ macro_rules! domainTests {
                 read_single_sanitize::<$domain>($init);
             }
             // TODO longer writes and reads, as well as partial writes and reads
+            #[test]
+            fn test_transfer_single() {
+                transefer::<$domain>($init, 1, false);
+            }
+            #[test]
+            fn test_transfer_single_sanitize() {
+                transefer::<$domain>($init, 1, true);
+            }
+            #[test]
+            fn test_transfer_page() {
+                transefer::<$domain>($init, 4096, false);
+            }
+            #[test]
+            fn test_transfer_page_sanitize() {
+                transefer::<$domain>($init, 4096, true);
+            }
         }
     };
 }

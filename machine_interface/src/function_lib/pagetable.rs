@@ -148,7 +148,7 @@ fn get_output_layout(context: &mut Context, config: &ElfConfig, base_addr: usize
 // }
 // unsafe impl Send for CheriCommand {}
 
-struct PagetableEngine {
+pub struct PagetableEngine {
     is_running: AtomicBool,
     cpu_slot: u8,
     // command_sender: Sender<CheriCommand>,
@@ -355,7 +355,7 @@ impl Engine for PagetableEngine {
     }
 }
 
-struct PagetableDriver {
+pub struct PagetableDriver {
     cpu_slots: Vec<u8>,
 }
 
@@ -413,7 +413,7 @@ impl Driver for PagetableDriver {
 
 const DEFAULT_SPACE_SIZE: usize = 0x80_0000; // 8MiB
 
-struct PagetableLoader {}
+pub struct PagetableLoader {}
 impl Loader for PagetableLoader {
     // parses an executable,
     // returns the layout requirements and a context containing static data,

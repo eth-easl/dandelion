@@ -81,13 +81,27 @@ impl MemoryDomain for PagetableMemoryDomain {
     }
 }
 
-// pub fn malloc_transfer(
-//     destination: &mut PagetableContext,
-//     source: &mut PagetableContext,
-//     destination_offset: usize,
-//     source_offset: usize,
-//     size: usize,
-//     sanitize: bool,
-// ) -> HwResult<()> {
-//     Ok(())
-// }
+pub fn pagetable_transfer(
+    destination: &mut PagetableContext,
+    source: &mut PagetableContext,
+    destination_offset: usize,
+    source_offset: usize,
+    size: usize,
+    sanitize: bool,
+) -> HwResult<()> {
+    // check if there is space in both contexts
+    if source.storage.len() < source_offset + size {
+        return Err(HardwareError::InvalidRead);
+    }
+    if destination.storage.len() < destination_offset + size {
+        return Err(HardwareError::InvalidWrite);
+    }
+    unsafe {
+        destination.storage.as_slice_mut()[destination_offset..destination_offset + size]
+            .copy_from_slice(&source.storage.as_slice()[source_offset..source_offset + size]);
+        if sanitize {
+            source.storage.as_slice_mut()[source_offset..source_offset + size].fill(0);
+        }
+    }
+    Ok(())
+}
