@@ -229,7 +229,7 @@ impl Engine for PagetableEngine {
         &mut self,
         config: &FunctionConfig,
         mut context: Context,
-    ) -> Pin<Box<dyn futures::Future<Output = (DandelionResult<()>, Context)> + '_>> {
+    ) -> Pin<Box<dyn futures::Future<Output = (DandelionResult<()>, Context)> + '_ + Send>> {
         if self.is_running.swap(true, Ordering::AcqRel) {
             return Box::pin(ready((Err(DandelionError::EngineAlreadyRunning), context)));
         }
@@ -388,7 +388,7 @@ impl Loader for PagetableLoader {
     //  and a layout description for it
     fn parse_function(
         function: Vec<u8>,
-        static_domain: &mut Box<dyn MemoryDomain>,
+        static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<(DataRequirementList, Context, FunctionConfig)> {
         let elf = elf_parser::ParsedElf::new(&function)?;
         let input_root = elf.get_symbol_by_name(&function, "inputRoot")?;

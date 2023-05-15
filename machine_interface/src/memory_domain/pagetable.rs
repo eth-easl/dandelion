@@ -55,7 +55,7 @@ impl MemoryDomain for PagetableMemoryDomain {
         Ok(Box::new(PagetableMemoryDomain {}))
     }
 
-    fn acquire_context(&mut self, size: usize) -> DandelionResult<Context> {
+    fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
         // create and map a shared memory region
         let mem_space = match SharedMem::create(size, ProtFlags::PROT_READ | ProtFlags::PROT_WRITE)
         {
@@ -72,7 +72,7 @@ impl MemoryDomain for PagetableMemoryDomain {
         })
     }
 
-    fn release_context(&mut self, context: Context) -> DandelionResult<()> {
+    fn release_context(&self, context: Context) -> DandelionResult<()> {
         match context.context {
             ContextType::Pagetable(_) => Ok(()),
             _ => Err(DandelionError::ContextMissmatch),

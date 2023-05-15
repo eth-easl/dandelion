@@ -16,6 +16,9 @@ pub struct SharedMem {
     owner: bool,
 }
 
+unsafe impl Send for SharedMem {}
+unsafe impl Sync for SharedMem {}
+
 impl SharedMem {
     pub fn create(size: usize, prot: ProtFlags) -> Result<Self, Errno> {
         let unique_id = format!("/shmem_{:X}", rand::random::<u64>());

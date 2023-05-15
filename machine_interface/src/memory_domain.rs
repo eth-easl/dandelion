@@ -9,7 +9,7 @@ use crate::{DataItem, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
 use std::collections::HashMap;
 
-pub trait ContextTrait {
+pub trait ContextTrait: Send + Sync {
     fn write(&mut self, offset: usize, data: Vec<u8>) -> DandelionResult<()>;
     fn read(&self, offset: usize, read_size: usize) -> DandelionResult<Vec<u8>>;
 }
@@ -106,13 +106,13 @@ impl Context {
     }
 }
 
-pub trait MemoryDomain {
+pub trait MemoryDomain: Sync + Send {
     // allocation and distruction
     fn init(config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>>
     where
         Self: Sized;
-    fn acquire_context(&mut self, size: usize) -> DandelionResult<Context>;
-    fn release_context(&mut self, context: Context) -> DandelionResult<()>;
+    fn acquire_context(&self, size: usize) -> DandelionResult<Context>;
+    fn release_context(&self, context: Context) -> DandelionResult<()>;
 }
 
 // Code to specialize transfers between different domains

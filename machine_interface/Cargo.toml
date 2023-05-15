@@ -8,6 +8,8 @@ cmake = "0.1"
 
 [dev-dependencies]
 criterion = "0.4"
+# need to lock this to older version, because morello does not yet have rustc 1.6
+regex = "1.7.1"
 
 [dependencies]
 dandelion_commons = { path = "../dandelion_commons" }
