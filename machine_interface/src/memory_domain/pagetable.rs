@@ -1,10 +1,10 @@
 use crate::{
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
     util::shared_mem::SharedMem,
-    DataItem, Position,
 };
 use dandelion_commons::{DandelionError, DandelionResult};
 use nix::sys::mman::ProtFlags;
+use std::collections::HashMap;
 
 #[derive(Debug)]
 pub struct PagetableContext {
@@ -26,12 +26,7 @@ impl ContextTrait for PagetableContext {
         Ok(())
     }
 
-    fn read(
-        &mut self,
-        offset: usize,
-        read_size: usize,
-        sanitize: bool,
-    ) -> DandelionResult<Vec<u8>> {
+    fn read(&self, offset: usize, read_size: usize) -> DandelionResult<Vec<u8>> {
         if offset + read_size > self.storage.len() {
             return Err(DandelionError::InvalidRead);
         }
@@ -46,9 +41,6 @@ impl ContextTrait for PagetableContext {
         // read values, sanitize if necessary
         unsafe {
             result_vec.copy_from_slice(&self.storage.as_slice()[offset..offset + read_size]);
-            if sanitize {
-                self.storage.as_slice_mut()[offset..offset + read_size].fill(0);
-            }
         }
 
         Ok(result_vec)
@@ -59,8 +51,8 @@ impl ContextTrait for PagetableContext {
 pub struct PagetableMemoryDomain {}
 
 impl MemoryDomain for PagetableMemoryDomain {
-    fn init(config: Vec<u8>) -> DandelionResult<Self> {
-        Ok(PagetableMemoryDomain {})
+    fn init(_config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>> {
+        Ok(Box::new(PagetableMemoryDomain {}))
     }
 
     fn acquire_context(&mut self, size: usize) -> DandelionResult<Context> {
@@ -73,10 +65,10 @@ impl MemoryDomain for PagetableMemoryDomain {
 
         Ok(Context {
             context: ContextType::Pagetable(Box::new(PagetableContext { storage: mem_space })),
-            dynamic_data: Vec::<DataItem>::new(),
-            static_data: Vec::<Position>::new(),
+            dynamic_data: HashMap::new(),
+            static_data: Vec::new(),
             #[cfg(feature = "pagetable")]
-            protection_requirements: Vec::<(u32, Position)>::new(),
+            protection_requirements: Vec::new(),
         })
     }
 
@@ -90,11 +82,10 @@ impl MemoryDomain for PagetableMemoryDomain {
 
 pub fn pagetable_transfer(
     destination: &mut PagetableContext,
-    source: &mut PagetableContext,
+    source: &PagetableContext,
     destination_offset: usize,
     source_offset: usize,
     size: usize,
-    sanitize: bool,
 ) -> DandelionResult<()> {
     // check if there is space in both contexts
     if source.storage.len() < source_offset + size {
@@ -106,9 +97,6 @@ pub fn pagetable_transfer(
     unsafe {
         destination.storage.as_slice_mut()[destination_offset..destination_offset + size]
             .copy_from_slice(&source.storage.as_slice()[source_offset..source_offset + size]);
-        if sanitize {
-            source.storage.as_slice_mut()[source_offset..source_offset + size].fill(0);
-        }
     }
     Ok(())
 }

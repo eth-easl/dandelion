@@ -63,6 +63,6 @@ pub trait Loader {
     //  and a layout description for it
     fn parse_function(
         function: Vec<u8>,
-        static_domain: &mut dyn MemoryDomain,
+        static_domain: &mut Box<dyn MemoryDomain>,
     ) -> DandelionResult<(DataRequirementList, Context, FunctionConfig)>;
 }

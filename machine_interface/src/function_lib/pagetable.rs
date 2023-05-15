@@ -2,11 +2,11 @@ use crate::{
     function_lib::{Driver, ElfConfig, Engine, FunctionConfig, Loader},
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
-    DataItem, DataItemType, DataRequirement, DataRequirementList, Position,
+    DataItem, DataRequirement, DataRequirementList, Position,
 };
+use core::{future::ready, pin::Pin};
 use core_affinity;
 use dandelion_commons::{DandelionError, DandelionResult};
-use futures::future::ready;
 use nix::{
     sys::{
         signal::Signal,
@@ -15,8 +15,8 @@ use nix::{
     unistd::Pid,
 };
 use std::{
+    collections::HashMap,
     io::{BufRead, BufReader, Write},
-    pin::Pin,
     process::{Command, Stdio},
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -30,29 +30,19 @@ fn setup_input_structs(
     base_addr: usize,
 ) -> DandelionResult<()> {
     // size of array with input struct array
-    // let pagetable_context = match &context.context {
-    //     ContextType::Pagetable(c) => c,
-    //     _ => return Err(DandelionError::ConfigMissmatch)
-    // };
-
-    let input_number_option = context
-        .dynamic_data
-        .iter()
-        .max_by(|a, b| a.index.cmp(&b.index));
+    let input_number_option = context.dynamic_data.keys().max();
     let input_number = match input_number_option {
-        Some(num) => num.index + 1,
+        Some(num) => num + 1,
         None => return Ok(()),
     };
     let input_struct_size = input_number as usize * IO_STRUCT_SIZE;
     let input_offset = context.get_free_space(input_struct_size, 8)?;
-    // let base_addr = pagetable_context.storage.as_ptr();
-
-    for input in &context.dynamic_data {
-        let pos = match &input.item_type {
-            DataItemType::Item(position) => position,
+    for (index, input) in context.dynamic_data.iter() {
+        let pos = match &input {
+            DataItem::Item(position) => position,
             _ => return Err(DandelionError::NotImplemented),
         };
-        let struct_offset = input_offset + IO_STRUCT_SIZE * input.index as usize;
+        let struct_offset = input_offset + IO_STRUCT_SIZE * index;
         let mut io_struct = Vec::<u8>::new();
         io_struct.append(&mut usize::to_ne_bytes(pos.size).to_vec());
         io_struct.append(&mut usize::to_ne_bytes(base_addr + pos.offset).to_vec());
@@ -76,7 +66,7 @@ fn setup_input_structs(
     )?;
     context.write(
         config.input_number.0,
-        u32::to_ne_bytes(input_number).to_vec(),
+        u32::to_ne_bytes(input_number as u32).to_vec(),
     )?;
     context.write(
         config.output_root.0,
@@ -96,32 +86,27 @@ fn get_output_layout(
     base_addr: usize,
 ) -> DandelionResult<()> {
     // get output number
-    let output_number_vec = context.read(config.output_number.0, config.output_number.1, false)?;
+    let output_number_vec = context.read(config.output_number.0, config.output_number.1)?;
     // TODO make this dependent on the actual size of the values
     // TODO use as_chunks when it stabilizes
     let output_number_slice: [u8; 4] = output_number_vec[0..4]
         .try_into()
         .expect("Should have correct length");
-    let output_number = u32::min(u32::from_ne_bytes(output_number_slice), MAX_OUTPUTS);
-    let mut output_structs = Vec::<DataItem>::new();
-    let output_root_vec = context.read(config.output_root.0, 8, false)?;
+    let number_of_outputs = usize::min(
+        u32::from_ne_bytes(output_number_slice) as usize,
+        MAX_OUTPUTS as usize,
+    );
+    let mut output_structs = HashMap::new();
+    let output_root_vec = context.read(config.output_root.0, 8)?;
     let output_root_offset = usize::from_ne_bytes(
         output_root_vec[0..8]
             .try_into()
             .expect("Should have correct length"),
     );
-
-    // let pagetable_context = match &context.context {
-    //     ContextType::Pagetable(c) => c,
-    //     _ => return Err(DandelionError::ConfigMissmatch)
-    // };
-    // let base_addr = pagetable_context.storage.as_ptr();
-
-    for output_index in 0..output_number {
-        // let read_offset = output_root_offset + IO_STRUCT_SIZE * output_index as usize;
-        let read_offset = (output_root_offset + IO_STRUCT_SIZE * output_index as usize
-            - base_addr as usize) as usize;
-        let out_struct = context.read(read_offset, IO_STRUCT_SIZE as usize, false)?;
+    for output_index in 0..number_of_outputs {
+        // let read_offset = output_root_offset + IO_STRUCT_SIZE * output_index;
+        let read_offset = output_root_offset + IO_STRUCT_SIZE * output_index - base_addr;
+        let out_struct = context.read(read_offset, IO_STRUCT_SIZE as usize)?;
         let size = usize::from_ne_bytes(
             out_struct[0..8]
                 .try_into()
@@ -132,13 +117,13 @@ fn get_output_layout(
                 .try_into()
                 .expect("Should have correct length"),
         );
-        output_structs.push(DataItem {
-            index: output_index,
-            item_type: DataItemType::Item(Position {
+        output_structs.insert(
+            output_index,
+            DataItem::Item(Position {
                 offset: offset - base_addr as usize,
                 size: size,
             }),
-        })
+        );
     }
     context.dynamic_data = output_structs;
     Ok(())
@@ -403,7 +388,7 @@ impl Loader for PagetableLoader {
     //  and a layout description for it
     fn parse_function(
         function: Vec<u8>,
-        static_domain: &mut dyn MemoryDomain,
+        static_domain: &mut Box<dyn MemoryDomain>,
     ) -> DandelionResult<(DataRequirementList, Context, FunctionConfig)> {
         let elf = elf_parser::ParsedElf::new(&function)?;
         let input_root = elf.get_symbol_by_name(&function, "inputRoot")?;

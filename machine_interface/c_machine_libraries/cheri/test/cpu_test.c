@@ -9,6 +9,9 @@
 #include "cpu.h"
 #include "registerState.h"
 
+// THIS IS SEPARATELY DEFINED AGAIN IN THE ASM!
+#define SANITY_VALUE 0xDEAD
+
 // test function definitions
 extern void overwriteAll(void);
 extern void overwriteAllEnd(void);
@@ -16,7 +19,7 @@ int overwriteSize;
 extern void safeAll(void);
 extern void safeAllEnd(void);
 int safeAllSize;
-extern void sandboxedCallWrapped(char* __capability memory,
+extern char sandboxedCallWrapped(char* __capability memory,
                                  void* __capability function,
                                  size_t returnPairOffset, void* stackPointer,
                                  StatePair* regState);
@@ -60,7 +63,8 @@ void testCapabiltyEquality(void* __capability expected,
 StatePair getSandboxEntryState(void) {
   const size_t capSize = sizeof(void* __capability);
   // round up to next 16 bytes
-  int allocSize = ((capSize + sizeof(RegisterState) + 1) / capSize) * capSize;
+  int allocSize =
+      ((capSize * 2 + sizeof(RegisterState) + 1) / capSize) * capSize;
   char* functionMemory = malloc(allocSize);
   // normally stackpointer should be set at end, but set it at beginning because
   // the cap storing using the stack pointer register only works with positive
@@ -86,15 +90,25 @@ StatePair getSandboxEntryState(void) {
   __asm__ volatile("clrperm %w0, %w0, %1"
                    : "+r"(function_cap)
                    : "r"(function_permission_mask));
-  cheri_execute(memory_cap, function_cap, 0, capSize);
+  char err = cheri_execute(memory_cap, function_cap, 0, (void*)capSize);
+  TEST_ASSERT_EQUAL_INT8_MESSAGE(0, err, "Execute call returned error");
 
   // copy values from stackpointer onward into registerState
   StatePair regState = {};
   memcpy(&regState.actual, stackPointer, sizeof(RegisterState));
-  regState.expected.csp = (void* __capability)stackPointer;
+  *((void**)(&regState.expected.csp)) = (void*)capSize;
   void* __capability ddc = (__cheri_tocap void* __capability)functionMemory;
   ddc = __builtin_cheri_bounds_set(ddc, allocSize);
+  // clear tag, since the safing also needs to do that, because cap stores are
+  // not allowed
+  ddc = __builtin_cheri_tag_clear(ddc);
   regState.expected.ddc = ddc;
+
+  // check the function actually ran
+  int sanityValue = *(int*)(functionMemory + allocSize - 4);
+  TEST_ASSERT_EQUAL_INT32_MESSAGE(
+      SANITY_VALUE, sanityValue,
+      "Sanity value missmatch, function may not have run");
 
   free(functionMemory);
 
@@ -111,9 +125,11 @@ StatePair getSandboxEntryState(void) {
  be equal to the expected for the sandbox to be correct.
 */
 StatePair getSandboxExitState(void) {
-  int alloc_size = sizeof(void* __capability);
+  int alloc_size = sizeof(void* __capability) * 2;
   char* functionMemory = malloc(alloc_size);
-  char* stackPointer = functionMemory + sizeof(void* __capability);
+  for (int i = 0; i < 16; i++) {
+    functionMemory[16 + i] = 0;
+  }
 
   StatePair regState = {};
 
@@ -125,7 +141,6 @@ StatePair getSandboxExitState(void) {
   __asm__ volatile("clrperm %w0, %w0, %1"
                    : "+r"(memory_cap)
                    : "r"(memory_permission_mask));
-  printf("memory pointer: %p\nmemory cap: %#lp\n", functionMemory, memory_cap);
   // make function cap
   void* __capability function_cap = __builtin_cheri_program_counter_get();
   function_cap =
@@ -136,7 +151,14 @@ StatePair getSandboxExitState(void) {
                    : "+r"(function_cap)
                    : "r"(function_permission_mask));
 
-  sandboxedCallWrapped(memory_cap, function_cap, 0, stackPointer, &regState);
+  char err = sandboxedCallWrapped(memory_cap, function_cap, 0,
+                                  (void*)alloc_size, &regState);
+  TEST_ASSERT_EQUAL_INT8_MESSAGE(0, err, "Execute call returned error");
+  // check the function actually ran
+  int sanityValue = *(int*)(functionMemory + alloc_size - 4);
+  TEST_ASSERT_EQUAL_INT32_MESSAGE(
+      SANITY_VALUE, sanityValue,
+      "Sanity value missmatch, function may not have run");
 
   free(functionMemory);
 
@@ -209,31 +231,31 @@ void testRegisterSanitation(void) {
 }
 
 void testStackPointerSanitation(void) {
-  StatePair regState = getSandboxExitState();
+  StatePair regState = getSandboxEntryState();
 
   testCapabiltyEquality(regState.expected.csp, regState.actual.csp);
 }
 
 void testDDCSanitation(void) {
-  StatePair regState = getSandboxExitState();
+  StatePair regState = getSandboxEntryState();
 
   testCapabiltyEquality(regState.expected.ddc, regState.actual.ddc);
 }
 
 void testCompartmentIdSanitation(void) {
-  StatePair regState = getSandboxExitState();
+  StatePair regState = getSandboxEntryState();
 
   testCapabiltyEquality(regState.expected.cid, regState.actual.cid);
 }
 
 void testThreadIdSanitation(void) {
-  StatePair regState = getSandboxExitState();
+  StatePair regState = getSandboxEntryState();
 
   testCapabiltyEquality(regState.expected.ctpidr, regState.actual.ctpidr);
 }
 
 void testRestrictedThreadIdSanitation(void) {
-  StatePair regState = getSandboxExitState();
+  StatePair regState = getSandboxEntryState();
 
   testCapabiltyEquality(regState.expected.rctpidr, regState.actual.rctpidr);
 }

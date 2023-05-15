@@ -22,7 +22,6 @@ extern "C" {
         destination_pointer: *mut u8,
         context_offset: size_t,
         size: size_t,
-        sanitize: i8,
     ) -> ();
     fn cheri_transfer_context(
         destination: *const cheri_c_context,
@@ -30,15 +29,12 @@ extern "C" {
         destination_offset: size_t,
         source_offset: size_t,
         size: size_t,
-        sanitize: i8,
     ) -> ();
 }
 
-use crate::{
-    memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
-    DataItem, Position,
-};
+use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
 use dandelion_commons::{DandelionError, DandelionResult};
+use std::collections::HashMap;
 
 pub struct CheriContext {
     pub context: *const cheri_c_context,
@@ -57,12 +53,7 @@ impl ContextTrait for CheriContext {
         }
         Ok(())
     }
-    fn read(
-        &mut self,
-        offset: usize,
-        read_size: usize,
-        sanitize: bool,
-    ) -> DandelionResult<Vec<u8>> {
+    fn read(&self, offset: usize, read_size: usize) -> DandelionResult<Vec<u8>> {
         // perform size checks
         if read_size + offset > self.size {
             return Err(DandelionError::InvalidRead);
@@ -73,15 +64,7 @@ impl ContextTrait for CheriContext {
             return Err(DandelionError::OutOfMemory);
         }
         result_vec.resize(read_size, 0);
-        unsafe {
-            cheri_read_context(
-                self.context,
-                result_vec.as_mut_ptr(),
-                offset,
-                read_size,
-                sanitize as i8,
-            )
-        }
+        unsafe { cheri_read_context(self.context, result_vec.as_mut_ptr(), offset, read_size) }
         Ok(result_vec)
     }
 }
@@ -89,8 +72,8 @@ impl ContextTrait for CheriContext {
 pub struct CheriMemoryDomain {}
 
 impl MemoryDomain for CheriMemoryDomain {
-    fn init(_config: Vec<u8>) -> DandelionResult<Self> {
-        Ok(CheriMemoryDomain {})
+    fn init(_config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>> {
+        Ok(Box::new(CheriMemoryDomain {}))
     }
     fn acquire_context(&mut self, size: usize) -> DandelionResult<Context> {
         let mut new_context: Box<CheriContext> = Box::new(CheriContext {
@@ -105,8 +88,8 @@ impl MemoryDomain for CheriMemoryDomain {
         }
         Ok(Context {
             context: ContextType::Cheri(new_context),
-            dynamic_data: Vec::<DataItem>::new(),
-            static_data: Vec::<Position>::new(),
+            dynamic_data: HashMap::new(),
+            static_data: Vec::new(),
         })
     }
     fn release_context(&mut self, context: Context) -> DandelionResult<()> {
@@ -124,11 +107,10 @@ impl MemoryDomain for CheriMemoryDomain {
 
 pub fn cheri_transfer(
     destination: &mut CheriContext,
-    source: &mut CheriContext,
+    source: &CheriContext,
     destination_offset: usize,
     source_offset: usize,
     size: usize,
-    sanitize: bool,
 ) -> DandelionResult<()> {
     if source_offset + size > source.size {
         return Err(DandelionError::InvalidRead);
@@ -143,7 +125,6 @@ pub fn cheri_transfer(
             destination_offset,
             source_offset,
             size,
-            sanitize as i8,
         );
     }
     Ok(())

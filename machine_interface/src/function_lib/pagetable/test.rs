@@ -4,10 +4,10 @@ use crate::{
     function_lib::{
         pagetable::{PagetableDriver, PagetableLoader},
         util::load_static,
-        Driver, Engine, FunctionConfig, Loader,
+        Driver, FunctionConfig, Loader,
     },
     memory_domain::{pagetable::PagetableMemoryDomain, ContextTrait, MemoryDomain},
-    DataItem, DataItemType, Position,
+    DataItem, Position,
 };
 use dandelion_commons::DandelionError;
 
@@ -17,8 +17,9 @@ use dandelion_commons::DandelionError;
 fn test_loader_empty() {
     // load elf file
     let elf_file = Vec::<u8>::new();
-    let mut malloc_domain = PagetableMemoryDomain {};
-    PagetableLoader::parse_function(elf_file, &mut malloc_domain)
+    let mut pagetable_domain =
+        PagetableMemoryDomain::init(Vec::new()).expect("Should be able to get pagetable domain");
+    PagetableLoader::parse_function(elf_file, &mut pagetable_domain)
         .expect("Empty string should return error");
 }
 
@@ -42,9 +43,10 @@ fn read_file(name: &str, expected_size: usize) -> Vec<u8> {
 #[test]
 fn test_loader_basic() {
     let elf_buffer = read_file("test_elf_x86c_basic", 13952);
-    let mut malloc_domain = PagetableMemoryDomain {};
+    let mut pagetable_domain =
+        PagetableMemoryDomain::init(Vec::new()).expect("Should be able to get pagetable domain");
     let (req_list, context, config) =
-        PagetableLoader::parse_function(elf_buffer, &mut malloc_domain)
+        PagetableLoader::parse_function(elf_buffer, &mut pagetable_domain)
             .expect("Should correctly parse elf file");
     // check requirement list
     let expected_requirements = vec![
@@ -178,14 +180,14 @@ fn test_engine_minimal() {
     let elf_buffer = read_file("test_elf_x86c_basic", 13952);
     let mut domain = PagetableMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new pagetable domain");
-    let (req_list, mut static_context, config) =
+    let (req_list, static_context, config) =
         PagetableLoader::parse_function(elf_buffer, &mut domain)
             .expect("Empty string should return error");
 
     let mut engine =
         PagetableDriver::start_engine(vec![1]).expect("Should be able to start engine");
     // set up context and fill in static requirements
-    let function_context_result = load_static(&mut domain, &mut static_context, &req_list);
+    let function_context_result = load_static(&mut domain, &static_context, &req_list);
     let function_context = match function_context_result {
         Ok(c) => c,
         Err(err) => panic!("Expect static loading to succeed, failed with {:?}", err),
@@ -228,53 +230,55 @@ fn test_engine_matmul_single() {
     function_context
         .write(in_size_offset, i64::to_ne_bytes(1).to_vec())
         .expect("Write should go through");
-    function_context.dynamic_data.push(DataItem {
-        index: 0,
-        item_type: DataItemType::Item(Position {
+    function_context.dynamic_data.insert(
+        0,
+        DataItem::Item(Position {
             offset: in_size_offset,
             size: 8,
         }),
-    });
+    );
     let in_mat_offset = function_context
         .get_free_space(8, 8)
         .expect("Should have space for single i64");
     function_context
         .write(in_mat_offset, i64::to_ne_bytes(2).to_vec())
         .expect("Write should go through");
-    function_context.dynamic_data.push(DataItem {
-        index: 1,
-        item_type: DataItemType::Item(Position {
+    function_context.dynamic_data.insert(
+        1,
+        DataItem::Item(Position {
             offset: in_mat_offset,
             size: 8,
         }),
-    });
+    );
     let out_mat_offset = function_context
         .get_free_space(8, 8)
         .expect("Should have space for single i64");
-    function_context.dynamic_data.push(DataItem {
-        index: 2,
-        item_type: DataItemType::Item(Position {
+    function_context.dynamic_data.insert(
+        2,
+        DataItem::Item(Position {
             offset: out_mat_offset,
             size: 8,
         }),
-    });
-    let (result, mut result_context) = tokio::runtime::Builder::new_current_thread()
+    );
+    let (result, result_context) = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
         .block_on(engine.run(&config, function_context));
     result.expect("Engine should run ok with basic function");
     // check that result is 4
     assert_eq!(1, result_context.dynamic_data.len());
-    let output_item = &result_context.dynamic_data[0];
-    assert_eq!(0, output_item.index);
-    let position = match &output_item.item_type {
-        DataItemType::Item(pos) => pos,
-        DataItemType::Set(_) => panic!("Output type should not be set"),
+    let output_item = &result_context
+        .dynamic_data
+        .get(&0)
+        .expect("Should contain item with index 0");
+    let position = match &output_item {
+        DataItem::Item(pos) => pos,
+        DataItem::Set(_) => panic!("Output type should not be set"),
     };
     assert_eq!(8, position.size, "Checking for size of output");
     let raw_output = result_context
         .context
-        .read(position.offset, position.size, false)
+        .read(position.offset, position.size)
         .expect("Should succeed in reading");
     let converted_output = i64::from_ne_bytes(
         raw_output[0..8]
@@ -315,7 +319,7 @@ fn test_engine_matmul_size_sweep() {
     let elf_buffer = read_file("test_elf_x86c_matmul", 13952);
     let mut domain = PagetableMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new pagetable domain");
-    let (req_list, mut static_context, config) =
+    let (req_list, static_context, config) =
         PagetableLoader::parse_function(elf_buffer, &mut domain)
             .expect("Empty string should return error");
 
@@ -323,7 +327,7 @@ fn test_engine_matmul_size_sweep() {
         PagetableDriver::start_engine(vec![1]).expect("Should be able to start engine");
     for mat_size in LOWER_SIZE_BOUND..UPPER_SIZE_BOUND {
         // set up context and fill in static requirements
-        let function_context_result = load_static(&mut domain, &mut static_context, &req_list);
+        let function_context_result = load_static(&mut domain, &static_context, &req_list);
         let mut function_context = match function_context_result {
             Ok(c) => c,
             Err(err) => panic!("Expect static loading to succeed, failed with {:?}", err),
@@ -335,13 +339,13 @@ fn test_engine_matmul_size_sweep() {
         function_context
             .write(in_size_offset, i64::to_ne_bytes(mat_size as i64).to_vec())
             .expect("Write should go through");
-        function_context.dynamic_data.push(DataItem {
-            index: 0,
-            item_type: DataItemType::Item(Position {
+        function_context.dynamic_data.insert(
+            0,
+            DataItem::Item(Position {
                 offset: in_size_offset,
                 size: 8,
             }),
-        });
+        );
         let input_size = 8 * mat_size * mat_size;
         let in_mat_offset = function_context
             .get_free_space(input_size, 8)
@@ -353,40 +357,42 @@ fn test_engine_matmul_size_sweep() {
         function_context
             .write(in_mat_offset, mat_vec)
             .expect("Write should go through");
-        function_context.dynamic_data.push(DataItem {
-            index: 1,
-            item_type: DataItemType::Item(Position {
+        function_context.dynamic_data.insert(
+            1,
+            DataItem::Item(Position {
                 offset: in_mat_offset,
                 size: input_size,
             }),
-        });
+        );
         let out_mat_offset = function_context
             .get_free_space(input_size, 8)
             .expect("Should have space for single i64");
-        function_context.dynamic_data.push(DataItem {
-            index: 2,
-            item_type: DataItemType::Item(Position {
+        function_context.dynamic_data.insert(
+            2,
+            DataItem::Item(Position {
                 offset: out_mat_offset,
                 size: input_size,
             }),
-        });
-        let (result, mut result_context) = tokio::runtime::Builder::new_current_thread()
+        );
+        let (result, result_context) = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(engine.run(&config, function_context));
         result.expect("Engine should run ok with basic function");
         // check that result is 4
         assert_eq!(1, result_context.dynamic_data.len());
-        let output_item = &result_context.dynamic_data[0];
-        assert_eq!(0, output_item.index);
-        let position = match &output_item.item_type {
-            DataItemType::Item(pos) => pos,
-            DataItemType::Set(_) => panic!("Output type should not be set"),
+        let output_item = &result_context
+            .dynamic_data
+            .get(&0)
+            .expect("Should have output with index 0");
+        let position = match &output_item {
+            DataItem::Item(pos) => pos,
+            DataItem::Set(_) => panic!("Output type should not be set"),
         };
         assert_eq!(input_size, position.size, "Checking for size of output");
         let raw_output = result_context
             .context
-            .read(position.offset, position.size, false)
+            .read(position.offset, position.size)
             .expect("Should succeed in reading");
         let expected = get_expected_mat(mat_size);
         for (index, chunk) in raw_output.chunks_exact(8).enumerate() {
@@ -408,14 +414,14 @@ fn test_engine_protection() {
     let elf_buffer = read_file("test_elf_x86c_syscall", 14128);
     let mut domain = PagetableMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new pagetable domain");
-    let (req_list, mut static_context, config) =
+    let (req_list, static_context, config) =
         PagetableLoader::parse_function(elf_buffer, &mut domain)
             .expect("Empty string should return error");
 
     let mut engine =
         PagetableDriver::start_engine(vec![1]).expect("Should be able to start engine");
     // set up context and fill in static requirements
-    let function_context_result = load_static(&mut domain, &mut static_context, &req_list);
+    let function_context_result = load_static(&mut domain, &static_context, &req_list);
     let function_context = match function_context_result {
         Ok(c) => c,
         Err(err) => panic!("Expect static loading to succeed, failed with {:?}", err),

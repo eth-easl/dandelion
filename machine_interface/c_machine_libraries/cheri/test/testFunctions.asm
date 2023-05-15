@@ -11,6 +11,8 @@
 .align 8
 .text
   overwriteAll:
+    mov w0, 0xDEAD
+    str w0, [SP, -4]
     mov x0, 0xCA31
     mov CSP, c0
     mov x0, 0xAB32
@@ -138,6 +140,9 @@ overwriteAllEnd: ldpbr c29, [c0]
     str c2, [SP, 528]
     str c3, [SP, 544]
     str c4, [SP, 560]
+    # store the sanity value
+    mov w0, 0xDEAD
+    str w0, [SP, 588]
     # load the ddc into a register so it can be used for a capability load
     mrs c0, DDC
     ldr c0, [c0]
