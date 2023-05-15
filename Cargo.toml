@@ -1,0 +1,3 @@
+# virtual workspace for building and testing all packages on changes
+[workspace]
+members = ["dandelion_commons", "dispatcher", "machine_interface", "server"]

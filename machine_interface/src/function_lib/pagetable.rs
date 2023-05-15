@@ -261,7 +261,7 @@ impl Engine for PagetableEngine {
         // }
 
         // create a new address space (child process) and pass the shared memory
-        let mut worker = Command::new("target/debug/pagetable_worker")
+        let mut worker = Command::new("../target/debug/pagetable_worker")
             .arg(self.cpu_slot.to_string())
             .arg(pagetable_context.storage.id())
             .arg(serde_json::to_string(&context.protection_requirements).unwrap())
