@@ -1,9 +1,13 @@
+use core_affinity::{self, CoreId};
 use dandelion_commons::{ContextTypeId, EngineTypeId};
 use dispatcher::{
     dispatcher::Dispatcher, function_registry::FunctionRegistry, resource_pool::ResourcePool,
 };
-use futures::{future::BoxFuture, lock::Mutex};
-use hyper::{service::Service, Body, Request, Response, Server};
+use futures::lock::Mutex;
+use hyper::{
+    service::{make_service_fn, service_fn},
+    Body, Request, Response, Server,
+};
 #[cfg(feature = "cheri")]
 use machine_interface::{
     function_lib::{
@@ -13,7 +17,8 @@ use machine_interface::{
     memory_domain::{cheri::CheriMemoryDomain, ContextTrait, MemoryDomain},
     DataItem, Position,
 };
-use std::{collections::HashMap, convert::Infallible, net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, convert::Infallible, net::SocketAddr, println, sync::Arc};
+use tokio::runtime::Builder;
 // use std::time::Instant;
 
 const MAT_DIM: usize = 128;
@@ -87,6 +92,9 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
         domain
             .release_context(result_context)
             .expect("Should be able to release result");
+        domain
+            .release_context(input_context)
+            .expect("Should be able to release input");
         // let item = match result_context.dynamic_data.get(&0) {
         //     Some(item) => item,
         //     None => {
@@ -154,59 +162,13 @@ async fn service(
         "/hot" => serve_hot(req, dispatcher).await,
         "/native" => serve_native(req).await,
         _ => Ok::<_, Infallible>(Response::new(
-            format!("Hello, World! You asked for: {}\n", uri).into(),
+            // format!("Hello, World! You asked for: {}\n", uri).into(),
+            format!("Hello, Wor\n").into(),
         )),
     }
 }
 
-struct DispatcherService {
-    dispatcher: Arc<Dispatcher>,
-}
-
-impl Service<Request<Body>> for DispatcherService {
-    type Response = Response<Body>;
-    type Error = Infallible;
-    // TODO check if we can get concrete type
-    type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
-    // Pin<Box<dyn futures::future::Future<Output = Result<Self::Response, Self::Error>>>;
-
-    fn poll_ready(
-        &mut self,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        Ok(()).into()
-    }
-
-    fn call(&mut self, req: Request<Body>) -> Self::Future {
-        Box::pin(service(req, self.dispatcher.clone()))
-    }
-}
-
-struct ServiceMaker {
-    dispatcher: Arc<Dispatcher>,
-}
-
-impl<T> Service<T> for ServiceMaker {
-    type Response = DispatcherService;
-    type Error = std::io::Error;
-    type Future = futures::future::Ready<Result<Self::Response, Self::Error>>;
-
-    fn poll_ready(
-        &mut self,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        Ok(()).into()
-    }
-
-    fn call(&mut self, _: T) -> Self::Future {
-        futures::future::ok(DispatcherService {
-            dispatcher: self.dispatcher.clone(),
-        })
-    }
-}
-
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> () {
+fn main() -> () {
     println!("Server Hello");
     // set up input data
     unsafe {
@@ -260,11 +222,31 @@ async fn main() -> () {
             .expect("Should be able to start dispatcher"),
     );
 
+    // make multithreaded front end that only uses core 0
+    // set up tokio runtime, need io in any case
+    let mut runtime_builder = Builder::new_multi_thread();
+    runtime_builder.enable_io();
+    runtime_builder.on_thread_start(|| {
+        core_affinity::set_for_current(CoreId { id: 0usize });
+        println!("Hello from Tokio thread");
+    });
+    let runtime = runtime_builder.build().unwrap();
+    let _guard = runtime.enter();
+
     // ready http endpoint
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
-    let server = Server::bind(&addr).serve(ServiceMaker { dispatcher });
+    let make_svc = make_service_fn(move |_| {
+        let new_dispatcher = dispatcher.clone();
+        async move {
+            Ok::<_, Infallible>(service_fn(move |req| {
+                let service_dispatcher = new_dispatcher.clone();
+                service(req, service_dispatcher)
+            }))
+        }
+    });
+    let server = Server::bind(&addr).serve(make_svc);
     // Run this server for... forever!
-    if let Err(e) = server.await {
+    if let Err(e) = runtime.block_on(server) {
         eprintln!("server error: {}", e);
     }
 }
