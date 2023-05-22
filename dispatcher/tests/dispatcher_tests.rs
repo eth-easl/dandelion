@@ -5,7 +5,8 @@ use dispatcher::{
 use futures::lock::Mutex;
 use machine_interface::{
     function_lib::{Driver, DriverFunction, Loader, LoaderFunction},
-    memory_domain::MemoryDomain,
+    memory_domain::{ContextTrait, MemoryDomain},
+    DataItem, Position,
 };
 use std::collections::HashMap;
 
@@ -39,26 +40,132 @@ fn setup_dispatcher<Dom: MemoryDomain, Driv: Driver, L: Loader>(
         .expect("Should have initialized dispatcher");
 }
 
+fn single_domain_and_engine_basic<Domain: MemoryDomain, TestDriver: Driver, TestLoader: Loader>(
+    domain_arg: Vec<u8>,
+    relative_path: &str,
+    engine_resource: Vec<u8>,
+) {
+    let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.push(relative_path);
+    let dispatcher = setup_dispatcher::<Domain, TestDriver, TestLoader>(
+        Vec::new(),
+        path.to_str().unwrap(),
+        engine_resource,
+    );
+    let result = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(dispatcher.queue_function(0, Vec::new(), false));
+    match result {
+        Ok(_) => (),
+        Err(err) => panic!("Failed with: {:?}", err),
+    }
+}
+
+fn single_domain_and_engine_matmul<Domain: MemoryDomain, TestDriver: Driver, TestLoader: Loader>(
+    domain_arg: Vec<u8>,
+    relative_path: &str,
+    engine_resource: Vec<u8>,
+) {
+    let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.push(relative_path);
+    let dispatcher = setup_dispatcher::<Domain, TestDriver, TestLoader>(
+        Vec::new(),
+        path.to_str().unwrap(),
+        engine_resource,
+    );
+    // need space for the input matrix of 2x2 uint64_t as well as a output matrix of the same size
+    // and an uint64_t size that gives the column / row size (which is 2)
+    const CONTEXT_SIZE: usize = 9 * 8;
+    let mut in_context = Domain::init(domain_arg)
+        .expect("Should be able to init domain")
+        .acquire_context(CONTEXT_SIZE)
+        .expect("Should get input matrix context");
+    let size_offset = in_context.get_free_space(8, 8).expect("Should have space");
+    in_context
+        .write(size_offset, u64::to_ne_bytes(2).to_vec())
+        .expect("Should be able to write matrix size");
+    in_context.dynamic_data.insert(
+        0,
+        DataItem::Item(Position {
+            offset: size_offset,
+            size: 8,
+        }),
+    );
+    let mut in_matrix = Vec::new();
+    in_matrix.extend_from_slice(&u64::to_ne_bytes(1));
+    in_matrix.extend_from_slice(&u64::to_ne_bytes(2));
+    in_matrix.extend_from_slice(&u64::to_ne_bytes(3));
+    in_matrix.extend_from_slice(&u64::to_ne_bytes(4));
+    let in_mat_offset = in_context
+        .get_free_space(4 * 8, 8)
+        .expect("Should have space");
+    in_context
+        .write(in_mat_offset, in_matrix)
+        .expect("Should be able to write");
+    in_context.dynamic_data.insert(
+        1,
+        DataItem::Item(Position {
+            offset: in_mat_offset,
+            size: 32,
+        }),
+    );
+    let out_mat_offset = in_context
+        .get_free_space(4 * 8, 8)
+        .expect("Should have space");
+    in_context.dynamic_data.insert(
+        2,
+        DataItem::Item(Position {
+            offset: out_mat_offset,
+            size: 32,
+        }),
+    );
+    let input_mapping = vec![(0, None, 0), (1, None, 1), (2, None, 2)];
+    let inputs = vec![(&in_context, input_mapping)];
+    let result = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(dispatcher.queue_function(0, inputs, false));
+    let out_context = match result {
+        Ok(context) => context,
+        Err(err) => panic!("Failed with: {:?}", err),
+    };
+    assert_eq!(1, out_context.dynamic_data.len());
+    let out_mat_position = match out_context
+        .dynamic_data
+        .get(&0)
+        .expect("Should have item 0")
+    {
+        DataItem::Item(pos) => pos,
+        _ => panic!("Expected item but got set for output matrix"),
+    };
+    let out_mat = out_context
+        .read(out_mat_position.offset, out_mat_position.size)
+        .expect("Should read output matrix");
+    assert_eq!(32, out_mat.len());
+    assert_eq!(u64::to_ne_bytes(5), out_mat[0..8]);
+    assert_eq!(u64::to_ne_bytes(11), out_mat[8..16]);
+    assert_eq!(u64::to_ne_bytes(11), out_mat[16..24]);
+    assert_eq!(u64::to_ne_bytes(25), out_mat[24..32]);
+}
+
 macro_rules! dispatcherTests {
-    ($domain : ty; $init: expr; $driver : ty; $engine_resource: expr; $loader: ty, $path: expr) => {
-        use crate::setup_dispatcher;
+    ($domain : ty; $init: expr; $driver : ty; $engine_resource: expr; $loader: ty; $prefix: expr; $basic: expr; $mat: expr) => {
         #[test]
-        fn test_single_domain_and_engine() {
-            let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            path.push($path);
-            let dispatcher = setup_dispatcher::<$domain, $driver, $loader>(
-                Vec::new(),
-                path.to_str().unwrap(),
+        fn test_single_domain_and_engine_basic() {
+            crate::single_domain_and_engine_basic::<$domain, $driver, $loader>(
+                $init,
+                concat!($prefix, $basic),
                 $engine_resource,
-            );
-            let result = tokio::runtime::Builder::new_current_thread()
-                .build()
-                .unwrap()
-                .block_on(dispatcher.queue_function(0, Vec::new()));
-            match result {
-                Ok(_) => (),
-                Err(err) => panic!("Failed with: {:?}", err),
-            }
+            )
+        }
+        #[test]
+        fn test_single_domain_and_engine_matmul() {
+            crate::single_domain_and_engine_matmul::<$domain, $driver, $loader>(
+                $init,
+                concat!($prefix, $mat),
+                $engine_resource,
+            )
         }
     };
 }
@@ -69,7 +176,7 @@ mod cheri {
         function_lib::cheri::{CheriDriver, CheriLoader},
         memory_domain::cheri::CheriMemoryDomain,
     };
-    dispatcherTests!(CheriMemoryDomain; Vec::new(); CheriDriver; vec![1]; CheriLoader, "../machine_interface/tests/data/test_elf_aarch64c_basic");
+    dispatcherTests!(CheriMemoryDomain; Vec::new(); CheriDriver; vec![1]; CheriLoader; "../machine_interface/tests/data/test_elf_aarch64c"; "_basic"; "_matmul");
 }
 
 #[cfg(feature = "pagetable")]
@@ -78,5 +185,5 @@ mod pagetable {
         function_lib::pagetable::{PagetableDriver, PagetableLoader},
         memory_domain::pagetable::PagetableMemoryDomain,
     };
-    dispatcherTests!(PagetableMemoryDomain; Vec::new(); PagetableDriver; vec![1]; PagetableLoader, "../machine_interface/tests/data/test_elf_x86c_basic");
+    dispatcherTests!(PagetableMemoryDomain; Vec::new(); PagetableDriver; vec![1]; PagetableLoader; "../machine_interface/tests/data/test_elf_x86c"; "_basic"; "_matmul");
 }
