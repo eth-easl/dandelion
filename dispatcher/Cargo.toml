@@ -1,0 +1,12 @@
+[package]
+name = "dispatcher"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+tokio = "1"
+
+[dependencies]
+dandelion_commons = {path = "../dandelion_commons"}
+machine_interface = {path = "../machine_interface"}
+futures = { version = "0.3.28" }
