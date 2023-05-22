@@ -56,6 +56,7 @@ impl MemoryDomain for MallocMemoryDomain {
             context: ContextType::Malloc(Box::new(MallocContext { storage: mem_space })),
             dynamic_data: HashMap::new(),
             static_data: Vec::new(),
+            size,
             #[cfg(feature = "pagetable")]
             // protection_requirements: (Vec::<Position>::new(), Vec::<Position>::new()),
             protection_requirements: Vec::new()
