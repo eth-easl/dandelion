@@ -183,8 +183,14 @@ fn ptrace_syscall(pid: libc::pid_t) {
     assert_eq!(res, 0);
 }
 
+enum SyscallType {
+    Exit,
+    Authorized,
+    Unauthorized(i64),
+}
+
 #[cfg(target_os = "linux")]
-fn check_syscall_non_exit(pid: libc::pid_t) -> Option<i64> {
+fn check_syscall(pid: libc::pid_t) -> SyscallType {
     type Regs = libc::user_regs_struct;
     let regs = unsafe {
         let mut regs_uninit: core::mem::MaybeUninit<Regs> = core::mem::MaybeUninit::uninit();
@@ -197,13 +203,15 @@ fn check_syscall_non_exit(pid: libc::pid_t) -> Option<i64> {
     #[cfg(target_arch = "aarch64")]
     let syscall_id = regs.regs[0] as i64;
     match syscall_id {
-        libc::SYS_exit | libc::SYS_exit_group => None,
-        id => Some(id),
+        libc::SYS_exit | libc::SYS_exit_group => SyscallType::Exit,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_arch_prctl => SyscallType::Authorized, // TODO: check arguments
+        id => SyscallType::Unauthorized(id),
     }
 }
 
 #[cfg(target_os = "freebsd")]
-fn check_syscall_non_exit(pid: libc::pid_t) -> Option<i64> {
+fn check_syscall(pid: libc::pid_t) -> SyscallType {
     #[cfg(target_arch = "x86_64")]
     type Regs = libc::reg;
     #[cfg(target_arch = "aarch64")]
@@ -219,8 +227,8 @@ fn check_syscall_non_exit(pid: libc::pid_t) -> Option<i64> {
     #[cfg(target_arch = "aarch64")]
     let syscall_id = regs.gp_x[0];
     match syscall_id {
-        1 => None,
-        id => Some(id),
+        1 => SyscallType::Exit,
+        id => SyscallType::Unauthorized(id),
     }
 }
 
@@ -299,32 +307,42 @@ impl Engine for PagetableEngine {
         assert_eq!(status, WaitStatus::Stopped(pid, Signal::SIGSTOP));
         ptrace_syscall(pid.as_raw());
 
-        let status = wait::waitpid(pid, None).unwrap();
-        let WaitStatus::Stopped(pid, sig) = status else {
-            panic!("worker should be stopped (status = {:?})", status);
-        };
-        match sig {
-            Signal::SIGTRAP => match check_syscall_non_exit(pid.as_raw()) {
-                None => {
-                    eprintln!("detected exit syscall");
-                    ptrace_syscall(pid.as_raw());
-                    let status = worker.wait().unwrap();
-                    eprintln!("worker exited with code {}", status.code().unwrap());
+        loop {
+            let status = wait::waitpid(pid, None).unwrap();
+            let WaitStatus::Stopped(pid, sig) = status else {
+                panic!("worker should be stopped (status = {:?})", status);
+            };
+            match sig {
+                Signal::SIGTRAP => match check_syscall(pid.as_raw()) {
+                    SyscallType::Exit => {
+                        eprintln!("detected exit syscall");
+                        ptrace_syscall(pid.as_raw());
+                        let status = worker.wait().unwrap();
+                        eprintln!("worker exited with code {}", status.code().unwrap());
+                        break;
+                    }
+                    SyscallType::Authorized => {
+                        eprintln!("detected authorized syscall");
+                        ptrace_syscall(pid.as_raw());
+                    }
+                    SyscallType::Unauthorized(syscall_id) => {
+                        eprintln!("detected unauthorized syscall with id {}", syscall_id);
+                        worker.kill().unwrap();
+                        eprintln!("worker killed");
+                        return Box::pin(ready((
+                            Err(DandelionError::UnauthorizedSyscall),
+                            context,
+                        )));
+                    }
+                },
+                Signal::SIGSEGV => {
+                    eprintln!("detected segmentation fault");
+                    return Box::pin(ready((Err(DandelionError::SegmentationFault), context)));
                 }
-                Some(syscall_id) => {
-                    eprintln!("detected unauthorized syscall with id {}", syscall_id);
-                    worker.kill().unwrap();
-                    eprintln!("worker killed");
-                    return Box::pin(ready((Err(DandelionError::UnauthorizedSyscall), context)));
+                s => {
+                    eprintln!("detected {}", s);
+                    return Box::pin(ready((Err(DandelionError::OtherProctionError), context)));
                 }
-            },
-            Signal::SIGSEGV => {
-                eprintln!("detected segmentation fault");
-                return Box::pin(ready((Err(DandelionError::SegmentationFault), context)));
-            }
-            s => {
-                eprintln!("detected {}", s);
-                return Box::pin(ready((Err(DandelionError::OtherProctionError), context)));
             }
         }
 
