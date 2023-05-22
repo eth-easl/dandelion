@@ -200,7 +200,7 @@ fn test_engine_minimal() {
 #[test]
 fn test_engine_matmul_single() {
     // load elf file
-    let elf_buffer = read_file("test_elf_aarch64c_matmul", 3648);
+    let elf_buffer = read_file("test_elf_aarch64c_matmul", 3504);
     let mut domain = CheriMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new cheri domain");
     let (req_list, mut static_context, config) =
@@ -307,7 +307,7 @@ fn get_expected_mat(size: usize) -> Vec<i64> {
 #[test]
 fn test_engine_matmul_size_sweep() {
     // load elf file
-    let elf_buffer = read_file("test_elf_aarch64c_matmul", 3648);
+    let elf_buffer = read_file("test_elf_aarch64c_matmul", 3504);
     let mut domain = CheriMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new cheri domain");
     let (req_list, static_context, config) = CheriLoader::parse_function(elf_buffer, &mut domain)
