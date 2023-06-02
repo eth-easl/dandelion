@@ -3,7 +3,7 @@
 pub mod cheri;
 pub mod malloc;
 
-use crate::{DataItem, Position};
+use crate::{DataItem, DataSet, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
 use std::collections::HashMap;
 
@@ -38,7 +38,7 @@ impl ContextTrait for ContextType {
 }
 pub struct Context {
     pub context: ContextType,
-    pub dynamic_data: HashMap<usize, DataItem>,
+    pub dynamic_data: HashMap<usize, DataSet>,
     pub static_data: Vec<Position>,
     pub size: usize,
 }
@@ -54,31 +54,23 @@ impl ContextTrait for Context {
 
 impl Context {
     pub fn get_free_space(&self, size: usize, alignment: usize) -> DandelionResult<usize> {
-        let mut items = Vec::<Position>::new();
-        for pos in &self.static_data {
-            items.push(pos.clone());
-        }
-        // make single vector with all positions
-        for dyn_item in self.dynamic_data.values() {
-            match dyn_item {
-                DataItem::Item(item) => items.push(item.clone()),
-                DataItem::Set(set) => {
-                    for pos in set {
-                        items.push(pos.clone())
-                    }
-                }
-            }
-        }
-        items.sort_unstable_by(|a, b| a.offset.cmp(&b.offset));
+        let static_items = self.static_data.iter();
+        let dynamic_items = self
+            .dynamic_data
+            .values()
+            .flat_map(|set| set.buffers.iter().map(|item| &item.data));
+        let items = static_items.chain(dynamic_items);
+        let mut item_slice: Vec<&Position> = items.collect();
+        item_slice.sort_unstable_by(|a, b| a.offset.cmp(&b.offset));
         // search for smallest space that is bigger than size
         // space start holds previous start
         let mut space_start = Err(DandelionError::ContextFull);
         let mut space_size = usize::MAX;
         let mut next_free = 0;
-        if items.len() == 0 {
+        if item_slice.len() == 0 {
             return Ok(0);
         };
-        for item in items {
+        for item in item_slice {
             let item_start = item.offset;
             let free_space = item_start - next_free;
 
@@ -97,6 +89,18 @@ impl Context {
             space_start = Ok(next_free);
         }
         return space_start;
+    }
+    pub fn get_last_item_end(&self) -> usize {
+        let static_items = self.static_data.iter();
+        let dynamic_items = self
+            .dynamic_data
+            .values()
+            .flat_map(|set| set.buffers.iter().map(|item| &item.data));
+        let items = static_items.chain(dynamic_items);
+        return items
+            .max_by(|a, b| (a.offset + a.size).cmp(&(b.offset + b.size)))
+            .and_then(|a| Some(a.offset + a.size))
+            .unwrap_or(0usize);
     }
 }
 
@@ -152,86 +156,71 @@ pub fn transefer_memory(
 pub fn transer_data_item(
     destination: &mut Context,
     source: &Context,
-    destionation_index: usize,
+    destionation_set_index: usize,
     destination_allignment: usize,
-    source_index: usize,
-    source_sub_index: Option<usize>,
+    source_set_index: usize,
+    source_item_index: Option<usize>,
 ) -> DandelionResult<()> {
     // check if source has item
-    let source_item = match source.dynamic_data.get(&source_index) {
-        Some(i) => i,
+    let source_set = match source.dynamic_data.get(&source_set_index) {
+        Some(set) => set,
         None => return Err(DandelionError::InvalidRead),
     };
-    // check destination is unoccupied, could be fused with insert in future with try insert
-    if destination.dynamic_data.contains_key(&destionation_index) {
-        return Err(DandelionError::InvalidWrite);
+    if source_set.buffers.is_empty() {
+        if source_item_index.is_none() {
+            return Ok(());
+        } else {
+            return Err(DandelionError::EmptyDataSet);
+        }
     }
     // get positions where to read from
-    let temp;
-    let source_positions = match (source_item, source_sub_index) {
-        (DataItem::Item(p), None) => {
-            temp = vec![p.clone()];
-            &temp
+    let source_positions: Vec<Position> = if let Some(item_index) = source_item_index {
+        if source_set.buffers.len() <= item_index {
+            return Err(DandelionError::InvalidRead);
+        } else {
+            vec![source_set.buffers[item_index].data]
         }
-        (DataItem::Item(_), Some(_)) => return Err(DandelionError::InvalidRead),
-        (DataItem::Set(s), None) => s,
-        (DataItem::Set(s), Some(i)) if i < s.len() => {
-            temp = vec![s[i].clone()];
-            &temp
-        }
-        (DataItem::Set(_), Some(_)) => return Err(DandelionError::InvalidRead),
+    } else {
+        source_set.buffers.iter().map(|item| item.data).collect()
     };
-    // find positions to write to
-    let destination_positions_result: DandelionResult<Vec<Position>> = source_positions
+    // find positions to write to and insert them into meta data
+    let mut new_positions = Vec::new();
+    let destination_positions: Vec<Position> = source_positions
         .iter()
         .map(|pos| {
             let offset = destination.get_free_space(pos.size, destination_allignment)?;
-            Ok(Position {
+            let new_position = Position {
                 size: pos.size,
                 offset,
-            })
+            };
+            new_positions.push(DataItem {
+                ident: String::from(""),
+                data: new_position,
+            });
+            return Ok(new_position);
         })
-        .collect();
-    let destination_positions = destination_positions_result?;
-    if destination_positions.len() == 0 {
-        return Err(DandelionError::EmptyDataItemSet);
-    } else if destination_positions.len() == 1 {
-        let transfer_error = transefer_memory(
+        .collect::<DandelionResult<Vec<_>>>()?;
+    // check if destination already has set that will be appended to or create new set
+    let entry = destination
+        .dynamic_data
+        .entry(destionation_set_index)
+        .or_insert(DataSet {
+            ident: String::from(""),
+            buffers: Vec::new(),
+        });
+    entry.buffers.append(&mut new_positions);
+    // perform transfers
+    let position_pair = source_positions
+        .iter()
+        .zip(destination_positions.into_iter());
+    for (source_pos, destination_pos) in position_pair {
+        transefer_memory(
             destination,
             source,
-            destination_positions[0].offset,
-            source_positions[0].offset,
-            source_positions[0].size,
-        );
-        destination
-            .dynamic_data
-            .insert(destionation_index, DataItem::Item(destination_positions[0]));
-        return transfer_error;
-    } else {
-        // perform transfers
-        let position_pair = source_positions
-            .iter()
-            .zip(destination_positions.into_iter());
-        let mut destination_set = Vec::new();
-        if destination_set.try_reserve(source_positions.len()).is_err() {
-            return Err(DandelionError::OutOfMemory);
-        }
-        for (source_pos, destination_pos) in position_pair {
-            let transfer_error = transefer_memory(
-                destination,
-                source,
-                destination_pos.offset,
-                source_pos.offset,
-                source_pos.size,
-            );
-            destination_set.push(destination_pos);
-            if transfer_error.is_err() {
-                break;
-            }
-        }
-        destination
-            .dynamic_data
-            .insert(destionation_index, DataItem::Set(destination_set));
+            destination_pos.offset,
+            source_pos.offset,
+            source_pos.size,
+        )?;
     }
     Ok(())
 }

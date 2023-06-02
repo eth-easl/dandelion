@@ -9,7 +9,7 @@ use crate::{
     memory_domain::{
         cheri::CheriMemoryDomain, malloc::MallocMemoryDomain, ContextTrait, MemoryDomain,
     },
-    DataItem, Position,
+    DataItem, DataSet, Position,
 };
 use dandelion_commons::DandelionError;
 
@@ -44,31 +44,33 @@ fn read_file(name: &str, expected_size: usize) -> Vec<u8> {
 
 #[test]
 fn test_loader_basic() {
-    let elf_buffer = read_file("test_elf_aarch64c_basic", 3240);
+    let elf_buffer = read_file("test_elf_aarch64c_basic", 6400);
     let mut malloc_domain =
         MallocMemoryDomain::init(Vec::new()).expect("Should be able to get malloc domain");
-    let (req_list, context, config) = CheriLoader::parse_function(elf_buffer, &mut malloc_domain)
-        .expect("Should correctly parse elf file");
-    // check requirement list
+    let (req_list, context, config) =
+        CheriLoader::parse_function(elf_buffer, &mut malloc_domain).expect("Parsing should work");
+    // check requirement list to be list of programm header info for after load
+    // meaning addresses and sizes in virtual address space
     let expected_requirements = vec![
         Position {
             offset: 0x200000,
-            size: 0x354,
+            size: 0x49c,
         },
         Position {
-            offset: 0x210354,
-            size: 0x2a4,
+            offset: 0x21049c,
+            size: 0xac4,
         },
         Position {
-            offset: 0x2205f8,
-            size: 0x10,
+            offset: 0x220f60,
+            size: 0x70,
         },
     ];
     assert_eq!(
         0x40_0000, req_list.size,
         "Missmatch in expected default context size"
     );
-    let expected_sizes = vec![0x354, 0x2a4, 0x0];
+    // actual sizes in file
+    let expected_sizes = vec![0x49c, 0xac4, 0x0];
     assert_eq!(
         expected_requirements.len(),
         req_list.static_requirements.len(),
@@ -113,37 +115,17 @@ fn test_loader_basic() {
         _ => panic!("Non elf FunctionConfig from cheri loader"),
     };
     assert_eq!(
-        (0x200198, 0x8),
-        function_config.input_root,
-        "Input root offset or size missmatch"
+        (0x220f78),
+        function_config.system_data_offset,
+        "System data offset missmatch"
     );
     assert_eq!(
-        (0x220600, 0x8),
-        function_config.output_root,
-        "Output root offset or size missmatch"
-    );
-    assert_eq!(
-        (0x200190, 0x4),
-        function_config.input_number,
-        "Input number offset or size missmatch"
-    );
-    assert_eq!(
-        (0x2205f8, 0x4),
-        function_config.output_number,
-        "Output number offset or size missmatch"
-    );
-    assert_eq!(
-        (0x2001a0, 0x4),
-        function_config.max_output_number,
-        "Max output number offset or size missmatch"
-    );
-    assert_eq!(
-        (0x2001b0, 0x10),
+        (0x220fc0, 0x10),
         function_config.return_offset,
         "Return offset missmatch"
     );
     assert_eq!(
-        0x210354, function_config.entry_point,
+        0x21049c, function_config.entry_point,
         "Entry point missmatch"
     );
 }
@@ -170,11 +152,11 @@ fn test_driver() {
 #[test]
 fn test_engine_minimal() {
     // load elf file
-    let elf_buffer = read_file("test_elf_aarch64c_basic", 3240);
+    let elf_buffer = read_file("test_elf_aarch64c_basic", 6400);
     let mut domain = CheriMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new cheri domain");
-    let (req_list, static_context, config) = CheriLoader::parse_function(elf_buffer, &mut domain)
-        .expect("Empty string should return error");
+    let (req_list, static_context, config) =
+        CheriLoader::parse_function(elf_buffer, &mut domain).expect("Parsing should work");
 
     let mut engine = CheriDriver::start_engine(vec![1]).expect("Should be able to start engine");
 
@@ -200,12 +182,11 @@ fn test_engine_minimal() {
 #[test]
 fn test_engine_matmul_single() {
     // load elf file
-    let elf_buffer = read_file("test_elf_aarch64c_matmul", 3504);
+    let elf_buffer = read_file("test_elf_aarch64c_matmul", 6896);
     let mut domain = CheriMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new cheri domain");
     let (req_list, mut static_context, config) =
-        CheriLoader::parse_function(elf_buffer, &mut domain)
-            .expect("Empty string should return error");
+        CheriLoader::parse_function(elf_buffer, &mut domain).expect("Parsing should work");
 
     let mut engine = CheriDriver::start_engine(vec![1]).expect("Should be able to start engine");
 
@@ -224,10 +205,16 @@ fn test_engine_matmul_single() {
         .expect("Write should go through");
     function_context.dynamic_data.insert(
         0,
-        DataItem::Item(Position {
-            offset: in_size_offset,
-            size: 8,
-        }),
+        DataSet {
+            ident: "".to_string(),
+            buffers: vec![DataItem {
+                ident: "".to_string(),
+                data: Position {
+                    offset: in_size_offset,
+                    size: 8,
+                },
+            }],
+        },
     );
     let in_mat_offset = function_context
         .get_free_space(8, 8)
@@ -237,20 +224,16 @@ fn test_engine_matmul_single() {
         .expect("Write should go through");
     function_context.dynamic_data.insert(
         1,
-        DataItem::Item(Position {
-            offset: in_mat_offset,
-            size: 8,
-        }),
-    );
-    let out_mat_offset = function_context
-        .get_free_space(8, 8)
-        .expect("Should have space for single i64");
-    function_context.dynamic_data.insert(
-        2,
-        DataItem::Item(Position {
-            offset: out_mat_offset,
-            size: 8,
-        }),
+        DataSet {
+            ident: "".to_string(),
+            buffers: vec![DataItem {
+                ident: "".to_string(),
+                data: Position {
+                    offset: in_mat_offset,
+                    size: 8,
+                },
+            }],
+        },
     );
     let (result, result_context) = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -263,10 +246,8 @@ fn test_engine_matmul_single() {
         .dynamic_data
         .get(&0)
         .expect("Should contain item with index 0");
-    let position = match &output_item {
-        DataItem::Item(pos) => pos,
-        DataItem::Set(_) => panic!("Output type should not be set"),
-    };
+    assert_eq!(1, output_item.buffers.len());
+    let position = output_item.buffers[0].data;
     assert_eq!(8, position.size, "Checking for size of output");
     let raw_output = result_context
         .context
@@ -307,11 +288,11 @@ fn get_expected_mat(size: usize) -> Vec<i64> {
 #[test]
 fn test_engine_matmul_size_sweep() {
     // load elf file
-    let elf_buffer = read_file("test_elf_aarch64c_matmul", 3504);
+    let elf_buffer = read_file("test_elf_aarch64c_matmul", 6896);
     let mut domain = CheriMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new cheri domain");
-    let (req_list, static_context, config) = CheriLoader::parse_function(elf_buffer, &mut domain)
-        .expect("Empty string should return error");
+    let (req_list, static_context, config) =
+        CheriLoader::parse_function(elf_buffer, &mut domain).expect("Parsing should work");
 
     let mut engine = CheriDriver::start_engine(vec![1]).expect("Should be able to start engine");
     for mat_size in LOWER_SIZE_BOUND..UPPER_SIZE_BOUND {
@@ -330,10 +311,16 @@ fn test_engine_matmul_size_sweep() {
             .expect("Write should go through");
         function_context.dynamic_data.insert(
             0,
-            DataItem::Item(Position {
-                offset: in_size_offset,
-                size: 8,
-            }),
+            DataSet {
+                ident: "".to_string(),
+                buffers: vec![DataItem {
+                    ident: "".to_string(),
+                    data: Position {
+                        offset: in_size_offset,
+                        size: 8,
+                    },
+                }],
+            },
         );
         let input_size = 8 * mat_size * mat_size;
         let in_mat_offset = function_context
@@ -348,20 +335,16 @@ fn test_engine_matmul_size_sweep() {
             .expect("Write should go through");
         function_context.dynamic_data.insert(
             1,
-            DataItem::Item(Position {
-                offset: in_mat_offset,
-                size: input_size,
-            }),
-        );
-        let out_mat_offset = function_context
-            .get_free_space(input_size, 8)
-            .expect("Should have space for single i64");
-        function_context.dynamic_data.insert(
-            2,
-            DataItem::Item(Position {
-                offset: out_mat_offset,
-                size: input_size,
-            }),
+            DataSet {
+                ident: "".to_string(),
+                buffers: vec![DataItem {
+                    ident: "".to_string(),
+                    data: Position {
+                        offset: in_mat_offset,
+                        size: input_size,
+                    },
+                }],
+            },
         );
         let (result, result_context) = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -374,10 +357,8 @@ fn test_engine_matmul_size_sweep() {
             .dynamic_data
             .get(&0)
             .expect("Should have output with index 0");
-        let position = match &output_item {
-            DataItem::Item(pos) => pos,
-            DataItem::Set(_) => panic!("Output type should not be set"),
-        };
+        assert_eq!(1, output_item.buffers.len());
+        let position = output_item.buffers[0].data;
         assert_eq!(input_size, position.size, "Checking for size of output");
         let raw_output = result_context
             .context

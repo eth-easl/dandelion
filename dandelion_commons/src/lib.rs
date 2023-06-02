@@ -15,7 +15,7 @@ pub enum DandelionError {
     ContextFull,      // context can't fit additional memory
     InvalidRead,      // tried to read from domain outside of domain bounds
     InvalidWrite,     // tried to write to domain ouside of domain bounds
-    EmptyDataItemSet, // found a case with a data item that is a set but has no entries
+    EmptyDataSet,     // found a case with a data item that is a set but has no entries
     // engine errors
     ConfigMissmatch, // missmatch between the function config the engine expects and the one given
     NoRunningFunction, // attempted abort when no function was running

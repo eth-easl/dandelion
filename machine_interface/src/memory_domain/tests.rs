@@ -1,9 +1,6 @@
 use std::vec;
 
-use crate::{
-    memory_domain::{transefer_memory, transer_data_item, ContextTrait, MemoryDomain},
-    DataItem,
-};
+use crate::memory_domain::{transefer_memory, transer_data_item, ContextTrait, MemoryDomain};
 use dandelion_commons::{DandelionError, DandelionResult};
 // produces binary pattern 0b0101_01010 or 0x55
 const BYTEPATTERN: u8 = 85;
@@ -115,10 +112,16 @@ fn transfer_item<D: MemoryDomain>(
         .expect("Writing should succeed");
     source.dynamic_data.insert(
         source_index,
-        crate::DataItem::Item(crate::Position {
-            offset: offset,
-            size: item_size,
-        }),
+        crate::DataSet {
+            ident: String::from(""),
+            buffers: vec![crate::DataItem {
+                ident: String::from(""),
+                data: crate::Position {
+                    offset: offset,
+                    size: item_size,
+                },
+            }],
+        },
     );
     let transfer_error = transer_data_item(
         &mut destination,
@@ -137,15 +140,13 @@ fn transfer_item<D: MemoryDomain>(
         .dynamic_data
         .get(&destination_index)
         .expect("Should have data at given index");
-    let read_position = match destination_item {
-        DataItem::Item(position) => {
-            assert_eq!(item_size, position.size);
-            position
-        }
-        _ => panic!("Expected item at destination"),
-    };
+    assert_eq!("", destination_item.ident);
+    assert_eq!(1, destination_item.buffers.len());
+    assert_eq!("", destination_item.buffers[0].ident);
+    assert_eq!(item_size, destination_item.buffers[0].data.size);
+    let read_offset = destination_item.buffers[0].data.offset;
     let read_val = destination
-        .read(read_position.offset, read_position.size)
+        .read(read_offset, item_size)
         .expect("Context should be readable at item position");
     assert_eq!(vec![BYTEPATTERN; item_size], read_val);
 }

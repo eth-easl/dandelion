@@ -1,8 +1,8 @@
 use crate::{
-    function_lib::{Driver, ElfConfig, Engine, FunctionConfig, Loader},
+    function_lib::{Driver, Engine, FunctionConfig, Loader},
     memory_domain::{cheri::cheri_c_context, Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
-    DataItem, DataRequirement, DataRequirementList, Position,
+    DataItem, DataRequirement, DataRequirementList, DataSet, Position,
 };
 use core::{
     future::{ready, Future},
@@ -28,106 +28,246 @@ extern "C" {
     ) -> i8;
 }
 
-const IO_STRUCT_SIZE: usize = 16;
+const SYSTEM_STRUCT_SIZE: usize = 72;
+const IO_SET_INFO_SIZE: usize = 24;
+const IO_BUFFER_SIZE: usize = 32;
 const MAX_OUTPUTS: u32 = 16;
 
-fn setup_input_structs(context: &mut Context, config: &ElfConfig) -> DandelionResult<()> {
-    // size of array with input struct array
-    let input_number_option = context.dynamic_data.keys().max();
-    let input_number = match input_number_option {
-        Some(num) => num + 1,
-        None => return Ok(()),
-    };
-    let input_struct_size = input_number as usize * IO_STRUCT_SIZE;
-    let input_offset = context.get_free_space(input_struct_size, 8)?;
-    for (index, input) in context.dynamic_data.iter() {
-        let pos = match &input {
-            DataItem::Item(position) => position,
-            _ => return Err(DandelionError::NotImplemented),
+fn setup_input_structs(context: &mut Context, system_data_offset: usize) -> DandelionResult<()> {
+    // prepare information to set up input sets, output sets and input buffers
+    let input_buffer_number = context.dynamic_data.keys().count();
+    let input_set_number = context
+        .dynamic_data
+        .keys()
+        .max()
+        .and_then(|x| Some(x + 1))
+        .unwrap_or(0usize)
+        + 1; // +1 for the sentinel set
+    let output_set_number = MAX_OUTPUTS as usize + 1; // +1 for sentinel set
+
+    let io_info_size = input_buffer_number * IO_BUFFER_SIZE
+        + (input_set_number + output_set_number) * IO_SET_INFO_SIZE;
+    let io_info_offset = context.get_free_space(io_info_size, 8)?;
+    context.static_data.push(Position {
+        offset: io_info_offset,
+        size: io_info_size,
+    });
+
+    // fill in data for input sets
+    // input set number and pointer (offset)
+    // TODO replace by single checked allocation and writing to it
+    let mut system_buffer = Vec::<u8>::new();
+    // heap start and end
+    let heap_start = context.get_last_item_end();
+    system_buffer.append(&mut usize::to_ne_bytes(heap_start).to_vec());
+    system_buffer.append(&mut usize::to_ne_bytes(context.size).to_vec());
+    // input set number and offset
+    // -1 to exclude sentinel set
+    system_buffer.append(&mut usize::to_ne_bytes(input_set_number - 1).to_vec().to_vec());
+    system_buffer.append(&mut usize::to_ne_bytes(io_info_offset).to_vec());
+    // output sets and offsets
+    // -1 to exclude sentinel set
+    system_buffer.append(&mut usize::to_ne_bytes(output_set_number - 1).to_vec());
+    system_buffer.append(
+        &mut usize::to_ne_bytes(io_info_offset + input_set_number * IO_SET_INFO_SIZE).to_vec(),
+    );
+    // input buffers
+    system_buffer.append(
+        &mut usize::to_ne_bytes(
+            io_info_offset + (input_set_number + output_set_number) * IO_SET_INFO_SIZE,
+        )
+        .to_vec(),
+    );
+    // write system buffer after exit code
+    context.write(system_data_offset + 8, system_buffer)?;
+
+    // input and output io buffer pointers (output just 0 as the application sets them)
+    let mut io_data_buffer = Vec::new();
+    // TODO ask for correct size and make it writes instead of appends
+
+    // start writing input set info structs
+    let mut buffer_count = 0;
+    let mut input_buffers = Vec::<u8>::new();
+    for set_index in 0..input_set_number {
+        // get name and length
+        let (name, buffer_num) = match context.dynamic_data.get(&set_index) {
+            Some(set) => (set.ident.clone(), set.buffers.len()),
+            None => (String::from(""), 0),
         };
-        let struct_offset = input_offset + IO_STRUCT_SIZE * index;
-        let mut io_struct = Vec::<u8>::new();
-        io_struct.append(&mut usize::to_ne_bytes(pos.size).to_vec());
-        io_struct.append(&mut usize::to_ne_bytes(pos.offset).to_vec());
-        context.context.write(struct_offset, io_struct)?;
+        // find space and write string
+        if name != "" {
+            let string_offset = context.get_free_space(name.len(), 8)?;
+            context.write(string_offset, name.as_bytes().to_vec())?;
+            context.static_data.push(Position {
+                offset: string_offset,
+                size: name.len(),
+            });
+            io_data_buffer.append(&mut usize::to_ne_bytes(string_offset).to_vec());
+            io_data_buffer.append(&mut usize::to_ne_bytes(name.len()).to_vec());
+        } else {
+            io_data_buffer.append(&mut usize::to_ne_bytes(0).to_vec());
+            io_data_buffer.append(&mut usize::to_ne_bytes(0).to_vec());
+        }
+        // find buffers
+        io_data_buffer.append(&mut usize::to_ne_bytes(buffer_count).to_vec());
+        buffer_count += buffer_num;
+        for buffer_index in 0..buffer_num {
+            let (name, offset, size) = match context.dynamic_data.get(&set_index) {
+                Some(set) => {
+                    let buffer = &set.buffers[buffer_index];
+                    (buffer.ident.clone(), buffer.data.offset, buffer.data.size)
+                }
+                None => (String::from(""), 0, 0),
+            };
+            let mut string_offset = 0;
+            if name != "" {
+                string_offset = context.get_free_space(name.len(), 8)?;
+                context.write(string_offset, name.as_bytes().to_vec())?;
+                context.static_data.push(Position {
+                    offset: string_offset,
+                    size: name.len(),
+                });
+            }
+            input_buffers.append(&mut usize::to_ne_bytes(string_offset).to_vec());
+            input_buffers.append(&mut usize::to_ne_bytes(name.len()).to_vec());
+            input_buffers.append(&mut usize::to_ne_bytes(offset).to_vec());
+            input_buffers.append(&mut usize::to_ne_bytes(size).to_vec());
+        }
     }
-    context.static_data.push(Position {
-        offset: input_offset,
-        size: input_struct_size,
-    });
-    // find space for output structs
-    let output_struct_size = IO_STRUCT_SIZE * MAX_OUTPUTS as usize;
-    let output_offset = context.get_free_space(output_struct_size, 8)?;
-    context.static_data.push(Position {
-        offset: output_offset,
-        size: output_struct_size,
-    });
-    // fill in values
-    context.write(
-        config.input_root.0,
-        usize::to_ne_bytes(input_offset).to_vec(),
-    )?;
-    context.write(
-        config.input_number.0,
-        u32::to_ne_bytes(input_number as u32).to_vec(),
-    )?;
-    context.write(
-        config.output_root.0,
-        usize::to_ne_bytes(output_offset).to_vec(),
-    )?;
-    context.write(config.output_number.0, u32::to_ne_bytes(0).to_vec())?;
-    context.write(
-        config.max_output_number.0,
-        u32::to_ne_bytes(MAX_OUTPUTS).to_vec(),
-    )?;
+    // start writing output set info structs
+    for _output_index in 0..output_set_number {
+        io_data_buffer.append(&mut usize::to_ne_bytes(0).to_vec());
+        io_data_buffer.append(&mut usize::to_ne_bytes(0).to_vec());
+        io_data_buffer.append(&mut usize::to_ne_bytes(0).to_vec());
+    }
+
+    io_data_buffer.append(&mut input_buffers);
+    context.write(io_info_offset, io_data_buffer)?;
+
     return Ok(());
 }
 
-fn get_output_layout(
-    context: &mut Context,
-    output_root: (usize, usize),
-    output_number: (usize, usize),
-) -> DandelionResult<()> {
-    // get output number
-    let output_number_vec = context.read(output_number.0, output_number.1)?;
-    // TODO make this dependent on the actual size of the values
-    // TODO use as_chunks when it stabilizes
-    let output_number_slice: [u8; 4] = output_number_vec[0..4]
-        .try_into()
-        .expect("Should have correct length");
-    let number_of_outputs = usize::min(
-        u32::from_ne_bytes(output_number_slice) as usize,
-        MAX_OUTPUTS as usize,
-    );
-    let mut output_structs = HashMap::new();
-    let output_root_vec = context.read(output_root.0, 8)?;
-    let output_root_offset = usize::from_ne_bytes(
-        output_root_vec[0..8]
+fn get_output_layout(context: &mut Context, system_data_offset: usize) -> DandelionResult<()> {
+    // clear out old data
+    context.static_data = Vec::new();
+    // read the system buffer
+    let system_struct = context.read(system_data_offset, SYSTEM_STRUCT_SIZE)?;
+    // get exit value
+    let _exit_value: i32 = i32::from_ne_bytes(
+        system_struct[0..4]
             .try_into()
-            .expect("Should have correct length"),
+            .expect("Should be able to convert"),
     );
-    for output_index in 0..number_of_outputs {
-        let read_offset = output_root_offset + IO_STRUCT_SIZE * output_index;
-        let out_struct = context.read(read_offset, IO_STRUCT_SIZE as usize)?;
-        let size = usize::from_ne_bytes(
-            out_struct[0..8]
-                .try_into()
-                .expect("Should have correct length"),
-        );
-        let offset = usize::from_ne_bytes(
-            out_struct[8..16]
-                .try_into()
-                .expect("Should have correct length"),
-        );
-        output_structs.insert(
-            output_index,
-            DataItem::Item(Position {
-                offset: offset,
-                size: size,
-            }),
-        );
+    // get output set number +1 for sentinel set
+    // TODO use as_chunks when it stabilizes
+    let output_set_number: usize = usize::from_ne_bytes(
+        system_struct[40..48]
+            .try_into()
+            .expect("Should be able to convert"),
+    );
+    if output_set_number == 1 {
+        context.dynamic_data = HashMap::new();
+        return Ok(());
     }
-    context.dynamic_data = output_structs;
+    let output_set_info_offset = usize::from_ne_bytes(
+        system_struct[48..56]
+            .try_into()
+            .expect("Should be able to convert"),
+    );
+    let output_buffers_offset = usize::from_ne_bytes(
+        system_struct[64..72]
+            .try_into()
+            .expect("Should be able to convert"),
+    );
+    // load output set info, + 1 to include sentinel set
+    let output_set_info = context.read(
+        output_set_info_offset,
+        (output_set_number + 1) * IO_SET_INFO_SIZE,
+    )?;
+    let mut output_sets = HashMap::new();
+    let output_buffer_number = usize::from_ne_bytes(
+        output_set_info
+            [output_set_number * IO_SET_INFO_SIZE + 16..output_set_number * IO_SET_INFO_SIZE + 24]
+            .try_into()
+            .expect("Should be able to convert"),
+    );
+    let output_buffers =
+        context.read(output_buffers_offset, output_buffer_number * IO_BUFFER_SIZE)?;
+
+    for output_set in 0..output_set_number {
+        let set_start = output_set * IO_SET_INFO_SIZE;
+        let ident_offset = usize::from_ne_bytes(
+            output_set_info[set_start..set_start + 8]
+                .try_into()
+                .expect("Should be able to convert"),
+        );
+        let ident_length = usize::from_ne_bytes(
+            output_set_info[set_start + 8..set_start + 16]
+                .try_into()
+                .expect("Should be able to convert"),
+        );
+        let set_ident = context.read(ident_offset, ident_length)?;
+        let set_ident_string = String::from_utf8(set_ident).unwrap_or("".to_string());
+        let first_buffer = usize::from_ne_bytes(
+            output_set_info[set_start + 16..set_start + 24]
+                .try_into()
+                .expect("Should be able to convert"),
+        );
+        let one_past_last_buffer = usize::from_ne_bytes(
+            output_set_info[set_start + IO_SET_INFO_SIZE + 16..set_start + IO_SET_INFO_SIZE + 24]
+                .try_into()
+                .expect("Should be able to convert"),
+        );
+        let buffer_number = one_past_last_buffer - first_buffer;
+        let mut buffers = Vec::new();
+        if buffers.try_reserve(buffer_number).is_err() {
+            return Err(DandelionError::OutOfMemory);
+        }
+        for buffer_index in 0..buffer_number {
+            let buffer_start = buffer_index * IO_BUFFER_SIZE;
+            let buffer_ident_offset = usize::from_ne_bytes(
+                output_buffers[buffer_start..buffer_start + 8]
+                    .try_into()
+                    .expect("Should be able to convert"),
+            );
+            let buffer_ident_length = usize::from_ne_bytes(
+                output_buffers[buffer_start + 8..buffer_start + 16]
+                    .try_into()
+                    .expect("Should be able to convert"),
+            );
+            let buffer_ident = context.read(buffer_ident_offset, buffer_ident_length)?;
+            let data_offset = usize::from_ne_bytes(
+                output_buffers[buffer_start + 16..buffer_start + 24]
+                    .try_into()
+                    .expect("Should be able to convert"),
+            );
+            let data_length = usize::from_ne_bytes(
+                output_buffers[buffer_start + 24..buffer_start + 32]
+                    .try_into()
+                    .expect("Should be able to convert"),
+            );
+            let ident_string = String::from_utf8(buffer_ident).unwrap_or("".to_string());
+            buffers.push(DataItem {
+                ident: ident_string,
+                data: Position {
+                    offset: data_offset,
+                    size: data_length,
+                },
+            })
+        }
+        // only add output set if there are actual buffers for it.
+        if buffers.len() > 0 {
+            output_sets.insert(
+                output_set,
+                DataSet {
+                    ident: set_ident_string,
+                    buffers: buffers,
+                },
+            );
+        }
+    }
+
+    context.dynamic_data = output_sets;
     Ok(())
 }
 
@@ -150,8 +290,7 @@ pub struct CheriEngine {
 struct CheriFuture<'a> {
     engine: &'a mut CheriEngine,
     context: Option<Context>,
-    output_root: (usize, usize),
-    output_number: (usize, usize),
+    system_data_offset: usize,
 }
 
 // TODO find better way than take unwrap to return context
@@ -181,9 +320,7 @@ impl Future for CheriFuture<'_> {
         context.dynamic_data.clear();
         context.static_data.clear();
         // read outputs
-        let output_root = self.output_root.clone();
-        let output_number = self.output_number.clone();
-        let result = get_output_layout(&mut context, output_root, output_number);
+        let result = get_output_layout(&mut context, self.system_data_offset);
         self.engine.is_running.store(false, Ordering::Release);
         Poll::Ready((result, context))
     }
@@ -252,7 +389,7 @@ impl Engine for CheriEngine {
             return_pair_offset: elf_config.return_offset.0,
             stack_pointer: cheri_context.size,
         };
-        if let Err(err) = setup_input_structs(&mut context, &elf_config) {
+        if let Err(err) = setup_input_structs(&mut context, elf_config.system_data_offset) {
             return Box::pin(ready((Err(err), context)));
         }
         match self.command_sender.send(command) {
@@ -262,8 +399,7 @@ impl Engine for CheriEngine {
         let function_future = Box::<CheriFuture>::pin(CheriFuture {
             engine: self,
             context: Some(context),
-            output_root: elf_config.output_root,
-            output_number: elf_config.output_number,
+            system_data_offset: elf_config.system_data_offset,
         });
         return function_future;
     }
@@ -338,19 +474,11 @@ impl Loader for CheriLoader {
         static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<(DataRequirementList, Context, FunctionConfig)> {
         let elf = elf_parser::ParsedElf::new(&function)?;
-        let input_root = elf.get_symbol_by_name(&function, "inputRoot")?;
-        let input_number = elf.get_symbol_by_name(&function, "inputNumber")?;
-        let output_root = elf.get_symbol_by_name(&function, "outputRoot")?;
-        let output_number = elf.get_symbol_by_name(&function, "outputNumber")?;
-        let max_output_number = elf.get_symbol_by_name(&function, "maxOutputNumber")?;
-        let return_offset = elf.get_symbol_by_name(&function, "returnPair")?;
+        let system_data = elf.get_symbol_by_name(&function, "__dandelion_system_data")?;
+        let return_offset = elf.get_symbol_by_name(&function, "__dandelion_return_address")?;
         let entry = elf.get_entry_point();
         let config = FunctionConfig::ElfConfig(super::ElfConfig {
-            input_root: input_root,
-            input_number: input_number,
-            output_root: output_root,
-            output_number: output_number,
-            max_output_number: max_output_number,
+            system_data_offset: system_data.0,
             return_offset: return_offset,
             entry_point: entry,
         });

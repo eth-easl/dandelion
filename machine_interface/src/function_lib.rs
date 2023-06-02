@@ -15,11 +15,7 @@ pub mod util;
 #[derive(Clone, Copy)]
 pub struct ElfConfig {
     // TODO change to positions
-    input_root: (usize, usize),
-    input_number: (usize, usize),
-    output_root: (usize, usize),
-    output_number: (usize, usize),
-    max_output_number: (usize, usize),
+    system_data_offset: usize,
     return_offset: (usize, usize),
     entry_point: usize,
 }

@@ -35,7 +35,13 @@ pub struct Position {
 }
 
 #[derive(Debug)]
-pub enum DataItem {
-    Item(Position),
-    Set(Vec<Position>),
+pub struct DataSet {
+    pub ident: String,
+    pub buffers: Vec<DataItem>,
+}
+
+#[derive(Debug)]
+pub struct DataItem {
+    pub ident: String,
+    pub data: Position,
 }

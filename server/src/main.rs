@@ -8,6 +8,7 @@ use hyper::{
     service::{make_service_fn, service_fn},
     Body, Request, Response, Server,
 };
+
 #[cfg(feature = "cheri")]
 use machine_interface::{
     function_lib::{
@@ -15,7 +16,7 @@ use machine_interface::{
         Driver, DriverFunction, Loader, LoaderFunction,
     },
     memory_domain::{cheri::CheriMemoryDomain, ContextTrait, MemoryDomain},
-    DataItem, Position,
+    DataItem, DataSet, Position,
 };
 use std::{collections::HashMap, convert::Infallible, net::SocketAddr, println, sync::Arc};
 use tokio::runtime::Builder;
@@ -33,8 +34,7 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
     let mut inputs = Vec::new();
     let mut input_context;
     let total_size = 2 * MAT_SIZE + 8;
-    let domain =
-        CheriMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
+    let domain = CheriMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
     input_context = domain
         .acquire_context(total_size)
         .expect("Should always have space");
@@ -46,10 +46,16 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
         .expect("Should be able to write");
     input_context.dynamic_data.insert(
         0,
-        DataItem::Item(Position {
-            offset: size_offset,
-            size: 8,
-        }),
+        DataSet {
+            ident: "".to_string(),
+            buffers: vec![DataItem {
+                ident: "".to_string(),
+                data: Position {
+                    offset: size_offset,
+                    size: 8,
+                },
+            }],
+        },
     );
     let in_map_offset = input_context
         .get_free_space(MAT_SIZE, 8)
@@ -59,6 +65,53 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
             .write(in_map_offset, Vec::<u8>::from(IN_MAT))
             .expect("Should be able to write input matrix");
     }
+    input_context.dynamic_data.insert(
+        1,
+        DataSet {
+            ident: "".to_string(),
+            buffers: vec![DataItem {
+                ident: "".to_string(),
+                data: Position {
+                    offset: in_map_offset,
+                    size: MAT_SIZE,
+                },
+            }],
+        },
+    );
+    inputs.push((
+        &input_context,
+        vec![(0usize, None, 0usize), (1usize, None, 1usize)],
+    ));
+    let result_context = dispatcher
+        .queue_function(COLD_ID, inputs, non_caching)
+        .await
+        .expect("Should get back context");
+    domain
+        .release_context(result_context)
+        .expect("Should be able to release result");
+    domain
+        .release_context(input_context)
+        .expect("Should be able to release input");
+    // let item = match result_context.dynamic_data.get(&0) {
+    //     Some(item) => item,
+    //     None => {
+    //         let answer = format!("Dispatcher no output item no 0\n");
+    //         return;
+    //     }
+    // };
+    // if let DataItem::Item(position) = item {
+    //     println!("item size: {}", position.size);
+    //     for i in 0..MAT_DIM * MAT_DIM {
+    //         let value = u64::from_ne_bytes(
+    //             result_context
+    //                 .read(position.offset + i * 8, 8)
+    //                 .expect("Should read")[0..8]
+    //                 .try_into()
+    //                 .expect("Should have right size"),
+    //         );
+    //         println!("Dispatcher Ok with result = {:?}\n", value);
+    //     }
+    // }
     input_context.dynamic_data.insert(
         1,
         DataItem::Item(Position {

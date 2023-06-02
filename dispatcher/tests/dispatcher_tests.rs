@@ -6,7 +6,7 @@ use futures::lock::Mutex;
 use machine_interface::{
     function_lib::{Driver, DriverFunction, Loader, LoaderFunction},
     memory_domain::{ContextTrait, MemoryDomain},
-    DataItem, Position,
+    DataItem, DataSet, Position,
 };
 use std::collections::HashMap;
 
@@ -48,7 +48,7 @@ fn single_domain_and_engine_basic<Domain: MemoryDomain, TestDriver: Driver, Test
     let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push(relative_path);
     let dispatcher = setup_dispatcher::<Domain, TestDriver, TestLoader>(
-        Vec::new(),
+        domain_arg,
         path.to_str().unwrap(),
         engine_resource,
     );
@@ -87,10 +87,16 @@ fn single_domain_and_engine_matmul<Domain: MemoryDomain, TestDriver: Driver, Tes
         .expect("Should be able to write matrix size");
     in_context.dynamic_data.insert(
         0,
-        DataItem::Item(Position {
-            offset: size_offset,
-            size: 8,
-        }),
+        DataSet {
+            ident: "".to_string(),
+            buffers: vec![DataItem {
+                ident: "".to_string(),
+                data: Position {
+                    offset: size_offset,
+                    size: 8,
+                },
+            }],
+        },
     );
     let mut in_matrix = Vec::new();
     in_matrix.extend_from_slice(&u64::to_ne_bytes(1));
@@ -105,22 +111,19 @@ fn single_domain_and_engine_matmul<Domain: MemoryDomain, TestDriver: Driver, Tes
         .expect("Should be able to write");
     in_context.dynamic_data.insert(
         1,
-        DataItem::Item(Position {
-            offset: in_mat_offset,
-            size: 32,
-        }),
+        DataSet {
+            ident: "".to_string(),
+            buffers: vec![DataItem {
+                ident: "".to_string(),
+                data: Position {
+                    offset: in_mat_offset,
+                    size: 32,
+                },
+            }],
+        },
     );
-    let out_mat_offset = in_context
-        .get_free_space(4 * 8, 8)
-        .expect("Should have space");
-    in_context.dynamic_data.insert(
-        2,
-        DataItem::Item(Position {
-            offset: out_mat_offset,
-            size: 32,
-        }),
-    );
-    let input_mapping = vec![(0, None, 0), (1, None, 1), (2, None, 2)];
+
+    let input_mapping = vec![(0, None, 0), (1, None, 1)];
     let inputs = vec![(&in_context, input_mapping)];
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -131,14 +134,12 @@ fn single_domain_and_engine_matmul<Domain: MemoryDomain, TestDriver: Driver, Tes
         Err(err) => panic!("Failed with: {:?}", err),
     };
     assert_eq!(1, out_context.dynamic_data.len());
-    let out_mat_position = match out_context
+    let out_mat_set = out_context
         .dynamic_data
         .get(&0)
-        .expect("Should have item 0")
-    {
-        DataItem::Item(pos) => pos,
-        _ => panic!("Expected item but got set for output matrix"),
-    };
+        .expect("Should have item 0");
+    assert_eq!(1, out_mat_set.buffers.len());
+    let out_mat_position = out_mat_set.buffers[0].data;
     let out_mat = out_context
         .read(out_mat_position.offset, out_mat_position.size)
         .expect("Should read output matrix");
