@@ -28,100 +28,99 @@ static IN_SIZE: [u8; 8] = u64::to_ne_bytes(MAT_DIM as u64);
 const HOT_ID: u64 = 0;
 const COLD_ID: u64 = 1;
 
+#[cfg(feature = "cheri")]
 async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
     let mut inputs = Vec::new();
     let mut input_context;
-    #[cfg(feature = "cheri")]
-    {
-        let total_size = 2 * MAT_SIZE + 8;
-        let domain =
-            CheriMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
-        input_context = domain
-            .acquire_context(total_size)
-            .expect("Should always have space");
-        let size_offset = input_context
-            .get_free_space(8, 8)
-            .expect("Should have space");
+    let total_size = 2 * MAT_SIZE + 8;
+    let domain =
+        CheriMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
+    input_context = domain
+        .acquire_context(total_size)
+        .expect("Should always have space");
+    let size_offset = input_context
+        .get_free_space(8, 8)
+        .expect("Should have space");
+    input_context
+        .write(size_offset, Vec::<u8>::from(IN_SIZE))
+        .expect("Should be able to write");
+    input_context.dynamic_data.insert(
+        0,
+        DataItem::Item(Position {
+            offset: size_offset,
+            size: 8,
+        }),
+    );
+    let in_map_offset = input_context
+        .get_free_space(MAT_SIZE, 8)
+        .expect("Should have space");
+    unsafe {
         input_context
-            .write(size_offset, Vec::<u8>::from(IN_SIZE))
-            .expect("Should be able to write");
-        input_context.dynamic_data.insert(
-            0,
-            DataItem::Item(Position {
-                offset: size_offset,
-                size: 8,
-            }),
-        );
-        let in_map_offset = input_context
-            .get_free_space(MAT_SIZE, 8)
-            .expect("Should have space");
-        unsafe {
-            input_context
-                .write(in_map_offset, Vec::<u8>::from(IN_MAT))
-                .expect("Should be able to write input matrix");
-        }
-        input_context.dynamic_data.insert(
-            1,
-            DataItem::Item(Position {
-                offset: in_map_offset,
-                size: MAT_SIZE,
-            }),
-        );
-        let out_map_offset = input_context
-            .get_free_space(MAT_SIZE, 8)
-            .expect("Should have space");
-        input_context.dynamic_data.insert(
-            2,
-            DataItem::Item(Position {
-                offset: out_map_offset,
-                size: MAT_SIZE,
-            }),
-        );
-        inputs.push((
-            &input_context,
-            vec![
-                (0usize, None, 0usize),
-                (1usize, None, 1usize),
-                (2usize, None, 2usize),
-            ],
-        ));
-        let result_context = dispatcher
-            .queue_function(COLD_ID, inputs, non_caching)
-            .await
-            .expect("Should get back context");
-        domain
-            .release_context(result_context)
-            .expect("Should be able to release result");
-        domain
-            .release_context(input_context)
-            .expect("Should be able to release input");
-        // let item = match result_context.dynamic_data.get(&0) {
-        //     Some(item) => item,
-        //     None => {
-        //         let answer = format!("Dispatcher no output item no 0\n");
-        //         return;
-        //     }
-        // };
-        // if let DataItem::Item(position) = item {
-        //     println!("item size: {}", position.size);
-        //     for i in 0..MAT_DIM * MAT_DIM {
-        //         let value = u64::from_ne_bytes(
-        //             result_context
-        //                 .read(position.offset + i * 8, 8)
-        //                 .expect("Should read")[0..8]
-        //                 .try_into()
-        //                 .expect("Should have right size"),
-        //         );
-        //         println!("Dispatcher Ok with result = {:?}\n", value);
-        //     }
-        // }
+            .write(in_map_offset, Vec::<u8>::from(IN_MAT))
+            .expect("Should be able to write input matrix");
     }
+    input_context.dynamic_data.insert(
+        1,
+        DataItem::Item(Position {
+            offset: in_map_offset,
+            size: MAT_SIZE,
+        }),
+    );
+    let out_map_offset = input_context
+        .get_free_space(MAT_SIZE, 8)
+        .expect("Should have space");
+    input_context.dynamic_data.insert(
+        2,
+        DataItem::Item(Position {
+            offset: out_map_offset,
+            size: MAT_SIZE,
+        }),
+    );
+    inputs.push((
+        &input_context,
+        vec![
+            (0usize, None, 0usize),
+            (1usize, None, 1usize),
+            (2usize, None, 2usize),
+        ],
+    ));
+    let result_context = dispatcher
+        .queue_function(COLD_ID, inputs, non_caching)
+        .await
+        .expect("Should get back context");
+    domain
+        .release_context(result_context)
+        .expect("Should be able to release result");
+    domain
+        .release_context(input_context)
+        .expect("Should be able to release input");
+    // let item = match result_context.dynamic_data.get(&0) {
+    //     Some(item) => item,
+    //     None => {
+    //         let answer = format!("Dispatcher no output item no 0\n");
+    //         return;
+    //     }
+    // };
+    // if let DataItem::Item(position) = item {
+    //     println!("item size: {}", position.size);
+    //     for i in 0..MAT_DIM * MAT_DIM {
+    //         let value = u64::from_ne_bytes(
+    //             result_context
+    //                 .read(position.offset + i * 8, 8)
+    //                 .expect("Should read")[0..8]
+    //                 .try_into()
+    //                 .expect("Should have right size"),
+    //         );
+    //         println!("Dispatcher Ok with result = {:?}\n", value);
+    //     }
+    // }
 }
 
 async fn serve_cold(
     _req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
 ) -> Result<Response<Body>, Infallible> {
+    #[cfg(feature = "cheri")]
     run_mat_func(dispatcher, true).await;
     let answer = "Done: Cold\n";
     Ok::<_, Infallible>(Response::new(answer.into()))
@@ -131,6 +130,7 @@ async fn serve_hot(
     _req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
 ) -> Result<Response<Body>, Infallible> {
+    #[cfg(feature = "cheri")]
     run_mat_func(dispatcher, false).await;
     let answer = "Done: Hot \n";
     Ok::<_, Infallible>(Response::new(answer.into()))
