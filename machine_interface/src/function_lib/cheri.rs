@@ -18,6 +18,8 @@ use std::{
     thread::{spawn, JoinHandle},
 };
 
+use super::Function;
+
 #[link(name = "cheri_lib")]
 extern "C" {
     fn cheri_run_static(
@@ -336,7 +338,7 @@ impl Loader for CheriLoader {
     fn parse_function(
         function: Vec<u8>,
         static_domain: &Box<dyn MemoryDomain>,
-    ) -> DandelionResult<(DataRequirementList, Context, FunctionConfig)> {
+    ) -> DandelionResult<Function> {
         let elf = elf_parser::ParsedElf::new(&function)?;
         let input_root = elf.get_symbol_by_name(&function, "inputRoot")?;
         let input_number = elf.get_symbol_by_name(&function, "inputNumber")?;
@@ -382,7 +384,7 @@ impl Loader for CheriLoader {
             write_counter += position.size;
         }
         context.static_data = static_layout;
-        return Ok((requirements, context, config));
+        return Ok(Function { requirements, context, config });
     }
 }
 
