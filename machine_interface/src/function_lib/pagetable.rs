@@ -370,7 +370,7 @@ pub struct PagetableDriver {}
 
 impl Driver for PagetableDriver {
     // // take or release one of the available engines
-    fn start_engine(config: Vec<u8>) -> DandelionResult<Box<dyn Engine>> {
+    fn start_engine(&self, config: Vec<u8>) -> DandelionResult<Box<dyn Engine>> {
         if config.len() != 1 {
             return Err(DandelionError::ConfigMissmatch);
         }

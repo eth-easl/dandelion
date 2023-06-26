@@ -150,19 +150,20 @@ fn test_loader_basic() {
 
 #[test]
 fn test_driver() {
-    let no_resource_engine = CheriDriver::start_engine(Vec::<u8>::new());
+    let driver = CheriDriver {};
+    let no_resource_engine = driver.start_engine(Vec::<u8>::new());
     match no_resource_engine {
         Ok(_) => panic!("Should not be able to get engine"),
         Err(err) => assert_eq!(DandelionError::ConfigMissmatch, err),
     }
-    let wrong_resource_engine = CheriDriver::start_engine(vec![4]);
+    let wrong_resource_engine = driver.start_engine(vec![4]);
     match wrong_resource_engine {
         Ok(_) => panic!("Should not be able to get engine"),
         Err(err) => assert_eq!(DandelionError::MalformedConfig, err),
     }
 
     for i in 0..4 {
-        let engine = CheriDriver::start_engine(vec![i]);
+        let engine = driver.start_engine(vec![i]);
         engine.expect("Should be able to get engine");
     }
 }
@@ -171,12 +172,13 @@ fn test_driver() {
 fn test_engine_minimal() {
     // load elf file
     let elf_buffer = read_file("test_elf_aarch64c_basic", 3240);
+    let driver = CheriDriver { };
     let mut domain = CheriMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new cheri domain");
     let Function { requirements, context: static_context, config } = CheriLoader::parse_function(elf_buffer, &mut domain)
         .expect("Empty string should return error");
 
-    let mut engine = CheriDriver::start_engine(vec![1]).expect("Should be able to start engine");
+    let mut engine = driver.start_engine(vec![1]).expect("Should be able to start engine");
 
     // set up context and fill in static requirements
     let function_context_result = load_static(&mut domain, &static_context, &requirements);
@@ -201,13 +203,14 @@ fn test_engine_minimal() {
 fn test_engine_matmul_single() {
     // load elf file
     let elf_buffer = read_file("test_elf_aarch64c_matmul", 3648);
+    let driver = CheriDriver { };
     let mut domain = CheriMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new cheri domain");
     let Function { requirements, context: mut static_context, config } =
         CheriLoader::parse_function(elf_buffer, &mut domain)
             .expect("Empty string should return error");
 
-    let mut engine = CheriDriver::start_engine(vec![1]).expect("Should be able to start engine");
+    let mut engine = driver.start_engine(vec![1]).expect("Should be able to start engine");
 
     // set up context and fill in static requirements
     let function_context_result = load_static(&mut domain, &mut static_context, &requirements);
@@ -308,12 +311,13 @@ fn get_expected_mat(size: usize) -> Vec<i64> {
 fn test_engine_matmul_size_sweep() {
     // load elf file
     let elf_buffer = read_file("test_elf_aarch64c_matmul", 3648);
+    let driver = CheriDriver {};
     let mut domain = CheriMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new cheri domain");
     let Function { requirements, context: static_context, config } = CheriLoader::parse_function(elf_buffer, &mut domain)
         .expect("Empty string should return error");
 
-    let mut engine = CheriDriver::start_engine(vec![1]).expect("Should be able to start engine");
+    let mut engine = driver.start_engine(vec![1]).expect("Should be able to start engine");
     for mat_size in LOWER_SIZE_BOUND..UPPER_SIZE_BOUND {
         // set up context and fill in static requirements
         let function_context_result = load_static(&mut domain, &static_context, &requirements);

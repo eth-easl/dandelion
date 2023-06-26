@@ -4,16 +4,17 @@ use dispatcher::{
 };
 use futures::lock::Mutex;
 use machine_interface::{
-    function_lib::{Driver, DriverFunction, Loader, LoaderFunction},
+    function_lib::{Driver, Loader, LoaderFunction},
     memory_domain::{ContextTrait, MemoryDomain},
     DataItem, Position,
 };
 use std::collections::HashMap;
 
-fn setup_dispatcher<Dom: MemoryDomain, Driv: Driver, L: Loader>(
+fn setup_dispatcher<Dom: MemoryDomain, L: Loader>(
     domain_arg: Vec<u8>,
     path: &str,
     engine_resource: Vec<u8>,
+    driver: Box<dyn Driver>,
 ) -> Dispatcher {
     let mut domains = HashMap::new();
     let context_id: ContextTypeId = 0;
@@ -22,9 +23,8 @@ fn setup_dispatcher<Dom: MemoryDomain, Driv: Driver, L: Loader>(
         Dom::init(domain_arg).expect("Should be able to initialize domain"),
     );
     let engine_id: EngineTypeId = 0;
-    let mut drivers = HashMap::<EngineTypeId, DriverFunction>::new();
-    let driver_func = Driv::start_engine as DriverFunction;
-    drivers.insert(engine_id, driver_func);
+    let mut drivers = HashMap::<EngineTypeId, Box<dyn Driver>>::new();
+    drivers.insert(engine_id, driver);
     let mut type_map = HashMap::new();
     type_map.insert(engine_id, context_id);
     let mut loader_map = HashMap::new();
@@ -40,17 +40,19 @@ fn setup_dispatcher<Dom: MemoryDomain, Driv: Driver, L: Loader>(
         .expect("Should have initialized dispatcher");
 }
 
-fn single_domain_and_engine_basic<Domain: MemoryDomain, TestDriver: Driver, TestLoader: Loader>(
+fn single_domain_and_engine_basic<Domain: MemoryDomain, TestLoader: Loader>(
     domain_arg: Vec<u8>,
     relative_path: &str,
     engine_resource: Vec<u8>,
+    driver: Box<dyn Driver>,
 ) {
     let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push(relative_path);
-    let dispatcher = setup_dispatcher::<Domain, TestDriver, TestLoader>(
+    let dispatcher = setup_dispatcher::<Domain, TestLoader>(
         Vec::new(),
         path.to_str().unwrap(),
         engine_resource,
+        driver,
     );
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -62,17 +64,19 @@ fn single_domain_and_engine_basic<Domain: MemoryDomain, TestDriver: Driver, Test
     }
 }
 
-fn single_domain_and_engine_matmul<Domain: MemoryDomain, TestDriver: Driver, TestLoader: Loader>(
+fn single_domain_and_engine_matmul<Domain: MemoryDomain, TestLoader: Loader>(
     domain_arg: Vec<u8>,
     relative_path: &str,
     engine_resource: Vec<u8>,
+    driver: Box<dyn Driver>,
 ) {
     let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push(relative_path);
-    let dispatcher = setup_dispatcher::<Domain, TestDriver, TestLoader>(
+    let dispatcher = setup_dispatcher::<Domain, TestLoader>(
         Vec::new(),
         path.to_str().unwrap(),
         engine_resource,
+        driver,
     );
     // need space for the input matrix of 2x2 uint64_t as well as a output matrix of the same size
     // and an uint64_t size that gives the column / row size (which is 2)
@@ -150,21 +154,25 @@ fn single_domain_and_engine_matmul<Domain: MemoryDomain, TestDriver: Driver, Tes
 }
 
 macro_rules! dispatcherTests {
-    ($domain : ty; $init: expr; $driver : ty; $engine_resource: expr; $loader: ty; $prefix: expr; $basic: expr; $mat: expr) => {
+    ($domain : ty; $init: expr; $driver : expr; $engine_resource: expr; $loader: ty; $prefix: expr; $basic: expr; $mat: expr) => {
         #[test]
         fn test_single_domain_and_engine_basic() {
-            crate::single_domain_and_engine_basic::<$domain, $driver, $loader>(
+            let driver = Box::new($driver);
+            crate::single_domain_and_engine_basic::<$domain, $loader>(
                 $init,
                 concat!($prefix, $basic),
                 $engine_resource,
+                driver,
             )
         }
         #[test]
         fn test_single_domain_and_engine_matmul() {
-            crate::single_domain_and_engine_matmul::<$domain, $driver, $loader>(
+            let driver = Box::new($driver);
+            crate::single_domain_and_engine_matmul::<$domain, $loader>(
                 $init,
                 concat!($prefix, $mat),
                 $engine_resource,
+                driver,
             )
         }
     };
@@ -176,7 +184,7 @@ mod cheri {
         function_lib::cheri::{CheriDriver, CheriLoader},
         memory_domain::cheri::CheriMemoryDomain,
     };
-    dispatcherTests!(CheriMemoryDomain; Vec::new(); CheriDriver; vec![1]; CheriLoader; "../machine_interface/tests/data/test_elf_aarch64c"; "_basic"; "_matmul");
+    dispatcherTests!(CheriMemoryDomain; Vec::new(); CheriDriver {}; vec![1]; CheriLoader; "../machine_interface/tests/data/test_elf_aarch64c"; "_basic"; "_matmul");
 }
 
 #[cfg(feature = "pagetable")]
@@ -185,5 +193,5 @@ mod pagetable {
         function_lib::pagetable::{PagetableDriver, PagetableLoader},
         memory_domain::pagetable::PagetableMemoryDomain,
     };
-    dispatcherTests!(PagetableMemoryDomain; Vec::new(); PagetableDriver; vec![1]; PagetableLoader; "../machine_interface/tests/data/test_elf_x86c"; "_basic"; "_matmul");
+    dispatcherTests!(PagetableMemoryDomain; Vec::new(); PagetableDriver {}; vec![1]; PagetableLoader; "../machine_interface/tests/data/test_elf_x86c"; "_basic"; "_matmul");
 }

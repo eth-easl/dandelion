@@ -8,11 +8,12 @@ use hyper::{
     service::{make_service_fn, service_fn},
     Body, Request, Response, Server,
 };
+use machine_interface::function_lib::cheri::CheriDriver;
 #[cfg(feature = "cheri")]
 use machine_interface::{
     function_lib::{
         cheri::{CheriDriver, CheriLoader},
-        Driver, DriverFunction, Loader, LoaderFunction,
+        Driver, Loader, LoaderFunction,
     },
     memory_domain::{cheri::CheriMemoryDomain, ContextTrait, MemoryDomain},
     DataItem, Position,
@@ -21,7 +22,7 @@ use machine_interface::{
 use machine_interface::{
     function_lib::{
         pagetable::{PagetableDriver, PagetableLoader},
-        Driver, DriverFunction, Loader, LoaderFunction,
+        Driver, Loader, LoaderFunction,
     },
     memory_domain::{pagetable::PagetableMemoryDomain, ContextTrait, MemoryDomain},
     DataItem, Position,
@@ -211,8 +212,8 @@ fn main() -> () {
             context_id,
             CheriMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain"),
         );
-        let driver_func = CheriDriver::start_engine as DriverFunction;
-        drivers.insert(engine_id, driver_func);
+        let driver: Box<dyn Driver> = Box::new(CheriDriver {});
+        drivers.insert(engine_id, driver);
         let mut loader_map = HashMap::new();
         loader_map.insert(0, CheriLoader::parse_function as LoaderFunction);
         registry = FunctionRegistry::new(loader_map);
@@ -229,8 +230,8 @@ fn main() -> () {
             context_id,
             PagetableMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain"),
         );
-        let driver_func = PagetableDriver::start_engine as DriverFunction;
-        drivers.insert(engine_id, driver_func);
+        let driver: Box<dyn Driver> = Box::new(PagetableDriver {});
+        drivers.insert(engine_id, driver);
         let mut loader_map = HashMap::new();
         loader_map.insert(0, PagetableLoader::parse_function as LoaderFunction);
         registry = FunctionRegistry::new(loader_map);

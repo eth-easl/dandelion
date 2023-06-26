@@ -2,7 +2,7 @@ use crate::{function_registry::FunctionRegistry, resource_pool::ResourcePool};
 use dandelion_commons::{ContextTypeId, DandelionError, DandelionResult, EngineTypeId, FunctionId};
 use futures::{channel::oneshot, lock::Mutex};
 use machine_interface::{
-    function_lib::{DriverFunction, Engine, FunctionConfig},
+    function_lib::{Engine, FunctionConfig, Driver},
     memory_domain::{transer_data_item, Context, MemoryDomain},
 };
 use std::collections::{HashMap, VecDeque};
@@ -48,7 +48,7 @@ impl SchedulerQueue {
 // That have compile time size and static indexing
 pub struct Dispatcher {
     domains: HashMap<ContextTypeId, Box<dyn MemoryDomain>>,
-    _drivers: HashMap<EngineTypeId, DriverFunction>,
+    _drivers: HashMap<EngineTypeId, Box<dyn Driver>>,
     engines: HashMap<EngineTypeId, SchedulerQueue>,
     type_map: HashMap<EngineTypeId, ContextTypeId>,
     function_registry: FunctionRegistry,
@@ -58,7 +58,7 @@ pub struct Dispatcher {
 impl Dispatcher {
     pub fn init(
         domains: HashMap<ContextTypeId, Box<dyn MemoryDomain>>,
-        drivers: HashMap<EngineTypeId, DriverFunction>,
+        drivers: HashMap<EngineTypeId, Box<dyn Driver>>,
         type_map: HashMap<EngineTypeId, ContextTypeId>,
         function_registry: FunctionRegistry,
         mut resource_pool: ResourcePool,
@@ -70,7 +70,7 @@ impl Dispatcher {
             while let Ok(Some(resource)) =
                 resource_pool.sync_acquire_engine_resource(engine_id.clone())
             {
-                if let Ok(engine) = driver(vec![resource]) {
+                if let Ok(engine) = driver.start_engine(vec![resource]) {
                     engine_vec.push(engine);
                 }
             }
