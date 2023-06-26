@@ -194,7 +194,9 @@ fn check_syscall(pid: libc::pid_t) -> SyscallType {
     type Regs = libc::user_regs_struct;
     let regs = unsafe {
         let mut regs_uninit: core::mem::MaybeUninit<Regs> = core::mem::MaybeUninit::uninit();
-        let res: i64 = libc::ptrace(libc::PTRACE_GETREGS, pid, 0, regs_uninit.as_mut_ptr());
+        // TODO PTRACE_GETREGS seems to be missing on linux;
+        // is this the correct replacement?
+        let res: i64 = libc::ptrace(libc::PTRACE_GETREGSET, pid, 0, regs_uninit.as_mut_ptr());
         assert_eq!(res, 0);
         regs_uninit.assume_init()
     };

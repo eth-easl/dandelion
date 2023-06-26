@@ -93,6 +93,8 @@ impl MemoryDomain for CheriMemoryDomain {
             dynamic_data: HashMap::new(),
             static_data: Vec::new(),
             size,
+            #[cfg(feature = "pagetable")]
+            protection_requirements: Vec::new(),
         })
     }
     fn release_context(&self, context: Context) -> DandelionResult<()> {

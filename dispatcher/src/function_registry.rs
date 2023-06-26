@@ -16,6 +16,7 @@ pub struct FunctionRegistry {
     // TODO replace with futures compatible RW lock if it becomes a bottleneck
     registry:
         Mutex<HashMap<(FunctionId, EngineTypeId), (DataRequirementList, Context, FunctionConfig)>>,
+    /// The paths for the local function binaries for a specific engine
     local_available: HashMap<(FunctionId, EngineTypeId), String>,
 }
 
