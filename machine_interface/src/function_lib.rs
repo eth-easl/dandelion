@@ -51,10 +51,17 @@ pub trait Driver {
     fn start_engine(config: Vec<u8>) -> DandelionResult<Box<dyn Engine>>;
 }
 
+// TODO should be private?
+pub struct Function {
+    pub requirements: DataRequirementList,
+    pub context: Context,
+    pub config: FunctionConfig,
+}
+
 pub type LoaderFunction = fn(
     Vec<u8>,
     &Box<dyn MemoryDomain>,
-) -> DandelionResult<(DataRequirementList, Context, FunctionConfig)>;
+) -> DandelionResult<Function>;
 
 pub trait Loader {
     // parses an executable,
@@ -63,5 +70,5 @@ pub trait Loader {
     fn parse_function(
         function: Vec<u8>,
         static_domain: &Box<dyn MemoryDomain>,
-    ) -> DandelionResult<(DataRequirementList, Context, FunctionConfig)>;
+    ) -> DandelionResult<Function>;
 }

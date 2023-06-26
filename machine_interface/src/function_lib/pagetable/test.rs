@@ -4,7 +4,7 @@ use crate::{
     function_lib::{
         pagetable::{PagetableDriver, PagetableLoader},
         util::load_static,
-        Driver, FunctionConfig, Loader,
+        Driver, FunctionConfig, Loader, Function,
     },
     memory_domain::{pagetable::PagetableMemoryDomain, ContextTrait, MemoryDomain},
     DataItem, Position,
@@ -45,7 +45,7 @@ fn test_loader_basic() {
     let elf_buffer = read_file("test_elf_x86c_basic", 13952);
     let mut pagetable_domain =
         PagetableMemoryDomain::init(Vec::new()).expect("Should be able to get pagetable domain");
-    let (req_list, context, config) =
+    let Function { requirements, context, config } =
         PagetableLoader::parse_function(elf_buffer, &mut pagetable_domain)
             .expect("Should correctly parse elf file");
     // check requirement list
@@ -72,16 +72,16 @@ fn test_loader_basic() {
         },
     ];
     assert_eq!(
-        0x80_0000, req_list.size,
+        0x80_0000, requirements.size,
         "Missmatch in expected default context size"
     );
     let expected_sizes = vec![0x254, 0x197, 0x178, 0x10];
     assert_eq!(
         expected_requirements.len(),
-        req_list.static_requirements.len(),
+        requirements.static_requirements.len(),
         "Requirements list lengths don't match"
     );
-    for (index, (actual, expected)) in req_list
+    for (index, (actual, expected)) in requirements
         .static_requirements
         .iter()
         .zip(expected_requirements.iter())
@@ -180,14 +180,14 @@ fn test_engine_minimal() {
     let elf_buffer = read_file("test_elf_x86c_basic", 13952);
     let mut domain = PagetableMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new pagetable domain");
-    let (req_list, static_context, config) =
+    let Function { requirements, context: static_context, config } =
         PagetableLoader::parse_function(elf_buffer, &mut domain)
             .expect("Empty string should return error");
 
     let mut engine =
         PagetableDriver::start_engine(vec![1]).expect("Should be able to start engine");
     // set up context and fill in static requirements
-    let function_context_result = load_static(&mut domain, &static_context, &req_list);
+    let function_context_result = load_static(&mut domain, &static_context, &requirements);
     let function_context = match function_context_result {
         Ok(c) => c,
         Err(err) => panic!("Expect static loading to succeed, failed with {:?}", err),
@@ -211,14 +211,14 @@ fn test_engine_matmul_single() {
     let elf_buffer = read_file("test_elf_x86c_matmul", 13952);
     let mut domain = PagetableMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new pagetable domain");
-    let (req_list, mut static_context, config) =
+    let Function { requirements, context: mut static_context, config } =
         PagetableLoader::parse_function(elf_buffer, &mut domain)
             .expect("Empty string should return error");
 
     let mut engine =
         PagetableDriver::start_engine(vec![1]).expect("Should be able to start engine");
     // set up context and fill in static requirements
-    let function_context_result = load_static(&mut domain, &mut static_context, &req_list);
+    let function_context_result = load_static(&mut domain, &mut static_context, &requirements);
     let mut function_context = match function_context_result {
         Ok(c) => c,
         Err(err) => panic!("Expect static loading to succeed, failed with {:?}", err),
@@ -319,7 +319,7 @@ fn test_engine_matmul_size_sweep() {
     let elf_buffer = read_file("test_elf_x86c_matmul", 13952);
     let mut domain = PagetableMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new pagetable domain");
-    let (req_list, static_context, config) =
+    let Function { requirements, context: static_context, config } =
         PagetableLoader::parse_function(elf_buffer, &mut domain)
             .expect("Empty string should return error");
 
@@ -327,7 +327,7 @@ fn test_engine_matmul_size_sweep() {
         PagetableDriver::start_engine(vec![1]).expect("Should be able to start engine");
     for mat_size in LOWER_SIZE_BOUND..UPPER_SIZE_BOUND {
         // set up context and fill in static requirements
-        let function_context_result = load_static(&mut domain, &static_context, &req_list);
+        let function_context_result = load_static(&mut domain, &static_context, &requirements);
         let mut function_context = match function_context_result {
             Ok(c) => c,
             Err(err) => panic!("Expect static loading to succeed, failed with {:?}", err),
@@ -414,14 +414,14 @@ fn test_engine_protection() {
     let elf_buffer = read_file("test_elf_x86c_syscall", 14128);
     let mut domain = PagetableMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new pagetable domain");
-    let (req_list, static_context, config) =
+    let Function { requirements, context: static_context, config } =
         PagetableLoader::parse_function(elf_buffer, &mut domain)
             .expect("Empty string should return error");
 
     let mut engine =
         PagetableDriver::start_engine(vec![1]).expect("Should be able to start engine");
     // set up context and fill in static requirements
-    let function_context_result = load_static(&mut domain, &static_context, &req_list);
+    let function_context_result = load_static(&mut domain, &static_context, &requirements);
     let function_context = match function_context_result {
         Ok(c) => c,
         Err(err) => panic!("Expect static loading to succeed, failed with {:?}", err),

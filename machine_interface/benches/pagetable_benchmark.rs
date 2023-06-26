@@ -4,7 +4,7 @@ use machine_interface::{
     function_lib::{
         pagetable::{PagetableDriver, PagetableLoader},
         util::load_static,
-        Driver, Loader,
+        Driver, Loader, Function,
     },
     memory_domain::{pagetable::PagetableMemoryDomain, ContextTrait, MemoryDomain},
     DataItem, Position,
@@ -48,12 +48,12 @@ fn matmul_sequential_benchmark(c: &mut Criterion) {
     elf_file
         .read_to_end(&mut elf_buffer)
         .expect("Should be able to read entire file");
-    let (req_list, mut static_context, config) =
+    let Function { requirements, context: mut static_context, config } =
         PagetableLoader::parse_function(elf_buffer, &mut domain)
             .expect("Should success at parsing");
     c.bench_function("matmul", |b| {
         b.iter(|| {
-            let mut function_context = load_static(&mut domain, &mut static_context, &req_list)
+            let mut function_context = load_static(&mut domain, &mut static_context, &requirements)
                 .expect("Should be able to configure function context");
             // add inputs
             let in_size_offset = function_context

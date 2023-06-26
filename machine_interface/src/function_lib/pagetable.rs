@@ -21,6 +21,8 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use super::Function;
+
 const IO_STRUCT_SIZE: usize = 16;
 const MAX_OUTPUTS: u32 = 16;
 
@@ -409,7 +411,7 @@ impl Loader for PagetableLoader {
     fn parse_function(
         function: Vec<u8>,
         static_domain: &Box<dyn MemoryDomain>,
-    ) -> DandelionResult<(DataRequirementList, Context, FunctionConfig)> {
+    ) -> DandelionResult<Function> {
         let elf = elf_parser::ParsedElf::new(&function)?;
         let input_root = elf.get_symbol_by_name(&function, "inputRoot")?;
         let input_number = elf.get_symbol_by_name(&function, "inputNumber")?;
@@ -457,7 +459,7 @@ impl Loader for PagetableLoader {
         context.static_data = static_layout;
 
         context.protection_requirements = elf.get_memory_protection_layout();
-        return Ok((requirements, context, config));
+        return Ok(Function { requirements, context, config });
     }
 }
 
