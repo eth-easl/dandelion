@@ -2,9 +2,9 @@ use std::vec;
 
 use crate::{
     function_lib::{
-        pagetable::{PagetableDriver, PagetableLoader},
+        pagetable::PagetableDriver,
         util::load_static,
-        Driver, FunctionConfig, Loader, Function,
+        Driver, FunctionConfig, Function,
     },
     memory_domain::{pagetable::PagetableMemoryDomain, ContextTrait, MemoryDomain},
     DataItem, Position,
@@ -17,9 +17,10 @@ use dandelion_commons::DandelionError;
 fn test_loader_empty() {
     // load elf file
     let elf_file = Vec::<u8>::new();
+    let driver = PagetableDriver {};
     let mut pagetable_domain =
         PagetableMemoryDomain::init(Vec::new()).expect("Should be able to get pagetable domain");
-    PagetableLoader::parse_function(elf_file, &mut pagetable_domain)
+    driver.parse_function(elf_file, &mut pagetable_domain)
         .expect("Empty string should return error");
 }
 
@@ -43,10 +44,11 @@ fn read_file(name: &str, expected_size: usize) -> Vec<u8> {
 #[test]
 fn test_loader_basic() {
     let elf_buffer = read_file("test_elf_x86c_basic", 13952);
+    let driver = PagetableDriver {};
     let mut pagetable_domain =
         PagetableMemoryDomain::init(Vec::new()).expect("Should be able to get pagetable domain");
     let Function { requirements, context, config } =
-        PagetableLoader::parse_function(elf_buffer, &mut pagetable_domain)
+        driver.parse_function(elf_buffer, &mut pagetable_domain)
             .expect("Should correctly parse elf file");
     // check requirement list
     let expected_requirements = vec![
@@ -183,7 +185,7 @@ fn test_engine_minimal() {
     let mut domain = PagetableMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new pagetable domain");
     let Function { requirements, context: static_context, config } =
-        PagetableLoader::parse_function(elf_buffer, &mut domain)
+        driver.parse_function(elf_buffer, &mut domain)
             .expect("Empty string should return error");
 
     let mut engine =
@@ -215,7 +217,7 @@ fn test_engine_matmul_single() {
     let mut domain = PagetableMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new pagetable domain");
     let Function { requirements, context: mut static_context, config } =
-        PagetableLoader::parse_function(elf_buffer, &mut domain)
+        driver.parse_function(elf_buffer, &mut domain)
             .expect("Empty string should return error");
 
     let mut engine =
@@ -324,7 +326,7 @@ fn test_engine_matmul_size_sweep() {
     let mut domain = PagetableMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new pagetable domain");
     let Function { requirements, context: static_context, config } =
-        PagetableLoader::parse_function(elf_buffer, &mut domain)
+        driver.parse_function(elf_buffer, &mut domain)
             .expect("Empty string should return error");
 
     let mut engine =
@@ -420,7 +422,7 @@ fn test_engine_protection() {
     let mut domain = PagetableMemoryDomain::init(Vec::<u8>::new())
         .expect("Should have initialized new pagetable domain");
     let Function { requirements, context: static_context, config } =
-        PagetableLoader::parse_function(elf_buffer, &mut domain)
+        driver.parse_function(elf_buffer, &mut domain)
             .expect("Empty string should return error");
 
     let mut engine =

@@ -1,5 +1,5 @@
 use crate::{
-    function_lib::{Driver, ElfConfig, Engine, FunctionConfig, Loader},
+    function_lib::{Driver, ElfConfig, Engine, FunctionConfig},
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
     DataItem, DataRequirement, DataRequirementList, Position,
@@ -368,6 +368,8 @@ impl Engine for PagetableEngine {
 
 pub struct PagetableDriver {}
 
+const DEFAULT_SPACE_SIZE: usize = 0x80_0000; // 8MiB
+
 impl Driver for PagetableDriver {
     // // take or release one of the available engines
     fn start_engine(&self, config: Vec<u8>) -> DandelionResult<Box<dyn Engine>> {
@@ -399,16 +401,12 @@ impl Driver for PagetableDriver {
             is_running,
         }));
     }
-}
 
-const DEFAULT_SPACE_SIZE: usize = 0x80_0000; // 8MiB
-
-pub struct PagetableLoader {}
-impl Loader for PagetableLoader {
     // parses an executable,
     // returns the layout requirements and a context containing static data,
     //  and a layout description for it
     fn parse_function(
+        &self,
         function: Vec<u8>,
         static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<Function> {

@@ -47,6 +47,15 @@ pub trait Engine: Send {
 pub trait Driver: Send+Sync {
     // the resource descirbed by config and make it into an engine of the type
     fn start_engine(&self, config: Vec<u8>) -> DandelionResult<Box<dyn Engine>>;
+
+    // parses an executable,
+    // returns the layout requirements and a context containing static data,
+    //  and a layout description for it
+    fn parse_function(
+        &self,
+        function: Vec<u8>,
+        static_domain: &Box<dyn MemoryDomain>,
+    ) -> DandelionResult<Function>;
 }
 
 // TODO should be private?
@@ -54,19 +63,4 @@ pub struct Function {
     pub requirements: DataRequirementList,
     pub context: Context,
     pub config: FunctionConfig,
-}
-
-pub type LoaderFunction = fn(
-    Vec<u8>,
-    &Box<dyn MemoryDomain>,
-) -> DandelionResult<Function>;
-
-pub trait Loader {
-    // parses an executable,
-    // returns the layout requirements and a context containing static data,
-    //  and a layout description for it
-    fn parse_function(
-        function: Vec<u8>,
-        static_domain: &Box<dyn MemoryDomain>,
-    ) -> DandelionResult<Function>;
 }

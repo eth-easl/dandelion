@@ -2,9 +2,9 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use machine_interface::{
     function_lib::{
-        pagetable::{PagetableDriver, PagetableLoader},
+        pagetable::PagetableDriver,
         util::load_static,
-        Driver, Loader, Function,
+        Driver, Function,
     },
     memory_domain::{pagetable::PagetableMemoryDomain, ContextTrait, MemoryDomain},
     DataItem, Position,
@@ -50,7 +50,7 @@ fn matmul_sequential_benchmark(c: &mut Criterion) {
         .read_to_end(&mut elf_buffer)
         .expect("Should be able to read entire file");
     let Function { requirements, context: mut static_context, config } =
-        PagetableLoader::parse_function(elf_buffer, &mut domain)
+        driver.parse_function(elf_buffer, &mut domain)
             .expect("Should success at parsing");
     c.bench_function("matmul", |b| {
         b.iter(|| {

@@ -4,13 +4,13 @@ use dispatcher::{
 };
 use futures::lock::Mutex;
 use machine_interface::{
-    function_lib::{Driver, Loader, LoaderFunction},
+    function_lib::Driver,
     memory_domain::{ContextTrait, MemoryDomain},
     DataItem, Position,
 };
 use std::collections::HashMap;
 
-fn setup_dispatcher<Dom: MemoryDomain, L: Loader>(
+fn setup_dispatcher<Dom: MemoryDomain>(
     domain_arg: Vec<u8>,
     path: &str,
     engine_resource: Vec<u8>,
@@ -27,20 +27,18 @@ fn setup_dispatcher<Dom: MemoryDomain, L: Loader>(
     drivers.insert(engine_id, driver);
     let mut type_map = HashMap::new();
     type_map.insert(engine_id, context_id);
-    let mut loader_map = HashMap::new();
-    loader_map.insert(engine_id, L::parse_function as LoaderFunction);
-    let mut registry = FunctionRegistry::new(loader_map);
+    let mut registry = FunctionRegistry::new(drivers);
     registry.add_local(0, engine_id, path);
     let mut pool_map = HashMap::new();
     pool_map.insert(engine_id, engine_resource);
     let resource_pool = ResourcePool {
         engine_pool: Mutex::new(pool_map),
     };
-    return Dispatcher::init(domains, drivers, type_map, registry, resource_pool)
+    return Dispatcher::init(domains, type_map, registry, resource_pool)
         .expect("Should have initialized dispatcher");
 }
 
-fn single_domain_and_engine_basic<Domain: MemoryDomain, TestLoader: Loader>(
+fn single_domain_and_engine_basic<Domain: MemoryDomain>(
     domain_arg: Vec<u8>,
     relative_path: &str,
     engine_resource: Vec<u8>,
@@ -48,7 +46,7 @@ fn single_domain_and_engine_basic<Domain: MemoryDomain, TestLoader: Loader>(
 ) {
     let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push(relative_path);
-    let dispatcher = setup_dispatcher::<Domain, TestLoader>(
+    let dispatcher = setup_dispatcher::<Domain>(
         Vec::new(),
         path.to_str().unwrap(),
         engine_resource,
@@ -64,7 +62,7 @@ fn single_domain_and_engine_basic<Domain: MemoryDomain, TestLoader: Loader>(
     }
 }
 
-fn single_domain_and_engine_matmul<Domain: MemoryDomain, TestLoader: Loader>(
+fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
     domain_arg: Vec<u8>,
     relative_path: &str,
     engine_resource: Vec<u8>,
@@ -72,7 +70,7 @@ fn single_domain_and_engine_matmul<Domain: MemoryDomain, TestLoader: Loader>(
 ) {
     let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push(relative_path);
-    let dispatcher = setup_dispatcher::<Domain, TestLoader>(
+    let dispatcher = setup_dispatcher::<Domain>(
         Vec::new(),
         path.to_str().unwrap(),
         engine_resource,
@@ -158,7 +156,7 @@ macro_rules! dispatcherTests {
         #[test]
         fn test_single_domain_and_engine_basic() {
             let driver = Box::new($driver);
-            crate::single_domain_and_engine_basic::<$domain, $loader>(
+            crate::single_domain_and_engine_basic::<$domain>(
                 $init,
                 concat!($prefix, $basic),
                 $engine_resource,
@@ -168,7 +166,7 @@ macro_rules! dispatcherTests {
         #[test]
         fn test_single_domain_and_engine_matmul() {
             let driver = Box::new($driver);
-            crate::single_domain_and_engine_matmul::<$domain, $loader>(
+            crate::single_domain_and_engine_matmul::<$domain>(
                 $init,
                 concat!($prefix, $mat),
                 $engine_resource,
@@ -181,7 +179,7 @@ macro_rules! dispatcherTests {
 #[cfg(feature = "cheri")]
 mod cheri {
     use machine_interface::{
-        function_lib::cheri::{CheriDriver, CheriLoader},
+        function_lib::cheri::CheriDriver,
         memory_domain::cheri::CheriMemoryDomain,
     };
     dispatcherTests!(CheriMemoryDomain; Vec::new(); CheriDriver {}; vec![1]; CheriLoader; "../machine_interface/tests/data/test_elf_aarch64c"; "_basic"; "_matmul");
@@ -190,7 +188,7 @@ mod cheri {
 #[cfg(feature = "pagetable")]
 mod pagetable {
     use machine_interface::{
-        function_lib::pagetable::{PagetableDriver, PagetableLoader},
+        function_lib::pagetable::PagetableDriver,
         memory_domain::pagetable::PagetableMemoryDomain,
     };
     dispatcherTests!(PagetableMemoryDomain; Vec::new(); PagetableDriver {}; vec![1]; PagetableLoader; "../machine_interface/tests/data/test_elf_x86c"; "_basic"; "_matmul");

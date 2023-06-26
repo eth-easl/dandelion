@@ -21,8 +21,8 @@ use machine_interface::{
 #[cfg(feature = "pagetable")]
 use machine_interface::{
     function_lib::{
-        pagetable::{PagetableDriver, PagetableLoader},
-        Driver, Loader, LoaderFunction,
+        pagetable::PagetableDriver,
+        Driver,
     },
     memory_domain::{pagetable::PagetableMemoryDomain, ContextTrait, MemoryDomain},
     DataItem, Position,
@@ -206,8 +206,10 @@ fn main() -> () {
     };
     let mut registry;
     // insert specific configuration
+    // TODO this won't work if both features are enabled
     #[cfg(feature = "cheri")]
     {
+        let mut drivers = HashMap::new();
         domains.insert(
             context_id,
             CheriMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain"),
@@ -232,9 +234,7 @@ fn main() -> () {
         );
         let driver: Box<dyn Driver> = Box::new(PagetableDriver {});
         drivers.insert(engine_id, driver);
-        let mut loader_map = HashMap::new();
-        loader_map.insert(0, PagetableLoader::parse_function as LoaderFunction);
-        registry = FunctionRegistry::new(loader_map);
+        registry = FunctionRegistry::new(drivers);
         let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         path.push("../machine_interface/tests/data/test_elf_x86c_matmul");
         // add for hot function
@@ -244,7 +244,7 @@ fn main() -> () {
     }
 
     let dispatcher = Arc::new(
-        Dispatcher::init(domains, drivers, type_map, registry, resource_pool)
+        Dispatcher::init(domains, type_map, registry, resource_pool)
             .expect("Should be able to start dispatcher"),
     );
 
