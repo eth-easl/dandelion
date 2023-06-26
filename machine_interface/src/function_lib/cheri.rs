@@ -1,5 +1,5 @@
 use crate::{
-    function_lib::{Driver, ElfConfig, Engine, FunctionConfig, Loader},
+    function_lib::{Driver, ElfConfig, Engine, FunctionConfig},
     memory_domain::{cheri::cheri_c_context, Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
     DataItem, DataRequirement, DataRequirementList, Position,
@@ -296,6 +296,8 @@ impl Drop for CheriEngine {
 
 pub struct CheriDriver {}
 
+const DEFAULT_SPACE_SIZE: usize = 0x40_0000; // 4MiB
+
 impl Driver for CheriDriver {
     // // take or release one of the available engines
     fn start_engine(&self, config: Vec<u8>) -> DandelionResult<Box<dyn Engine>> {
@@ -326,16 +328,12 @@ impl Driver for CheriDriver {
             is_running,
         }));
     }
-}
 
-const DEFAULT_SPACE_SIZE: usize = 0x40_0000; // 4MiB
-
-pub struct CheriLoader {}
-impl Loader for CheriLoader {
     // parses an executable,
     // returns the layout requirements and a context containing static data,
     //  and a layout description for it
     fn parse_function(
+        &self,
         function: Vec<u8>,
         static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<Function> {

@@ -2,10 +2,10 @@ use crate::{function_registry::FunctionRegistry, resource_pool::ResourcePool};
 use dandelion_commons::{ContextTypeId, DandelionError, DandelionResult, EngineTypeId, FunctionId};
 use futures::{channel::oneshot, lock::Mutex};
 use machine_interface::{
-    function_lib::{Engine, FunctionConfig, Driver},
+    function_lib::{Engine, FunctionConfig},
     memory_domain::{transer_data_item, Context, MemoryDomain},
 };
-use std::collections::{HashMap, VecDeque};
+use std::{collections::{HashMap, VecDeque}};
 
 struct SchedulerQueue {
     internals: Mutex<(
@@ -48,7 +48,8 @@ impl SchedulerQueue {
 // That have compile time size and static indexing
 pub struct Dispatcher {
     domains: HashMap<ContextTypeId, Box<dyn MemoryDomain>>,
-    _drivers: HashMap<EngineTypeId, Box<dyn Driver>>,
+    // TODO does this struct need the drivers?
+    // _drivers: Arc<HashMap<EngineTypeId, Box<dyn Driver>>>,
     engines: HashMap<EngineTypeId, SchedulerQueue>,
     type_map: HashMap<EngineTypeId, ContextTypeId>,
     function_registry: FunctionRegistry,
@@ -58,14 +59,13 @@ pub struct Dispatcher {
 impl Dispatcher {
     pub fn init(
         domains: HashMap<ContextTypeId, Box<dyn MemoryDomain>>,
-        drivers: HashMap<EngineTypeId, Box<dyn Driver>>,
         type_map: HashMap<EngineTypeId, ContextTypeId>,
         function_registry: FunctionRegistry,
         mut resource_pool: ResourcePool,
     ) -> DandelionResult<Dispatcher> {
-        let mut engines = HashMap::with_capacity(drivers.len());
+        let mut engines = HashMap::with_capacity(function_registry.drivers.len());
         // Use up all engine resources to start with
-        for (engine_id, driver) in drivers.iter() {
+        for (engine_id, driver) in function_registry.drivers.iter() {
             let mut engine_vec = Vec::new();
             while let Ok(Some(resource)) =
                 resource_pool.sync_acquire_engine_resource(engine_id.clone())
@@ -81,7 +81,6 @@ impl Dispatcher {
         }
         return Ok(Dispatcher {
             domains,
-            _drivers: drivers,
             engines,
             type_map,
             function_registry,

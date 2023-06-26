@@ -11,8 +11,7 @@ use hyper::{
 #[cfg(feature = "cheri")]
 use machine_interface::{
     function_lib::{
-        cheri::{CheriDriver, CheriLoader},
-        Driver, Loader, LoaderFunction,
+        cheri::CheriDriver, Driver,
     },
     memory_domain::{cheri::CheriMemoryDomain, ContextTrait, MemoryDomain},
     DataItem, Position,
@@ -183,7 +182,6 @@ fn main() -> () {
     let mut domains = HashMap::new();
     let context_id: ContextTypeId = 0;
     let engine_id: EngineTypeId = 0;
-    let mut drivers = HashMap::new();
     let mut type_map = HashMap::new();
     type_map.insert(engine_id, context_id);
     let mut pool_map = HashMap::new();
@@ -193,17 +191,19 @@ fn main() -> () {
     };
     let mut registry;
     // insert specific configuration
+    // TODO this won't work if both features are enabled
     #[cfg(feature = "cheri")]
     {
+        let mut drivers = HashMap::new();
         domains.insert(
             context_id,
             CheriMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain"),
         );
         let driver: Box<dyn Driver> = Box::new(CheriDriver {});
         drivers.insert(engine_id, driver);
-        let mut loader_map = HashMap::new();
-        loader_map.insert(0, CheriLoader::parse_function as LoaderFunction);
-        registry = FunctionRegistry::new(loader_map);
+        let mut drivers: HashMap<_, Box<dyn Driver>> = HashMap::new();
+        drivers.insert(0, Box::new(CheriDriver {}));
+        registry = FunctionRegistry::new(drivers);
         let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         path.push("../machine_interface/tests/data/test_elf_aarch64c_matmul");
         // add for hot function
@@ -218,7 +218,7 @@ fn main() -> () {
     }
 
     let dispatcher = Arc::new(
-        Dispatcher::init(domains, drivers, type_map, registry, resource_pool)
+        Dispatcher::init(domains, type_map, registry, resource_pool)
             .expect("Should be able to start dispatcher"),
     );
 

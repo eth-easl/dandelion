@@ -3,15 +3,15 @@ use futures::lock::Mutex;
 use machine_interface::{
     function_lib::{
         util::{load_static, load_u8_from_file},
-        FunctionConfig, LoaderFunction, Function,
+        FunctionConfig, Function, Driver,
     },
     memory_domain::{Context, MemoryDomain},
 };
-use std::collections::{HashMap, HashSet};
+use std::{collections::{HashMap, HashSet}};
 
 pub struct FunctionRegistry {
     engine_map: HashMap<FunctionId, HashSet<EngineTypeId>>,
-    loaders: HashMap<EngineTypeId, LoaderFunction>,
+    pub(crate) drivers: HashMap<EngineTypeId, Box<dyn Driver>>,
     // TODO replace with futures compatible RW lock if it becomes a bottleneck
     registry:
         Mutex<HashMap<(FunctionId, EngineTypeId), Function>>,
@@ -20,10 +20,10 @@ pub struct FunctionRegistry {
 }
 
 impl FunctionRegistry {
-    pub fn new(loaders: HashMap<EngineTypeId, LoaderFunction>) -> Self {
+    pub fn new(drivers: HashMap<EngineTypeId, Box<dyn Driver>>) -> Self {
         return FunctionRegistry {
             engine_map: HashMap::new(),
-            loaders,
+            drivers,
             registry: Mutex::new(HashMap::new()),
             local_available: HashMap::new(),
         };
@@ -68,7 +68,7 @@ impl FunctionRegistry {
         domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<Function> {
         // get loader
-        let loader = match self.loaders.get(&engine_id) {
+        let driver = match self.drivers.get(&engine_id) {
             Some(l) => l,
             None => return Err(DandelionError::DispatcherMissingLoader(engine_id)),
         };
@@ -79,7 +79,7 @@ impl FunctionRegistry {
             None => return Err(DandelionError::DispatcherUnavailableFunction),
         };
         let function_buffer = load_u8_from_file(path.to_string())?;
-        let tripple = loader(function_buffer, domain)?;
+        let tripple = driver.parse_function(function_buffer, domain)?;
         return Ok(tripple);
     }
     pub async fn load(

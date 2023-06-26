@@ -4,9 +4,9 @@ mod chery_bench {
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use machine_interface::{
     function_lib::{
-        cheri::{CheriDriver, CheriLoader},
+        cheri::CheriDriver,
         util::load_static,
-        Driver, Loader, Function,
+        Driver, Function,
     },
     memory_domain::{cheri::CheriMemoryDomain, ContextTrait, MemoryDomain},
     DataItem, Position,
@@ -51,7 +51,7 @@ fn matmul_sequential_benchmark(c: &mut Criterion) {
         .read_to_end(&mut elf_buffer)
         .expect("Should be able to read entire file");
     let Function { requirements, context: mut static_context, config } =
-        CheriLoader::parse_function(elf_buffer, &mut domain).expect("Should success at parsing");
+        driver.parse_function(elf_buffer, &mut domain).expect("Should success at parsing");
     c.bench_function("matmul", |b| {
         b.iter(|| {
             let mut function_context = load_static(&mut domain, &mut static_context, &requirements)
