@@ -21,6 +21,7 @@ pub struct DataRequirement {
     pub size: Option<SizeRequirement>,
 }
 
+#[derive(Debug)]
 pub struct DataRequirementList {
     // domain_id: i32,
     pub size: usize,

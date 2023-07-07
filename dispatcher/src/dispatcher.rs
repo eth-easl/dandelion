@@ -92,6 +92,7 @@ impl Dispatcher {
         &self,
         function_id: FunctionId,
         inputs: Vec<(&Context, Vec<(usize, Option<usize>, usize)>)>,
+        output_sets: Vec<String>,
         non_caching: bool,
     ) -> DandelionResult<Context> {
         // find an engine capable of running the function
@@ -110,7 +111,9 @@ impl Dispatcher {
         let (context, config) = self
             .prepare_for_engine(function_id, engine_id, inputs, non_caching)
             .await?;
-        let (result, context) = self.run_on_engine(engine_id, config, context).await;
+        let (result, context) = self
+            .run_on_engine(engine_id, config, output_sets, context)
+            .await;
         match result {
             Ok(()) => Ok(context),
             Err(err) => {
@@ -171,6 +174,7 @@ impl Dispatcher {
         &self,
         engine_type: EngineTypeId,
         function_config: FunctionConfig,
+        output_sets: Vec<String>,
         function_context: Context,
     ) -> (DandelionResult<()>, Context) {
         // preparation is done, get engine to receive engine
@@ -195,7 +199,9 @@ impl Dispatcher {
                 )
             }
         };
-        let (result, output_context) = engine.run(&function_config, function_context).await;
+        let (result, output_context) = engine
+            .run(&function_config, function_context, output_sets)
+            .await;
         let end_result = match (result, engine_queue.yield_engine(engine).await) {
             (Ok(()), Ok(())) => Ok(()),
             (Err(err), _) | (Ok(()), Err(err)) => Err(err),

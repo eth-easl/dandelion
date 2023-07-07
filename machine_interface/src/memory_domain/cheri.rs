@@ -34,7 +34,6 @@ extern "C" {
 
 use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
 use dandelion_commons::{DandelionError, DandelionResult};
-use std::collections::HashMap;
 
 pub struct CheriContext {
     pub context: *const cheri_c_context,
@@ -88,12 +87,7 @@ impl MemoryDomain for CheriMemoryDomain {
         if new_context.context.is_null() {
             return Err(DandelionError::OutOfMemory);
         }
-        Ok(Context {
-            context: ContextType::Cheri(new_context),
-            dynamic_data: HashMap::new(),
-            static_data: Vec::new(),
-            size,
-        })
+        return Ok(Context::new(ContextType::Cheri(new_context), size));
     }
     fn release_context(&self, context: Context) -> DandelionResult<()> {
         match context.context {

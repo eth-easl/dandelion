@@ -13,7 +13,6 @@ use dandelion_commons::{DandelionError, DandelionResult};
 use futures::{task::Poll, Stream};
 use libc::size_t;
 use std::{
-    collections::HashMap,
     sync::atomic::{AtomicBool, Ordering},
     thread::{spawn, JoinHandle},
 };
@@ -31,133 +30,142 @@ extern "C" {
 const SYSTEM_STRUCT_SIZE: usize = 72;
 const IO_SET_INFO_SIZE: usize = 24;
 const IO_BUFFER_SIZE: usize = 32;
-const MAX_OUTPUTS: u32 = 16;
 
-fn setup_input_structs(context: &mut Context, system_data_offset: usize) -> DandelionResult<()> {
+fn setup_input_structs(
+    context: &mut Context,
+    system_data_offset: usize,
+    out_set_names: Vec<String>,
+) -> DandelionResult<()> {
     // prepare information to set up input sets, output sets and input buffers
-    let input_buffer_number = context.dynamic_data.keys().count();
-    let input_set_number = context
-        .dynamic_data
-        .keys()
-        .max()
-        .and_then(|x| Some(x + 1))
-        .unwrap_or(0usize)
-        + 1; // +1 for the sentinel set
-    let output_set_number = MAX_OUTPUTS as usize + 1; // +1 for sentinel set
+    let input_buffer_number = context
+        .content
+        .iter()
+        .fold(0, |acc, set| acc + set.buffers.len());
+    let input_set_number = context.content.len();
+    let output_set_number = out_set_names.len();
 
     let io_info_size = input_buffer_number * IO_BUFFER_SIZE
-        + (input_set_number + output_set_number) * IO_SET_INFO_SIZE;
+        + (input_set_number + output_set_number + 2) * IO_SET_INFO_SIZE;
     let io_info_offset = context.get_free_space(io_info_size, 8)?;
-    context.static_data.push(Position {
-        offset: io_info_offset,
-        size: io_info_size,
-    });
-
     // fill in data for input sets
     // input set number and pointer (offset)
-    // TODO replace by single checked allocation and writing to it
     let mut system_buffer = Vec::<u8>::new();
+    if system_buffer.try_reserve_exact(72).is_err() {
+        return Err(DandelionError::OutOfMemory);
+    }
+    system_buffer.resize(72, 0);
     // heap start and end
     let heap_start = context.get_last_item_end();
-    system_buffer.append(&mut usize::to_ne_bytes(heap_start).to_vec());
-    system_buffer.append(&mut usize::to_ne_bytes(context.size).to_vec());
+    system_buffer[8..16].clone_from_slice(&usize::to_ne_bytes(heap_start));
+    // TODO set heap start to be lower that expected stack max
+    system_buffer[16..24].clone_from_slice(&usize::to_ne_bytes(context.size - 128));
     // input set number and offset
-    // -1 to exclude sentinel set
-    system_buffer.append(&mut usize::to_ne_bytes(input_set_number - 1).to_vec().to_vec());
-    system_buffer.append(&mut usize::to_ne_bytes(io_info_offset).to_vec());
+    system_buffer[24..32].clone_from_slice(&usize::to_ne_bytes(input_set_number));
+    system_buffer[32..40].clone_from_slice(&usize::to_ne_bytes(io_info_offset));
     // output sets and offsets
-    // -1 to exclude sentinel set
-    system_buffer.append(&mut usize::to_ne_bytes(output_set_number - 1).to_vec());
-    system_buffer.append(
-        &mut usize::to_ne_bytes(io_info_offset + input_set_number * IO_SET_INFO_SIZE).to_vec(),
-    );
+    system_buffer[40..48].clone_from_slice(&usize::to_ne_bytes(output_set_number));
+    // +1 for sentinel set
+    system_buffer[48..56].clone_from_slice(&usize::to_ne_bytes(
+        io_info_offset + (input_set_number + 1) * IO_SET_INFO_SIZE,
+    ));
+
     // input buffers
-    system_buffer.append(
-        &mut usize::to_ne_bytes(
-            io_info_offset + (input_set_number + output_set_number) * IO_SET_INFO_SIZE,
-        )
-        .to_vec(),
-    );
+    // + 2 for sentinel sets
+    system_buffer[56..64].clone_from_slice(&usize::to_ne_bytes(
+        io_info_offset + (input_set_number + output_set_number + 2) * IO_SET_INFO_SIZE,
+    ));
     // write system buffer after exit code
-    context.write(system_data_offset + 8, system_buffer)?;
+    context.write(system_data_offset, system_buffer)?;
 
     // input and output io buffer pointers (output just 0 as the application sets them)
     let mut io_data_buffer = Vec::new();
-    // TODO ask for correct size and make it writes instead of appends
-
+    if io_data_buffer.try_reserve_exact(io_info_size).is_err() {
+        return Err(DandelionError::OutOfMemory);
+    }
+    io_data_buffer.resize(io_info_size, 0);
     // start writing input set info structs
     let mut buffer_count = 0;
-    let mut input_buffers = Vec::<u8>::new();
+    let buffer_base = (input_set_number + output_set_number + 2) * IO_SET_INFO_SIZE;
     for set_index in 0..input_set_number {
         // get name and length
-        let (name, buffer_num) = match context.dynamic_data.get(&set_index) {
-            Some(set) => (set.ident.clone(), set.buffers.len()),
-            None => (String::from(""), 0),
-        };
+        let name = context.content[set_index].ident.as_bytes().to_vec();
+        let name_length = name.len();
+        let buffer_num = context.content[set_index].buffers.len();
         // find space and write string
-        if name != "" {
-            let string_offset = context.get_free_space(name.len(), 8)?;
-            context.write(string_offset, name.as_bytes().to_vec())?;
-            context.static_data.push(Position {
-                offset: string_offset,
-                size: name.len(),
-            });
-            io_data_buffer.append(&mut usize::to_ne_bytes(string_offset).to_vec());
-            io_data_buffer.append(&mut usize::to_ne_bytes(name.len()).to_vec());
-        } else {
-            io_data_buffer.append(&mut usize::to_ne_bytes(0).to_vec());
-            io_data_buffer.append(&mut usize::to_ne_bytes(0).to_vec());
+        let mut string_offset = 0;
+        if name_length != 0 {
+            string_offset = context.get_free_space(name.len(), 8)?;
+            context.write(string_offset, name)?;
         }
+        let set_data_offset = set_index * IO_SET_INFO_SIZE;
+        io_data_buffer[set_data_offset..set_data_offset + 8]
+            .clone_from_slice(&usize::to_ne_bytes(string_offset));
+        io_data_buffer[set_data_offset + 8..set_data_offset + 16]
+            .clone_from_slice(&usize::to_ne_bytes(name_length));
+        io_data_buffer[set_data_offset + 16..set_data_offset + 24]
+            .clone_from_slice(&usize::to_ne_bytes(buffer_count));
         // find buffers
-        io_data_buffer.append(&mut usize::to_ne_bytes(buffer_count).to_vec());
-        buffer_count += buffer_num;
         for buffer_index in 0..buffer_num {
-            let (name, offset, size) = match context.dynamic_data.get(&set_index) {
-                Some(set) => {
-                    let buffer = &set.buffers[buffer_index];
-                    (buffer.ident.clone(), buffer.data.offset, buffer.data.size)
-                }
-                None => (String::from(""), 0, 0),
-            };
+            let buffer = &context.content[set_index].buffers[buffer_index];
+            let name = buffer.ident.as_bytes().to_vec();
+            let name_length = name.len();
+            let offset = buffer.data.offset;
+            let size = buffer.data.size;
             let mut string_offset = 0;
-            if name != "" {
-                string_offset = context.get_free_space(name.len(), 8)?;
-                context.write(string_offset, name.as_bytes().to_vec())?;
-                context.static_data.push(Position {
-                    offset: string_offset,
-                    size: name.len(),
-                });
+            if name_length != 0 {
+                string_offset = context.get_free_space(name_length, 8)?;
+                context.write(string_offset, name)?;
             }
-            input_buffers.append(&mut usize::to_ne_bytes(string_offset).to_vec());
-            input_buffers.append(&mut usize::to_ne_bytes(name.len()).to_vec());
-            input_buffers.append(&mut usize::to_ne_bytes(offset).to_vec());
-            input_buffers.append(&mut usize::to_ne_bytes(size).to_vec());
+            let buffer_offset = buffer_base + (buffer_count + buffer_index) * IO_BUFFER_SIZE;
+            io_data_buffer[buffer_offset..buffer_offset + 8]
+                .clone_from_slice(&usize::to_ne_bytes(string_offset));
+            io_data_buffer[buffer_offset + 8..buffer_offset + 16]
+                .clone_from_slice(&usize::to_ne_bytes(name_length));
+            io_data_buffer[buffer_offset + 16..buffer_offset + 24]
+                .clone_from_slice(&usize::to_ne_bytes(offset));
+            io_data_buffer[buffer_offset + 24..buffer_offset + 32]
+                .clone_from_slice(&usize::to_ne_bytes(size));
         }
+        buffer_count += buffer_num;
     }
+    // write input sentinel set
+    let sentinel_offset = input_set_number * IO_SET_INFO_SIZE;
+    io_data_buffer[sentinel_offset + 16..sentinel_offset + 24]
+        .clone_from_slice(&usize::to_ne_bytes(buffer_count));
+
     // start writing output set info structs
-    for _output_index in 0..output_set_number {
-        io_data_buffer.append(&mut usize::to_ne_bytes(0).to_vec());
-        io_data_buffer.append(&mut usize::to_ne_bytes(0).to_vec());
-        io_data_buffer.append(&mut usize::to_ne_bytes(0).to_vec());
+    let output_base = sentinel_offset + IO_SET_INFO_SIZE;
+    for (index, out_set_name) in out_set_names.iter().enumerate() {
+        // insert the name into the context
+        let mut string_offset = 0;
+        let string_len = out_set_name.len();
+        if string_len != 0 {
+            string_offset = context.get_free_space(out_set_name.len(), 8)?;
+            context.write(string_offset, out_set_name.as_bytes().to_vec())?;
+        }
+        let output_offset = output_base + index * IO_SET_INFO_SIZE;
+        io_data_buffer[output_offset..output_offset + 8]
+            .clone_from_slice(&usize::to_ne_bytes(string_offset));
+        io_data_buffer[output_offset + 8..output_offset + 16]
+            .clone_from_slice(&usize::to_ne_bytes(string_len));
     }
 
-    io_data_buffer.append(&mut input_buffers);
     context.write(io_info_offset, io_data_buffer)?;
 
     return Ok(());
 }
 
 fn get_output_layout(context: &mut Context, system_data_offset: usize) -> DandelionResult<()> {
-    // clear out old data
-    context.static_data = Vec::new();
     // read the system buffer
     let system_struct = context.read(system_data_offset, SYSTEM_STRUCT_SIZE)?;
     // get exit value
     let _exit_value: i32 = i32::from_ne_bytes(
-        system_struct[0..4]
+        system_struct[4..8]
             .try_into()
             .expect("Should be able to convert"),
     );
+    let _maybe_exit_value: i32 = i32::from_ne_bytes(system_struct[0..4].try_into().expect(""));
+
     // get output set number +1 for sentinel set
     // TODO use as_chunks when it stabilizes
     let output_set_number: usize = usize::from_ne_bytes(
@@ -165,8 +173,8 @@ fn get_output_layout(context: &mut Context, system_data_offset: usize) -> Dandel
             .try_into()
             .expect("Should be able to convert"),
     );
-    if output_set_number == 1 {
-        context.dynamic_data = HashMap::new();
+    if output_set_number == 0 {
+        context.content = vec![];
         return Ok(());
     }
     let output_set_info_offset = usize::from_ne_bytes(
@@ -184,10 +192,13 @@ fn get_output_layout(context: &mut Context, system_data_offset: usize) -> Dandel
         output_set_info_offset,
         (output_set_number + 1) * IO_SET_INFO_SIZE,
     )?;
-    let mut output_sets = HashMap::new();
+    let mut output_sets = vec![];
+    if output_sets.try_reserve(output_set_number).is_err() {
+        return Err(DandelionError::OutOfMemory);
+    }
+    let sentinel_offset = output_set_number * IO_SET_INFO_SIZE;
     let output_buffer_number = usize::from_ne_bytes(
-        output_set_info
-            [output_set_number * IO_SET_INFO_SIZE + 16..output_set_number * IO_SET_INFO_SIZE + 24]
+        output_set_info[sentinel_offset + 16..sentinel_offset + 24]
             .try_into()
             .expect("Should be able to convert"),
     );
@@ -223,7 +234,7 @@ fn get_output_layout(context: &mut Context, system_data_offset: usize) -> Dandel
         if buffers.try_reserve(buffer_number).is_err() {
             return Err(DandelionError::OutOfMemory);
         }
-        for buffer_index in 0..buffer_number {
+        for buffer_index in first_buffer..one_past_last_buffer {
             let buffer_start = buffer_index * IO_BUFFER_SIZE;
             let buffer_ident_offset = usize::from_ne_bytes(
                 output_buffers[buffer_start..buffer_start + 8]
@@ -256,18 +267,13 @@ fn get_output_layout(context: &mut Context, system_data_offset: usize) -> Dandel
             })
         }
         // only add output set if there are actual buffers for it.
-        if buffers.len() > 0 {
-            output_sets.insert(
-                output_set,
-                DataSet {
-                    ident: set_ident_string,
-                    buffers: buffers,
-                },
-            );
-        }
+        output_sets.push(DataSet {
+            ident: set_ident_string,
+            buffers: buffers,
+        });
     }
 
-    context.dynamic_data = output_sets;
+    context.content = output_sets;
     Ok(())
 }
 
@@ -317,8 +323,7 @@ impl Future for CheriFuture<'_> {
         }
         let mut context = self.context.take().unwrap();
         // erase all assumptions on context internal layout
-        context.dynamic_data.clear();
-        context.static_data.clear();
+        context.content.clear();
         // read outputs
         let result = get_output_layout(&mut context, self.system_data_offset);
         self.engine.is_running.store(false, Ordering::Release);
@@ -348,6 +353,7 @@ fn run_thread(
                 command.stack_pointer,
             );
         }
+
         let message = match cheri_error {
             0 => Ok(()),
             1 => Err(DandelionError::OutOfMemory),
@@ -370,6 +376,7 @@ impl Engine for CheriEngine {
         &mut self,
         config: &FunctionConfig,
         mut context: Context,
+        output_set_names: Vec<String>,
     ) -> Pin<Box<dyn futures::Future<Output = (DandelionResult<()>, Context)> + '_ + Send>> {
         if self.is_running.swap(true, Ordering::AcqRel) {
             return Box::pin(ready((Err(DandelionError::EngineAlreadyRunning), context)));
@@ -387,9 +394,13 @@ impl Engine for CheriEngine {
             context: cheri_context.context,
             entry_point: elf_config.entry_point,
             return_pair_offset: elf_config.return_offset.0,
-            stack_pointer: cheri_context.size,
+            stack_pointer: cheri_context.size - 32,
         };
-        if let Err(err) = setup_input_structs(&mut context, elf_config.system_data_offset) {
+        if let Err(err) = setup_input_structs(
+            &mut context,
+            elf_config.system_data_offset,
+            output_set_names,
+        ) {
             return Box::pin(ready((Err(err), context)));
         }
         match self.command_sender.send(command) {
@@ -462,7 +473,7 @@ impl Driver for CheriDriver {
     }
 }
 
-const DEFAULT_SPACE_SIZE: usize = 0x40_0000; // 4MiB
+const DEFAULT_SPACE_SIZE: usize = 0x800_0000; // 128MiB
 
 pub struct CheriLoader {}
 impl Loader for CheriLoader {
@@ -483,7 +494,6 @@ impl Loader for CheriLoader {
             entry_point: entry,
         });
         let (static_requirements, source_layout) = elf.get_layout_pair();
-        // set default size to 128KiB
         let requirements = DataRequirementList {
             size: DEFAULT_SPACE_SIZE,
             input_requirements: Vec::<DataRequirement>::new(),
@@ -497,19 +507,26 @@ impl Loader for CheriLoader {
         let mut context = static_domain.acquire_context(total_size)?;
         // copy all
         let mut write_counter = 0;
-        let mut static_layout = Vec::<Position>::new();
+        let mut new_content = DataSet {
+            ident: String::from("static"),
+            buffers: vec![],
+        };
+        let buffers = &mut new_content.buffers;
         for position in source_layout.iter() {
             context.write(
                 write_counter,
                 function[position.offset..position.offset + position.size].to_vec(),
             )?;
-            static_layout.push(Position {
-                offset: write_counter,
-                size: position.size,
+            buffers.push(DataItem {
+                ident: String::from(""),
+                data: Position {
+                    offset: write_counter,
+                    size: position.size,
+                },
             });
             write_counter += position.size;
         }
-        context.static_data = static_layout;
+        context.content = vec![new_content];
         return Ok((requirements, context, config));
     }
 }

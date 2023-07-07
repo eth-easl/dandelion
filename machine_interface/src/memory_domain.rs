@@ -5,7 +5,6 @@ pub mod malloc;
 
 use crate::{DataItem, DataSet, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
-use std::collections::HashMap;
 
 pub trait ContextTrait: Send + Sync {
     fn write(&mut self, offset: usize, data: Vec<u8>) -> DandelionResult<()>;
@@ -38,8 +37,8 @@ impl ContextTrait for ContextType {
 }
 pub struct Context {
     pub context: ContextType,
-    pub dynamic_data: HashMap<usize, DataSet>,
-    pub static_data: Vec<Position>,
+    pub content: Vec<DataSet>,
+    occupation: Vec<Position>,
     pub size: usize,
 }
 
@@ -53,54 +52,81 @@ impl ContextTrait for Context {
 }
 
 impl Context {
-    pub fn get_free_space(&self, size: usize, alignment: usize) -> DandelionResult<usize> {
-        let static_items = self.static_data.iter();
-        let dynamic_items = self
-            .dynamic_data
-            .values()
-            .flat_map(|set| set.buffers.iter().map(|item| &item.data));
-        let items = static_items.chain(dynamic_items);
-        let mut item_slice: Vec<&Position> = items.collect();
-        item_slice.sort_unstable_by(|a, b| a.offset.cmp(&b.offset));
+    pub fn new(con: ContextType, size: usize) -> Self {
+        return Context {
+            context: con,
+            content: vec![],
+            occupation: vec![
+                Position { offset: 0, size: 0 },
+                Position {
+                    offset: size,
+                    size: 0,
+                },
+            ],
+            size: size,
+        };
+    }
+    fn insert(&mut self, index: usize, offset: usize, size: usize) {
+        if (self.occupation[index].offset + self.occupation[index].size) == offset {
+            self.occupation[index].size += size;
+        } else {
+            self.occupation.insert(
+                index + 1,
+                Position {
+                    offset: offset,
+                    size,
+                },
+            )
+        }
+    }
+    pub fn occupy_space(&mut self, offset: usize, size: usize) -> DandelionResult<()> {
+        let insertion_index = self
+            .occupation
+            .windows(2)
+            .enumerate()
+            .find_map(|(index, pos)| {
+                let start = pos[0].offset + pos[0].size;
+                let end = pos[1].offset;
+                if offset >= start && offset + size < end {
+                    return Some(index);
+                } else {
+                    return None;
+                }
+            });
+        if let Some(index) = insertion_index {
+            self.insert(index, offset, size);
+        } else {
+            return Err(DandelionError::ContextFull);
+        }
+        return Ok(());
+    }
+    pub fn get_free_space(&mut self, size: usize, alignment: usize) -> DandelionResult<usize> {
         // search for smallest space that is bigger than size
         // space start holds previous start
-        let mut space_start = Err(DandelionError::ContextFull);
-        let mut space_size = usize::MAX;
-        let mut next_free = 0;
-        if item_slice.len() == 0 {
-            return Ok(0);
-        };
-        for item in item_slice {
-            let item_start = item.offset;
-            let free_space = item_start - next_free;
-
-            if free_space >= size && free_space < space_size {
-                space_size = free_space;
-                space_start = Ok(next_free);
-            }
-            next_free = item_start + item.size;
-            // TODO use next_multiple_of as soon as it is stabilized
-            if next_free % alignment != 0 {
-                next_free += alignment - next_free % alignment;
+        let mut space_size = self.size + 1;
+        let mut index = 0;
+        let mut start_address = 0;
+        for (window_index, occupied) in self.occupation.windows(2).enumerate() {
+            let lower_end = occupied[0].offset + occupied[0].size;
+            // TODO use next multiple of when stabilized
+            let start = ((lower_end + alignment - 1) / alignment) * alignment;
+            let end = occupied[1].offset;
+            let available = end - start;
+            if available > size && available < space_size {
+                space_size = available;
+                index = window_index;
+                start_address = start;
             }
         }
-        // check after last item
-        if self.size - next_free >= size && self.size - next_free < space_size {
-            space_start = Ok(next_free);
+        if self.size + 1 == space_size {
+            return Err(DandelionError::ContextFull);
         }
-        return space_start;
+        self.insert(index, start_address, size);
+        return Ok(start_address);
     }
     pub fn get_last_item_end(&self) -> usize {
-        let static_items = self.static_data.iter();
-        let dynamic_items = self
-            .dynamic_data
-            .values()
-            .flat_map(|set| set.buffers.iter().map(|item| &item.data));
-        let items = static_items.chain(dynamic_items);
-        return items
-            .max_by(|a, b| (a.offset + a.size).cmp(&(b.offset + b.size)))
-            .and_then(|a| Some(a.offset + a.size))
-            .unwrap_or(0usize);
+        let last_item = self.occupation[self.occupation.len() - 2];
+        return last_item.offset + last_item.size;
     }
 }
 
@@ -162,10 +188,10 @@ pub fn transer_data_item(
     source_item_index: Option<usize>,
 ) -> DandelionResult<()> {
     // check if source has item
-    let source_set = match source.dynamic_data.get(&source_set_index) {
-        Some(set) => set,
-        None => return Err(DandelionError::InvalidRead),
-    };
+    if source.content.len() <= source_set_index {
+        return Err(DandelionError::InvalidRead);
+    }
+    let source_set = &source.content[source_set_index];
     if source_set.buffers.is_empty() {
         if source_item_index.is_none() {
             return Ok(());
@@ -173,54 +199,43 @@ pub fn transer_data_item(
             return Err(DandelionError::EmptyDataSet);
         }
     }
-    // get positions where to read from
-    let source_positions: Vec<Position> = if let Some(item_index) = source_item_index {
+    let index_range = if let Some(item_index) = source_item_index {
         if source_set.buffers.len() <= item_index {
             return Err(DandelionError::InvalidRead);
-        } else {
-            vec![source_set.buffers[item_index].data]
         }
+        item_index..(item_index + 1)
     } else {
-        source_set.buffers.iter().map(|item| item.data).collect()
+        0..source_set.buffers.len()
     };
-    // find positions to write to and insert them into meta data
-    let mut new_positions = Vec::new();
-    let destination_positions: Vec<Position> = source_positions
-        .iter()
-        .map(|pos| {
-            let offset = destination.get_free_space(pos.size, destination_allignment)?;
-            let new_position = Position {
-                size: pos.size,
-                offset,
-            };
-            new_positions.push(DataItem {
+    if destination.content.len() <= destionation_set_index {
+        destination
+            .content
+            .resize_with(destionation_set_index + 1, || DataSet {
                 ident: String::from(""),
-                data: new_position,
-            });
-            return Ok(new_position);
-        })
-        .collect::<DandelionResult<Vec<_>>>()?;
-    // check if destination already has set that will be appended to or create new set
-    let entry = destination
-        .dynamic_data
-        .entry(destionation_set_index)
-        .or_insert(DataSet {
-            ident: String::from(""),
-            buffers: Vec::new(),
-        });
-    entry.buffers.append(&mut new_positions);
-    // perform transfers
-    let position_pair = source_positions
-        .iter()
-        .zip(destination_positions.into_iter());
-    for (source_pos, destination_pos) in position_pair {
+                buffers: vec![],
+            })
+    }
+    for item_index in index_range {
+        let source_item = &source_set.buffers[item_index];
+        let destination_offset =
+            destination.get_free_space(source_item.data.size, destination_allignment)?;
+        let new_item = DataItem {
+            ident: source_item.ident.clone(),
+            data: Position {
+                offset: destination_offset,
+                size: source_item.data.size,
+            },
+        };
+        destination.content[destionation_set_index]
+            .buffers
+            .push(new_item);
         transefer_memory(
             destination,
             source,
-            destination_pos.offset,
-            source_pos.offset,
-            source_pos.size,
-        )?;
+            destination_offset,
+            source_item.data.offset,
+            source_item.data.size,
+        )?
     }
     Ok(())
 }

@@ -1,6 +1,9 @@
 use std::vec;
 
-use crate::memory_domain::{transefer_memory, transer_data_item, ContextTrait, MemoryDomain};
+use crate::{
+    memory_domain::{transefer_memory, transer_data_item, ContextTrait, MemoryDomain},
+    DataSet,
+};
 use dandelion_commons::{DandelionError, DandelionResult};
 // produces binary pattern 0b0101_01010 or 0x55
 const BYTEPATTERN: u8 = 85;
@@ -110,19 +113,22 @@ fn transfer_item<D: MemoryDomain>(
     source
         .write(offset, vec![BYTEPATTERN; item_size])
         .expect("Writing should succeed");
-    source.dynamic_data.insert(
-        source_index,
-        crate::DataSet {
+    if source.content.len() <= source_index {
+        source.content.resize_with(source_index + 1, || DataSet {
             ident: String::from(""),
-            buffers: vec![crate::DataItem {
-                ident: String::from(""),
-                data: crate::Position {
-                    offset: offset,
-                    size: item_size,
-                },
-            }],
-        },
-    );
+            buffers: vec![],
+        });
+    }
+    source.content[source_index] = crate::DataSet {
+        ident: String::from(""),
+        buffers: vec![crate::DataItem {
+            ident: String::from(""),
+            data: crate::Position {
+                offset: offset,
+                size: item_size,
+            },
+        }],
+    };
     let transfer_error = transer_data_item(
         &mut destination,
         &source,
@@ -136,10 +142,8 @@ fn transfer_item<D: MemoryDomain>(
         return;
     }
     // check transfer success
-    let destination_item = destination
-        .dynamic_data
-        .get(&destination_index)
-        .expect("Should have data at given index");
+    assert!(destination_index < destination.content.len());
+    let destination_item = &destination.content[destination_index];
     assert_eq!("", destination_item.ident);
     assert_eq!(1, destination_item.buffers.len());
     assert_eq!("", destination_item.buffers[0].ident);

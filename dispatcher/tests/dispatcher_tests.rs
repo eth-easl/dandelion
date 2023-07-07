@@ -55,7 +55,7 @@ fn single_domain_and_engine_basic<Domain: MemoryDomain, TestDriver: Driver, Test
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_function(0, Vec::new(), false));
+        .block_on(dispatcher.queue_function(0, Vec::new(), vec![], false));
     match result {
         Ok(_) => (),
         Err(err) => panic!("Failed with: {:?}", err),
@@ -85,19 +85,16 @@ fn single_domain_and_engine_matmul<Domain: MemoryDomain, TestDriver: Driver, Tes
     in_context
         .write(size_offset, u64::to_ne_bytes(2).to_vec())
         .expect("Should be able to write matrix size");
-    in_context.dynamic_data.insert(
-        0,
-        DataSet {
+    in_context.content.push(DataSet {
+        ident: "".to_string(),
+        buffers: vec![DataItem {
             ident: "".to_string(),
-            buffers: vec![DataItem {
-                ident: "".to_string(),
-                data: Position {
-                    offset: size_offset,
-                    size: 8,
-                },
-            }],
-        },
-    );
+            data: Position {
+                offset: size_offset,
+                size: 8,
+            },
+        }],
+    });
     let mut in_matrix = Vec::new();
     in_matrix.extend_from_slice(&u64::to_ne_bytes(1));
     in_matrix.extend_from_slice(&u64::to_ne_bytes(2));
@@ -109,35 +106,29 @@ fn single_domain_and_engine_matmul<Domain: MemoryDomain, TestDriver: Driver, Tes
     in_context
         .write(in_mat_offset, in_matrix)
         .expect("Should be able to write");
-    in_context.dynamic_data.insert(
-        1,
-        DataSet {
+    in_context.content.push(DataSet {
+        ident: "".to_string(),
+        buffers: vec![DataItem {
             ident: "".to_string(),
-            buffers: vec![DataItem {
-                ident: "".to_string(),
-                data: Position {
-                    offset: in_mat_offset,
-                    size: 32,
-                },
-            }],
-        },
-    );
+            data: Position {
+                offset: in_mat_offset,
+                size: 32,
+            },
+        }],
+    });
 
     let input_mapping = vec![(0, None, 0), (1, None, 1)];
     let inputs = vec![(&in_context, input_mapping)];
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_function(0, inputs, false));
+        .block_on(dispatcher.queue_function(0, inputs, vec![String::from("")], false));
     let out_context = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
     };
-    assert_eq!(1, out_context.dynamic_data.len());
-    let out_mat_set = out_context
-        .dynamic_data
-        .get(&0)
-        .expect("Should have item 0");
+    assert_eq!(1, out_context.content.len());
+    let out_mat_set = &out_context.content[0];
     assert_eq!(1, out_mat_set.buffers.len());
     let out_mat_position = out_mat_set.buffers[0].data;
     let out_mat = out_context

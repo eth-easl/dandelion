@@ -1,6 +1,6 @@
 use crate::{
     memory_domain::{transefer_memory, Context, MemoryDomain},
-    DataRequirementList, Position,
+    DataRequirementList,
 };
 use dandelion_commons::{DandelionError, DandelionResult};
 
@@ -25,17 +25,21 @@ pub fn load_static(
     requirement_list: &DataRequirementList,
 ) -> DandelionResult<Context> {
     let mut function_context = domain.acquire_context(requirement_list.size)?;
-    let layout = static_context.static_data.to_vec();
-    if layout.len() != requirement_list.static_requirements.len() {
+    if static_context.content.len() != 1
+        || static_context.content[0].buffers.len() != requirement_list.static_requirements.len()
+    {
         return Err(DandelionError::ConfigMissmatch);
     }
+    let layout = &static_context.content[0].buffers;
     let static_pairs = layout
         .iter()
         .zip(requirement_list.static_requirements.iter());
-    for (position, requirement) in static_pairs {
+    for (item, requirement) in static_pairs {
+        let position = item.data;
         if requirement.size < position.size {
             return Err(DandelionError::ConfigMissmatch);
         }
+        function_context.occupy_space(requirement.offset, requirement.size)?;
         transefer_memory(
             &mut function_context,
             static_context,
@@ -43,10 +47,6 @@ pub fn load_static(
             position.offset,
             position.size,
         )?;
-        function_context.static_data.push(Position {
-            offset: requirement.offset,
-            size: requirement.size,
-        });
     }
     return Ok(function_context);
 }
