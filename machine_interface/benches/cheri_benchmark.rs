@@ -1,3 +1,6 @@
+#[cfg(feature = "cheri")]
+mod chery_bench {
+
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use machine_interface::{
     function_lib::{
@@ -107,3 +110,8 @@ async fn run_matmul() {}
 
 criterion_group!(benches, context_benchmark, matmul_sequential_benchmark);
 criterion_main!(benches);
+
+}
+
+#[cfg(not(feature = "cheri"))]
+fn main() {}
