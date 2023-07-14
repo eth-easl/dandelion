@@ -34,12 +34,12 @@ pub fn load_static(
     let static_pairs = layout
         .iter()
         .zip(requirement_list.static_requirements.iter());
+    let mut max_end = 0;
     for (item, requirement) in static_pairs {
         let position = item.data;
         if requirement.size < position.size {
             return Err(DandelionError::ConfigMissmatch);
         }
-        function_context.occupy_space(requirement.offset, requirement.size)?;
         transefer_memory(
             &mut function_context,
             static_context,
@@ -47,6 +47,10 @@ pub fn load_static(
             position.offset,
             position.size,
         )?;
+        max_end = core::cmp::max(max_end, requirement.offset + requirement.size);
     }
+    // round up to next page
+    max_end = ((max_end + 4095) / 4096) * 4096;
+    function_context.occupy_space(0, max_end)?;
     return Ok(function_context);
 }
