@@ -36,9 +36,29 @@ cheri_context *cheri_alloc(size_t size) {
   int allignment = sandbox_size_alignment(allocation_size);
   // round up to at least page alligmnent
   allignment = allignment > 12 ? allignment : 12;
+#ifdef __FreeBSD__
   char *context_space_addr =
       mmap(NULL, allocation_size, PROT_EXEC | PROT_READ | PROT_WRITE,
            MAP_ANONYMOUS | MAP_ALIGNED(allignment), -1, 0);
+#elif defined __linux__
+  // linux mmap does not allow for allignment requirements.
+  // therefore allocate double the space and alligne inside
+  char *context_space_addr =
+      mmap(NULL, allocation_size * 2, PROT_EXEC | PROT_READ | PROT_WRITE,
+           MAP_PRIVATE | MAP_ANON, -1, 0);
+  // round it up to next fitting allginment
+  size_t mask = ~(-1LL << allignment);
+  char *allocation = context_space_addr;
+  context_space_addr = (char *)(((uintptr_t)context_space_addr + mask) & ~mask);
+  // unmap unused space
+  size_t unused_lower = context_space_addr - allocation;
+  if (unused_lower > 0) {
+    munmap(allocation, context_space_addr - allocation);
+  }
+  munmap(context_space_addr + allocation_size, allocation_size - unused_lower);
+#else
+#error "Non supported OS, need a valid mmap"
+#endif
   if (context_space_addr == MAP_FAILED) {
     return NULL;
   }
