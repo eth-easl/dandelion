@@ -10,7 +10,10 @@ use core::{
     pin::Pin,
 };
 use core_affinity;
-use dandelion_commons::{DandelionError, DandelionResult};
+use dandelion_commons::{
+    records::{RecordPoint, Recorder},
+    DandelionError, DandelionResult,
+};
 use futures::{task::Poll, Stream};
 use libc::size_t;
 use std::{
@@ -34,6 +37,7 @@ struct CheriCommand {
     entry_point: size_t,
     return_pair_offset: size_t,
     stack_pointer: size_t,
+    recorder: Option<Recorder>,
 }
 unsafe impl Send for CheriCommand {}
 
@@ -110,6 +114,9 @@ fn run_thread(
             1 => Err(DandelionError::OutOfMemory),
             _ => Err(DandelionError::NotImplemented),
         };
+        if let Some(mut recorder) = command.recorder {
+            let _ = recorder.record(RecordPoint::EngineEnd);
+        }
         // try sending until succeeds
         let mut not_sent = true;
         while not_sent {
@@ -128,7 +135,11 @@ impl Engine for CheriEngine {
         config: &FunctionConfig,
         mut context: Context,
         output_set_names: Vec<String>,
+        mut recorder: Recorder,
     ) -> Pin<Box<dyn futures::Future<Output = (DandelionResult<()>, Context)> + '_ + Send>> {
+        if let Err(err) = recorder.record(RecordPoint::EngineStart) {
+            return Box::pin(core::future::ready((Err(err), context)));
+        }
         if self.is_running.swap(true, Ordering::AcqRel) {
             return Box::pin(ready((Err(DandelionError::EngineAlreadyRunning), context)));
         }
@@ -146,6 +157,7 @@ impl Engine for CheriEngine {
             entry_point: elf_config.entry_point,
             return_pair_offset: elf_config.return_offset.0,
             stack_pointer: cheri_context.size - 32,
+            recorder: Some(recorder),
         };
         if let Err(err) = setup_input_structs(
             &mut context,
@@ -184,6 +196,7 @@ impl Drop for CheriEngine {
                 entry_point: 0,
                 return_pair_offset: 0,
                 stack_pointer: 0,
+                recorder: None,
             });
             handle.join().expect("Cheri thread should not panic");
         }

@@ -1,5 +1,3 @@
-use std::vec;
-
 use crate::{
     function_lib::{
         cheri::{CheriDriver, CheriLoader},
@@ -11,7 +9,14 @@ use crate::{
     },
     DataItem, DataSet, Position,
 };
-use dandelion_commons::DandelionError;
+use dandelion_commons::{
+    records::{Archive, RecordPoint, Recorder},
+    DandelionError,
+};
+use std::{
+    sync::{Arc, Mutex},
+    vec,
+};
 
 // basic loader test
 #[test]
@@ -167,10 +172,12 @@ fn test_engine_minimal() {
         Ok(c) => c,
         Err(err) => panic!("Expect static loading to succeed, failed with {:?}", err),
     };
+    let archive = Arc::new(Mutex::new(Archive::new()));
+    let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
     let (result, function_context) = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(engine.run(&config, function_context, vec![]));
+        .block_on(engine.run(&config, function_context, vec![], recorder.clone()));
     result.expect("Engine should run ok with basic function");
     domain
         .release_context(function_context)
@@ -230,11 +237,21 @@ fn test_engine_matmul_single() {
             },
         }],
     });
+    let archive = Arc::new(Mutex::new(Archive::new()));
+    let mut recorder = Recorder::new(archive, RecordPoint::TransferEnd);
     let (result, result_context) = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(engine.run(&config, function_context, vec!["".to_string()]));
+        .block_on(engine.run(
+            &config,
+            function_context,
+            vec!["".to_string()],
+            recorder.clone(),
+        ));
     result.expect("Engine should run ok with basic function");
+    recorder
+        .record(RecordPoint::FutureReturn)
+        .expect("Should have properly advanced recorder state");
     // check that result is 4
     assert_eq!(1, result_context.content.len());
     let output_item = &result_context.content[0];
@@ -332,11 +349,21 @@ fn test_engine_matmul_size_sweep() {
                 },
             }],
         });
+        let archive = Arc::new(Mutex::new(Archive::new()));
+        let mut recorder = Recorder::new(archive.clone(), RecordPoint::TransferEnd);
         let (result, result_context) = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(engine.run(&config, function_context, vec!["".to_string()]));
+            .block_on(engine.run(
+                &config,
+                function_context,
+                vec!["".to_string()],
+                recorder.clone(),
+            ));
         result.expect("Engine should run ok with basic function");
+        recorder
+            .record(RecordPoint::FutureReturn)
+            .expect("Should have properly advanced recorder state");
         // check that result is 4
         assert_eq!(1, result_context.content.len());
         let output_item = &result_context.content[0];
@@ -395,11 +422,21 @@ fn test_engine_stdio() {
         }],
     });
     println!("{:?}", function_context.content);
+    let archive = Arc::new(Mutex::new(Archive::new()));
+    let mut recorder = Recorder::new(archive, RecordPoint::TransferEnd);
     let (result, result_context) = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(engine.run(&config, function_context, vec!["stdio".to_string()]));
+        .block_on(engine.run(
+            &config,
+            function_context,
+            vec!["stdio".to_string()],
+            recorder.clone(),
+        ));
     result.expect("Engine should run ok with basic function");
+    recorder
+        .record(RecordPoint::FutureReturn)
+        .expect("Should have properly advanced recorder state");
     // check there is exactly one set called stdio
     assert_eq!(1, result_context.content.len());
     let io_set = &result_context.content[0];
@@ -526,6 +563,8 @@ fn test_engine_fileio() {
             },
         ],
     });
+    let archive = Arc::new(Mutex::new(Archive::new()));
+    let mut recorder = Recorder::new(archive, RecordPoint::TransferEnd);
     let (result, result_context) = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
@@ -537,8 +576,12 @@ fn test_engine_fileio() {
                 "out".to_string(),
                 "out_nested".to_string(),
             ],
+            recorder.clone(),
         ));
     result.expect("Engine should run ok with basic function");
+    recorder
+        .record(RecordPoint::FutureReturn)
+        .expect("Should have properly advanced recorder state");
     assert_eq!(3, result_context.content.len());
     // check out set
     assert_eq!(1, result_context.content[1].buffers.len());

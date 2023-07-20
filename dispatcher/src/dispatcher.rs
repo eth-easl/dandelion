@@ -1,11 +1,16 @@
 use crate::{function_registry::FunctionRegistry, resource_pool::ResourcePool};
-use dandelion_commons::{ContextTypeId, DandelionError, DandelionResult, EngineTypeId, FunctionId};
+use dandelion_commons::{
+    records::{Archive, RecordPoint, Recorder},
+    ContextTypeId, DandelionError, DandelionResult, EngineTypeId, FunctionId,
+};
 use futures::{channel::oneshot, lock::Mutex};
 use machine_interface::{
     function_lib::{DriverFunction, Engine, FunctionConfig},
     memory_domain::{transer_data_item, Context, MemoryDomain},
 };
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+use std::sync::Mutex as SyncMutex;
 
 struct SchedulerQueue {
     internals: Mutex<(
@@ -52,6 +57,7 @@ pub struct Dispatcher {
     engines: HashMap<EngineTypeId, SchedulerQueue>,
     type_map: HashMap<EngineTypeId, ContextTypeId>,
     function_registry: FunctionRegistry,
+    pub archive: Arc<SyncMutex<Archive>>,
     _resource_pool: ResourcePool,
 }
 
@@ -79,12 +85,14 @@ impl Dispatcher {
             };
             engines.insert(engine_id.clone(), engine_queue);
         }
+        let archive = Arc::new(SyncMutex::new(Archive::new()));
         return Ok(Dispatcher {
             domains,
             _drivers: drivers,
             engines,
             type_map,
             function_registry,
+            archive,
             _resource_pool: resource_pool,
         });
     }
@@ -95,6 +103,8 @@ impl Dispatcher {
         output_sets: Vec<String>,
         non_caching: bool,
     ) -> DandelionResult<Context> {
+        let mut recorder = Recorder::new(self.archive.clone(), RecordPoint::Arrival);
+        // start new record for the function
         // find an engine capable of running the function
         // TODO actual scheduling decisions
         let engine_id;
@@ -109,12 +119,19 @@ impl Dispatcher {
             }
         }
         let (context, config) = self
-            .prepare_for_engine(function_id, engine_id, inputs, non_caching)
+            .prepare_for_engine(
+                function_id,
+                engine_id,
+                inputs,
+                non_caching,
+                recorder.clone(),
+            )
             .await?;
         let (result, context) = self
-            .run_on_engine(engine_id, config, output_sets, context)
+            .run_on_engine(engine_id, config, output_sets, context, recorder.clone())
             .await;
-        match result {
+        recorder.record(RecordPoint::FutureReturn)?;
+        return match result {
             Ok(()) => Ok(context),
             Err(err) => {
                 let context_id = match self.type_map.get(&engine_id) {
@@ -128,8 +145,7 @@ impl Dispatcher {
                 let _release_result = domain.release_context(context);
                 Err(err)
             }
-        }
-        // Err(DandelionError::NotImplemented)
+        };
     }
     async fn prepare_for_engine(
         &self,
@@ -139,6 +155,7 @@ impl Dispatcher {
         // the dynamic data index of the context, possible index into a set and index of the input in the new function
         inputs: Vec<(&Context, Vec<(usize, Option<usize>, usize)>)>,
         non_caching: bool,
+        mut recorder: Recorder,
     ) -> DandelionResult<(Context, FunctionConfig)> {
         // get context and load static data
         let context_id = match self.type_map.get(&engine_type) {
@@ -150,6 +167,7 @@ impl Dispatcher {
             None => return Err(DandelionError::DispatcherConfigError),
         };
         // start doing transfers
+        recorder.record(RecordPoint::TransferStart)?;
         let (mut function_context, function_config) = self
             .function_registry
             .load(function_id, engine_type, domain, non_caching)
@@ -167,6 +185,7 @@ impl Dispatcher {
                 )?;
             }
         }
+        recorder.record(RecordPoint::TransferEnd)?;
         return Ok((function_context, function_config));
     }
 
@@ -176,6 +195,7 @@ impl Dispatcher {
         function_config: FunctionConfig,
         output_sets: Vec<String>,
         function_context: Context,
+        recorder: Recorder,
     ) -> (DandelionResult<()>, Context) {
         // preparation is done, get engine to receive engine
         let engine_queue = match self.engines.get(&engine_type) {
@@ -200,7 +220,7 @@ impl Dispatcher {
             }
         };
         let (result, output_context) = engine
-            .run(&function_config, function_context, output_sets)
+            .run(&function_config, function_context, output_sets, recorder)
             .await;
         let end_result = match (result, engine_queue.yield_engine(engine).await) {
             (Ok(()), Ok(())) => Ok(()),

@@ -1,3 +1,7 @@
+pub mod records;
+
+use records::RecordPoint;
+
 pub type EngineTypeId = u8;
 pub type ContextTypeId = u8;
 pub type FunctionId = u64;
@@ -27,6 +31,9 @@ pub enum DandelionError {
     DispatcherConfigError, // error from resulting from assumptions based on config passed to dispatcher
     DispatcherUnavailableFunction, // dispatcher was asked to queue function it can't find
     DispatcherChannelError, // dispatcher encountered an issue when trasmitting data between tasks
+    // metering errors
+    RecordLockFailure, // Mutex for metering was poisoned
+    RecordSequencingFailure(RecordPoint, RecordPoint), // Call to record time spans were not called in order
     // Gerneral util errors
     FileError, // error while performing IO on a file
 }

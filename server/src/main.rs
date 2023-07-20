@@ -86,128 +86,6 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
     domain
         .release_context(input_context)
         .expect("Should be able to release input");
-    // let item = match result_context.dynamic_data.get(&0) {
-    //     Some(item) => item,
-    //     None => {
-    //         let answer = format!("Dispatcher no output item no 0\n");
-    //         return;
-    //     }
-    // };
-    // if let DataItem::Item(position) = item {
-    //     println!("item size: {}", position.size);
-    //     for i in 0..MAT_DIM * MAT_DIM {
-    //         let value = u64::from_ne_bytes(
-    //             result_context
-    //                 .read(position.offset + i * 8, 8)
-    //                 .expect("Should read")[0..8]
-    //                 .try_into()
-    //                 .expect("Should have right size"),
-    //         );
-    //         println!("Dispatcher Ok with result = {:?}\n", value);
-    //     }
-    // }
-    input_context.dynamic_data.insert(
-        1,
-        DataSet {
-            ident: "".to_string(),
-            buffers: vec![DataItem {
-                ident: "".to_string(),
-                data: Position {
-                    offset: in_map_offset,
-                    size: MAT_SIZE,
-                },
-            }],
-        },
-    );
-    inputs.push((
-        &input_context,
-        vec![(0usize, None, 0usize), (1usize, None, 1usize)],
-    ));
-    let result_context = dispatcher
-        .queue_function(COLD_ID, inputs, non_caching)
-        .await
-        .expect("Should get back context");
-    domain
-        .release_context(result_context)
-        .expect("Should be able to release result");
-    domain
-        .release_context(input_context)
-        .expect("Should be able to release input");
-    // let item = match result_context.dynamic_data.get(&0) {
-    //     Some(item) => item,
-    //     None => {
-    //         let answer = format!("Dispatcher no output item no 0\n");
-    //         return;
-    //     }
-    // };
-    // if let DataItem::Item(position) = item {
-    //     println!("item size: {}", position.size);
-    //     for i in 0..MAT_DIM * MAT_DIM {
-    //         let value = u64::from_ne_bytes(
-    //             result_context
-    //                 .read(position.offset + i * 8, 8)
-    //                 .expect("Should read")[0..8]
-    //                 .try_into()
-    //                 .expect("Should have right size"),
-    //         );
-    //         println!("Dispatcher Ok with result = {:?}\n", value);
-    //     }
-    // }
-    input_context.dynamic_data.insert(
-        1,
-        DataItem::Item(Position {
-            offset: in_map_offset,
-            size: MAT_SIZE,
-        }),
-    );
-    let out_map_offset = input_context
-        .get_free_space(MAT_SIZE, 8)
-        .expect("Should have space");
-    input_context.dynamic_data.insert(
-        2,
-        DataItem::Item(Position {
-            offset: out_map_offset,
-            size: MAT_SIZE,
-        }),
-    );
-    inputs.push((
-        &input_context,
-        vec![
-            (0usize, None, 0usize),
-            (1usize, None, 1usize),
-            (2usize, None, 2usize),
-        ],
-    ));
-    let result_context = dispatcher
-        .queue_function(COLD_ID, inputs, non_caching)
-        .await
-        .expect("Should get back context");
-    domain
-        .release_context(result_context)
-        .expect("Should be able to release result");
-    domain
-        .release_context(input_context)
-        .expect("Should be able to release input");
-    // let item = match result_context.dynamic_data.get(&0) {
-    //     Some(item) => item,
-    //     None => {
-    //         let answer = format!("Dispatcher no output item no 0\n");
-    //         return;
-    //     }
-    // };
-    // if let DataItem::Item(position) = item {
-    //     println!("item size: {}", position.size);
-    //     for i in 0..MAT_DIM * MAT_DIM {
-    //         let value = u64::from_ne_bytes(
-    //             result_context
-    //                 .read(position.offset + i * 8, 8)
-    //                 .expect("Should read")[0..8]
-    //                 .try_into()
-    //                 .expect("Should have right size"),
-    //         );
-    //         println!("Dispatcher Ok with result = {:?}\n", value);
-    //     }
-    // }
 }
 
 async fn serve_cold(
@@ -246,6 +124,19 @@ async fn serve_native(_req: Request<Body>) -> Result<Response<Body>, Infallible>
     Ok::<_, Infallible>(Response::new("Done: Natv\n".into()))
 }
 
+async fn serve_stats(
+    _req: Request<Body>,
+    dispatcher: Arc<Dispatcher>,
+) -> Result<Response<Body>, Infallible> {
+    let archive_guard = match dispatcher.archive.lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return Ok::<_, Infallible>(Response::new("Could not lock archive for stats".into()))
+        }
+    };
+    return Ok::<_, Infallible>(Response::new(archive_guard.get_summary().into()));
+}
+
 async fn service(
     req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
@@ -255,6 +146,7 @@ async fn service(
         "/cold" => serve_cold(req, dispatcher).await,
         "/hot" => serve_hot(req, dispatcher).await,
         "/native" => serve_native(req).await,
+        "/stats" => serve_stats(req, dispatcher).await,
         _ => Ok::<_, Infallible>(Response::new(
             // format!("Hello, World! You asked for: {}\n", uri).into(),
             format!("Hello, Wor\n").into(),

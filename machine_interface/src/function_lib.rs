@@ -3,7 +3,7 @@ use crate::{
     DataRequirementList,
 };
 use core::pin::Pin;
-use dandelion_commons::DandelionResult;
+use dandelion_commons::{records::Recorder, DandelionResult};
 use std::future::Future;
 
 // list of implementations
@@ -31,6 +31,7 @@ pub trait Engine: Send {
         config: &FunctionConfig,
         context: Context,
         output_set_names: Vec<String>,
+        recorder: Recorder,
     ) -> Pin<Box<dyn Future<Output = (DandelionResult<()>, Context)> + '_ + Send>>;
     fn abort(&mut self) -> DandelionResult<()>;
 }
