@@ -10,7 +10,7 @@ pub struct cheri_c_context {
 #[link(name = "cheri_lib")]
 extern "C" {
     fn cheri_alloc(size: size_t) -> *const cheri_c_context;
-    fn cheri_free(context: *const cheri_c_context, size: size_t) -> ();
+    fn cheri_free(context: *const cheri_c_context) -> ();
     fn cheri_write_context(
         context: *const cheri_c_context,
         source_pointer: *const u8,
@@ -93,7 +93,7 @@ impl MemoryDomain for CheriMemoryDomain {
         match context.context {
             ContextType::Cheri(cheri_context) => {
                 unsafe {
-                    cheri_free(cheri_context.context, cheri_context.size);
+                    cheri_free(cheri_context.context);
                 }
                 Ok(())
             }

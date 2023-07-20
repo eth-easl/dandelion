@@ -30,6 +30,7 @@ unsigned char sandbox_size_alignment(size_t size) {
 cheri_context *cheri_alloc(size_t size) {
   // setup configure size and allignment
   size_t allocation_size = sandbox_size_rounding(size);
+  size_t map_size = allocation_size;
   // check if when rounded to representable lenght is still larger then
   // requested
   if (allocation_size < size) return NULL;
@@ -43,9 +44,10 @@ cheri_context *cheri_alloc(size_t size) {
 #elif defined __linux__
   // linux mmap does not allow for allignment requirements.
   // therefore allocate double the space and alligne inside
+  size_t extra_space = 1LL << allignment;
   char *context_space_addr =
-      mmap(NULL, allocation_size * 2, PROT_EXEC | PROT_READ | PROT_WRITE,
-           MAP_PRIVATE | MAP_ANON, -1, 0);
+      mmap(NULL, allocation_size + extra_space,
+           PROT_EXEC | PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
   // round it up to next fitting allginment
   size_t mask = ~(-1LL << allignment);
   char *allocation = context_space_addr;
@@ -53,9 +55,9 @@ cheri_context *cheri_alloc(size_t size) {
   // unmap unused space
   size_t unused_lower = context_space_addr - allocation;
   if (unused_lower > 0) {
-    munmap(allocation, context_space_addr - allocation);
+    munmap(allocation, unused_lower);
   }
-  munmap(context_space_addr + allocation_size, allocation_size - unused_lower);
+  map_size += extra_space - unused_lower;
 #else
 #error "Non supported OS, need a valid mmap"
 #endif
@@ -72,17 +74,17 @@ cheri_context *cheri_alloc(size_t size) {
                    : "r"(permission_mask));
   cheri_context *context = malloc(sizeof(cheri_context));
   if (context != NULL) {
-    context->size = allocation_size;
+    context->size = map_size;
     context->cap = context_space;
   } else {
-    munmap(context_space_addr, allocation_size);
+    munmap(context_space_addr, map_size);
   }
   return context;
 }
 
-void cheri_free(cheri_context *context, size_t size) {
+void cheri_free(cheri_context *context) {
   //   todo error handling
-  munmap((__cheri_fromcap void *)context->cap, size);
+  munmap((__cheri_fromcap void *)context->cap, context->size);
   free(context);
 }
 
