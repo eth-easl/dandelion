@@ -30,7 +30,7 @@ pub trait Engine: Send {
         &mut self,
         config: &FunctionConfig,
         context: Context,
-        output_set_names: Vec<String>,
+        output_set_names: &Vec<String>,
         recorder: Recorder,
     ) -> Pin<Box<dyn Future<Output = (DandelionResult<()>, Context)> + '_ + Send>>;
     fn abort(&mut self) -> DandelionResult<()>;
@@ -61,3 +61,6 @@ pub trait Loader {
         static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<(DataRequirementList, Context, FunctionConfig)>;
 }
+
+#[cfg(test)]
+mod driver_tests;

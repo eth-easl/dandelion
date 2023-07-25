@@ -25,12 +25,17 @@ pub fn load_static(
     requirement_list: &DataRequirementList,
 ) -> DandelionResult<Context> {
     let mut function_context = domain.acquire_context(requirement_list.size)?;
-    if static_context.content.len() != 1
-        || static_context.content[0].buffers.len() != requirement_list.static_requirements.len()
-    {
+
+    if static_context.content.len() != 1 {
         return Err(DandelionError::ConfigMissmatch);
     }
-    let layout = &static_context.content[0].buffers;
+    let static_set = static_context.content[0]
+        .as_ref()
+        .ok_or(DandelionError::ConfigMissmatch)?;
+    if static_set.buffers.len() != requirement_list.static_requirements.len() {
+        return Err(DandelionError::ConfigMissmatch);
+    }
+    let layout = &static_set.buffers;
     let static_pairs = layout
         .iter()
         .zip(requirement_list.static_requirements.iter());

@@ -134,7 +134,7 @@ impl Engine for CheriEngine {
         &mut self,
         config: &FunctionConfig,
         mut context: Context,
-        output_set_names: Vec<String>,
+        output_set_names: &Vec<String>,
         mut recorder: Recorder,
     ) -> Pin<Box<dyn futures::Future<Output = (DandelionResult<()>, Context)> + '_ + Send>> {
         if let Err(err) = recorder.record(RecordPoint::EngineStart) {
@@ -290,7 +290,7 @@ impl Loader for CheriLoader {
             });
             write_counter += position.size;
         }
-        context.content = vec![new_content];
+        context.content = vec![Some(new_content)];
         return Ok((requirements, context, config));
     }
 }

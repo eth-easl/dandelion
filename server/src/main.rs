@@ -18,7 +18,7 @@ use machine_interface::{
     memory_domain::{cheri::CheriMemoryDomain, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
 };
-use std::{collections::HashMap, convert::Infallible, net::SocketAddr, println, sync::Arc};
+use std::{collections::BTreeMap, convert::Infallible, net::SocketAddr, println, sync::Arc, vec};
 use tokio::runtime::Builder;
 // use std::time::Instant;
 
@@ -31,6 +31,8 @@ const COLD_ID: u64 = 1;
 
 #[cfg(feature = "cheri")]
 async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
+    use dispatcher::dispatcher::TransferIndices;
+
     let mut inputs = Vec::new();
     let mut input_context;
     let total_size = 2 * MAT_SIZE + 8;
@@ -44,7 +46,7 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
     input_context
         .write(size_offset, Vec::<u8>::from(IN_SIZE))
         .expect("Should be able to write");
-    input_context.content.push(DataSet {
+    input_context.content.push(Some(DataSet {
         ident: "".to_string(),
         buffers: vec![DataItem {
             ident: "".to_string(),
@@ -53,7 +55,7 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
                 size: 8,
             },
         }],
-    });
+    }));
     let in_map_offset = input_context
         .get_free_space(MAT_SIZE, 8)
         .expect("Should have space");
@@ -62,7 +64,7 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
             .write(in_map_offset, Vec::<u8>::from(IN_MAT))
             .expect("Should be able to write input matrix");
     }
-    input_context.content.push(DataSet {
+    input_context.content.push(Some(DataSet {
         ident: "".to_string(),
         buffers: vec![DataItem {
             ident: "".to_string(),
@@ -71,13 +73,24 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
                 size: MAT_SIZE,
             },
         }],
-    });
+    }));
     inputs.push((
         &input_context,
-        vec![(0usize, None, 0usize), (1usize, None, 1usize)],
+        vec![
+            TransferIndices {
+                input_set_index: 0,
+                output_set_index: 0,
+                item_indices: None,
+            },
+            TransferIndices {
+                input_set_index: 1,
+                output_set_index: 1,
+                item_indices: None,
+            },
+        ],
     ));
     let result_context = dispatcher
-        .queue_function(COLD_ID, inputs, vec![String::from("")], non_caching)
+        .queue_function(COLD_ID, inputs, non_caching)
         .await
         .expect("Should get back context");
     domain
@@ -166,13 +179,13 @@ fn main() -> () {
     }
 
     // set up dispatcher configuration basics
-    let mut domains = HashMap::new();
+    let mut domains = BTreeMap::new();
     let context_id: ContextTypeId = 0;
     let engine_id: EngineTypeId = 0;
-    let mut drivers = HashMap::new();
-    let mut type_map = HashMap::new();
+    let mut drivers = BTreeMap::new();
+    let mut type_map = BTreeMap::new();
     type_map.insert(engine_id, context_id);
-    let mut pool_map = HashMap::new();
+    let mut pool_map = BTreeMap::new();
     pool_map.insert(0, vec![1, 2, 3]);
     let resource_pool = ResourcePool {
         engine_pool: Mutex::new(pool_map),
@@ -187,19 +200,31 @@ fn main() -> () {
         );
         let driver_func = CheriDriver::start_engine as DriverFunction;
         drivers.insert(engine_id, driver_func);
-        let mut loader_map = HashMap::new();
+        let mut loader_map = BTreeMap::new();
         loader_map.insert(0, CheriLoader::parse_function as LoaderFunction);
         registry = FunctionRegistry::new(loader_map);
         let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         path.push("../machine_interface/tests/data/test_elf_aarch64c_matmul");
         // add for hot function
-        registry.add_local(HOT_ID, engine_id, path.to_str().unwrap());
+        registry.add_local(
+            HOT_ID,
+            engine_id,
+            path.to_str().unwrap(),
+            vec![String::from(""), String::from("")],
+            vec![String::from("")],
+        );
         // add for cold function
-        registry.add_local(COLD_ID, engine_id, path.to_str().unwrap());
+        registry.add_local(
+            COLD_ID,
+            engine_id,
+            path.to_str().unwrap(),
+            vec![String::from(""), String::from("")],
+            vec![String::from("")],
+        );
     }
     #[cfg(not(feature = "cheri"))]
     {
-        let mut loader_map = HashMap::new();
+        let mut loader_map = BTreeMap::new();
         registry = FunctionRegistry::new(loader_map);
     }
 

@@ -37,9 +37,9 @@ impl ContextTrait for ContextType {
 }
 pub struct Context {
     pub context: ContextType,
-    pub content: Vec<DataSet>,
-    occupation: Vec<Position>,
+    pub content: Vec<Option<DataSet>>,
     pub size: usize,
+    occupation: Vec<Position>,
 }
 
 impl ContextTrait for Context {
@@ -56,6 +56,7 @@ impl Context {
         return Context {
             context: con,
             content: vec![],
+            size: size,
             occupation: vec![
                 Position { offset: 0, size: 0 },
                 Position {
@@ -63,7 +64,6 @@ impl Context {
                     size: 0,
                 },
             ],
-            size: size,
         };
     }
     fn insert(&mut self, index: usize, offset: usize, size: usize) {
@@ -179,66 +179,95 @@ pub fn transefer_memory(
     result
 }
 
+pub fn transfer_data_set(
+    destination: &mut Context,
+    source: &Context,
+    destionation_set_index: usize,
+    destination_allignment: usize,
+    destination_set_name: &str,
+    source_set_index: usize,
+) -> DandelionResult<()> {
+    // check if source has set
+    if source.content.len() <= source_set_index {
+        return Err(DandelionError::InvalidRead);
+    }
+    let source_set = source.content[source_set_index]
+        .as_ref()
+        .ok_or(DandelionError::EmptyDataSet)?;
+    for index in 0..source_set.buffers.len() {
+        transer_data_item(
+            destination,
+            source,
+            destionation_set_index,
+            destination_allignment,
+            index,
+            destination_set_name,
+            source_set_index,
+            index,
+        )?;
+    }
+    return Ok(());
+}
+
 pub fn transer_data_item(
     destination: &mut Context,
     source: &Context,
     destionation_set_index: usize,
     destination_allignment: usize,
+    destination_item_index: usize,
+    destination_set_name: &str,
     source_set_index: usize,
-    source_item_index: Option<usize>,
+    source_item_index: usize,
 ) -> DandelionResult<()> {
     // check if source has item
     if source.content.len() <= source_set_index {
         return Err(DandelionError::InvalidRead);
     }
-    let source_set = &source.content[source_set_index];
-    if source_set.buffers.is_empty() {
-        if source_item_index.is_none() {
-            return Ok(());
-        } else {
-            return Err(DandelionError::EmptyDataSet);
-        }
+    let source_set = source.content[source_set_index]
+        .as_ref()
+        .ok_or(DandelionError::EmptyDataSet)?;
+    if source_set.buffers.len() <= source_item_index {
+        return Err(DandelionError::InvalidRead);
     }
-    let index_range = if let Some(item_index) = source_item_index {
-        if source_set.buffers.len() <= item_index {
-            return Err(DandelionError::InvalidRead);
-        }
-        item_index..(item_index + 1)
-    } else {
-        0..source_set.buffers.len()
-    };
+
     if destination.content.len() <= destionation_set_index {
         destination
             .content
-            .resize_with(destionation_set_index + 1, || DataSet {
-                ident: String::from(""),
+            .resize_with(destionation_set_index + 1, || None)
+    }
+    let source_item = &source_set.buffers[source_item_index];
+    let destination_offset =
+        destination.get_free_space(source_item.data.size, destination_allignment)?;
+    {
+        let destination_set =
+            &mut destination.content[destionation_set_index].get_or_insert(DataSet {
+                ident: destination_set_name.to_string(),
                 buffers: vec![],
-            })
+            });
+        if destination_set.buffers.len() <= destination_item_index {
+            destination_set
+                .buffers
+                .resize_with(destination_item_index + 1, || DataItem {
+                    ident: String::from(""),
+                    data: Position { offset: 0, size: 0 },
+                });
+        } else if destination_set.buffers[destination_item_index].data.size > 0 {
+            return Err(DandelionError::InvalidWrite);
+        }
+        destination_set.buffers[destination_item_index].data.offset = destination_offset;
+        destination_set.buffers[destination_item_index].data.size = source_item.data.size;
+        destination_set.buffers[destination_item_index].ident = source_item.ident.clone();
     }
-    for item_index in index_range {
-        let source_item = &source_set.buffers[item_index];
-        let destination_offset =
-            destination.get_free_space(source_item.data.size, destination_allignment)?;
-        let new_item = DataItem {
-            ident: source_item.ident.clone(),
-            data: Position {
-                offset: destination_offset,
-                size: source_item.data.size,
-            },
-        };
-        destination.content[destionation_set_index]
-            .buffers
-            .push(new_item);
-        transefer_memory(
-            destination,
-            source,
-            destination_offset,
-            source_item.data.offset,
-            source_item.data.size,
-        )?
-    }
+
+    transefer_memory(
+        destination,
+        source,
+        destination_offset,
+        source_item.data.offset,
+        source_item.data.size,
+    )?;
     Ok(())
 }
 
 #[cfg(test)]
-mod tests;
+mod domain_tests;
