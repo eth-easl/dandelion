@@ -14,31 +14,32 @@ use machine_interface::{
     function_lib::{DriverFunction, FunctionConfig},
     memory_domain::{transer_data_item, transfer_data_set, Context, MemoryDomain},
 };
-use std::sync::Arc;
-use std::sync::Mutex as SyncMutex;
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    rc::Rc,
+    sync::Arc,
+    sync::Mutex as SyncMutex,
     vec,
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct ItemIndices {
-    in_index: usize,
-    out_index: usize,
+    pub in_index: usize,
+    pub out_index: usize,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct TransferIndices {
     pub input_set_index: usize,
     pub output_set_index: usize,
     pub item_indices: Option<ItemIndices>,
 }
 
-struct PartiallyReadyFunction<'a> {
+struct PartiallyReadyFunction {
     function: FunctionId,
     waiting_map: BTreeMap<usize, Vec<TransferIndices>>,
-    ready_ins: Vec<(&'a Context, Vec<TransferIndices>)>,
-    output_ids: Vec<TransferIndices>,
+    ready_ins: Vec<(Rc<Context>, Vec<TransferIndices>)>,
+    output_id: usize,
 }
 
 // TODO here and in registry can probably replace driver and loader function maps with fixed size arrays
@@ -90,93 +91,137 @@ impl Dispatcher {
     pub async fn queue_composition(
         &self,
         composition: Composition,
-        inputs: Vec<(&Context, Vec<TransferIndices>)>,
-        output_sets: Vec<usize>,
+        inputs: Vec<(usize, Rc<Context>)>,
+        output_sets: BTreeSet<usize>,
         non_caching: bool,
-    ) -> DandelionResult<Vec<(Context, Vec<TransferIndices>)>> {
+    ) -> DandelionResult<Vec<(usize, Context)>> {
         // build up a structure with all ids in the composition namespace and the functions waiting for them
+        // TODO preallocate here
         let mut partials = Vec::<Option<PartiallyReadyFunction>>::new();
+        // map from context id to indexes in wating function vector
         let mut composition_waiting_map = BTreeMap::<usize, Vec<usize>>::new();
-        for dependencies in composition.dependencies {
+        for dependencies in composition.dependencies.into_iter() {
+            let partial_index = partials.len();
+            let function = dependencies.function;
+            let output_id = dependencies.output_id;
             let mut waiting_map = BTreeMap::new();
-            for input_id in &dependencies.input_ids {
-                waiting_map
-                    .entry(input_id.input_set_index)
-                    .and_modify(|list: &mut Vec<TransferIndices>| list.push(*input_id))
-                    .or_insert(vec![*input_id]);
+            for (context_id, transfer_indices) in dependencies.input_ids {
+                if waiting_map.insert(context_id, transfer_indices).is_some() {
+                    return Err(DandelionError::DispatcherSetMissmatch);
+                }
+                composition_waiting_map
+                    .entry(context_id)
+                    .and_modify(|entry| entry.push(partial_index))
+                    .or_insert(vec![partial_index]);
             }
             let partial = PartiallyReadyFunction {
-                function: dependencies.function,
+                function,
                 waiting_map,
                 ready_ins: vec![],
-                output_ids: dependencies.output_ids,
+                output_id,
             };
             partials.push(Some(partial));
-            let lenght = partials.len();
-            for input_ids in &dependencies.input_ids {
-                composition_waiting_map
-                    .entry(input_ids.input_set_index)
-                    .and_modify(|entry| entry.push(lenght - 1))
-                    .or_insert(vec![lenght - 1]);
-            }
         }
-        // fill in the already available sets
+        // fill in the already available contexts
         let mut future_list = FuturesUnordered::new();
-        for (input_context, transfer_map) in inputs {
-            for mapping in transfer_map {
-                if let Some(waiting_list) =
-                    composition_waiting_map.remove(&mapping.output_set_index)
-                {
-                    for waiting_func_index in waiting_list {
-                        let mut is_empty = false;
-                        if let Some(waiting_func) = partials[waiting_func_index].as_mut() {
-                            if let Some(transfer_info) =
-                                waiting_func.waiting_map.remove(&mapping.output_set_index)
-                            {
-                                waiting_func.ready_ins.push((input_context, transfer_info));
-                            }
-                            if waiting_func.waiting_map.is_empty() {
-                                is_empty = true;
-                            }
-                        } else {
-                            return Err(DandelionError::DispatcherDependencyError);
+        for (input_id, input_context) in inputs {
+            if let Some(waiting_list) = composition_waiting_map.remove(&input_id) {
+                for waiting_func_index in waiting_list {
+                    let mut is_empty = false;
+                    if let Some(waiting_func) = partials[waiting_func_index].as_mut() {
+                        if let Some(transfer_info) = waiting_func.waiting_map.remove(&input_id) {
+                            waiting_func
+                                .ready_ins
+                                .push((input_context.clone(), transfer_info));
                         }
-                        if is_empty {
-                            if let Some(waiting) = partials[waiting_func_index].take() {
-                                future_list.push(self.wrapped_queue_function(
-                                    waiting.function,
-                                    waiting.ready_ins,
-                                    non_caching,
-                                    waiting.output_ids,
-                                ));
-                            }
+                        if waiting_func.waiting_map.is_empty() {
+                            is_empty = true;
+                        }
+                    } else {
+                        return Err(DandelionError::DispatcherDependencyError);
+                    }
+                    if is_empty {
+                        if let Some(waiting) = partials[waiting_func_index].take() {
+                            future_list.push(self.wrapped_queue_function(
+                                waiting.function,
+                                waiting.ready_ins,
+                                non_caching,
+                                waiting.output_id,
+                            ));
                         }
                     }
                 }
             }
         }
+        // TODO replace with preallocated list (of options?) so do not need to mutatet in the loop, allowing to hand out refs instead of rcs
         let mut ready_contexts = Vec::new();
+        let mut ready_context_ids = Vec::new();
         loop {
             let next_done = future_list.next().await;
-            let (transfer_map, context_result) = match next_done {
+            let (context_id, context_result) = match next_done {
                 None => break,
                 Some((trans_vec, res)) => (trans_vec, res?),
             };
-            ready_contexts.push((context_result, transfer_map));
+            let rc_context = Rc::new(context_result);
+            ready_contexts.push(rc_context.clone());
+            if let Some(waiting_list) = composition_waiting_map.remove(&context_id) {
+                for waiting_func_index in waiting_list {
+                    let mut is_empty = false;
+                    if let Some(waiting_func) = partials[waiting_func_index].as_mut() {
+                        if let Some(transfer_info) = waiting_func.waiting_map.remove(&context_id) {
+                            waiting_func
+                                .ready_ins
+                                .push((rc_context.clone(), transfer_info));
+                        }
+                        if waiting_func.waiting_map.is_empty() {
+                            is_empty = true;
+                        }
+                    } else {
+                        return Err(DandelionError::DispatcherDependencyError);
+                    }
+                    if is_empty {
+                        if let Some(waiting) = partials[waiting_func_index].take() {
+                            future_list.push(self.wrapped_queue_function(
+                                waiting.function,
+                                waiting.ready_ins,
+                                non_caching,
+                                waiting.output_id,
+                            ));
+                        }
+                    }
+                }
+            }
+            ready_context_ids.push(context_id);
         }
-        return Ok(ready_contexts);
+        let output_list = ready_contexts
+            .into_iter()
+            .zip(ready_context_ids.into_iter())
+            .filter_map(|(rc_context, context_id)| {
+                let context = Rc::try_unwrap(rc_context);
+                return match (output_sets.contains(&context_id), context) {
+                    (true, Ok(cont)) => Some((context_id, cont)),
+                    (_, _) => None,
+                };
+            })
+            .collect();
+        return Ok(output_list);
     }
 
     async fn wrapped_queue_function(
         &self,
         function_id: FunctionId,
-        inputs: Vec<(&Context, Vec<TransferIndices>)>,
+        inputs: Vec<(Rc<Context>, Vec<TransferIndices>)>,
         non_caching: bool,
-        output_mapping: Vec<TransferIndices>,
-    ) -> (Vec<TransferIndices>, DandelionResult<Context>) {
+        output_id: usize,
+    ) -> (usize, DandelionResult<Context>) {
+        let input_refs = inputs
+            .iter()
+            .map(|(rc_context, trans_vec)| (rc_context.as_ref(), trans_vec.to_owned()))
+            .collect();
         return (
-            output_mapping,
-            self.queue_function(function_id, inputs, non_caching).await,
+            output_id,
+            self.queue_function(function_id, input_refs, non_caching)
+                .await,
         );
     }
 

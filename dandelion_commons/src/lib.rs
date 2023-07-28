@@ -29,6 +29,10 @@ pub enum DandelionError {
     InvalidWrite,
     /// found a case with a data item that is a set but has no entries
     EmptyDataSet,
+    /// tried to transfer a set index that is not in the content of the context
+    TransferInputNoSetAvailable,
+    /// tried to transfer to a data item that was already present
+    TransferItemAlreadyPresent,
     // engine errors
     /// missmatch between the function config the engine expects and the one given
     ConfigMissmatch,

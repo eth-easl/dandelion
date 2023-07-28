@@ -189,7 +189,7 @@ pub fn transfer_data_set(
 ) -> DandelionResult<()> {
     // check if source has set
     if source.content.len() <= source_set_index {
-        return Err(DandelionError::InvalidRead);
+        return Err(DandelionError::TransferInputNoSetAvailable);
     }
     let source_set = source.content[source_set_index]
         .as_ref()
@@ -227,7 +227,7 @@ pub fn transer_data_item(
         .as_ref()
         .ok_or(DandelionError::EmptyDataSet)?;
     if source_set.buffers.len() <= source_item_index {
-        return Err(DandelionError::InvalidRead);
+        return Err(DandelionError::TransferInputNoSetAvailable);
     }
 
     if destination.content.len() <= destionation_set_index {
@@ -252,7 +252,7 @@ pub fn transer_data_item(
                     data: Position { offset: 0, size: 0 },
                 });
         } else if destination_set.buffers[destination_item_index].data.size > 0 {
-            return Err(DandelionError::InvalidWrite);
+            return Err(DandelionError::TransferItemAlreadyPresent);
         }
         destination_set.buffers[destination_item_index].data.offset = destination_offset;
         destination_set.buffers[destination_item_index].data.size = source_item.data.size;
