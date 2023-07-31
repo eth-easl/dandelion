@@ -1,5 +1,5 @@
 use crate::{
-    function_lib::{cheri::CheriLoader, FunctionConfig, Loader},
+    function_driver::{compute_driver::cheri::CheriLoader, FunctionConfig, Loader},
     memory_domain::{malloc::MallocMemoryDomain, MemoryDomain},
     Position,
 };

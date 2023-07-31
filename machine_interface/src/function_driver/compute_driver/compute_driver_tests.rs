@@ -1,5 +1,5 @@
 use crate::{
-    function_lib::{util::load_static, Driver, Loader},
+    function_driver::{util::load_static, Driver, Loader},
     memory_domain::{ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
 };
@@ -669,8 +669,8 @@ macro_rules! driverTests {
 
 #[cfg(feature = "cheri")]
 mod cheri {
-    use crate::function_lib::cheri::CheriDriver as cheriDriver;
-    use crate::function_lib::cheri::CheriLoader as cheriLoader;
+    use crate::function_driver::compute_driver::cheri::CheriDriver as cheriDriver;
+    use crate::function_driver::compute_driver::cheri::CheriLoader as cheriLoader;
     use crate::memory_domain::cheri::CheriMemoryDomain as cheriDomain;
     driverTests!(cheri; cheriDomain; Vec::new(); cheriDriver; vec![1,2,3]; vec![4]; cheriLoader);
 }

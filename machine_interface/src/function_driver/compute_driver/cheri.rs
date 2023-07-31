@@ -1,5 +1,5 @@
 use crate::{
-    function_lib::{Driver, Engine, FunctionConfig, Loader},
+    function_driver::{Driver, ElfConfig, Engine, FunctionConfig, Loader},
     interface::{read_output_structs, setup_input_structs},
     memory_domain::{cheri::cheri_c_context, Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
@@ -252,7 +252,7 @@ impl Loader for CheriLoader {
         let system_data = elf.get_symbol_by_name(&function, "__dandelion_system_data")?;
         let return_offset = elf.get_symbol_by_name(&function, "__dandelion_return_address")?;
         let entry = elf.get_entry_point();
-        let config = FunctionConfig::ElfConfig(super::ElfConfig {
+        let config = FunctionConfig::ElfConfig(ElfConfig {
             system_data_offset: system_data.0,
             return_offset: return_offset,
             entry_point: entry,

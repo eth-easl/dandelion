@@ -11,7 +11,7 @@ use futures::{
     stream::{FuturesUnordered, StreamExt},
 };
 use machine_interface::{
-    function_lib::{DriverFunction, FunctionConfig},
+    function_driver::{DriverFunction, FunctionConfig},
     memory_domain::{transer_data_item, transfer_data_set, Context, MemoryDomain},
 };
 use std::{

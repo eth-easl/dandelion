@@ -1,4 +1,4 @@
-pub mod function_lib;
+pub mod function_driver;
 pub mod memory_domain;
 
 mod interface;

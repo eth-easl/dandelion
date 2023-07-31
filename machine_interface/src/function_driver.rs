@@ -6,10 +6,8 @@ use core::pin::Pin;
 use dandelion_commons::{records::Recorder, DandelionResult};
 use std::future::Future;
 
-// list of implementations
-#[cfg(feature = "cheri")]
-pub mod cheri;
-
+pub mod compute_driver;
+pub mod system_driver;
 pub mod util;
 
 #[derive(Clone, Copy)]
@@ -61,6 +59,3 @@ pub trait Loader {
         static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<(DataRequirementList, Context, FunctionConfig)>;
 }
-
-#[cfg(test)]
-mod driver_tests;

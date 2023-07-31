@@ -11,8 +11,8 @@ use hyper::{
 
 #[cfg(feature = "cheri")]
 use machine_interface::{
-    function_lib::{
-        cheri::{CheriDriver, CheriLoader},
+    function_driver::{
+        compute_driver::cheri::{CheriDriver, CheriLoader},
         Driver, DriverFunction, Loader, LoaderFunction,
     },
     memory_domain::{cheri::CheriMemoryDomain, ContextTrait, MemoryDomain},

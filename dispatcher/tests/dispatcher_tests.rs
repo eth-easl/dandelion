@@ -7,7 +7,7 @@ use dispatcher::{
 };
 use futures::lock::Mutex;
 use machine_interface::{
-    function_lib::{Driver, DriverFunction, Loader, LoaderFunction},
+    function_driver::{Driver, DriverFunction, Loader, LoaderFunction},
     memory_domain::{Context, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
 };
@@ -789,7 +789,7 @@ macro_rules! dispatcherTests {
 #[cfg(feature = "cheri")]
 mod cheri {
     use machine_interface::{
-        function_lib::cheri::{CheriDriver, CheriLoader},
+        function_driver::compute_driver::cheri::{CheriDriver, CheriLoader},
         memory_domain::cheri::CheriMemoryDomain,
     };
     dispatcherTests!(CheriMemoryDomain; Vec::new(); CheriDriver; vec![1]; CheriLoader; "../machine_interface/tests/data/test_elf_cheri");

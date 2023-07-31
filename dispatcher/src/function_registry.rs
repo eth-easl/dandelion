@@ -1,7 +1,7 @@
 use dandelion_commons::{DandelionError, DandelionResult, EngineTypeId, FunctionId};
 use futures::lock::Mutex;
 use machine_interface::{
-    function_lib::{
+    function_driver::{
         util::{load_static, load_u8_from_file},
         FunctionConfig, LoaderFunction,
     },
@@ -101,7 +101,10 @@ impl FunctionRegistry {
         non_caching: bool,
     ) -> DandelionResult<(Context, FunctionConfig, &Vec<String>, &Vec<String>)> {
         // get input and output set names
-        let (in_set_names, out_set_names) = self.set_names.get(&function_id).ok_or(DandelionError::DispatcherUnavailableFunction)?;
+        let (in_set_names, out_set_names) = self
+            .set_names
+            .get(&function_id)
+            .ok_or(DandelionError::DispatcherUnavailableFunction)?;
         // check if function for the engine is in registry already
         let mut lock_guard = self.registry.lock().await;
         if let Some(tripple) = lock_guard.get(&(function_id, engine_id)) {
