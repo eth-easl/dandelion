@@ -7,8 +7,11 @@ use machine_interface::{
         Driver, Loader,
     },
     memory_domain::{pagetable::PagetableMemoryDomain, ContextTrait, MemoryDomain},
-    DataItem, Position,
+    DataItem, DataSet, Position,
 };
+use dandelion_commons::records::{Archive, RecordPoint, Recorder};
+use std::sync::{Arc, Mutex};
+
 
 fn context_benchmark(c: &mut Criterion) {
     let mut domain =
@@ -62,13 +65,16 @@ fn matmul_sequential_benchmark(c: &mut Criterion) {
             function_context
                 .write(in_size_offset, i64::to_ne_bytes(MAT_SIZE as i64).to_vec())
                 .expect("Write should go through");
-            function_context.dynamic_data.insert(
-                0,
-                DataItem::Item(Position {
-                    offset: in_size_offset,
-                    size: 8,
-                }),
-            );
+            function_context.content.push(Some(DataSet {
+                ident: "".to_string(),
+                buffers: vec![DataItem {
+                    ident: "".to_string(),
+                    data: Position {
+                        offset: in_size_offset,
+                        size: 8,
+                    },
+                }],
+            }));
             let input_size = 8 * MAT_SIZE * MAT_SIZE;
             let in_mat_offset = function_context
                 .get_free_space(input_size, 8)
@@ -80,29 +86,30 @@ fn matmul_sequential_benchmark(c: &mut Criterion) {
             function_context
                 .write(in_mat_offset, mat_vec)
                 .expect("Write should go through");
-            function_context.dynamic_data.insert(
-                1,
-                DataItem::Item(Position {
-                    offset: in_mat_offset,
-                    size: input_size,
-                }),
-            );
-            let out_mat_offset = function_context
-                .get_free_space(input_size, 8)
-                .expect("Should have space for single i64");
-            function_context.dynamic_data.insert(
-                2,
-                DataItem::Item(Position {
-                    offset: out_mat_offset,
-                    size: input_size,
-                }),
-            );
-            let (_result, result_context) = tokio::runtime::Builder::new_current_thread()
+            function_context.content.push(Some(DataSet {
+                ident: "".to_string(),
+                buffers: vec![DataItem {
+                    ident: "".to_string(),
+                    data: Position {
+                        offset: in_size_offset,
+                        size: input_size,
+                    },
+                }],
+            }));
+            
+            let archive = Arc::new(Mutex::new(Archive::new()));
+            let mut recorder = Recorder::new(archive, RecordPoint::TransferEnd);
+            let (result, result_context) = tokio::runtime::Builder::new_current_thread()
                 .build()
                 .unwrap()
-                .block_on(engine.run(&config, function_context));
-            domain.release_context(result_context);
-        })
+                .block_on(engine.run(&config, function_context, &vec![String::from("")], recorder.clone()));
+            if domain.release_context(result_context).is_err() {
+                panic!("domain release errored");
+            }
+            if result.is_err() {
+                panic!("returned error result");
+            }
+        });
     });
 }
 

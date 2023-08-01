@@ -1,4 +1,6 @@
-#![cfg(feature = "cheri")]
+#[cfg(feature = "cheri")]
+mod chery_bench {
+
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use machine_interface::{
     function_lib::{
@@ -7,12 +9,11 @@ use machine_interface::{
         Driver, Loader,
     },
     memory_domain::{cheri::CheriMemoryDomain, ContextTrait, MemoryDomain},
-    DataItem, Position,
+    DataItem, DataSet, Position,
 };
 
 fn context_benchmark(c: &mut Criterion) {
-    let mut domain =
-        CheriMemoryDomain::init(Vec::<u8>::new()).expect("Should be able to initialize");
+    let domain = CheriMemoryDomain::init(Vec::<u8>::new()).expect("Should be able to initialize");
     let mut group = c.benchmark_group("cheri context aquire and release");
     static KB: usize = 1024;
     for size in [128 * KB, 2 * KB * KB].iter() {
@@ -60,13 +61,16 @@ fn matmul_sequential_benchmark(c: &mut Criterion) {
             function_context
                 .write(in_size_offset, i64::to_ne_bytes(MAT_SIZE as i64).to_vec())
                 .expect("Write should go through");
-            function_context.dynamic_data.insert(
-                0,
-                DataItem::Item(Position {
-                    offset: in_size_offset,
-                    size: 8,
-                }),
-            );
+            function_context.content.push(DataSet {
+                ident: "".to_string(),
+                buffers: vec![DataItem {
+                    ident: "".to_string(),
+                    data: Position {
+                        offset: in_size_offset,
+                        size: 8,
+                    },
+                }],
+            });
             let input_size = 8 * MAT_SIZE * MAT_SIZE;
             let in_mat_offset = function_context
                 .get_free_space(input_size, 8)
@@ -78,33 +82,34 @@ fn matmul_sequential_benchmark(c: &mut Criterion) {
             function_context
                 .write(in_mat_offset, mat_vec)
                 .expect("Write should go through");
-            function_context.dynamic_data.insert(
-                1,
-                DataItem::Item(Position {
-                    offset: in_mat_offset,
-                    size: input_size,
-                }),
-            );
-            let out_mat_offset = function_context
-                .get_free_space(input_size, 8)
-                .expect("Should have space for single i64");
-            function_context.dynamic_data.insert(
-                2,
-                DataItem::Item(Position {
-                    offset: out_mat_offset,
-                    size: input_size,
-                }),
-            );
-            let (_result, result_context) = tokio::runtime::Builder::new_current_thread()
+            function_context.content.push(DataSet {
+                ident: "".to_string(),
+                buffers: vec![DataItem {
+                    ident: "".to_string(),
+                    data: Position {
+                        offset: in_mat_offset,
+                        size: input_size,
+                    },
+                }],
+            });
+            let (result, result_context) = tokio::runtime::Builder::new_current_thread()
                 .build()
                 .unwrap()
-                .block_on(engine.run(&config, function_context));
-            domain.release_context(result_context);
-        })
+                .block_on(engine.run(&config, function_context, vec![String::from("")]));
+            if domain.release_context(result_context).is_err() {
+                panic!("domain release errored");
+            }
+            if result.is_err() {
+                panic!("returned error result");
+            }
+        });
     });
 }
 
-async fn run_matmul() {}
-
 criterion_group!(benches, context_benchmark, matmul_sequential_benchmark);
 criterion_main!(benches);
+
+}
+
+#[cfg(not(feature = "cheri"))]
+fn main() {}

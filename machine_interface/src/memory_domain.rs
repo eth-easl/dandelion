@@ -5,9 +5,8 @@ pub mod malloc;
 #[cfg(feature = "pagetable")]
 pub mod pagetable;
 
-use crate::{DataItem, Position};
+use crate::{DataItem, DataSet, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
-use std::collections::HashMap;
 
 pub trait ContextTrait: Send + Sync {
     fn write(&mut self, offset: usize, data: Vec<u8>) -> DandelionResult<()>;
@@ -46,12 +45,12 @@ impl ContextTrait for ContextType {
 }
 pub struct Context {
     pub context: ContextType,
-    pub dynamic_data: HashMap<usize, DataItem>,
-    pub static_data: Vec<Position>,
+    pub content: Vec<Option<DataSet>>,
     pub size: usize,
     #[cfg(feature = "pagetable")]
     // pub protection_requirements: (Vec<Position>, Vec<Position>),
     pub protection_requirements: Vec<(u32, Position)>,
+    occupation: Vec<Position>,
 }
 
 impl ContextTrait for Context {
@@ -64,50 +63,83 @@ impl ContextTrait for Context {
 }
 
 impl Context {
-    pub fn get_free_space(&self, size: usize, alignment: usize) -> DandelionResult<usize> {
-        let mut items = Vec::<Position>::new();
-        for pos in &self.static_data {
-            items.push(pos.clone());
+    pub fn new(con: ContextType, size: usize) -> Self {
+        return Context {
+            context: con,
+            content: vec![],
+            size: size,
+            occupation: vec![
+                Position { offset: 0, size: 0 },
+                Position {
+                    offset: size,
+                    size: 0,
+                },
+            ],
+            #[cfg(feature = "pagetable")]
+                protection_requirements: vec![]
+        };
+    }
+    fn insert(&mut self, index: usize, offset: usize, size: usize) {
+        if (self.occupation[index].offset + self.occupation[index].size) == offset {
+            self.occupation[index].size += size;
+        } else {
+            self.occupation.insert(
+                index + 1,
+                Position {
+                    offset: offset,
+                    size,
+                },
+            )
         }
-        // make single vector with all positions
-        for dyn_item in self.dynamic_data.values() {
-            match dyn_item {
-                DataItem::Item(item) => items.push(item.clone()),
-                DataItem::Set(set) => {
-                    for pos in set {
-                        items.push(pos.clone())
-                    }
+    }
+    pub fn occupy_space(&mut self, offset: usize, size: usize) -> DandelionResult<()> {
+        let insertion_index = self
+            .occupation
+            .windows(2)
+            .enumerate()
+            .find_map(|(index, pos)| {
+                let start = pos[0].offset + pos[0].size;
+                let end = pos[1].offset;
+                if offset >= start && offset + size < end {
+                    return Some(index);
+                } else {
+                    return None;
                 }
-            }
+            });
+        if let Some(index) = insertion_index {
+            self.insert(index, offset, size);
+        } else {
+            return Err(DandelionError::ContextFull);
         }
-        items.sort_unstable_by(|a, b| a.offset.cmp(&b.offset));
+        return Ok(());
+    }
+    pub fn get_free_space(&mut self, size: usize, alignment: usize) -> DandelionResult<usize> {
         // search for smallest space that is bigger than size
         // space start holds previous start
-        let mut space_start = Err(DandelionError::ContextFull);
-        let mut space_size = usize::MAX;
-        let mut next_free = 0;
-        if items.len() == 0 {
-            return Ok(0);
-        };
-        for item in items {
-            let item_start = item.offset;
-            let free_space = item_start - next_free;
-
-            if free_space >= size && free_space < space_size {
-                space_size = free_space;
-                space_start = Ok(next_free);
-            }
-            next_free = item_start + item.size;
-            // TODO use next_multiple_of as soon as it is stabilized
-            if next_free % alignment != 0 {
-                next_free += alignment - next_free % alignment;
+        let mut space_size = self.size + 1;
+        let mut index = 0;
+        let mut start_address = 0;
+        for (window_index, occupied) in self.occupation.windows(2).enumerate() {
+            let lower_end = occupied[0].offset + occupied[0].size;
+            // TODO use next multiple of when stabilized
+            let start = ((lower_end + alignment - 1) / alignment) * alignment;
+            let end = occupied[1].offset;
+            let available = end - start;
+            if available > size && available < space_size {
+                space_size = available;
+                index = window_index;
+                start_address = start;
             }
         }
-        // check after last item
-        if self.size - next_free >= size && self.size - next_free < space_size {
-            space_start = Ok(next_free);
+        if self.size + 1 == space_size {
+            return Err(DandelionError::ContextFull);
         }
-        return space_start;
+        self.insert(index, start_address, size);
+        return Ok(start_address);
+    }
+    pub fn get_last_item_end(&self) -> usize {
+        let last_item = self.occupation[self.occupation.len() - 2];
+        return last_item.offset + last_item.size;
     }
 }
 
@@ -170,92 +202,95 @@ pub fn transefer_memory(
     result
 }
 
+pub fn transfer_data_set(
+    destination: &mut Context,
+    source: &Context,
+    destionation_set_index: usize,
+    destination_allignment: usize,
+    destination_set_name: &str,
+    source_set_index: usize,
+) -> DandelionResult<()> {
+    // check if source has set
+    if source.content.len() <= source_set_index {
+        return Err(DandelionError::TransferInputNoSetAvailable);
+    }
+    let source_set = source.content[source_set_index]
+        .as_ref()
+        .ok_or(DandelionError::EmptyDataSet)?;
+    for index in 0..source_set.buffers.len() {
+        transer_data_item(
+            destination,
+            source,
+            destionation_set_index,
+            destination_allignment,
+            index,
+            destination_set_name,
+            source_set_index,
+            index,
+        )?;
+    }
+    return Ok(());
+}
+
 pub fn transer_data_item(
     destination: &mut Context,
     source: &Context,
-    destionation_index: usize,
+    destionation_set_index: usize,
     destination_allignment: usize,
-    source_index: usize,
-    source_sub_index: Option<usize>,
+    destination_item_index: usize,
+    destination_set_name: &str,
+    source_set_index: usize,
+    source_item_index: usize,
 ) -> DandelionResult<()> {
     // check if source has item
-    let source_item = match source.dynamic_data.get(&source_index) {
-        Some(i) => i,
-        None => return Err(DandelionError::InvalidRead),
-    };
-    // check destination is unoccupied, could be fused with insert in future with try insert
-    if destination.dynamic_data.contains_key(&destionation_index) {
-        return Err(DandelionError::InvalidWrite);
+    if source.content.len() <= source_set_index {
+        return Err(DandelionError::InvalidRead);
     }
-    // get positions where to read from
-    let temp;
-    let source_positions = match (source_item, source_sub_index) {
-        (DataItem::Item(p), None) => {
-            temp = vec![p.clone()];
-            &temp
-        }
-        (DataItem::Item(_), Some(_)) => return Err(DandelionError::InvalidRead),
-        (DataItem::Set(s), None) => s,
-        (DataItem::Set(s), Some(i)) if i < s.len() => {
-            temp = vec![s[i].clone()];
-            &temp
-        }
-        (DataItem::Set(_), Some(_)) => return Err(DandelionError::InvalidRead),
-    };
-    // find positions to write to
-    let destination_positions_result: DandelionResult<Vec<Position>> = source_positions
-        .iter()
-        .map(|pos| {
-            let offset = destination.get_free_space(pos.size, destination_allignment)?;
-            Ok(Position {
-                size: pos.size,
-                offset,
-            })
-        })
-        .collect();
-    let destination_positions = destination_positions_result?;
-    if destination_positions.len() == 0 {
-        return Err(DandelionError::EmptyDataItemSet);
-    } else if destination_positions.len() == 1 {
-        let transfer_error = transefer_memory(
-            destination,
-            source,
-            destination_positions[0].offset,
-            source_positions[0].offset,
-            source_positions[0].size,
-        );
-        destination
-            .dynamic_data
-            .insert(destionation_index, DataItem::Item(destination_positions[0]));
-        return transfer_error;
-    } else {
-        // perform transfers
-        let position_pair = source_positions
-            .iter()
-            .zip(destination_positions.into_iter());
-        let mut destination_set = Vec::new();
-        if destination_set.try_reserve(source_positions.len()).is_err() {
-            return Err(DandelionError::OutOfMemory);
-        }
-        for (source_pos, destination_pos) in position_pair {
-            let transfer_error = transefer_memory(
-                destination,
-                source,
-                destination_pos.offset,
-                source_pos.offset,
-                source_pos.size,
-            );
-            destination_set.push(destination_pos);
-            if transfer_error.is_err() {
-                break;
-            }
-        }
-        destination
-            .dynamic_data
-            .insert(destionation_index, DataItem::Set(destination_set));
+    let source_set = source.content[source_set_index]
+        .as_ref()
+        .ok_or(DandelionError::EmptyDataSet)?;
+    if source_set.buffers.len() <= source_item_index {
+        return Err(DandelionError::TransferInputNoSetAvailable);
     }
+
+    if destination.content.len() <= destionation_set_index {
+        destination
+            .content
+            .resize_with(destionation_set_index + 1, || None)
+    }
+    let source_item = &source_set.buffers[source_item_index];
+    let destination_offset =
+        destination.get_free_space(source_item.data.size, destination_allignment)?;
+    {
+        let destination_set =
+            &mut destination.content[destionation_set_index].get_or_insert(DataSet {
+                ident: destination_set_name.to_string(),
+                buffers: vec![],
+            });
+        if destination_set.buffers.len() <= destination_item_index {
+            destination_set
+                .buffers
+                .resize_with(destination_item_index + 1, || DataItem {
+                    ident: String::from(""),
+                    data: Position { offset: 0, size: 0 },
+                });
+        } else if destination_set.buffers[destination_item_index].data.size > 0 {
+            return Err(DandelionError::TransferItemAlreadyPresent);
+        }
+        destination_set.buffers[destination_item_index].data.offset = destination_offset;
+        destination_set.buffers[destination_item_index].data.size = source_item.data.size;
+        destination_set.buffers[destination_item_index].ident = source_item.ident.clone();
+    }
+
+    transefer_memory(
+        destination,
+        source,
+        destination_offset,
+        source_item.data.offset,
+        source_item.data.size,
+    )?;
     Ok(())
 }
 
 #[cfg(test)]
-mod tests;
+mod domain_tests;

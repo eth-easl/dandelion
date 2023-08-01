@@ -1,5 +1,5 @@
 use core_affinity::{self, CoreId};
-use dandelion_commons::{ContextTypeId, EngineTypeId};
+use dandelion_commons::{ContextTypeId, EngineTypeId, DandelionError};
 use dispatcher::{
     dispatcher::Dispatcher, function_registry::FunctionRegistry, resource_pool::ResourcePool,
 };
@@ -8,6 +8,7 @@ use hyper::{
     service::{make_service_fn, service_fn},
     Body, Request, Response, Server,
 };
+
 #[cfg(feature = "cheri")]
 use machine_interface::{
     function_lib::{
@@ -15,7 +16,7 @@ use machine_interface::{
         Driver, DriverFunction, Loader, LoaderFunction,
     },
     memory_domain::{cheri::CheriMemoryDomain, ContextTrait, MemoryDomain},
-    DataItem, Position,
+    DataItem, DataSet, Position,
 };
 #[cfg(feature = "pagetable")]
 use machine_interface::{
@@ -24,9 +25,9 @@ use machine_interface::{
         Driver, DriverFunction, Loader, LoaderFunction,
     },
     memory_domain::{pagetable::PagetableMemoryDomain, ContextTrait, MemoryDomain},
-    DataItem, Position,
+    DataItem, DataSet, Position,
 };
-use std::{collections::HashMap, convert::Infallible, net::SocketAddr, sync::Arc};
+use std::{collections::BTreeMap, convert::Infallible, net::SocketAddr, println, sync::Arc, vec};
 use tokio::runtime::Builder;
 // use std::time::Instant;
 
@@ -37,103 +38,89 @@ static IN_SIZE: [u8; 8] = u64::to_ne_bytes(MAT_DIM as u64);
 const HOT_ID: u64 = 0;
 const COLD_ID: u64 = 1;
 
+//#[cfg(feature = "cheri")]
 async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
+    use dispatcher::dispatcher::TransferIndices;
+
     let mut inputs = Vec::new();
     let mut input_context;
-    {
-        let total_size = 2 * MAT_SIZE + 8;
-        #[cfg(feature = "cheri")]
-        let domain =
-            CheriMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
-        #[cfg(feature = "pagetable")]
-        let domain =
-            PagetableMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
-        input_context = domain
-            .acquire_context(total_size)
-            .expect("Should always have space");
-        let size_offset = input_context
-            .get_free_space(8, 8)
-            .expect("Should have space");
-        input_context
-            .write(size_offset, Vec::<u8>::from(IN_SIZE))
-            .expect("Should be able to write");
-        input_context.dynamic_data.insert(
-            0,
-            DataItem::Item(Position {
+    let total_size = 2 * MAT_SIZE + 8;
+    #[cfg(feature = "cheri")]
+    let domain =
+        CheriMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
+    #[cfg(feature = "pagetable")]
+    let domain =
+        PagetableMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
+
+    input_context = domain
+        .acquire_context(total_size)
+        .expect("Should always have space");
+    let size_offset = input_context
+        .get_free_space(8, 8)
+        .expect("Should have space");
+    input_context
+        .write(size_offset, Vec::<u8>::from(IN_SIZE))
+        .expect("Should be able to write");
+    input_context.content.push(Some(DataSet {
+        ident: "".to_string(),
+        buffers: vec![DataItem {
+            ident: "".to_string(),
+            data: Position {
                 offset: size_offset,
                 size: 8,
-            }),
-        );
-        let in_map_offset = input_context
-            .get_free_space(MAT_SIZE, 8)
-            .expect("Should have space");
-        unsafe {
-            input_context
-                .write(in_map_offset, Vec::<u8>::from(IN_MAT))
-                .expect("Should be able to write input matrix");
-        }
-        input_context.dynamic_data.insert(
-            1,
-            DataItem::Item(Position {
+            },
+        }],
+    }));
+    let in_map_offset = input_context
+        .get_free_space(MAT_SIZE, 8)
+        .expect("Should have space");
+    unsafe {
+        input_context
+            .write(in_map_offset, Vec::<u8>::from(IN_MAT))
+            .expect("Should be able to write input matrix");
+    }
+    input_context.content.push(Some(DataSet {
+        ident: "".to_string(),
+        buffers: vec![DataItem {
+            ident: "".to_string(),
+            data: Position {
                 offset: in_map_offset,
                 size: MAT_SIZE,
-            }),
-        );
-        let out_map_offset = input_context
-            .get_free_space(MAT_SIZE, 8)
-            .expect("Should have space");
-        input_context.dynamic_data.insert(
-            2,
-            DataItem::Item(Position {
-                offset: out_map_offset,
-                size: MAT_SIZE,
-            }),
-        );
-        inputs.push((
-            &input_context,
-            vec![
-                (0usize, None, 0usize),
-                (1usize, None, 1usize),
-                (2usize, None, 2usize),
-            ],
-        ));
-        let result_context = dispatcher
-            .queue_function(COLD_ID, inputs, non_caching)
-            .await
-            .expect("Should get back context");
-        domain
-            .release_context(result_context)
-            .expect("Should be able to release result");
-        domain
-            .release_context(input_context)
-            .expect("Should be able to release input");
-        // let item = match result_context.dynamic_data.get(&0) {
-        //     Some(item) => item,
-        //     None => {
-        //         let answer = format!("Dispatcher no output item no 0\n");
-        //         return;
-        //     }
-        // };
-        // if let DataItem::Item(position) = item {
-        //     println!("item size: {}", position.size);
-        //     for i in 0..MAT_DIM * MAT_DIM {
-        //         let value = u64::from_ne_bytes(
-        //             result_context
-        //                 .read(position.offset + i * 8, 8)
-        //                 .expect("Should read")[0..8]
-        //                 .try_into()
-        //                 .expect("Should have right size"),
-        //         );
-        //         println!("Dispatcher Ok with result = {:?}\n", value);
-        //     }
-        // }
-    }
+            },
+        }],
+    }));
+    inputs.push((
+        &input_context,
+        vec![
+            TransferIndices {
+                input_set_index: 0,
+                output_set_index: 0,
+                item_indices: None,
+            },
+            TransferIndices {
+                input_set_index: 1,
+                output_set_index: 1,
+                item_indices: None,
+            },
+        ],
+    ));
+    let result_context = dispatcher
+        .queue_function(COLD_ID, inputs, non_caching)
+        .await
+        .expect("Should get back context");
+    domain
+        .release_context(result_context)
+        .expect("Should be able to release result");
+    domain
+        .release_context(input_context)
+        .expect("Should be able to release input");
 }
 
 async fn serve_cold(
     _req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
 ) -> Result<Response<Body>, Infallible> {
+    #[cfg(feature = "cheri")]
     run_mat_func(dispatcher, true).await;
     let answer = "Done: Cold\n";
     Ok::<_, Infallible>(Response::new(answer.into()))
@@ -143,6 +130,7 @@ async fn serve_hot(
     _req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
 ) -> Result<Response<Body>, Infallible> {
+    #[cfg(feature = "cheri")]
     run_mat_func(dispatcher, false).await;
     let answer = "Done: Hot \n";
     Ok::<_, Infallible>(Response::new(answer.into()))
@@ -164,6 +152,19 @@ async fn serve_native(_req: Request<Body>) -> Result<Response<Body>, Infallible>
     Ok::<_, Infallible>(Response::new("Done: Natv\n".into()))
 }
 
+async fn serve_stats(
+    _req: Request<Body>,
+    dispatcher: Arc<Dispatcher>,
+) -> Result<Response<Body>, Infallible> {
+    let archive_guard = match dispatcher.archive.lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return Ok::<_, Infallible>(Response::new("Could not lock archive for stats".into()))
+        }
+    };
+    return Ok::<_, Infallible>(Response::new(archive_guard.get_summary().into()));
+}
+
 async fn service(
     req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
@@ -173,6 +174,7 @@ async fn service(
         "/cold" => serve_cold(req, dispatcher).await,
         "/hot" => serve_hot(req, dispatcher).await,
         "/native" => serve_native(req).await,
+        "/stats" => serve_stats(req, dispatcher).await,
         _ => Ok::<_, Infallible>(Response::new(
             // format!("Hello, World! You asked for: {}\n", uri).into(),
             format!("Hello, Wor\n").into(),
@@ -192,56 +194,71 @@ fn main() -> () {
     }
 
     // set up dispatcher configuration basics
-    let mut domains = HashMap::new();
+    let mut domains = BTreeMap::new();
     let context_id: ContextTypeId = 0;
     let engine_id: EngineTypeId = 0;
-    let mut drivers = HashMap::new();
-    let mut type_map = HashMap::new();
+    let mut drivers = BTreeMap::new();
+    let mut type_map = BTreeMap::new();
     type_map.insert(engine_id, context_id);
-    let mut pool_map = HashMap::new();
+    let mut pool_map = BTreeMap::new();
     pool_map.insert(0, vec![1, 2, 3]);
     let resource_pool = ResourcePool {
         engine_pool: Mutex::new(pool_map),
     };
     let mut registry;
+    let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    let mut domain_init: Option<fn(Vec<u8>) -> Result<Box<dyn MemoryDomain>, DandelionError>> = None;
+    let mut driver_func: Option<DriverFunction> = None;
+    let mut loader: Option<LoaderFunction> = None;
     // insert specific configuration
     #[cfg(feature = "cheri")]
     {
-        domains.insert(
-            context_id,
-            CheriMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain"),
-        );
-        let driver_func = CheriDriver::start_engine as DriverFunction;
-        drivers.insert(engine_id, driver_func);
-        let mut loader_map = HashMap::new();
-        loader_map.insert(0, CheriLoader::parse_function as LoaderFunction);
-        registry = FunctionRegistry::new(loader_map);
-        let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let domain_init = Some(CheriMemoryDomain::init);
+        let driver_func = Some(CheriDriver::start_engine as DriverFunction);  
+        let loader = Some(CheriLoader::parse_function as LoaderFunction);        
         path.push("../machine_interface/tests/data/test_elf_aarch64c_matmul");
-        // add for hot function
-        registry.add_local(HOT_ID, engine_id, path.to_str().unwrap());
-        // add for cold function
-        registry.add_local(COLD_ID, engine_id, path.to_str().unwrap());
     }
-    #[cfg(feature = "pagetable")]
+    //#[cfg(feature = "pagetable")]
+    #[cfg(not(feature = "cheri"))]
     {
-        domains.insert(
-            context_id,
-            PagetableMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain"),
-        );
-        let driver_func = PagetableDriver::start_engine as DriverFunction;
-        drivers.insert(engine_id, driver_func);
-        let mut loader_map = HashMap::new();
-        loader_map.insert(0, PagetableLoader::parse_function as LoaderFunction);
-        registry = FunctionRegistry::new(loader_map);
-        let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let domain_init = Some(PagetableMemoryDomain::init);
+        let loader = Some(PagetableLoader::parse_function as LoaderFunction);
+        let driver_func = Some(PagetableDriver::start_engine as DriverFunction);
         path.push("../machine_interface/tests/data/test_elf_x86c_matmul");
-        // add for hot function
-        registry.add_local(HOT_ID, engine_id, path.to_str().unwrap());
-        // add for cold function
-        registry.add_local(COLD_ID, engine_id, path.to_str().unwrap());
     }
 
+    let domain_init = domain_init.expect("domain_init not initialized");
+    let driver_func = driver_func.expect("driver_func not initialized");
+    let loader = loader.expect("driver_func not initialized");
+
+    domains.insert(
+        context_id,
+        domain_init(Vec::new()).expect("Should be able to initialize domain"),
+    );
+    drivers.insert(engine_id, driver_func);
+    let mut loader_map = BTreeMap::new();
+    loader_map.insert(0, loader);
+    registry = FunctionRegistry::new(loader_map);
+    
+
+    // add for hot function
+    registry.add_local(
+        HOT_ID,
+        engine_id,
+        path.to_str().unwrap(),
+        vec![String::from(""), String::from("")],
+        vec![String::from("")],
+    );
+    // add for cold function
+    registry.add_local(
+        COLD_ID,
+        engine_id,
+        path.to_str().unwrap(),
+        vec![String::from(""), String::from("")],
+        vec![String::from("")],
+    );
+    
     let dispatcher = Arc::new(
         Dispatcher::init(domains, drivers, type_map, registry, resource_pool)
             .expect("Should be able to start dispatcher"),
@@ -259,7 +276,7 @@ fn main() -> () {
     let _guard = runtime.enter();
 
     // ready http endpoint
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     let make_svc = make_service_fn(move |_| {
         let new_dispatcher = dispatcher.clone();
         async move {

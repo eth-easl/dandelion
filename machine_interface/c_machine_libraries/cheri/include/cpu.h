@@ -75,6 +75,11 @@ static inline void prepareContextAndJump(void* __capability ddc,
                                          void* stackPointer,
                                          void* __capability target) {
   __asm__ volatile(
+#ifdef __linux__
+      // make sure the system settings are as expected
+      "mov x0, #12 \n"
+      "msr CCTLR_EL0, x0 \n"
+#endif
       // move target to c30 for the jump
       // c30 will be overwritten by branch into user code
       "mov c30, %x[target] \n"

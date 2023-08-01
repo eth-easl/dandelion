@@ -4,8 +4,7 @@ use std::process::Command;
 fn cmake_libraries() -> () {
     // cmake configure and build all
     let _all = Config::new("c_machine_libraries")
-        // .define("CMAKE_TOOLCHAIN_FILE", "morello-toolchain.txt")
-        // .define("CMAKE_C_COMPILER", "cc")
+        .define("FORCE_BUILD_CHERI", "")
         .build_target("all")
         .build();
     // run tests tests
@@ -26,7 +25,8 @@ fn main() {
         .output()
         .expect("Uname should be available");
     let processor_string = std::str::from_utf8(&output.stdout).unwrap();
-    let is_cheri = processor_string == "aarch64c\n";
+    // morello linux has unkonw for now, check later if this is portability issue / better way to detect
+    let is_cheri = processor_string == "aarch64c\n" || processor_string == "unknown\n";
     if is_cheri {
         println!("cargo:rustc-cfg=feature=\"cheri\"");
         cmake_libraries();

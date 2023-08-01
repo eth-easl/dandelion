@@ -1,6 +1,6 @@
 use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
 use dandelion_commons::{DandelionError, DandelionResult};
-use std::collections::HashMap;
+//use std::collections::HashMap;
 
 #[derive(Debug)]
 pub struct MallocContext {
@@ -52,15 +52,10 @@ impl MemoryDomain for MallocMemoryDomain {
             return Err(DandelionError::OutOfMemory);
         }
         mem_space.resize(size, 0);
-        Ok(Context {
-            context: ContextType::Malloc(Box::new(MallocContext { storage: mem_space })),
-            dynamic_data: HashMap::new(),
-            static_data: Vec::new(),
+        return Ok(Context::new(
+            ContextType::Malloc(Box::new(MallocContext { storage: mem_space })),
             size,
-            #[cfg(feature = "pagetable")]
-            // protection_requirements: (Vec::<Position>::new(), Vec::<Position>::new()),
-            protection_requirements: Vec::new()
-        })
+        ));
     }
     fn release_context(&self, context: Context) -> DandelionResult<()> {
         match context.context {

@@ -8,30 +8,32 @@ use machine_interface::{
     memory_domain::{Context, MemoryDomain},
     DataRequirementList,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 pub struct FunctionRegistry {
-    engine_map: HashMap<FunctionId, HashSet<EngineTypeId>>,
-    loaders: HashMap<EngineTypeId, LoaderFunction>,
+    engine_map: BTreeMap<FunctionId, BTreeSet<EngineTypeId>>,
+    loaders: BTreeMap<EngineTypeId, LoaderFunction>,
     // TODO replace with futures compatible RW lock if it becomes a bottleneck
     registry:
-        Mutex<HashMap<(FunctionId, EngineTypeId), (DataRequirementList, Context, FunctionConfig)>>,
-    local_available: HashMap<(FunctionId, EngineTypeId), String>,
+        Mutex<BTreeMap<(FunctionId, EngineTypeId), (DataRequirementList, Context, FunctionConfig)>>,
+    local_available: BTreeMap<(FunctionId, EngineTypeId), String>,
+    set_names: BTreeMap<FunctionId, (Vec<String>, Vec<String>)>,
 }
 
 impl FunctionRegistry {
-    pub fn new(loaders: HashMap<EngineTypeId, LoaderFunction>) -> Self {
+    pub fn new(loaders: BTreeMap<EngineTypeId, LoaderFunction>) -> Self {
         return FunctionRegistry {
-            engine_map: HashMap::new(),
+            engine_map: BTreeMap::new(),
             loaders,
-            registry: Mutex::new(HashMap::new()),
-            local_available: HashMap::new(),
+            registry: Mutex::new(BTreeMap::new()),
+            local_available: BTreeMap::new(),
+            set_names: BTreeMap::new(),
         };
     }
     pub async fn get_options(
         &self,
         function_id: FunctionId,
-    ) -> DandelionResult<(HashSet<EngineTypeId>, &HashSet<EngineTypeId>)> {
+    ) -> DandelionResult<(BTreeSet<EngineTypeId>, &BTreeSet<EngineTypeId>)> {
         // get the ones that are already loaded
         let lock_guard = self.registry.lock().await;
         let loaded = lock_guard.keys().filter_map(|(function, engine)| {
@@ -47,7 +49,14 @@ impl FunctionRegistry {
         };
         return Ok((loaded.collect(), local_ret_set));
     }
-    pub fn add_local(&mut self, function_id: FunctionId, engine_id: EngineTypeId, path: &str) {
+    pub fn add_local(
+        &mut self,
+        function_id: FunctionId,
+        engine_id: EngineTypeId,
+        path: &str,
+        input_sets: Vec<String>,
+        output_sets: Vec<String>,
+    ) {
         self.local_available
             .insert((function_id, engine_id), path.to_string());
         self.engine_map
@@ -56,10 +65,12 @@ impl FunctionRegistry {
                 set.insert(engine_id);
             })
             .or_insert({
-                let mut set = HashSet::new();
+                let mut set = BTreeSet::new();
                 set.insert(engine_id);
                 set
             });
+        self.set_names
+            .insert(function_id, (input_sets, output_sets));
     }
     fn load_local(
         &self,
@@ -88,12 +99,14 @@ impl FunctionRegistry {
         engine_id: EngineTypeId,
         domain: &Box<dyn MemoryDomain>,
         non_caching: bool,
-    ) -> DandelionResult<(Context, FunctionConfig)> {
+    ) -> DandelionResult<(Context, FunctionConfig, &Vec<String>, &Vec<String>)> {
+        // get input and output set names
+        let (in_set_names, out_set_names) = self.set_names.get(&function_id).ok_or(DandelionError::DispatcherUnavailableFunction)?;
         // check if function for the engine is in registry already
         let mut lock_guard = self.registry.lock().await;
         if let Some(tripple) = lock_guard.get(&(function_id, engine_id)) {
             let function_context = load_static(domain, &tripple.1, &tripple.0)?;
-            return Ok((function_context, tripple.2));
+            return Ok((function_context, tripple.2, in_set_names, out_set_names));
         }
 
         let tripple = self.load_local(function_id, engine_id, domain)?;
@@ -107,6 +120,11 @@ impl FunctionRegistry {
                 panic!("Function not in registry even after Ok from loading");
             };
         }
-        return Ok((function_context, function_config));
+        return Ok((
+            function_context,
+            function_config,
+            in_set_names,
+            out_set_names,
+        ));
     }
 }

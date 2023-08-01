@@ -4,8 +4,8 @@ use crate::{
 };
 use dandelion_commons::{DandelionError, DandelionResult};
 use nix::sys::mman::ProtFlags;
-use std::collections::HashMap;
-
+//use std::collections::HashMap;
+use crate::Position;
 #[derive(Debug)]
 pub struct PagetableContext {
     pub storage: SharedMem,
@@ -65,9 +65,15 @@ impl MemoryDomain for PagetableMemoryDomain {
 
         Ok(Context {
             context: ContextType::Pagetable(Box::new(PagetableContext { storage: mem_space })),
-            dynamic_data: HashMap::new(),
-            static_data: Vec::new(),
+            content: vec![],
             size,
+            occupation: vec![
+                Position { offset: 0, size: 0 },
+                Position {
+                    offset: size,
+                    size: 0,
+                },
+            ],
             #[cfg(feature = "pagetable")]
             protection_requirements: Vec::new(),
         })

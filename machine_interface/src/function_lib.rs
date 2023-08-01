@@ -3,7 +3,7 @@ use crate::{
     DataRequirementList,
 };
 use core::pin::Pin;
-use dandelion_commons::DandelionResult;
+use dandelion_commons::{records::Recorder, DandelionResult};
 use std::future::Future;
 
 // list of implementations
@@ -17,11 +17,7 @@ pub mod util;
 #[derive(Clone, Copy)]
 pub struct ElfConfig {
     // TODO change to positions
-    input_root: (usize, usize),
-    input_number: (usize, usize),
-    output_root: (usize, usize),
-    output_number: (usize, usize),
-    max_output_number: (usize, usize),
+    system_data_offset: usize,
     return_offset: (usize, usize),
     entry_point: usize,
 }
@@ -36,13 +32,14 @@ pub trait Engine: Send {
         &mut self,
         config: &FunctionConfig,
         context: Context,
+        output_set_names: &Vec<String>,
+        recorder: Recorder,
     ) -> Pin<Box<dyn Future<Output = (DandelionResult<()>, Context)> + '_ + Send>>;
     fn abort(&mut self) -> DandelionResult<()>;
 }
 // TODO figure out if we could / should enforce proper drop behaviour
 // we could add a uncallable function with a private token that is not visible outside,
 // but not sure if that is necessary
-
 pub type DriverFunction = fn(Vec<u8>) -> DandelionResult<Box<dyn Engine>>;
 
 // TODO maybe combine driver and loader into one trait or replace them completely with function signatrue types
@@ -65,3 +62,6 @@ pub trait Loader {
         static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<(DataRequirementList, Context, FunctionConfig)>;
 }
+
+#[cfg(test)]
+mod driver_tests;

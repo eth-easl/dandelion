@@ -10,7 +10,7 @@ pub struct cheri_c_context {
 #[link(name = "cheri_lib")]
 extern "C" {
     fn cheri_alloc(size: size_t) -> *const cheri_c_context;
-    fn cheri_free(context: *const cheri_c_context, size: size_t) -> ();
+    fn cheri_free(context: *const cheri_c_context) -> ();
     fn cheri_write_context(
         context: *const cheri_c_context,
         source_pointer: *const u8,
@@ -34,7 +34,6 @@ extern "C" {
 
 use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
 use dandelion_commons::{DandelionError, DandelionResult};
-use std::collections::HashMap;
 
 pub struct CheriContext {
     pub context: *const cheri_c_context,
@@ -88,18 +87,13 @@ impl MemoryDomain for CheriMemoryDomain {
         if new_context.context.is_null() {
             return Err(DandelionError::OutOfMemory);
         }
-        Ok(Context {
-            context: ContextType::Cheri(new_context),
-            dynamic_data: HashMap::new(),
-            static_data: Vec::new(),
-            size,
-        })
+        return Ok(Context::new(ContextType::Cheri(new_context), size));
     }
     fn release_context(&self, context: Context) -> DandelionResult<()> {
         match context.context {
             ContextType::Cheri(cheri_context) => {
                 unsafe {
-                    cheri_free(cheri_context.context, cheri_context.size);
+                    cheri_free(cheri_context.context);
                 }
                 Ok(())
             }

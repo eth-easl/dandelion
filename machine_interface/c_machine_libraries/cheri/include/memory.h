@@ -21,7 +21,7 @@ static const int memory_permissions = 0x34000;
 
 // allocation functions
 cheri_context* cheri_alloc(size_t size);
-void cheri_free(cheri_context* context, size_t size);
+void cheri_free(cheri_context* context);
 
 // interaction functions
 void cheri_write_context(cheri_context* context, unsigned char* source_pointer,

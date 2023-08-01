@@ -1,6 +1,6 @@
 use crate::{
     memory_domain::{transefer_memory, Context, MemoryDomain},
-    DataRequirementList, Position,
+    DataRequirementList,
 };
 use dandelion_commons::{DandelionError, DandelionResult};
 
@@ -25,14 +25,23 @@ pub fn load_static(
     requirement_list: &DataRequirementList,
 ) -> DandelionResult<Context> {
     let mut function_context = domain.acquire_context(requirement_list.size)?;
-    let layout = static_context.static_data.to_vec();
-    if layout.len() != requirement_list.static_requirements.len() {
+
+    if static_context.content.len() != 1 {
         return Err(DandelionError::ConfigMissmatch);
     }
+    let static_set = static_context.content[0]
+        .as_ref()
+        .ok_or(DandelionError::ConfigMissmatch)?;
+    if static_set.buffers.len() != requirement_list.static_requirements.len() {
+        return Err(DandelionError::ConfigMissmatch);
+    }
+    let layout = &static_set.buffers;
     let static_pairs = layout
         .iter()
         .zip(requirement_list.static_requirements.iter());
-    for (position, requirement) in static_pairs {
+    let mut max_end = 0;
+    for (item, requirement) in static_pairs {
+        let position = item.data;
         if requirement.size < position.size {
             return Err(DandelionError::ConfigMissmatch);
         }
@@ -43,11 +52,12 @@ pub fn load_static(
             position.offset,
             position.size,
         )?;
-        function_context.static_data.push(Position {
-            offset: requirement.offset,
-            size: requirement.size,
-        });
+        max_end = core::cmp::max(max_end, requirement.offset + requirement.size);
     }
+    //#[cfg(feature = "pagetable")] 
     function_context.protection_requirements = static_context.protection_requirements.clone();
+    // round up to next page
+    max_end = ((max_end + 4095) / 4096) * 4096;
+    function_context.occupy_space(0, max_end)?;
     return Ok(function_context);
 }

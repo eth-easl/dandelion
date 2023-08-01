@@ -1,12 +1,16 @@
 use crate::{
     function_lib::{Driver, ElfConfig, Engine, FunctionConfig, Loader},
+    interface::{read_output_structs, setup_input_structs},
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
-    DataItem, DataRequirement, DataRequirementList, Position,
+    DataItem, DataRequirement, DataRequirementList, DataSet, Position,
 };
 use core::{future::ready, pin::Pin};
 use core_affinity;
-use dandelion_commons::{DandelionError, DandelionResult};
+use dandelion_commons::{
+    records::Recorder,
+    DandelionError, DandelionResult,
+};
 use nix::{
     sys::{
         signal::Signal,
@@ -15,7 +19,6 @@ use nix::{
     unistd::Pid,
 };
 use std::{
-    collections::HashMap,
     io::{BufRead, BufReader, Write},
     process::{Command, Stdio},
     sync::atomic::{AtomicBool, Ordering},
@@ -24,6 +27,7 @@ use std::{
 const IO_STRUCT_SIZE: usize = 16;
 const MAX_OUTPUTS: u32 = 16;
 
+/*
 fn setup_input_structs(
     context: &mut Context,
     config: &ElfConfig,
@@ -128,7 +132,7 @@ fn get_output_layout(
     context.dynamic_data = output_structs;
     Ok(())
 }
-
+*/
 // struct CheriCommand {
 //     context: *const cheri_c_context,
 //     entry_point: size_t,
@@ -237,6 +241,8 @@ impl Engine for PagetableEngine {
         &mut self,
         config: &FunctionConfig,
         mut context: Context,
+        output_set_names: &Vec<String>,
+        mut recorder: Recorder,
     ) -> Pin<Box<dyn futures::Future<Output = (DandelionResult<()>, Context)> + '_ + Send>> {
         if self.is_running.swap(true, Ordering::AcqRel) {
             return Box::pin(ready((Err(DandelionError::EngineAlreadyRunning), context)));
@@ -288,7 +294,7 @@ impl Engine for PagetableEngine {
         let worker_base_addr: usize = buf.trim().parse().unwrap();
         eprintln!("got base address {:x}", worker_base_addr);
 
-        if let Err(err) = setup_input_structs(&mut context, &elf_config, worker_base_addr) {
+        if let Err(err) = setup_input_structs(&mut context, elf_config.system_data_offset, output_set_names) {
             return Box::pin(ready((Err(err), context)));
         }
 
@@ -347,10 +353,12 @@ impl Engine for PagetableEngine {
         }
 
         // erase all assumptions on context internal layout
-        context.dynamic_data.clear();
-        context.static_data.clear();
+        //context.dynamic_data.clear();
+        //context.static_data.clear();
+        context.content.clear();
         // read outputs
-        let result = get_output_layout(&mut context, &elf_config, worker_base_addr);
+        //let result = get_output_layout(&mut context, &elf_config, worker_base_addr);
+        let result = read_output_structs(&mut context, worker_base_addr);
         self.is_running.store(false, Ordering::Release);
         Box::pin(ready((result, context)))
     }
@@ -408,20 +416,19 @@ impl Loader for PagetableLoader {
         function: Vec<u8>,
         static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<(DataRequirementList, Context, FunctionConfig)> {
+        //let input_root = elf.get_symbol_by_name(&function, "inputRoot")?;
+        //let input_number = elf.get_symbol_by_name(&function, "inputNumber")?;
+        //let output_root = elf.get_symbol_by_name(&function, "outputRoot")?;
+        //let output_number = elf.get_symbol_by_name(&function, "outputNumber")?;
+        //let max_output_number = elf.get_symbol_by_name(&function, "maxOutputNumber")?;
+        // let return_offset = elf.get_symbol_by_name(&function, "returnPair")?
+
         let elf = elf_parser::ParsedElf::new(&function)?;
-        let input_root = elf.get_symbol_by_name(&function, "inputRoot")?;
-        let input_number = elf.get_symbol_by_name(&function, "inputNumber")?;
-        let output_root = elf.get_symbol_by_name(&function, "outputRoot")?;
-        let output_number = elf.get_symbol_by_name(&function, "outputNumber")?;
-        let max_output_number = elf.get_symbol_by_name(&function, "maxOutputNumber")?;
-        // let return_offset = elf.get_symbol_by_name(&function, "returnPair")?;
+        let system_data = elf.get_symbol_by_name(&function, "__dandelion_system_data")?;
+        let return_offset = elf.get_symbol_by_name(&function, "__dandelion_return_address")?;
         let entry = elf.get_entry_point();
         let config = FunctionConfig::ElfConfig(super::ElfConfig {
-            input_root: input_root,
-            input_number: input_number,
-            output_root: output_root,
-            output_number: output_number,
-            max_output_number: max_output_number,
+            system_data_offset: system_data.0,
             return_offset: (0, 0),
             entry_point: entry,
         });
@@ -440,6 +447,33 @@ impl Loader for PagetableLoader {
         let mut context = static_domain.acquire_context(total_size)?;
         // copy all
         let mut write_counter = 0;
+        for position in source_layout.iter() {
+            total_size += position.size;
+        }
+        let mut context = static_domain.acquire_context(total_size)?;
+        // copy all
+        let mut write_counter = 0;
+        let mut new_content = DataSet {
+            ident: String::from("static"),
+            buffers: vec![],
+        };
+        let buffers = &mut new_content.buffers;
+        for position in source_layout.iter() {
+            context.write(
+                write_counter,
+                function[position.offset..position.offset + position.size].to_vec(),
+            )?;
+            buffers.push(DataItem {
+                ident: String::from(""),
+                data: Position {
+                    offset: write_counter,
+                    size: position.size,
+                },
+            });
+            write_counter += position.size;
+        }
+        context.content = vec![Some(new_content)];
+        /* 
         let mut static_layout = Vec::<Position>::new();
         for position in source_layout.iter() {
             context.write(
@@ -453,8 +487,9 @@ impl Loader for PagetableLoader {
             write_counter += position.size;
         }
         context.static_data = static_layout;
-
+        */
         context.protection_requirements = elf.get_memory_protection_layout();
+
         return Ok((requirements, context, config));
     }
 }

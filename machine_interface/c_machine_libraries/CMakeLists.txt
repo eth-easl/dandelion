@@ -9,7 +9,7 @@ endif()
 project(c_machine_libraries LANGUAGES C ASM)
 
 # set path to the compiler to be used
-if(DEFINED CMAKE_TOOLCHAIN_FILE OR ${CMAKE_SYSTEM_PROCESSOR} STREQUAL "aarch64c")
+if(DEFINED CMAKE_TOOLCHAIN_FILE OR DEFINED FORCE_BUILD_CHERI)
   message(STATUS "Compiling with toolchain file or native")
   # compile library instead of executable
   # because cross compiled code can't be executed
