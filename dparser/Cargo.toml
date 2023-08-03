@@ -1,0 +1,10 @@
+[package]
+name = "dparser"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chumsky = "0.9"
+ariadne = "0.3"
+
+[lib]
