@@ -54,12 +54,13 @@ enum Node {
 fn s_parser() -> impl Parser<char, Vec<(Node, Span)>, Error = Simple<char>> {
     let comment = just(' ')
         .repeated()
-        .ignore_then(just(';'))
+        .then(just(';'))
+        .padded()
         .ignore_then(text::newline().not().repeated())
         .ignore_then(text::newline())
-        .repeated()
         .ignored()
-        .labelled("comment");
+        .labelled("comment")
+        .repeated();
     let atom = just(":=")
         .to(Node::Atom(Atom::Mark(Mark::Gets)))
         .or(just("<-").to(Node::Atom(Atom::Mark(Mark::From))))
@@ -81,6 +82,7 @@ fn s_parser() -> impl Parser<char, Vec<(Node, Span)>, Error = Simple<char>> {
             let node = atom.or(list).labelled("atom or list").then_ignore(comment);
             node.map_with_span(|node, span| (node, span))
                 .separated_by(whitespace().at_least(1))
+                .then_ignore(comment)
                 .padded()
                 .delimited_by(just('('), just(')'))
                 .collect::<Vec<(Node, Span)>>()
@@ -90,11 +92,67 @@ fn s_parser() -> impl Parser<char, Vec<(Node, Span)>, Error = Simple<char>> {
         }))
         .labelled("node")
         .map_with_span(|node, span| (node, span))
-        .then_ignore(comment)
-        .separated_by(whitespace().at_least(1).labelled("whitespace"))
+        .separated_by(comment.or(whitespace().at_least(1).labelled("whitespace")))
         .padded()
         .then_ignore(comment)
         .padded()
+}
+
+#[test]
+fn s_parser_test() {
+    let srcs = [
+        r#"
+(a)
+    "#,
+        r#"
+; comment
+(a) ; comment
+(b)
+    "#,
+        r#"
+(a) ; comment
+(a ; comment
+)
+    "#,
+        r#"
+(a) ; comment
+(
+    (a) ; comment
+)
+    "#,
+        r#"
+; this currently fails because support for comments is incomplete
+
+(:function CompileFiles (Source) -> (Out)) ; the key for Out is the binary this file will end up in
+(:function LinkObjects (ObjectFile Library) -> (Binary))
+    "#,
+        r#"
+(:composition CompileMulti (SourceFiles Libraries) -> (Binaries) (
+    (CompileFiles (
+        (:shard Source <- SourceFile)
+    ) => (
+        (ObjectFiles := Out) ; declares a collection ObjectFiles and merges all outputs from the shards of CompileFile into it
+    ))
+
+    (LinkObjects (
+        (:shard Objects <- ObjectFiles)
+        (Libraries <- Libraries) ; no sharding modifier: broadcast libraries to all funciton calls
+    ) => (
+        (Binaries := Binary) ; declares a collection Binaries and merges all outputs from the shards of CompileFile into it
+    ))
+))
+    "#,
+    ];
+    for src in srcs {
+        // eprintln!("{}", src);
+        let nodes = s_parser()
+            .then_ignore(end())
+            .parse(&*src)
+            .expect("parse failed");
+        // dbg!(&nodes);
+        let eoi = 0..src.chars().count();
+        let _token_stream = flatten_tts(eoi, nodes);
+    }
 }
 
 fn span_at(at: usize) -> Span {
