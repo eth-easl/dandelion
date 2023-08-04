@@ -1,4 +1,3 @@
-; this currently fails because support for comments is incomplete
 
 (:function CompileFiles (Source) -> (Out)) ; the key for Out is the binary this file will end up in
 (:function LinkObjects (ObjectFile Library) -> (Binary))
