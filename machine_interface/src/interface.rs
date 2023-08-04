@@ -178,7 +178,7 @@ pub fn read_output_structs(context: &mut Context, base_address: usize) -> Dandel
     // get output set number +1 for sentinel set
     let output_set_number = system_struct.output_sets_len;
     if output_set_number == 0 {
-        context.content = vec![];
+        context.clear_metadata();
         return Ok(());
     }
     let output_set_info_offset: usize = system_struct.output_sets as usize;
@@ -200,7 +200,7 @@ pub fn read_output_structs(context: &mut Context, base_address: usize) -> Dandel
     }
     let output_buffer_number = output_set_info[output_set_number].offset;
 
-    let output_buffer_vec =
+    let output_buffer_vec: Vec<u8> =
         context.read(output_buffers_offset, output_buffer_number * IO_BUFFER_SIZE)?;
     let output_buffers = unsafe {
         core::slice::from_raw_parts(
@@ -208,7 +208,7 @@ pub fn read_output_structs(context: &mut Context, base_address: usize) -> Dandel
             output_buffer_number,
         )
     };
-
+    context.clear_metadata();
     for output_set in 0..output_set_number {
         let ident_offset = output_set_info[output_set].ident;
         let ident_length = output_set_info[output_set].ident_len;
@@ -234,7 +234,8 @@ pub fn read_output_structs(context: &mut Context, base_address: usize) -> Dandel
                     offset: data_offset,
                     size: data_length,
                 },
-            })
+            });
+            context.occupy_space(data_offset, data_length);
         }
         // only add output set if there are actual buffers for it.
         output_sets.push(Some(DataSet {

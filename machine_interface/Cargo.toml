@@ -3,6 +3,11 @@ name = "machine_interface"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+std = []
+cheri = ["std", "dep:core_affinity"]
+hyper_io = ["std", "dep:hyper", "dep:core_affinity"]
+
 [build-dependencies]
 cmake = "0.1"
 
@@ -15,9 +20,10 @@ regex = "1.7.1"
 dandelion_commons = { path = "../dandelion_commons" }
 # FFI dependencies
 libc = "0.2"
-core_affinity = "0.8"
+core_affinity = { version = "0.8", optional = true }
 futures = "0.3"
 tokio = { version = "1", features = ["full"] }
+hyper = { version = "0.14", optional = true, features = ["http1", "http2", "client", "runtime"]}
 
 # disable benchmarks in library, to not run all unit tests on every benchmark
 # also needs to be disabled for criterion flags to work that are not available for tests

@@ -1,6 +1,7 @@
 pub mod function_driver;
 pub mod memory_domain;
 
+#[cfg(any(feature = "cheri"))]
 mod interface;
 mod util;
 

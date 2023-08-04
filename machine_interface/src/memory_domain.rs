@@ -128,6 +128,16 @@ impl Context {
         let last_item = self.occupation[self.occupation.len() - 2];
         return last_item.offset + last_item.size;
     }
+    pub fn clear_metadata(&mut self) -> () {
+        self.content = vec![];
+        self.occupation = vec![
+            Position { offset: 0, size: 0 },
+            Position {
+                offset: self.size,
+                size: 0,
+            },
+        ];
+    }
 }
 
 pub trait MemoryDomain: Sync + Send {

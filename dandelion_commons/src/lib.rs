@@ -44,6 +44,13 @@ pub enum DandelionError {
     EngineError,
     /// asked driver for engine, but there are no more available
     NoEngineAvailable,
+    // system engine errors
+    /// The arguments in the context handed to the system function are malformed or otherwise insufissient
+    MalformedSystemFuncArg,
+    /// Argument given to system function was not valid
+    InvalidSystemFuncArg(String),
+    /// System function did get unexpected response
+    SystemFuncResponseError,
     // dispatcher errors
     /// dispatcher does not find a loader for this engine type
     DispatcherMissingLoader(EngineTypeId),

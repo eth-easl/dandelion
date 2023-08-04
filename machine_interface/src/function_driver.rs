@@ -19,8 +19,14 @@ pub struct ElfConfig {
 }
 
 #[derive(Clone, Copy)]
+pub enum SystemFunction {
+    HTTPS,
+}
+
+#[derive(Clone, Copy)]
 pub enum FunctionConfig {
     ElfConfig(ElfConfig),
+    SysConfig(SystemFunction),
 }
 
 pub trait Engine: Send {

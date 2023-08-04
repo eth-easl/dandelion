@@ -214,7 +214,6 @@ fn parse_symbol_table(
             })
         }
         if counter > counter_start + entry_size {
-            println!("Entry size: {}, counter: {}", entry_size, counter);
             return Err(DandelionError::MalformedConfig);
         }
     }
