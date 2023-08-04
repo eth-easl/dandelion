@@ -1,0 +1,44 @@
+
+(:function CompileFiles (Source) -> (Out)) ; the key for Out is the binary this file will end up in
+(:function LinkObjects (ObjectFile Library) -> (Binary))
+
+(:composition CompileMulti (SourceFiles Libraries) -> (Binaries) (
+    (CompileFiles (
+        (:shard Source <- SourceFile)
+    ) => (
+        (ObjectFiles := Out) ; declares a collection ObjectFiles and merges all outputs from the shards of CompileFile into it
+    ))
+
+    (LinkObjects (
+        (:shard Objects <- ObjectFiles)
+        (Libraries <- Libraries) ; no sharding modifier: broadcast libraries to all funciton calls
+    ) => (
+        (Binaries := Binary) ; declares a collection Binaries and merges all outputs from the shards of CompileFile into it
+    ))
+))
+
+; a function that compiles one of the sources and outputs the sources minus the file it compiled and the object file it produced
+(:function CompileOneFile (SourcesBefore) -> (SourcesAfter Out))
+
+(:composition CompileFixpoint (SourceFiles Libraries) -> (Binary) (
+    (:loop (
+        (:until_empty Sources <- SourceFiles) ; until_empty (until the collection is empty), until_empty_item (until the collection's only item has length zero)
+    ) => (
+        (CompileOneFile (
+            (SourcesBefore <- Sources) ; no sharding modifier: run a single function instance with all the collection's inputs
+        ) => (
+            (SourcesAfter := SourcesAfter)
+            (Out := Out)
+        ))
+    ) => (
+        (:feedback Sources := SourcesAfter) ; replaces Sources at each iteration
+        (ObjectFiles := Out)
+    ))
+    
+    (LinkObjects (
+        (Objects <- ObjectFiles)
+        (Libraries <- Libraries) ; no sharding modifier: broadcast libraries to all funciton calls
+    ) => (
+        (Binary := Binary)
+    ))
+))
