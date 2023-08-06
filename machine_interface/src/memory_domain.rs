@@ -124,6 +124,18 @@ impl Context {
         self.insert(index, start_address, size);
         return Ok(start_address);
     }
+    pub fn get_free_space_and_write_slice<T>(&mut self, data: &[T]) -> DandelionResult<*const T> {
+        let offset = self.get_free_space(data.len(), core::mem::align_of::<T>())?;
+        let mut write_buf: Vec<u8> = Vec::new();
+        let buf = unsafe { safe_transmute::to_bytes::transmute_to_bytes_many_unchecked(data) };
+        if write_buf.try_reserve_exact(buf.len()).is_err() {
+            return Err(DandelionError::OutOfMemory);
+        }
+        write_buf.extend_from_slice(buf);
+
+        self.write(offset, write_buf)?;
+        Ok(offset as *const T)
+    }
     pub fn get_last_item_end(&self) -> usize {
         let last_item = self.occupation[self.occupation.len() - 2];
         return last_item.offset + last_item.size;
