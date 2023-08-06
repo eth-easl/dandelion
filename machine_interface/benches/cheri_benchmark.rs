@@ -1,7 +1,7 @@
 #[cfg(feature = "cheri")]
-mod chery_bench {
+mod cheri_bench {
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, BenchmarkId, Criterion};
 use machine_interface::{
     function_lib::{
         cheri::{CheriDriver, CheriLoader},
@@ -107,9 +107,13 @@ fn matmul_sequential_benchmark(c: &mut Criterion) {
 }
 
 criterion_group!(benches, context_benchmark, matmul_sequential_benchmark);
-criterion_main!(benches);
 
 }
+
+use criterion::criterion_main;
+
+#[cfg(feature = "cheri")]
+criterion_main!(self::cheri_bench::benches);
 
 #[cfg(not(feature = "cheri"))]
 fn main() {}
