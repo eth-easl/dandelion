@@ -83,7 +83,7 @@ fn single_domain_and_engine_matmul<Domain: MemoryDomain, TestDriver: Driver, Tes
         .expect("Should get input matrix context");
     let size_offset = in_context.get_free_space(8, 8).expect("Should have space");
     in_context
-        .write(size_offset, u64::to_ne_bytes(2).to_vec())
+        .write(size_offset, &vec![2u64])
         .expect("Should be able to write matrix size");
     in_context.content.push(DataSet {
         ident: "".to_string(),
@@ -95,16 +95,12 @@ fn single_domain_and_engine_matmul<Domain: MemoryDomain, TestDriver: Driver, Tes
             },
         }],
     });
-    let mut in_matrix = Vec::new();
-    in_matrix.extend_from_slice(&u64::to_ne_bytes(1));
-    in_matrix.extend_from_slice(&u64::to_ne_bytes(2));
-    in_matrix.extend_from_slice(&u64::to_ne_bytes(3));
-    in_matrix.extend_from_slice(&u64::to_ne_bytes(4));
+    let mut in_matrix = vec![1u64, 2u64, 3u64, 4u64];
     let in_mat_offset = in_context
         .get_free_space(4 * 8, 8)
         .expect("Should have space");
     in_context
-        .write(in_mat_offset, in_matrix)
+        .write(in_mat_offset, &mut in_matrix)
         .expect("Should be able to write");
     in_context.content.push(DataSet {
         ident: "".to_string(),
@@ -131,14 +127,15 @@ fn single_domain_and_engine_matmul<Domain: MemoryDomain, TestDriver: Driver, Tes
     let out_mat_set = &out_context.content[0];
     assert_eq!(1, out_mat_set.buffers.len());
     let out_mat_position = out_mat_set.buffers[0].data;
-    let out_mat = out_context
-        .read(out_mat_position.offset, out_mat_position.size)
+    let mut out_mat = vec![0u64; 4];
+    out_context
+        .read(out_mat_position.offset, &mut out_mat)
         .expect("Should read output matrix");
-    assert_eq!(32, out_mat.len());
-    assert_eq!(u64::to_ne_bytes(5), out_mat[0..8]);
-    assert_eq!(u64::to_ne_bytes(11), out_mat[8..16]);
-    assert_eq!(u64::to_ne_bytes(11), out_mat[16..24]);
-    assert_eq!(u64::to_ne_bytes(25), out_mat[24..32]);
+    assert_eq!(4, out_mat.len());
+    assert_eq!(5, out_mat[0]);
+    assert_eq!(11, out_mat[1]);
+    assert_eq!(11, out_mat[2]);
+    assert_eq!(25, out_mat[3]);
 }
 
 macro_rules! dispatcherTests {

@@ -7,8 +7,8 @@ use crate::{DataItem, DataSet, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
 
 pub trait ContextTrait: Send + Sync {
-    fn write(&mut self, offset: usize, data: Vec<u8>) -> DandelionResult<()>;
-    fn read(&self, offset: usize, read_size: usize) -> DandelionResult<Vec<u8>>;
+    fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()>;
+    fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()>;
 }
 
 // https://docs.rs/enum_dispatch/latest/enum_dispatch/index.html
@@ -20,18 +20,18 @@ pub enum ContextType {
 }
 
 impl ContextTrait for ContextType {
-    fn write(&mut self, offset: usize, data: Vec<u8>) -> DandelionResult<()> {
+    fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
         match self {
             ContextType::Malloc(context) => context.write(offset, data),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.write(offset, data),
         }
     }
-    fn read(&self, offset: usize, read_size: usize) -> DandelionResult<Vec<u8>> {
+    fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         match self {
-            ContextType::Malloc(context) => context.read(offset, read_size),
+            ContextType::Malloc(context) => context.read(offset, read_buffer),
             #[cfg(feature = "cheri")]
-            ContextType::Cheri(context) => context.read(offset, read_size),
+            ContextType::Cheri(context) => context.read(offset, read_buffer),
         }
     }
 }
@@ -43,11 +43,11 @@ pub struct Context {
 }
 
 impl ContextTrait for Context {
-    fn write(&mut self, offset: usize, data: Vec<u8>) -> DandelionResult<()> {
+    fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
         self.context.write(offset, data)
     }
-    fn read(&self, offset: usize, read_size: usize) -> DandelionResult<Vec<u8>> {
-        self.context.read(offset, read_size)
+    fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
+        self.context.read(offset, read_buffer)
     }
 }
 
@@ -125,15 +125,9 @@ impl Context {
         return Ok(start_address);
     }
     pub fn get_free_space_and_write_slice<T>(&mut self, data: &[T]) -> DandelionResult<*const T> {
-        let offset = self.get_free_space(data.len(), core::mem::align_of::<T>())?;
-        let mut write_buf: Vec<u8> = Vec::new();
-        let buf = unsafe { safe_transmute::to_bytes::transmute_to_bytes_many_unchecked(data) };
-        if write_buf.try_reserve_exact(buf.len()).is_err() {
-            return Err(DandelionError::OutOfMemory);
-        }
-        write_buf.extend_from_slice(buf);
-
-        self.write(offset, write_buf)?;
+        let alloc_size = data.len() * core::mem::size_of::<T>();
+        let offset = self.get_free_space(alloc_size, core::mem::align_of::<T>())?;
+        self.write(offset, data)?;
         Ok(offset as *const T)
     }
     pub fn get_last_item_end(&self) -> usize {
@@ -159,7 +153,7 @@ pub fn transefer_memory(
     source_offset: usize,
     size: usize,
 ) -> DandelionResult<()> {
-    let result = match (&mut destination.context, &source.context) {
+    return match (&mut destination.context, &source.context) {
         (ContextType::Malloc(destination_ctxt), ContextType::Malloc(source_ctxt)) => {
             malloc::malloc_transfer(
                 destination_ctxt,
@@ -181,14 +175,11 @@ pub fn transefer_memory(
         }
         // default implementation using reads and writes
         (destination, source) => {
-            let read_result = source.read(source_offset, size);
-            match read_result {
-                Ok(read_value) => destination.write(destination_offset, read_value),
-                Err(err) => Err(err),
-            }
+            let mut read_buffer = vec![0; size];
+            source.read(source_offset, &mut read_buffer)?;
+            destination.write(destination_offset, &read_buffer)
         }
     };
-    result
 }
 
 pub fn transer_data_item(

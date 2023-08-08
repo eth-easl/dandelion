@@ -66,13 +66,12 @@ pub fn setup_input_structs(
     // start writing input set info structs
     for c in 0..context.content.len() {
         // get name and length
-        let name = context.content[c].ident.as_bytes().to_vec();
+        let name = context.content[c].ident.clone();
         let name_length = name.len();
         // find space and write string
         let mut string_offset = 0;
         if name_length != 0 {
-            string_offset = context.get_free_space(name.len(), 8)?;
-            context.write(string_offset, name)?;
+            string_offset = context.get_free_space_and_write_slice(name.as_bytes())? as usize;
         }
         input_sets.push(IoSetInfo {
             ident: string_offset,
@@ -82,14 +81,13 @@ pub fn setup_input_structs(
         // find buffers
         for b in 0..context.content[c].buffers.len() {
             let buffer = &context.content[c].buffers[b];
-            let name = buffer.ident.as_bytes().to_vec();
+            let name = buffer.ident.clone();
             let name_length = name.len();
             let offset = buffer.data.offset;
             let size = buffer.data.size;
             let mut string_offset = 0;
             if name_length != 0 {
-                string_offset = context.get_free_space(name_length, 8)?;
-                context.write(string_offset, name)?;
+                string_offset = context.get_free_space_and_write_slice(name.as_bytes())? as usize;
             }
             input_buffers.push(IoBufferDescriptor {
                 ident: string_offset,
@@ -120,8 +118,8 @@ pub fn setup_input_structs(
         let mut string_offset = 0;
         let string_len = out_set_name.len();
         if string_len != 0 {
-            string_offset = context.get_free_space(out_set_name.len(), 8)?;
-            context.write(string_offset, out_set_name.as_bytes().to_vec())?;
+            string_offset =
+                context.get_free_space_and_write_slice(out_set_name.as_bytes())? as usize;
         }
         output_sets.push(IoSetInfo {
             ident: string_offset,
@@ -129,6 +127,11 @@ pub fn setup_input_structs(
             offset: 0,
         });
     }
+    output_sets.push(IoSetInfo {
+        ident: 0,
+        ident_len: 0,
+        offset: 0,
+    });
 
     let input_sets_offset = context.get_free_space_and_write_slice(&input_sets[..])?;
     let output_sets_offset = context.get_free_space_and_write_slice(&output_sets[..])?;
@@ -148,37 +151,26 @@ pub fn setup_input_structs(
         input_bufs: input_buffers_offset,
         output_bufs: core::ptr::null(),
     };
-    let system_buffer_data =
-        unsafe { safe_transmute::to_bytes::transmute_to_bytes_unchecked(&system_buffer) };
-    assert_eq!(
-        system_data_offset % std::mem::align_of::<DandelionSystemData>(),
-        0
-    );
-    let mut system_buffer_vec: Vec<u8> = Vec::new();
-    if system_buffer_vec
-        .try_reserve_exact(system_buffer_data.len())
-        .is_err()
-    {
-        return Err(DandelionError::OutOfMemory);
-    }
 
-    context.write(system_data_offset, system_buffer_vec)?;
+    context.write(system_data_offset, core::slice::from_ref(&system_buffer))?;
     Ok(())
 }
 
 pub fn read_output_structs(context: &mut Context, base_address: usize) -> DandelionResult<()> {
     // read the system buffer
-    let system_struct_vec = context.read(base_address, SYSTEM_STRUCT_SIZE)?;
-    assert_eq!(
-        system_struct_vec
-            .as_ptr()
-            .align_offset(std::mem::align_of::<DandelionSystemData>()),
-        0
-    );
-    let system_struct: &DandelionSystemData = unsafe {
-        safe_transmute::base::from_bytes_pedantic(&system_struct_vec[..])
-            .expect("wrong size for system struct")
+    let mut system_struct = DandelionSystemData {
+        exit_code: 0,
+        heap_begin: 0,
+        heap_end: 0,
+        input_sets_len: 0,
+        input_sets: core::ptr::null(),
+        output_sets_len: 0,
+        output_sets: core::ptr::null(),
+        input_bufs: core::ptr::null(),
+        output_bufs: core::ptr::null(),
     };
+    context.read(base_address, core::slice::from_mut(&mut system_struct));
+
     // get exit value
     let _exit_value = system_struct.exit_code;
     // get output set number +1 for sentinel set
@@ -189,22 +181,23 @@ pub fn read_output_structs(context: &mut Context, base_address: usize) -> Dandel
     }
     let output_buffers_offset: usize = system_struct.output_bufs as usize;
     // load output set info, + 1 to include sentinel set
-    let output_set_vec = context.read(
-        system_struct.output_sets as usize,
-        (output_set_number + 1) * IO_SET_INFO_SIZE,
-    )?;
+    let mut output_set_info = vec![];
+    if output_set_info.try_reserve(output_set_number + 1).is_err() {
+        return Err(DandelionError::OutOfMemory);
+    }
+    output_set_info.resize_with(output_set_number + 1, || IoSetInfo {
+        ident: 0,
+        ident_len: 0,
+        offset: 0,
+    });
+    context.read(system_struct.output_sets as usize, &mut output_set_info)?;
+    // TODO is this still necessary / useful?
     assert_eq!(
-        output_set_vec
+        output_set_info
             .as_ptr()
             .align_offset(std::mem::align_of::<IoSetInfo>()),
         0
     );
-    let output_set_info = unsafe {
-        safe_transmute::base::transmute_many::<IoSetInfo, safe_transmute::guard::AllOrNothingGuard>(
-            &output_set_vec[..],
-        )
-        .expect("invalid output_set_info")
-    };
     assert_eq!(output_set_info.len(), output_set_number + 1);
 
     let mut output_sets = vec![];
@@ -214,27 +207,30 @@ pub fn read_output_structs(context: &mut Context, base_address: usize) -> Dandel
     // TODO could this be another field on DandelionSystemData instead?
     let output_buffer_number = output_set_info[output_set_number].offset;
 
-    let output_buffer_vec =
-        context.read(output_buffers_offset, output_buffer_number * IO_BUFFER_SIZE)?;
+    let mut output_buffers = vec![];
+    if output_buffers.try_reserve(output_buffer_number).is_err() {
+        return Err(DandelionError::OutOfMemory);
+    }
+    output_buffers.resize_with(output_buffer_number, || IoBufferDescriptor {
+        ident: 0,
+        ident_len: 0,
+        data: 0,
+        data_len: 0,
+    });
+    context.read(output_buffers_offset, &mut output_buffers)?;
     assert_eq!(
-        output_buffer_vec
+        output_buffers
             .as_ptr()
             .align_offset(std::mem::align_of::<IoBufferDescriptor>()),
         0
     );
-    let output_buffers = unsafe {
-        safe_transmute::base::transmute_many::<
-            IoBufferDescriptor,
-            safe_transmute::guard::AllOrNothingGuard,
-        >(&output_buffer_vec[..])
-        .expect("invalid output_buffers")
-    };
     assert_eq!(output_buffers.len(), output_buffer_number);
 
     for output_set in 0..output_set_number {
         let ident_offset = output_set_info[output_set].ident;
         let ident_length = output_set_info[output_set].ident_len;
-        let set_ident = context.read(ident_offset, ident_length)?;
+        let mut set_ident = vec![0u8; ident_length];
+        context.read(ident_offset, &mut set_ident)?;
         let set_ident_string = String::from_utf8(set_ident).unwrap_or("".to_string());
         let first_buffer = output_set_info[output_set].offset;
         let one_past_last_buffer = output_set_info[output_set + 1].offset;
@@ -246,7 +242,8 @@ pub fn read_output_structs(context: &mut Context, base_address: usize) -> Dandel
         for buffer_index in first_buffer..one_past_last_buffer {
             let buffer_ident_offset = output_buffers[buffer_index].ident as usize;
             let buffer_ident_length = output_buffers[buffer_index].ident_len;
-            let buffer_ident = context.read(buffer_ident_offset, buffer_ident_length)?;
+            let mut buffer_ident = vec![0u8; buffer_ident_length];
+            context.read(buffer_ident_offset, &mut buffer_ident)?;
             let data_offset = output_buffers[buffer_index].data as usize;
             let data_length = output_buffers[buffer_index].data_len;
             let ident_string = String::from_utf8(buffer_ident).unwrap_or("".to_string());

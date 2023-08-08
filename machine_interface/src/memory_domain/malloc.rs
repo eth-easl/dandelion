@@ -7,34 +7,37 @@ pub struct MallocContext {
 }
 
 impl ContextTrait for MallocContext {
-    fn write(&mut self, offset: usize, data: Vec<u8>) -> DandelionResult<()> {
+    fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
         // check if the write is within bounds
+        let write_length = data.len() * core::mem::size_of::<T>();
         let length = self.storage.capacity();
-        if offset + data.len() > length {
+        if write_length + offset > length {
             return Err(DandelionError::InvalidWrite);
         }
+        let buffer =
+            unsafe { core::slice::from_raw_parts(data.as_ptr() as *const u8, write_length) };
         // write values
-        for (pos, value) in data.into_iter().enumerate() {
-            self.storage[offset + pos] = value;
+        for (pos, value) in buffer.iter().enumerate() {
+            self.storage[offset + pos] = *value;
         }
         Ok(())
     }
-    fn read(&self, offset: usize, read_size: usize) -> DandelionResult<Vec<u8>> {
+    fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         let length = self.storage.len();
+        let read_size = core::mem::size_of::<T>() * read_buffer.len();
         if offset + read_size > length {
             return Err(DandelionError::InvalidRead);
         }
-        // try to allocate space for read values
-        let mut result_vec = Vec::new();
-        if let Err(_) = result_vec.try_reserve(read_size) {
-            return Err(DandelionError::OutOfMemory);
-        }
-        result_vec.resize(read_size, 0);
+
+        let read_memory = unsafe {
+            core::slice::from_raw_parts_mut(read_buffer.as_mut_ptr() as *mut u8, read_size)
+        };
+
         // read values, sanitize if necessary
-        for (index, result) in result_vec.iter_mut().enumerate() {
-            *result = self.storage[offset + index];
+        for index in 0..read_size {
+            read_memory[index] = self.storage[offset + index];
         }
-        Ok(result_vec)
+        return Ok(());
     }
 }
 

@@ -42,7 +42,7 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
         .get_free_space(8, 8)
         .expect("Should have space");
     input_context
-        .write(size_offset, Vec::<u8>::from(IN_SIZE))
+        .write(size_offset, &IN_SIZE)
         .expect("Should be able to write");
     input_context.content.push(DataSet {
         ident: "".to_string(),
@@ -59,7 +59,7 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
         .expect("Should have space");
     unsafe {
         input_context
-            .write(in_map_offset, Vec::<u8>::from(IN_MAT))
+            .write(in_map_offset, &IN_MAT)
             .expect("Should be able to write input matrix");
     }
     input_context.content.push(DataSet {
@@ -86,128 +86,6 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
     domain
         .release_context(input_context)
         .expect("Should be able to release input");
-    // let item = match result_context.dynamic_data.get(&0) {
-    //     Some(item) => item,
-    //     None => {
-    //         let answer = format!("Dispatcher no output item no 0\n");
-    //         return;
-    //     }
-    // };
-    // if let DataItem::Item(position) = item {
-    //     println!("item size: {}", position.size);
-    //     for i in 0..MAT_DIM * MAT_DIM {
-    //         let value = u64::from_ne_bytes(
-    //             result_context
-    //                 .read(position.offset + i * 8, 8)
-    //                 .expect("Should read")[0..8]
-    //                 .try_into()
-    //                 .expect("Should have right size"),
-    //         );
-    //         println!("Dispatcher Ok with result = {:?}\n", value);
-    //     }
-    // }
-    input_context.dynamic_data.insert(
-        1,
-        DataSet {
-            ident: "".to_string(),
-            buffers: vec![DataItem {
-                ident: "".to_string(),
-                data: Position {
-                    offset: in_map_offset,
-                    size: MAT_SIZE,
-                },
-            }],
-        },
-    );
-    inputs.push((
-        &input_context,
-        vec![(0usize, None, 0usize), (1usize, None, 1usize)],
-    ));
-    let result_context = dispatcher
-        .queue_function(COLD_ID, inputs, non_caching)
-        .await
-        .expect("Should get back context");
-    domain
-        .release_context(result_context)
-        .expect("Should be able to release result");
-    domain
-        .release_context(input_context)
-        .expect("Should be able to release input");
-    // let item = match result_context.dynamic_data.get(&0) {
-    //     Some(item) => item,
-    //     None => {
-    //         let answer = format!("Dispatcher no output item no 0\n");
-    //         return;
-    //     }
-    // };
-    // if let DataItem::Item(position) = item {
-    //     println!("item size: {}", position.size);
-    //     for i in 0..MAT_DIM * MAT_DIM {
-    //         let value = u64::from_ne_bytes(
-    //             result_context
-    //                 .read(position.offset + i * 8, 8)
-    //                 .expect("Should read")[0..8]
-    //                 .try_into()
-    //                 .expect("Should have right size"),
-    //         );
-    //         println!("Dispatcher Ok with result = {:?}\n", value);
-    //     }
-    // }
-    input_context.dynamic_data.insert(
-        1,
-        DataItem::Item(Position {
-            offset: in_map_offset,
-            size: MAT_SIZE,
-        }),
-    );
-    let out_map_offset = input_context
-        .get_free_space(MAT_SIZE, 8)
-        .expect("Should have space");
-    input_context.dynamic_data.insert(
-        2,
-        DataItem::Item(Position {
-            offset: out_map_offset,
-            size: MAT_SIZE,
-        }),
-    );
-    inputs.push((
-        &input_context,
-        vec![
-            (0usize, None, 0usize),
-            (1usize, None, 1usize),
-            (2usize, None, 2usize),
-        ],
-    ));
-    let result_context = dispatcher
-        .queue_function(COLD_ID, inputs, non_caching)
-        .await
-        .expect("Should get back context");
-    domain
-        .release_context(result_context)
-        .expect("Should be able to release result");
-    domain
-        .release_context(input_context)
-        .expect("Should be able to release input");
-    // let item = match result_context.dynamic_data.get(&0) {
-    //     Some(item) => item,
-    //     None => {
-    //         let answer = format!("Dispatcher no output item no 0\n");
-    //         return;
-    //     }
-    // };
-    // if let DataItem::Item(position) = item {
-    //     println!("item size: {}", position.size);
-    //     for i in 0..MAT_DIM * MAT_DIM {
-    //         let value = u64::from_ne_bytes(
-    //             result_context
-    //                 .read(position.offset + i * 8, 8)
-    //                 .expect("Should read")[0..8]
-    //                 .try_into()
-    //                 .expect("Should have right size"),
-    //         );
-    //         println!("Dispatcher Ok with result = {:?}\n", value);
-    //     }
-    // }
 }
 
 async fn serve_cold(
