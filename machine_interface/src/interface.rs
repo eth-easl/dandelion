@@ -191,20 +191,12 @@ pub fn read_output_structs(context: &mut Context, base_address: usize) -> Dandel
         offset: 0,
     });
     context.read(system_struct.output_sets as usize, &mut output_set_info)?;
-    // TODO is this still necessary / useful?
-    assert_eq!(
-        output_set_info
-            .as_ptr()
-            .align_offset(std::mem::align_of::<IoSetInfo>()),
-        0
-    );
-    assert_eq!(output_set_info.len(), output_set_number + 1);
 
     let mut output_sets = vec![];
     if output_sets.try_reserve(output_set_number).is_err() {
         return Err(DandelionError::OutOfMemory);
     }
-    // TODO could this be another field on DandelionSystemData instead?
+
     let output_buffer_number = output_set_info[output_set_number].offset;
 
     let mut output_buffers = vec![];

@@ -8,6 +8,11 @@ pub struct MallocContext {
 
 impl ContextTrait for MallocContext {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
+        // check alignment
+        if offset % core::mem::align_of::<T>() != 0 {
+            return Err(DandelionError::WriteMissaligned);
+        }
+
         // check if the write is within bounds
         let write_length = data.len() * core::mem::size_of::<T>();
         let length = self.storage.capacity();
@@ -23,6 +28,11 @@ impl ContextTrait for MallocContext {
         Ok(())
     }
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
+        // check that buffer has proper allighment
+        if offset % core::mem::align_of::<T>() != 0 {
+            return Err(DandelionError::ReadMissaligned);
+        }
+
         let length = self.storage.len();
         let read_size = core::mem::size_of::<T>() * read_buffer.len();
         if offset + read_size > length {

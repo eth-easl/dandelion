@@ -83,7 +83,7 @@ fn single_domain_and_engine_matmul<Domain: MemoryDomain, TestDriver: Driver, Tes
         .expect("Should get input matrix context");
     let size_offset = in_context.get_free_space(8, 8).expect("Should have space");
     in_context
-        .write(size_offset, &vec![2u64])
+        .write(size_offset, &[2u64])
         .expect("Should be able to write matrix size");
     in_context.content.push(DataSet {
         ident: "".to_string(),
