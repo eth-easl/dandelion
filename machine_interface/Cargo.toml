@@ -18,7 +18,6 @@ libc = "0.2"
 core_affinity = "0.8"
 futures = "0.3"
 tokio = { version = "1", features = ["full"] }
-safe-transmute = "0.11"
 
 [features]
 cheri = []
