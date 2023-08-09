@@ -266,7 +266,7 @@ impl Loader for CheriLoader {
         for position in source_layout.iter() {
             context.write(
                 write_counter,
-                function[position.offset..position.offset + position.size].to_vec(),
+                &function[position.offset..position.offset + position.size],
             )?;
             buffers.push(DataItem {
                 ident: String::from(""),
