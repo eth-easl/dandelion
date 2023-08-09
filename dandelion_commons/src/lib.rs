@@ -14,8 +14,10 @@ pub enum DandelionError {
     OutOfMemory,      // domain could not be allocated because there is no space available
     ContextFull,      // context can't fit additional memory
     InvalidRead,      // tried to read from domain outside of domain bounds
-    InvalidWrite,     // tried to write to domain ouside of domain bounds
-    EmptyDataItemSet, // found a case with a data item that is a set but has no entries
+    ReadMisaligned,  // read buffer was misaligned for requested data type
+    InvalidWrite,     // tried to write to domain ouside of domain boundsvec
+    WriteMissaligned, // offset handed to writing was not alligned with type to write
+    EmptyDataSet,     // found a case with a data item that is a set but has no entries
     // engine errors
     ConfigMissmatch, // missmatch between the function config the engine expects and the one given
     NoRunningFunction, // attempted abort when no function was running

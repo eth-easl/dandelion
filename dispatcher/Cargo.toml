@@ -10,3 +10,6 @@ tokio = "1"
 dandelion_commons = {path = "../dandelion_commons"}
 machine_interface = {path = "../machine_interface"}
 futures = { version = "0.3.28" }
+
+[features]
+cheri = ["machine_interface/cheri"]

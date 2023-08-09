@@ -1,5 +1,7 @@
 pub mod function_lib;
 pub mod memory_domain;
+
+mod interface;
 mod util;
 
 #[derive(PartialEq, Debug)]
@@ -21,6 +23,7 @@ pub struct DataRequirement {
     pub size: Option<SizeRequirement>,
 }
 
+#[derive(Debug)]
 pub struct DataRequirementList {
     // domain_id: i32,
     pub size: usize,
@@ -35,7 +38,13 @@ pub struct Position {
 }
 
 #[derive(Debug)]
-pub enum DataItem {
-    Item(Position),
-    Set(Vec<Position>),
+pub struct DataSet {
+    pub ident: String,
+    pub buffers: Vec<DataItem>,
+}
+
+#[derive(Debug)]
+pub struct DataItem {
+    pub ident: String,
+    pub data: Position,
 }
