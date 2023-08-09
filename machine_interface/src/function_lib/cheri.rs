@@ -1,8 +1,9 @@
 use crate::{
-    function_lib::{Driver, ElfConfig, Engine, FunctionConfig},
+    function_lib::{Driver, Engine, FunctionConfig},
+    interface::{read_output_structs, setup_input_structs},
     memory_domain::{cheri::cheri_c_context, Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
-    DataItem, DataRequirement, DataRequirementList, Position,
+    DataItem, DataRequirement, DataRequirementList, DataSet, Position,
 };
 use core::{
     future::{ready, Future},
@@ -13,7 +14,6 @@ use dandelion_commons::{DandelionError, DandelionResult};
 use futures::{task::Poll, Stream};
 use libc::size_t;
 use std::{
-    collections::HashMap,
     sync::atomic::{AtomicBool, Ordering},
     thread::{spawn, JoinHandle},
 };
@@ -28,109 +28,6 @@ extern "C" {
         return_pair_offset: size_t,
         stack_pointer: size_t,
     ) -> i8;
-}
-
-const IO_STRUCT_SIZE: usize = 16;
-const MAX_OUTPUTS: u32 = 16;
-
-fn setup_input_structs(context: &mut Context, config: &ElfConfig) -> DandelionResult<()> {
-    // size of array with input struct array
-    let input_number_option = context.dynamic_data.keys().max();
-    let input_number = match input_number_option {
-        Some(num) => num + 1,
-        None => return Ok(()),
-    };
-    let input_struct_size = input_number as usize * IO_STRUCT_SIZE;
-    let input_offset = context.get_free_space(input_struct_size, 8)?;
-    for (index, input) in context.dynamic_data.iter() {
-        let pos = match &input {
-            DataItem::Item(position) => position,
-            _ => return Err(DandelionError::NotImplemented),
-        };
-        let struct_offset = input_offset + IO_STRUCT_SIZE * index;
-        let mut io_struct = Vec::<u8>::new();
-        io_struct.append(&mut usize::to_ne_bytes(pos.size).to_vec());
-        io_struct.append(&mut usize::to_ne_bytes(pos.offset).to_vec());
-        context.context.write(struct_offset, io_struct)?;
-    }
-    context.static_data.push(Position {
-        offset: input_offset,
-        size: input_struct_size,
-    });
-    // find space for output structs
-    let output_struct_size = IO_STRUCT_SIZE * MAX_OUTPUTS as usize;
-    let output_offset = context.get_free_space(output_struct_size, 8)?;
-    context.static_data.push(Position {
-        offset: output_offset,
-        size: output_struct_size,
-    });
-    // fill in values
-    context.write(
-        config.input_root.0,
-        usize::to_ne_bytes(input_offset).to_vec(),
-    )?;
-    context.write(
-        config.input_number.0,
-        u32::to_ne_bytes(input_number as u32).to_vec(),
-    )?;
-    context.write(
-        config.output_root.0,
-        usize::to_ne_bytes(output_offset).to_vec(),
-    )?;
-    context.write(config.output_number.0, u32::to_ne_bytes(0).to_vec())?;
-    context.write(
-        config.max_output_number.0,
-        u32::to_ne_bytes(MAX_OUTPUTS).to_vec(),
-    )?;
-    return Ok(());
-}
-
-fn get_output_layout(
-    context: &mut Context,
-    output_root: (usize, usize),
-    output_number: (usize, usize),
-) -> DandelionResult<()> {
-    // get output number
-    let output_number_vec = context.read(output_number.0, output_number.1)?;
-    // TODO make this dependent on the actual size of the values
-    // TODO use as_chunks when it stabilizes
-    let output_number_slice: [u8; 4] = output_number_vec[0..4]
-        .try_into()
-        .expect("Should have correct length");
-    let number_of_outputs = usize::min(
-        u32::from_ne_bytes(output_number_slice) as usize,
-        MAX_OUTPUTS as usize,
-    );
-    let mut output_structs = HashMap::new();
-    let output_root_vec = context.read(output_root.0, 8)?;
-    let output_root_offset = usize::from_ne_bytes(
-        output_root_vec[0..8]
-            .try_into()
-            .expect("Should have correct length"),
-    );
-    for output_index in 0..number_of_outputs {
-        let read_offset = output_root_offset + IO_STRUCT_SIZE * output_index;
-        let out_struct = context.read(read_offset, IO_STRUCT_SIZE as usize)?;
-        let size = usize::from_ne_bytes(
-            out_struct[0..8]
-                .try_into()
-                .expect("Should have correct length"),
-        );
-        let offset = usize::from_ne_bytes(
-            out_struct[8..16]
-                .try_into()
-                .expect("Should have correct length"),
-        );
-        output_structs.insert(
-            output_index,
-            DataItem::Item(Position {
-                offset: offset,
-                size: size,
-            }),
-        );
-    }
-    context.dynamic_data = output_structs;
-    Ok(())
 }
 
 struct CheriCommand {
@@ -152,8 +49,7 @@ pub struct CheriEngine {
 struct CheriFuture<'a> {
     engine: &'a mut CheriEngine,
     context: Option<Context>,
-    output_root: (usize, usize),
-    output_number: (usize, usize),
+    system_data_offset: usize,
 }
 
 // TODO find better way than take unwrap to return context
@@ -180,12 +76,9 @@ impl Future for CheriFuture<'_> {
         }
         let mut context = self.context.take().unwrap();
         // erase all assumptions on context internal layout
-        context.dynamic_data.clear();
-        context.static_data.clear();
+        context.content.clear();
         // read outputs
-        let output_root = self.output_root.clone();
-        let output_number = self.output_number.clone();
-        let result = get_output_layout(&mut context, output_root, output_number);
+        let result = read_output_structs(&mut context, self.system_data_offset);
         self.engine.is_running.store(false, Ordering::Release);
         Poll::Ready((result, context))
     }
@@ -213,6 +106,7 @@ fn run_thread(
                 command.stack_pointer,
             );
         }
+
         let message = match cheri_error {
             0 => Ok(()),
             1 => Err(DandelionError::OutOfMemory),
@@ -235,6 +129,7 @@ impl Engine for CheriEngine {
         &mut self,
         config: &FunctionConfig,
         mut context: Context,
+        output_set_names: Vec<String>,
     ) -> Pin<Box<dyn futures::Future<Output = (DandelionResult<()>, Context)> + '_ + Send>> {
         if self.is_running.swap(true, Ordering::AcqRel) {
             return Box::pin(ready((Err(DandelionError::EngineAlreadyRunning), context)));
@@ -252,9 +147,13 @@ impl Engine for CheriEngine {
             context: cheri_context.context,
             entry_point: elf_config.entry_point,
             return_pair_offset: elf_config.return_offset.0,
-            stack_pointer: cheri_context.size,
+            stack_pointer: cheri_context.size - 32,
         };
-        if let Err(err) = setup_input_structs(&mut context, &elf_config) {
+        if let Err(err) = setup_input_structs(
+            &mut context,
+            elf_config.system_data_offset,
+            output_set_names,
+        ) {
             return Box::pin(ready((Err(err), context)));
         }
         match self.command_sender.send(command) {
@@ -264,8 +163,7 @@ impl Engine for CheriEngine {
         let function_future = Box::<CheriFuture>::pin(CheriFuture {
             engine: self,
             context: Some(context),
-            output_root: elf_config.output_root,
-            output_number: elf_config.output_number,
+            system_data_offset: elf_config.system_data_offset,
         });
         return function_future;
     }
@@ -296,7 +194,7 @@ impl Drop for CheriEngine {
 
 pub struct CheriDriver {}
 
-const DEFAULT_SPACE_SIZE: usize = 0x40_0000; // 4MiB
+const DEFAULT_SPACE_SIZE: usize = 0x800_0000; // 4MiB
 
 impl Driver for CheriDriver {
     // // take or release one of the available engines
@@ -338,24 +236,15 @@ impl Driver for CheriDriver {
         static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<Function> {
         let elf = elf_parser::ParsedElf::new(&function)?;
-        let input_root = elf.get_symbol_by_name(&function, "inputRoot")?;
-        let input_number = elf.get_symbol_by_name(&function, "inputNumber")?;
-        let output_root = elf.get_symbol_by_name(&function, "outputRoot")?;
-        let output_number = elf.get_symbol_by_name(&function, "outputNumber")?;
-        let max_output_number = elf.get_symbol_by_name(&function, "maxOutputNumber")?;
-        let return_offset = elf.get_symbol_by_name(&function, "returnPair")?;
+        let system_data = elf.get_symbol_by_name(&function, "__dandelion_system_data")?;
+        let return_offset = elf.get_symbol_by_name(&function, "__dandelion_return_address")?;
         let entry = elf.get_entry_point();
         let config = FunctionConfig::ElfConfig(super::ElfConfig {
-            input_root: input_root,
-            input_number: input_number,
-            output_root: output_root,
-            output_number: output_number,
-            max_output_number: max_output_number,
+            system_data_offset: system_data.0,
             return_offset: return_offset,
             entry_point: entry,
         });
         let (static_requirements, source_layout) = elf.get_layout_pair();
-        // set default size to 128KiB
         let requirements = DataRequirementList {
             size: DEFAULT_SPACE_SIZE,
             input_requirements: Vec::<DataRequirement>::new(),
@@ -369,20 +258,31 @@ impl Driver for CheriDriver {
         let mut context = static_domain.acquire_context(total_size)?;
         // copy all
         let mut write_counter = 0;
-        let mut static_layout = Vec::<Position>::new();
+        let mut new_content = DataSet {
+            ident: String::from("static"),
+            buffers: vec![],
+        };
+        let buffers = &mut new_content.buffers;
         for position in source_layout.iter() {
             context.write(
                 write_counter,
-                function[position.offset..position.offset + position.size].to_vec(),
+                &function[position.offset..position.offset + position.size],
             )?;
-            static_layout.push(Position {
-                offset: write_counter,
-                size: position.size,
+            buffers.push(DataItem {
+                ident: String::from(""),
+                data: Position {
+                    offset: write_counter,
+                    size: position.size,
+                },
             });
             write_counter += position.size;
         }
-        context.static_data = static_layout;
-        return Ok(Function { requirements, context, config });
+        context.content = vec![new_content];
+        return Ok(Function {
+            requirements,
+            context,
+            config,
+        });
     }
 }
 

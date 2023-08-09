@@ -19,6 +19,9 @@ core_affinity = "0.8"
 futures = "0.3"
 tokio = { version = "1", features = ["full"] }
 
+[features]
+cheri = []
+
 # disable benchmarks in library, to not run all unit tests on every benchmark
 # also needs to be disabled for criterion flags to work that are not available for tests
 [lib]

@@ -6,7 +6,7 @@ use futures::lock::Mutex;
 use machine_interface::{
     function_lib::Driver,
     memory_domain::{ContextTrait, MemoryDomain},
-    DataItem, Position,
+    DataItem, DataSet, Position,
 };
 use std::collections::HashMap;
 
@@ -46,16 +46,12 @@ fn single_domain_and_engine_basic<Domain: MemoryDomain>(
 ) {
     let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push(relative_path);
-    let dispatcher = setup_dispatcher::<Domain>(
-        Vec::new(),
-        path.to_str().unwrap(),
-        engine_resource,
-        driver,
-    );
+    let dispatcher =
+        setup_dispatcher::<Domain>(domain_arg, path.to_str().unwrap(), engine_resource, driver);
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_function(0, Vec::new(), false));
+        .block_on(dispatcher.queue_function(0, Vec::new(), vec![], false));
     match result {
         Ok(_) => (),
         Err(err) => panic!("Failed with: {:?}", err),
@@ -70,12 +66,8 @@ fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
 ) {
     let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push(relative_path);
-    let dispatcher = setup_dispatcher::<Domain>(
-        Vec::new(),
-        path.to_str().unwrap(),
-        engine_resource,
-        driver,
-    );
+    let dispatcher =
+        setup_dispatcher::<Domain>(Vec::new(), path.to_str().unwrap(), engine_resource, driver);
     // need space for the input matrix of 2x2 uint64_t as well as a output matrix of the same size
     // and an uint64_t size that gives the column / row size (which is 2)
     const CONTEXT_SIZE: usize = 9 * 8;
@@ -85,70 +77,59 @@ fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
         .expect("Should get input matrix context");
     let size_offset = in_context.get_free_space(8, 8).expect("Should have space");
     in_context
-        .write(size_offset, u64::to_ne_bytes(2).to_vec())
+        .write(size_offset, &[2u64])
         .expect("Should be able to write matrix size");
-    in_context.dynamic_data.insert(
-        0,
-        DataItem::Item(Position {
-            offset: size_offset,
-            size: 8,
-        }),
-    );
-    let mut in_matrix = Vec::new();
-    in_matrix.extend_from_slice(&u64::to_ne_bytes(1));
-    in_matrix.extend_from_slice(&u64::to_ne_bytes(2));
-    in_matrix.extend_from_slice(&u64::to_ne_bytes(3));
-    in_matrix.extend_from_slice(&u64::to_ne_bytes(4));
+    in_context.content.push(DataSet {
+        ident: "".to_string(),
+        buffers: vec![DataItem {
+            ident: "".to_string(),
+            data: Position {
+                offset: size_offset,
+                size: 8,
+            },
+        }],
+    });
+    let mut in_matrix = vec![1u64, 2u64, 3u64, 4u64];
     let in_mat_offset = in_context
         .get_free_space(4 * 8, 8)
         .expect("Should have space");
     in_context
-        .write(in_mat_offset, in_matrix)
+        .write(in_mat_offset, &mut in_matrix)
         .expect("Should be able to write");
-    in_context.dynamic_data.insert(
-        1,
-        DataItem::Item(Position {
-            offset: in_mat_offset,
-            size: 32,
-        }),
-    );
-    let out_mat_offset = in_context
-        .get_free_space(4 * 8, 8)
-        .expect("Should have space");
-    in_context.dynamic_data.insert(
-        2,
-        DataItem::Item(Position {
-            offset: out_mat_offset,
-            size: 32,
-        }),
-    );
-    let input_mapping = vec![(0, None, 0), (1, None, 1), (2, None, 2)];
+    in_context.content.push(DataSet {
+        ident: "".to_string(),
+        buffers: vec![DataItem {
+            ident: "".to_string(),
+            data: Position {
+                offset: in_mat_offset,
+                size: 32,
+            },
+        }],
+    });
+
+    let input_mapping = vec![(0, None, 0), (1, None, 1)];
     let inputs = vec![(&in_context, input_mapping)];
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_function(0, inputs, false));
+        .block_on(dispatcher.queue_function(0, inputs, vec![String::from("")], false));
     let out_context = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
     };
-    assert_eq!(1, out_context.dynamic_data.len());
-    let out_mat_position = match out_context
-        .dynamic_data
-        .get(&0)
-        .expect("Should have item 0")
-    {
-        DataItem::Item(pos) => pos,
-        _ => panic!("Expected item but got set for output matrix"),
-    };
-    let out_mat = out_context
-        .read(out_mat_position.offset, out_mat_position.size)
+    assert_eq!(1, out_context.content.len());
+    let out_mat_set = &out_context.content[0];
+    assert_eq!(1, out_mat_set.buffers.len());
+    let out_mat_position = out_mat_set.buffers[0].data;
+    let mut out_mat = vec![0u64; 4];
+    out_context
+        .read(out_mat_position.offset, &mut out_mat)
         .expect("Should read output matrix");
-    assert_eq!(32, out_mat.len());
-    assert_eq!(u64::to_ne_bytes(5), out_mat[0..8]);
-    assert_eq!(u64::to_ne_bytes(11), out_mat[8..16]);
-    assert_eq!(u64::to_ne_bytes(11), out_mat[16..24]);
-    assert_eq!(u64::to_ne_bytes(25), out_mat[24..32]);
+    assert_eq!(4, out_mat.len());
+    assert_eq!(5, out_mat[0]);
+    assert_eq!(11, out_mat[1]);
+    assert_eq!(11, out_mat[2]);
+    assert_eq!(25, out_mat[3]);
 }
 
 macro_rules! dispatcherTests {
@@ -179,8 +160,7 @@ macro_rules! dispatcherTests {
 #[cfg(feature = "cheri")]
 mod cheri {
     use machine_interface::{
-        function_lib::cheri::CheriDriver,
-        memory_domain::cheri::CheriMemoryDomain,
+        function_lib::cheri::CheriDriver, memory_domain::cheri::CheriMemoryDomain,
     };
     dispatcherTests!(CheriMemoryDomain; Vec::new(); CheriDriver {}; vec![1]; CheriLoader; "../machine_interface/tests/data/test_elf_aarch64c"; "_basic"; "_matmul");
 }

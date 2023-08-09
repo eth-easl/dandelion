@@ -2,7 +2,7 @@ use std::vec;
 
 use crate::{
     memory_domain::{transefer_memory, transer_data_item, ContextTrait, MemoryDomain},
-    DataItem,
+    DataSet,
 };
 use dandelion_commons::{DandelionError, DandelionResult};
 // produces binary pattern 0b0101_01010 or 0x55
@@ -44,7 +44,7 @@ fn write<D: MemoryDomain>(
     let mut context = domain
         .acquire_context(context_size)
         .expect("Single byte context should always be allocatable");
-    let write_error = context.write(offset, vec![BYTEPATTERN; size]);
+    let write_error = context.write(offset, &vec![BYTEPATTERN; size]);
     match (expect_success, write_error) {
         (false, Err(DandelionError::InvalidWrite)) | (true, Ok(())) => (),
         (false, Ok(())) => panic!("Unexpected write success"),
@@ -64,12 +64,13 @@ fn read<D: MemoryDomain>(
         .acquire_context(context_size)
         .expect("Context should always be allocatable");
     context
-        .write(0, vec![BYTEPATTERN; context_size])
+        .write(0, &vec![BYTEPATTERN; context_size])
         .expect("Writing should succeed");
-    let read_error = context.read(offset, size);
+    let mut read_buffer = vec![0; size];
+    let read_error = context.read(offset, &mut read_buffer);
     match (expect_success, read_error) {
-        (true, Ok(data)) => assert_eq!(vec![BYTEPATTERN; size], data),
-        (false, Ok(_)) => panic!("Unexpected ok from read that should fail with context size: {}, read offset: {}, read size: {}", context_size, offset, size),
+        (true, Ok(())) => assert_eq!(vec![BYTEPATTERN; size], read_buffer),
+        (false, Ok(())) => panic!("Unexpected ok from read that should fail with context size: {}, read offset: {}, read size: {}", context_size, offset, size),
         (false, Err(DandelionError::InvalidRead)) => (),
         (_, Err(err)) => panic!("Unexpected error while reading: {:?}", err),
     }
@@ -84,14 +85,15 @@ fn transefer<D: MemoryDomain>(arg: Vec<u8>, size: usize) {
         .acquire_context(size)
         .expect("Context should be allocatable");
     source
-        .write(0, vec![BYTEPATTERN; size])
+        .write(0, &vec![BYTEPATTERN; size])
         .expect("Writing should succeed");
     transefer_memory(&mut destination, &mut source, 0, 0, size)
         .expect("Should successfully transfer");
-    let return_val = destination
-        .read(0, size)
+    let mut read_buffer = vec![0; size];
+    destination
+        .read(0, &mut read_buffer)
         .expect("Context should return single value vector in range");
-    assert_eq!(vec![BYTEPATTERN; size], return_val);
+    assert_eq!(vec![BYTEPATTERN; size], read_buffer);
 }
 
 fn transfer_item<D: MemoryDomain>(
@@ -111,15 +113,24 @@ fn transfer_item<D: MemoryDomain>(
         .acquire_context(context_size)
         .expect("Context should be allocatable");
     source
-        .write(offset, vec![BYTEPATTERN; item_size])
+        .write(offset, &vec![BYTEPATTERN; item_size])
         .expect("Writing should succeed");
-    source.dynamic_data.insert(
-        source_index,
-        crate::DataItem::Item(crate::Position {
-            offset: offset,
-            size: item_size,
-        }),
-    );
+    if source.content.len() <= source_index {
+        source.content.resize_with(source_index + 1, || DataSet {
+            ident: String::from(""),
+            buffers: vec![],
+        });
+    }
+    source.content[source_index] = crate::DataSet {
+        ident: String::from(""),
+        buffers: vec![crate::DataItem {
+            ident: String::from(""),
+            data: crate::Position {
+                offset: offset,
+                size: item_size,
+            },
+        }],
+    };
     let transfer_error = transer_data_item(
         &mut destination,
         &source,
@@ -133,21 +144,18 @@ fn transfer_item<D: MemoryDomain>(
         return;
     }
     // check transfer success
-    let destination_item = destination
-        .dynamic_data
-        .get(&destination_index)
-        .expect("Should have data at given index");
-    let read_position = match destination_item {
-        DataItem::Item(position) => {
-            assert_eq!(item_size, position.size);
-            position
-        }
-        _ => panic!("Expected item at destination"),
-    };
-    let read_val = destination
-        .read(read_position.offset, read_position.size)
+    assert!(destination_index < destination.content.len());
+    let destination_item = &destination.content[destination_index];
+    assert_eq!("", destination_item.ident);
+    assert_eq!(1, destination_item.buffers.len());
+    assert_eq!("", destination_item.buffers[0].ident);
+    assert_eq!(item_size, destination_item.buffers[0].data.size);
+    let read_offset = destination_item.buffers[0].data.offset;
+    let mut read_buffer = vec![0; item_size];
+    destination
+        .read(read_offset, &mut read_buffer)
         .expect("Context should be readable at item position");
-    assert_eq!(vec![BYTEPATTERN; item_size], read_val);
+    assert_eq!(vec![BYTEPATTERN; item_size], read_buffer);
 }
 
 // TODO make tests sweep ranges
