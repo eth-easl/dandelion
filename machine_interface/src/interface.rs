@@ -34,10 +34,6 @@ struct IoBufferDescriptor {
     data_len: size_t,
 }
 
-const SYSTEM_STRUCT_SIZE: usize = core::mem::size_of::<DandelionSystemData>();
-const IO_SET_INFO_SIZE: usize = core::mem::size_of::<IoSetInfo>();
-const IO_BUFFER_SIZE: usize = core::mem::size_of::<IoBufferDescriptor>();
-
 pub fn setup_input_structs(
     context: &mut Context,
     system_data_offset: usize,
@@ -169,7 +165,7 @@ pub fn read_output_structs(context: &mut Context, base_address: usize) -> Dandel
         input_bufs: core::ptr::null(),
         output_bufs: core::ptr::null(),
     };
-    context.read(base_address, core::slice::from_mut(&mut system_struct));
+    context.read(base_address, core::slice::from_mut(&mut system_struct))?;
 
     // get exit value
     let _exit_value = system_struct.exit_code;

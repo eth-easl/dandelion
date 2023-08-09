@@ -3,27 +3,27 @@ use futures::lock::Mutex;
 use machine_interface::{
     function_lib::{
         util::{load_static, load_u8_from_file},
-        FunctionConfig, LoaderFunction,
+        FunctionConfig, Function, Driver,
     },
     memory_domain::{Context, MemoryDomain},
-    DataRequirementList,
 };
-use std::collections::{HashMap, HashSet};
+use std::{collections::{HashMap, HashSet}};
 
 pub struct FunctionRegistry {
     engine_map: HashMap<FunctionId, HashSet<EngineTypeId>>,
-    loaders: HashMap<EngineTypeId, LoaderFunction>,
+    pub(crate) drivers: HashMap<EngineTypeId, Box<dyn Driver>>,
     // TODO replace with futures compatible RW lock if it becomes a bottleneck
     registry:
-        Mutex<HashMap<(FunctionId, EngineTypeId), (DataRequirementList, Context, FunctionConfig)>>,
+        Mutex<HashMap<(FunctionId, EngineTypeId), Function>>,
+    /// The paths for the local function binaries for a specific engine
     local_available: HashMap<(FunctionId, EngineTypeId), String>,
 }
 
 impl FunctionRegistry {
-    pub fn new(loaders: HashMap<EngineTypeId, LoaderFunction>) -> Self {
+    pub fn new(drivers: HashMap<EngineTypeId, Box<dyn Driver>>) -> Self {
         return FunctionRegistry {
             engine_map: HashMap::new(),
-            loaders,
+            drivers,
             registry: Mutex::new(HashMap::new()),
             local_available: HashMap::new(),
         };
@@ -66,9 +66,9 @@ impl FunctionRegistry {
         function_id: FunctionId,
         engine_id: EngineTypeId,
         domain: &Box<dyn MemoryDomain>,
-    ) -> DandelionResult<(DataRequirementList, Context, FunctionConfig)> {
+    ) -> DandelionResult<Function> {
         // get loader
-        let loader = match self.loaders.get(&engine_id) {
+        let driver = match self.drivers.get(&engine_id) {
             Some(l) => l,
             None => return Err(DandelionError::DispatcherMissingLoader(engine_id)),
         };
@@ -79,7 +79,7 @@ impl FunctionRegistry {
             None => return Err(DandelionError::DispatcherUnavailableFunction),
         };
         let function_buffer = load_u8_from_file(path.to_string())?;
-        let tripple = loader(function_buffer, domain)?;
+        let tripple = driver.parse_function(function_buffer, domain)?;
         return Ok(tripple);
     }
     pub async fn load(
@@ -91,17 +91,17 @@ impl FunctionRegistry {
     ) -> DandelionResult<(Context, FunctionConfig)> {
         // check if function for the engine is in registry already
         let mut lock_guard = self.registry.lock().await;
-        if let Some(tripple) = lock_guard.get(&(function_id, engine_id)) {
-            let function_context = load_static(domain, &tripple.1, &tripple.0)?;
-            return Ok((function_context, tripple.2));
+        if let Some(Function { requirements, context, config }) = lock_guard.get(&(function_id, engine_id)) {
+            let function_context = load_static(domain, &context, &requirements)?;
+            return Ok((function_context, *config));
         }
 
-        let tripple = self.load_local(function_id, engine_id, domain)?;
-        let function_context = load_static(domain, &tripple.1, &tripple.0)?;
-        let function_config = tripple.2;
+        let function = self.load_local(function_id, engine_id, domain)?;
+        let function_context = load_static(domain, &function.context, &function.requirements)?;
+        let function_config = function.config;
         if !non_caching {
             if lock_guard
-                .insert((function_id, engine_id), tripple)
+                .insert((function_id, engine_id), function)
                 .is_some()
             {
                 panic!("Function not in registry even after Ok from loading");

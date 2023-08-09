@@ -1,5 +1,5 @@
 use crate::{
-    function_lib::{Driver, Engine, FunctionConfig, Loader},
+    function_lib::{Driver, Engine, FunctionConfig},
     interface::{read_output_structs, setup_input_structs},
     memory_domain::{cheri::cheri_c_context, Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
@@ -17,6 +17,8 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     thread::{spawn, JoinHandle},
 };
+
+use super::Function;
 
 #[link(name = "cheri_lib")]
 extern "C" {
@@ -192,9 +194,11 @@ impl Drop for CheriEngine {
 
 pub struct CheriDriver {}
 
+const DEFAULT_SPACE_SIZE: usize = 0x800_0000; // 4MiB
+
 impl Driver for CheriDriver {
     // // take or release one of the available engines
-    fn start_engine(config: Vec<u8>) -> DandelionResult<Box<dyn Engine>> {
+    fn start_engine(&self, config: Vec<u8>) -> DandelionResult<Box<dyn Engine>> {
         if config.len() != 1 {
             return Err(DandelionError::ConfigMissmatch);
         }
@@ -222,19 +226,15 @@ impl Driver for CheriDriver {
             is_running,
         }));
     }
-}
 
-const DEFAULT_SPACE_SIZE: usize = 0x800_0000; // 128MiB
-
-pub struct CheriLoader {}
-impl Loader for CheriLoader {
     // parses an executable,
     // returns the layout requirements and a context containing static data,
     //  and a layout description for it
     fn parse_function(
+        &self,
         function: Vec<u8>,
         static_domain: &Box<dyn MemoryDomain>,
-    ) -> DandelionResult<(DataRequirementList, Context, FunctionConfig)> {
+    ) -> DandelionResult<Function> {
         let elf = elf_parser::ParsedElf::new(&function)?;
         let system_data = elf.get_symbol_by_name(&function, "__dandelion_system_data")?;
         let return_offset = elf.get_symbol_by_name(&function, "__dandelion_return_address")?;
@@ -278,7 +278,11 @@ impl Loader for CheriLoader {
             write_counter += position.size;
         }
         context.content = vec![new_content];
-        return Ok((requirements, context, config));
+        return Ok(Function {
+            requirements,
+            context,
+            config,
+        });
     }
 }
 

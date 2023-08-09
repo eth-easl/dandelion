@@ -47,7 +47,7 @@ impl ContextTrait for CheriContext {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
         // check that buffer has proper allighment
         if offset % core::mem::align_of::<T>() != 0 {
-            return Err(DandelionError::ReadMissaligned);
+            return Err(DandelionError::WriteMisaligned);
         }
 
         // perform size checks
@@ -63,7 +63,7 @@ impl ContextTrait for CheriContext {
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         // check that buffer has proper allighment
         if offset % core::mem::align_of::<T>() != 0 {
-            return Err(DandelionError::ReadMissaligned);
+            return Err(DandelionError::ReadMisaligned);
         }
 
         let read_size = read_buffer.len() * core::mem::size_of::<T>();
