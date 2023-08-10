@@ -88,12 +88,13 @@ fn _add_matmul_matrix(
     if context.content[size_set].is_some() || context.content[mat_set].is_some() {
         panic!("trying to add matrix where there is already set");
     }
+
     let size_offset = context.get_free_space(8, 8).expect("Should have space");
 
     assert_eq!(matrix_dim * matrix_dim, matrix.len() as u64);
 
     context
-        .write(size_offset, u64::to_ne_bytes(matrix_dim).to_vec())
+        .write(size_offset, &[matrix_dim])
         .expect("Should be able to write matrix size");
     context.content[size_set] = Some(DataSet {
         ident: "".to_string(),
@@ -105,25 +106,20 @@ fn _add_matmul_matrix(
             },
         }],
     });
-    let mut in_matrix = Vec::<u8>::new();
-    let matrix_size = matrix.len() * 8;
-    in_matrix.resize(matrix_size, 0);
-    for (index, value) in matrix.into_iter().enumerate() {
-        in_matrix[index * 8..index * 8 + 8].clone_from_slice(&u64::to_ne_bytes(value));
-    }
-    let in_mat_offset = context
-        .get_free_space(in_matrix.len(), 8)
+
+    let mat_offset = context
+        .get_free_space(matrix.len() * 8, 8)
         .expect("Should have space");
     context
-        .write(in_mat_offset, in_matrix)
+        .write(mat_offset, &matrix)
         .expect("Should be able to write");
     context.content[mat_set] = Some(DataSet {
         ident: "".to_string(),
         buffers: vec![DataItem {
             ident: "".to_string(),
             data: Position {
-                offset: in_mat_offset,
-                size: matrix_size,
+                offset: mat_offset,
+                size: matrix.len() * 8,
             },
         }],
     });
@@ -150,10 +146,10 @@ fn _add_matmac_matrix(
     assert_eq!(rows * cols, matrix.len() as u64);
 
     context
-        .write(size_offset, u64::to_ne_bytes(rows).to_vec())
+        .write(size_offset, &[rows])
         .expect("Should be able to write matrix size");
     context
-        .write(size_offset + 8, u64::to_ne_bytes(cols).to_vec())
+        .write(size_offset + 8, &[cols])
         .expect("Should be able to write matrix size");
     context.content[size_set] = Some(DataSet {
         ident: "".to_string(),
@@ -174,17 +170,11 @@ fn _add_matmac_matrix(
             },
         ],
     });
-    let mut in_matrix = Vec::<u8>::new();
-    let matrix_size = matrix.len() * 8;
-    in_matrix.resize(matrix_size, 0);
-    for (index, value) in matrix.into_iter().enumerate() {
-        in_matrix[index * 8..index * 8 + 8].clone_from_slice(&u64::to_ne_bytes(value));
-    }
     let in_mat_offset = context
-        .get_free_space(in_matrix.len(), 8)
+        .get_free_space(matrix.len() * 8, 8)
         .expect("Should have space");
     context
-        .write(in_mat_offset, in_matrix)
+        .write(in_mat_offset, &matrix)
         .expect("Should be able to write");
     context.content[mat_set] = Some(DataSet {
         ident: "".to_string(),
@@ -192,7 +182,7 @@ fn _add_matmac_matrix(
             ident: "".to_string(),
             data: Position {
                 offset: in_mat_offset,
-                size: matrix_size,
+                size: matrix.len() * 8,
             },
         }],
     });
@@ -203,12 +193,14 @@ fn _check_matrix(context: &Context, set_id: usize, expected: Vec<u64>) {
     let out_mat_set = context.content[set_id].as_ref().expect("Should have set");
     assert_eq!(1, out_mat_set.buffers.len());
     let out_mat_position = out_mat_set.buffers[0].data;
-    let out_mat = context
-        .read(out_mat_position.offset, out_mat_position.size)
+    let mut out_mat = Vec::<u64>::new();
+    assert_eq!(expected.len() * 8, out_mat_position.size);
+    out_mat.resize(expected.len(), 0);
+    context
+        .read(out_mat_position.offset, &mut out_mat)
         .expect("Should read output matrix");
-    assert_eq!(expected.len() * 8, out_mat.len());
     for i in 0..expected.len() {
-        assert_eq!(u64::to_ne_bytes(expected[i]), out_mat[i * 8..i * 8 + 8]);
+        assert_eq!(expected[i], out_mat[i]);
     }
 }
 
@@ -287,7 +279,7 @@ fn _composition_single_matmul<Domain: MemoryDomain, TestDriver: Driver, TestLoad
         .expect("Should get input matrix context");
     let size_offset = in_context.get_free_space(8, 8).expect("Should have space");
     in_context
-        .write(size_offset, u64::to_ne_bytes(2).to_vec())
+        .write(size_offset, &[2u64])
         .expect("Should be able to write matrix size");
     _add_matmul_matrix(&mut in_context, 0, 1, 2, vec![1, 2, 3, 4]);
 

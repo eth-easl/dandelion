@@ -197,33 +197,33 @@ fn _engine_matmul_single<Dom: MemoryDomain, L: Loader, Drv: Driver>(
     };
     // add inputs
     let in_size_offset = function_context
-        .get_free_space(8, 8)
+        .get_free_space_and_write_slice(core::slice::from_ref(&1i64))
         .expect("Should have space for single i64");
-    function_context
-        .write(in_size_offset, i64::to_ne_bytes(1).to_vec())
-        .expect("Write should go through");
+    // function_context
+    // .write(in_size_offset, i64::to_ne_bytes(1).to_vec())
+    // .expect("Write should go through");
     function_context.content.push(Some(DataSet {
         ident: "".to_string(),
         buffers: vec![DataItem {
             ident: "".to_string(),
             data: Position {
-                offset: in_size_offset,
+                offset: in_size_offset as usize,
                 size: 8,
             },
         }],
     }));
     let in_mat_offset = function_context
-        .get_free_space(8, 8)
+        .get_free_space_and_write_slice(core::slice::from_ref(&2i64))
         .expect("Should have space for single i64");
-    function_context
-        .write(in_mat_offset, i64::to_ne_bytes(2).to_vec())
-        .expect("Write should go through");
+    // function_context
+    // .write(in_mat_offset, i64::to_ne_bytes(2))
+    // .expect("Write should go through");
     function_context.content.push(Some(DataSet {
         ident: "".to_string(),
         buffers: vec![DataItem {
             ident: "".to_string(),
             data: Position {
-                offset: in_mat_offset,
+                offset: in_mat_offset as usize,
                 size: 8,
             },
         }],
@@ -251,16 +251,12 @@ fn _engine_matmul_single<Dom: MemoryDomain, L: Loader, Drv: Driver>(
     assert_eq!(1, output_item.buffers.len());
     let position = output_item.buffers[0].data;
     assert_eq!(8, position.size, "Checking for size of output");
-    let raw_output = result_context
+    let mut read_buffer = vec![0i64; position.size / 8];
+    result_context
         .context
-        .read(position.offset, position.size)
+        .read(position.offset, &mut read_buffer)
         .expect("Should succeed in reading");
-    let converted_output = i64::from_ne_bytes(
-        raw_output[0..8]
-            .try_into()
-            .expect("Should have correct length"),
-    );
-    assert_eq!(4, converted_output);
+    assert_eq!(4, read_buffer[0]);
     domain
         .release_context(result_context)
         .expect("Should release context");
@@ -311,7 +307,7 @@ fn _engine_matmul_size_sweep<Dom: MemoryDomain, L: Loader, Drv: Driver>(
             .get_free_space(8, 8)
             .expect("Should have space for single i64");
         function_context
-            .write(in_size_offset, i64::to_ne_bytes(mat_size as i64).to_vec())
+            .write(in_size_offset, &i64::to_ne_bytes(mat_size as i64))
             .expect("Write should go through");
         function_context.content.push(Some(DataSet {
             ident: "".to_string(),
@@ -327,12 +323,12 @@ fn _engine_matmul_size_sweep<Dom: MemoryDomain, L: Loader, Drv: Driver>(
         let in_mat_offset = function_context
             .get_free_space(input_size, 8)
             .expect("Should have space for single i64");
-        let mut mat_vec = Vec::<u8>::new();
+        let mut mat_vec = Vec::<i64>::new();
         for i in 0..(mat_size * mat_size) {
-            mat_vec.append(&mut i64::to_ne_bytes(i as i64).to_vec());
+            mat_vec.push(i as i64);
         }
         function_context
-            .write(in_mat_offset, mat_vec)
+            .write(in_mat_offset, &mut mat_vec)
             .expect("Write should go through");
         function_context.content.push(Some(DataSet {
             ident: "".to_string(),
@@ -367,14 +363,15 @@ fn _engine_matmul_size_sweep<Dom: MemoryDomain, L: Loader, Drv: Driver>(
         assert_eq!(1, output_item.buffers.len());
         let position = output_item.buffers[0].data;
         assert_eq!(input_size, position.size, "Checking for size of output");
-        let raw_output = result_context
+        let mut output = vec![0i64; position.size / 8];
+        result_context
             .context
-            .read(position.offset, position.size)
+            .read(position.offset, &mut output)
             .expect("Should succeed in reading");
         let expected = _get_expected_mat(mat_size);
-        for (index, chunk) in raw_output.chunks_exact(8).enumerate() {
-            let value = i64::from_ne_bytes(chunk.try_into().expect("Should have correct length"));
-            assert_eq!(expected[index], value);
+        assert_eq!(expected.len(), output.len());
+        for (should, is) in expected.iter().zip(output.iter()) {
+            assert_eq!(should, is);
         }
         domain
             .release_context(result_context)
@@ -407,7 +404,7 @@ fn _engine_stdio<Dom: MemoryDomain, L: Loader, Drv: Driver>(
         .get_free_space(stdin_content.len(), 8)
         .expect("Should have space");
     function_context
-        .write(stdin_offset, stdin_content.as_bytes().to_vec())
+        .write(stdin_offset, stdin_content.as_bytes())
         .expect("Write should go through");
     function_context.content.push(Some(DataSet {
         ident: "stdio".to_string(),
@@ -447,13 +444,15 @@ fn _engine_stdio<Dom: MemoryDomain, L: Loader, Drv: Driver>(
     for item in &io_set.buffers {
         match item.ident.as_str() {
             "stdout" => {
-                stdout_vec = result_context
-                    .read(item.data.offset, item.data.size)
+                stdout_vec = vec![0; item.data.size];
+                result_context
+                    .read(item.data.offset, &mut stdout_vec)
                     .expect("stdout read should succeed")
             }
             "stderr" => {
-                stderr_vec = result_context
-                    .read(item.data.offset, item.data.size)
+                stderr_vec = vec![0; item.data.size];
+                result_context
+                    .read(item.data.offset, &mut stderr_vec)
                     .expect("stderr read should succeed")
             }
             _ => panic!("found item in stdio set that is neither out nor err"),
@@ -492,7 +491,7 @@ fn _engine_fileio<Dom: MemoryDomain, L: Loader, Drv: Driver>(
         .get_free_space(in_file_content.len(), 8)
         .expect("Should have space");
     function_context
-        .write(in_file_offset, in_file_content.as_bytes().to_vec())
+        .write(in_file_offset, in_file_content.as_bytes())
         .expect("Write should go through");
     function_context.content.push(Some(DataSet {
         ident: "in".to_string(),
@@ -509,28 +508,28 @@ fn _engine_fileio<Dom: MemoryDomain, L: Loader, Drv: Driver>(
         .get_free_space(in_file1_content.len(), 8)
         .expect("Should have space");
     function_context
-        .write(in_file1_offset, in_file1_content.as_bytes().to_vec())
+        .write(in_file1_offset, in_file1_content.as_bytes())
         .expect("Write should go through");
     let in_file2_content = "Test file 2 \n line 2\n";
     let in_file2_offset = function_context
         .get_free_space(in_file2_content.len(), 8)
         .expect("Should have space");
     function_context
-        .write(in_file2_offset, in_file2_content.as_bytes().to_vec())
+        .write(in_file2_offset, in_file2_content.as_bytes())
         .expect("Write should go through");
     let in_file3_content = "Test file 3 \n line 2\n";
     let in_file3_offset = function_context
         .get_free_space(in_file3_content.len(), 8)
         .expect("Should have space");
     function_context
-        .write(in_file3_offset, in_file3_content.as_bytes().to_vec())
+        .write(in_file3_offset, in_file3_content.as_bytes())
         .expect("Write should go through");
     let in_file4_content = "Test file 4 \n line 2\n";
     let in_file4_offset = function_context
         .get_free_space(in_file4_content.len(), 8)
         .expect("Should have space");
     function_context
-        .write(in_file4_offset, in_file4_content.as_bytes().to_vec())
+        .write(in_file4_offset, in_file4_content.as_bytes())
         .expect("Write should go through");
     function_context.content.push(Some(DataSet {
         ident: "in_nested".to_string(),
@@ -592,22 +591,24 @@ fn _engine_fileio<Dom: MemoryDomain, L: Loader, Drv: Driver>(
     assert_eq!(1, set1.buffers.len());
     let item = &set1.buffers[0];
     assert_eq!("out_file", item.ident);
-    let content = result_context
-        .read(item.data.offset, item.data.size)
+    let mut read_buffer = vec![0; item.data.size];
+    result_context
+        .read(item.data.offset, &mut read_buffer)
         .expect("should be able to read");
     assert_eq!(
         in_file_content,
-        std::str::from_utf8(&content).expect("output content should be string")
+        std::str::from_utf8(&read_buffer).expect("output content should be string")
     );
-    let set2 = result_context.content[2]
+    let output_set = result_context.content[2]
         .as_ref()
-        .expect("Set should be present");
-    assert_eq!(4, set2.buffers.len());
-    for item in set2.buffers.iter() {
-        let content = result_context
-            .read(item.data.offset, item.data.size)
+        .expect("Should have output set");
+    assert_eq!(4, output_set.buffers.len());
+    for item in output_set.buffers.iter() {
+        let mut read_buffer = vec![0; item.data.size];
+        result_context
+            .read(item.data.offset, &mut read_buffer)
             .expect("should be able to read");
-        let content_string = std::str::from_utf8(&content).expect("content should be string");
+        let content_string = std::str::from_utf8(&read_buffer).expect("content should be string");
         let expected_string = match item.ident.as_str() {
             "out_file" => in_file1_content,
             "out_folder/out_file" => in_file2_content,

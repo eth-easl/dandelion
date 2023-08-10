@@ -5,8 +5,8 @@ edition = "2021"
 
 [features]
 std = []
-cheri = ["std", "dep:core_affinity"]
-hyper_io = ["std", "dep:hyper", "dep:core_affinity"]
+cheri = ["std"]
+hyper_io = ["std", "dep:hyper"]
 
 [build-dependencies]
 cmake = "0.1"
@@ -20,7 +20,7 @@ regex = "1.7.1"
 dandelion_commons = { path = "../dandelion_commons" }
 # FFI dependencies
 libc = "0.2"
-core_affinity = { version = "0.8", optional = true }
+core_affinity = { version = "0.8"}
 futures = "0.3"
 tokio = { version = "1", features = ["full"] }
 hyper = { version = "0.14", optional = true, features = ["http1", "http2", "client", "runtime"]}

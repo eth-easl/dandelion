@@ -7,8 +7,8 @@ use crate::{DataItem, DataSet, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
 
 pub trait ContextTrait: Send + Sync {
-    fn write(&mut self, offset: usize, data: Vec<u8>) -> DandelionResult<()>;
-    fn read(&self, offset: usize, read_size: usize) -> DandelionResult<Vec<u8>>;
+    fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()>;
+    fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()>;
 }
 
 // https://docs.rs/enum_dispatch/latest/enum_dispatch/index.html
@@ -20,18 +20,18 @@ pub enum ContextType {
 }
 
 impl ContextTrait for ContextType {
-    fn write(&mut self, offset: usize, data: Vec<u8>) -> DandelionResult<()> {
+    fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
         match self {
             ContextType::Malloc(context) => context.write(offset, data),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.write(offset, data),
         }
     }
-    fn read(&self, offset: usize, read_size: usize) -> DandelionResult<Vec<u8>> {
+    fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         match self {
-            ContextType::Malloc(context) => context.read(offset, read_size),
+            ContextType::Malloc(context) => context.read(offset, read_buffer),
             #[cfg(feature = "cheri")]
-            ContextType::Cheri(context) => context.read(offset, read_size),
+            ContextType::Cheri(context) => context.read(offset, read_buffer),
         }
     }
 }
@@ -43,11 +43,11 @@ pub struct Context {
 }
 
 impl ContextTrait for Context {
-    fn write(&mut self, offset: usize, data: Vec<u8>) -> DandelionResult<()> {
+    fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
         self.context.write(offset, data)
     }
-    fn read(&self, offset: usize, read_size: usize) -> DandelionResult<Vec<u8>> {
-        self.context.read(offset, read_size)
+    fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
+        self.context.read(offset, read_buffer)
     }
 }
 
@@ -66,9 +66,13 @@ impl Context {
             ],
         };
     }
+    /// Mark area between offset and offset + size as occupied
+    /// Start search on index and merge occupation with any overlapping occupation
+    /// Assumes offset is larger than or equal to the offset of occupation at index
     fn insert(&mut self, index: usize, offset: usize, size: usize) {
-        if (self.occupation[index].offset + self.occupation[index].size) == offset {
-            self.occupation[index].size += size;
+        let mut check_index = index;
+        if (self.occupation[index].offset + self.occupation[index].size) <= offset {
+            self.occupation[index].size = offset - self.occupation[index].offset + size;
         } else {
             self.occupation.insert(
                 index + 1,
@@ -76,18 +80,30 @@ impl Context {
                     offset: offset,
                     size,
                 },
-            )
+            );
+            check_index = index + 1;
+        }
+        while self.occupation.len() > check_index + 1
+            && self.occupation[check_index + 1].offset
+                <= (self.occupation[check_index].offset + self.occupation[check_index].size)
+        {
+            self.occupation[check_index].size = self.occupation[check_index + 1].offset
+                - self.occupation[check_index].offset
+                + self.occupation[check_index + 1].size;
+            self.occupation.remove(check_index + 1);
         }
     }
+    /// Make sure all space between offset and size is marked as occupied, ignoring overlap with previous occupation
     pub fn occupy_space(&mut self, offset: usize, size: usize) -> DandelionResult<()> {
+        if offset + size > self.size {
+            return Err(DandelionError::InvalidWrite);
+        }
         let insertion_index = self
             .occupation
             .windows(2)
             .enumerate()
             .find_map(|(index, pos)| {
-                let start = pos[0].offset + pos[0].size;
-                let end = pos[1].offset;
-                if offset >= start && offset + size < end {
+                if offset >= pos[0].offset && offset < pos[1].offset {
                     return Some(index);
                 } else {
                     return None;
@@ -95,8 +111,6 @@ impl Context {
             });
         if let Some(index) = insertion_index {
             self.insert(index, offset, size);
-        } else {
-            return Err(DandelionError::ContextFull);
         }
         return Ok(());
     }
@@ -123,6 +137,12 @@ impl Context {
         }
         self.insert(index, start_address, size);
         return Ok(start_address);
+    }
+    pub fn get_free_space_and_write_slice<T>(&mut self, data: &[T]) -> DandelionResult<*const T> {
+        let alloc_size = data.len() * core::mem::size_of::<T>();
+        let offset = self.get_free_space(alloc_size, core::mem::align_of::<T>())?;
+        self.write(offset, data)?;
+        Ok(offset as *const T)
     }
     pub fn get_last_item_end(&self) -> usize {
         let last_item = self.occupation[self.occupation.len() - 2];
@@ -157,7 +177,7 @@ pub fn transefer_memory(
     source_offset: usize,
     size: usize,
 ) -> DandelionResult<()> {
-    let result = match (&mut destination.context, &source.context) {
+    return match (&mut destination.context, &source.context) {
         (ContextType::Malloc(destination_ctxt), ContextType::Malloc(source_ctxt)) => {
             malloc::malloc_transfer(
                 destination_ctxt,
@@ -179,14 +199,11 @@ pub fn transefer_memory(
         }
         // default implementation using reads and writes
         (destination, source) => {
-            let read_result = source.read(source_offset, size);
-            match read_result {
-                Ok(read_value) => destination.write(destination_offset, read_value),
-                Err(err) => Err(err),
-            }
+            let mut read_buffer = vec![0; size];
+            source.read(source_offset, &mut read_buffer)?;
+            destination.write(destination_offset, &read_buffer)
         }
     };
-    result
 }
 
 pub fn transfer_data_set(

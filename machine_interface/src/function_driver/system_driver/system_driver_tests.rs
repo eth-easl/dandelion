@@ -1,5 +1,5 @@
 use crate::{
-    function_driver::{Driver, Engine, FunctionConfig, SystemFunction},
+    function_driver::{Driver, FunctionConfig, SystemFunction},
     memory_domain::{Context, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
 };
@@ -8,7 +8,7 @@ use dandelion_commons::{
     DandelionResult,
 };
 
-const CONTEXT_SIZE: usize = 2048 * 1024;
+const _CONTEXT_SIZE: usize = 2048 * 1024;
 
 fn _write_request_line(
     context: &mut Context,
@@ -18,15 +18,15 @@ fn _write_request_line(
 ) -> DandelionResult<()> {
     let method_length = method.len();
     let method_offset = context.get_free_space(method_length, 8)?;
-    context.write(method_offset, method)?;
+    context.write(method_offset, &method)?;
 
     let version_length = version.len();
     let version_offset = context.get_free_space(version.len(), 8)?;
-    context.write(version_offset, version)?;
+    context.write(version_offset, &version)?;
 
     let uri_length = uri.len();
     let uri_offset = context.get_free_space(uri_length, 8)?;
-    context.write(uri_offset, uri)?;
+    context.write(uri_offset, &uri)?;
 
     context.content.push(Some(DataSet {
         ident: String::from("request"),
@@ -63,10 +63,9 @@ fn _write_headers(context: &mut Context, headers: Vec<(&str, &str)>) -> Dandelio
         buffers: vec![],
     };
     for (key, value) in headers {
-        let value_vec = value.as_bytes().to_vec();
-        let value_length = value_vec.len();
+        let value_length = value.len();
         let value_offset = context.get_free_space(value_length, 8)?;
-        context.write(value_offset, value_vec)?;
+        context.write(value_offset, value.as_bytes())?;
         header_set.buffers.push(DataItem {
             ident: key.to_string(),
             data: Position {
@@ -82,7 +81,7 @@ fn _write_headers(context: &mut Context, headers: Vec<(&str, &str)>) -> Dandelio
 fn _get_http<Dom: MemoryDomain, Drv: Driver>(dom_init: Vec<u8>, drv_init: Vec<u8>) -> () {
     let domain = Dom::init(dom_init).expect("Should be able to get domain");
     let mut context = domain
-        .acquire_context(CONTEXT_SIZE)
+        .acquire_context(_CONTEXT_SIZE)
         .expect("Should be able to get context");
     let mut engine = Drv::start_engine(drv_init).expect("Should be able to get engine");
     let config = FunctionConfig::SysConfig(SystemFunction::HTTPS);
@@ -128,31 +127,31 @@ fn _get_http<Dom: MemoryDomain, Drv: Driver>(dom_init: Vec<u8>, drv_init: Vec<u8
         .iter()
         .find(|item| item.ident == "status")
         .expect("Should have status");
-    let status = String::from_utf8(
-        result_context
-            .read(status_item.data.offset, status_item.data.size)
-            .expect("Should be able to read status"),
-    )
-    .expect("Should have status string");
+    let mut status_buffer = Vec::<u8>::new();
+    status_buffer.resize(status_item.data.size, 0);
+    result_context
+        .read(status_item.data.offset, &mut status_buffer)
+        .expect("Should be able to read status");
+    let status = String::from_utf8(status_buffer).expect("Should have status string");
     assert_eq!("200", status);
     let version_item = response_line
         .buffers
         .iter()
         .find(|item| item.ident == "version")
         .expect("Should have version");
-    let version = String::from_utf8(
-        result_context
-            .read(version_item.data.offset, version_item.data.size)
-            .expect("Should be able to read version"),
-    )
-    .expect("Should have version string");
+    let mut verison_buffer = Vec::<u8>::new();
+    verison_buffer.resize(version_item.data.size, 0);
+    result_context
+        .read(version_item.data.offset, &mut verison_buffer)
+        .expect("Should be able to read version");
+    let version = String::from_utf8(verison_buffer).expect("Should have version string");
     assert_eq!("HTTP/1.1", version);
 }
 
 fn _put_http<Dom: MemoryDomain, Drv: Driver>(dom_init: Vec<u8>, drv_init: Vec<u8>) -> () {
     let domain = Dom::init(dom_init).expect("Should be able to get domain");
     let mut context = domain
-        .acquire_context(CONTEXT_SIZE)
+        .acquire_context(_CONTEXT_SIZE)
         .expect("Should be able to get context");
     let mut engine = Drv::start_engine(drv_init).expect("Should be able to get engine");
     let config = FunctionConfig::SysConfig(SystemFunction::HTTPS);
@@ -167,7 +166,7 @@ fn _put_http<Dom: MemoryDomain, Drv: Driver>(dom_init: Vec<u8>, drv_init: Vec<u8
     let headers = vec![("Content-Type", "text/plain")];
     _write_headers(&mut context, headers).expect("Should be able to write headers");
 
-    let request_body = "Hello World\n".as_bytes().to_vec();
+    let request_body = "Hello World\n".as_bytes();
     let body_size = request_body.len();
     let body_offset = context
         .get_free_space(body_size, 8)
@@ -210,24 +209,26 @@ fn _put_http<Dom: MemoryDomain, Drv: Driver>(dom_init: Vec<u8>, drv_init: Vec<u8
         .iter()
         .find(|item| item.ident == "status")
         .expect("Should have status");
-    let status = String::from_utf8(
-        result_context
-            .read(status_item.data.offset, status_item.data.size)
-            .expect("Should be able to read status"),
-    )
-    .expect("Should have status string");
+
+    let mut status_buffer = Vec::<u8>::new();
+    status_buffer.resize(status_item.data.size, 0);
+    result_context
+        .read(status_item.data.offset, &mut status_buffer)
+        .expect("Should be able to read status");
+    let status = String::from_utf8(status_buffer).expect("Should have status string");
     assert_eq!("200", status);
+
     let version_item = response_line
         .buffers
         .iter()
         .find(|item| item.ident == "version")
         .expect("Should have version");
-    let version = String::from_utf8(
-        result_context
-            .read(version_item.data.offset, version_item.data.size)
-            .expect("Should be able to read version"),
-    )
-    .expect("Should have version string");
+    let mut verison_buffer = Vec::<u8>::new();
+    verison_buffer.resize(version_item.data.size, 0);
+    result_context
+        .read(version_item.data.offset, &mut verison_buffer)
+        .expect("Should be able to read version");
+    let version = String::from_utf8(verison_buffer).expect("Should have version string");
     assert_eq!("HTTP/1.1", version);
 }
 

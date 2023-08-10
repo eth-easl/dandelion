@@ -44,7 +44,7 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
         .get_free_space(8, 8)
         .expect("Should have space");
     input_context
-        .write(size_offset, Vec::<u8>::from(IN_SIZE))
+        .write(size_offset, &IN_SIZE)
         .expect("Should be able to write");
     input_context.content.push(Some(DataSet {
         ident: "".to_string(),
@@ -61,7 +61,7 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
         .expect("Should have space");
     unsafe {
         input_context
-            .write(in_map_offset, Vec::<u8>::from(IN_MAT))
+            .write(in_map_offset, &IN_MAT)
             .expect("Should be able to write input matrix");
     }
     input_context.content.push(Some(DataSet {
@@ -204,7 +204,7 @@ fn main() -> () {
         loader_map.insert(0, CheriLoader::parse_function as LoaderFunction);
         registry = FunctionRegistry::new(loader_map);
         let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        path.push("../machine_interface/tests/data/test_elf_aarch64c_matmul");
+        path.push("../machine_interface/tests/data/test_elf_cheri_matmul");
         // add for hot function
         registry.add_local(
             HOT_ID,

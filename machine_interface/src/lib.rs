@@ -44,7 +44,7 @@ pub struct DataSet {
     pub buffers: Vec<DataItem>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DataItem {
     pub ident: String,
     pub data: Position,

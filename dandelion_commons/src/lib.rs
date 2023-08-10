@@ -23,8 +23,12 @@ pub enum DandelionError {
     OutOfMemory,
     /// context can't fit additional memory
     ContextFull,
+    /// read buffer was misaligned for requested data type
+    ReadMisaligned,
     /// tried to read from domain outside of domain bounds
     InvalidRead,
+    /// offset handed to writing was not aligned with type to write
+    WriteMisaligned,
     /// tried to write to domain ouside of domain bounds
     InvalidWrite,
     /// found a case with a data item that is a set but has no entries

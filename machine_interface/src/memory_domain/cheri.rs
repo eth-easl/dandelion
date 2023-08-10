@@ -44,29 +44,42 @@ unsafe impl Sync for CheriContext {}
 // TODO implement drop
 
 impl ContextTrait for CheriContext {
-    fn write(&mut self, offset: usize, data: Vec<u8>) -> DandelionResult<()> {
+    fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
+        // check that buffer has proper allighment
+        if offset % core::mem::align_of::<T>() != 0 {
+            return Err(DandelionError::WriteMisaligned);
+        }
+
         // perform size checks
-        if data.len() + offset > self.size {
+        let write_size = core::mem::size_of::<T>() * data.len();
+        if write_size + offset > self.size {
             return Err(DandelionError::InvalidWrite);
         }
         unsafe {
-            cheri_write_context(self.context, data.as_ptr(), offset, data.len());
+            cheri_write_context(self.context, data.as_ptr() as *const u8, offset, write_size);
         }
-        Ok(())
+        return Ok(());
     }
-    fn read(&self, offset: usize, read_size: usize) -> DandelionResult<Vec<u8>> {
+    fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
+        // check that buffer has proper allighment
+        if offset % core::mem::align_of::<T>() != 0 {
+            return Err(DandelionError::ReadMisaligned);
+        }
+
+        let read_size = read_buffer.len() * core::mem::size_of::<T>();
         // perform size checks
         if read_size + offset > self.size {
             return Err(DandelionError::InvalidRead);
         }
-        // try to allocate space for read values
-        let mut result_vec = Vec::<u8>::new();
-        if let Err(_) = result_vec.try_reserve(read_size) {
-            return Err(DandelionError::OutOfMemory);
+        unsafe {
+            cheri_read_context(
+                self.context,
+                read_buffer.as_mut_ptr() as *mut u8,
+                offset,
+                read_size,
+            )
         }
-        result_vec.resize(read_size, 0);
-        unsafe { cheri_read_context(self.context, result_vec.as_mut_ptr(), offset, read_size) }
-        Ok(result_vec)
+        Ok(())
     }
 }
 
