@@ -94,14 +94,11 @@ mod dispatcher_tests {
         if context.content[size_set].is_some() || context.content[mat_set].is_some() {
             panic!("trying to add matrix where there is already set");
         }
-
-        let size_offset = context.get_free_space(8, 8).expect("Should have space");
-
         assert_eq!(matrix_dim * matrix_dim, matrix.len() as u64);
 
-        context
-            .write(size_offset, &[matrix_dim])
-            .expect("Should be able to write matrix size");
+        let size_offset = context
+            .get_free_space_and_write_slice(&[matrix_dim])
+            .expect("Should have space") as usize;
         context.content[size_set] = Some(DataSet {
             ident: "".to_string(),
             buffers: vec![DataItem {
@@ -114,11 +111,8 @@ mod dispatcher_tests {
         });
 
         let mat_offset = context
-            .get_free_space(matrix.len() * 8, 8)
-            .expect("Should have space");
-        context
-            .write(mat_offset, &matrix)
-            .expect("Should be able to write");
+            .get_free_space_and_write_slice(&matrix)
+            .expect("Should have space") as usize;
         context.content[mat_set] = Some(DataSet {
             ident: "".to_string(),
             buffers: vec![DataItem {
@@ -147,41 +141,37 @@ mod dispatcher_tests {
         if context.content[size_set].is_some() || context.content[mat_set].is_some() {
             panic!("trying to add matrix where there is already set");
         }
-        let size_offset = context.get_free_space(16, 8).expect("Should have space");
+        let row_offset = context
+            .get_free_space_and_write_slice(&[rows])
+            .expect("Should have space") as usize;
+        let col_offset = context
+            .get_free_space_and_write_slice(&[cols])
+            .expect("Should have space") as usize;
 
         assert_eq!(rows * cols, matrix.len() as u64);
 
-        context
-            .write(size_offset, &[rows])
-            .expect("Should be able to write matrix size");
-        context
-            .write(size_offset + 8, &[cols])
-            .expect("Should be able to write matrix size");
         context.content[size_set] = Some(DataSet {
             ident: "".to_string(),
             buffers: vec![
                 DataItem {
                     ident: "".to_string(),
                     data: Position {
-                        offset: size_offset,
+                        offset: row_offset,
                         size: 8,
                     },
                 },
                 DataItem {
                     ident: "".to_string(),
                     data: Position {
-                        offset: size_offset + 8,
+                        offset: col_offset,
                         size: 8,
                     },
                 },
             ],
         });
         let in_mat_offset = context
-            .get_free_space(matrix.len() * 8, 8)
-            .expect("Should have space");
-        context
-            .write(in_mat_offset, &matrix)
-            .expect("Should be able to write");
+            .get_free_space_and_write_slice(&matrix)
+            .expect("Should have space") as usize;
         context.content[mat_set] = Some(DataSet {
             ident: "".to_string(),
             buffers: vec![DataItem {
@@ -224,8 +214,6 @@ mod dispatcher_tests {
             driver,
             engine_resource,
         );
-        // need space for the input matrix of 2x2 uint64_t as well as a output matrix of the same size
-        // and an uint64_t size that gives the column / row size (which is 2)
         const CONTEXT_SIZE: usize = 9 * 8;
         let mut in_context = Domain::init(domain_arg)
             .expect("Should be able to init domain")
@@ -272,17 +260,11 @@ mod dispatcher_tests {
             driver,
             engine_resource,
         );
-        // need space for the input matrix of 2x2 uint64_t as well as a output matrix of the same size
-        // and an uint64_t size that gives the column / row size (which is 2)
         const CONTEXT_SIZE: usize = 9 * 8;
         let mut in_context = Domain::init(domain_arg)
             .expect("Should be able to init domain")
             .acquire_context(CONTEXT_SIZE)
             .expect("Should get input matrix context");
-        let size_offset = in_context.get_free_space(8, 8).expect("Should have space");
-        in_context
-            .write(size_offset, &[2u64])
-            .expect("Should be able to write matrix size");
         add_matmul_matrix(&mut in_context, 0, 1, 2, vec![1, 2, 3, 4]);
 
         let composition = Composition {
@@ -422,8 +404,6 @@ mod dispatcher_tests {
             driver,
             engine_resource,
         );
-        // need space for the input matrix of 2x2 uint64_t as well as a output matrix of the same size
-        // and an uint64_t size that gives the column / row size (which is 2)
         const CONTEXT_SIZE: usize = 9 * 8;
         let mut in_context = Domain::init(domain_arg)
             .expect("Should be able to init domain")
@@ -512,8 +492,6 @@ mod dispatcher_tests {
             driver,
             engine_resource,
         );
-        // need space for the input matrix of 2x2 uint64_t as well as a output matrix of the same size
-        // and an uint64_t size that gives the column / row size (which is 2)
         const CONTEXT_SIZE: usize = 10 * 8;
         let mut in_context = Domain::init(domain_arg)
             .expect("Should be able to init domain")

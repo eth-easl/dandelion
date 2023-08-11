@@ -1,8 +1,8 @@
 #[cfg(all(test, any(feature = "cheri")))]
 mod compute_driver_tests {
     use crate::{
-        function_driver::{util::load_static, Driver, Function},
-        memory_domain::{ContextTrait, MemoryDomain},
+        function_driver::{util::load_static, Driver, Engine, Function, FunctionConfig},
+        memory_domain::{Context, ContextTrait, MemoryDomain},
         DataItem, DataSet, Position,
     };
     use dandelion_commons::{
@@ -11,7 +11,7 @@ mod compute_driver_tests {
     };
     use std::sync::{Arc, Mutex};
 
-    fn read_file(name: &str, expected_size: usize) -> Vec<u8> {
+    fn read_file(name: &str) -> Vec<u8> {
         // load elf file
         let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         path.push("tests/data");
@@ -19,12 +19,9 @@ mod compute_driver_tests {
         let mut elf_file = std::fs::File::open(path).expect("Should have found test file");
         let mut elf_buffer = Vec::<u8>::new();
         use std::io::Read;
-        let file_length = elf_file
+        let _ = elf_file
             .read_to_end(&mut elf_buffer)
             .expect("Should be able to read entire file");
-        if expected_size != 0 {
-            assert_eq!(expected_size, file_length);
-        }
         return elf_buffer;
     }
 
@@ -56,33 +53,45 @@ mod compute_driver_tests {
         }
     }
 
+    fn prepare_engine_and_function<Dom: MemoryDomain>(
+        filename: &str,
+        dom_init: Vec<u8>,
+        driver: &Box<dyn Driver>,
+        drv_init: Vec<u8>,
+    ) -> (
+        Box<dyn MemoryDomain>,
+        Box<dyn Engine>,
+        Context,
+        FunctionConfig,
+    ) {
+        let elf_buffer = read_file(filename);
+        let mut domain = Dom::init(dom_init).expect("Should have initialized domain");
+        let Function {
+            requirements,
+            context,
+            config,
+        } = driver
+            .parse_function(elf_buffer, &mut domain)
+            .expect("Should be able to parse function");
+        let engine = driver
+            .start_engine(vec![drv_init[0]])
+            .expect("Should be able to start engine");
+        let function_context = load_static(&mut domain, &context, &requirements)
+            .expect("Should be able to load function");
+        domain
+            .release_context(context)
+            .expect("Should release context");
+        return (domain, engine, function_context, config);
+    }
+
     fn engine_minimal<Dom: MemoryDomain>(
         filename: &str,
         dom_init: Vec<u8>,
         driver: Box<dyn Driver>,
         drv_init: Vec<u8>,
     ) {
-        // load elf file
-        let elf_buffer = read_file(filename, 0);
-        let mut domain = Dom::init(dom_init).expect("Should have initialized new cheri domain");
-        let Function {
-            requirements,
-            context: static_context,
-            config,
-        } = driver
-            .parse_function(elf_buffer, &mut domain)
-            .expect("Empty string should return error");
-
-        let mut engine = driver
-            .start_engine(vec![drv_init[0]])
-            .expect("Should be able to start engine");
-
-        // set up context and fill in static requirements
-        let function_context_result = load_static(&mut domain, &static_context, &requirements);
-        let function_context = match function_context_result {
-            Ok(c) => c,
-            Err(err) => panic!("Expect static loading to succeed, failed with {:?}", err),
-        };
+        let (domain, mut engine, function_context, config) =
+            prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         let archive = Arc::new(Mutex::new(Archive::new()));
         let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
         let (result, function_context) = tokio::runtime::Builder::new_current_thread()
@@ -93,9 +102,6 @@ mod compute_driver_tests {
         domain
             .release_context(function_context)
             .expect("Should release context");
-        domain
-            .release_context(static_context)
-            .expect("Should release context");
     }
 
     fn engine_matmul_single<Dom: MemoryDomain>(
@@ -104,27 +110,8 @@ mod compute_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: Vec<u8>,
     ) {
-        // load elf file
-        let elf_buffer = read_file(filename, 0);
-        let mut domain = Dom::init(dom_init).expect("Should have initialized new cheri domain");
-        let Function {
-            requirements,
-            context: mut static_context,
-            config,
-        } = driver
-            .parse_function(elf_buffer, &mut domain)
-            .expect("Empty string should return error");
-
-        let mut engine = driver
-            .start_engine(vec![drv_init[0]])
-            .expect("Should be able to start engine");
-
-        // set up context and fill in static requirements
-        let function_context_result = load_static(&mut domain, &mut static_context, &requirements);
-        let mut function_context = match function_context_result {
-            Ok(c) => c,
-            Err(err) => panic!("Expect static loading to succeed, failed with {:?}", err),
-        };
+        let (domain, mut engine, mut function_context, config) =
+            prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         // add inputs
         let in_size_offset = function_context
             .get_free_space_and_write_slice(&[1i64])
@@ -184,9 +171,6 @@ mod compute_driver_tests {
         domain
             .release_context(result_context)
             .expect("Should release context");
-        domain
-            .release_context(static_context)
-            .expect("Should release context");
     }
 
     fn get_expected_mat(size: usize) -> Vec<i64> {
@@ -214,34 +198,19 @@ mod compute_driver_tests {
     ) {
         const LOWER_SIZE_BOUND: usize = 2;
         const UPPER_SIZE_BOUND: usize = 16;
-        // load elf file
-        let elf_buffer = read_file(filename, 0);
-        let mut domain = Dom::init(dom_init).expect("Should have initialized new cheri domain");
-        let Function {
-            requirements,
-            context: static_context,
-            config,
-        } = driver
-            .parse_function(elf_buffer, &mut domain)
-            .expect("Empty string should return error");
-
-        let mut engine = driver
-            .start_engine(vec![drv_init[0]])
-            .expect("Should be able to start engine");
         for mat_size in LOWER_SIZE_BOUND..UPPER_SIZE_BOUND {
-            // set up context and fill in static requirements
-            let function_context_result = load_static(&mut domain, &static_context, &requirements);
-            let mut function_context = match function_context_result {
-                Ok(c) => c,
-                Err(err) => panic!("Expect static loading to succeed, failed with {:?}", err),
-            };
+            let (domain, mut engine, mut function_context, config) =
+                prepare_engine_and_function::<Dom>(
+                    filename,
+                    dom_init.clone(),
+                    &driver,
+                    drv_init.clone(),
+                );
             // add inputs
             let in_size_offset = function_context
-                .get_free_space(8, 8)
-                .expect("Should have space for single i64");
-            function_context
-                .write(in_size_offset, &[mat_size as i64])
-                .expect("Write should go through");
+                .get_free_space_and_write_slice(&[mat_size as i64])
+                .expect("Should have space for single i64")
+                as usize;
             function_context.content.push(Some(DataSet {
                 ident: "".to_string(),
                 buffers: vec![DataItem {
@@ -253,16 +222,13 @@ mod compute_driver_tests {
                 }],
             }));
             let input_size = 8 * mat_size * mat_size;
-            let in_mat_offset = function_context
-                .get_free_space(input_size, 8)
-                .expect("Should have space for single i64");
             let mut mat_vec = Vec::<i64>::new();
             for i in 0..(mat_size * mat_size) {
                 mat_vec.push(i as i64);
             }
-            function_context
-                .write(in_mat_offset, &mat_vec)
-                .expect("Write should go through");
+            let in_mat_offset = function_context
+                .get_free_space_and_write_slice(&mat_vec)
+                .expect("Should have space") as usize;
             function_context.content.push(Some(DataSet {
                 ident: "".to_string(),
                 buffers: vec![DataItem {
@@ -310,9 +276,6 @@ mod compute_driver_tests {
                 .release_context(result_context)
                 .expect("Should release context");
         }
-        domain
-            .release_context(static_context)
-            .expect("Should release context");
     }
 
     fn engine_stdio<Dom: MemoryDomain>(
@@ -321,32 +284,12 @@ mod compute_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: Vec<u8>,
     ) {
-        // load elf file
-        let elf_buffer = read_file(filename, 0);
-        let mut domain = Dom::init(dom_init).expect("Should have initialized new cheri domain");
-        let Function {
-            requirements,
-            context: static_context,
-            config,
-        } = driver
-            .parse_function(elf_buffer, &mut domain)
-            .expect("Parsing should work");
-
-        let mut engine = driver
-            .start_engine(vec![drv_init[0]])
-            .expect("Should be able to start engine");
-        let function_context_result = load_static(&mut domain, &static_context, &requirements);
-        let mut function_context = match function_context_result {
-            Ok(c) => c,
-            Err(err) => panic!("Expect static loading to succeed, failed with {:?}", err),
-        };
+        let (domain, mut engine, mut function_context, config) =
+            prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         let stdin_content = "Test line \n line 2\n";
         let stdin_offset = function_context
-            .get_free_space(stdin_content.len(), 8)
-            .expect("Should have space");
-        function_context
-            .write(stdin_offset, stdin_content.as_bytes())
-            .expect("Write should go through");
+            .get_free_space_and_write_slice(stdin_content.as_bytes())
+            .expect("Should have space") as usize;
         function_context.content.push(Some(DataSet {
             ident: "stdio".to_string(),
             buffers: vec![DataItem {
@@ -408,6 +351,9 @@ mod compute_driver_tests {
         );
         assert_eq!(expected_stdout, stdout_string);
         assert_eq!("Test string to stderr\n", stderr_string);
+        domain
+            .release_context(result_context)
+            .expect("Should be able to release");
     }
 
     fn engine_fileio<Dom: MemoryDomain>(
@@ -416,32 +362,12 @@ mod compute_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: Vec<u8>,
     ) {
-        // load elf file
-        let elf_buffer = read_file(filename, 0);
-        let mut domain = Dom::init(dom_init).expect("Should have initialized new cheri domain");
-        let Function {
-            requirements,
-            context: static_context,
-            config,
-        } = driver
-            .parse_function(elf_buffer, &mut domain)
-            .expect("Parsing should work");
-
-        let mut engine = driver
-            .start_engine(vec![drv_init[0]])
-            .expect("Should be able to start engine");
-        let function_context_result = load_static(&mut domain, &static_context, &requirements);
-        let mut function_context = match function_context_result {
-            Ok(c) => c,
-            Err(err) => panic!("Expect static loading to succeed, failed with {:?}", err),
-        };
+        let (domain, mut engine, mut function_context, config) =
+            prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         let in_file_content = "Test file 0\n line 2\n";
         let in_file_offset = function_context
-            .get_free_space(in_file_content.len(), 8)
-            .expect("Should have space");
-        function_context
-            .write(in_file_offset, in_file_content.as_bytes())
-            .expect("Write should go through");
+            .get_free_space_and_write_slice(in_file_content.as_bytes())
+            .expect("Should have space") as usize;
         function_context.content.push(Some(DataSet {
             ident: "in".to_string(),
             buffers: vec![DataItem {
@@ -454,32 +380,20 @@ mod compute_driver_tests {
         }));
         let in_file1_content = "Test file 1 \n line 2\n";
         let in_file1_offset = function_context
-            .get_free_space(in_file1_content.len(), 8)
-            .expect("Should have space");
-        function_context
-            .write(in_file1_offset, in_file1_content.as_bytes())
-            .expect("Write should go through");
+            .get_free_space_and_write_slice(in_file1_content.as_bytes())
+            .expect("Should have space") as usize;
         let in_file2_content = "Test file 2 \n line 2\n";
         let in_file2_offset = function_context
-            .get_free_space(in_file2_content.len(), 8)
-            .expect("Should have space");
-        function_context
-            .write(in_file2_offset, in_file2_content.as_bytes())
-            .expect("Write should go through");
+            .get_free_space_and_write_slice(in_file2_content.as_bytes())
+            .expect("Should have space") as usize;
         let in_file3_content = "Test file 3 \n line 2\n";
         let in_file3_offset = function_context
-            .get_free_space(in_file3_content.len(), 8)
-            .expect("Should have space");
-        function_context
-            .write(in_file3_offset, in_file3_content.as_bytes())
-            .expect("Write should go through");
+            .get_free_space_and_write_slice(in_file3_content.as_bytes())
+            .expect("Should have space") as usize;
         let in_file4_content = "Test file 4 \n line 2\n";
         let in_file4_offset = function_context
-            .get_free_space(in_file4_content.len(), 8)
-            .expect("Should have space");
-        function_context
-            .write(in_file4_offset, in_file4_content.as_bytes())
-            .expect("Write should go through");
+            .get_free_space_and_write_slice(in_file4_content.as_bytes())
+            .expect("Should have space") as usize;
         function_context.content.push(Some(DataSet {
             ident: "in_nested".to_string(),
             buffers: vec![
@@ -568,6 +482,9 @@ mod compute_driver_tests {
             };
             assert_eq!(expected_string, content_string);
         }
+        domain
+            .release_context(result_context)
+            .expect("Should be able to release context");
     }
 
     macro_rules! driverTests {

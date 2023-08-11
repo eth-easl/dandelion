@@ -19,16 +19,13 @@ mod system_driver_tests {
         version: Vec<u8>,
     ) -> DandelionResult<()> {
         let method_length = method.len();
-        let method_offset = context.get_free_space(method_length, 8)?;
-        context.write(method_offset, &method)?;
+        let method_offset = context.get_free_space_and_write_slice(&method)? as usize;
 
         let version_length = version.len();
-        let version_offset = context.get_free_space(version.len(), 8)?;
-        context.write(version_offset, &version)?;
+        let version_offset = context.get_free_space_and_write_slice(&version)? as usize;
 
         let uri_length = uri.len();
-        let uri_offset = context.get_free_space(uri_length, 8)?;
-        context.write(uri_offset, &uri)?;
+        let uri_offset = context.get_free_space_and_write_slice(&uri)? as usize;
 
         context.content.push(Some(DataSet {
             ident: String::from("request"),
@@ -66,8 +63,7 @@ mod system_driver_tests {
         };
         for (key, value) in headers {
             let value_length = value.len();
-            let value_offset = context.get_free_space(value_length, 8)?;
-            context.write(value_offset, value.as_bytes())?;
+            let value_offset = context.get_free_space_and_write_slice(value.as_bytes())? as usize;
             header_set.buffers.push(DataItem {
                 ident: key.to_string(),
                 data: Position {
