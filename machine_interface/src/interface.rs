@@ -32,6 +32,7 @@ struct IoBufferDescriptor {
     ident_len: size_t,
     data: uintptr_t,
     data_len: size_t,
+    key: size_t,
 }
 
 pub fn setup_input_structs(
@@ -88,13 +89,18 @@ pub fn setup_input_structs(
         });
         // find buffers
         for b in 0..buffer_len {
-            let (name, offset, size) = context.content[c]
+            let (name, offset, size, key) = context.content[c]
                 .as_ref()
                 .and_then(|set| {
                     let buffer = &set.buffers[b];
-                    return Some((buffer.ident.clone(), buffer.data.offset, buffer.data.size));
+                    return Some((
+                        buffer.ident.clone(),
+                        buffer.data.offset,
+                        buffer.data.size,
+                        buffer.key,
+                    ));
                 })
-                .unwrap_or((String::from(""), 0, 0));
+                .unwrap_or((String::from(""), 0, 0, 0));
             let name_length = name.len();
             let mut string_offset = 0;
             if name_length != 0 {
@@ -105,6 +111,7 @@ pub fn setup_input_structs(
                 ident_len: name_length,
                 data: offset,
                 data_len: size,
+                key: key as usize,
             });
         }
     }
@@ -219,6 +226,7 @@ pub fn read_output_structs(context: &mut Context, base_address: usize) -> Dandel
         ident_len: 0,
         data: 0,
         data_len: 0,
+        key: 0,
     });
     context.read(output_buffers_offset, &mut output_buffers)?;
     assert_eq!(
@@ -249,6 +257,7 @@ pub fn read_output_structs(context: &mut Context, base_address: usize) -> Dandel
             context.read(buffer_ident_offset, &mut buffer_ident)?;
             let data_offset = output_buffers[buffer_index].data as usize;
             let data_length = output_buffers[buffer_index].data_len;
+            let key = output_buffers[buffer_index].key;
             let ident_string = String::from_utf8(buffer_ident).unwrap_or("".to_string());
             buffers.push(DataItem {
                 ident: ident_string,
@@ -256,6 +265,7 @@ pub fn read_output_structs(context: &mut Context, base_address: usize) -> Dandel
                     offset: data_offset,
                     size: data_length,
                 },
+                key: key as u32,
             });
             context.occupy_space(data_offset, data_length)?;
         }

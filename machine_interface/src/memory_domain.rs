@@ -277,6 +277,7 @@ pub fn transer_data_item(
                 .resize_with(destination_item_index + 1, || DataItem {
                     ident: String::from(""),
                     data: Position { offset: 0, size: 0 },
+                    key: 0,
                 });
         } else if destination_set.buffers[destination_item_index].data.size > 0 {
             return Err(DandelionError::TransferItemAlreadyPresent);

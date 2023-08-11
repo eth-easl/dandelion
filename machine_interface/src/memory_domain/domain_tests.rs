@@ -123,6 +123,7 @@ fn transfer_item<D: MemoryDomain>(
                 offset: offset,
                 size: item_size,
             },
+            key: 0,
         }],
     });
     let set_name = "";

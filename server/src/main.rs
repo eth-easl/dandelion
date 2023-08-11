@@ -51,6 +51,7 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
                 offset: size_offset,
                 size: 8,
             },
+            key: 0,
         }],
     }));
     let in_map_offset = input_context
@@ -69,6 +70,7 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
                 offset: in_map_offset,
                 size: MAT_SIZE,
             },
+            key: 0,
         }],
     }));
     inputs.push((

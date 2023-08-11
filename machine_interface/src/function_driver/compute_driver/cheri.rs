@@ -285,6 +285,7 @@ impl Driver for CheriDriver {
                     offset: write_counter,
                     size: position.size,
                 },
+                key: 0,
             });
             write_counter += position.size;
         }

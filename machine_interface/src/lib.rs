@@ -48,4 +48,5 @@ pub struct DataSet {
 pub struct DataItem {
     pub ident: String,
     pub data: Position,
+    pub key: u32,
 }

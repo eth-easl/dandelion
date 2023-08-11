@@ -124,6 +124,7 @@ mod compute_driver_tests {
                     offset: in_size_offset as usize,
                     size: 8,
                 },
+                key: 0,
             }],
         }));
         let in_mat_offset = function_context
@@ -137,6 +138,7 @@ mod compute_driver_tests {
                     offset: in_mat_offset as usize,
                     size: 8,
                 },
+                key: 0,
             }],
         }));
         let archive = Arc::new(Mutex::new(Archive::new()));
@@ -219,6 +221,7 @@ mod compute_driver_tests {
                         offset: in_size_offset,
                         size: 8,
                     },
+                    key: 0,
                 }],
             }));
             let input_size = 8 * mat_size * mat_size;
@@ -237,6 +240,7 @@ mod compute_driver_tests {
                         offset: in_mat_offset,
                         size: input_size,
                     },
+                    key: 0,
                 }],
             }));
             let archive = Arc::new(Mutex::new(Archive::new()));
@@ -298,6 +302,7 @@ mod compute_driver_tests {
                     offset: stdin_offset,
                     size: stdin_content.len(),
                 },
+                key: 0,
             }],
         }));
         println!("{:?}", function_context.content);
@@ -376,6 +381,7 @@ mod compute_driver_tests {
                     offset: in_file_offset,
                     size: in_file_content.len(),
                 },
+                key: 0,
             }],
         }));
         let in_file1_content = "Test file 1 \n line 2\n";
@@ -403,6 +409,7 @@ mod compute_driver_tests {
                         offset: in_file1_offset,
                         size: in_file1_content.len(),
                     },
+                    key: 0,
                 },
                 DataItem {
                     ident: "in_folder/in_file".to_string(),
@@ -410,6 +417,7 @@ mod compute_driver_tests {
                         offset: in_file2_offset,
                         size: in_file2_content.len(),
                     },
+                    key: 0,
                 },
                 DataItem {
                     ident: "in_folder/in_file_two".to_string(),
@@ -417,6 +425,7 @@ mod compute_driver_tests {
                         offset: in_file3_offset,
                         size: in_file3_content.len(),
                     },
+                    key: 0,
                 },
                 DataItem {
                     ident: "in_folder/in_folder_two/in_file".to_string(),
@@ -424,6 +433,7 @@ mod compute_driver_tests {
                         offset: in_file4_offset,
                         size: in_file4_content.len(),
                     },
+                    key: 0,
                 },
             ],
         }));

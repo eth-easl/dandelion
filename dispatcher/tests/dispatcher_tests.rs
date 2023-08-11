@@ -107,6 +107,7 @@ mod dispatcher_tests {
                     offset: size_offset,
                     size: 8,
                 },
+                key: 0,
             }],
         });
 
@@ -121,6 +122,7 @@ mod dispatcher_tests {
                     offset: mat_offset,
                     size: matrix.len() * 8,
                 },
+                key: 0,
             }],
         });
     }
@@ -159,6 +161,7 @@ mod dispatcher_tests {
                         offset: row_offset,
                         size: 8,
                     },
+                    key: 0,
                 },
                 DataItem {
                     ident: "".to_string(),
@@ -166,6 +169,7 @@ mod dispatcher_tests {
                         offset: col_offset,
                         size: 8,
                     },
+                    key: 0,
                 },
             ],
         });
@@ -180,6 +184,7 @@ mod dispatcher_tests {
                     offset: in_mat_offset,
                     size: matrix.len() * 8,
                 },
+                key: 0,
             }],
         });
     }

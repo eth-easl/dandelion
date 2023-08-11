@@ -36,6 +36,7 @@ mod system_driver_tests {
                         offset: method_offset,
                         size: method_length,
                     },
+                    key: 0,
                 },
                 DataItem {
                     ident: String::from("version"),
@@ -43,6 +44,7 @@ mod system_driver_tests {
                         offset: version_offset,
                         size: version_length,
                     },
+                    key: 0,
                 },
                 DataItem {
                     ident: String::from("uri"),
@@ -50,6 +52,7 @@ mod system_driver_tests {
                         offset: uri_offset,
                         size: uri_length,
                     },
+                    key: 0,
                 },
             ],
         }));
@@ -70,6 +73,7 @@ mod system_driver_tests {
                     offset: value_offset,
                     size: value_length,
                 },
+                key: 0,
             });
         }
         context.content.push(Some(header_set));

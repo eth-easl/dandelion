@@ -160,6 +160,7 @@ fn http_context_write(
                         offset: status_offset,
                         size: status.len(),
                     },
+                    key: 0,
                 },
                 DataItem {
                     ident: String::from("version"),
@@ -167,6 +168,7 @@ fn http_context_write(
                         offset: version_offset,
                         size: version.len(),
                     },
+                    key: 0,
                 },
             ],
         }));
@@ -190,6 +192,7 @@ fn http_context_write(
                         offset: value_offset,
                         size: value.len(),
                     },
+                    key: 0,
                 };
                 header_dataset.buffers.push(item);
             }
@@ -208,6 +211,7 @@ fn http_context_write(
                     offset: body_offset,
                     size: body_length,
                 },
+                key: 0,
             }],
         };
         content.push(Some(body_set));
