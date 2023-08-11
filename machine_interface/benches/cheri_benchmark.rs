@@ -4,9 +4,9 @@ mod cheri_bench {
 use criterion::{criterion_group, BenchmarkId, Criterion};
 use machine_interface::{
     function_lib::{
-        cheri::{CheriDriver, CheriLoader},
+        cheri::CheriDriver,
         util::load_static,
-        Driver, Loader,
+        Driver, Function,
     },
     memory_domain::{cheri::CheriMemoryDomain, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
@@ -39,7 +39,8 @@ fn matmul_sequential_benchmark(c: &mut Criterion) {
 
     let mut domain =
         CheriMemoryDomain::init(Vec::<u8>::new()).expect("Should be able to initialize");
-    let mut engine = CheriDriver::start_engine(vec![1]).expect("Should be able to get one engine");
+    let driver = CheriDriver { };
+    let mut engine = driver.start_engine(vec![1]).expect("Should be able to get one engine");
     let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push("tests/data/test_elf_aarch64c_matmul");
     let mut elf_file = std::fs::File::open(path).expect("Should have found test file");
@@ -48,11 +49,11 @@ fn matmul_sequential_benchmark(c: &mut Criterion) {
     elf_file
         .read_to_end(&mut elf_buffer)
         .expect("Should be able to read entire file");
-    let (req_list, mut static_context, config) =
-        CheriLoader::parse_function(elf_buffer, &mut domain).expect("Should success at parsing");
+    let Function { requirements, context: mut static_context, config } =
+        driver.parse_function(elf_buffer, &mut domain).expect("Should success at parsing");
     c.bench_function("matmul", |b| {
         b.iter(|| {
-            let mut function_context = load_static(&mut domain, &mut static_context, &req_list)
+            let mut function_context = load_static(&mut domain, &mut static_context, &requirements)
                 .expect("Should be able to configure function context");
             // add inputs
             let in_size_offset = function_context

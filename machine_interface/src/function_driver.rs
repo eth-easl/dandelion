@@ -43,25 +43,24 @@ pub trait Engine: Send {
 // we could add a uncallable function with a private token that is not visible outside,
 // but not sure if that is necessary
 
-pub type DriverFunction = fn(Vec<u8>) -> DandelionResult<Box<dyn Engine>>;
-
 // TODO maybe combine driver and loader into one trait or replace them completely with function signatrue types
-pub trait Driver {
+pub trait Driver: Send+Sync {
     // the resource descirbed by config and make it into an engine of the type
-    fn start_engine(config: Vec<u8>) -> DandelionResult<Box<dyn Engine>>;
-}
+    fn start_engine(&self, config: Vec<u8>) -> DandelionResult<Box<dyn Engine>>;
 
-pub type LoaderFunction = fn(
-    Vec<u8>,
-    &Box<dyn MemoryDomain>,
-) -> DandelionResult<(DataRequirementList, Context, FunctionConfig)>;
-
-pub trait Loader {
     // parses an executable,
     // returns the layout requirements and a context containing static data,
     //  and a layout description for it
     fn parse_function(
+        &self,
         function: Vec<u8>,
         static_domain: &Box<dyn MemoryDomain>,
-    ) -> DandelionResult<(DataRequirementList, Context, FunctionConfig)>;
+    ) -> DandelionResult<Function>;
+}
+
+// TODO should be private?
+pub struct Function {
+    pub requirements: DataRequirementList,
+    pub context: Context,
+    pub config: FunctionConfig,
 }

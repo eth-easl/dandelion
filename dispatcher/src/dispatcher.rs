@@ -11,7 +11,7 @@ use futures::{
     stream::{FuturesUnordered, StreamExt},
 };
 use machine_interface::{
-    function_driver::{DriverFunction, FunctionConfig},
+    function_driver::FunctionConfig,
     memory_domain::{transer_data_item, transfer_data_set, Context, MemoryDomain},
 };
 use std::{
@@ -46,7 +46,6 @@ struct PartiallyReadyFunction {
 // That have compile time size and static indexing
 pub struct Dispatcher {
     domains: BTreeMap<ContextTypeId, Box<dyn MemoryDomain>>,
-    _drivers: BTreeMap<EngineTypeId, DriverFunction>,
     engines: BTreeMap<EngineTypeId, EngineQueue>,
     type_map: BTreeMap<EngineTypeId, ContextTypeId>,
     function_registry: FunctionRegistry,
@@ -56,19 +55,18 @@ pub struct Dispatcher {
 impl Dispatcher {
     pub fn init(
         domains: BTreeMap<ContextTypeId, Box<dyn MemoryDomain>>,
-        drivers: BTreeMap<EngineTypeId, DriverFunction>,
         type_map: BTreeMap<EngineTypeId, ContextTypeId>,
         function_registry: FunctionRegistry,
         mut resource_pool: ResourcePool,
     ) -> DandelionResult<Dispatcher> {
         let mut engines = BTreeMap::new();
         // Use up all engine resources to start with
-        for (engine_id, driver) in drivers.iter() {
+        for (engine_id, driver) in function_registry.drivers.iter() {
             let mut engine_vec = Vec::new();
             while let Ok(Some(resource)) =
                 resource_pool.sync_acquire_engine_resource(engine_id.clone())
             {
-                if let Ok(engine) = driver(vec![resource]) {
+                if let Ok(engine) = driver.start_engine(vec![resource]) {
                     engine_vec.push(engine);
                 }
             }
@@ -80,7 +78,6 @@ impl Dispatcher {
         let archive: Arc<SyncMutex<Archive>> = Arc::new(SyncMutex::new(Archive::new()));
         return Ok(Dispatcher {
             domains,
-            _drivers: drivers,
             engines,
             type_map,
             function_registry,

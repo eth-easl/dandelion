@@ -1,5 +1,5 @@
 use crate::{
-    function_driver::{compute_driver::cheri::CheriLoader, FunctionConfig, Loader},
+    function_driver::{compute_driver::cheri::CheriDriver, Driver, Function, FunctionConfig},
     memory_domain::{malloc::MallocMemoryDomain, MemoryDomain},
     Position,
 };
@@ -26,8 +26,14 @@ fn test_loader_basic() {
     let elf_buffer = read_file("test_elf_cheri_basic", 6400);
     let mut malloc_domain =
         MallocMemoryDomain::init(Vec::new()).expect("Should be able to get malloc domain");
-    let (req_list, context, config) =
-        CheriLoader::parse_function(elf_buffer, &mut malloc_domain).expect("Parsing should work");
+    let driver = CheriDriver {};
+    let Function {
+        requirements,
+        context,
+        config,
+    } = driver
+        .parse_function(elf_buffer, &mut malloc_domain)
+        .expect("Parsing should work");
     // check requirement list to be list of programm header info for after load
     // meaning addresses and sizes in virtual address space
     let expected_requirements = vec![
@@ -45,17 +51,17 @@ fn test_loader_basic() {
         },
     ];
     assert_eq!(
-        0x800_0000, req_list.size,
+        0x800_0000, requirements.size,
         "Missmatch in expected default context size"
     );
     // actual sizes in file
     let expected_sizes = vec![0x49c, 0xac4, 0x0];
     assert_eq!(
         expected_requirements.len(),
-        req_list.static_requirements.len(),
+        requirements.static_requirements.len(),
         "Requirements list lengths don't match"
     );
-    for (index, (expected, actual)) in req_list
+    for (index, (expected, actual)) in requirements
         .static_requirements
         .iter()
         .zip(expected_requirements.iter())

@@ -43,7 +43,8 @@ fn http_setup(context: &Context) -> DandelionResult<RequestInformation> {
         .find(|&buffer| buffer.ident == "method")
         .ok_or(DandelionError::MalformedSystemFuncArg)?;
 
-    let method_vec = context.read(method_item.data.offset, method_item.data.size)?;
+    let mut method_vec = vec![0u8; method_item.data.size];
+    context.read(method_item.data.offset, &mut method_vec)?;
     let method = match String::from_utf8(method_vec) {
         Ok(method_string) if method_string == "GET" => Method::GET,
         Ok(method_string) if method_string == "PUT" => Method::PUT,
@@ -56,7 +57,8 @@ fn http_setup(context: &Context) -> DandelionResult<RequestInformation> {
         .iter()
         .find(|&buffer| buffer.ident == "uri")
         .ok_or(DandelionError::MalformedSystemFuncArg)?;
-    let uri_vec = context.read(uri_item.data.offset, uri_item.data.size)?;
+    let mut uri_vec = vec![0u8; uri_item.data.size];
+    context.read(uri_item.data.offset, &mut uri_vec)?;
     let uri = String::from_utf8(uri_vec).or(Err(DandelionError::MalformedSystemFuncArg))?;
 
     let version_item = request_line
@@ -64,7 +66,8 @@ fn http_setup(context: &Context) -> DandelionResult<RequestInformation> {
         .iter()
         .find(|&buffer| buffer.ident == "version")
         .ok_or(DandelionError::MalformedSystemFuncArg)?;
-    let version_vec = context.read(version_item.data.offset, version_item.data.size)?;
+    let mut version_vec = vec![0u8; version_item.data.size];
+    context.read(version_item.data.offset, &mut version_vec)?;
     let version = match String::from_utf8(version_vec) {
         Ok(version_string) if version_string == "HTTP/0.9" => Version::HTTP_09,
         Ok(version_string) if version_string == "HTTP/1.0" => Version::HTTP_10,
@@ -146,13 +149,8 @@ fn http_context_write(
         body,
     } = response;
     if output_set_names.iter().any(|elem| elem == "status line") {
-        let status_length = status.len();
-        let version_length = version.len();
-        let status_offset = context.get_free_space(status_length + version_length, 8)?;
-        let version_offset = status_offset + status_length;
-        let mut write_vec = status.into_bytes();
-        write_vec.append(&mut version.into_bytes());
-        context.write(status_offset, write_vec)?;
+        let status_offset = context.get_free_space_and_write_slice(status.as_bytes())? as usize;
+        let version_offset = context.get_free_space_and_write_slice(version.as_bytes())? as usize;
         content.push(Some(DataSet {
             ident: String::from("status line"),
             buffers: vec![
@@ -160,14 +158,14 @@ fn http_context_write(
                     ident: String::from("status"),
                     data: Position {
                         offset: status_offset,
-                        size: status_length,
+                        size: status.len(),
                     },
                 },
                 DataItem {
                     ident: String::from("version"),
                     data: Position {
                         offset: version_offset,
-                        size: version_length,
+                        size: version.len(),
                     },
                 },
             ],
@@ -184,8 +182,8 @@ fn http_context_write(
         }
         for (key_opt, header_value) in headermap.into_iter() {
             if let Some(key) = key_opt {
-                let value = header_value.as_bytes().to_vec();
-                let value_offset = context.get_free_space(value.len(), 8)?;
+                let value = header_value.as_bytes();
+                let value_offset = context.get_free_space_and_write_slice(value)? as usize;
                 let item = DataItem {
                     ident: key.to_string(),
                     data: Position {
@@ -194,7 +192,6 @@ fn http_context_write(
                     },
                 };
                 header_dataset.buffers.push(item);
-                context.write(value_offset, value)?
             }
         }
         content.push(Some(header_dataset));
@@ -202,9 +199,7 @@ fn http_context_write(
 
     if output_set_names.iter().any(|elem| elem == "body") {
         let body_length = body.len();
-        let body_offset = context.get_free_space(body_length, 8)?;
-        context.write(body_offset, body)?;
-
+        let body_offset = context.get_free_space_and_write_slice(&body)? as usize;
         let body_set = DataSet {
             ident: String::from("body"),
             buffers: vec![DataItem {
@@ -227,16 +222,19 @@ async fn http_wrapper(
     runtime: &Runtime,
     mut recorder: Recorder,
 ) -> (DandelionResult<()>, Context) {
-    let _guard = runtime.enter();
-    let method = match http_setup(&context) {
-        Ok(method) => method,
-        Err(err) => return (Err(err), context),
-    };
+    let response_future;
+    {
+        let _guard = runtime.enter();
+        let method = match http_setup(&context) {
+            Ok(method) => method,
+            Err(err) => return (Err(err), context),
+        };
 
-    if let Err(err) = recorder.record(RecordPoint::EngineStart) {
-        return (Err(err), context);
+        if let Err(err) = recorder.record(RecordPoint::EngineStart) {
+            return (Err(err), context);
+        }
+        response_future = runtime.spawn(http_request(method));
     }
-    let response_future = runtime.spawn(http_request(method));
     let response = match response_future.await {
         Ok(Ok(info)) => info,
         Ok(Err(err)) => return (Err(err), context),
@@ -286,7 +284,7 @@ impl Engine for HyperEngine {
 pub struct HyperDriver {}
 
 impl Driver for HyperDriver {
-    fn start_engine(config: Vec<u8>) -> DandelionResult<Box<dyn Engine>> {
+    fn start_engine(&self, config: Vec<u8>) -> DandelionResult<Box<dyn Engine>> {
         if config.len() != 1 {
             return Err(DandelionError::ConfigMissmatch);
         }
@@ -301,5 +299,13 @@ impl Driver for HyperDriver {
             .build()
             .or(Err(DandelionError::EngineError))?;
         return Ok(Box::new(HyperEngine { runtime }));
+    }
+
+    fn parse_function(
+        &self,
+        _function: Vec<u8>,
+        _static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
+    ) -> DandelionResult<crate::function_driver::Function> {
+        return Err(DandelionError::CalledSystemFuncParser);
     }
 }

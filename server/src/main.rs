@@ -11,21 +11,18 @@ use hyper::{
 
 #[cfg(feature = "cheri")]
 use machine_interface::{
-    function_driver::{
-        compute_driver::cheri::{CheriDriver, CheriLoader},
-        Driver, DriverFunction, Loader, LoaderFunction,
-    },
+    function_driver::{compute_driver::cheri::CheriDriver, Driver},
     memory_domain::{cheri::CheriMemoryDomain, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
 };
-use std::{collections::BTreeMap, convert::Infallible, net::SocketAddr, println, sync::Arc, vec};
+use std::{collections::BTreeMap, convert::Infallible, net::SocketAddr, sync::Arc, vec};
 use tokio::runtime::Builder;
 // use std::time::Instant;
 
 const MAT_DIM: usize = 128;
 const MAT_SIZE: usize = MAT_DIM * MAT_DIM * 8;
 static mut IN_MAT: [u8; MAT_SIZE] = [0; MAT_SIZE];
-static IN_SIZE: [u8; 8] = u64::to_ne_bytes(MAT_DIM as u64);
+static IN_SIZE: u64 = MAT_DIM as u64;
 const HOT_ID: u64 = 0;
 const COLD_ID: u64 = 1;
 
@@ -44,7 +41,7 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
         .get_free_space(8, 8)
         .expect("Should have space");
     input_context
-        .write(size_offset, &IN_SIZE)
+        .write(size_offset, &[IN_SIZE])
         .expect("Should be able to write");
     input_context.content.push(Some(DataSet {
         ident: "".to_string(),
@@ -182,7 +179,6 @@ fn main() -> () {
     let mut domains = BTreeMap::new();
     let context_id: ContextTypeId = 0;
     let engine_id: EngineTypeId = 0;
-    let mut drivers = BTreeMap::new();
     let mut type_map = BTreeMap::new();
     type_map.insert(engine_id, context_id);
     let mut pool_map = BTreeMap::new();
@@ -192,17 +188,19 @@ fn main() -> () {
     };
     let mut registry;
     // insert specific configuration
+    // TODO this won't work if both features are enabled
     #[cfg(feature = "cheri")]
     {
+        let mut drivers = BTreeMap::new();
         domains.insert(
             context_id,
             CheriMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain"),
         );
-        let driver_func = CheriDriver::start_engine as DriverFunction;
-        drivers.insert(engine_id, driver_func);
-        let mut loader_map = BTreeMap::new();
-        loader_map.insert(0, CheriLoader::parse_function as LoaderFunction);
-        registry = FunctionRegistry::new(loader_map);
+        let driver: Box<dyn Driver> = Box::new(CheriDriver {});
+        drivers.insert(engine_id, driver);
+        let mut drivers: BTreeMap<_, Box<dyn Driver>> = BTreeMap::new();
+        drivers.insert(0, Box::new(CheriDriver {}));
+        registry = FunctionRegistry::new(drivers);
         let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         path.push("../machine_interface/tests/data/test_elf_cheri_matmul");
         // add for hot function
@@ -224,12 +222,12 @@ fn main() -> () {
     }
     #[cfg(not(feature = "cheri"))]
     {
-        let mut loader_map = BTreeMap::new();
+        let loader_map = BTreeMap::new();
         registry = FunctionRegistry::new(loader_map);
     }
 
     let dispatcher = Arc::new(
-        Dispatcher::init(domains, drivers, type_map, registry, resource_pool)
+        Dispatcher::init(domains, type_map, registry, resource_pool)
             .expect("Should be able to start dispatcher"),
     );
 

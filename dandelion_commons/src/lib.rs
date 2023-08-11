@@ -55,6 +55,8 @@ pub enum DandelionError {
     InvalidSystemFuncArg(String),
     /// System function did get unexpected response
     SystemFuncResponseError,
+    /// Tried to call parser for system function
+    CalledSystemFuncParser,
     // dispatcher errors
     /// dispatcher does not find a loader for this engine type
     DispatcherMissingLoader(EngineTypeId),
