@@ -13,7 +13,7 @@ use hyper::{
 use machine_interface::{
     function_driver::{compute_driver::cheri::CheriDriver, Driver},
     memory_domain::{cheri::CheriMemoryDomain, ContextTrait, MemoryDomain},
-    DataItem, DataSet, Position,
+    DataItem, DataSet, Position, Context
 };
 use std::{collections::BTreeMap, convert::Infallible, net::SocketAddr, sync::Arc, vec};
 use tokio::runtime::Builder;
@@ -25,18 +25,21 @@ static mut IN_MAT: [u8; MAT_SIZE] = [0; MAT_SIZE];
 static IN_SIZE: u64 = MAT_DIM as u64;
 const HOT_ID: u64 = 0;
 const COLD_ID: u64 = 1;
+static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
 
 #[cfg(feature = "cheri")]
-async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
+async fn run_mat_func(dispatcher: Arc<Dispatcher>, isCold: bool) -> (i64) {
     use dispatcher::dispatcher::TransferIndices;
 
     let mut inputs = Vec::new();
     let mut input_context;
     let total_size = 2 * MAT_SIZE + 8;
+
     let domain = CheriMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
     input_context = domain
         .acquire_context(total_size)
         .expect("Should always have space");
+
     let size_offset = input_context
         .get_free_space(8, 8)
         .expect("Should have space");
@@ -54,6 +57,7 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
             key: 0,
         }],
     }));
+
     let in_map_offset = input_context
         .get_free_space(MAT_SIZE, 8)
         .expect("Should have space");
@@ -62,6 +66,7 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
             .write(in_map_offset, &IN_MAT)
             .expect("Should be able to write input matrix");
     }
+
     input_context.content.push(Some(DataSet {
         ident: "".to_string(),
         buffers: vec![DataItem {
@@ -73,6 +78,7 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
             key: 0,
         }],
     }));
+
     inputs.push((
         &input_context,
         vec![
@@ -88,26 +94,60 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
             },
         ],
     ));
-    let result_context = dispatcher
-        .queue_function(COLD_ID, inputs, non_caching)
+
+    let result_context: Context = dispatcher
+        .queue_function(isCold as u64, inputs, isCold)
         .await
         .expect("Should get back context");
+    let checksum: i64 = getChecksum(result_context);
+
     domain
         .release_context(result_context)
         .expect("Should be able to release result");
     domain
         .release_context(input_context)
         .expect("Should be able to release input");
+
+    return checksum;
 }
+
+// Given a result context, return the last element of the resulting matrix
+fn getChecksum(context: Context) -> i64 {
+    // Determine offset of last matrix element
+    let dataset = context.content[0]
+        .expect("Should contain matrix");
+    let last_offset = dataset.buffers[0].data.offset
+        + dataset.buffers[0].data.size - 8;
+
+    // Read out the checksum
+    let mut checksum_buffer: Vec<i64> = vec![0; 1];
+
+    return checksum_buffer[0];
+}
+
+// Return a pointer to the matrix we pass to the function
+// and initialize it if necessary
+fn getMatrix(rows: i64, cols: i64) -> () {
+    // TODO
+}
+
+// Given a matmul request, parse it and return the matrix dimensions it contains
+fn parseMatrixDims(request: Request<Body>) -> (i64, i64) {
+    // TODO
+    let mut rows: i64 = 0;
+    let mut cols: i64 = 0;
+    return (rows, cols)
+}
+
 
 async fn serve_cold(
     _req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
 ) -> Result<Response<Body>, Infallible> {
     #[cfg(feature = "cheri")]
-    run_mat_func(dispatcher, true).await;
-    let answer = "Done: Cold\n";
-    Ok::<_, Infallible>(Response::new(answer.into()))
+    let response_vec: Vec<u8> = run_mat_func(dispatcher, true).await.to_be_bytes().to_vec();
+    Ok::<_, Infallible>(Response::new(response_vec.into()))
+
 }
 
 async fn serve_hot(
@@ -115,9 +155,8 @@ async fn serve_hot(
     dispatcher: Arc<Dispatcher>,
 ) -> Result<Response<Body>, Infallible> {
     #[cfg(feature = "cheri")]
-    run_mat_func(dispatcher, false).await;
-    let answer = "Done: Hot \n";
-    Ok::<_, Infallible>(Response::new(answer.into()))
+    let response_vec: Vec<u8> = run_mat_func(dispatcher, false).await.to_be_bytes().to_vec();
+    Ok::<_, Infallible>(Response::new(response_vec.into()))
 }
 
 async fn serve_native(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
