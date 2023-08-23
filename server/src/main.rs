@@ -15,9 +15,8 @@ use machine_interface::{
     memory_domain::{cheri::CheriMemoryDomain, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position, Context
 };
-use std::{collections::BTreeMap, convert::Infallible, net::SocketAddr, sync::Arc, vec};
+use std::{collections::BTreeMap, convert::Infallible, net::SocketAddr, sync::Arc};
 use tokio::runtime::Builder;
-// use std::time::Instant;
 
 const MAT_DIM: usize = 128;
 const MAT_SIZE: usize = MAT_DIM * MAT_DIM * 8;
@@ -30,6 +29,7 @@ static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
 #[cfg(feature = "cheri")]
 async fn run_mat_func(dispatcher: Arc<Dispatcher>, isCold: bool) -> (i64) {
     use dispatcher::dispatcher::TransferIndices;
+
 
     let mut inputs = Vec::new();
     let mut input_context;
@@ -78,37 +78,37 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, isCold: bool) -> (i64) {
             key: 0,
         }],
     }));
+    let input_rc = Arc::new(input_context);
+    inputs.push((
+        0,
+        CompositionSet {
+            context_list: vec![input_rc.clone()],
+            set_index: 0,
+            sharding_mode: dispatcher::dispatcher::ShardingMode::NoSharding,
+        },
+    ));
 
     inputs.push((
-        &input_context,
-        vec![
-            TransferIndices {
-                input_set_index: 0,
-                output_set_index: 0,
-                item_indices: None,
-            },
-            TransferIndices {
-                input_set_index: 1,
-                output_set_index: 1,
-                item_indices: None,
-            },
-        ],
+        1,
+        CompositionSet {
+            set_index: 1,
+            context_list: vec![input_rc.clone()],
+            sharding_mode: dispatcher::dispatcher::ShardingMode::NoSharding,
+        },
     ));
+
+    let result_context = dispatcher
+        .queue_function(COLD_ID, inputs, non_caching)
+        .await
+        .expect("Should get back context");
 
     let result_context: Context = dispatcher
         .queue_function(isCold as u64, inputs, isCold)
         .await
         .expect("Should get back context");
-    let checksum: i64 = getChecksum(result_context);
 
-    domain
-        .release_context(result_context)
-        .expect("Should be able to release result");
-    domain
-        .release_context(input_context)
-        .expect("Should be able to release input");
+    return getChecksum(result_context);
 
-    return checksum;
 }
 
 // Given a result context, return the last element of the resulting matrix

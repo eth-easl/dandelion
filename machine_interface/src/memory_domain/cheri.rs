@@ -83,6 +83,14 @@ impl ContextTrait for CheriContext {
     }
 }
 
+impl Drop for CheriContext {
+    fn drop(&mut self) {
+        unsafe {
+            cheri_free(self.context);
+        }
+    }
+}
+
 pub struct CheriMemoryDomain {}
 
 impl MemoryDomain for CheriMemoryDomain {
@@ -90,28 +98,18 @@ impl MemoryDomain for CheriMemoryDomain {
         Ok(Box::new(CheriMemoryDomain {}))
     }
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
-        let mut new_context: Box<CheriContext> = Box::new(CheriContext {
-            context: std::ptr::null_mut(),
-            size: size,
-        });
+        let cheri_context;
         unsafe {
-            new_context.context = cheri_alloc(size);
+            cheri_context = cheri_alloc(size);
         }
-        if new_context.context.is_null() {
+        if cheri_context.is_null() {
             return Err(DandelionError::OutOfMemory);
         }
+        let new_context: Box<CheriContext> = Box::new(CheriContext {
+            context: cheri_context,
+            size: size,
+        });
         return Ok(Context::new(ContextType::Cheri(new_context), size));
-    }
-    fn release_context(&self, context: Context) -> DandelionResult<()> {
-        match context.context {
-            ContextType::Cheri(cheri_context) => {
-                unsafe {
-                    cheri_free(cheri_context.context);
-                }
-                Ok(())
-            }
-            _ => Err(DandelionError::ContextMissmatch),
-        }
     }
 }
 

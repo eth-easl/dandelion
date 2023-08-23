@@ -126,7 +126,7 @@ impl Context {
             let start = ((lower_end + alignment - 1) / alignment) * alignment;
             let end = occupied[1].offset;
             let available = end - start;
-            if available > size && available < space_size {
+            if available >= size && available < space_size {
                 space_size = available;
                 index = window_index;
                 start_address = start;
@@ -166,7 +166,6 @@ pub trait MemoryDomain: Sync + Send {
     where
         Self: Sized;
     fn acquire_context(&self, size: usize) -> DandelionResult<Context>;
-    fn release_context(&self, context: Context) -> DandelionResult<()>;
 }
 
 // Code to specialize transfers between different domains
@@ -206,6 +205,9 @@ pub fn transefer_memory(
     };
 }
 
+/// Transfer a complete dataset from one context to another.
+/// If there is already a dataset with the given desintation set index present,
+/// the items from the source set will be added to that set, keeping the identifier of the previous set.
 pub fn transfer_data_set(
     destination: &mut Context,
     source: &Context,
@@ -221,13 +223,22 @@ pub fn transfer_data_set(
     let source_set = source.content[source_set_index]
         .as_ref()
         .ok_or(DandelionError::EmptyDataSet)?;
+    if destination.content.len() <= destionation_set_index {
+        destination
+            .content
+            .resize_with(destionation_set_index + 1, || None);
+    }
+    let destination_index_offset = destination.content[destionation_set_index]
+        .as_ref()
+        .and_then(|set| Some(set.buffers.len()))
+        .unwrap_or(0);
     for index in 0..source_set.buffers.len() {
         transer_data_item(
             destination,
             source,
             destionation_set_index,
             destination_allignment,
-            index,
+            destination_index_offset + index,
             destination_set_name,
             source_set_index,
             index,
@@ -236,6 +247,9 @@ pub fn transfer_data_set(
     return Ok(());
 }
 
+/// Transfer a data item from one context to another.
+/// If the destination does not yet have a set at the index,
+/// a new one is created using the set name given.
 pub fn transer_data_item(
     destination: &mut Context,
     source: &Context,

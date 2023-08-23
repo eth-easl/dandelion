@@ -3,7 +3,7 @@ mod dispatcher_tests {
     use dandelion_commons::{ContextTypeId, EngineTypeId};
     use dispatcher::{
         composition::{Composition, FunctionDependencies},
-        dispatcher::{Dispatcher, ItemIndices, TransferIndices},
+        dispatcher::{CompositionSet, Dispatcher, ShardingMode},
         function_registry::FunctionRegistry,
         resource_pool::ResourcePool,
     };
@@ -15,8 +15,8 @@ mod dispatcher_tests {
     };
     use std::{
         collections::{BTreeMap, BTreeSet},
-        rc::Rc,
-        vec,
+        mem::size_of,
+        sync::Arc,
     };
 
     fn setup_dispatcher<Dom: MemoryDomain>(
@@ -81,102 +81,69 @@ mod dispatcher_tests {
 
     fn add_matmul_matrix(
         context: &mut Context,
-        size_set: usize,
-        mat_set: usize,
+        set: usize,
+        key: u32,
         matrix_dim: u64,
-        matrix: Vec<u64>,
+        mut matrix: Vec<u64>,
     ) {
         // check the sets are not already full and ensure they exist
-        let max_id = usize::max(size_set, mat_set);
-        if context.content.len() <= max_id {
-            context.content.resize_with(max_id + 1, || None);
+        if context.content.len() <= set {
+            context.content.resize_with(set + 1, || None);
         }
-        if context.content[size_set].is_some() || context.content[mat_set].is_some() {
-            panic!("trying to add matrix where there is already set");
-        }
+
         assert_eq!(matrix_dim * matrix_dim, matrix.len() as u64);
 
-        let size_offset = context
-            .get_free_space_and_write_slice(&[matrix_dim])
-            .expect("Should have space") as usize;
-        context.content[size_set] = Some(DataSet {
-            ident: "".to_string(),
-            buffers: vec![DataItem {
-                ident: "".to_string(),
-                data: Position {
-                    offset: size_offset,
-                    size: 8,
-                },
-                key: 0,
-            }],
-        });
-
+        matrix.insert(0, matrix_dim);
         let mat_offset = context
             .get_free_space_and_write_slice(&matrix)
             .expect("Should have space") as usize;
-        context.content[mat_set] = Some(DataSet {
-            ident: "".to_string(),
-            buffers: vec![DataItem {
-                ident: "".to_string(),
+        if let Some(set) = &mut context.content[set] {
+            set.buffers.push(DataItem {
+                ident: String::from(""),
                 data: Position {
                     offset: mat_offset,
-                    size: matrix.len() * 8,
+                    size: matrix.len() * size_of::<i64>(),
                 },
-                key: 0,
-            }],
-        });
+                key: key,
+            });
+        } else {
+            context.content[set] = Some(DataSet {
+                ident: "".to_string(),
+                buffers: vec![DataItem {
+                    ident: "".to_string(),
+                    data: Position {
+                        offset: mat_offset,
+                        size: matrix.len() * size_of::<i64>(),
+                    },
+                    key: key,
+                }],
+            });
+        }
     }
 
     fn add_matmac_matrix(
         context: &mut Context,
-        size_set: usize,
+        set: usize,
         rows: u64,
         cols: u64,
-        mat_set: usize,
-        matrix: Vec<u64>,
+        mut matrix: Vec<u64>,
     ) {
         // check the sets are not already full and ensure they exist
-        let max_id = usize::max(size_set, mat_set);
-        if context.content.len() <= max_id {
-            context.content.resize_with(max_id + 1, || None);
+        if context.content.len() <= set {
+            context.content.resize_with(set + 1, || None);
         }
-        if context.content[size_set].is_some() || context.content[mat_set].is_some() {
+        if context.content[set].is_some() || context.content[set].is_some() {
             panic!("trying to add matrix where there is already set");
         }
-        let row_offset = context
-            .get_free_space_and_write_slice(&[rows])
-            .expect("Should have space") as usize;
-        let col_offset = context
-            .get_free_space_and_write_slice(&[cols])
-            .expect("Should have space") as usize;
 
         assert_eq!(rows * cols, matrix.len() as u64);
 
-        context.content[size_set] = Some(DataSet {
-            ident: "".to_string(),
-            buffers: vec![
-                DataItem {
-                    ident: "".to_string(),
-                    data: Position {
-                        offset: row_offset,
-                        size: 8,
-                    },
-                    key: 0,
-                },
-                DataItem {
-                    ident: "".to_string(),
-                    data: Position {
-                        offset: col_offset,
-                        size: 8,
-                    },
-                    key: 0,
-                },
-            ],
-        });
+        matrix.insert(0, rows);
+
         let in_mat_offset = context
             .get_free_space_and_write_slice(&matrix)
             .expect("Should have space") as usize;
-        context.content[mat_set] = Some(DataSet {
+        context.content[set] = Some(DataSet {
             ident: "".to_string(),
             buffers: vec![DataItem {
                 ident: "".to_string(),
@@ -189,19 +156,31 @@ mod dispatcher_tests {
         });
     }
 
-    fn check_matrix(context: &Context, set_id: usize, expected: Vec<u64>) {
+    fn check_matrix(context: &Context, set_id: usize, key: u32, rows: u64, expected: Vec<u64>) {
         assert!(context.content.len() >= set_id);
         let out_mat_set = context.content[set_id].as_ref().expect("Should have set");
-        assert_eq!(1, out_mat_set.buffers.len());
-        let out_mat_position = out_mat_set.buffers[0].data;
+        assert_eq!(
+            1,
+            out_mat_set
+                .buffers
+                .iter()
+                .filter(|buffer| buffer.key == key)
+                .count()
+        );
+        let out_mat_position = out_mat_set
+            .buffers
+            .iter()
+            .find(|buffer| buffer.key == key)
+            .expect("should find a buffer with the correct key");
         let mut out_mat = Vec::<u64>::new();
-        assert_eq!(expected.len() * 8, out_mat_position.size);
-        out_mat.resize(expected.len(), 0);
+        assert_eq!((expected.len() + 1) * 8, out_mat_position.data.size);
+        out_mat.resize(expected.len() + 1, 0);
         context
-            .read(out_mat_position.offset, &mut out_mat)
+            .read(out_mat_position.data.offset, &mut out_mat)
             .expect("Should read output matrix");
+        assert_eq!(rows, out_mat[0]);
         for i in 0..expected.len() {
-            assert_eq!(expected[i], out_mat[i]);
+            assert_eq!(expected[i], out_mat[1 + i]);
         }
     }
 
@@ -214,31 +193,26 @@ mod dispatcher_tests {
         let dispatcher = setup_dispatcher::<Domain>(
             Vec::new(),
             relative_path,
-            vec![String::from(""), String::from("")],
+            vec![String::from("")],
             vec![String::from("")],
             driver,
             engine_resource,
         );
-        const CONTEXT_SIZE: usize = 9 * 8;
+        const CONTEXT_SIZE: usize = 5 * 8;
         let mut in_context = Domain::init(domain_arg)
             .expect("Should be able to init domain")
             .acquire_context(CONTEXT_SIZE)
             .expect("Should get input matrix context");
-        add_matmul_matrix(&mut in_context, 0, 1, 2, vec![1, 2, 3, 4]);
+        add_matmul_matrix(&mut in_context, 0, 0, 2, vec![1, 2, 3, 4]);
 
-        let input_mapping = vec![
-            TransferIndices {
-                input_set_index: 0,
-                output_set_index: 0,
-                item_indices: None,
+        let inputs = vec![(
+            0,
+            CompositionSet {
+                context_list: vec![(Arc::new(in_context))],
+                sharding_mode: ShardingMode::NoSharding,
+                set_index: 0,
             },
-            TransferIndices {
-                input_set_index: 1,
-                output_set_index: 1,
-                item_indices: None,
-            },
-        ];
-        let inputs = vec![(&in_context, input_mapping)];
+        )];
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -248,7 +222,7 @@ mod dispatcher_tests {
             Err(err) => panic!("Failed with: {:?}", err),
         };
         assert_eq!(1, out_context.content.len());
-        check_matrix(&out_context, 0, vec![5, 11, 11, 25])
+        check_matrix(&out_context, 0, 0, 2, vec![5, 11, 11, 25])
     }
 
     fn composition_single_matmul<Domain: MemoryDomain>(
@@ -260,7 +234,7 @@ mod dispatcher_tests {
         let dispatcher = setup_dispatcher::<Domain>(
             Vec::new(),
             relative_path,
-            vec![String::from(""), String::from("")],
+            vec![String::from("")],
             vec![String::from("")],
             driver,
             engine_resource,
@@ -270,46 +244,42 @@ mod dispatcher_tests {
             .expect("Should be able to init domain")
             .acquire_context(CONTEXT_SIZE)
             .expect("Should get input matrix context");
-        add_matmul_matrix(&mut in_context, 0, 1, 2, vec![1, 2, 3, 4]);
+        add_matmul_matrix(&mut in_context, 0, 0, 2, vec![1, 2, 3, 4]);
 
         let composition = Composition {
             dependencies: vec![FunctionDependencies {
                 function: 0,
-                input_ids: vec![(
-                    0,
-                    vec![
-                        TransferIndices {
-                            input_set_index: 0,
-                            output_set_index: 0,
-                            item_indices: None,
-                        },
-                        TransferIndices {
-                            input_set_index: 1,
-                            output_set_index: 1,
-                            item_indices: None,
-                        },
-                    ],
-                )],
-                output_id: 1,
+                input_set_ids: vec![Some(0)],
+                output_set_ids: vec![Some(1)],
             }],
         };
-        let inputs = vec![(0, Rc::new(in_context))];
+        let inputs = BTreeMap::from([(
+            0,
+            CompositionSet {
+                set_index: 0,
+                context_list: vec![Arc::new(in_context)],
+                sharding_mode: ShardingMode::NoSharding,
+            },
+        )]);
         let outputs = BTreeSet::from([1]);
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(dispatcher.queue_composition(composition, inputs, outputs, false));
-        let out_contexts = match result {
+        let mut out_contexts = match result {
             Ok(context) => context,
             Err(err) => panic!("Failed with: {:?}", err),
         };
         assert_eq!(1, out_contexts.len());
-        let (out_context_id, out_context) = &out_contexts[0];
-        assert_eq!(1, *out_context_id);
+        let (out_context_id, mut out_context_list) = out_contexts.remove(0);
+
+        assert_eq!(1, out_context_id);
+        assert_eq!(1, out_context_list.context_list.len());
+        let out_context = out_context_list.context_list.remove(0);
         assert_eq!(1, out_context.content.len());
         let out_mat_set = out_context.content[0].as_ref().expect("Should have set");
         assert_eq!(1, out_mat_set.buffers.len());
-        check_matrix(out_context, 0, vec![5, 11, 11, 25])
+        check_matrix(&out_context, 0, 0, 2, vec![5, 11, 11, 25])
     }
 
     fn composition_parallel_matmul<Domain: MemoryDomain>(
@@ -321,77 +291,63 @@ mod dispatcher_tests {
         let dispatcher = setup_dispatcher::<Domain>(
             Vec::new(),
             relative_path,
-            vec![String::from(""), String::from("")],
+            vec![String::from("")],
             vec![String::from("")],
             driver,
             engine_resource,
         );
         // need space for the input matrix of 2x2 uint64_t as well as a output matrix of the same size
         // and an uint64_t size that gives the column / row size (which is 2)
-        const CONTEXT_SIZE: usize = 9 * 8;
+        const CONTEXT_SIZE: usize = 18 * 8;
         let mut in_context = Domain::init(domain_arg)
             .expect("Should be able to init domain")
             .acquire_context(CONTEXT_SIZE)
             .expect("Should get input matrix context");
+        add_matmul_matrix(&mut in_context, 0, 0, 2, vec![1, 2, 3, 4]);
         add_matmul_matrix(&mut in_context, 0, 1, 2, vec![1, 2, 3, 4]);
 
         let composition = Composition {
-            dependencies: vec![
-                FunctionDependencies {
-                    function: 0,
-                    input_ids: vec![(
-                        0,
-                        vec![
-                            TransferIndices {
-                                input_set_index: 0,
-                                output_set_index: 0,
-                                item_indices: None,
-                            },
-                            TransferIndices {
-                                input_set_index: 1,
-                                output_set_index: 1,
-                                item_indices: None,
-                            },
-                        ],
-                    )],
-                    output_id: 1,
-                },
-                FunctionDependencies {
-                    function: 0,
-                    input_ids: vec![(
-                        0,
-                        vec![
-                            TransferIndices {
-                                input_set_index: 0,
-                                output_set_index: 0,
-                                item_indices: None,
-                            },
-                            TransferIndices {
-                                input_set_index: 1,
-                                output_set_index: 1,
-                                item_indices: None,
-                            },
-                        ],
-                    )],
-                    output_id: 2,
-                },
-            ],
+            dependencies: vec![FunctionDependencies {
+                function: 0,
+                input_set_ids: vec![Some(0)],
+                output_set_ids: vec![Some(1)],
+            }],
         };
-        let inputs = vec![(0, Rc::new(in_context))];
-        let outputs = BTreeSet::from([1, 2]);
+        let inputs = BTreeMap::from([(
+            0,
+            CompositionSet {
+                set_index: 0,
+                context_list: vec![Arc::new(in_context)],
+                sharding_mode: ShardingMode::KeySharding(BTreeSet::from([0, 1])),
+            },
+        )]);
+        let outputs = BTreeSet::from([1]);
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(dispatcher.queue_composition(composition, inputs, outputs, false));
-        let out_contexts = match result {
-            Ok(context) => context,
+        let mut out_vec = match result {
+            Ok(v) => v,
             Err(err) => panic!("Failed with: {:?}", err),
         };
-        assert_eq!(2, out_contexts.len());
-        for (out_context_id, out_context) in out_contexts {
-            assert!(1 == out_context_id || 2 == out_context_id);
-            assert_eq!(1, out_context.content.len());
-            check_matrix(&out_context, 0, vec![5, 11, 11, 25])
+        assert_eq!(1, out_vec.len());
+        let (out_index, out_set) = out_vec.remove(0);
+        assert_eq!(2, out_set.context_list.len());
+        assert_eq!(1, out_index);
+        // check for each shard:
+        for matrix_context in out_set.context_list {
+            if let Some(matrix_set) = &matrix_context.content[0] {
+                assert_eq!(1, matrix_set.buffers.len());
+                let matrix_buffer = &matrix_set.buffers[0];
+                assert!(matrix_buffer.key == 1 || matrix_buffer.key == 0);
+                check_matrix(
+                    &matrix_context,
+                    0,
+                    matrix_buffer.key,
+                    2,
+                    vec![5, 11, 11, 25],
+                );
+            }
         }
     }
 
@@ -404,7 +360,7 @@ mod dispatcher_tests {
         let dispatcher = setup_dispatcher::<Domain>(
             Vec::new(),
             relative_path,
-            vec![String::from(""), String::from("")],
+            vec![String::from("")],
             vec![String::from("")],
             driver,
             engine_resource,
@@ -420,48 +376,24 @@ mod dispatcher_tests {
             dependencies: vec![
                 FunctionDependencies {
                     function: 0,
-                    input_ids: vec![(
-                        0,
-                        vec![
-                            TransferIndices {
-                                input_set_index: 0,
-                                output_set_index: 0,
-                                item_indices: None,
-                            },
-                            TransferIndices {
-                                input_set_index: 1,
-                                output_set_index: 1,
-                                item_indices: None,
-                            },
-                        ],
-                    )],
-                    output_id: 1,
+                    input_set_ids: vec![Some(0)],
+                    output_set_ids: vec![Some(1)],
                 },
                 FunctionDependencies {
                     function: 0,
-                    input_ids: vec![
-                        (
-                            0,
-                            vec![TransferIndices {
-                                input_set_index: 0,
-                                output_set_index: 0,
-                                item_indices: None,
-                            }],
-                        ),
-                        (
-                            1,
-                            vec![TransferIndices {
-                                input_set_index: 0,
-                                output_set_index: 1,
-                                item_indices: None,
-                            }],
-                        ),
-                    ],
-                    output_id: 2,
+                    input_set_ids: vec![Some(1)],
+                    output_set_ids: vec![Some(2)],
                 },
             ],
         };
-        let inputs = vec![(0, Rc::new(in_context))];
+        let inputs = BTreeMap::from([(
+            0,
+            CompositionSet {
+                set_index: 0,
+                sharding_mode: ShardingMode::NoSharding,
+                context_list: vec![Arc::new(in_context)],
+            },
+        )]);
         let output_contexts = BTreeSet::from([2]);
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -472,10 +404,12 @@ mod dispatcher_tests {
             Err(err) => panic!("Failed with: {:?}", err),
         };
         assert_eq!(1, out_contexts.len());
-        let (out_context_id, out_context) = &out_contexts[0];
+        let (out_context_id, out_composition_set) = &out_contexts[0];
         assert_eq!(2, *out_context_id);
+        assert_eq!(1, out_composition_set.context_list.len());
+        let out_context = &out_composition_set.context_list[0];
         assert_eq!(1, out_context.content.len());
-        check_matrix(out_context, 0, vec![146, 330, 330, 746])
+        check_matrix(&out_context, 0, 0, 2, vec![146, 330, 330, 746]);
     }
 
     fn composition_diamond_matmac<Domain: MemoryDomain>(
@@ -487,204 +421,85 @@ mod dispatcher_tests {
         let dispatcher = self::setup_dispatcher::<Domain>(
             Vec::new(),
             relative_path,
-            vec![
-                String::from(""),
-                String::from(""),
-                String::from(""),
-                String::from(""),
-            ],
-            vec![String::from(""), String::from("")],
+            vec![String::from(""), String::from(""), String::from("")],
+            vec![String::from("")],
             driver,
             engine_resource,
         );
-        const CONTEXT_SIZE: usize = 10 * 8;
+        const CONTEXT_SIZE: usize = 12 * 8;
         let mut in_context = Domain::init(domain_arg)
             .expect("Should be able to init domain")
             .acquire_context(CONTEXT_SIZE)
             .expect("Should get input matrix context");
         // A = [7]
-        add_matmac_matrix(&mut in_context, 0, 1, 1, 1, vec![7]);
+        add_matmac_matrix(&mut in_context, 0, 1, 1, vec![7]);
         // B = [1,2,3,5]
-        add_matmac_matrix(&mut in_context, 2, 1, 4, 3, vec![1, 2, 3, 5]);
+        add_matmac_matrix(&mut in_context, 1, 1, 4, vec![1, 2, 3, 5]);
+        // B^T
+        add_matmac_matrix(&mut in_context, 2, 4, 1, vec![1, 2, 3, 5]);
 
         let composition = Composition {
             dependencies: vec![
                 // C = A*B
                 FunctionDependencies {
                     function: 0,
-                    input_ids: vec![(
-                        0,
-                        vec![
-                            TransferIndices {
-                                input_set_index: 2,
-                                output_set_index: 0,
-                                item_indices: None,
-                            },
-                            TransferIndices {
-                                input_set_index: 1,
-                                output_set_index: 1,
-                                item_indices: None,
-                            },
-                            TransferIndices {
-                                input_set_index: 3,
-                                output_set_index: 2,
-                                item_indices: None,
-                            },
-                        ],
-                    )],
-                    output_id: 1,
+                    input_set_ids: vec![Some(0), Some(1), None],
+                    output_set_ids: vec![Some(3)],
                 },
-                // D = B*A
+                // D = B^T*A
                 FunctionDependencies {
                     function: 0,
-                    input_ids: vec![(
-                        0,
-                        vec![
-                            TransferIndices {
-                                input_set_index: 2,
-                                output_set_index: 0,
-                                item_indices: Some(ItemIndices {
-                                    in_index: 0,
-                                    out_index: 1,
-                                }),
-                            },
-                            TransferIndices {
-                                input_set_index: 2,
-                                output_set_index: 0,
-                                item_indices: Some(ItemIndices {
-                                    in_index: 1,
-                                    out_index: 0,
-                                }),
-                            },
-                            TransferIndices {
-                                input_set_index: 3,
-                                output_set_index: 1,
-                                item_indices: None,
-                            },
-                            TransferIndices {
-                                input_set_index: 1,
-                                output_set_index: 2,
-                                item_indices: None,
-                            },
-                        ],
-                    )],
-                    output_id: 2,
+                    input_set_ids: vec![Some(2), Some(0), None],
+                    output_set_ids: vec![Some(4)],
                 },
                 // E = B + C
                 FunctionDependencies {
                     function: 0,
-                    input_ids: vec![
-                        (
-                            0,
-                            vec![
-                                TransferIndices {
-                                    input_set_index: 2,
-                                    output_set_index: 0,
-                                    item_indices: None,
-                                },
-                                TransferIndices {
-                                    input_set_index: 3,
-                                    output_set_index: 2,
-                                    item_indices: None,
-                                },
-                            ],
-                        ),
-                        (
-                            1,
-                            vec![TransferIndices {
-                                input_set_index: 1,
-                                output_set_index: 3,
-                                item_indices: None,
-                            }],
-                        ),
-                    ],
-                    output_id: 3,
+                    input_set_ids: vec![None, Some(1), Some(3)],
+                    output_set_ids: vec![Some(5)],
                 },
                 // G = D * C
                 FunctionDependencies {
                     function: 0,
-                    input_ids: vec![
-                        (
-                            1,
-                            vec![
-                                TransferIndices {
-                                    input_set_index: 0,
-                                    output_set_index: 0,
-                                    item_indices: Some(ItemIndices {
-                                        in_index: 1,
-                                        out_index: 1,
-                                    }),
-                                },
-                                TransferIndices {
-                                    input_set_index: 1,
-                                    output_set_index: 2,
-                                    item_indices: None,
-                                },
-                            ],
-                        ),
-                        (
-                            2,
-                            vec![
-                                TransferIndices {
-                                    input_set_index: 0,
-                                    output_set_index: 0,
-                                    item_indices: Some(ItemIndices {
-                                        in_index: 0,
-                                        out_index: 0,
-                                    }),
-                                },
-                                TransferIndices {
-                                    input_set_index: 1,
-                                    output_set_index: 1,
-                                    item_indices: None,
-                                },
-                            ],
-                        ),
-                    ],
-                    output_id: 4,
+                    input_set_ids: vec![Some(4), Some(3), None],
+                    output_set_ids: vec![Some(6)],
                 },
                 // Result = D*E + G
                 FunctionDependencies {
                     function: 0,
-                    input_ids: vec![
-                        (
-                            2,
-                            vec![TransferIndices {
-                                input_set_index: 1,
-                                output_set_index: 1,
-                                item_indices: None,
-                            }],
-                        ),
-                        (
-                            3,
-                            vec![TransferIndices {
-                                input_set_index: 1,
-                                output_set_index: 2,
-                                item_indices: None,
-                            }],
-                        ),
-                        (
-                            4,
-                            vec![
-                                TransferIndices {
-                                    input_set_index: 0,
-                                    output_set_index: 0,
-                                    item_indices: None,
-                                },
-                                TransferIndices {
-                                    input_set_index: 1,
-                                    output_set_index: 3,
-                                    item_indices: None,
-                                },
-                            ],
-                        ),
-                    ],
-                    output_id: 5,
+                    input_set_ids: vec![Some(4), Some(5), Some(6)],
+                    output_set_ids: vec![Some(7)],
                 },
             ],
         };
-        let inputs = vec![(0, Rc::new(in_context))];
-        let output_contexts = BTreeSet::from([5]);
+        let context_arc = Arc::new(in_context);
+        let inputs = BTreeMap::from([
+            (
+                0,
+                CompositionSet {
+                    set_index: 0,
+                    sharding_mode: ShardingMode::NoSharding,
+                    context_list: vec![context_arc.clone()],
+                },
+            ),
+            (
+                1,
+                CompositionSet {
+                    set_index: 1,
+                    sharding_mode: ShardingMode::NoSharding,
+                    context_list: vec![context_arc.clone()],
+                },
+            ),
+            (
+                2,
+                CompositionSet {
+                    set_index: 2,
+                    sharding_mode: ShardingMode::NoSharding,
+                    context_list: vec![context_arc.clone()],
+                },
+            ),
+        ]);
+        let output_contexts = BTreeSet::from([7]);
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -694,16 +509,20 @@ mod dispatcher_tests {
             Err(err) => panic!("Failed with: {:?}", err),
         };
         assert_eq!(1, out_contexts.len());
-        let (out_context_id, out_context) = &out_contexts[0];
-        assert_eq!(5, *out_context_id);
-        assert_eq!(2, out_context.content.len());
+        let (out_context_id, out_composition_set) = &out_contexts[0];
+        assert_eq!(7, *out_context_id);
+        assert_eq!(1, out_composition_set.context_list.len());
+        let out_context = &out_composition_set.context_list[0];
+        assert_eq!(1, out_context.content.len());
         check_matrix(
             out_context,
-            1,
+            0,
+            0,
+            4,
             vec![
                 105, 210, 315, 525, 210, 420, 630, 1050, 315, 630, 945, 1575, 525, 1050, 1575, 2625,
             ],
-        )
+        );
     }
 
     macro_rules! dispatcherTests {

@@ -1,5 +1,7 @@
 use crate::{
-    composition::Composition, execution_qs::EngineQueue, function_registry::FunctionRegistry,
+    composition::{Composition, FunctionDependencies},
+    execution_qs::EngineQueue,
+    function_registry::FunctionRegistry,
     resource_pool::ResourcePool,
 };
 use dandelion_commons::{
@@ -7,39 +9,134 @@ use dandelion_commons::{
     ContextTypeId, DandelionError, DandelionResult, EngineTypeId, FunctionId,
 };
 use futures::{
+    future::join_all,
     lock::Mutex,
     stream::{FuturesUnordered, StreamExt},
 };
+use itertools::Itertools;
 use machine_interface::{
     function_driver::FunctionConfig,
-    memory_domain::{transer_data_item, transfer_data_set, Context, MemoryDomain},
+    memory_domain::{transer_data_item, Context, MemoryDomain},
 };
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    rc::Rc,
     sync::Arc,
     sync::Mutex as SyncMutex,
     vec,
 };
 
-#[derive(Clone, Copy, Debug)]
-pub struct ItemIndices {
-    pub in_index: usize,
-    pub out_index: usize,
+#[derive(Clone, Debug)]
+pub enum ShardingMode {
+    NoSharding,
+    KeySharding(BTreeSet<u32>),
+    // potentailly add an option to provide a map for specific items
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct TransferIndices {
-    pub input_set_index: usize,
-    pub output_set_index: usize,
-    pub item_indices: Option<ItemIndices>,
+/// Struct that has all locations belonging to one set, that is potentially spread over multiple contexts.
+#[derive(Clone)]
+pub struct CompositionSet {
+    /// list of all contexts and the set index in that context that belongs to the composition set
+    pub context_list: Vec<Arc<Context>>,
+    pub set_index: usize,
+    pub sharding_mode: ShardingMode,
 }
 
-struct PartiallyReadyFunction {
-    function: FunctionId,
-    waiting_map: BTreeMap<usize, Vec<TransferIndices>>,
-    ready_ins: Vec<(Rc<Context>, Vec<TransferIndices>)>,
-    output_id: usize,
+impl CompositionSet {
+    fn shard(self, index: usize) -> Vec<(usize, CompositionSet)> {
+        let keys = match self.sharding_mode {
+            ShardingMode::NoSharding => return vec![(index, self)],
+            ShardingMode::KeySharding(keys) => keys,
+        };
+        return keys
+            .into_iter()
+            .map(|key| {
+                let mut new_shard = BTreeSet::new();
+                new_shard.insert(key);
+                return (
+                    index,
+                    CompositionSet {
+                        context_list: self.context_list.clone(),
+                        set_index: self.set_index,
+                        sharding_mode: ShardingMode::KeySharding(new_shard),
+                    },
+                );
+            })
+            .collect();
+    }
+}
+
+pub struct CompositionSetTransferIterator {
+    set: CompositionSet,
+    context_counter: usize,
+    item_counter: usize,
+}
+
+impl IntoIterator for CompositionSet {
+    type Item = (usize, usize, Arc<Context>);
+    type IntoIter = CompositionSetTransferIterator;
+
+    fn into_iter(self) -> Self::IntoIter {
+        CompositionSetTransferIterator {
+            set: self,
+            context_counter: 0,
+            item_counter: 0,
+        }
+    }
+}
+
+impl Iterator for CompositionSetTransferIterator {
+    type Item = (usize, usize, Arc<Context>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.set.context_list.len() > self.context_counter {
+            let set_index = self.set.set_index;
+            let context = self.set.context_list[self.context_counter].clone();
+            if let Some(set) = &context.content[set_index] {
+                while set.buffers.len() > self.item_counter {
+                    let current_item = self.item_counter;
+                    self.item_counter += 1;
+                    match &self.set.sharding_mode {
+                        ShardingMode::NoSharding => {
+                            return Some((set_index, current_item, context));
+                        }
+                        ShardingMode::KeySharding(shard_set)
+                            if shard_set.contains(&set.buffers[current_item].key) =>
+                        {
+                            return Some((set_index, current_item, context));
+                        }
+                        ShardingMode::KeySharding(_) => (),
+                    }
+                }
+            }
+            self.item_counter = 0;
+            self.context_counter += 1;
+        }
+        return None;
+    }
+}
+
+fn get_composition_set(
+    contexts: &Vec<Arc<Context>>,
+    function_set_index: usize,
+) -> Option<CompositionSet> {
+    let keys = contexts
+        .iter()
+        .filter_map(|context_ref| {
+            if context_ref.content.len() <= function_set_index {
+                return None;
+            }
+            let set_keys = context_ref.content[function_set_index]
+                .as_ref()
+                .and_then(|set| Some(set.buffers.iter().map(|buffer| buffer.key)));
+            return set_keys;
+        })
+        .flatten()
+        .collect();
+    return Some(CompositionSet {
+        set_index: function_set_index,
+        sharding_mode: ShardingMode::KeySharding(keys),
+        context_list: contexts.to_vec(),
+    });
 }
 
 // TODO here and in registry can probably replace driver and loader function maps with fixed size arrays
@@ -88,144 +185,160 @@ impl Dispatcher {
     pub async fn queue_composition(
         &self,
         composition: Composition,
-        inputs: Vec<(usize, Rc<Context>)>,
+        mut inputs: BTreeMap<usize, CompositionSet>,
         output_sets: BTreeSet<usize>,
         non_caching: bool,
-    ) -> DandelionResult<Vec<(usize, Context)>> {
-        // build up a structure with all ids in the composition namespace and the functions waiting for them
-        // TODO preallocate here
-        let mut partials = Vec::<Option<PartiallyReadyFunction>>::new();
-        // map from context id to indexes in wating function vector
-        let mut composition_waiting_map = BTreeMap::<usize, Vec<usize>>::new();
-        for dependencies in composition.dependencies.into_iter() {
-            let partial_index = partials.len();
-            let function = dependencies.function;
-            let output_id = dependencies.output_id;
-            let mut waiting_map = BTreeMap::new();
-            for (context_id, transfer_indices) in dependencies.input_ids {
-                if waiting_map.insert(context_id, transfer_indices).is_some() {
-                    return Err(DandelionError::DispatcherSetMissmatch);
-                }
-                composition_waiting_map
-                    .entry(context_id)
-                    .and_modify(|entry| entry.push(partial_index))
-                    .or_insert(vec![partial_index]);
-            }
-            let partial = PartiallyReadyFunction {
-                function,
-                waiting_map,
-                ready_ins: vec![],
-                output_id,
-            };
-            partials.push(Some(partial));
-        }
-        // fill in the already available contexts
-        let mut future_list = FuturesUnordered::new();
-        for (input_id, input_context) in inputs {
-            if let Some(waiting_list) = composition_waiting_map.remove(&input_id) {
-                for waiting_func_index in waiting_list {
-                    let mut is_empty = false;
-                    if let Some(waiting_func) = partials[waiting_func_index].as_mut() {
-                        if let Some(transfer_info) = waiting_func.waiting_map.remove(&input_id) {
-                            waiting_func
-                                .ready_ins
-                                .push((input_context.clone(), transfer_info));
-                        }
-                        if waiting_func.waiting_map.is_empty() {
-                            is_empty = true;
-                        }
-                    } else {
-                        return Err(DandelionError::DispatcherDependencyError);
-                    }
-                    if is_empty {
-                        if let Some(waiting) = partials[waiting_func_index].take() {
-                            future_list.push(self.wrapped_queue_function(
-                                waiting.function,
-                                waiting.ready_ins,
-                                non_caching,
-                                waiting.output_id,
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-        // TODO replace with preallocated list (of options?) so do not need to mutatet in the loop, allowing to hand out refs instead of rcs
-        let mut ready_contexts = Vec::new();
-        let mut ready_context_ids = Vec::new();
-        loop {
-            let next_done = future_list.next().await;
-            let (context_id, context_result) = match next_done {
-                None => break,
-                Some((trans_vec, res)) => (trans_vec, res?),
-            };
-            let rc_context = Rc::new(context_result);
-            ready_contexts.push(rc_context.clone());
-            if let Some(waiting_list) = composition_waiting_map.remove(&context_id) {
-                for waiting_func_index in waiting_list {
-                    let mut is_empty = false;
-                    if let Some(waiting_func) = partials[waiting_func_index].as_mut() {
-                        if let Some(transfer_info) = waiting_func.waiting_map.remove(&context_id) {
-                            waiting_func
-                                .ready_ins
-                                .push((rc_context.clone(), transfer_info));
-                        }
-                        if waiting_func.waiting_map.is_empty() {
-                            is_empty = true;
-                        }
-                    } else {
-                        return Err(DandelionError::DispatcherDependencyError);
-                    }
-                    if is_empty {
-                        if let Some(waiting) = partials[waiting_func_index].take() {
-                            future_list.push(self.wrapped_queue_function(
-                                waiting.function,
-                                waiting.ready_ins,
-                                non_caching,
-                                waiting.output_id,
-                            ));
-                        }
-                    }
-                }
-            }
-            ready_context_ids.push(context_id);
-        }
-        let output_list = ready_contexts
+    ) -> DandelionResult<Vec<(usize, CompositionSet)>> {
+        // build up ready sets
+        let mut ready_sets = inputs.keys().cloned().collect::<BTreeSet<usize>>();
+        let (mut ready_functions, mut non_ready_functions): (Vec<_>, Vec<_>) =
+            composition.dependencies.into_iter().partition(
+                |FunctionDependencies {
+                     input_set_ids: in_ids,
+                     output_set_ids: _,
+                     function: _,
+                 }| {
+                    in_ids.iter().all(|index_opt| {
+                        index_opt
+                            .and_then(|index| Some(ready_sets.contains(&index)))
+                            .unwrap_or(true)
+                    })
+                },
+            );
+        let mut running_functions: FuturesUnordered<_> = ready_functions
             .into_iter()
-            .zip(ready_context_ids.into_iter())
-            .filter_map(|(rc_context, context_id)| {
-                let context = Rc::try_unwrap(rc_context);
-                return match (output_sets.contains(&context_id), context) {
-                    (true, Ok(cont)) => Some((context_id, cont)),
-                    (_, _) => None,
-                };
+            .map(|dependencies| {
+                let function_inputs = dependencies
+                    .input_set_ids
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(function_index, composition_index_opt)| {
+                        if let Some(composition_index) = composition_index_opt {
+                            inputs.get(composition_index).and_then(|composition_set| {
+                                Some((function_index, composition_set.clone()))
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                return self.queue_function_wrapped(dependencies, function_inputs, non_caching);
             })
             .collect();
-        return Ok(output_list);
+
+        while let Some((composition_set_indices, new_results)) = running_functions.next().await {
+            let new_contexts = new_results?;
+            for (function_set_index, composition_set_index_opt) in
+                composition_set_indices.iter().enumerate()
+            {
+                if let Some(composition_set_index) = composition_set_index_opt {
+                    if let Some(composition_set) =
+                        get_composition_set(&new_contexts, function_set_index)
+                    {
+                        inputs.insert(*composition_set_index, composition_set);
+                        ready_sets.insert(*composition_set_index);
+                    }
+                }
+            }
+            // add newly ready ones
+            (ready_functions, non_ready_functions) = non_ready_functions.into_iter().partition(
+                |FunctionDependencies {
+                     input_set_ids: in_ids,
+                     output_set_ids: _,
+                     function: _,
+                 }| {
+                    in_ids.iter().all(|index_opt| {
+                        index_opt
+                            .and_then(|index| Some(ready_sets.contains(&index)))
+                            .unwrap_or(true)
+                    })
+                },
+            );
+            for ready_function in ready_functions {
+                let function_inputs = ready_function
+                    .input_set_ids
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(function_index, composition_index_opt)| {
+                        if let Some(composition_index) = composition_index_opt {
+                            inputs.get(composition_index).and_then(|composition_set| {
+                                Some((function_index, composition_set.clone()))
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                running_functions.push(self.queue_function_wrapped(
+                    ready_function,
+                    function_inputs,
+                    non_caching,
+                ));
+            }
+        }
+        return Ok(inputs
+            .into_iter()
+            .filter(|(set_index, _)| output_sets.contains(set_index))
+            .collect::<Vec<_>>());
     }
 
-    async fn wrapped_queue_function(
+    async fn queue_function_wrapped(
         &self,
-        function_id: FunctionId,
-        inputs: Vec<(Rc<Context>, Vec<TransferIndices>)>,
+        dependencies: FunctionDependencies,
+        input_sets: Vec<(usize, CompositionSet)>,
         non_caching: bool,
-        output_id: usize,
-    ) -> (usize, DandelionResult<Context>) {
-        let input_refs = inputs
-            .iter()
-            .map(|(rc_context, trans_vec)| (rc_context.as_ref(), trans_vec.to_owned()))
-            .collect();
+    ) -> (Vec<Option<usize>>, DandelionResult<Vec<Arc<Context>>>) {
+        let FunctionDependencies {
+            function,
+            input_set_ids: _,
+            output_set_ids,
+        } = dependencies;
         return (
-            output_id,
-            self.queue_function(function_id, input_refs, non_caching)
+            output_set_ids,
+            self.queue_function_sharded(function, input_sets, non_caching)
                 .await,
         );
+    }
+
+    async fn queue_function_sharded<'context>(
+        &self,
+        function_id: FunctionId,
+        input_sets: Vec<(usize, CompositionSet)>,
+        non_caching: bool,
+    ) -> DandelionResult<Vec<Arc<Context>>> {
+        // build the cartesian product of all sets that need to be sharded
+        // TODO switch to collect into when it becomes stable
+        // let result_num = input_sets
+        //     .into_iter()
+        //     .map(|(_, set)| match set.sharding_mode {
+        //         ShardingMode::NoSharding => 1,
+        //         ShardingMode::KeySharding(keys) => keys.len(),
+        //     })
+        //     .product();
+        // let mut results = Vec::new();
+        // if results.try_reserve(result_num).is_err() {
+        //     return Err(DandelionError::OutOfMemory);
+        // }
+        let results: Vec<_> = input_sets
+            .into_iter()
+            .map(|(index, composition_set)| composition_set.shard(index))
+            .multi_cartesian_product()
+            .map(|input_sets_local| {
+                Box::pin(self.queue_function(function_id, input_sets_local, non_caching))
+            })
+            .collect();
+        let context_vec = join_all(results)
+            .await
+            .into_iter()
+            .map(|res| res.and_then(|con| Ok(Arc::new(con))))
+            .collect();
+        return context_vec;
     }
 
     pub async fn queue_function(
         &self,
         function_id: FunctionId,
-        inputs: Vec<(&Context, Vec<TransferIndices>)>,
+        inputs: Vec<(usize, CompositionSet)>,
         non_caching: bool,
     ) -> DandelionResult<Context> {
         let mut recorder = Recorder::new(self.archive.clone(), RecordPoint::Arrival);
@@ -256,30 +369,14 @@ impl Dispatcher {
             .run_on_engine(engine_id, config, out_set_names, context, recorder.clone())
             .await;
         recorder.record(RecordPoint::FutureReturn)?;
-        return match result {
-            Ok(()) => Ok(context),
-            Err(err) => {
-                let context_id = match self.type_map.get(&engine_id) {
-                    Some(id) => id,
-                    None => return Err(DandelionError::DispatcherConfigError),
-                };
-                let domain = match self.domains.get(context_id) {
-                    Some(d) => d,
-                    None => return Err(DandelionError::DispatcherConfigError),
-                };
-                let _release_result = domain.release_context(context);
-                Err(err)
-            }
-        };
+        return result.and(Ok(context));
     }
 
     async fn prepare_for_engine(
         &self,
         function_id: FunctionId,
         engine_type: EngineTypeId,
-        // vector with contexts that hold the inputs as well as assoziated tripples that say
-        // the dynamic data index of the context, possible index into a set and index of the input in the new function
-        inputs: Vec<(&Context, Vec<TransferIndices>)>,
+        inputs: Vec<(usize, CompositionSet)>,
         non_caching: bool,
         mut recorder: Recorder,
     ) -> DandelionResult<(Context, FunctionConfig, &Vec<String>)> {
@@ -298,35 +395,31 @@ impl Dispatcher {
             .function_registry
             .load(function_id, engine_type, domain, non_caching)
             .await?;
-        for (input_context, index_map) in inputs {
-            for transfer_info in index_map {
+        // make sure all input sets are there at the correct index
+        for in_set_name in in_set_names {
+            function_context
+                .content
+                .push(Some(machine_interface::DataSet {
+                    ident: in_set_name.clone(),
+                    buffers: vec![],
+                }))
+        }
+        for (function_set, context_set) in inputs {
+            let mut function_item = 0usize;
+            for (subset, item, source_context) in context_set {
                 // TODO get allignment information
-                if transfer_info.output_set_index >= in_set_names.len() {
-                    let _ = domain.release_context(function_context);
-                    return Err(DandelionError::DispatcherSetMissmatch);
-                }
-                let set_name = &in_set_names[transfer_info.output_set_index];
-                if let Some(item_indices) = transfer_info.item_indices {
-                    transer_data_item(
-                        &mut function_context,
-                        input_context,
-                        transfer_info.output_set_index,
-                        128,
-                        item_indices.out_index,
-                        set_name,
-                        transfer_info.input_set_index,
-                        item_indices.in_index,
-                    )?;
-                } else {
-                    transfer_data_set(
-                        &mut function_context,
-                        input_context,
-                        transfer_info.output_set_index,
-                        128,
-                        set_name,
-                        transfer_info.input_set_index,
-                    )?;
-                }
+                let set_name = &in_set_names[function_set];
+                transer_data_item(
+                    &mut function_context,
+                    &source_context,
+                    function_set,
+                    128,
+                    function_item,
+                    set_name,
+                    subset,
+                    item,
+                )?;
+                function_item += 1;
             }
         }
         recorder.record(RecordPoint::TransferEnd)?;

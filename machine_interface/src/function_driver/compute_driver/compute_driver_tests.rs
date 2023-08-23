@@ -58,12 +58,7 @@ mod compute_driver_tests {
         dom_init: Vec<u8>,
         driver: &Box<dyn Driver>,
         drv_init: Vec<u8>,
-    ) -> (
-        Box<dyn MemoryDomain>,
-        Box<dyn Engine>,
-        Context,
-        FunctionConfig,
-    ) {
+    ) -> (Box<dyn Engine>, Context, FunctionConfig) {
         let elf_buffer = read_file(filename);
         let mut domain = Dom::init(dom_init).expect("Should have initialized domain");
         let Function {
@@ -78,10 +73,7 @@ mod compute_driver_tests {
             .expect("Should be able to start engine");
         let function_context = load_static(&mut domain, &context, &requirements)
             .expect("Should be able to load function");
-        domain
-            .release_context(context)
-            .expect("Should release context");
-        return (domain, engine, function_context, config);
+        return (engine, function_context, config);
     }
 
     fn engine_minimal<Dom: MemoryDomain>(
@@ -90,18 +82,15 @@ mod compute_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: Vec<u8>,
     ) {
-        let (domain, mut engine, function_context, config) =
+        let (mut engine, function_context, config) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         let archive = Arc::new(Mutex::new(Archive::new()));
         let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-        let (result, function_context) = tokio::runtime::Builder::new_current_thread()
+        let (result, _function_context) = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(engine.run(&config, function_context, &vec![], recorder.clone()));
         result.expect("Engine should run ok with basic function");
-        domain
-            .release_context(function_context)
-            .expect("Should release context");
     }
 
     fn engine_matmul_single<Dom: MemoryDomain>(
@@ -110,11 +99,11 @@ mod compute_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: Vec<u8>,
     ) {
-        let (domain, mut engine, mut function_context, config) =
+        let (mut engine, mut function_context, config) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         // add inputs
         let in_size_offset = function_context
-            .get_free_space_and_write_slice(&[1i64])
+            .get_free_space_and_write_slice(&[1i64, 2i64])
             .expect("Should have space for single i64");
         function_context.content.push(Some(DataSet {
             ident: "".to_string(),
@@ -122,21 +111,7 @@ mod compute_driver_tests {
                 ident: "".to_string(),
                 data: Position {
                     offset: in_size_offset as usize,
-                    size: 8,
-                },
-                key: 0,
-            }],
-        }));
-        let in_mat_offset = function_context
-            .get_free_space_and_write_slice(&[2i64])
-            .expect("Should have space for single i64");
-        function_context.content.push(Some(DataSet {
-            ident: "".to_string(),
-            buffers: vec![DataItem {
-                ident: "".to_string(),
-                data: Position {
-                    offset: in_mat_offset as usize,
-                    size: 8,
+                    size: 16,
                 },
                 key: 0,
             }],
@@ -163,16 +138,14 @@ mod compute_driver_tests {
             .expect("Set should be present");
         assert_eq!(1, output_item.buffers.len());
         let position = output_item.buffers[0].data;
-        assert_eq!(8, position.size, "Checking for size of output");
+        assert_eq!(16, position.size, "Checking for size of output");
         let mut read_buffer = vec![0i64; position.size / 8];
         result_context
             .context
             .read(position.offset, &mut read_buffer)
             .expect("Should succeed in reading");
-        assert_eq!(4, read_buffer[0]);
-        domain
-            .release_context(result_context)
-            .expect("Should release context");
+        assert_eq!(1, read_buffer[0]);
+        assert_eq!(4, read_buffer[1]);
     }
 
     fn get_expected_mat(size: usize) -> Vec<i64> {
@@ -201,31 +174,15 @@ mod compute_driver_tests {
         const LOWER_SIZE_BOUND: usize = 2;
         const UPPER_SIZE_BOUND: usize = 16;
         for mat_size in LOWER_SIZE_BOUND..UPPER_SIZE_BOUND {
-            let (domain, mut engine, mut function_context, config) =
-                prepare_engine_and_function::<Dom>(
-                    filename,
-                    dom_init.clone(),
-                    &driver,
-                    drv_init.clone(),
-                );
+            let (mut engine, mut function_context, config) = prepare_engine_and_function::<Dom>(
+                filename,
+                dom_init.clone(),
+                &driver,
+                drv_init.clone(),
+            );
             // add inputs
-            let in_size_offset = function_context
-                .get_free_space_and_write_slice(&[mat_size as i64])
-                .expect("Should have space for single i64")
-                as usize;
-            function_context.content.push(Some(DataSet {
-                ident: "".to_string(),
-                buffers: vec![DataItem {
-                    ident: "".to_string(),
-                    data: Position {
-                        offset: in_size_offset,
-                        size: 8,
-                    },
-                    key: 0,
-                }],
-            }));
-            let input_size = 8 * mat_size * mat_size;
             let mut mat_vec = Vec::<i64>::new();
+            mat_vec.push(mat_size as i64);
             for i in 0..(mat_size * mat_size) {
                 mat_vec.push(i as i64);
             }
@@ -238,7 +195,7 @@ mod compute_driver_tests {
                     ident: "".to_string(),
                     data: Position {
                         offset: in_mat_offset,
-                        size: input_size,
+                        size: mat_vec.len() * core::mem::size_of::<i64>(),
                     },
                     key: 0,
                 }],
@@ -258,27 +215,27 @@ mod compute_driver_tests {
             recorder
                 .record(RecordPoint::FutureReturn)
                 .expect("Should have properly advanced recorder state");
-            // check that result is 4
             assert_eq!(1, result_context.content.len());
             let output_item = &result_context.content[0]
                 .as_ref()
                 .expect("Set should be present");
             assert_eq!(1, output_item.buffers.len());
             let position = output_item.buffers[0].data;
-            assert_eq!(input_size, position.size, "Checking for size of output");
+            assert_eq!(
+                (mat_size * mat_size + 1) * 8,
+                position.size,
+                "Checking for size of output"
+            );
             let mut output = vec![0i64; position.size / 8];
             result_context
                 .context
                 .read(position.offset, &mut output)
                 .expect("Should succeed in reading");
             let expected = self::get_expected_mat(mat_size);
-            assert_eq!(expected.len(), output.len());
-            for (should, is) in expected.iter().zip(output.iter()) {
+            assert_eq!(mat_size as i64, output[0]);
+            for (should, is) in expected.iter().zip(output[1..].iter()) {
                 assert_eq!(should, is);
             }
-            domain
-                .release_context(result_context)
-                .expect("Should release context");
         }
     }
 
@@ -288,7 +245,7 @@ mod compute_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: Vec<u8>,
     ) {
-        let (domain, mut engine, mut function_context, config) =
+        let (mut engine, mut function_context, config) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         let stdin_content = "Test line \n line 2\n";
         let stdin_offset = function_context
@@ -356,9 +313,6 @@ mod compute_driver_tests {
         );
         assert_eq!(expected_stdout, stdout_string);
         assert_eq!("Test string to stderr\n", stderr_string);
-        domain
-            .release_context(result_context)
-            .expect("Should be able to release");
     }
 
     fn engine_fileio<Dom: MemoryDomain>(
@@ -367,7 +321,7 @@ mod compute_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: Vec<u8>,
     ) {
-        let (domain, mut engine, mut function_context, config) =
+        let (mut engine, mut function_context, config) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         let in_file_content = "Test file 0\n line 2\n";
         let in_file_offset = function_context
@@ -492,9 +446,6 @@ mod compute_driver_tests {
             };
             assert_eq!(expected_string, content_string);
         }
-        domain
-            .release_context(result_context)
-            .expect("Should be able to release context");
     }
 
     macro_rules! driverTests {
