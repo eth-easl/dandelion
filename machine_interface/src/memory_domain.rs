@@ -166,7 +166,6 @@ pub trait MemoryDomain: Sync + Send {
     where
         Self: Sized;
     fn acquire_context(&self, size: usize) -> DandelionResult<Context>;
-    fn release_context(&self, context: Context) -> DandelionResult<()>;
 }
 
 // Code to specialize transfers between different domains

@@ -369,21 +369,7 @@ impl Dispatcher {
             .run_on_engine(engine_id, config, out_set_names, context, recorder.clone())
             .await;
         recorder.record(RecordPoint::FutureReturn)?;
-        return match result {
-            Ok(()) => Ok(context),
-            Err(err) => {
-                let context_id = match self.type_map.get(&engine_id) {
-                    Some(id) => id,
-                    None => return Err(DandelionError::DispatcherConfigError),
-                };
-                let domain = match self.domains.get(context_id) {
-                    Some(d) => d,
-                    None => return Err(DandelionError::DispatcherConfigError),
-                };
-                let _release_result = domain.release_context(context);
-                Err(err)
-            }
-        };
+        return result.and(Ok(context));
     }
 
     async fn prepare_for_engine(

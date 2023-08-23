@@ -19,12 +19,9 @@ mod cheri_bench {
         for size in [128 * KB, 2 * KB * KB].iter() {
             group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, i| {
                 b.iter(|| {
-                    let context = domain
+                    let _context = domain
                         .acquire_context(*i)
                         .expect("Should be able to allocate");
-                    domain
-                        .release_context(context)
-                        .expect("Should be able to deallocate");
                 })
             });
         }
@@ -86,7 +83,7 @@ mod cheri_bench {
                 }));
                 let archive = Arc::new(Mutex::new(Archive::new()));
                 let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-                let (result, result_context) = tokio::runtime::Builder::new_current_thread()
+                let (result, _result_context) = tokio::runtime::Builder::new_current_thread()
                     .build()
                     .unwrap()
                     .block_on(engine.run(
@@ -95,9 +92,6 @@ mod cheri_bench {
                         &vec![String::from("")],
                         recorder,
                     ));
-                if domain.release_context(result_context).is_err() {
-                    panic!("domain release errored");
-                }
                 if result.is_err() {
                     panic!("returned error result");
                 }

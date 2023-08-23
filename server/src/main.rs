@@ -94,16 +94,6 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
         .queue_function(COLD_ID, inputs, non_caching)
         .await
         .expect("Should get back context");
-    domain
-        .release_context(result_context)
-        .expect("Should be able to release result");
-    let input_context_unwrapped = match Arc::try_unwrap(input_rc) {
-        Ok(val) => val,
-        Err(_) => panic!("Should get context from Rc"),
-    };
-    domain
-        .release_context(input_context_unwrapped)
-        .expect("Should be able to release input");
 }
 
 async fn serve_cold(

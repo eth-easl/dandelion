@@ -69,12 +69,6 @@ impl MemoryDomain for MallocMemoryDomain {
             size,
         ));
     }
-    fn release_context(&self, context: Context) -> DandelionResult<()> {
-        match context.context {
-            ContextType::Malloc(_) => Ok(()),
-            _ => Err(DandelionError::ContextMissmatch),
-        }
-    }
 }
 
 pub fn malloc_transfer(
