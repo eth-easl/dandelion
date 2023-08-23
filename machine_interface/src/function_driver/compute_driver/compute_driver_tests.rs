@@ -114,7 +114,7 @@ mod compute_driver_tests {
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         // add inputs
         let in_size_offset = function_context
-            .get_free_space_and_write_slice(&[1i64])
+            .get_free_space_and_write_slice(&[1i64, 2i64])
             .expect("Should have space for single i64");
         function_context.content.push(Some(DataSet {
             ident: "".to_string(),
@@ -122,21 +122,7 @@ mod compute_driver_tests {
                 ident: "".to_string(),
                 data: Position {
                     offset: in_size_offset as usize,
-                    size: 8,
-                },
-                key: 0,
-            }],
-        }));
-        let in_mat_offset = function_context
-            .get_free_space_and_write_slice(&[2i64])
-            .expect("Should have space for single i64");
-        function_context.content.push(Some(DataSet {
-            ident: "".to_string(),
-            buffers: vec![DataItem {
-                ident: "".to_string(),
-                data: Position {
-                    offset: in_mat_offset as usize,
-                    size: 8,
+                    size: 16,
                 },
                 key: 0,
             }],
@@ -163,13 +149,14 @@ mod compute_driver_tests {
             .expect("Set should be present");
         assert_eq!(1, output_item.buffers.len());
         let position = output_item.buffers[0].data;
-        assert_eq!(8, position.size, "Checking for size of output");
+        assert_eq!(16, position.size, "Checking for size of output");
         let mut read_buffer = vec![0i64; position.size / 8];
         result_context
             .context
             .read(position.offset, &mut read_buffer)
             .expect("Should succeed in reading");
-        assert_eq!(4, read_buffer[0]);
+        assert_eq!(1, read_buffer[0]);
+        assert_eq!(4, read_buffer[1]);
         domain
             .release_context(result_context)
             .expect("Should release context");
@@ -209,23 +196,8 @@ mod compute_driver_tests {
                     drv_init.clone(),
                 );
             // add inputs
-            let in_size_offset = function_context
-                .get_free_space_and_write_slice(&[mat_size as i64])
-                .expect("Should have space for single i64")
-                as usize;
-            function_context.content.push(Some(DataSet {
-                ident: "".to_string(),
-                buffers: vec![DataItem {
-                    ident: "".to_string(),
-                    data: Position {
-                        offset: in_size_offset,
-                        size: 8,
-                    },
-                    key: 0,
-                }],
-            }));
-            let input_size = 8 * mat_size * mat_size;
             let mut mat_vec = Vec::<i64>::new();
+            mat_vec.push(mat_size as i64);
             for i in 0..(mat_size * mat_size) {
                 mat_vec.push(i as i64);
             }
@@ -238,7 +210,7 @@ mod compute_driver_tests {
                     ident: "".to_string(),
                     data: Position {
                         offset: in_mat_offset,
-                        size: input_size,
+                        size: mat_vec.len() * core::mem::size_of::<i64>(),
                     },
                     key: 0,
                 }],
@@ -258,22 +230,25 @@ mod compute_driver_tests {
             recorder
                 .record(RecordPoint::FutureReturn)
                 .expect("Should have properly advanced recorder state");
-            // check that result is 4
             assert_eq!(1, result_context.content.len());
             let output_item = &result_context.content[0]
                 .as_ref()
                 .expect("Set should be present");
             assert_eq!(1, output_item.buffers.len());
             let position = output_item.buffers[0].data;
-            assert_eq!(input_size, position.size, "Checking for size of output");
+            assert_eq!(
+                (mat_size * mat_size + 1) * 8,
+                position.size,
+                "Checking for size of output"
+            );
             let mut output = vec![0i64; position.size / 8];
             result_context
                 .context
                 .read(position.offset, &mut output)
                 .expect("Should succeed in reading");
             let expected = self::get_expected_mat(mat_size);
-            assert_eq!(expected.len(), output.len());
-            for (should, is) in expected.iter().zip(output.iter()) {
+            assert_eq!(mat_size as i64, output[0]);
+            for (should, is) in expected.iter().zip(output[1..].iter()) {
                 assert_eq!(should, is);
             }
             domain

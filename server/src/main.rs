@@ -15,9 +15,8 @@ use machine_interface::{
     memory_domain::{cheri::CheriMemoryDomain, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
 };
-use std::{collections::BTreeMap, convert::Infallible, net::SocketAddr, sync::Arc, vec};
+use std::{collections::BTreeMap, convert::Infallible, net::SocketAddr, sync::Arc};
 use tokio::runtime::Builder;
-// use std::time::Instant;
 
 const MAT_DIM: usize = 128;
 const MAT_SIZE: usize = MAT_DIM * MAT_DIM * 8;
@@ -28,7 +27,7 @@ const COLD_ID: u64 = 1;
 
 #[cfg(feature = "cheri")]
 async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
-    use dispatcher::dispatcher::TransferIndices;
+    use dispatcher::dispatcher::CompositionSet;
 
     let mut inputs = Vec::new();
     let mut input_context;
@@ -73,21 +72,24 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
             key: 0,
         }],
     }));
+    let input_rc = Arc::new(input_context);
     inputs.push((
-        &input_context,
-        vec![
-            TransferIndices {
-                input_set_index: 0,
-                output_set_index: 0,
-                item_indices: None,
-            },
-            TransferIndices {
-                input_set_index: 1,
-                output_set_index: 1,
-                item_indices: None,
-            },
-        ],
+        0,
+        CompositionSet {
+            context_list: vec![input_rc.clone()],
+            set_index: 0,
+            sharding_mode: dispatcher::dispatcher::ShardingMode::NoSharding,
+        },
     ));
+    inputs.push((
+        1,
+        CompositionSet {
+            set_index: 1,
+            context_list: vec![input_rc.clone()],
+            sharding_mode: dispatcher::dispatcher::ShardingMode::NoSharding,
+        },
+    ));
+
     let result_context = dispatcher
         .queue_function(COLD_ID, inputs, non_caching)
         .await
@@ -95,8 +97,12 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
     domain
         .release_context(result_context)
         .expect("Should be able to release result");
+    let input_context_unwrapped = match Arc::try_unwrap(input_rc) {
+        Ok(val) => val,
+        Err(_) => panic!("Should get context from Rc"),
+    };
     domain
-        .release_context(input_context)
+        .release_context(input_context_unwrapped)
         .expect("Should be able to release input");
 }
 
