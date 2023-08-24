@@ -35,17 +35,19 @@ const COLD_ID: u64 = 1;
 
 static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
 
-async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, cols: usize) -> (i64) {
+async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, cols: usize) -> i64 {
 
-    let mut inputs = Vec::new();
     let mut input_context;
     let mat_size: usize = rows * cols;
-    let total_size = 2 * mat_size * 8 + 8;
+    // [rows] [input_matrix] [output_matrix]
+    let context_size = 8 + mat_size * 8 + mat_size * 8;
 
     // Initialize matrix if necessary
     // NOTE: Not exactly thread safe but works for now
     unsafe {
         if DUMMY_MATRIX.is_empty() {
+            // TODO: add cols
+            DUMMY_MATRIX.push(rows as i64);
             for i in 0..mat_size {
                 DUMMY_MATRIX.push(i as i64 + 1)
             }
@@ -53,72 +55,28 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
     }
 
     #[cfg(feature = "cheri")]
-    let domain = CheriMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
+    let domain = CheriMemoryDomain::init(Vec::new())
+        .expect("Should be able to initialize domain");
     #[cfg(not(feature = "cheri"))]
-    let domain = MallocMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
+    let domain = MallocMemoryDomain::init(Vec::new())
+        .expect("Should be able to initialize domain");
 
     input_context = domain
-        .acquire_context(total_size)
+        .acquire_context(context_size)
         .expect("Should always have space");
 
-    let size_offset = input_context
-        .get_free_space(8, 8)
-        .expect("Should have space");
-
-    // TODO: Add cols argument to function
-    input_context
-        .write(size_offset, &[rows])
-        .expect("Should be able to write");
-    input_context.content.push(Some(DataSet {
-        ident: "".to_string(),
-        buffers: vec![DataItem {
-            ident: "".to_string(),
-            data: Position {
-                offset: size_offset,
-                size: 8,
-            },
-            key: 0,
-        }],
-    }));
-
-    let in_map_offset = input_context
-        .get_free_space(mat_size * 8, 8)
-        .expect("Should have space");
     unsafe {
-        input_context
-            .write(in_map_offset, &DUMMY_MATRIX)
-            .expect("Should be able to write input matrix");
+        add_matmul_inputs(&mut input_context, rows, cols, &DUMMY_MATRIX);
     }
 
-    input_context.content.push(Some(DataSet {
-        ident: "".to_string(),
-        buffers: vec![DataItem {
-            ident: "".to_string(),
-            data: Position {
-                offset: in_map_offset,
-                size: mat_size * 8,
-            },
-            key: 0,
-        }],
-    }));
-    let input_rc = Arc::new(input_context);
-    inputs.push((
+    let inputs = vec![(
         0,
         CompositionSet {
-            context_list: vec![input_rc.clone()],
+            context_list: vec![(Arc::new(input_context))],
+            sharding_mode: dispatcher::dispatcher::ShardingMode::NoSharding,
             set_index: 0,
-            sharding_mode: dispatcher::dispatcher::ShardingMode::NoSharding,
         },
-    ));
-
-    inputs.push((
-        1,
-        CompositionSet {
-            set_index: 1,
-            context_list: vec![input_rc.clone()],
-            sharding_mode: dispatcher::dispatcher::ShardingMode::NoSharding,
-        },
-    ));
+    )];
 
     let result_context: Context = dispatcher
         .queue_function(is_cold as u64, inputs, is_cold)
@@ -126,6 +84,32 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
         .expect("Should get back context");
 
     return get_checksum(&result_context);
+
+}
+
+// Add the matrix multiplication inputs to the given context
+fn add_matmul_inputs(
+    context: &mut Context,
+    _rows: usize,
+    _cols: usize,
+    matrix: &Vec<i64>,
+) -> () {
+
+
+    let mat_offset = context
+        .get_free_space_and_write_slice(matrix)
+        .expect("Should have space") as usize;
+    context.content.push(Some(DataSet {
+        ident: "".to_string(),
+        buffers: vec![DataItem {
+            ident: "".to_string(),
+            data: Position {
+                offset: mat_offset,
+                size: matrix.len() * 8,
+            },
+            key: 0,
+        }],
+    }));
 
 }
 
