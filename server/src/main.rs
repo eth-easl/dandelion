@@ -266,7 +266,6 @@ async fn service(
 }
 
 fn main() -> () {
-    println!("Server Hello");
 
     // set up dispatcher configuration basics
     let mut domains = BTreeMap::new();
@@ -348,6 +347,8 @@ fn main() -> () {
         }
     });
     let server = Server::bind(&addr).serve(make_svc);
+
+    println!("Hello, World");
     // Run this server for... forever!
     if let Err(e) = runtime.block_on(server) {
         eprintln!("server error: {}", e);
