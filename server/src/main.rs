@@ -125,28 +125,27 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
         .await
         .expect("Should get back context");
 
-    return get_checksum(result_context);
+    return get_checksum(&result_context);
 
 }
 
 // Given a result context, return the last element of the resulting matrix
-fn get_checksum(context: machine_interface::memory_domain::Context) -> i64 {
+fn get_checksum(context: &Context) -> i64 {
 
     // Determine offset of last matrix element
-    let dataset = context.content[0]
+    let output_dataset = context.content[0]
         .as_ref()
         .expect("Should contain matrix");
-    let checksum_offset = dataset.buffers[0].data.offset
-        + dataset.buffers[0].data.size - 8;
+    let output_item = output_dataset.buffers[0].data;
+    let checksum_offset = output_item.offset + output_item.size - 8;
 
     // Read out the checksum
-    let mut read_buffer: Vec<u8> = vec![0; 8];
+    let mut read_buffer: Vec<i64> = vec![0; 1];
     context
         .read(checksum_offset, &mut read_buffer)
         .expect("Context should contain matrix");
-    let checksum = i64::from_le_bytes(read_buffer.try_into().unwrap());
 
-    return checksum;
+    return read_buffer[0];
 }
 
 async fn serve_request(
@@ -222,16 +221,16 @@ async fn serve_native(_req: Request<Body>) -> Result<Response<Body>, Infallible>
         for j in 0..rows {
             for k in 0..cols {
                 unsafe{
-                out_mat[i * rows + j] += 
+                out_mat[i * rows + j] +=
                     DUMMY_MATRIX[i * cols + k] * DUMMY_MATRIX[j * cols + k];
-                
+
                 }
             }
         }
     }
 
     let checksum = out_mat[rows * cols - 1];
-    
+
     Ok::<_, Infallible>(Response::new(checksum.to_be_bytes().to_vec().into()))
 }
 
