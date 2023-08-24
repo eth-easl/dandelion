@@ -1,41 +1,62 @@
 use core_affinity::{self, CoreId};
 use dandelion_commons::{ContextTypeId, EngineTypeId};
 use dispatcher::{
-    dispatcher::Dispatcher, function_registry::FunctionRegistry, resource_pool::ResourcePool,
+    dispatcher::Dispatcher,
+    function_registry::FunctionRegistry,
+    resource_pool::ResourcePool,
+    dispatcher::CompositionSet,
 };
 use futures::lock::Mutex;
 use hyper::{
     service::{make_service_fn, service_fn},
     Body, Request, Response, Server,
 };
+use http::{StatusCode};
+use bytes::Buf;
 
 #[cfg(feature = "cheri")]
 use machine_interface::{
     function_driver::{compute_driver::cheri::CheriDriver, Driver},
-    memory_domain::{cheri::CheriMemoryDomain, ContextTrait, MemoryDomain},
-    DataItem, DataSet, Position, Context
+    memory_domain::{cheri::CheriMemoryDomain, ContextTrait, MemoryDomain, Context},
+    DataItem, DataSet, Position,
 };
+
+#[cfg(not(feature = "cheri"))]
+use machine_interface::{
+    memory_domain::{malloc::MallocMemoryDomain, ContextTrait, MemoryDomain, Context},
+    DataItem, DataSet, Position,
+};
+
 use std::{collections::BTreeMap, convert::Infallible, net::SocketAddr, sync::Arc};
 use tokio::runtime::Builder;
 
-const MAT_DIM: usize = 128;
-const MAT_SIZE: usize = MAT_DIM * MAT_DIM * 8;
-static mut IN_MAT: [u8; MAT_SIZE] = [0; MAT_SIZE];
-static IN_SIZE: u64 = MAT_DIM as u64;
 const HOT_ID: u64 = 0;
 const COLD_ID: u64 = 1;
+
 static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
 
-#[cfg(feature = "cheri")]
-async fn run_mat_func(dispatcher: Arc<Dispatcher>, isCold: bool) -> (i64) {
-    use dispatcher::dispatcher::TransferIndices;
-
+async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, cols: usize) -> (i64) {
 
     let mut inputs = Vec::new();
     let mut input_context;
-    let total_size = 2 * MAT_SIZE + 8;
+    let mat_size: usize = rows * cols;
+    let total_size = 2 * mat_size * 8 + 8;
 
+    // Initialize matrix if necessary
+    // NOTE: Not exactly thread safe but works for now
+    unsafe {
+        if DUMMY_MATRIX.is_empty() {
+            for i in 0..mat_size {
+                DUMMY_MATRIX.push(i as i64 + 1)
+            }
+        }
+    }
+
+    #[cfg(feature = "cheri")]
     let domain = CheriMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
+    #[cfg(not(feature = "cheri"))]
+    let domain = MallocMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
+
     input_context = domain
         .acquire_context(total_size)
         .expect("Should always have space");
@@ -43,8 +64,10 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, isCold: bool) -> (i64) {
     let size_offset = input_context
         .get_free_space(8, 8)
         .expect("Should have space");
+
+    // TODO: Add cols argument to function
     input_context
-        .write(size_offset, &[IN_SIZE])
+        .write(size_offset, &[rows])
         .expect("Should be able to write");
     input_context.content.push(Some(DataSet {
         ident: "".to_string(),
@@ -59,11 +82,11 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, isCold: bool) -> (i64) {
     }));
 
     let in_map_offset = input_context
-        .get_free_space(MAT_SIZE, 8)
+        .get_free_space(mat_size * 8, 8)
         .expect("Should have space");
     unsafe {
         input_context
-            .write(in_map_offset, &IN_MAT)
+            .write(in_map_offset, &DUMMY_MATRIX)
             .expect("Should be able to write input matrix");
     }
 
@@ -73,7 +96,7 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, isCold: bool) -> (i64) {
             ident: "".to_string(),
             data: Position {
                 offset: in_map_offset,
-                size: MAT_SIZE,
+                size: mat_size * 8,
             },
             key: 0,
         }],
@@ -97,82 +120,119 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, isCold: bool) -> (i64) {
         },
     ));
 
-    let result_context = dispatcher
-        .queue_function(COLD_ID, inputs, non_caching)
-        .await
-        .expect("Should get back context");
-
     let result_context: Context = dispatcher
-        .queue_function(isCold as u64, inputs, isCold)
+        .queue_function(is_cold as u64, inputs, is_cold)
         .await
         .expect("Should get back context");
 
-    return getChecksum(result_context);
+    return get_checksum(result_context);
 
 }
 
 // Given a result context, return the last element of the resulting matrix
-fn getChecksum(context: Context) -> i64 {
+fn get_checksum(context: machine_interface::memory_domain::Context) -> i64 {
+
     // Determine offset of last matrix element
     let dataset = context.content[0]
+        .as_ref()
         .expect("Should contain matrix");
-    let last_offset = dataset.buffers[0].data.offset
+    let checksum_offset = dataset.buffers[0].data.offset
         + dataset.buffers[0].data.size - 8;
 
     // Read out the checksum
-    let mut checksum_buffer: Vec<i64> = vec![0; 1];
+    let mut read_buffer: Vec<u8> = vec![0; 8];
+    context
+        .read(checksum_offset, &mut read_buffer)
+        .expect("Context should contain matrix");
+    let checksum = i64::from_le_bytes(read_buffer.try_into().unwrap());
 
-    return checksum_buffer[0];
+    return checksum;
 }
 
-// Return a pointer to the matrix we pass to the function
-// and initialize it if necessary
-fn getMatrix(rows: i64, cols: i64) -> () {
-    // TODO
-}
+async fn serve_request(
+    is_cold: bool,
+    _req: Request<Body>,
+    dispatcher: Arc<Dispatcher>,
+) -> Result<Response<Body>, Infallible> {
 
-// Given a matmul request, parse it and return the matrix dimensions it contains
-fn parseMatrixDims(request: Request<Body>) -> (i64, i64) {
-    // TODO
-    let mut rows: i64 = 0;
-    let mut cols: i64 = 0;
-    return (rows, cols)
-}
+    // Try to parse the request
+    let mut request_buf = hyper::body::to_bytes(_req.into_body())
+        .await
+        .expect("Could not read request body");
 
+    if request_buf.len() != 16 {
+        let mut bad_request = Response::new(Body::empty());
+        *bad_request.status_mut() = StatusCode::BAD_REQUEST;
+        return Ok::<_, Infallible>(bad_request)
+    }
+
+    let rows = request_buf.get_i64() as usize;
+    let cols = request_buf.get_i64() as usize;
+
+    let response_vec: Vec<u8> = run_mat_func(dispatcher, is_cold, rows, cols)
+        .await.to_be_bytes().to_vec();
+    let response = Ok::<_, Infallible>(Response::new(response_vec.into()));
+    return response
+}
 
 async fn serve_cold(
     _req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
 ) -> Result<Response<Body>, Infallible> {
-    #[cfg(feature = "cheri")]
-    let response_vec: Vec<u8> = run_mat_func(dispatcher, true).await.to_be_bytes().to_vec();
-    Ok::<_, Infallible>(Response::new(response_vec.into()))
 
+    return serve_request(true, _req, dispatcher).await
 }
 
 async fn serve_hot(
     _req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
 ) -> Result<Response<Body>, Infallible> {
-    #[cfg(feature = "cheri")]
-    let response_vec: Vec<u8> = run_mat_func(dispatcher, false).await.to_be_bytes().to_vec();
-    Ok::<_, Infallible>(Response::new(response_vec.into()))
+    return serve_request(false, _req, dispatcher).await
 }
 
 async fn serve_native(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
-    let mut in_mat: [u64; MAT_DIM * MAT_DIM] = [0; MAT_DIM * MAT_DIM];
-    let mut out_mat: [u64; MAT_DIM * MAT_DIM] = [0; MAT_DIM * MAT_DIM];
-    for i in 0..in_mat.len() {
-        in_mat[i] = i as u64 + 1;
+    // Try to parse the request
+    let mut request_buf = hyper::body::to_bytes(_req.into_body())
+        .await
+        .expect("Could not read request body");
+
+    if request_buf.len() != 16 {
+        let mut bad_request = Response::new(Body::empty());
+        *bad_request.status_mut() = StatusCode::BAD_REQUEST;
+        return Ok::<_, Infallible>(bad_request)
     }
-    for i in 0..MAT_DIM {
-        for j in 0..MAT_DIM {
-            for k in 0..MAT_DIM {
-                out_mat[i * MAT_DIM + j] += in_mat[i * MAT_DIM + k] * in_mat[j * MAT_DIM + k];
+
+    let rows = request_buf.get_i64() as usize;
+    let cols = request_buf.get_i64() as usize;
+
+    let mat_size: usize = rows * cols;
+
+    // Initialize matrix if necessary
+    // NOTE: Not exactly thread safe but works for now
+    unsafe {
+        if DUMMY_MATRIX.is_empty() {
+            for i in 0..mat_size {
+                DUMMY_MATRIX.push(i as i64 + 1)
             }
         }
     }
-    Ok::<_, Infallible>(Response::new("Done: Natv\n".into()))
+
+    let mut out_mat: Vec<i64> = vec![0; mat_size];
+    for i in 0..rows {
+        for j in 0..rows {
+            for k in 0..cols {
+                unsafe{
+                out_mat[i * rows + j] += 
+                    DUMMY_MATRIX[i * cols + k] * DUMMY_MATRIX[j * cols + k];
+                
+                }
+            }
+        }
+    }
+
+    let checksum = out_mat[rows * cols - 1];
+    
+    Ok::<_, Infallible>(Response::new(checksum.to_be_bytes().to_vec().into()))
 }
 
 async fn serve_stats(
@@ -207,14 +267,6 @@ async fn service(
 
 fn main() -> () {
     println!("Server Hello");
-    // set up input data
-    unsafe {
-        for i in 0..MAT_SIZE {
-            if i % 8 == 0 {
-                IN_MAT[i] = 2;
-            }
-        }
-    }
 
     // set up dispatcher configuration basics
     let mut domains = BTreeMap::new();
@@ -263,6 +315,7 @@ fn main() -> () {
     }
     #[cfg(not(feature = "cheri"))]
     {
+        // TODO: Add non-cheri driver once implemented
         let loader_map = BTreeMap::new();
         registry = FunctionRegistry::new(loader_map);
     }
