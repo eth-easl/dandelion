@@ -37,10 +37,9 @@ static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
 
 async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, cols: usize) -> i64 {
 
-    let mut input_context;
     let mat_size: usize = rows * cols;
     // [rows] [input_matrix] [output_matrix]
-    let context_size = 8 + mat_size * 8 + mat_size * 8;
+    let context_size: usize = (1 + mat_size + mat_size) * 8;
 
     // Initialize matrix if necessary
     // NOTE: Not exactly thread safe but works for now
@@ -57,11 +56,12 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
     #[cfg(feature = "cheri")]
     let domain = CheriMemoryDomain::init(Vec::new())
         .expect("Should be able to initialize domain");
+
     #[cfg(not(feature = "cheri"))]
     let domain = MallocMemoryDomain::init(Vec::new())
         .expect("Should be able to initialize domain");
 
-    input_context = domain
+    let mut input_context = domain
         .acquire_context(context_size)
         .expect("Should always have space");
 
@@ -78,12 +78,16 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
         },
     )];
 
-    let result_context: Context = dispatcher
+    let result = dispatcher
         .queue_function(is_cold as u64, inputs, is_cold)
-        .await
-        .expect("Should get back context");
+        .await;
 
-    return get_checksum(&result_context);
+    let result_context = match result {
+        Ok(context) => context,
+        Err(err) => panic!("Failed to get context with: {:?}", err),
+    };
+
+    return get_checksum(result_context);
 
 }
 
@@ -99,6 +103,7 @@ fn add_matmul_inputs(
     let mat_offset = context
         .get_free_space_and_write_slice(matrix)
         .expect("Should have space") as usize;
+
     context.content.push(Some(DataSet {
         ident: "".to_string(),
         buffers: vec![DataItem {
@@ -114,13 +119,18 @@ fn add_matmul_inputs(
 }
 
 // Given a result context, return the last element of the resulting matrix
-fn get_checksum(context: &Context) -> i64 {
+fn get_checksum(context: Context) -> i64 {
 
     // Determine offset of last matrix element
     let output_dataset = context.content[0]
         .as_ref()
         .expect("Should contain matrix");
-    let output_item = output_dataset.buffers[0].data;
+    let output_item = output_dataset
+            .buffers
+            .iter()
+            .find(|buffer| buffer.key == 0)
+            .expect("should find a buffer with the correct key")
+            .data;
     let checksum_offset = output_item.offset + output_item.size - 8;
 
     // Read out the checksum
