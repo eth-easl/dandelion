@@ -33,7 +33,7 @@ pub enum ShardingMode {
 }
 
 /// Struct that has all locations belonging to one set, that is potentially spread over multiple contexts.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CompositionSet {
     /// list of all contexts and the set index in that context that belongs to the composition set
     pub context_list: Vec<Arc<Context>>,

@@ -84,6 +84,8 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
         },
     )];
 
+    println!("Input: {:?}", inputs);
+
     let result = dispatcher
         .queue_function(is_cold as u64, inputs, is_cold)
         .await;
@@ -92,6 +94,8 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
         Ok(context) => context,
         Err(err) => panic!("Failed to get context with: {:?}", err),
     };
+
+    println!("Output: {:?}", result_context);
 
     return get_checksum(result_context);
 
