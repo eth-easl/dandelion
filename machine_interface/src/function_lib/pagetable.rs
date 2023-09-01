@@ -1,16 +1,12 @@
 use crate::{
-    function_lib::{Driver, ElfConfig, Engine, FunctionConfig, Loader},
-    interface::{read_output_structs, setup_input_structs},
+    function_lib::{Driver, Engine, FunctionConfig, Loader},
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
-    DataItem, DataRequirement, DataRequirementList, DataSet, Position,
+    DataItem, DataRequirement, DataRequirementList, Position, interface::{read_output_structs, setup_input_structs}, DataSet,
 };
 use core::{future::ready, pin::Pin};
 use core_affinity;
-use dandelion_commons::{
-    records::Recorder,
-    DandelionError, DandelionResult,
-};
+use dandelion_commons::{DandelionError, DandelionResult, records::Recorder};
 use nix::{
     sys::{
         signal::Signal,
@@ -19,13 +15,13 @@ use nix::{
     unistd::Pid,
 };
 use std::{
-    io::{BufRead, BufReader, Write},
     process::{Command, Stdio},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, Ordering}, 
+    io::{BufReader, BufRead, Write},
 };
 
-const IO_STRUCT_SIZE: usize = 16;
-const MAX_OUTPUTS: u32 = 16;
+//const IO_STRUCT_SIZE: usize = 16;
+//const MAX_OUTPUTS: u32 = 16;
 
 /*
 fn setup_input_structs(
@@ -242,7 +238,8 @@ impl Engine for PagetableEngine {
         config: &FunctionConfig,
         mut context: Context,
         output_set_names: &Vec<String>,
-        mut recorder: Recorder,
+        _recorder: Recorder,
+        user_code_len: usize
     ) -> Pin<Box<dyn futures::Future<Output = (DandelionResult<()>, Context)> + '_ + Send>> {
         if self.is_running.swap(true, Ordering::AcqRel) {
             return Box::pin(ready((Err(DandelionError::EngineAlreadyRunning), context)));
@@ -255,29 +252,12 @@ impl Engine for PagetableEngine {
             ContextType::Pagetable(pagetable_context) => pagetable_context,
             _ => return Box::pin(ready((Err(DandelionError::ContextMissmatch), context))),
         };
-        // let command = CheriCommand {
-        //     context: cheri_context.context,
-        //     entry_point: elf_config.entry_point,
-        //     return_pair_offset: elf_config.return_offset.0,
-        //     stack_pointer: cheri_context.size,
-        // };
-
-        // let storage = pagetable_context.storage.as_ptr();
-        // let storage_len = pagetable_context.storage.len();
-        // match self.command_sender.send(command) {
-        //     Err(_) => return (Err(DandelionError::EngineError), context),
-        //     Ok(_) => (),
-        // }
-        // match self.result_receiver.recv() {
-        //     Err(_) => return (Err(DandelionError::EngineError), context),
-        //     Ok(Err(err)) => return (Err(err), context),
-        //     Ok(Ok(())) => (),
-        // }
 
         // create a new address space (child process) and pass the shared memory
-        let mut worker = Command::new("../target/debug/pagetable_worker")
+        let mut worker = Command::new("../target/x86_64-unknown-linux-musl/debug/pagetable_worker")
             .arg(self.cpu_slot.to_string())
             .arg(pagetable_context.storage.id())
+            .arg(user_code_len.to_string())
             .arg(serde_json::to_string(&context.protection_requirements).unwrap())
             .env_clear()
             .stdin(Stdio::piped())
@@ -286,9 +266,20 @@ impl Engine for PagetableEngine {
             .unwrap();
 
         eprintln!("created a new process");
-
+        
         // receive the shared memory address in worker's address space
         let mut reader = BufReader::new(worker.stdout.take().unwrap());
+        
+        let mut buf: String = String::new();
+        reader.read_line(&mut buf).unwrap();
+        let addr: String = buf.trim().parse().unwrap();
+        eprintln!("got next_steps {}", addr);
+
+        let mut buf: String = String::new();
+        reader.read_line(&mut buf).unwrap();
+        let result: String = buf.trim().parse().unwrap();
+        eprintln!("got result from mmap {}", result);
+        
         let mut buf: String = String::new();
         reader.read_line(&mut buf).unwrap();
         let worker_base_addr: usize = buf.trim().parse().unwrap();
@@ -306,7 +297,7 @@ impl Engine for PagetableEngine {
             .write_all(elf_config.entry_point.to_string().as_bytes())
             .unwrap();
         eprintln!("sent entry point");
-
+        
         // intercept worker's syscalls by ptrace
         let pid = Pid::from_raw(worker.id() as i32);
         let status = wait::waitpid(pid, None).unwrap();
@@ -353,11 +344,8 @@ impl Engine for PagetableEngine {
         }
 
         // erase all assumptions on context internal layout
-        //context.dynamic_data.clear();
-        //context.static_data.clear();
         context.content.clear();
         // read outputs
-        //let result = get_output_layout(&mut context, &elf_config, worker_base_addr);
         let result = read_output_structs(&mut context, worker_base_addr);
         self.is_running.store(false, Ordering::Release);
         Box::pin(ready((result, context)))
@@ -425,7 +413,7 @@ impl Loader for PagetableLoader {
 
         let elf = elf_parser::ParsedElf::new(&function)?;
         let system_data = elf.get_symbol_by_name(&function, "__dandelion_system_data")?;
-        let return_offset = elf.get_symbol_by_name(&function, "__dandelion_return_address")?;
+        //let return_offset = elf.get_symbol_by_name(&function, "__dandelion_return_address")?;
         let entry = elf.get_entry_point();
         let config = FunctionConfig::ElfConfig(super::ElfConfig {
             system_data_offset: system_data.0,
@@ -444,9 +432,9 @@ impl Loader for PagetableLoader {
         for position in source_layout.iter() {
             total_size += position.size;
         }
-        let mut context = static_domain.acquire_context(total_size)?;
+        let _context = static_domain.acquire_context(total_size)?;
         // copy all
-        let mut write_counter = 0;
+        let _write_counter = 0;
         for position in source_layout.iter() {
             total_size += position.size;
         }

@@ -34,6 +34,7 @@ pub trait Engine: Send {
         context: Context,
         output_set_names: &Vec<String>,
         recorder: Recorder,
+        user_code_len: usize
     ) -> Pin<Box<dyn Future<Output = (DandelionResult<()>, Context)> + '_ + Send>>;
     fn abort(&mut self) -> DandelionResult<()>;
 }
