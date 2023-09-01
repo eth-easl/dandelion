@@ -1,39 +1,32 @@
+use bytes::Buf;
 use core_affinity::{self, CoreId};
 use dandelion_commons::{ContextTypeId, EngineTypeId};
 use dispatcher::{
-    dispatcher::Dispatcher,
+    dispatcher::{CompositionSet, Dispatcher},
     function_registry::FunctionRegistry,
     resource_pool::ResourcePool,
-    dispatcher::CompositionSet,
 };
 use futures::lock::Mutex;
+use http::StatusCode;
 use hyper::{
     service::{make_service_fn, service_fn},
     Body, Request, Response, Server,
 };
-use http::{StatusCode};
-use bytes::Buf;
 
 #[cfg(feature = "cheri")]
 use machine_interface::{
     function_driver::{compute_driver::cheri::CheriDriver, Driver},
-    memory_domain::{cheri::CheriMemoryDomain, ContextTrait, MemoryDomain, Context},
+    memory_domain::{cheri::CheriMemoryDomain, Context, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
 };
 
 #[cfg(not(feature = "cheri"))]
 use machine_interface::{
-    memory_domain::{malloc::MallocMemoryDomain, ContextTrait, MemoryDomain, Context},
+    memory_domain::{malloc::MallocMemoryDomain, Context, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
 };
 
-use std::{
-    collections::BTreeMap,
-    convert::Infallible,
-    net::SocketAddr,
-    sync::Arc,
-    mem::size_of,
-};
+use std::{collections::BTreeMap, convert::Infallible, mem::size_of, net::SocketAddr, sync::Arc};
 use tokio::runtime::Builder;
 
 const HOT_ID: u64 = 0;
@@ -42,7 +35,6 @@ const COLD_ID: u64 = 1;
 static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
 
 async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, cols: usize) -> i64 {
-
     let mat_size: usize = rows * cols;
     // [rows] [input_matrix]
     let context_size: usize = (1 + mat_size) * 8;
@@ -60,12 +52,10 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
     }
 
     #[cfg(feature = "cheri")]
-    let domain = CheriMemoryDomain::init(Vec::new())
-        .expect("Should be able to initialize domain");
+    let domain = CheriMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
 
     #[cfg(not(feature = "cheri"))]
-    let domain = MallocMemoryDomain::init(Vec::new())
-        .expect("Should be able to initialize domain");
+    let domain = MallocMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
 
     let mut input_context = domain
         .acquire_context(context_size)
@@ -84,8 +74,6 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
         },
     )];
 
-    println!("Input: {:?}", inputs);
-
     let result = dispatcher
         .queue_function(is_cold as u64, inputs, is_cold)
         .await;
@@ -95,20 +83,11 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
         Err(err) => panic!("Failed to get context with: {:?}", err),
     };
 
-    println!("Output: {:?}", result_context);
-
     return get_checksum(result_context);
-
 }
 
 // Add the matrix multiplication inputs to the given context
-fn add_matmul_inputs(
-    context: &mut Context,
-    _rows: usize,
-    _cols: usize,
-    matrix: &Vec<i64>,
-) -> () {
-
+fn add_matmul_inputs(context: &mut Context, _rows: usize, _cols: usize, matrix: &Vec<i64>) -> () {
     // Allocate a new set entry
     context.content.resize_with(1, || None);
 
@@ -138,24 +117,18 @@ fn add_matmul_inputs(
             }],
         });
     }
-
-    println!("{:?}", context);
-
 }
 
 // Given a result context, return the last element of the resulting matrix
 fn get_checksum(context: Context) -> i64 {
-
     // Determine offset of last matrix element
-    let output_dataset = context.content[0]
-        .as_ref()
-        .expect("Should contain matrix");
+    let output_dataset = context.content[0].as_ref().expect("Should contain matrix");
     let output_item = output_dataset
-            .buffers
-            .iter()
-            .find(|buffer| buffer.key == 0)
-            .expect("should find a buffer with the correct key")
-            .data;
+        .buffers
+        .iter()
+        .find(|buffer| buffer.key == 0)
+        .expect("should find a buffer with the correct key")
+        .data;
     let checksum_offset = output_item.offset + output_item.size - 8;
 
     // Read out the checksum
@@ -172,7 +145,6 @@ async fn serve_request(
     _req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
 ) -> Result<Response<Body>, Infallible> {
-
     // Try to parse the request
     let mut request_buf = hyper::body::to_bytes(_req.into_body())
         .await
@@ -181,16 +153,18 @@ async fn serve_request(
     if request_buf.len() != 16 {
         let mut bad_request = Response::new(Body::empty());
         *bad_request.status_mut() = StatusCode::BAD_REQUEST;
-        return Ok::<_, Infallible>(bad_request)
+        return Ok::<_, Infallible>(bad_request);
     }
 
     let rows = request_buf.get_i64() as usize;
     let cols = request_buf.get_i64() as usize;
 
     let response_vec: Vec<u8> = run_mat_func(dispatcher, is_cold, rows, cols)
-        .await.to_be_bytes().to_vec();
+        .await
+        .to_be_bytes()
+        .to_vec();
     let response = Ok::<_, Infallible>(Response::new(response_vec.into()));
-    return response
+    return response;
 }
 
 async fn serve_native(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
@@ -202,7 +176,7 @@ async fn serve_native(_req: Request<Body>) -> Result<Response<Body>, Infallible>
     if request_buf.len() != 16 {
         let mut bad_request = Response::new(Body::empty());
         *bad_request.status_mut() = StatusCode::BAD_REQUEST;
-        return Ok::<_, Infallible>(bad_request)
+        return Ok::<_, Infallible>(bad_request);
     }
 
     let rows = request_buf.get_i64() as usize;
@@ -224,10 +198,9 @@ async fn serve_native(_req: Request<Body>) -> Result<Response<Body>, Infallible>
     for i in 0..rows {
         for j in 0..rows {
             for k in 0..cols {
-                unsafe{
-                out_mat[i * rows + j] +=
-                    DUMMY_MATRIX[i * cols + k] * DUMMY_MATRIX[j * cols + k];
-
+                unsafe {
+                    out_mat[i * rows + j] +=
+                        DUMMY_MATRIX[i * cols + k] * DUMMY_MATRIX[j * cols + k];
                 }
             }
         }
@@ -269,7 +242,6 @@ async fn service(
 }
 
 fn main() -> () {
-
     // set up dispatcher configuration basics
     let mut domains = BTreeMap::new();
     let context_id: ContextTypeId = 0;
@@ -303,7 +275,7 @@ fn main() -> () {
             HOT_ID,
             engine_id,
             path.to_str().unwrap(),
-            vec![String::from(""), String::from("")],
+            vec![String::from("")],
             vec![String::from("")],
         );
         // add for cold function
