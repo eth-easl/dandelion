@@ -44,8 +44,8 @@ static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
 async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, cols: usize) -> i64 {
 
     let mat_size: usize = rows * cols;
-    // [rows] [input_matrix] [output_matrix]
-    let context_size: usize = (1 + mat_size + mat_size) * 8;
+    // [rows] [input_matrix]
+    let context_size: usize = (1 + mat_size) * 8;
 
     // Initialize matrix if necessary
     // NOTE: Not exactly thread safe but works for now
