@@ -13,6 +13,7 @@ pub trait ContextTrait: Send + Sync {
 
 // https://docs.rs/enum_dispatch/latest/enum_dispatch/index.html
 // check if this would be better way to do it
+#[derive(Debug)]
 pub enum ContextType {
     Malloc(Box<malloc::MallocContext>),
     #[cfg(feature = "cheri")]
@@ -35,6 +36,8 @@ impl ContextTrait for ContextType {
         }
     }
 }
+
+#[derive(Debug)]
 pub struct Context {
     pub context: ContextType,
     pub content: Vec<Option<DataSet>>,

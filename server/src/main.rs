@@ -27,7 +27,13 @@ use machine_interface::{
     DataItem, DataSet, Position,
 };
 
-use std::{collections::BTreeMap, convert::Infallible, net::SocketAddr, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    convert::Infallible,
+    net::SocketAddr,
+    sync::Arc,
+    mem::size_of,
+};
 use tokio::runtime::Builder;
 
 const HOT_ID: u64 = 0;
@@ -99,22 +105,37 @@ fn add_matmul_inputs(
     matrix: &Vec<i64>,
 ) -> () {
 
+    // Allocate a new set entry
+    context.content.resize_with(1, || None);
 
     let mat_offset = context
         .get_free_space_and_write_slice(matrix)
         .expect("Should have space") as usize;
 
-    context.content.push(Some(DataSet {
-        ident: "".to_string(),
-        buffers: vec![DataItem {
-            ident: "".to_string(),
+    if let Some(set) = &mut context.content[0] {
+        set.buffers.push(DataItem {
+            ident: String::from(""),
             data: Position {
                 offset: mat_offset,
-                size: matrix.len() * 8,
+                size: matrix.len() * size_of::<i64>(),
             },
             key: 0,
-        }],
-    }));
+        });
+    } else {
+        context.content[0] = Some(DataSet {
+            ident: "".to_string(),
+            buffers: vec![DataItem {
+                ident: "".to_string(),
+                data: Position {
+                    offset: mat_offset,
+                    size: matrix.len() * size_of::<i64>(),
+                },
+                key: 0,
+            }],
+        });
+    }
+
+    println!("{:?}", context);
 
 }
 
@@ -166,21 +187,6 @@ async fn serve_request(
         .await.to_be_bytes().to_vec();
     let response = Ok::<_, Infallible>(Response::new(response_vec.into()));
     return response
-}
-
-async fn serve_cold(
-    _req: Request<Body>,
-    dispatcher: Arc<Dispatcher>,
-) -> Result<Response<Body>, Infallible> {
-
-    return serve_request(true, _req, dispatcher).await
-}
-
-async fn serve_hot(
-    _req: Request<Body>,
-    dispatcher: Arc<Dispatcher>,
-) -> Result<Response<Body>, Infallible> {
-    return serve_request(false, _req, dispatcher).await
 }
 
 async fn serve_native(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
@@ -247,8 +253,8 @@ async fn service(
 ) -> Result<Response<Body>, Infallible> {
     let uri = req.uri().path();
     match uri {
-        "/cold" => serve_cold(req, dispatcher).await,
-        "/hot" => serve_hot(req, dispatcher).await,
+        "/cold" => serve_request(true, req, dispatcher).await,
+        "/hot" => serve_request(false, req, dispatcher).await,
         "/native" => serve_native(req).await,
         "/stats" => serve_stats(req, dispatcher).await,
         _ => Ok::<_, Infallible>(Response::new(
@@ -312,7 +318,8 @@ fn main() -> () {
         registry = FunctionRegistry::new(loader_map);
     }
 
-    let dispatcher = Arc::new(
+    // Create an ARC pointer to the dispatcher for thread-safe access
+    let dispatcher_ptr = Arc::new(
         Dispatcher::init(domains, type_map, registry, resource_pool)
             .expect("Should be able to start dispatcher"),
     );
@@ -331,11 +338,11 @@ fn main() -> () {
     // ready http endpoint
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     let make_svc = make_service_fn(move |_| {
-        let new_dispatcher = dispatcher.clone();
+        let new_dispatcher_ptr = dispatcher_ptr.clone();
         async move {
             Ok::<_, Infallible>(service_fn(move |req| {
-                let service_dispatcher = new_dispatcher.clone();
-                service(req, service_dispatcher)
+                let service_dispatcher_ptr = new_dispatcher_ptr.clone();
+                service(req, service_dispatcher_ptr)
             }))
         }
     });
