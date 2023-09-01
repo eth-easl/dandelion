@@ -27,6 +27,8 @@ const COLD_ID: u64 = 1;
 
 #[cfg(feature = "cheri")]
 async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
+    use std::vec;
+
     use dispatcher::dispatcher::CompositionSet;
 
     let mut inputs = Vec::new();
@@ -89,9 +91,9 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, non_caching: bool) -> () {
             sharding_mode: dispatcher::dispatcher::ShardingMode::NoSharding,
         },
     ));
-
+    let outputs = vec![Some(0)];
     let result_context = dispatcher
-        .queue_function(COLD_ID, inputs, non_caching)
+        .queue_function(COLD_ID, inputs, outputs, non_caching)
         .await
         .expect("Should get back context");
 }

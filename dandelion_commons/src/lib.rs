@@ -68,6 +68,8 @@ pub enum DandelionError {
     DispatcherChannelError,
     /// dispatcher found set to transfer that has no registered name
     DispatcherSetMissmatch,
+    /// dispatcher failed to combine two composition sets
+    DispatcherCompositionCombine,
     /// dispatcher found mistake when trying to find waiting functions
     DispatcherDependencyError,
     // metering errors
