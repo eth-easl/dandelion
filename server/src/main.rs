@@ -283,7 +283,7 @@ fn main() -> () {
             COLD_ID,
             engine_id,
             path.to_str().unwrap(),
-            vec![String::from(""), String::from("")],
+            vec![String::from("")],
             vec![String::from("")],
         );
     }
