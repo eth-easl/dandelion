@@ -71,9 +71,9 @@ impl SharedMem {
                 NonZeroUsize::new(addr),
                 NonZeroUsize::new(shmem.size).unwrap(),
                 prot,
-                MapFlags::MAP_SHARED,
+                MapFlags::MAP_SHARED | MapFlags::MAP_FIXED_NOREPLACE,
                 shmem_fd,
-                0,
+                addr.try_into().unwrap(),
             )? as *mut _
         };
 

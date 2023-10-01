@@ -6,6 +6,9 @@ use dandelion_commons::{DandelionError, DandelionResult};
 use nix::sys::mman::ProtFlags;
 //use std::collections::HashMap;
 use crate::Position;
+
+pub const MMAP_BASE_ADDR: usize = 0x400000;
+
 #[derive(Debug)]
 pub struct PagetableContext {
     pub storage: SharedMem,
@@ -13,6 +16,10 @@ pub struct PagetableContext {
 
 impl ContextTrait for PagetableContext {
     fn write(&mut self, offset: usize, data: Vec<u8>) -> DandelionResult<()> {
+        if offset < MMAP_BASE_ADDR {
+            // not an issue if this context is not to be used by pagetable_worker
+            eprintln!("[WARNING] write to an offset smaller than MMAP_BASE_ADDR");
+        }
         // check if the write is within bounds
         if offset + data.len() > self.storage.len() {
             return Err(DandelionError::InvalidWrite);
@@ -27,6 +34,10 @@ impl ContextTrait for PagetableContext {
     }
 
     fn read(&self, offset: usize, read_size: usize) -> DandelionResult<Vec<u8>> {
+        if offset < MMAP_BASE_ADDR {
+            // not an issue if this context is not to be used by pagetable_worker
+            eprintln!("[WARNING] read from an offset smaller than MMAP_BASE_ADDR");
+        }
         if offset + read_size > self.storage.len() {
             return Err(DandelionError::InvalidRead);
         }

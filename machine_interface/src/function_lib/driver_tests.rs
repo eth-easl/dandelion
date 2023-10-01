@@ -149,7 +149,6 @@ fn _engine_minimal<Dom: MemoryDomain, L: Loader, Drv: Driver>(
 ) {
     // load elf file
     let elf_buffer = _read_file(filename, 0);
-    let user_code_len = elf_buffer.len();
     let mut domain = Dom::init(dom_init).expect("Should be able to initialized domain");
     let (req_list, static_context, config) =
         L::parse_function(elf_buffer, &mut domain).expect("Parsing should work");
@@ -164,11 +163,10 @@ fn _engine_minimal<Dom: MemoryDomain, L: Loader, Drv: Driver>(
     };
     let archive = Arc::new(Mutex::new(Archive::new()));
     let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-
     let (result, function_context) = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(engine.run(&config, function_context, &vec![], recorder.clone(), user_code_len));
+        .block_on(engine.run(&config, function_context, &vec![], recorder.clone()));
     result.expect("Engine should run ok with basic function");
     domain
         .release_context(function_context)
@@ -185,7 +183,6 @@ fn _engine_matmul_single<Dom: MemoryDomain, L: Loader, Drv: Driver>(
 ) {
     // load elf file
     let elf_buffer = _read_file(filename, 0);
-    let user_code_len = elf_buffer.len();
     let mut domain = Dom::init(dom_init).expect("Should have initialized new cheri domain");
     let (req_list, mut static_context, config) =
         L::parse_function(elf_buffer, &mut domain).expect("Parsing should work");
@@ -241,7 +238,6 @@ fn _engine_matmul_single<Dom: MemoryDomain, L: Loader, Drv: Driver>(
             function_context,
             &vec!["".to_string()],
             recorder.clone(),
-            user_code_len,
         ));
     result.expect("Engine should run ok with basic function");
     recorder
@@ -298,7 +294,6 @@ fn _engine_matmul_size_sweep<Dom: MemoryDomain, L: Loader, Drv: Driver>(
     const UPPER_SIZE_BOUND: usize = 16;
     // load elf file
     let elf_buffer = _read_file(filename, 0);
-    let user_code_len = elf_buffer.len();
     let mut domain = Dom::init(dom_init).expect("Should have initialized new cheri domain");
     let (req_list, static_context, config) =
         L::parse_function(elf_buffer, &mut domain).expect("Parsing should work");
@@ -359,7 +354,6 @@ fn _engine_matmul_size_sweep<Dom: MemoryDomain, L: Loader, Drv: Driver>(
                 function_context,
                 &vec!["".to_string()],
                 recorder.clone(),
-                user_code_len,
             ));
         result.expect("Engine should run ok with basic function");
         recorder
@@ -398,7 +392,6 @@ fn _engine_stdio<Dom: MemoryDomain, L: Loader, Drv: Driver>(
 ) {
     // load elf file
     let elf_buffer = _read_file(filename, 0);
-    let user_code_len = elf_buffer.len();
     let mut domain = Dom::init(dom_init).expect("Should have initialized new cheri domain");
     let (req_list, static_context, config) =
         L::parse_function(elf_buffer, &mut domain).expect("Parsing should work");
@@ -437,7 +430,6 @@ fn _engine_stdio<Dom: MemoryDomain, L: Loader, Drv: Driver>(
             function_context,
             &vec!["stdio".to_string()],
             recorder.clone(),
-            user_code_len,
         ));
     result.expect("Engine should run ok with basic function");
     recorder
@@ -485,7 +477,6 @@ fn _engine_fileio<Dom: MemoryDomain, L: Loader, Drv: Driver>(
 ) {
     // load elf file
     let elf_buffer = _read_file(filename, 0);
-    let user_code_len = elf_buffer.len();
     let mut domain = Dom::init(dom_init).expect("Should have initialized new cheri domain");
     let (req_list, static_context, config) =
         L::parse_function(elf_buffer, &mut domain).expect("Parsing should work");
@@ -588,7 +579,6 @@ fn _engine_fileio<Dom: MemoryDomain, L: Loader, Drv: Driver>(
                 "out_nested".to_string(),
             ],
             recorder.clone(),
-            user_code_len,
         ));
     result.expect("Engine should run ok with basic function");
     recorder

@@ -318,16 +318,19 @@ impl ParsedElf {
         for program_header in &self.program_header_table {
             // check if section occupies memory during execution
             if program_header.p_type == 0x1 {
-                let mut size = program_header.p_memsz as usize;
-                if size % DEFAULT_ALIGNMENT != 0 {
-                    size += DEFAULT_ALIGNMENT - size % DEFAULT_ALIGNMENT;
+                let mut start = program_header.p_vaddr as usize;
+                let mut end = start + program_header.p_memsz as usize;
+                if start % DEFAULT_ALIGNMENT != 0 {
+                    start -= start % DEFAULT_ALIGNMENT;
+                }
+                if end % DEFAULT_ALIGNMENT != 0 {
+                    end += DEFAULT_ALIGNMENT - end % DEFAULT_ALIGNMENT;
                 }
                 executable.push((
                     program_header._p_flags,
                     Position {
-                        offset: program_header.p_vaddr as usize,
-                        // size: program_header.p_memsz as usize
-                        size: size,
+                        offset: start,
+                        size: end - start,
                     },
                 ));
             }

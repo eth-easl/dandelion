@@ -6,7 +6,7 @@ use crate::{
 };
 use core::{future::ready, pin::Pin};
 use core_affinity;
-use dandelion_commons::{DandelionError, DandelionResult, records::Recorder};
+use dandelion_commons::{DandelionError, DandelionResult, records::{Recorder, RecordPoint}};
 use nix::{
     sys::{
         signal::Signal,
@@ -238,9 +238,11 @@ impl Engine for PagetableEngine {
         config: &FunctionConfig,
         mut context: Context,
         output_set_names: &Vec<String>,
-        _recorder: Recorder,
-        user_code_len: usize
+        mut recorder: Recorder,
     ) -> Pin<Box<dyn futures::Future<Output = (DandelionResult<()>, Context)> + '_ + Send>> {
+        if let Err(err) = recorder.record(RecordPoint::EngineStart) {
+            return Box::pin(ready((Err(err), context)));
+        }
         if self.is_running.swap(true, Ordering::AcqRel) {
             return Box::pin(ready((Err(DandelionError::EngineAlreadyRunning), context)));
         }
@@ -253,11 +255,14 @@ impl Engine for PagetableEngine {
             _ => return Box::pin(ready((Err(DandelionError::ContextMissmatch), context))),
         };
 
+        // TODO: modify ELF header
+        // to load pagetable_worker into a safe address range
+        // that will not collide with those used by user's function
+
         // create a new address space (child process) and pass the shared memory
-        let mut worker = Command::new("../target/x86_64-unknown-linux-musl/debug/pagetable_worker")
+        let mut worker = Command::new("../target/debug/pagetable_worker")
             .arg(self.cpu_slot.to_string())
             .arg(pagetable_context.storage.id())
-            .arg(user_code_len.to_string())
             .arg(serde_json::to_string(&context.protection_requirements).unwrap())
             .env_clear()
             .stdin(Stdio::piped())
@@ -269,16 +274,6 @@ impl Engine for PagetableEngine {
         
         // receive the shared memory address in worker's address space
         let mut reader = BufReader::new(worker.stdout.take().unwrap());
-        
-        let mut buf: String = String::new();
-        reader.read_line(&mut buf).unwrap();
-        let addr: String = buf.trim().parse().unwrap();
-        eprintln!("got next_steps {}", addr);
-
-        let mut buf: String = String::new();
-        reader.read_line(&mut buf).unwrap();
-        let result: String = buf.trim().parse().unwrap();
-        eprintln!("got result from mmap {}", result);
         
         let mut buf: String = String::new();
         reader.read_line(&mut buf).unwrap();
@@ -346,8 +341,11 @@ impl Engine for PagetableEngine {
         // erase all assumptions on context internal layout
         context.content.clear();
         // read outputs
-        let result = read_output_structs(&mut context, worker_base_addr);
+        let result = read_output_structs(&mut context, elf_config.system_data_offset);
         self.is_running.store(false, Ordering::Release);
+        if let Err(err) = recorder.record(RecordPoint::EngineEnd) {
+            return Box::pin(ready((Err(err), context)));
+        }
         Box::pin(ready((result, context)))
     }
     fn abort(&mut self) -> DandelionResult<()> {
@@ -393,7 +391,7 @@ impl Driver for PagetableDriver {
     }
 }
 
-const DEFAULT_SPACE_SIZE: usize = 0x80_0000; // 8MiB
+const DEFAULT_SPACE_SIZE: usize = 0x800_0000; // 128MiB
 
 pub struct PagetableLoader {}
 impl Loader for PagetableLoader {
@@ -404,13 +402,6 @@ impl Loader for PagetableLoader {
         function: Vec<u8>,
         static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<(DataRequirementList, Context, FunctionConfig)> {
-        //let input_root = elf.get_symbol_by_name(&function, "inputRoot")?;
-        //let input_number = elf.get_symbol_by_name(&function, "inputNumber")?;
-        //let output_root = elf.get_symbol_by_name(&function, "outputRoot")?;
-        //let output_number = elf.get_symbol_by_name(&function, "outputNumber")?;
-        //let max_output_number = elf.get_symbol_by_name(&function, "maxOutputNumber")?;
-        // let return_offset = elf.get_symbol_by_name(&function, "returnPair")?
-
         let elf = elf_parser::ParsedElf::new(&function)?;
         let system_data = elf.get_symbol_by_name(&function, "__dandelion_system_data")?;
         //let return_offset = elf.get_symbol_by_name(&function, "__dandelion_return_address")?;
@@ -429,12 +420,6 @@ impl Loader for PagetableLoader {
         };
         // sum up all sizes
         let mut total_size = 0;
-        for position in source_layout.iter() {
-            total_size += position.size;
-        }
-        let _context = static_domain.acquire_context(total_size)?;
-        // copy all
-        let _write_counter = 0;
         for position in source_layout.iter() {
             total_size += position.size;
         }
