@@ -17,7 +17,6 @@ use nix::{
 use std::{
     process::{Command, Stdio},
     sync::atomic::{AtomicBool, Ordering}, 
-    io::{BufReader, BufRead, Write},
 };
 
 //const IO_STRUCT_SIZE: usize = 16;
@@ -264,6 +263,7 @@ impl Engine for PagetableEngine {
             .arg(self.cpu_slot.to_string())
             .arg(pagetable_context.storage.id())
             .arg(serde_json::to_string(&context.protection_requirements).unwrap())
+            .arg(elf_config.entry_point.to_string())
             .env_clear()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -271,28 +271,11 @@ impl Engine for PagetableEngine {
             .unwrap();
 
         eprintln!("created a new process");
-        
-        // receive the shared memory address in worker's address space
-        let mut reader = BufReader::new(worker.stdout.take().unwrap());
-        
-        let mut buf: String = String::new();
-        reader.read_line(&mut buf).unwrap();
-        let worker_base_addr: usize = buf.trim().parse().unwrap();
-        eprintln!("got base address {:x}", worker_base_addr);
 
         if let Err(err) = setup_input_structs(&mut context, elf_config.system_data_offset, output_set_names) {
             return Box::pin(ready((Err(err), context)));
         }
 
-        // send the entry point of user's code to worker
-        worker
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(elf_config.entry_point.to_string().as_bytes())
-            .unwrap();
-        eprintln!("sent entry point");
-        
         // intercept worker's syscalls by ptrace
         let pid = Pid::from_raw(worker.id() as i32);
         let status = wait::waitpid(pid, None).unwrap();

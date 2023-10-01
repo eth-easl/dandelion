@@ -16,11 +16,12 @@ const PF_W: u32 = 1 << 1;
 fn main() {
     // get shared memory id from arguments
     let args: Vec<String> = std::env::args().collect();
-    assert_eq!(args.len(), 4);
+    assert_eq!(args.len(), 5);
 
     let core_id: usize = args[1].parse().unwrap();
     let mem_id = &args[2];
-    eprintln!("[worker] started with core {} and shared memory {}", core_id, mem_id);
+    let entry_point: usize = args[4].parse().unwrap();
+    eprintln!("[worker] started with core {}, shared memory {} and entry point {:#x}", core_id, mem_id, entry_point);
 
     // set cpu affinity
     assert!(core_affinity::set_for_current(CoreId { id: core_id }));
@@ -42,15 +43,6 @@ fn main() {
         }
     };
     eprintln!("[worker] loaded shared memory");
-
-    // send mapped address of shared memory to server
-    println!("{}", mem.as_ptr() as usize);
-
-    // receive the entry point of user's code from server
-    let mut buf: String = String::new();
-    std::io::stdin().read_line(&mut buf).unwrap();
-    let entry_point: usize = buf.trim().parse().unwrap();
-    eprintln!("[worker] got entry point {:x}", entry_point);
 
     // let (read_only, executable): (Vec<Position>, Vec<Position>) = serde_json::from_str(&args[3]).unwrap();
     let mut executable: Vec<(u32, Position)> = serde_json::from_str(&args[3]).unwrap();
