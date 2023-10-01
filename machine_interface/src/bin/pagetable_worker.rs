@@ -75,9 +75,14 @@ fn main() {
     let stack_pointer = mem.len() - 32;
 
     // jump to the entry point, then the process becomes untrusted
+    run_user_code(entry_point, stack_pointer);
+}
+
+fn run_user_code(entry_point: usize, stack_pointer: usize) -> ! {
     unsafe {
         // TODO: support ARM architecture
         // TODO: clear registers
+        // TODO: implement this in asm file(s) so that compiler won't mess up with registers?
         asm!(
             "mov rax, {0}",
             "mov rsp, {1}",
@@ -86,4 +91,5 @@ fn main() {
             in(reg) stack_pointer,
         );
     }
+    unreachable!();
 }
