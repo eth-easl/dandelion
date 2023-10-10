@@ -80,13 +80,21 @@ fn main() {
 
 fn run_user_code(entry_point: usize, stack_pointer: usize) -> ! {
     unsafe {
-        // TODO: support ARM architecture
         // TODO: clear registers
         // TODO: implement this in asm file(s) so that compiler won't mess up with registers?
+        #[cfg(target_arch = "x86_64")]
         asm!(
             "mov rax, {0}",
             "mov rsp, {1}",
             "jmp rax",
+            in(reg) entry_point,
+            in(reg) stack_pointer,
+        );
+        #[cfg(target_arch = "aarch64")]
+        asm!(
+            "mov x0, {0}",
+            "mov sp, {1}",
+            "blr x0",
             in(reg) entry_point,
             in(reg) stack_pointer,
         );

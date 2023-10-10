@@ -7,7 +7,8 @@ use nix::sys::mman::ProtFlags;
 //use std::collections::HashMap;
 use crate::Position;
 
-pub const MMAP_BASE_ADDR: usize = 0x400000;
+// TODO: decide this value in a system dependent way
+pub const MMAP_BASE_ADDR: usize = 0x10000;
 
 #[derive(Debug)]
 pub struct PagetableContext {

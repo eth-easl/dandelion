@@ -193,14 +193,18 @@ fn check_syscall(pid: libc::pid_t) -> SyscallType {
     type Regs = libc::user_regs_struct;
     let regs = unsafe {
         let mut regs_uninit: core::mem::MaybeUninit<Regs> = core::mem::MaybeUninit::uninit();
-        let res: i64 = libc::ptrace(libc::PTRACE_GETREGS, pid, 0, regs_uninit.as_mut_ptr());
+        let io = libc::iovec{
+            iov_base: regs_uninit.as_mut_ptr() as *mut _,
+            iov_len: core::mem::size_of::<Regs>(),
+        };
+        let res = libc::ptrace(libc::PTRACE_GETREGSET, pid, libc::NT_PRSTATUS, &io);
         assert_eq!(res, 0);
         regs_uninit.assume_init()
     };
     #[cfg(target_arch = "x86_64")]
     let syscall_id = regs.orig_rax as i64;
     #[cfg(target_arch = "aarch64")]
-    let syscall_id = regs.regs[0] as i64;
+    let syscall_id = regs.regs[8] as i64;
     match syscall_id {
         libc::SYS_exit | libc::SYS_exit_group => SyscallType::Exit,
         #[cfg(target_arch = "x86_64")]
