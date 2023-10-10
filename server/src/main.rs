@@ -225,7 +225,7 @@ fn main() -> () {
         let domain_init = Some(PagetableMemoryDomain::init);
         let loader = Some(PagetableLoader::parse_function as LoaderFunction);
         let driver_func = Some(PagetableDriver::start_engine as DriverFunction);
-        path.push("../machine_interface/tests/data/test_elf_x86c_matmul");
+        path.push(format!("../machine_interface/tests/data/test_elf_pagetable_{}_matmul", std::env::consts::ARCH));
     }
 
     let domain_init = domain_init.expect("domain_init not initialized");

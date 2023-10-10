@@ -636,32 +636,47 @@ macro_rules! driverTests {
 
         #[test]
         fn test_engine_minimal() {
+            #[cfg(feature = "cheri")]
             let name = format!("test_elf_{}_basic", stringify!($name));
+            #[cfg(not(feature = "cheri"))]
+            let name = format!("test_elf_{}_{}_basic", stringify!($name), std::env::consts::ARCH);
             _engine_minimal::<$domain, $loader, $driver>(&name, $dom_init, $drv_init);
         }
 
         #[test]
         fn test_engine_matmul_single() {
+            #[cfg(feature = "cheri")]
             let name = format!("test_elf_{}_matmul", stringify!($name));
+            #[cfg(not(feature = "cheri"))]
+            let name = format!("test_elf_{}_{}_matmul", stringify!($name), std::env::consts::ARCH);
             _engine_matmul_single::<$domain, $loader, $driver>(&name, $dom_init, $drv_init);
         }
 
         #[test]
         fn test_engine_matmul_size_sweep() {
+            #[cfg(feature = "cheri")]
             let name = format!("test_elf_{}_matmul", stringify!($name));
+            #[cfg(not(feature = "cheri"))]
+            let name = format!("test_elf_{}_{}_matmul", stringify!($name), std::env::consts::ARCH);
             _engine_matmul_size_sweep::<$domain, $loader, $driver>(&name, $dom_init, $drv_init);
         }
 
         #[test]
         #[ignore]
         fn test_engine_stdio() {
+            #[cfg(feature = "cheri")]
             let name = format!("test_elf_{}_stdio", stringify!($name));
+            #[cfg(not(feature = "cheri"))]
+            let name = format!("test_elf_{}_{}_stdio", stringify!($name), std::env::consts::ARCH);
             _engine_stdio::<$domain, $loader, $driver>(&name, $dom_init, $drv_init);
         }
 
         #[test]
         fn test_engine_fileio() {
+            #[cfg(feature = "cheri")]
             let name = format!("test_elf_{}_fileio", stringify!($name));
+            #[cfg(not(feature = "cheri"))]
+            let name = format!("test_elf_{}_{}_fileio", stringify!($name), std::env::consts::ARCH);
             _engine_fileio::<$domain, $loader, $driver>(&name, $dom_init, $drv_init)
         }
     };
@@ -680,5 +695,5 @@ mod pagetable {
     use crate::function_lib::pagetable::PagetableDriver as PagetableDriver;
     use crate::function_lib::pagetable::PagetableLoader as PagetableLoader;
     use crate::memory_domain::pagetable::PagetableMemoryDomain as PagetableDomain;
-    driverTests!(pagetable; PagetableDomain; Vec::new(); PagetableDriver; vec![1,2,3]; vec![255]; PagetableLoader);
+    driverTests!(pagetable; PagetableDomain; Vec::new(); PagetableDriver; vec![0]; vec![255]; PagetableLoader);
 }

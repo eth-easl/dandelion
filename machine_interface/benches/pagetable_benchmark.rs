@@ -44,7 +44,7 @@ fn matmul_sequential_benchmark(c: &mut Criterion) {
     let mut engine =
         PagetableDriver::start_engine(vec![1]).expect("Should be able to get one engine");
     let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push("tests/data/test_elf_x86c_matmul");
+    path.push(format!("tests/data/test_elf_pagetable_{}_matmul", std::env::consts::ARCH));
     let mut elf_file = std::fs::File::open(path).expect("Should have found test file");
     let mut elf_buffer = Vec::<u8>::new();
     use std::io::Read;
