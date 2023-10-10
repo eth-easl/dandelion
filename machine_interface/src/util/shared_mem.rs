@@ -53,7 +53,7 @@ impl SharedMem {
         Ok(shmem)
     }
 
-    pub fn open(unique_id: &str, prot: ProtFlags, addr:usize) -> Result<SharedMem, Errno> {
+    pub fn open(unique_id: &str, prot: ProtFlags, addr: usize) -> Result<SharedMem, Errno> {
         let shmem_fd = shm_open(unique_id, OFlag::O_RDWR, Mode::S_IRUSR)?;
 
         let mut shmem = SharedMem {
@@ -69,7 +69,7 @@ impl SharedMem {
         shmem.map_ptr = unsafe {
             mmap(
                 NonZeroUsize::new(addr),
-                NonZeroUsize::new(shmem.size).unwrap(),
+                NonZeroUsize::new(shmem.size - addr).unwrap(),
                 prot,
                 MapFlags::MAP_SHARED | MapFlags::MAP_FIXED_NOREPLACE,
                 shmem_fd,
