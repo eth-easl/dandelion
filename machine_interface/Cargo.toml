@@ -37,3 +37,7 @@ bench = false
 [[bench]]
 name = "cheri_benchmark"
 harness = false
+
+[[bench]]
+name = "pagetable_benchmark"
+harness = false
