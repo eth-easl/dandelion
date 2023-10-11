@@ -141,6 +141,7 @@ fn test_loader_basic() {
         0x2315A0, function_config.system_data_offset,
         "System data offset missmatch"
     );
+    #[cfg(feature = "cheri")]
     assert_eq!(
         (0x0, 0x0),
         function_config.return_offset,

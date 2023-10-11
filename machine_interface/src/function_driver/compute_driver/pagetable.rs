@@ -126,6 +126,7 @@ fn ptrace_syscall(pid: libc::pid_t) {
 
 enum SyscallType {
     Exit,
+    #[cfg(target_arch = "x86_64")]
     Authorized,
     Unauthorized(i64),
 }
@@ -220,6 +221,7 @@ fn pagetable_run_static(
                     // eprintln!("worker exited with code {}", status.code().unwrap());
                     return Ok(());
                 }
+                #[cfg(target_arch = "x86_64")]
                 SyscallType::Authorized => {
                     // eprintln!("detected authorized syscall");
                     ptrace_syscall(pid.as_raw());
@@ -364,6 +366,7 @@ impl Driver for PagetableDriver {
         let entry = elf.get_entry_point();
         let config = FunctionConfig::ElfConfig(ElfConfig {
             system_data_offset: system_data.0,
+            #[cfg(feature = "cheri")]
             return_offset: (0, 0),
             entry_point: entry,
         });

@@ -14,6 +14,7 @@ pub mod util;
 pub struct ElfConfig {
     // TODO change to positions
     system_data_offset: usize,
+    #[cfg(feature = "cheri")]
     return_offset: (usize, usize),
     entry_point: usize,
 }
