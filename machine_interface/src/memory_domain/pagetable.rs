@@ -1,11 +1,8 @@
-use crate::{
-    memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
-    util::shared_mem::SharedMem,
-};
+use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
+use crate::util::shared_mem::SharedMem;
+use crate::Position;
 use dandelion_commons::{DandelionError, DandelionResult};
 use nix::sys::mman::ProtFlags;
-//use std::collections::HashMap;
-use crate::Position;
 
 // TODO: decide this value in a system dependent way
 pub const MMAP_BASE_ADDR: usize = 0x10000;
@@ -16,46 +13,56 @@ pub struct PagetableContext {
 }
 
 impl ContextTrait for PagetableContext {
-    fn write(&mut self, offset: usize, data: Vec<u8>) -> DandelionResult<()> {
+    fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
         if offset < MMAP_BASE_ADDR {
             // not an issue if this context is not to be used by pagetable_worker
             eprintln!("[WARNING] write to an offset smaller than MMAP_BASE_ADDR");
         }
+
+        // check alignment
+        if offset % core::mem::align_of::<T>() != 0 {
+            return Err(DandelionError::WriteMisaligned);
+        }
+
         // check if the write is within bounds
-        if offset + data.len() > self.storage.len() {
+        let write_length = data.len() * core::mem::size_of::<T>();
+        if offset + write_length > self.storage.len() {
             return Err(DandelionError::InvalidWrite);
         }
 
         // write values
         unsafe {
-            self.storage.as_slice_mut()[offset..offset + data.len()].copy_from_slice(&data);
+            let buffer = core::slice::from_raw_parts(data.as_ptr() as *const u8, write_length);
+            self.storage.as_slice_mut()[offset..offset + buffer.len()].copy_from_slice(&buffer);
         }
 
         Ok(())
     }
 
-    fn read(&self, offset: usize, read_size: usize) -> DandelionResult<Vec<u8>> {
+    fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         if offset < MMAP_BASE_ADDR {
             // not an issue if this context is not to be used by pagetable_worker
             eprintln!("[WARNING] read from an offset smaller than MMAP_BASE_ADDR");
         }
+
+        // check that buffer has proper allighment
+        if offset % core::mem::align_of::<T>() != 0 {
+            return Err(DandelionError::ReadMisaligned);
+        }
+
+        let read_size = core::mem::size_of::<T>() * read_buffer.len();
         if offset + read_size > self.storage.len() {
             return Err(DandelionError::InvalidRead);
         }
 
-        // try to allocate space for read values
-        let mut result_vec = Vec::new();
-        if let Err(_) = result_vec.try_reserve(read_size) {
-            return Err(DandelionError::OutOfMemory);
-        }
-        result_vec.resize(read_size, 0);
-
         // read values, sanitize if necessary
         unsafe {
-            result_vec.copy_from_slice(&self.storage.as_slice()[offset..offset + read_size]);
+            let read_memory =
+                core::slice::from_raw_parts_mut(read_buffer.as_mut_ptr() as *mut u8, read_size);
+            read_memory.copy_from_slice(&self.storage.as_slice()[offset..offset + read_size]);
         }
 
-        Ok(result_vec)
+        Ok(())
     }
 }
 
@@ -89,13 +96,6 @@ impl MemoryDomain for PagetableMemoryDomain {
             #[cfg(feature = "pagetable")]
             protection_requirements: Vec::new(),
         })
-    }
-
-    fn release_context(&self, context: Context) -> DandelionResult<()> {
-        match context.context {
-            ContextType::Pagetable(_) => Ok(()),
-            _ => Err(DandelionError::ContextMissmatch),
-        }
     }
 }
 

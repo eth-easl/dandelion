@@ -1,12 +1,16 @@
 use crate::{
-    function_lib::{Driver, Engine, FunctionConfig, Loader},
+    function_driver::{Driver, ElfConfig, Engine, Function, FunctionConfig},
+    interface::{read_output_structs, setup_input_structs},
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
-    DataItem, DataRequirement, DataRequirementList, Position, interface::{read_output_structs, setup_input_structs}, DataSet,
+    DataItem, DataRequirement, DataRequirementList, DataSet, Position,
 };
 use core::{future::ready, pin::Pin};
 use core_affinity;
-use dandelion_commons::{DandelionError, DandelionResult, records::{Recorder, RecordPoint}};
+use dandelion_commons::{
+    records::{RecordPoint, Recorder},
+    DandelionError, DandelionResult,
+};
 use nix::{
     sys::{
         signal::Signal,
@@ -16,7 +20,7 @@ use nix::{
 };
 use std::{
     process::{Command, Stdio},
-    sync::atomic::{AtomicBool, Ordering}, 
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 //const IO_STRUCT_SIZE: usize = 16;
@@ -193,7 +197,7 @@ fn check_syscall(pid: libc::pid_t) -> SyscallType {
     type Regs = libc::user_regs_struct;
     let regs = unsafe {
         let mut regs_uninit: core::mem::MaybeUninit<Regs> = core::mem::MaybeUninit::uninit();
-        let io = libc::iovec{
+        let io = libc::iovec {
             iov_base: regs_uninit.as_mut_ptr() as *mut _,
             iov_len: core::mem::size_of::<Regs>(),
         };
@@ -244,7 +248,7 @@ impl Engine for PagetableEngine {
         mut recorder: Recorder,
     ) -> Pin<Box<dyn futures::Future<Output = (DandelionResult<()>, Context)> + '_ + Send>> {
         if let Err(err) = recorder.record(RecordPoint::EngineStart) {
-            return Box::pin(ready((Err(err), context)));
+            return Box::pin(core::future::ready((Err(err), context)));
         }
         if self.is_running.swap(true, Ordering::AcqRel) {
             return Box::pin(ready((Err(DandelionError::EngineAlreadyRunning), context)));
@@ -276,7 +280,11 @@ impl Engine for PagetableEngine {
 
         eprintln!("created a new process");
 
-        if let Err(err) = setup_input_structs(&mut context, elf_config.system_data_offset, output_set_names) {
+        if let Err(err) = setup_input_structs(
+            &mut context,
+            elf_config.system_data_offset,
+            output_set_names,
+        ) {
             return Box::pin(ready((Err(err), context)));
         }
 
@@ -331,7 +339,7 @@ impl Engine for PagetableEngine {
         let result = read_output_structs(&mut context, elf_config.system_data_offset);
         self.is_running.store(false, Ordering::Release);
         if let Err(err) = recorder.record(RecordPoint::EngineEnd) {
-            return Box::pin(ready((Err(err), context)));
+            return Box::pin(core::future::ready((Err(err), context)));
         }
         Box::pin(ready((result, context)))
     }
@@ -345,9 +353,11 @@ impl Engine for PagetableEngine {
 
 pub struct PagetableDriver {}
 
+const DEFAULT_SPACE_SIZE: usize = 0x800_0000; // 128MiB
+
 impl Driver for PagetableDriver {
     // // take or release one of the available engines
-    fn start_engine(config: Vec<u8>) -> DandelionResult<Box<dyn Engine>> {
+    fn start_engine(&self, config: Vec<u8>) -> DandelionResult<Box<dyn Engine>> {
         if config.len() != 1 {
             return Err(DandelionError::ConfigMissmatch);
         }
@@ -376,30 +386,25 @@ impl Driver for PagetableDriver {
             is_running,
         }));
     }
-}
 
-const DEFAULT_SPACE_SIZE: usize = 0x800_0000; // 128MiB
-
-pub struct PagetableLoader {}
-impl Loader for PagetableLoader {
     // parses an executable,
     // returns the layout requirements and a context containing static data,
     //  and a layout description for it
     fn parse_function(
+        &self,
         function: Vec<u8>,
         static_domain: &Box<dyn MemoryDomain>,
-    ) -> DandelionResult<(DataRequirementList, Context, FunctionConfig)> {
+    ) -> DandelionResult<Function> {
         let elf = elf_parser::ParsedElf::new(&function)?;
         let system_data = elf.get_symbol_by_name(&function, "__dandelion_system_data")?;
         //let return_offset = elf.get_symbol_by_name(&function, "__dandelion_return_address")?;
         let entry = elf.get_entry_point();
-        let config = FunctionConfig::ElfConfig(super::ElfConfig {
+        let config = FunctionConfig::ElfConfig(ElfConfig {
             system_data_offset: system_data.0,
             return_offset: (0, 0),
             entry_point: entry,
         });
         let (static_requirements, source_layout) = elf.get_layout_pair();
-        // set default size to 128KiB
         let requirements = DataRequirementList {
             size: DEFAULT_SPACE_SIZE,
             input_requirements: Vec::<DataRequirement>::new(),
@@ -421,7 +426,7 @@ impl Loader for PagetableLoader {
         for position in source_layout.iter() {
             context.write(
                 write_counter,
-                function[position.offset..position.offset + position.size].to_vec(),
+                &function[position.offset..position.offset + position.size],
             )?;
             buffers.push(DataItem {
                 ident: String::from(""),
@@ -429,28 +434,17 @@ impl Loader for PagetableLoader {
                     offset: write_counter,
                     size: position.size,
                 },
+                key: 0,
             });
             write_counter += position.size;
         }
         context.content = vec![Some(new_content)];
-        /* 
-        let mut static_layout = Vec::<Position>::new();
-        for position in source_layout.iter() {
-            context.write(
-                write_counter,
-                function[position.offset..position.offset + position.size].to_vec(),
-            )?;
-            static_layout.push(Position {
-                offset: write_counter,
-                size: position.size,
-            });
-            write_counter += position.size;
-        }
-        context.static_data = static_layout;
-        */
         context.protection_requirements = elf.get_memory_protection_layout();
-
-        return Ok((requirements, context, config));
+        return Ok(Function {
+            requirements,
+            context,
+            config,
+        });
     }
 }
 

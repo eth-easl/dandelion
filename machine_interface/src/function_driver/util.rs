@@ -54,8 +54,10 @@ pub fn load_static(
         )?;
         max_end = core::cmp::max(max_end, requirement.offset + requirement.size);
     }
-    //#[cfg(feature = "pagetable")] 
-    function_context.protection_requirements = static_context.protection_requirements.clone();
+    #[cfg(feature = "pagetable")]
+    {
+        function_context.protection_requirements = static_context.protection_requirements.clone();
+    }
     // round up to next page
     max_end = ((max_end + 4095) / 4096) * 4096;
     function_context.occupy_space(0, max_end)?;

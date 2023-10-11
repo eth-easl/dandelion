@@ -215,7 +215,6 @@ fn parse_symbol_table(
             })
         }
         if counter > counter_start + entry_size {
-            println!("Entry size: {}, counter: {}", entry_size, counter);
             return Err(DandelionError::MalformedConfig);
         }
     }
@@ -293,16 +292,9 @@ impl ParsedElf {
                     offset: program_header.p_offset as usize,
                     size: program_header.p_filesz as usize,
                 });
-
-                let mut size = program_header.p_memsz as usize;
-                if size % DEFAULT_ALIGNMENT != 0 {
-                    size += DEFAULT_ALIGNMENT - size % DEFAULT_ALIGNMENT;
-                }
-
                 requirements.push(Position {
                     offset: program_header.p_vaddr as usize,
-                    // size: programm_header.p_memsz as usize,
-                    size: size,
+                    size: program_header.p_memsz as usize,
                 });
             }
         }

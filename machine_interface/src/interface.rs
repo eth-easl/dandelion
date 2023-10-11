@@ -15,8 +15,8 @@ struct DandelionSystemData {
     input_sets: *const IoSetInfo,
     output_sets_len: size_t,
     output_sets: *const IoSetInfo,
-    input_bufs: *const IoBuffer,
-    output_bufs: *const IoBuffer,
+    input_bufs: *const IoBufferDescriptor,
+    output_bufs: *const IoBufferDescriptor,
 }
 
 #[repr(C)]
@@ -27,16 +27,13 @@ struct IoSetInfo {
 }
 
 #[repr(C)]
-struct IoBuffer {
+struct IoBufferDescriptor {
     ident: uintptr_t,
     ident_len: size_t,
     data: uintptr_t,
     data_len: size_t,
+    key: size_t,
 }
-
-const SYSTEM_STRUCT_SIZE: usize = core::mem::size_of::<DandelionSystemData>();
-const IO_SET_INFO_SIZE: usize = core::mem::size_of::<IoSetInfo>();
-const IO_BUFFER_SIZE: usize = core::mem::size_of::<IoBuffer>();
 
 pub fn setup_input_structs(
     context: &mut Context,
@@ -44,175 +41,207 @@ pub fn setup_input_structs(
     output_set_names: &Vec<String>,
 ) -> DandelionResult<()> {
     // prepare information to set up input sets, output sets and input buffers
-    let input_buffer_number = context.content.iter().fold(0, |acc, set| {
-        acc + set
-            .as_ref()
-            .and_then(|s| Some(s.buffers.len()))
-            .unwrap_or(0)
-    });
+    let input_buffer_number = context
+        .content
+        .iter()
+        .map(|set_opt| {
+            set_opt
+                .as_ref()
+                .and_then(|set| Some(set.buffers.len()))
+                .unwrap_or(0)
+        })
+        .sum();
     let input_set_number = context.content.len();
     let output_set_number = output_set_names.len();
 
-    let io_info_size = input_buffer_number * IO_BUFFER_SIZE
-        + (input_set_number + output_set_number + 2) * IO_SET_INFO_SIZE;
-    let io_info_offset = context.get_free_space(io_info_size, 8)?;
-
-    // input and output io buffer pointers (output just 0 as the application sets them)
-    let mut io_data_vec = Vec::new();
-    if io_data_vec.try_reserve_exact(io_info_size).is_err() {
+    let mut input_buffers: Vec<IoBufferDescriptor> = Vec::new();
+    if input_buffers
+        .try_reserve_exact(input_buffer_number)
+        .is_err()
+    {
         return Err(DandelionError::OutOfMemory);
     }
-    io_data_vec.resize(io_info_size, 0);
-    let in_set_buffer = unsafe {
-        core::slice::from_raw_parts_mut(
-            io_data_vec.as_mut_ptr() as *mut IoSetInfo,
-            input_set_number + 1,
-        )
-    };
-    let out_set_buffer = unsafe {
-        core::slice::from_raw_parts_mut(
-            (io_data_vec.as_mut_ptr() as *mut IoSetInfo).add(input_set_number + 1),
-            output_set_number + 1,
-        )
-    };
-    let input_buffers = unsafe {
-        core::slice::from_raw_parts_mut(
-            io_data_vec
-                .as_mut_ptr()
-                .add((input_set_number + output_set_number + 2) * IO_SET_INFO_SIZE)
-                as *mut IoBuffer,
-            input_buffer_number,
-        )
-    };
+
+    let mut input_sets: Vec<IoSetInfo> = Vec::new();
+    if input_sets
+        .try_reserve_exact(context.content.len() + 1)
+        .is_err()
+    {
+        return Err(DandelionError::OutOfMemory);
+    }
     // start writing input set info structs
-    let mut buffer_count = 0;
-    for set_index in 0..input_set_number {
+    for c in 0..context.content.len() {
         // get name and length
-        let (name, buffer_num) = match &context.content[set_index] {
-            None => (vec![], 0),
-            Some(set) => (set.ident.as_bytes().to_vec(), set.buffers.len()),
-        };
+        let (name, buffer_len) = context.content[c]
+            .as_ref()
+            .and_then(|set| Some((set.ident.clone(), set.buffers.len())))
+            .unwrap_or((String::from(""), 0));
         let name_length = name.len();
         // find space and write string
         let mut string_offset = 0;
         if name_length != 0 {
-            string_offset = context.get_free_space(name.len(), 8)?;
-            context.write(string_offset, name)?;
+            string_offset = context.get_free_space_and_write_slice(name.as_bytes())? as usize;
         }
-        in_set_buffer[set_index].ident = string_offset;
-        in_set_buffer[set_index].ident_len = name_length;
-        in_set_buffer[set_index].offset = buffer_count;
+        input_sets.push(IoSetInfo {
+            ident: string_offset,
+            ident_len: name_length,
+            offset: input_buffers.len(),
+        });
         // find buffers
-        for buffer_index in buffer_count..buffer_count + buffer_num {
-            if let Some(set) = &context.content[set_index] {
-                let buffer = &set.buffers[buffer_index - buffer_count];
-                let name = buffer.ident.as_bytes().to_vec();
-                let name_length = name.len();
-                let offset = buffer.data.offset;
-                let size = buffer.data.size;
-                let mut string_offset = 0;
-                if name_length != 0 {
-                    string_offset = context.get_free_space(name_length, 8)?;
-                    context.write(string_offset, name)?;
-                }
-                input_buffers[buffer_index].ident = string_offset;
-                input_buffers[buffer_index].ident_len = name_length;
-                input_buffers[buffer_index].data = offset;
-                input_buffers[buffer_index].data_len = size;
+        for b in 0..buffer_len {
+            let (name, offset, size, key) = context.content[c]
+                .as_ref()
+                .and_then(|set| {
+                    let buffer = &set.buffers[b];
+                    return Some((
+                        buffer.ident.clone(),
+                        buffer.data.offset,
+                        buffer.data.size,
+                        buffer.key,
+                    ));
+                })
+                .unwrap_or((String::from(""), 0, 0, 0));
+            let name_length = name.len();
+            let mut string_offset = 0;
+            if name_length != 0 {
+                string_offset = context.get_free_space_and_write_slice(name.as_bytes())? as usize;
             }
+            input_buffers.push(IoBufferDescriptor {
+                ident: string_offset,
+                ident_len: name_length,
+                data: offset,
+                data_len: size,
+                key: key as usize,
+            });
         }
-        buffer_count += buffer_num;
     }
     // write input sentinel set
-    in_set_buffer[input_set_number].offset = buffer_count;
+    input_sets.push(IoSetInfo {
+        ident: 0,
+        ident_len: 0,
+        offset: input_buffers.len(),
+    });
+
+    let mut output_sets: Vec<IoSetInfo> = Vec::new();
+    if output_sets
+        .try_reserve_exact(output_set_names.len() + 1)
+        .is_err()
+    {
+        return Err(DandelionError::OutOfMemory);
+    }
 
     // start writing output set info structs
-    for (index, out_set_name) in output_set_names.iter().enumerate() {
+    for out_set_name in output_set_names.iter() {
         // insert the name into the context
         let mut string_offset = 0;
         let string_len = out_set_name.len();
         if string_len != 0 {
-            string_offset = context.get_free_space(out_set_name.len(), 8)?;
-            context.write(string_offset, out_set_name.as_bytes().to_vec())?;
+            string_offset =
+                context.get_free_space_and_write_slice(out_set_name.as_bytes())? as usize;
         }
-        out_set_buffer[index].ident = string_offset;
-        out_set_buffer[index].ident_len = string_len;
+        output_sets.push(IoSetInfo {
+            ident: string_offset,
+            ident_len: string_len,
+            offset: 0,
+        });
     }
-    context.write(io_info_offset, io_data_vec)?;
+    output_sets.push(IoSetInfo {
+        ident: 0,
+        ident_len: 0,
+        offset: 0,
+    });
+
+    let input_sets_offset = context.get_free_space_and_write_slice(&input_sets[..])?;
+    let output_sets_offset = context.get_free_space_and_write_slice(&output_sets[..])?;
+    let input_buffers_offset = context.get_free_space_and_write_slice(&input_buffers[..])?;
 
     // fill in data for input sets
     // input set number and pointer (offset)
     // needs to happen after to get correct lower bound on stack
-    let system_buffer = Box::new(DandelionSystemData {
+    let system_buffer = DandelionSystemData {
         exit_code: 0,
         heap_begin: context.get_last_item_end(),
         heap_end: (context.size - 128),
         input_sets_len: input_set_number,
-        input_sets: io_info_offset as *const IoSetInfo,
+        input_sets: input_sets_offset,
         output_sets_len: output_set_number,
-        output_sets: (io_info_offset + (input_set_number + 1) * IO_SET_INFO_SIZE)
-            as *const IoSetInfo,
-        input_bufs: (io_info_offset + (input_set_number + output_set_number + 2) * IO_SET_INFO_SIZE)
-            as *const IoBuffer,
+        output_sets: output_sets_offset,
+        input_bufs: input_buffers_offset,
         output_bufs: core::ptr::null(),
-    });
-    let system_vec = unsafe {
-        alloc::vec::Vec::<u8>::from_raw_parts(
-            Box::into_raw(system_buffer) as *mut u8,
-            SYSTEM_STRUCT_SIZE,
-            SYSTEM_STRUCT_SIZE,
-        )
     };
-    context.write(system_data_offset, system_vec)?;
 
-    return Ok(());
+    context.write(system_data_offset, core::slice::from_ref(&system_buffer))?;
+    Ok(())
 }
 
 pub fn read_output_structs(context: &mut Context, base_address: usize) -> DandelionResult<()> {
+    context.clear_metadata();
     // read the system buffer
-    let system_struct_vec = context.read(base_address, SYSTEM_STRUCT_SIZE)?;
-    // transform
-    let system_struct = unsafe { &*(system_struct_vec.as_ptr() as *const DandelionSystemData) };
+    let mut system_struct = DandelionSystemData {
+        exit_code: 0,
+        heap_begin: 0,
+        heap_end: 0,
+        input_sets_len: 0,
+        input_sets: core::ptr::null(),
+        output_sets_len: 0,
+        output_sets: core::ptr::null(),
+        input_bufs: core::ptr::null(),
+        output_bufs: core::ptr::null(),
+    };
+    context.read(base_address, core::slice::from_mut(&mut system_struct))?;
+
     // get exit value
     let _exit_value = system_struct.exit_code;
     // get output set number +1 for sentinel set
     let output_set_number = system_struct.output_sets_len;
     if output_set_number == 0 {
-        context.content = vec![];
         return Ok(());
     }
-    let output_set_info_offset: usize = system_struct.output_sets as usize;
     let output_buffers_offset: usize = system_struct.output_bufs as usize;
     // load output set info, + 1 to include sentinel set
-    let output_set_vec = context.read(
-        output_set_info_offset,
-        (output_set_number + 1) * IO_SET_INFO_SIZE,
-    )?;
-    let output_set_info = unsafe {
-        core::slice::from_raw_parts(
-            output_set_vec.as_ptr() as *const IoSetInfo,
-            output_set_number + 1,
-        )
-    };
+    let mut output_set_info = vec![];
+    if output_set_info.try_reserve(output_set_number + 1).is_err() {
+        return Err(DandelionError::OutOfMemory);
+    }
+    output_set_info.resize_with(output_set_number + 1, || IoSetInfo {
+        ident: 0,
+        ident_len: 0,
+        offset: 0,
+    });
+    context.read(system_struct.output_sets as usize, &mut output_set_info)?;
+
     let mut output_sets = vec![];
     if output_sets.try_reserve(output_set_number).is_err() {
         return Err(DandelionError::OutOfMemory);
     }
+
     let output_buffer_number = output_set_info[output_set_number].offset;
 
-    let output_buffer_vec =
-        context.read(output_buffers_offset, output_buffer_number * IO_BUFFER_SIZE)?;
-    let output_buffers = unsafe {
-        core::slice::from_raw_parts(
-            output_buffer_vec.as_ptr() as *const IoBuffer,
-            output_buffer_number,
-        )
-    };
+    let mut output_buffers = vec![];
+    if output_buffers.try_reserve(output_buffer_number).is_err() {
+        return Err(DandelionError::OutOfMemory);
+    }
+    output_buffers.resize_with(output_buffer_number, || IoBufferDescriptor {
+        ident: 0,
+        ident_len: 0,
+        data: 0,
+        data_len: 0,
+        key: 0,
+    });
+    context.read(output_buffers_offset, &mut output_buffers)?;
+    assert_eq!(
+        output_buffers
+            .as_ptr()
+            .align_offset(std::mem::align_of::<IoBufferDescriptor>()),
+        0
+    );
+    assert_eq!(output_buffers.len(), output_buffer_number);
 
     for output_set in 0..output_set_number {
         let ident_offset = output_set_info[output_set].ident;
         let ident_length = output_set_info[output_set].ident_len;
-        let set_ident = context.read(ident_offset, ident_length)?;
+        let mut set_ident = vec![0u8; ident_length];
+        context.read(ident_offset, &mut set_ident)?;
         let set_ident_string = String::from_utf8(set_ident).unwrap_or("".to_string());
         let first_buffer = output_set_info[output_set].offset;
         let one_past_last_buffer = output_set_info[output_set + 1].offset;
@@ -224,9 +253,11 @@ pub fn read_output_structs(context: &mut Context, base_address: usize) -> Dandel
         for buffer_index in first_buffer..one_past_last_buffer {
             let buffer_ident_offset = output_buffers[buffer_index].ident as usize;
             let buffer_ident_length = output_buffers[buffer_index].ident_len;
-            let buffer_ident = context.read(buffer_ident_offset, buffer_ident_length)?;
+            let mut buffer_ident = vec![0u8; buffer_ident_length];
+            context.read(buffer_ident_offset, &mut buffer_ident)?;
             let data_offset = output_buffers[buffer_index].data as usize;
             let data_length = output_buffers[buffer_index].data_len;
+            let key = output_buffers[buffer_index].key;
             let ident_string = String::from_utf8(buffer_ident).unwrap_or("".to_string());
             buffers.push(DataItem {
                 ident: ident_string,
@@ -234,7 +265,9 @@ pub fn read_output_structs(context: &mut Context, base_address: usize) -> Dandel
                     offset: data_offset,
                     size: data_length,
                 },
-            })
+                key: key as u32,
+            });
+            context.occupy_space(data_offset, data_length)?;
         }
         // only add output set if there are actual buffers for it.
         output_sets.push(Some(DataSet {

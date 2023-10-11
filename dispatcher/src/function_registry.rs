@@ -1,30 +1,27 @@
 use dandelion_commons::{DandelionError, DandelionResult, EngineTypeId, FunctionId};
 use futures::lock::Mutex;
 use machine_interface::{
-    function_lib::{
+    function_driver::{
         util::{load_static, load_u8_from_file},
-        FunctionConfig, LoaderFunction,
+        Driver, Function, FunctionConfig,
     },
     memory_domain::{Context, MemoryDomain},
-    DataRequirementList,
 };
 use std::collections::{BTreeMap, BTreeSet};
-
 pub struct FunctionRegistry {
     engine_map: BTreeMap<FunctionId, BTreeSet<EngineTypeId>>,
-    loaders: BTreeMap<EngineTypeId, LoaderFunction>,
+    pub(crate) drivers: BTreeMap<EngineTypeId, Box<dyn Driver>>,
     // TODO replace with futures compatible RW lock if it becomes a bottleneck
-    registry:
-        Mutex<BTreeMap<(FunctionId, EngineTypeId), (DataRequirementList, Context, FunctionConfig)>>,
+    registry: Mutex<BTreeMap<(FunctionId, EngineTypeId), Function>>,
     local_available: BTreeMap<(FunctionId, EngineTypeId), String>,
     set_names: BTreeMap<FunctionId, (Vec<String>, Vec<String>)>,
 }
 
 impl FunctionRegistry {
-    pub fn new(loaders: BTreeMap<EngineTypeId, LoaderFunction>) -> Self {
+    pub fn new(drivers: BTreeMap<EngineTypeId, Box<dyn Driver>>) -> Self {
         return FunctionRegistry {
             engine_map: BTreeMap::new(),
-            loaders,
+            drivers,
             registry: Mutex::new(BTreeMap::new()),
             local_available: BTreeMap::new(),
             set_names: BTreeMap::new(),
@@ -77,9 +74,9 @@ impl FunctionRegistry {
         function_id: FunctionId,
         engine_id: EngineTypeId,
         domain: &Box<dyn MemoryDomain>,
-    ) -> DandelionResult<(DataRequirementList, Context, FunctionConfig)> {
+    ) -> DandelionResult<Function> {
         // get loader
-        let loader = match self.loaders.get(&engine_id) {
+        let driver = match self.drivers.get(&engine_id) {
             Some(l) => l,
             None => return Err(DandelionError::DispatcherMissingLoader(engine_id)),
         };
@@ -90,7 +87,7 @@ impl FunctionRegistry {
             None => return Err(DandelionError::DispatcherUnavailableFunction),
         };
         let function_buffer = load_u8_from_file(path.to_string())?;
-        let tripple = loader(function_buffer, domain)?;
+        let tripple = driver.parse_function(function_buffer, domain)?;
         return Ok(tripple);
     }
     pub async fn load(
@@ -101,20 +98,28 @@ impl FunctionRegistry {
         non_caching: bool,
     ) -> DandelionResult<(Context, FunctionConfig, &Vec<String>, &Vec<String>)> {
         // get input and output set names
-        let (in_set_names, out_set_names) = self.set_names.get(&function_id).ok_or(DandelionError::DispatcherUnavailableFunction)?;
+        let (in_set_names, out_set_names) = self
+            .set_names
+            .get(&function_id)
+            .ok_or(DandelionError::DispatcherUnavailableFunction)?;
         // check if function for the engine is in registry already
         let mut lock_guard = self.registry.lock().await;
-        if let Some(tripple) = lock_guard.get(&(function_id, engine_id)) {
-            let function_context = load_static(domain, &tripple.1, &tripple.0)?;
-            return Ok((function_context, tripple.2, in_set_names, out_set_names));
+        if let Some(Function {
+            requirements,
+            context,
+            config,
+        }) = lock_guard.get(&(function_id, engine_id))
+        {
+            let function_context = load_static(domain, &context, &requirements)?;
+            return Ok((function_context, *config, in_set_names, out_set_names));
         }
 
-        let tripple = self.load_local(function_id, engine_id, domain)?;
-        let function_context = load_static(domain, &tripple.1, &tripple.0)?;
-        let function_config = tripple.2;
+        let function = self.load_local(function_id, engine_id, domain)?;
+        let function_context = load_static(domain, &function.context, &function.requirements)?;
+        let function_config = function.config;
         if !non_caching {
             if lock_guard
-                .insert((function_id, engine_id), tripple)
+                .insert((function_id, engine_id), function)
                 .is_some()
             {
                 panic!("Function not in registry even after Ok from loading");

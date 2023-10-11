@@ -1,10 +1,10 @@
 use crate::{
-    function_lib::{cheri::CheriLoader, FunctionConfig, Loader},
+    function_driver::{compute_driver::cheri::CheriDriver, Driver, Function, FunctionConfig},
     memory_domain::{malloc::MallocMemoryDomain, MemoryDomain},
     Position,
 };
 
-fn read_file(name: &str, expected_size: usize) -> Vec<u8> {
+fn read_file(name: &str) -> Vec<u8> {
     // load elf file
     let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push("tests/data");
@@ -12,50 +12,57 @@ fn read_file(name: &str, expected_size: usize) -> Vec<u8> {
     let mut elf_file = std::fs::File::open(path).expect("Should have found test file");
     let mut elf_buffer = Vec::<u8>::new();
     use std::io::Read;
-    let file_length = elf_file
+    let _ = elf_file
         .read_to_end(&mut elf_buffer)
         .expect("Should be able to read entire file");
-    if expected_size != 0 {
-        assert_eq!(expected_size, file_length);
-    }
     return elf_buffer;
 }
 
 #[test]
 fn test_loader_basic() {
-    let elf_buffer = read_file("test_elf_cheri_basic", 6400);
+    let elf_buffer = read_file("test_elf_cheri_basic");
     let mut malloc_domain =
         MallocMemoryDomain::init(Vec::new()).expect("Should be able to get malloc domain");
-    let (req_list, context, config) =
-        CheriLoader::parse_function(elf_buffer, &mut malloc_domain).expect("Parsing should work");
+    let driver = CheriDriver {};
+    let Function {
+        requirements,
+        context,
+        config,
+    } = driver
+        .parse_function(elf_buffer, &mut malloc_domain)
+        .expect("Parsing should work");
     // check requirement list to be list of programm header info for after load
     // meaning addresses and sizes in virtual address space
     let expected_requirements = vec![
         Position {
-            offset: 0x200000,
-            size: 0x49c,
+            offset: 0x00000,
+            size: 0x1c8,
         },
         Position {
-            offset: 0x21049c,
-            size: 0xac4,
+            offset: 0x101c8,
+            size: 0xbb4,
         },
         Position {
-            offset: 0x220f60,
+            offset: 0x20d80,
+            size: 0x18,
+        },
+        Position {
+            offset: 0x30da0,
             size: 0x70,
         },
     ];
     assert_eq!(
-        0x800_0000, req_list.size,
+        0x800_0000, requirements.size,
         "Missmatch in expected default context size"
     );
     // actual sizes in file
-    let expected_sizes = vec![0x49c, 0xac4, 0x0];
+    let expected_sizes = vec![0x1c8, 0xbb4, 0x18, 0x0];
     assert_eq!(
         expected_requirements.len(),
-        req_list.static_requirements.len(),
+        requirements.static_requirements.len(),
         "Requirements list lengths don't match"
     );
-    for (index, (expected, actual)) in req_list
+    for (index, (expected, actual)) in requirements
         .static_requirements
         .iter()
         .zip(expected_requirements.iter())
@@ -98,17 +105,17 @@ fn test_loader_basic() {
         _ => panic!("Non elf FunctionConfig from cheri loader"),
     };
     assert_eq!(
-        (0x220f78),
+        (0x30db8),
         function_config.system_data_offset,
         "System data offset missmatch"
     );
     assert_eq!(
-        (0x220fc0, 0x10),
+        (0x30e00, 0x10),
         function_config.return_offset,
         "Return offset missmatch"
     );
     assert_eq!(
-        0x21049c, function_config.entry_point,
+        0x101c8, function_config.entry_point,
         "Entry point missmatch"
     );
 }

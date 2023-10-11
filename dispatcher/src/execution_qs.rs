@@ -1,7 +1,7 @@
 use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
 use futures::{channel::oneshot, lock::Mutex};
 use machine_interface::{
-    function_lib::{Engine, FunctionConfig},
+    function_driver::{Engine, FunctionConfig},
     memory_domain::Context,
 };
 use std::collections::VecDeque;
