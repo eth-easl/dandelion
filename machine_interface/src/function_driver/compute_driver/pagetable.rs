@@ -198,8 +198,7 @@ fn pagetable_run_static(
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
-
-    eprintln!("created a new process");
+    // eprintln!("created a new process");
 
     // intercept worker's syscalls by ptrace
     let pid = Pid::from_raw(worker.id() as i32);
@@ -215,14 +214,14 @@ fn pagetable_run_static(
         match sig {
             Signal::SIGTRAP => match check_syscall(pid.as_raw()) {
                 SyscallType::Exit => {
-                    eprintln!("detected exit syscall");
+                    // eprintln!("detected exit syscall");
                     ptrace_syscall(pid.as_raw());
-                    let status = worker.wait().unwrap();
-                    eprintln!("worker exited with code {}", status.code().unwrap());
+                    let _status = worker.wait().unwrap();
+                    // eprintln!("worker exited with code {}", status.code().unwrap());
                     return Ok(());
                 }
                 SyscallType::Authorized => {
-                    eprintln!("detected authorized syscall");
+                    // eprintln!("detected authorized syscall");
                     ptrace_syscall(pid.as_raw());
                 }
                 SyscallType::Unauthorized(syscall_id) => {

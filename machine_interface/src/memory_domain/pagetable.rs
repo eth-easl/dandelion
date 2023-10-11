@@ -16,7 +16,7 @@ impl ContextTrait for PagetableContext {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
         if offset < MMAP_BASE_ADDR {
             // not an issue if this context is not to be used by pagetable_worker
-            eprintln!("[WARNING] write to an offset smaller than MMAP_BASE_ADDR");
+            // eprintln!("[WARNING] write to an offset smaller than MMAP_BASE_ADDR");
         }
 
         // check alignment
@@ -42,7 +42,7 @@ impl ContextTrait for PagetableContext {
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         if offset < MMAP_BASE_ADDR {
             // not an issue if this context is not to be used by pagetable_worker
-            eprintln!("[WARNING] read from an offset smaller than MMAP_BASE_ADDR");
+            // eprintln!("[WARNING] read from an offset smaller than MMAP_BASE_ADDR");
         }
 
         // check that buffer has proper allighment

@@ -21,7 +21,7 @@ fn main() {
     let core_id: usize = args[1].parse().unwrap();
     let mem_id = &args[2];
     let entry_point: usize = args[4].parse().unwrap();
-    eprintln!("[worker] started with core {}, shared memory {} and entry point {:#x}", core_id, mem_id, entry_point);
+    // eprintln!("[worker] started with core {}, shared memory {} and entry point {:#x}", core_id, mem_id, entry_point);
 
     // set cpu affinity
     assert!(core_affinity::set_for_current(CoreId { id: core_id }));
@@ -42,7 +42,7 @@ fn main() {
             panic!("{}", e);
         }
     };
-    eprintln!("[worker] loaded shared memory");
+    // eprintln!("[worker] loaded shared memory");
 
     // let (read_only, executable): (Vec<Position>, Vec<Position>) = serde_json::from_str(&args[3]).unwrap();
     let mut executable: Vec<(u32, Position)> = serde_json::from_str(&args[3]).unwrap();
