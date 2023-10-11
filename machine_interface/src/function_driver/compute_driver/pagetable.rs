@@ -5,12 +5,16 @@ use crate::{
     util::elf_parser,
     DataItem, DataRequirement, DataRequirementList, DataSet, Position,
 };
-use core::{future::ready, pin::Pin};
+use core::{
+    future::{ready, Future},
+    pin::Pin,
+};
 use core_affinity;
 use dandelion_commons::{
     records::{RecordPoint, Recorder},
     DandelionError, DandelionResult,
 };
+use futures::{task::Poll, Stream};
 use nix::{
     sys::{
         signal::Signal,
@@ -21,162 +25,96 @@ use nix::{
 use std::{
     process::{Command, Stdio},
     sync::atomic::{AtomicBool, Ordering},
+    thread::{spawn, JoinHandle},
 };
 
-//const IO_STRUCT_SIZE: usize = 16;
-//const MAX_OUTPUTS: u32 = 16;
-
-/*
-fn setup_input_structs(
-    context: &mut Context,
-    config: &ElfConfig,
-    base_addr: usize,
-) -> DandelionResult<()> {
-    // size of array with input struct array
-    let input_number_option = context.dynamic_data.keys().max();
-    let input_number = match input_number_option {
-        Some(num) => num + 1,
-        None => return Ok(()),
-    };
-    let input_struct_size = input_number as usize * IO_STRUCT_SIZE;
-    let input_offset = context.get_free_space(input_struct_size, 8)?;
-    for (index, input) in context.dynamic_data.iter() {
-        let pos = match &input {
-            DataItem::Item(position) => position,
-            _ => return Err(DandelionError::NotImplemented),
-        };
-        let struct_offset = input_offset + IO_STRUCT_SIZE * index;
-        let mut io_struct = Vec::<u8>::new();
-        io_struct.append(&mut usize::to_ne_bytes(pos.size).to_vec());
-        io_struct.append(&mut usize::to_ne_bytes(base_addr + pos.offset).to_vec());
-        context.context.write(struct_offset, io_struct)?;
-    }
-    context.static_data.push(Position {
-        offset: input_offset,
-        size: input_struct_size,
-    });
-    // find space for output structs
-    let output_struct_size = IO_STRUCT_SIZE * MAX_OUTPUTS as usize;
-    let output_offset = context.get_free_space(output_struct_size, 8)?;
-    context.static_data.push(Position {
-        offset: output_offset,
-        size: output_struct_size,
-    });
-    // fill in values
-    context.write(
-        config.input_root.0,
-        usize::to_ne_bytes(base_addr + input_offset).to_vec(),
-    )?;
-    context.write(
-        config.input_number.0,
-        u32::to_ne_bytes(input_number as u32).to_vec(),
-    )?;
-    context.write(
-        config.output_root.0,
-        usize::to_ne_bytes(base_addr + output_offset).to_vec(),
-    )?;
-    context.write(config.output_number.0, u32::to_ne_bytes(0).to_vec())?;
-    context.write(
-        config.max_output_number.0,
-        u32::to_ne_bytes(MAX_OUTPUTS).to_vec(),
-    )?;
-    return Ok(());
+struct PagetableCommand {
+    cancel: bool,
+    storage_id: String,
+    protection_requirements: Vec<(u32, Position)>,
+    entry_point: usize,
+    recorder: Option<Recorder>,
 }
-
-fn get_output_layout(
-    context: &mut Context,
-    config: &ElfConfig,
-    base_addr: usize,
-) -> DandelionResult<()> {
-    // get output number
-    let output_number_vec = context.read(config.output_number.0, config.output_number.1)?;
-    // TODO make this dependent on the actual size of the values
-    // TODO use as_chunks when it stabilizes
-    let output_number_slice: [u8; 4] = output_number_vec[0..4]
-        .try_into()
-        .expect("Should have correct length");
-    let number_of_outputs = usize::min(
-        u32::from_ne_bytes(output_number_slice) as usize,
-        MAX_OUTPUTS as usize,
-    );
-    let mut output_structs = HashMap::new();
-    let output_root_vec = context.read(config.output_root.0, 8)?;
-    let output_root_offset = usize::from_ne_bytes(
-        output_root_vec[0..8]
-            .try_into()
-            .expect("Should have correct length"),
-    );
-    for output_index in 0..number_of_outputs {
-        // let read_offset = output_root_offset + IO_STRUCT_SIZE * output_index;
-        let read_offset = output_root_offset + IO_STRUCT_SIZE * output_index - base_addr;
-        let out_struct = context.read(read_offset, IO_STRUCT_SIZE as usize)?;
-        let size = usize::from_ne_bytes(
-            out_struct[0..8]
-                .try_into()
-                .expect("Should have correct length"),
-        );
-        let offset = usize::from_ne_bytes(
-            out_struct[8..16]
-                .try_into()
-                .expect("Should have correct length"),
-        );
-        output_structs.insert(
-            output_index,
-            DataItem::Item(Position {
-                offset: offset - base_addr as usize,
-                size: size,
-            }),
-        );
-    }
-    context.dynamic_data = output_structs;
-    Ok(())
-}
-*/
-// struct CheriCommand {
-//     context: *const cheri_c_context,
-//     entry_point: size_t,
-//     return_pair_offset: size_t,
-//     stack_pointer: size_t,
-// }
-// unsafe impl Send for CheriCommand {}
+unsafe impl Send for PagetableCommand {}
 
 pub struct PagetableEngine {
     is_running: AtomicBool,
-    cpu_slot: u8,
-    // command_sender: Sender<CheriCommand>,
-    // result_receiver: Receiver<DandelionResult<()>>,
-    // thread_handle: JoinHandle<()>,
+    command_sender: std::sync::mpsc::Sender<PagetableCommand>,
+    result_receiver: futures::channel::mpsc::Receiver<DandelionResult<()>>,
+    thread_handle: Option<JoinHandle<()>>,
 }
 
-// fn run_thread(
-//     core_id: u8,
-//     // command_receiver: Receiver<CheriCommand>,
-//     result_sender: Sender<DandelionResult<()>>,
-// ) -> () {
-//     // set core
-//     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
-//         return;
-//     };
-//     for command in command_receiver.iter() {
-//         let cheri_error;
-//         unsafe {
-//             cheri_error = cheri_run_static(
-//                 command.context,
-//                 command.entry_point,
-//                 command.return_pair_offset,
-//                 command.stack_pointer,
-//             );
-//         }
-//         let message = match cheri_error {
-//             0 => Ok(()),
-//             1 => Err(DandelionError::OutOfMemory),
-//             _ => Err(DandelionError::NotImplemented),
-//         };
-//         if result_sender.send(message).is_err() {
-//             return;
-//         }
-//     }
-// }
+struct PagetableFuture<'a> {
+    engine: &'a mut PagetableEngine,
+    context: Option<Context>,
+    system_data_offset: usize,
+}
+
+// TODO find better way than take unwrap to return context
+// or at least a way to ensure that the future is always initialized with a context,
+// so this can only happen when poll is called after it has already returned the context once
+impl Future for PagetableFuture<'_> {
+    type Output = (DandelionResult<()>, Context);
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &mut futures::task::Context,
+    ) -> futures::task::Poll<Self::Output> {
+        match Pin::new(&mut self.engine.result_receiver).poll_next(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(None) => {
+                return Poll::Ready((
+                    Err(DandelionError::EngineError),
+                    self.context.take().unwrap(),
+                ))
+            }
+            Poll::Ready(Some(Err(err))) => {
+                return Poll::Ready((Err(err), self.context.take().unwrap()))
+            }
+            Poll::Ready(Some(Ok(()))) => (),
+        }
+        let mut context = self.context.take().unwrap();
+        // erase all assumptions on context internal layout
+        context.content.clear();
+        // read outputs
+        let result = read_output_structs(&mut context, self.system_data_offset);
+        self.engine.is_running.store(false, Ordering::Release);
+        Poll::Ready((result, context))
+    }
+}
+
+fn run_thread(
+    core_id: u8,
+    command_receiver: std::sync::mpsc::Receiver<PagetableCommand>,
+    mut result_sender: futures::channel::mpsc::Sender<DandelionResult<()>>,
+) -> () {
+    // set core
+    if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
+        return;
+    };
+    'commandloop: for command in command_receiver.iter() {
+        if command.cancel {
+            break 'commandloop;
+        }
+        let message = pagetable_run_static(
+            core_id,
+            &command.storage_id,
+            &command.protection_requirements,
+            command.entry_point,
+        );
+        if let Some(mut recorder) = command.recorder {
+            let _ = recorder.record(RecordPoint::EngineEnd);
+        }
+        // try sending until succeeds
+        let mut not_sent = true;
+        while not_sent {
+            not_sent = match result_sender.try_send(message.clone()) {
+                Ok(()) => false,
+                Err(err) if err.is_full() => true,
+                Err(_) => break 'commandloop,
+            }
+        }
+    }
+}
 
 fn ptrace_syscall(pid: libc::pid_t) {
     #[cfg(target_os = "linux")]
@@ -239,6 +177,73 @@ fn check_syscall(pid: libc::pid_t) -> SyscallType {
     }
 }
 
+fn pagetable_run_static(
+    cpu_slot: u8,
+    storage_id: &str,
+    protection_requirements: &[(u32, Position)],
+    entry_point: usize,
+) -> Result<(), DandelionError> {
+    // TODO: modify ELF header
+    // to load pagetable_worker into a safe address range
+    // that will not collide with those used by user's function
+
+    // create a new address space (child process) and pass the shared memory
+    let mut worker = Command::new("../target/debug/pagetable_worker")
+        .arg(cpu_slot.to_string())
+        .arg(storage_id)
+        .arg(serde_json::to_string(protection_requirements).unwrap())
+        .arg(entry_point.to_string())
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    eprintln!("created a new process");
+
+    // intercept worker's syscalls by ptrace
+    let pid = Pid::from_raw(worker.id() as i32);
+    let status = wait::waitpid(pid, None).unwrap();
+    assert_eq!(status, WaitStatus::Stopped(pid, Signal::SIGSTOP));
+    ptrace_syscall(pid.as_raw());
+
+    loop {
+        let status = wait::waitpid(pid, None).unwrap();
+        let WaitStatus::Stopped(pid, sig) = status else {
+                panic!("worker should be stopped (status = {:?})", status);
+            };
+        match sig {
+            Signal::SIGTRAP => match check_syscall(pid.as_raw()) {
+                SyscallType::Exit => {
+                    eprintln!("detected exit syscall");
+                    ptrace_syscall(pid.as_raw());
+                    let status = worker.wait().unwrap();
+                    eprintln!("worker exited with code {}", status.code().unwrap());
+                    return Ok(());
+                }
+                SyscallType::Authorized => {
+                    eprintln!("detected authorized syscall");
+                    ptrace_syscall(pid.as_raw());
+                }
+                SyscallType::Unauthorized(syscall_id) => {
+                    eprintln!("detected unauthorized syscall with id {}", syscall_id);
+                    worker.kill().unwrap();
+                    eprintln!("worker killed");
+                    return Err(DandelionError::UnauthorizedSyscall);
+                }
+            },
+            Signal::SIGSEGV => {
+                eprintln!("detected segmentation fault");
+                return Err(DandelionError::SegmentationFault);
+            }
+            s => {
+                eprintln!("detected {}", s);
+                return Err(DandelionError::OtherProctionError);
+            }
+        }
+    }
+}
+
 impl Engine for PagetableEngine {
     fn run(
         &mut self,
@@ -261,25 +266,13 @@ impl Engine for PagetableEngine {
             ContextType::Pagetable(pagetable_context) => pagetable_context,
             _ => return Box::pin(ready((Err(DandelionError::ContextMissmatch), context))),
         };
-
-        // TODO: modify ELF header
-        // to load pagetable_worker into a safe address range
-        // that will not collide with those used by user's function
-
-        // create a new address space (child process) and pass the shared memory
-        let mut worker = Command::new("../target/debug/pagetable_worker")
-            .arg(self.cpu_slot.to_string())
-            .arg(pagetable_context.storage.id())
-            .arg(serde_json::to_string(&context.protection_requirements).unwrap())
-            .arg(elf_config.entry_point.to_string())
-            .env_clear()
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-
-        eprintln!("created a new process");
-
+        let command = PagetableCommand {
+            cancel: false,
+            storage_id: pagetable_context.storage.id().to_string(),
+            protection_requirements: context.protection_requirements.to_vec(),
+            entry_point: elf_config.entry_point,
+            recorder: Some(recorder),
+        };
         if let Err(err) = setup_input_structs(
             &mut context,
             elf_config.system_data_offset,
@@ -287,67 +280,39 @@ impl Engine for PagetableEngine {
         ) {
             return Box::pin(ready((Err(err), context)));
         }
-
-        // intercept worker's syscalls by ptrace
-        let pid = Pid::from_raw(worker.id() as i32);
-        let status = wait::waitpid(pid, None).unwrap();
-        assert_eq!(status, WaitStatus::Stopped(pid, Signal::SIGSTOP));
-        ptrace_syscall(pid.as_raw());
-
-        loop {
-            let status = wait::waitpid(pid, None).unwrap();
-            let WaitStatus::Stopped(pid, sig) = status else {
-                panic!("worker should be stopped (status = {:?})", status);
-            };
-            match sig {
-                Signal::SIGTRAP => match check_syscall(pid.as_raw()) {
-                    SyscallType::Exit => {
-                        eprintln!("detected exit syscall");
-                        ptrace_syscall(pid.as_raw());
-                        let status = worker.wait().unwrap();
-                        eprintln!("worker exited with code {}", status.code().unwrap());
-                        break;
-                    }
-                    SyscallType::Authorized => {
-                        eprintln!("detected authorized syscall");
-                        ptrace_syscall(pid.as_raw());
-                    }
-                    SyscallType::Unauthorized(syscall_id) => {
-                        eprintln!("detected unauthorized syscall with id {}", syscall_id);
-                        worker.kill().unwrap();
-                        eprintln!("worker killed");
-                        return Box::pin(ready((
-                            Err(DandelionError::UnauthorizedSyscall),
-                            context,
-                        )));
-                    }
-                },
-                Signal::SIGSEGV => {
-                    eprintln!("detected segmentation fault");
-                    return Box::pin(ready((Err(DandelionError::SegmentationFault), context)));
-                }
-                s => {
-                    eprintln!("detected {}", s);
-                    return Box::pin(ready((Err(DandelionError::OtherProctionError), context)));
-                }
-            }
+        match self.command_sender.send(command) {
+            Err(_) => return Box::pin(ready((Err(DandelionError::EngineError), context))),
+            Ok(_) => (),
         }
-
-        // erase all assumptions on context internal layout
-        context.content.clear();
-        // read outputs
-        let result = read_output_structs(&mut context, elf_config.system_data_offset);
-        self.is_running.store(false, Ordering::Release);
-        if let Err(err) = recorder.record(RecordPoint::EngineEnd) {
-            return Box::pin(core::future::ready((Err(err), context)));
-        }
-        Box::pin(ready((result, context)))
+        let function_future = Box::<PagetableFuture>::pin(PagetableFuture {
+            engine: self,
+            context: Some(context),
+            system_data_offset: elf_config.system_data_offset,
+        });
+        return function_future;
     }
     fn abort(&mut self) -> DandelionResult<()> {
         if !self.is_running.load(Ordering::Acquire) {
             return Err(DandelionError::NoRunningFunction);
         }
+        // TODO actually abort
         Ok(())
+    }
+}
+
+impl Drop for PagetableEngine {
+    fn drop(&mut self) {
+        if let Some(handle) = self.thread_handle.take() {
+            // drop channel
+            let _res = self.command_sender.send(PagetableCommand {
+                cancel: true,
+                storage_id: "".to_string(),
+                protection_requirements: [].to_vec(),
+                entry_point: 0,
+                recorder: None,
+            });
+            handle.join().expect("Pagetable thread should not panic");
+        }
     }
 }
 
@@ -374,15 +339,14 @@ impl Driver for PagetableDriver {
         {
             return Err(DandelionError::MalformedConfig);
         }
-        // let (command_sender, command_receiver) = channel();
-        // let (result_sender, result_receiver) = channel();
-        // let thread_handle = spawn(move || run_thread(cpu_slot, result_sender));
+        let (command_sender, command_receiver) = std::sync::mpsc::channel();
+        let (result_sender, result_receiver) = futures::channel::mpsc::channel(0);
+        let thread_handle = spawn(move || run_thread(cpu_slot, command_receiver, result_sender));
         let is_running = AtomicBool::new(false);
         return Ok(Box::new(PagetableEngine {
-            cpu_slot,
-            // command_sender,
-            // result_receiver,
-            // thread_handle,
+            command_sender,
+            result_receiver,
+            thread_handle: Some(thread_handle),
             is_running,
         }));
     }
