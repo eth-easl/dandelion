@@ -1,37 +1,36 @@
 use dandelion_commons::{DandelionError, DandelionResult, EngineTypeId, FunctionId};
 use futures::lock::Mutex;
 use machine_interface::{
-    function_lib::{
+    function_driver::{
         util::{load_static, load_u8_from_file},
-        FunctionConfig, Function, Driver,
+        Driver, Function, FunctionConfig,
     },
     memory_domain::{Context, MemoryDomain},
 };
-use std::{collections::{HashMap, HashSet}};
-
+use std::collections::{BTreeMap, BTreeSet};
 pub struct FunctionRegistry {
-    engine_map: HashMap<FunctionId, HashSet<EngineTypeId>>,
-    pub(crate) drivers: HashMap<EngineTypeId, Box<dyn Driver>>,
+    engine_map: BTreeMap<FunctionId, BTreeSet<EngineTypeId>>,
+    pub(crate) drivers: BTreeMap<EngineTypeId, Box<dyn Driver>>,
     // TODO replace with futures compatible RW lock if it becomes a bottleneck
-    registry:
-        Mutex<HashMap<(FunctionId, EngineTypeId), Function>>,
-    /// The paths for the local function binaries for a specific engine
-    local_available: HashMap<(FunctionId, EngineTypeId), String>,
+    registry: Mutex<BTreeMap<(FunctionId, EngineTypeId), Function>>,
+    local_available: BTreeMap<(FunctionId, EngineTypeId), String>,
+    set_names: BTreeMap<FunctionId, (Vec<String>, Vec<String>)>,
 }
 
 impl FunctionRegistry {
-    pub fn new(drivers: HashMap<EngineTypeId, Box<dyn Driver>>) -> Self {
+    pub fn new(drivers: BTreeMap<EngineTypeId, Box<dyn Driver>>) -> Self {
         return FunctionRegistry {
-            engine_map: HashMap::new(),
+            engine_map: BTreeMap::new(),
             drivers,
-            registry: Mutex::new(HashMap::new()),
-            local_available: HashMap::new(),
+            registry: Mutex::new(BTreeMap::new()),
+            local_available: BTreeMap::new(),
+            set_names: BTreeMap::new(),
         };
     }
     pub async fn get_options(
         &self,
         function_id: FunctionId,
-    ) -> DandelionResult<(HashSet<EngineTypeId>, &HashSet<EngineTypeId>)> {
+    ) -> DandelionResult<(BTreeSet<EngineTypeId>, &BTreeSet<EngineTypeId>)> {
         // get the ones that are already loaded
         let lock_guard = self.registry.lock().await;
         let loaded = lock_guard.keys().filter_map(|(function, engine)| {
@@ -47,7 +46,14 @@ impl FunctionRegistry {
         };
         return Ok((loaded.collect(), local_ret_set));
     }
-    pub fn add_local(&mut self, function_id: FunctionId, engine_id: EngineTypeId, path: &str) {
+    pub fn add_local(
+        &mut self,
+        function_id: FunctionId,
+        engine_id: EngineTypeId,
+        path: &str,
+        input_sets: Vec<String>,
+        output_sets: Vec<String>,
+    ) {
         self.local_available
             .insert((function_id, engine_id), path.to_string());
         self.engine_map
@@ -56,10 +62,12 @@ impl FunctionRegistry {
                 set.insert(engine_id);
             })
             .or_insert({
-                let mut set = HashSet::new();
+                let mut set = BTreeSet::new();
                 set.insert(engine_id);
                 set
             });
+        self.set_names
+            .insert(function_id, (input_sets, output_sets));
     }
     fn load_local(
         &self,
@@ -88,12 +96,22 @@ impl FunctionRegistry {
         engine_id: EngineTypeId,
         domain: &Box<dyn MemoryDomain>,
         non_caching: bool,
-    ) -> DandelionResult<(Context, FunctionConfig)> {
+    ) -> DandelionResult<(Context, FunctionConfig, &Vec<String>, &Vec<String>)> {
+        // get input and output set names
+        let (in_set_names, out_set_names) = self
+            .set_names
+            .get(&function_id)
+            .ok_or(DandelionError::DispatcherUnavailableFunction)?;
         // check if function for the engine is in registry already
         let mut lock_guard = self.registry.lock().await;
-        if let Some(Function { requirements, context, config }) = lock_guard.get(&(function_id, engine_id)) {
+        if let Some(Function {
+            requirements,
+            context,
+            config,
+        }) = lock_guard.get(&(function_id, engine_id))
+        {
             let function_context = load_static(domain, &context, &requirements)?;
-            return Ok((function_context, *config));
+            return Ok((function_context, *config, in_set_names, out_set_names));
         }
 
         let function = self.load_local(function_id, engine_id, domain)?;
@@ -107,6 +125,11 @@ impl FunctionRegistry {
                 panic!("Function not in registry even after Ok from loading");
             };
         }
-        return Ok((function_context, function_config));
+        return Ok((
+            function_context,
+            function_config,
+            in_set_names,
+            out_set_names,
+        ));
     }
 }

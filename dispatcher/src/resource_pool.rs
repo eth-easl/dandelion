@@ -1,10 +1,12 @@
 use dandelion_commons::{DandelionError, DandelionResult, EngineTypeId};
 use futures::lock::Mutex;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
+// Struct to potentially trade off resource as runtime
+// mainly for GPUs or FPGAs where we can have different sizes of slicing
 pub struct ResourcePool {
     // TODO write init and make this private
-    pub engine_pool: Mutex<HashMap<EngineTypeId, Vec<u8>>>,
+    pub engine_pool: Mutex<BTreeMap<EngineTypeId, Vec<u8>>>,
 }
 
 impl ResourcePool {

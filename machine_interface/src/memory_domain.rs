@@ -13,6 +13,7 @@ pub trait ContextTrait: Send + Sync {
 
 // https://docs.rs/enum_dispatch/latest/enum_dispatch/index.html
 // check if this would be better way to do it
+#[derive(Debug)]
 pub enum ContextType {
     Malloc(Box<malloc::MallocContext>),
     #[cfg(feature = "cheri")]
@@ -35,11 +36,13 @@ impl ContextTrait for ContextType {
         }
     }
 }
+
+#[derive(Debug)]
 pub struct Context {
     pub context: ContextType,
-    pub content: Vec<DataSet>,
-    occupation: Vec<Position>,
+    pub content: Vec<Option<DataSet>>,
     pub size: usize,
+    occupation: Vec<Position>,
 }
 
 impl ContextTrait for Context {
@@ -56,6 +59,7 @@ impl Context {
         return Context {
             context: con,
             content: vec![],
+            size: size,
             occupation: vec![
                 Position { offset: 0, size: 0 },
                 Position {
@@ -63,12 +67,15 @@ impl Context {
                     size: 0,
                 },
             ],
-            size: size,
         };
     }
+    /// Mark area between offset and offset + size as occupied
+    /// Start search on index and merge occupation with any overlapping occupation
+    /// Assumes offset is larger than or equal to the offset of occupation at index
     fn insert(&mut self, index: usize, offset: usize, size: usize) {
-        if (self.occupation[index].offset + self.occupation[index].size) == offset {
-            self.occupation[index].size += size;
+        let mut check_index = index;
+        if (self.occupation[index].offset + self.occupation[index].size) <= offset {
+            self.occupation[index].size = offset - self.occupation[index].offset + size;
         } else {
             self.occupation.insert(
                 index + 1,
@@ -76,18 +83,30 @@ impl Context {
                     offset: offset,
                     size,
                 },
-            )
+            );
+            check_index = index + 1;
+        }
+        while self.occupation.len() > check_index + 1
+            && self.occupation[check_index + 1].offset
+                <= (self.occupation[check_index].offset + self.occupation[check_index].size)
+        {
+            self.occupation[check_index].size = self.occupation[check_index + 1].offset
+                - self.occupation[check_index].offset
+                + self.occupation[check_index + 1].size;
+            self.occupation.remove(check_index + 1);
         }
     }
+    /// Make sure all space between offset and size is marked as occupied, ignoring overlap with previous occupation
     pub fn occupy_space(&mut self, offset: usize, size: usize) -> DandelionResult<()> {
+        if offset + size > self.size {
+            return Err(DandelionError::InvalidWrite);
+        }
         let insertion_index = self
             .occupation
             .windows(2)
             .enumerate()
             .find_map(|(index, pos)| {
-                let start = pos[0].offset + pos[0].size;
-                let end = pos[1].offset;
-                if offset >= start && offset + size < end {
+                if offset >= pos[0].offset && offset < pos[1].offset {
                     return Some(index);
                 } else {
                     return None;
@@ -95,8 +114,6 @@ impl Context {
             });
         if let Some(index) = insertion_index {
             self.insert(index, offset, size);
-        } else {
-            return Err(DandelionError::ContextFull);
         }
         return Ok(());
     }
@@ -112,7 +129,7 @@ impl Context {
             let start = ((lower_end + alignment - 1) / alignment) * alignment;
             let end = occupied[1].offset;
             let available = end - start;
-            if available > size && available < space_size {
+            if available >= size && available < space_size {
                 space_size = available;
                 index = window_index;
                 start_address = start;
@@ -134,6 +151,16 @@ impl Context {
         let last_item = self.occupation[self.occupation.len() - 2];
         return last_item.offset + last_item.size;
     }
+    pub fn clear_metadata(&mut self) -> () {
+        self.content = vec![];
+        self.occupation = vec![
+            Position { offset: 0, size: 0 },
+            Position {
+                offset: self.size,
+                size: 0,
+            },
+        ];
+    }
 }
 
 pub trait MemoryDomain: Sync + Send {
@@ -142,7 +169,6 @@ pub trait MemoryDomain: Sync + Send {
     where
         Self: Sized;
     fn acquire_context(&self, size: usize) -> DandelionResult<Context>;
-    fn release_context(&self, context: Context) -> DandelionResult<()>;
 }
 
 // Code to specialize transfers between different domains
@@ -182,66 +208,111 @@ pub fn transefer_memory(
     };
 }
 
+/// Transfer a complete dataset from one context to another.
+/// If there is already a dataset with the given desintation set index present,
+/// the items from the source set will be added to that set, keeping the identifier of the previous set.
+pub fn transfer_data_set(
+    destination: &mut Context,
+    source: &Context,
+    destionation_set_index: usize,
+    destination_allignment: usize,
+    destination_set_name: &str,
+    source_set_index: usize,
+) -> DandelionResult<()> {
+    // check if source has set
+    if source.content.len() <= source_set_index {
+        return Err(DandelionError::TransferInputNoSetAvailable);
+    }
+    let source_set = source.content[source_set_index]
+        .as_ref()
+        .ok_or(DandelionError::EmptyDataSet)?;
+    if destination.content.len() <= destionation_set_index {
+        destination
+            .content
+            .resize_with(destionation_set_index + 1, || None);
+    }
+    let destination_index_offset = destination.content[destionation_set_index]
+        .as_ref()
+        .and_then(|set| Some(set.buffers.len()))
+        .unwrap_or(0);
+    for index in 0..source_set.buffers.len() {
+        transer_data_item(
+            destination,
+            source,
+            destionation_set_index,
+            destination_allignment,
+            destination_index_offset + index,
+            destination_set_name,
+            source_set_index,
+            index,
+        )?;
+    }
+    return Ok(());
+}
+
+/// Transfer a data item from one context to another.
+/// If the destination does not yet have a set at the index,
+/// a new one is created using the set name given.
 pub fn transer_data_item(
     destination: &mut Context,
     source: &Context,
     destionation_set_index: usize,
     destination_allignment: usize,
+    destination_item_index: usize,
+    destination_set_name: &str,
     source_set_index: usize,
-    source_item_index: Option<usize>,
+    source_item_index: usize,
 ) -> DandelionResult<()> {
     // check if source has item
     if source.content.len() <= source_set_index {
         return Err(DandelionError::InvalidRead);
     }
-    let source_set = &source.content[source_set_index];
-    if source_set.buffers.is_empty() {
-        if source_item_index.is_none() {
-            return Ok(());
-        } else {
-            return Err(DandelionError::EmptyDataSet);
-        }
+    let source_set = source.content[source_set_index]
+        .as_ref()
+        .ok_or(DandelionError::EmptyDataSet)?;
+    if source_set.buffers.len() <= source_item_index {
+        return Err(DandelionError::TransferInputNoSetAvailable);
     }
-    let index_range = if let Some(item_index) = source_item_index {
-        if source_set.buffers.len() <= item_index {
-            return Err(DandelionError::InvalidRead);
-        }
-        item_index..(item_index + 1)
-    } else {
-        0..source_set.buffers.len()
-    };
+
     if destination.content.len() <= destionation_set_index {
         destination
             .content
-            .resize_with(destionation_set_index + 1, || DataSet {
-                ident: String::from(""),
+            .resize_with(destionation_set_index + 1, || None)
+    }
+    let source_item = &source_set.buffers[source_item_index];
+    let destination_offset =
+        destination.get_free_space(source_item.data.size, destination_allignment)?;
+    {
+        let destination_set =
+            &mut destination.content[destionation_set_index].get_or_insert(DataSet {
+                ident: destination_set_name.to_string(),
                 buffers: vec![],
-            })
+            });
+        if destination_set.buffers.len() <= destination_item_index {
+            destination_set
+                .buffers
+                .resize_with(destination_item_index + 1, || DataItem {
+                    ident: String::from(""),
+                    data: Position { offset: 0, size: 0 },
+                    key: 0,
+                });
+        } else if destination_set.buffers[destination_item_index].data.size > 0 {
+            return Err(DandelionError::TransferItemAlreadyPresent);
+        }
+        destination_set.buffers[destination_item_index].data.offset = destination_offset;
+        destination_set.buffers[destination_item_index].data.size = source_item.data.size;
+        destination_set.buffers[destination_item_index].ident = source_item.ident.clone();
     }
-    for item_index in index_range {
-        let source_item = &source_set.buffers[item_index];
-        let destination_offset =
-            destination.get_free_space(source_item.data.size, destination_allignment)?;
-        let new_item = DataItem {
-            ident: source_item.ident.clone(),
-            data: Position {
-                offset: destination_offset,
-                size: source_item.data.size,
-            },
-        };
-        destination.content[destionation_set_index]
-            .buffers
-            .push(new_item);
-        transefer_memory(
-            destination,
-            source,
-            destination_offset,
-            source_item.data.offset,
-            source_item.data.size,
-        )?
-    }
+
+    transefer_memory(
+        destination,
+        source,
+        destination_offset,
+        source_item.data.offset,
+        source_item.data.size,
+    )?;
     Ok(())
 }
 
 #[cfg(test)]
-mod tests;
+mod domain_tests;

@@ -1,5 +1,5 @@
 use crate::{
-    function_lib::{Driver, Engine, FunctionConfig},
+    function_driver::{Driver, ElfConfig, Engine, Function, FunctionConfig},
     interface::{read_output_structs, setup_input_structs},
     memory_domain::{cheri::cheri_c_context, Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
@@ -10,15 +10,16 @@ use core::{
     pin::Pin,
 };
 use core_affinity;
-use dandelion_commons::{DandelionError, DandelionResult};
+use dandelion_commons::{
+    records::{RecordPoint, Recorder},
+    DandelionError, DandelionResult,
+};
 use futures::{task::Poll, Stream};
 use libc::size_t;
 use std::{
     sync::atomic::{AtomicBool, Ordering},
     thread::{spawn, JoinHandle},
 };
-
-use super::Function;
 
 #[link(name = "cheri_lib")]
 extern "C" {
@@ -36,6 +37,7 @@ struct CheriCommand {
     entry_point: size_t,
     return_pair_offset: size_t,
     stack_pointer: size_t,
+    recorder: Option<Recorder>,
 }
 unsafe impl Send for CheriCommand {}
 
@@ -112,6 +114,9 @@ fn run_thread(
             1 => Err(DandelionError::OutOfMemory),
             _ => Err(DandelionError::NotImplemented),
         };
+        if let Some(mut recorder) = command.recorder {
+            let _ = recorder.record(RecordPoint::EngineEnd);
+        }
         // try sending until succeeds
         let mut not_sent = true;
         while not_sent {
@@ -129,8 +134,12 @@ impl Engine for CheriEngine {
         &mut self,
         config: &FunctionConfig,
         mut context: Context,
-        output_set_names: Vec<String>,
+        output_set_names: &Vec<String>,
+        mut recorder: Recorder,
     ) -> Pin<Box<dyn futures::Future<Output = (DandelionResult<()>, Context)> + '_ + Send>> {
+        if let Err(err) = recorder.record(RecordPoint::EngineStart) {
+            return Box::pin(core::future::ready((Err(err), context)));
+        }
         if self.is_running.swap(true, Ordering::AcqRel) {
             return Box::pin(ready((Err(DandelionError::EngineAlreadyRunning), context)));
         }
@@ -148,6 +157,7 @@ impl Engine for CheriEngine {
             entry_point: elf_config.entry_point,
             return_pair_offset: elf_config.return_offset.0,
             stack_pointer: cheri_context.size - 32,
+            recorder: Some(recorder),
         };
         if let Err(err) = setup_input_structs(
             &mut context,
@@ -186,6 +196,7 @@ impl Drop for CheriEngine {
                 entry_point: 0,
                 return_pair_offset: 0,
                 stack_pointer: 0,
+                recorder: None,
             });
             handle.join().expect("Cheri thread should not panic");
         }
@@ -239,7 +250,7 @@ impl Driver for CheriDriver {
         let system_data = elf.get_symbol_by_name(&function, "__dandelion_system_data")?;
         let return_offset = elf.get_symbol_by_name(&function, "__dandelion_return_address")?;
         let entry = elf.get_entry_point();
-        let config = FunctionConfig::ElfConfig(super::ElfConfig {
+        let config = FunctionConfig::ElfConfig(ElfConfig {
             system_data_offset: system_data.0,
             return_offset: return_offset,
             entry_point: entry,
@@ -274,10 +285,11 @@ impl Driver for CheriDriver {
                     offset: write_counter,
                     size: position.size,
                 },
+                key: 0,
             });
             write_counter += position.size;
         }
-        context.content = vec![new_content];
+        context.content = vec![Some(new_content)];
         return Ok(Function {
             requirements,
             context,

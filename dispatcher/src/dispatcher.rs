@@ -1,69 +1,162 @@
-use crate::{function_registry::FunctionRegistry, resource_pool::ResourcePool};
-use dandelion_commons::{ContextTypeId, DandelionError, DandelionResult, EngineTypeId, FunctionId};
-use futures::{channel::oneshot, lock::Mutex};
+use crate::{
+    composition::{Composition, FunctionDependencies},
+    execution_qs::EngineQueue,
+    function_registry::FunctionRegistry,
+    resource_pool::ResourcePool,
+};
+use dandelion_commons::{
+    records::{Archive, RecordPoint, Recorder},
+    ContextTypeId, DandelionError, DandelionResult, EngineTypeId, FunctionId,
+};
+use futures::{
+    future::join_all,
+    lock::Mutex,
+    stream::{FuturesUnordered, StreamExt},
+};
+use itertools::Itertools;
 use machine_interface::{
-    function_lib::{Engine, FunctionConfig},
+    function_driver::FunctionConfig,
     memory_domain::{transer_data_item, Context, MemoryDomain},
 };
-use std::{collections::{HashMap, VecDeque}};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    sync::Arc,
+    sync::Mutex as SyncMutex,
+    vec,
+};
 
-struct SchedulerQueue {
-    internals: Mutex<(
-        Vec<Box<dyn Engine>>,
-        VecDeque<oneshot::Sender<Box<dyn Engine>>>,
-    )>,
+#[derive(Clone, Debug)]
+pub enum ShardingMode {
+    NoSharding,
+    KeySharding(BTreeSet<u32>),
+    // potentailly add an option to provide a map for specific items
 }
 
-impl SchedulerQueue {
-    async fn get_engine(&self) -> DandelionResult<oneshot::Receiver<Box<dyn Engine>>> {
-        let mut mux_guard = self.internals.lock().await;
-        // create new lock
-        let (sender, receiver) = oneshot::channel();
-        if let Some(engine) = mux_guard.0.pop() {
-            let sender_result: Result<(), Box<dyn Engine>> = sender.send(engine);
-            if let Err(engine) = sender_result {
-                mux_guard.0.push(engine);
-                return Err(DandelionError::DispatcherChannelError);
-            }
-        } else {
-            mux_guard.1.push_back(sender);
-        }
-        return Ok(receiver);
+/// Struct that has all locations belonging to one set, that is potentially spread over multiple contexts.
+#[derive(Clone, Debug)]
+pub struct CompositionSet {
+    /// list of all contexts and the set index in that context that belongs to the composition set
+    pub context_list: Vec<Arc<Context>>,
+    pub set_index: usize,
+    pub sharding_mode: ShardingMode,
+}
+
+impl CompositionSet {
+    fn shard(self, index: usize) -> Vec<(usize, CompositionSet)> {
+        let keys = match self.sharding_mode {
+            ShardingMode::NoSharding => return vec![(index, self)],
+            ShardingMode::KeySharding(keys) => keys,
+        };
+        return keys
+            .into_iter()
+            .map(|key| {
+                let mut new_shard = BTreeSet::new();
+                new_shard.insert(key);
+                return (
+                    index,
+                    CompositionSet {
+                        context_list: self.context_list.clone(),
+                        set_index: self.set_index,
+                        sharding_mode: ShardingMode::KeySharding(new_shard),
+                    },
+                );
+            })
+            .collect();
     }
-    async fn yield_engine(&self, engine: Box<dyn Engine>) -> DandelionResult<()> {
-        let mut mux_guard = self.internals.lock().await;
-        if let Some(sender) = mux_guard.1.pop_front() {
-            match sender.send(engine) {
-                Ok(()) => (),
-                Err(_) => return Err(DandelionError::DispatcherChannelError),
-            }
-        } else {
-            mux_guard.0.push(engine);
+}
+
+pub struct CompositionSetTransferIterator {
+    set: CompositionSet,
+    context_counter: usize,
+    item_counter: usize,
+}
+
+impl IntoIterator for CompositionSet {
+    type Item = (usize, usize, Arc<Context>);
+    type IntoIter = CompositionSetTransferIterator;
+
+    fn into_iter(self) -> Self::IntoIter {
+        CompositionSetTransferIterator {
+            set: self,
+            context_counter: 0,
+            item_counter: 0,
         }
-        Ok(())
     }
+}
+
+impl Iterator for CompositionSetTransferIterator {
+    type Item = (usize, usize, Arc<Context>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.set.context_list.len() > self.context_counter {
+            let set_index = self.set.set_index;
+            let context = self.set.context_list[self.context_counter].clone();
+            if let Some(set) = &context.content[set_index] {
+                while set.buffers.len() > self.item_counter {
+                    let current_item = self.item_counter;
+                    self.item_counter += 1;
+                    match &self.set.sharding_mode {
+                        ShardingMode::NoSharding => {
+                            return Some((set_index, current_item, context));
+                        }
+                        ShardingMode::KeySharding(shard_set)
+                            if shard_set.contains(&set.buffers[current_item].key) =>
+                        {
+                            return Some((set_index, current_item, context));
+                        }
+                        ShardingMode::KeySharding(_) => (),
+                    }
+                }
+            }
+            self.item_counter = 0;
+            self.context_counter += 1;
+        }
+        return None;
+    }
+}
+
+fn get_composition_set(
+    contexts: &Vec<Arc<Context>>,
+    function_set_index: usize,
+) -> Option<CompositionSet> {
+    let keys = contexts
+        .iter()
+        .filter_map(|context_ref| {
+            if context_ref.content.len() <= function_set_index {
+                return None;
+            }
+            let set_keys = context_ref.content[function_set_index]
+                .as_ref()
+                .and_then(|set| Some(set.buffers.iter().map(|buffer| buffer.key)));
+            return set_keys;
+        })
+        .flatten()
+        .collect();
+    return Some(CompositionSet {
+        set_index: function_set_index,
+        sharding_mode: ShardingMode::KeySharding(keys),
+        context_list: contexts.to_vec(),
+    });
 }
 
 // TODO here and in registry can probably replace driver and loader function maps with fixed size arrays
 // That have compile time size and static indexing
 pub struct Dispatcher {
-    domains: HashMap<ContextTypeId, Box<dyn MemoryDomain>>,
-    // TODO does this struct need the drivers?
-    // _drivers: Arc<HashMap<EngineTypeId, Box<dyn Driver>>>,
-    engines: HashMap<EngineTypeId, SchedulerQueue>,
-    type_map: HashMap<EngineTypeId, ContextTypeId>,
+    domains: BTreeMap<ContextTypeId, Box<dyn MemoryDomain>>,
+    engines: BTreeMap<EngineTypeId, EngineQueue>,
+    type_map: BTreeMap<EngineTypeId, ContextTypeId>,
     function_registry: FunctionRegistry,
-    _resource_pool: ResourcePool,
+    pub archive: Arc<SyncMutex<Archive>>,
 }
 
 impl Dispatcher {
     pub fn init(
-        domains: HashMap<ContextTypeId, Box<dyn MemoryDomain>>,
-        type_map: HashMap<EngineTypeId, ContextTypeId>,
+        domains: BTreeMap<ContextTypeId, Box<dyn MemoryDomain>>,
+        type_map: BTreeMap<EngineTypeId, ContextTypeId>,
         function_registry: FunctionRegistry,
         mut resource_pool: ResourcePool,
     ) -> DandelionResult<Dispatcher> {
-        let mut engines = HashMap::with_capacity(function_registry.drivers.len());
+        let mut engines = BTreeMap::new();
         // Use up all engine resources to start with
         for (engine_id, driver) in function_registry.drivers.iter() {
             let mut engine_vec = Vec::new();
@@ -74,26 +167,182 @@ impl Dispatcher {
                     engine_vec.push(engine);
                 }
             }
-            let engine_queue = SchedulerQueue {
+            let engine_queue = EngineQueue {
                 internals: Mutex::new((engine_vec, VecDeque::new())),
             };
             engines.insert(engine_id.clone(), engine_queue);
         }
+        let archive: Arc<SyncMutex<Archive>> = Arc::new(SyncMutex::new(Archive::new()));
         return Ok(Dispatcher {
             domains,
             engines,
             type_map,
             function_registry,
-            _resource_pool: resource_pool,
+            archive,
         });
     }
+
+    pub async fn queue_composition(
+        &self,
+        composition: Composition,
+        mut inputs: BTreeMap<usize, CompositionSet>,
+        output_sets: BTreeSet<usize>,
+        non_caching: bool,
+    ) -> DandelionResult<Vec<(usize, CompositionSet)>> {
+        // build up ready sets
+        let mut ready_sets = inputs.keys().cloned().collect::<BTreeSet<usize>>();
+        let (mut ready_functions, mut non_ready_functions): (Vec<_>, Vec<_>) =
+            composition.dependencies.into_iter().partition(
+                |FunctionDependencies {
+                     input_set_ids: in_ids,
+                     output_set_ids: _,
+                     function: _,
+                 }| {
+                    in_ids.iter().all(|index_opt| {
+                        index_opt
+                            .and_then(|index| Some(ready_sets.contains(&index)))
+                            .unwrap_or(true)
+                    })
+                },
+            );
+        let mut running_functions: FuturesUnordered<_> = ready_functions
+            .into_iter()
+            .map(|dependencies| {
+                let function_inputs = dependencies
+                    .input_set_ids
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(function_index, composition_index_opt)| {
+                        if let Some(composition_index) = composition_index_opt {
+                            inputs.get(composition_index).and_then(|composition_set| {
+                                Some((function_index, composition_set.clone()))
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                return self.queue_function_wrapped(dependencies, function_inputs, non_caching);
+            })
+            .collect();
+
+        while let Some((composition_set_indices, new_results)) = running_functions.next().await {
+            let new_contexts = new_results?;
+            for (function_set_index, composition_set_index_opt) in
+                composition_set_indices.iter().enumerate()
+            {
+                if let Some(composition_set_index) = composition_set_index_opt {
+                    if let Some(composition_set) =
+                        get_composition_set(&new_contexts, function_set_index)
+                    {
+                        inputs.insert(*composition_set_index, composition_set);
+                        ready_sets.insert(*composition_set_index);
+                    }
+                }
+            }
+            // add newly ready ones
+            (ready_functions, non_ready_functions) = non_ready_functions.into_iter().partition(
+                |FunctionDependencies {
+                     input_set_ids: in_ids,
+                     output_set_ids: _,
+                     function: _,
+                 }| {
+                    in_ids.iter().all(|index_opt| {
+                        index_opt
+                            .and_then(|index| Some(ready_sets.contains(&index)))
+                            .unwrap_or(true)
+                    })
+                },
+            );
+            for ready_function in ready_functions {
+                let function_inputs = ready_function
+                    .input_set_ids
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(function_index, composition_index_opt)| {
+                        if let Some(composition_index) = composition_index_opt {
+                            inputs.get(composition_index).and_then(|composition_set| {
+                                Some((function_index, composition_set.clone()))
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                running_functions.push(self.queue_function_wrapped(
+                    ready_function,
+                    function_inputs,
+                    non_caching,
+                ));
+            }
+        }
+        return Ok(inputs
+            .into_iter()
+            .filter(|(set_index, _)| output_sets.contains(set_index))
+            .collect::<Vec<_>>());
+    }
+
+    async fn queue_function_wrapped(
+        &self,
+        dependencies: FunctionDependencies,
+        input_sets: Vec<(usize, CompositionSet)>,
+        non_caching: bool,
+    ) -> (Vec<Option<usize>>, DandelionResult<Vec<Arc<Context>>>) {
+        let FunctionDependencies {
+            function,
+            input_set_ids: _,
+            output_set_ids,
+        } = dependencies;
+        return (
+            output_set_ids,
+            self.queue_function_sharded(function, input_sets, non_caching)
+                .await,
+        );
+    }
+
+    async fn queue_function_sharded<'context>(
+        &self,
+        function_id: FunctionId,
+        input_sets: Vec<(usize, CompositionSet)>,
+        non_caching: bool,
+    ) -> DandelionResult<Vec<Arc<Context>>> {
+        // build the cartesian product of all sets that need to be sharded
+        // TODO switch to collect into when it becomes stable
+        // let result_num = input_sets
+        //     .into_iter()
+        //     .map(|(_, set)| match set.sharding_mode {
+        //         ShardingMode::NoSharding => 1,
+        //         ShardingMode::KeySharding(keys) => keys.len(),
+        //     })
+        //     .product();
+        // let mut results = Vec::new();
+        // if results.try_reserve(result_num).is_err() {
+        //     return Err(DandelionError::OutOfMemory);
+        // }
+        let results: Vec<_> = input_sets
+            .into_iter()
+            .map(|(index, composition_set)| composition_set.shard(index))
+            .multi_cartesian_product()
+            .map(|input_sets_local| {
+                Box::pin(self.queue_function(function_id, input_sets_local, non_caching))
+            })
+            .collect();
+        let context_vec = join_all(results)
+            .await
+            .into_iter()
+            .map(|res| res.and_then(|con| Ok(Arc::new(con))))
+            .collect();
+        return context_vec;
+    }
+
     pub async fn queue_function(
         &self,
         function_id: FunctionId,
-        inputs: Vec<(&Context, Vec<(usize, Option<usize>, usize)>)>,
-        output_sets: Vec<String>,
+        inputs: Vec<(usize, CompositionSet)>,
         non_caching: bool,
     ) -> DandelionResult<Context> {
+        let mut recorder = Recorder::new(self.archive.clone(), RecordPoint::Arrival);
+        // start new record for the function
         // find an engine capable of running the function
         // TODO actual scheduling decisions
         let engine_id;
@@ -107,38 +356,30 @@ impl Dispatcher {
                 return Err(DandelionError::DispatcherUnavailableFunction);
             }
         }
-        let (context, config) = self
-            .prepare_for_engine(function_id, engine_id, inputs, non_caching)
+        let (context, config, out_set_names) = self
+            .prepare_for_engine(
+                function_id,
+                engine_id,
+                inputs,
+                non_caching,
+                recorder.clone(),
+            )
             .await?;
         let (result, context) = self
-            .run_on_engine(engine_id, config, output_sets, context)
+            .run_on_engine(engine_id, config, out_set_names, context, recorder.clone())
             .await;
-        match result {
-            Ok(()) => Ok(context),
-            Err(err) => {
-                let context_id = match self.type_map.get(&engine_id) {
-                    Some(id) => id,
-                    None => return Err(DandelionError::DispatcherConfigError),
-                };
-                let domain = match self.domains.get(context_id) {
-                    Some(d) => d,
-                    None => return Err(DandelionError::DispatcherConfigError),
-                };
-                let _release_result = domain.release_context(context);
-                Err(err)
-            }
-        }
-        // Err(DandelionError::NotImplemented)
+        recorder.record(RecordPoint::FutureReturn)?;
+        return result.and(Ok(context));
     }
+
     async fn prepare_for_engine(
         &self,
         function_id: FunctionId,
         engine_type: EngineTypeId,
-        // vector with contexts that hold the inputs as well as assoziated tripples that say
-        // the dynamic data index of the context, possible index into a set and index of the input in the new function
-        inputs: Vec<(&Context, Vec<(usize, Option<usize>, usize)>)>,
+        inputs: Vec<(usize, CompositionSet)>,
         non_caching: bool,
-    ) -> DandelionResult<(Context, FunctionConfig)> {
+        mut recorder: Recorder,
+    ) -> DandelionResult<(Context, FunctionConfig, &Vec<String>)> {
         // get context and load static data
         let context_id = match self.type_map.get(&engine_type) {
             Some(id) => id,
@@ -149,62 +390,57 @@ impl Dispatcher {
             None => return Err(DandelionError::DispatcherConfigError),
         };
         // start doing transfers
-        let (mut function_context, function_config) = self
+        recorder.record(RecordPoint::TransferStart)?;
+        let (mut function_context, function_config, in_set_names, out_set_names) = self
             .function_registry
             .load(function_id, engine_type, domain, non_caching)
             .await?;
-        for (input_context, index_map) in inputs {
-            for (input_index, input_sub_index, function_index) in index_map {
+        // make sure all input sets are there at the correct index
+        for in_set_name in in_set_names {
+            function_context
+                .content
+                .push(Some(machine_interface::DataSet {
+                    ident: in_set_name.clone(),
+                    buffers: vec![],
+                }))
+        }
+        for (function_set, context_set) in inputs {
+            let mut function_item = 0usize;
+            for (subset, item, source_context) in context_set {
                 // TODO get allignment information
+                let set_name = &in_set_names[function_set];
                 transer_data_item(
                     &mut function_context,
-                    input_context,
-                    function_index,
+                    &source_context,
+                    function_set,
                     128,
-                    input_index,
-                    input_sub_index,
+                    function_item,
+                    set_name,
+                    subset,
+                    item,
                 )?;
+                function_item += 1;
             }
         }
-        return Ok((function_context, function_config));
+        recorder.record(RecordPoint::TransferEnd)?;
+        return Ok((function_context, function_config, out_set_names));
     }
 
     async fn run_on_engine(
         &self,
         engine_type: EngineTypeId,
         function_config: FunctionConfig,
-        output_sets: Vec<String>,
+        output_sets: &Vec<String>,
         function_context: Context,
+        recorder: Recorder,
     ) -> (DandelionResult<()>, Context) {
         // preparation is done, get engine to receive engine
         let engine_queue = match self.engines.get(&engine_type) {
             Some(q) => q,
             None => return (Err(DandelionError::DispatcherConfigError), function_context),
         };
-        let mut engine = match engine_queue.get_engine().await {
-            Ok(res) => match res.await {
-                Ok(eng) => eng,
-                Err(_) => {
-                    return (
-                        Err(DandelionError::DispatcherChannelError),
-                        function_context,
-                    )
-                }
-            },
-            Err(_) => {
-                return (
-                    Err(DandelionError::DispatcherChannelError),
-                    function_context,
-                )
-            }
-        };
-        let (result, output_context) = engine
-            .run(&function_config, function_context, output_sets)
+        return engine_queue
+            .perform_single_run(&function_config, function_context, output_sets, recorder)
             .await;
-        let end_result = match (result, engine_queue.yield_engine(engine).await) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(err), _) | (Ok(()), Err(err)) => Err(err),
-        };
-        return (end_result, output_context);
     }
 }

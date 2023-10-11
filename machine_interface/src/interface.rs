@@ -32,15 +32,25 @@ struct IoBufferDescriptor {
     ident_len: size_t,
     data: uintptr_t,
     data_len: size_t,
+    key: size_t,
 }
 
 pub fn setup_input_structs(
     context: &mut Context,
     system_data_offset: usize,
-    output_set_names: Vec<String>,
+    output_set_names: &Vec<String>,
 ) -> DandelionResult<()> {
     // prepare information to set up input sets, output sets and input buffers
-    let input_buffer_number = context.content.iter().map(|set| set.buffers.len()).sum();
+    let input_buffer_number = context
+        .content
+        .iter()
+        .map(|set_opt| {
+            set_opt
+                .as_ref()
+                .and_then(|set| Some(set.buffers.len()))
+                .unwrap_or(0)
+        })
+        .sum();
     let input_set_number = context.content.len();
     let output_set_number = output_set_names.len();
 
@@ -62,7 +72,10 @@ pub fn setup_input_structs(
     // start writing input set info structs
     for c in 0..context.content.len() {
         // get name and length
-        let name = context.content[c].ident.clone();
+        let (name, buffer_len) = context.content[c]
+            .as_ref()
+            .and_then(|set| Some((set.ident.clone(), set.buffers.len())))
+            .unwrap_or((String::from(""), 0));
         let name_length = name.len();
         // find space and write string
         let mut string_offset = 0;
@@ -75,12 +88,20 @@ pub fn setup_input_structs(
             offset: input_buffers.len(),
         });
         // find buffers
-        for b in 0..context.content[c].buffers.len() {
-            let buffer = &context.content[c].buffers[b];
-            let name = buffer.ident.clone();
+        for b in 0..buffer_len {
+            let (name, offset, size, key) = context.content[c]
+                .as_ref()
+                .and_then(|set| {
+                    let buffer = &set.buffers[b];
+                    return Some((
+                        buffer.ident.clone(),
+                        buffer.data.offset,
+                        buffer.data.size,
+                        buffer.key,
+                    ));
+                })
+                .unwrap_or((String::from(""), 0, 0, 0));
             let name_length = name.len();
-            let offset = buffer.data.offset;
-            let size = buffer.data.size;
             let mut string_offset = 0;
             if name_length != 0 {
                 string_offset = context.get_free_space_and_write_slice(name.as_bytes())? as usize;
@@ -90,6 +111,7 @@ pub fn setup_input_structs(
                 ident_len: name_length,
                 data: offset,
                 data_len: size,
+                key: key as usize,
             });
         }
     }
@@ -153,6 +175,7 @@ pub fn setup_input_structs(
 }
 
 pub fn read_output_structs(context: &mut Context, base_address: usize) -> DandelionResult<()> {
+    context.clear_metadata();
     // read the system buffer
     let mut system_struct = DandelionSystemData {
         exit_code: 0,
@@ -172,7 +195,6 @@ pub fn read_output_structs(context: &mut Context, base_address: usize) -> Dandel
     // get output set number +1 for sentinel set
     let output_set_number = system_struct.output_sets_len;
     if output_set_number == 0 {
-        context.content = vec![];
         return Ok(());
     }
     let output_buffers_offset: usize = system_struct.output_bufs as usize;
@@ -204,6 +226,7 @@ pub fn read_output_structs(context: &mut Context, base_address: usize) -> Dandel
         ident_len: 0,
         data: 0,
         data_len: 0,
+        key: 0,
     });
     context.read(output_buffers_offset, &mut output_buffers)?;
     assert_eq!(
@@ -234,6 +257,7 @@ pub fn read_output_structs(context: &mut Context, base_address: usize) -> Dandel
             context.read(buffer_ident_offset, &mut buffer_ident)?;
             let data_offset = output_buffers[buffer_index].data as usize;
             let data_length = output_buffers[buffer_index].data_len;
+            let key = output_buffers[buffer_index].key;
             let ident_string = String::from_utf8(buffer_ident).unwrap_or("".to_string());
             buffers.push(DataItem {
                 ident: ident_string,
@@ -241,13 +265,15 @@ pub fn read_output_structs(context: &mut Context, base_address: usize) -> Dandel
                     offset: data_offset,
                     size: data_length,
                 },
-            })
+                key: key as u32,
+            });
+            context.occupy_space(data_offset, data_length)?;
         }
         // only add output set if there are actual buffers for it.
-        output_sets.push(DataSet {
+        output_sets.push(Some(DataSet {
             ident: set_ident_string,
             buffers: buffers,
-        });
+        }));
     }
     context.content = output_sets;
     Ok(())

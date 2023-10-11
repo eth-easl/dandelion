@@ -10,7 +10,7 @@ pub struct cheri_c_context {
 #[link(name = "cheri_lib")]
 extern "C" {
     fn cheri_alloc(size: size_t) -> *const cheri_c_context;
-    fn cheri_free(context: *const cheri_c_context, size: size_t) -> ();
+    fn cheri_free(context: *const cheri_c_context) -> ();
     fn cheri_write_context(
         context: *const cheri_c_context,
         source_pointer: *const u8,
@@ -35,6 +35,7 @@ extern "C" {
 use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
 use dandelion_commons::{DandelionError, DandelionResult};
 
+#[derive(Debug)]
 pub struct CheriContext {
     pub context: *const cheri_c_context,
     pub size: usize,
@@ -83,6 +84,14 @@ impl ContextTrait for CheriContext {
     }
 }
 
+impl Drop for CheriContext {
+    fn drop(&mut self) {
+        unsafe {
+            cheri_free(self.context);
+        }
+    }
+}
+
 pub struct CheriMemoryDomain {}
 
 impl MemoryDomain for CheriMemoryDomain {
@@ -90,28 +99,18 @@ impl MemoryDomain for CheriMemoryDomain {
         Ok(Box::new(CheriMemoryDomain {}))
     }
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
-        let mut new_context: Box<CheriContext> = Box::new(CheriContext {
-            context: std::ptr::null_mut(),
-            size: size,
-        });
+        let cheri_context;
         unsafe {
-            new_context.context = cheri_alloc(size);
+            cheri_context = cheri_alloc(size);
         }
-        if new_context.context.is_null() {
+        if cheri_context.is_null() {
             return Err(DandelionError::OutOfMemory);
         }
+        let new_context: Box<CheriContext> = Box::new(CheriContext {
+            context: cheri_context,
+            size: size,
+        });
         return Ok(Context::new(ContextType::Cheri(new_context), size));
-    }
-    fn release_context(&self, context: Context) -> DandelionResult<()> {
-        match context.context {
-            ContextType::Cheri(cheri_context) => {
-                unsafe {
-                    cheri_free(cheri_context.context, cheri_context.size);
-                }
-                Ok(())
-            }
-            _ => Err(DandelionError::ContextMissmatch),
-        }
     }
 }
 

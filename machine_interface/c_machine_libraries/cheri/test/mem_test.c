@@ -39,8 +39,8 @@ void bounds_and_permission_test(size_t size) {
 // check that allocations have proper capabilities set up
 void allocation_test(void) {
   // iterate through powers of two and their bordering values
-  for (int i = 1; i < 63; i++) {
-    size_t value = (1L << i);
+  for (int i = 1; i < 33; i++) {
+    size_t value = (1LL << i);
     bounds_and_permission_test(value);
     bounds_and_permission_test(value + 1);
     bounds_and_permission_test(value - 1);

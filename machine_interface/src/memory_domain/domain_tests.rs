@@ -1,9 +1,6 @@
 use std::vec;
 
-use crate::{
-    memory_domain::{transefer_memory, transer_data_item, ContextTrait, MemoryDomain},
-    DataSet,
-};
+use crate::memory_domain::{transefer_memory, transfer_data_set, ContextTrait, MemoryDomain};
 use dandelion_commons::{DandelionError, DandelionResult};
 // produces binary pattern 0b0101_01010 or 0x55
 const BYTEPATTERN: u8 = 85;
@@ -116,12 +113,9 @@ fn transfer_item<D: MemoryDomain>(
         .write(offset, &vec![BYTEPATTERN; item_size])
         .expect("Writing should succeed");
     if source.content.len() <= source_index {
-        source.content.resize_with(source_index + 1, || DataSet {
-            ident: String::from(""),
-            buffers: vec![],
-        });
+        source.content.resize_with(source_index + 1, || None);
     }
-    source.content[source_index] = crate::DataSet {
+    source.content[source_index] = Some(crate::DataSet {
         ident: String::from(""),
         buffers: vec![crate::DataItem {
             ident: String::from(""),
@@ -129,15 +123,17 @@ fn transfer_item<D: MemoryDomain>(
                 offset: offset,
                 size: item_size,
             },
+            key: 0,
         }],
-    };
-    let transfer_error = transer_data_item(
+    });
+    let set_name = "";
+    let transfer_error = transfer_data_set(
         &mut destination,
         &source,
         destination_index,
         8,
+        &set_name,
         source_index,
-        None,
     );
     assert_eq!(transfer_error, expect_result);
     if expect_result.is_err() {
@@ -145,7 +141,9 @@ fn transfer_item<D: MemoryDomain>(
     }
     // check transfer success
     assert!(destination_index < destination.content.len());
-    let destination_item = &destination.content[destination_index];
+    let destination_item = destination.content[destination_index]
+        .as_ref()
+        .expect("Set should be present");
     assert_eq!("", destination_item.ident);
     assert_eq!(1, destination_item.buffers.len());
     assert_eq!("", destination_item.buffers[0].ident);

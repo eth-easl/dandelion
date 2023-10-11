@@ -1,6 +1,7 @@
-pub mod function_lib;
+pub mod function_driver;
 pub mod memory_domain;
 
+#[cfg(any(feature = "cheri"))]
 mod interface;
 mod util;
 
@@ -43,8 +44,9 @@ pub struct DataSet {
     pub buffers: Vec<DataItem>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DataItem {
     pub ident: String,
     pub data: Position,
+    pub key: u32,
 }

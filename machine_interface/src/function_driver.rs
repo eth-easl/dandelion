@@ -3,13 +3,11 @@ use crate::{
     DataRequirementList,
 };
 use core::pin::Pin;
-use dandelion_commons::DandelionResult;
+use dandelion_commons::{records::Recorder, DandelionResult};
 use std::future::Future;
 
-// list of implementations
-#[cfg(feature = "cheri")]
-pub mod cheri;
-
+pub mod compute_driver;
+pub mod system_driver;
 pub mod util;
 
 #[derive(Clone, Copy)]
@@ -21,8 +19,14 @@ pub struct ElfConfig {
 }
 
 #[derive(Clone, Copy)]
+pub enum SystemFunction {
+    HTTPS,
+}
+
+#[derive(Clone, Copy)]
 pub enum FunctionConfig {
     ElfConfig(ElfConfig),
+    SysConfig(SystemFunction),
 }
 
 pub trait Engine: Send {
@@ -30,7 +34,8 @@ pub trait Engine: Send {
         &mut self,
         config: &FunctionConfig,
         context: Context,
-        output_set_names: Vec<String>,
+        output_set_names: &Vec<String>,
+        recorder: Recorder,
     ) -> Pin<Box<dyn Future<Output = (DandelionResult<()>, Context)> + '_ + Send>>;
     fn abort(&mut self) -> DandelionResult<()>;
 }
