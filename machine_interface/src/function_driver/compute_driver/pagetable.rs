@@ -188,8 +188,20 @@ fn pagetable_run_static(
     // to load pagetable_worker into a safe address range
     // that will not collide with those used by user's function
 
+    // this trick gives the desired path of pagetable_worker for packages within the workspace
+    // TODO: replace with a more general solution (e.g. environment variable)
+    let path = format!(
+        "{}/../target/{}/pagetable_worker",
+        env!("CARGO_MANIFEST_DIR"),
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+    );
+
     // create a new address space (child process) and pass the shared memory
-    let mut worker = Command::new("../target/debug/pagetable_worker")
+    let mut worker = Command::new(path)
         .arg(cpu_slot.to_string())
         .arg(storage_id)
         .arg(serde_json::to_string(protection_requirements).unwrap())
