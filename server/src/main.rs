@@ -20,7 +20,14 @@ use machine_interface::{
     DataItem, DataSet, Position,
 };
 
-#[cfg(not(feature = "cheri"))]
+#[cfg(feature = "pagetable")]
+use machine_interface::{
+    function_driver::{compute_driver::pagetable::PagetableDriver, Driver},
+    memory_domain::{pagetable::PagetableMemoryDomain, Context, ContextTrait, MemoryDomain},
+    DataItem, DataSet, Position,
+};
+
+#[cfg(not(any(feature = "cheri", feature = "pagetable")))]
 use machine_interface::{
     memory_domain::{malloc::MallocMemoryDomain, Context, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
@@ -54,7 +61,11 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
     #[cfg(feature = "cheri")]
     let domain = CheriMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
 
-    #[cfg(not(feature = "cheri"))]
+    #[cfg(feature = "pagetable")]
+    let domain =
+        PagetableMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
+
+    #[cfg(not(any(feature = "cheri", feature = "pagetable")))]
     let domain = MallocMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
 
     let mut input_context = domain
@@ -287,7 +298,41 @@ fn main() -> () {
             vec![String::from("")],
         );
     }
-    #[cfg(not(feature = "cheri"))]
+    #[cfg(feature = "pagetable")]
+    {
+        let mut drivers = BTreeMap::new();
+        domains.insert(
+            context_id,
+            PagetableMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain"),
+        );
+        let driver: Box<dyn Driver> = Box::new(PagetableDriver {});
+        drivers.insert(engine_id, driver);
+        let mut drivers: BTreeMap<_, Box<dyn Driver>> = BTreeMap::new();
+        drivers.insert(0, Box::new(PagetableDriver {}));
+        registry = FunctionRegistry::new(drivers);
+        let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push(format!(
+            "../machine_interface/tests/data/test_elf_pagetable_{}_matmul",
+            std::env::consts::ARCH
+        ));
+        // add for hot function
+        registry.add_local(
+            HOT_ID,
+            engine_id,
+            path.to_str().unwrap(),
+            vec![String::from("")],
+            vec![String::from("")],
+        );
+        // add for cold function
+        registry.add_local(
+            COLD_ID,
+            engine_id,
+            path.to_str().unwrap(),
+            vec![String::from("")],
+            vec![String::from("")],
+        );
+    }
+    #[cfg(not(any(feature = "cheri", feature = "pagetable")))]
     {
         // TODO: Add non-cheri driver once implemented
         let loader_map = BTreeMap::new();
