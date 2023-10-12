@@ -1,4 +1,4 @@
-#[cfg(all(test, any(feature = "cheri")))]
+#[cfg(all(test, any(feature = "cheri", feature = "pagetable")))]
 mod dispatcher_tests {
     use dandelion_commons::{ContextTypeId, EngineTypeId};
     use dispatcher::{
@@ -591,5 +591,17 @@ mod dispatcher_tests {
             memory_domain::cheri::CheriMemoryDomain,
         };
         dispatcherTests!(cheri; CheriMemoryDomain; Vec::new(); CheriDriver {}; vec![1]);
+    }
+
+    #[cfg(feature = "pagetable")]
+    mod pagetable {
+        use machine_interface::{
+            function_driver::compute_driver::pagetable::PagetableDriver,
+            memory_domain::pagetable::PagetableMemoryDomain,
+        };
+        #[cfg(target_arch = "x86_64")]
+        dispatcherTests!(pagetable_x86_64; PagetableMemoryDomain; Vec::new(); PagetableDriver {}; vec![1]);
+        #[cfg(target_arch = "aarch64")]
+        dispatcherTests!(pagetable_aarch64; PagetableMemoryDomain; Vec::new(); PagetableDriver {}; vec![1]);
     }
 }
