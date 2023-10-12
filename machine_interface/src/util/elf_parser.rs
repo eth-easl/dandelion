@@ -1,6 +1,8 @@
-use crate::util::DEFAULT_ALIGNMENT;
 use crate::Position;
 use dandelion_commons::{DandelionError, DandelionResult};
+
+// TODO: replace this with infomation in the ELF header
+pub const DEFAULT_ALIGNMENT: usize = 4096;
 
 macro_rules! parser_code {
     ($name: ident; $in_type: ty; $out_type: ty; $parser: ident; $increment: literal) => {
