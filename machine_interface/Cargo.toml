@@ -6,6 +6,7 @@ edition = "2021"
 [features]
 std = []
 cheri = ["std"]
+pagetable = ["std"]
 hyper_io = ["std", "dep:hyper"]
 
 [build-dependencies]
@@ -33,6 +34,10 @@ hyper = { version = "0.14", optional = true, features = ["http1", "http2", "clie
 # also needs to be disabled for criterion flags to work that are not available for tests
 [lib]
 bench = false
+
+[[bin]]
+name = "pagetable_worker"
+required-features = ["pagetable"]
 
 [[bench]]
 name = "cheri_benchmark"

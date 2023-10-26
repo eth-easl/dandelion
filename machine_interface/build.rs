@@ -31,8 +31,4 @@ fn main() {
         println!("cargo:rustc-cfg=feature=\"cheri\"");
         cmake_libraries();
     }
-    else {
-        println!("cargo:rustc-cfg=feature=\"pagetable\"");
-        // cmake_libraries();
-    }
 }

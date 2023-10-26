@@ -369,7 +369,12 @@ fn main() -> () {
     });
     let server = Server::bind(&addr).serve(make_svc);
 
-    println!("Hello, World");
+    #[cfg(feature = "cheri")]
+    println!("Hello, World (cheri)");
+    #[cfg(feature = "pagetable")]
+    println!("Hello, World (pagetable)");
+    #[cfg(not(any(feature = "cheri", feature = "pagetable")))]
+    println!("Hello, World (native)");
     // Run this server for... forever!
     if let Err(e) = runtime.block_on(server) {
         eprintln!("server error: {}", e);

@@ -11,21 +11,6 @@ mod compute_driver_tests {
     };
     use std::sync::{Arc, Mutex};
 
-    #[cfg(feature = "cheri")]
-    fn test_elf_name(driver_name: &str, test_name: &str) -> String {
-        format!("test_elf_{}_{}", driver_name, test_name)
-    }
-
-    #[cfg(feature = "pagetable")]
-    fn test_elf_name(driver_name: &str, test_name: &str) -> String {
-        format!(
-            "test_elf_{}_{}_{}",
-            driver_name,
-            std::env::consts::ARCH,
-            test_name
-        )
-    }
-
     fn read_file(name: &str) -> Vec<u8> {
         // load elf file
         let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -480,21 +465,21 @@ mod compute_driver_tests {
 
             #[test]
             fn test_engine_minimal() {
-                let name = super::test_elf_name(stringify!($name), "basic");
+                let name = format!("test_elf_{}_basic", stringify!($name));
                 let driver = Box::new($driver);
                 super::engine_minimal::<$domain>(&name, $dom_init, driver, $drv_init);
             }
 
             #[test]
             fn test_engine_matmul_single() {
-                let name = super::test_elf_name(stringify!($name), "matmul");
+                let name = format!("test_elf_{}_matmul", stringify!($name));
                 let driver = Box::new($driver);
                 super::engine_matmul_single::<$domain>(&name, $dom_init, driver, $drv_init);
             }
 
             #[test]
             fn test_engine_matmul_size_sweep() {
-                let name = super::test_elf_name(stringify!($name), "matmul");
+                let name = format!("test_elf_{}_matmul", stringify!($name));
                 let driver = Box::new($driver);
                 super::engine_matmul_size_sweep::<$domain>(&name, $dom_init, driver, $drv_init);
             }
@@ -502,14 +487,14 @@ mod compute_driver_tests {
             #[test]
             #[ignore]
             fn test_engine_stdio() {
-                let name = super::test_elf_name(stringify!($name), "stdio");
+                let name = format!("test_elf_{}_stdio", stringify!($name));
                 let driver = Box::new($driver);
                 super::engine_stdio::<$domain>(&name, $dom_init, driver, $drv_init);
             }
 
             #[test]
             fn test_engine_fileio() {
-                let name = super::test_elf_name(stringify!($name), "fileio");
+                let name = format!("test_elf_{}_fileio", stringify!($name));
                 let driver = Box::new($driver);
                 super::engine_fileio::<$domain>(&name, $dom_init, driver, $drv_init)
             }
@@ -527,6 +512,9 @@ mod compute_driver_tests {
     mod pagetable {
         use crate::function_driver::compute_driver::pagetable::PagetableDriver;
         use crate::memory_domain::pagetable::PagetableMemoryDomain;
-        driverTests!(pagetable; PagetableMemoryDomain; Vec::new(); PagetableDriver {}; vec![1, 2, 3]; vec![4]);
+        #[cfg(target_arch = "x86_64")]
+        driverTests!(pagetable_x86_64; PagetableMemoryDomain; Vec::new(); PagetableDriver {}; vec![1, 2, 3]; vec![4]);
+        #[cfg(target_arch = "aarch64")]
+        driverTests!(pagetable_aarch64; PagetableMemoryDomain; Vec::new(); PagetableDriver {}; vec![1, 2, 3]; vec![4]);
     }
 }

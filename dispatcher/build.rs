@@ -10,7 +10,5 @@ fn main() {
     let is_cheri = processor_string == "aarch64c\n" || processor_string == "unknown\n";
     if is_cheri {
         println!("cargo:rustc-cfg=feature=\"cheri\"");
-    } else {
-        println!("cargo:rustc-cfg=feature=\"pagetable\"");
     }
 }
