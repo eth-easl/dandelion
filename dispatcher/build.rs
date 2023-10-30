@@ -8,7 +8,7 @@ fn main() {
         .expect("Uname should be available");
     let processor_string = std::str::from_utf8(&output.stdout).unwrap();
     let is_cheri = processor_string == "aarch64c\n" || processor_string == "unknown\n";
-    if is_cheri {
+    if is_cheri && std::env::var("CARGO_FEATURE_PAGETABLE").is_err() {
         println!("cargo:rustc-cfg=feature=\"cheri\"");
     }
 }
