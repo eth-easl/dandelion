@@ -1,5 +1,5 @@
 use ariadne::Report;
-use dparser::Span;
+use dparser::{print_errors, Span};
 
 trait ToReport<T> {
     fn rep(self) -> Result<T, Report<'static>>;
@@ -28,13 +28,9 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let program = match dparser::parse(&input)
-        .map_err(|_| "Parse failure".to_string())
-        .rep()
-    {
+    let program = match dparser::parse(&input).map_err(|errs| print_errors(&input, errs)) {
         Ok(program) => program,
-        Err(report) => {
-            report.eprint(ariadne::Source::from(&input)).unwrap();
+        Err(()) => {
             std::process::exit(1);
         }
     };
