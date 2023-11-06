@@ -80,7 +80,7 @@ impl Future for CheriFuture<'_> {
         // erase all assumptions on context internal layout
         context.content.clear();
         // read outputs
-        let result = read_output_structs(&mut context, self.system_data_offset);
+        let result = read_output_structs::<u64, u64>(&mut context, self.system_data_offset);
         self.engine.is_running.store(false, Ordering::Release);
         Poll::Ready((result, context))
     }
@@ -159,7 +159,7 @@ impl Engine for CheriEngine {
             stack_pointer: cheri_context.size - 32,
             recorder: Some(recorder),
         };
-        if let Err(err) = setup_input_structs(
+        if let Err(err) = setup_input_structs::<u64, u64>(
             &mut context,
             elf_config.system_data_offset,
             output_set_names,

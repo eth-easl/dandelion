@@ -37,6 +37,8 @@ pub enum DandelionError {
     TransferInputNoSetAvailable,
     /// tried to transfer to a data item that was already present
     TransferItemAlreadyPresent,
+    /// error converting pointers or integers
+    UsizeTypeConversionError,
     // engine errors
     /// missmatch between the function config the engine expects and the one given
     ConfigMissmatch,
