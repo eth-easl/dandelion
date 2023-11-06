@@ -4,7 +4,9 @@ use crate::{
 };
 use core::pin::Pin;
 use dandelion_commons::{records::Recorder, DandelionResult};
-use std::future::Future;
+use std::{future::Future, rc::Rc};
+
+use libloading::Library;
 
 pub mod compute_driver;
 pub mod system_driver;
@@ -23,10 +25,20 @@ pub enum SystemFunction {
     HTTPS,
 }
 
-#[derive(Clone, Copy)]
+// #[derive(Clone, Copy)]
+pub struct WasmConfig {
+    lib: Rc<Library>,
+    system_data_region_base: usize,
+    system_data_region_end: usize,
+    sdk_heap_base: usize,
+    system_data_struct_offset: usize,
+}
+
+// #[derive(Clone, Copy)]
 pub enum FunctionConfig {
     ElfConfig(ElfConfig),
     SysConfig(SystemFunction),
+    WasmConfig(WasmConfig),
 }
 
 pub trait Engine: Send {

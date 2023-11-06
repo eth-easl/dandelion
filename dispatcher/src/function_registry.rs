@@ -86,9 +86,17 @@ impl FunctionRegistry {
             Some(s) => s,
             None => return Err(DandelionError::DispatcherUnavailableFunction),
         };
-        let function_buffer = load_u8_from_file(path.to_string())?;
-        let tripple = driver.parse_function(function_buffer, domain)?;
-        return Ok(tripple);
+        #[cfg(feature = "wasm")]
+        {
+            // the wasm driver needs the file path for dlopen()
+            return Ok(driver.parse_function(path.into_bytes(), domain)?);
+        }
+        #[cfg(not(feature = "wasm"))]
+        {
+            let function_buffer = load_u8_from_file(path.to_string())?;
+            let tripple = driver.parse_function(function_buffer, domain)?;
+            return Ok(tripple);
+        }
     }
     pub async fn load(
         &self,

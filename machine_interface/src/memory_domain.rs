@@ -1,6 +1,8 @@
 // list of memory domain implementations
 #[cfg(feature = "cheri")]
 pub mod cheri;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 pub mod malloc;
 
 use crate::{DataItem, DataSet, Position};
@@ -18,6 +20,8 @@ pub enum ContextType {
     Malloc(Box<malloc::MallocContext>),
     #[cfg(feature = "cheri")]
     Cheri(Box<cheri::CheriContext>),
+    #[cfg(feature = "wasm")]
+    Wasm(Box<wasm::WasmContext>),
 }
 
 impl ContextTrait for ContextType {
@@ -26,6 +30,8 @@ impl ContextTrait for ContextType {
             ContextType::Malloc(context) => context.write(offset, data),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.write(offset, data),
+            #[cfg(feature = "wasm")]
+            ContextType::Wasm(context) => context.write(offset, data),
         }
     }
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
@@ -33,6 +39,8 @@ impl ContextTrait for ContextType {
             ContextType::Malloc(context) => context.read(offset, read_buffer),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.read(offset, read_buffer),
+            #[cfg(feature = "wasm")]
+            ContextType::Wasm(context) => context.read(offset, read_buffer),
         }
     }
 }
