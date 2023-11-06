@@ -24,11 +24,12 @@ pub fn load_static(
     static_context: &Context,
     requirement_list: &DataRequirementList,
 ) -> DandelionResult<Context> {
-    let mut function_context = domain.acquire_context(requirement_list.size)?;
+    let mut function_context = domain.acquire_context(requirement_list.size, static_context.base_offset)?;
 
     if static_context.content.len() != 1 {
         return Err(DandelionError::ConfigMissmatch);
     }
+    // copy sections to the new context
     let static_set = static_context.content[0]
         .as_ref()
         .ok_or(DandelionError::ConfigMissmatch)?;
@@ -53,9 +54,10 @@ pub fn load_static(
             position.size,
         )?;
         max_end = core::cmp::max(max_end, requirement.offset + requirement.size);
+        function_context.occupy_space(position.offset, max_end)?;
     }
     // round up to next page
-    max_end = ((max_end + 4095) / 4096) * 4096;
-    function_context.occupy_space(0, max_end)?;
+    // max_end = ((max_end + 4095) / 4096) * 4096;
+    // function_context.occupy_space(0, max_end)?;
     return Ok(function_context);
 }

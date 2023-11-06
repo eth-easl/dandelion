@@ -5,10 +5,12 @@ use dandelion_commons::{DandelionError, DandelionResult};
 // produces binary pattern 0b0101_01010 or 0x55
 const BYTEPATTERN: u8 = 85;
 
+// TODO parameterize base offset
+
 fn acquire<D: MemoryDomain>(arg: Vec<u8>, acquisition_size: usize, expect_success: bool) -> () {
     let init_result = D::init(arg);
     let domain = init_result.expect("should have initialized memory domain");
-    let context_result = domain.acquire_context(acquisition_size);
+    let context_result = domain.acquire_context(acquisition_size, 0);
     match (expect_success, context_result) {
         (true, Ok(_)) | (false, Err(DandelionError::OutOfMemory)) => assert!(true),
         (false, Ok(_)) => assert!(
@@ -39,7 +41,7 @@ fn write<D: MemoryDomain>(
 ) {
     let domain = init_domain::<D>(arg);
     let mut context = domain
-        .acquire_context(context_size)
+        .acquire_context(context_size, 0)
         .expect("Single byte context should always be allocatable");
     let write_error = context.write(offset, &vec![BYTEPATTERN; size]);
     match (expect_success, write_error) {
@@ -58,7 +60,7 @@ fn read<D: MemoryDomain>(
 ) {
     let domain = init_domain::<D>(arg);
     let mut context = domain
-        .acquire_context(context_size)
+        .acquire_context(context_size, 0)
         .expect("Context should always be allocatable");
     context
         .write(0, &vec![BYTEPATTERN; context_size])
@@ -76,10 +78,10 @@ fn read<D: MemoryDomain>(
 fn transefer<D: MemoryDomain>(arg: Vec<u8>, size: usize) {
     let domain = init_domain::<D>(arg);
     let mut destination = domain
-        .acquire_context(size)
+        .acquire_context(size, 0)
         .expect("Context should be allocatable");
     let mut source = domain
-        .acquire_context(size)
+        .acquire_context(size, 0)
         .expect("Context should be allocatable");
     source
         .write(0, &vec![BYTEPATTERN; size])
@@ -104,10 +106,10 @@ fn transfer_item<D: MemoryDomain>(
 ) {
     let domain = init_domain::<D>(arg);
     let mut destination = domain
-        .acquire_context(context_size)
+        .acquire_context(context_size, 0)
         .expect("Context should be allocatable");
     let mut source = domain
-        .acquire_context(context_size)
+        .acquire_context(context_size, 0)
         .expect("Context should be allocatable");
     source
         .write(offset, &vec![BYTEPATTERN; item_size])
@@ -217,3 +219,7 @@ domainTests!(malloc; mallocType; Vec::new());
 use super::cheri::CheriMemoryDomain as cheriType;
 #[cfg(feature = "cheri")]
 domainTests!(cheri; cheriType; Vec::new());
+// #[cfg(feature = "wasm")]
+// use super::wasm::WasmMemoryDomain as wasmType;
+// #[cfg(feature = "wasm")]
+// domainTests!(wasm; wasmType; Vec::new());

@@ -98,7 +98,7 @@ impl MemoryDomain for CheriMemoryDomain {
     fn init(_config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>> {
         Ok(Box::new(CheriMemoryDomain {}))
     }
-    fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
+    fn acquire_context(&self, size: usize, base_offset: usize) -> DandelionResult<Context> {
         let cheri_context;
         unsafe {
             cheri_context = cheri_alloc(size);
@@ -110,7 +110,7 @@ impl MemoryDomain for CheriMemoryDomain {
             context: cheri_context,
             size: size,
         });
-        return Ok(Context::new(ContextType::Cheri(new_context), size));
+        return Ok(Context::new(ContextType::Cheri(new_context), size, base_offset));
     }
 }
 

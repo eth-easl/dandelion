@@ -42,28 +42,33 @@ pub struct Context {
     pub context: ContextType,
     pub content: Vec<Option<DataSet>>,
     pub size: usize,
+    pub base_offset: usize,
     occupation: Vec<Position>,
 }
 
+// the base_offset ensures that all positions are in [base_offset, base_offset+size]
+// all offset values handled here are absolute and should always be >=base_offset
+
 impl ContextTrait for Context {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
-        self.context.write(offset, data)
+        self.context.write(offset - self.base_offset, data)
     }
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
-        self.context.read(offset, read_buffer)
+        self.context.read(offset - self.base_offset, read_buffer)
     }
 }
 
 impl Context {
-    pub fn new(con: ContextType, size: usize) -> Self {
+    pub fn new(con: ContextType, size: usize, base_offset: usize) -> Self {
         return Context {
             context: con,
             content: vec![],
-            size: size,
+            size,
+            base_offset,
             occupation: vec![
-                Position { offset: 0, size: 0 },
+                Position { offset: base_offset, size: 0 },
                 Position {
-                    offset: size,
+                    offset: base_offset+size,
                     size: 0,
                 },
             ],
@@ -74,7 +79,9 @@ impl Context {
     /// Assumes offset is larger than or equal to the offset of occupation at index
     fn insert(&mut self, index: usize, offset: usize, size: usize) {
         let mut check_index = index;
-        if (self.occupation[index].offset + self.occupation[index].size) <= offset {
+        
+        // only merge with previous occupation on seamless insert, leave a hole otherwise
+        if (self.occupation[index].offset + self.occupation[index].size) == offset {
             self.occupation[index].size = offset - self.occupation[index].offset + size;
         } else {
             self.occupation.insert(
@@ -98,7 +105,8 @@ impl Context {
     }
     /// Make sure all space between offset and size is marked as occupied, ignoring overlap with previous occupation
     pub fn occupy_space(&mut self, offset: usize, size: usize) -> DandelionResult<()> {
-        if offset + size > self.size {
+        if size == 0 { return Ok(()); }
+        if offset - self.base_offset + size > self.size {
             return Err(DandelionError::InvalidWrite);
         }
         let insertion_index = self
@@ -122,7 +130,7 @@ impl Context {
         // space start holds previous start
         let mut space_size = self.size + 1;
         let mut index = 0;
-        let mut start_address = 0;
+        let mut start_address = self.base_offset;
         for (window_index, occupied) in self.occupation.windows(2).enumerate() {
             let lower_end = occupied[0].offset + occupied[0].size;
             // TODO use next multiple of when stabilized
@@ -149,14 +157,14 @@ impl Context {
     }
     pub fn get_last_item_end(&self) -> usize {
         let last_item = self.occupation[self.occupation.len() - 2];
-        return last_item.offset + last_item.size;
+        return last_item.offset + last_item.size + self.base_offset;
     }
     pub fn clear_metadata(&mut self) -> () {
         self.content = vec![];
         self.occupation = vec![
-            Position { offset: 0, size: 0 },
+            Position { offset: self.base_offset, size: 0 },
             Position {
-                offset: self.size,
+                offset: self.base_offset + self.size,
                 size: 0,
             },
         ];
@@ -168,7 +176,7 @@ pub trait MemoryDomain: Sync + Send {
     fn init(config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>>
     where
         Self: Sized;
-    fn acquire_context(&self, size: usize) -> DandelionResult<Context>;
+    fn acquire_context(&self, size: usize, base_offset: usize) -> DandelionResult<Context>;
 }
 
 // Code to specialize transfers between different domains
