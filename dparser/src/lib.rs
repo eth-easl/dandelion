@@ -22,7 +22,7 @@ pub struct Spanned<T> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum Mark {
+pub enum Mark {
     Gets,
     From,
     ToSlim,
@@ -30,7 +30,7 @@ enum Mark {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum Atom {
+pub enum Atom {
     Ident(String),
     Int(u64),
     Bool(bool),
@@ -39,7 +39,7 @@ enum Atom {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum Token {
+pub enum Token {
     Atom(Atom),
     ListDelim,
 }
@@ -192,8 +192,9 @@ pub type ASharding = Rc<Spanned<Sharding>>;
 
 #[derive(Debug)]
 pub enum Sharding {
-    No,
-    Shard,
+    All,
+    Keyed,
+    Each,
 }
 
 pub type ALoopCond = Rc<Spanned<LoopCond>>;
@@ -291,11 +292,15 @@ fn parser() -> impl Parser<Token, Module, Error = Simple<Token>> {
         .map_with_span(aspanned);
 
     let input_descriptor = {
-        let sharding = symbol("shard").or_not().map(|sharding| match sharding {
-            Some("shard") => Sharding::Shard,
-            Some(_) => unreachable!(),
-            None => Sharding::No,
-        });
+        let sharding = (symbol("all").or(symbol("keyed")).or(symbol("each")))
+            .or_not()
+            .map(|sharding| match sharding {
+                Some("all") => Sharding::All,
+                Some("keyed") => Sharding::Keyed,
+                Some("each") => Sharding::Each,
+                Some(_) => unreachable!(),
+                None => Sharding::All,
+            });
 
         let loop_cond =
             select! {
@@ -428,6 +433,28 @@ fn parser() -> impl Parser<Token, Module, Error = Simple<Token>> {
         .map(|i| Module(i))
 }
 
+#[derive(Debug)]
+pub enum DParserErrors {
+    SExpr(Vec<Simple<char>>),
+    Parse(Vec<Simple<Token>>),
+    // Valid()
+}
+
+pub fn parse(src: &str) -> Result<Module, DParserErrors> {
+    let nodes = match s_parser().then_ignore(end()).parse(src) {
+        Ok(nodes) => nodes,
+        Err(errs) => return Err(DParserErrors::SExpr(errs)),
+    };
+    let eoi = 0..src.chars().count();
+    let token_stream = flatten_tts(eoi, nodes);
+    let module = match parser().then_ignore(end()).parse(token_stream) {
+        Ok(module) => module,
+        Err(errs) => return Err(DParserErrors::Parse(errs)),
+    };
+
+    Ok(module)
+}
+
 #[test]
 fn basic_test() {
     let src = r#"
@@ -436,13 +463,13 @@ fn basic_test() {
     
     (:composition CompileMulti (SourceFiles Libraries) -> (Binaries) (
         (CompileFiles (
-            (:shard Source <- SourceFile)
+            (:keyed Source <- SourceFile)
         ) => (
             (ObjectFiles := Out)
         ))
     
         (LinkObjects (
-            (:shard Objects <- ObjectFiles)
+            (:all Objects <- ObjectFiles)
             (Libraries <- Libraries)
         ) => (
             (Binaries := Binary)
@@ -474,18 +501,72 @@ fn basic_test() {
         ))
     ))
 "#;
-    let nodes = s_parser().then_ignore(end()).parse(src).unwrap();
-    let eoi = 0..src.chars().count();
-    let token_stream = flatten_tts(eoi, nodes);
-    let _module = parser().then_ignore(end()).parse(token_stream).unwrap();
-    dbg!(&_module);
+    let module = parse(src).expect("successful parse");
+    dbg!(&module);
     // ...
 }
 
-pub fn parse(src: &str) -> Result<Module, ()> {
-    let nodes = match s_parser().then_ignore(end()).parse(&*src) {
-        Ok(nodes) => nodes,
-        Err(errs) => {
+#[test]
+fn simple_test() {
+    let src = r#"
+    (:function MakePNGGrayscaleS3 (S3GetResponse) -> (S3PutRequest))
+    
+    (:composition MakePNGGrayscale (S3GetRequest) -> () (
+        (DandelionHTTPGet ( (:keyed Request <- S3GetRequest) ) => ( (ToProcess := Response) ))
+        (MakePNGGrayscale ( (:keyed S3GetResponse <- ToProcess) ) => ( (S3PutRequest := S3PutRequest) ))
+        (DandelionHTTPPut ( (:keyed Request <- S3PutRequest) ) => ( ))
+    ))
+"#;
+    let module = parse(src).expect("successful parse");
+    dbg!(&module);
+}
+
+#[test]
+fn sharding_test() {
+    let src = r#"
+    (:function FunA (A B) -> (C))
+    (:function FunB (A B C) -> (D))
+    (:function FunC (D) -> (E))
+    
+    (:composition Test (InputA InputB) -> (OutputE) (
+        (FunA (
+            (:keyed A <- InputA)
+            (:keyed B <- InputB)
+        ) => (
+            (InterC := C)
+        ))
+    
+        (FunB (
+            (:keyed A <- InputA)
+            (:keyed B <- InputB)
+            (:keyed C <- InputC)
+        ) => (
+            (InterD := D)
+        ))
+        
+        (FunC (
+            (:all D <- InterD)
+        ) => (
+            (OutputE := E)
+        ))
+    ))
+"#;
+    let module = parse(src).expect("successful parse");
+    dbg!(&module);
+    let Module(items) = module;
+    let mut functions: Vec<AFunctionDecl> = Vec::new();
+    let mut compositions: Vec<AComposition> = Vec::new();
+    for i in items.into_iter() {
+        match i {
+            Item::FunctionDecl(d) => functions.push(d),
+            Item::Composition(c) => compositions.push(c),
+        }
+    }
+}
+
+pub fn print_errors(src: &str, errs: DParserErrors) {
+    match errs {
+        DParserErrors::SExpr(errs) => {
             errs.into_iter().for_each(|e| {
                 let msg = format!(
                     "Unexpected {}",
@@ -515,16 +596,8 @@ pub fn parse(src: &str) -> Result<Module, ()> {
                     );
                 report.finish().eprint(Source::from(&src)).unwrap();
             });
-            return Err(());
         }
-    };
-
-    let eoi = 0..src.chars().count();
-    let token_stream = flatten_tts(eoi, nodes);
-
-    let problem = match parser().then_ignore(end()).parse(token_stream) {
-        Ok(problem) => problem,
-        Err(errs) => {
+        DParserErrors::Parse(errs) => {
             errs.into_iter().for_each(|e| {
                 let msg = format!(
                     "Unexpected {}",
@@ -555,8 +628,6 @@ pub fn parse(src: &str) -> Result<Module, ()> {
                     );
                 report.finish().eprint(Source::from(&src)).unwrap();
             });
-            return Err(());
         }
-    };
-    Ok(problem)
+    }
 }
