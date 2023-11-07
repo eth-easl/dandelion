@@ -516,14 +516,5 @@ mod compute_driver_tests {
         use crate::memory_domain::wasm::WasmMemoryDomain;
 
         driverTests!(wasm; wasm; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![1,2,3]; vec![9]);
-
-        #[test]
-        fn custom() {
-            let driver = Box::new(WasmDriver {});
-            let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            path.push("../");   // Dandelion repo root
-            path.push("../dandelionFunctionExamples/wasm-compiler/bin/matmul");
-            super::engine_matmul_single::<WasmMemoryDomain>(path.to_str().unwrap(), Vec::new(), driver, vec![1,2,3]);
-        }
     }
 }
