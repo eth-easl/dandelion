@@ -28,9 +28,8 @@ pub enum SystemFunction {
 // #[derive(Clone, Copy)]
 pub struct WasmConfig {
     lib: Rc<Library>,
-    system_data_region_base: usize,
-    system_data_region_end: usize,
     sdk_heap_base: usize,
+    sdk_heap_size: usize,
     system_data_struct_offset: usize,
 }
 
@@ -65,7 +64,7 @@ pub trait Driver: Send+Sync {
     //  and a layout description for it
     fn parse_function(
         &self,
-        function: Vec<u8>,
+        function_path: String,
         static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<Function>;
 }

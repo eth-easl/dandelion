@@ -39,6 +39,8 @@ pub enum DandelionError {
     TransferItemAlreadyPresent,
     /// error converting pointers or integers
     UsizeTypeConversionError,
+    /// context synchronization failed
+    ContextSyncError,
     // engine errors
     /// missmatch between the function config the engine expects and the one given
     ConfigMissmatch,

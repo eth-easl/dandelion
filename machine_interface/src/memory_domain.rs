@@ -59,10 +59,10 @@ pub struct Context {
 
 impl ContextTrait for Context {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
-        self.context.write(offset - self.base_offset, data)
+        self.context.write(offset, data)
     }
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
-        self.context.read(offset - self.base_offset, read_buffer)
+        self.context.read(offset, read_buffer)
     }
 }
 
@@ -113,7 +113,6 @@ impl Context {
     }
     /// Make sure all space between offset and size is marked as occupied, ignoring overlap with previous occupation
     pub fn occupy_space(&mut self, offset: usize, size: usize) -> DandelionResult<()> {
-        if size == 0 { return Ok(()); }
         if offset - self.base_offset + size > self.size {
             return Err(DandelionError::InvalidWrite);
         }
@@ -165,7 +164,7 @@ impl Context {
     }
     pub fn get_last_item_end(&self) -> usize {
         let last_item = self.occupation[self.occupation.len() - 2];
-        return last_item.offset + last_item.size + self.base_offset;
+        return last_item.offset + last_item.size;
     }
     pub fn clear_metadata(&mut self) -> () {
         self.content = vec![];

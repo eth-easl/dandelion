@@ -7,6 +7,7 @@ edition = "2021"
 std = []
 cheri = ["std"]
 hyper_io = ["std", "dep:hyper"]
+wasm = []
 
 [build-dependencies]
 cmake = "0.1"
