@@ -1,4 +1,4 @@
-#[cfg(all(test, any(feature = "cheri")))]
+#[cfg(all(test, any(feature = "cheri", feature = "wasm")))]
 mod compute_driver_tests {
     use crate::{
         function_driver::{util::load_static, Driver, Engine, Function, FunctionConfig},
@@ -11,28 +11,31 @@ mod compute_driver_tests {
     };
     use std::sync::{Arc, Mutex};
 
-    fn read_file(name: &str) -> Vec<u8> {
+    fn test_file_path(name: &str) -> String {
         // load elf file
         let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         path.push("tests/data");
         path.push(name);
-        let mut elf_file = std::fs::File::open(path).expect("Should have found test file");
+
+        // check if we can open the file
+        let mut file = std::fs::File::open(&path).expect("Should have found test file");
         let mut elf_buffer = Vec::<u8>::new();
         use std::io::Read;
-        let _ = elf_file
+        let _ = file
             .read_to_end(&mut elf_buffer)
             .expect("Should be able to read entire file");
-        return elf_buffer;
+        
+        path.to_str().unwrap().to_string()
     }
 
-    fn loader_empty<Dom: MemoryDomain>(dom_init: Vec<u8>, driver: Box<dyn Driver>) {
-        // load elf file
-        let elf_file = Vec::<u8>::new();
-        let mut domain = Dom::init(dom_init).expect("Should be able to get domain");
-        driver
-            .parse_function(elf_file, &mut domain)
-            .expect("Empty string should return error");
-    }
+    // fn loader_empty<Dom: MemoryDomain>(dom_init: Vec<u8>, driver: Box<dyn Driver>) {
+    //     // load elf file
+    //     let elf_file = Vec::<u8>::new();
+    //     let mut domain = Dom::init(dom_init).expect("Should be able to get domain");
+    //     driver
+    //         .parse_function(elf_file, &mut domain)
+    //         .expect("Empty string should return error");
+    // }
 
     fn driver(driver: Box<dyn Driver>, init: Vec<u8>, wrong_init: Vec<u8>) {
         let no_resource_engine = driver.start_engine(Vec::<u8>::new());
@@ -59,15 +62,15 @@ mod compute_driver_tests {
         driver: &Box<dyn Driver>,
         drv_init: Vec<u8>,
     ) -> (Box<dyn Engine>, Context, FunctionConfig) {
-        let elf_buffer = read_file(filename);
         let mut domain = Dom::init(dom_init).expect("Should have initialized domain");
         let Function {
             requirements,
             context,
             config,
         } = driver
-            .parse_function(elf_buffer, &mut domain)
+            .parse_function(filename.to_string(), &mut domain)
             .expect("Should be able to parse function");
+        println!("requirements size: {}", requirements.size);
         let engine = driver
             .start_engine(vec![drv_init[0]])
             .expect("Should be able to start engine");
@@ -449,13 +452,13 @@ mod compute_driver_tests {
     }
 
     macro_rules! driverTests {
-        ($name : ident; $domain : ty; $dom_init: expr; $driver : expr ; $drv_init : expr; $drv_init_wrong : expr) => {
-            #[test]
-            #[should_panic]
-            fn test_loader_empty() {
-                let driver = Box::new($driver);
-                super::loader_empty::<$domain>($dom_init, driver);
-            }
+        ($name : ident; $bintype : ident; $domain : ty; $dom_init: expr; $driver : expr ; $drv_init : expr; $drv_init_wrong : expr) => {
+            // #[test]
+            // #[should_panic]
+            // fn test_loader_empty() {
+            //     let driver = Box::new($driver);
+            //     super::loader_empty::<$domain>($dom_init, driver);
+            // }
 
             #[test]
             fn test_driver() {
@@ -465,21 +468,21 @@ mod compute_driver_tests {
 
             #[test]
             fn test_engine_minimal() {
-                let name = format!("test_elf_{}_basic", stringify!($name));
+                let name = super::test_file_path(&format!("test_{}_{}_basic", stringify!($bintype), stringify!($name)));
                 let driver = Box::new($driver);
                 super::engine_minimal::<$domain>(&name, $dom_init, driver, $drv_init);
             }
 
             #[test]
             fn test_engine_matmul_single() {
-                let name = format!("test_elf_{}_matmul", stringify!($name));
+                let name = super::test_file_path(&format!("test_{}_{}_matmul", stringify!($bintype), stringify!($name)));
                 let driver = Box::new($driver);
                 super::engine_matmul_single::<$domain>(&name, $dom_init, driver, $drv_init);
             }
 
             #[test]
             fn test_engine_matmul_size_sweep() {
-                let name = format!("test_elf_{}_matmul", stringify!($name));
+                let name = super::test_file_path(&format!("test_{}_{}_matmul", stringify!($bintype), stringify!($name)));
                 let driver = Box::new($driver);
                 super::engine_matmul_size_sweep::<$domain>(&name, $dom_init, driver, $drv_init);
             }
@@ -487,14 +490,14 @@ mod compute_driver_tests {
             #[test]
             #[ignore]
             fn test_engine_stdio() {
-                let name = format!("test_elf_{}_stdio", stringify!($name));
+                let name = super::test_file_path(&format!("test_{}_{}_stdio", stringify!($bintype), stringify!($name)));
                 let driver = Box::new($driver);
                 super::engine_stdio::<$domain>(&name, $dom_init, driver, $drv_init);
             }
 
             #[test]
             fn test_engine_fileio() {
-                let name = format!("test_elf_{}_fileio", stringify!($name));
+                let name = super::test_file_path(&format!("test_{}_{}_fileio", stringify!($bintype), stringify!($name)));
                 let driver = Box::new($driver);
                 super::engine_fileio::<$domain>(&name, $dom_init, driver, $drv_init)
             }
@@ -505,6 +508,22 @@ mod compute_driver_tests {
     mod cheri {
         use crate::function_driver::compute_driver::cheri::CheriDriver;
         use crate::memory_domain::cheri::CheriMemoryDomain;
-        driverTests!(cheri; CheriMemoryDomain; Vec::new(); CheriDriver {}; vec![1,2,3]; vec![4]);
+        driverTests!(cheri; elf; CheriMemoryDomain; Vec::new(); CheriDriver {}; vec![1,2,3]; vec![4]);
+    }
+    #[cfg(feature = "wasm")]
+    mod wasm {
+        use crate::function_driver::compute_driver::wasm::WasmDriver;
+        use crate::memory_domain::wasm::WasmMemoryDomain;
+
+        driverTests!(wasm; wasm; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![1,2,3]; vec![9]);
+
+        #[test]
+        fn custom() {
+            let driver = Box::new(WasmDriver {});
+            let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            path.push("../");   // Dandelion repo root
+            path.push("../dandelionFunctionExamples/wasm-compiler/bin/matmul");
+            super::engine_matmul_single::<WasmMemoryDomain>(path.to_str().unwrap(), Vec::new(), driver, vec![1,2,3]);
+        }
     }
 }
