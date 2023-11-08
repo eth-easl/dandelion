@@ -28,24 +28,24 @@ use std::{
     thread::{spawn, JoinHandle},
 };
 
-struct PagetableCommand {
+struct MmuCommand {
     cancel: bool,
     storage_id: String,
     protection_requirements: Vec<(u32, Position)>,
     entry_point: usize,
     recorder: Option<Recorder>,
 }
-unsafe impl Send for PagetableCommand {}
+unsafe impl Send for MmuCommand {}
 
-pub struct PagetableEngine {
+pub struct MmuEngine {
     is_running: AtomicBool,
-    command_sender: std::sync::mpsc::Sender<PagetableCommand>,
+    command_sender: std::sync::mpsc::Sender<MmuCommand>,
     result_receiver: futures::channel::mpsc::Receiver<DandelionResult<()>>,
     thread_handle: Option<JoinHandle<()>>,
 }
 
-struct PagetableFuture<'a> {
-    engine: &'a mut PagetableEngine,
+struct MmuFuture<'a> {
+    engine: &'a mut MmuEngine,
     context: Option<Context>,
     system_data_offset: usize,
 }
@@ -53,7 +53,7 @@ struct PagetableFuture<'a> {
 // TODO find better way than take unwrap to return context
 // or at least a way to ensure that the future is always initialized with a context,
 // so this can only happen when poll is called after it has already returned the context once
-impl Future for PagetableFuture<'_> {
+impl Future for MmuFuture<'_> {
     type Output = (DandelionResult<()>, Context);
     fn poll(
         mut self: Pin<&mut Self>,
@@ -84,7 +84,7 @@ impl Future for PagetableFuture<'_> {
 
 fn run_thread(
     core_id: u8,
-    command_receiver: std::sync::mpsc::Receiver<PagetableCommand>,
+    command_receiver: std::sync::mpsc::Receiver<MmuCommand>,
     mut result_sender: futures::channel::mpsc::Sender<DandelionResult<()>>,
 ) -> () {
     // set core
@@ -95,7 +95,7 @@ fn run_thread(
         if command.cancel {
             break 'commandloop;
         }
-        let message = pagetable_run_static(
+        let message = mmu_run_static(
             core_id,
             &command.storage_id,
             &command.protection_requirements,
@@ -178,20 +178,20 @@ fn check_syscall(pid: libc::pid_t) -> SyscallType {
     }
 }
 
-fn pagetable_run_static(
+fn mmu_run_static(
     cpu_slot: u8,
     storage_id: &str,
     protection_requirements: &[(u32, Position)],
     entry_point: usize,
 ) -> Result<(), DandelionError> {
     // TODO: modify ELF header
-    // to load pagetable_worker into a safe address range
+    // to load mmu_worker into a safe address range
     // that will not collide with those used by user's function
 
-    // this trick gives the desired path of pagetable_worker for packages within the workspace
+    // this trick gives the desired path of mmu_worker for packages within the workspace
     // TODO: replace with a more general solution (e.g. environment variable)
     let path = format!(
-        "{}/../target/{}/pagetable_worker",
+        "{}/../target/{}/mmu_worker",
         env!("CARGO_MANIFEST_DIR"),
         if cfg!(debug_assertions) {
             "debug"
@@ -257,7 +257,7 @@ fn pagetable_run_static(
     }
 }
 
-impl Engine for PagetableEngine {
+impl Engine for MmuEngine {
     fn run(
         &mut self,
         config: &FunctionConfig,
@@ -275,13 +275,13 @@ impl Engine for PagetableEngine {
             FunctionConfig::ElfConfig(conf) => conf,
             _ => return Box::pin(ready((Err(DandelionError::ConfigMissmatch), context))),
         };
-        let pagetable_context = match &context.context {
-            ContextType::Pagetable(pagetable_context) => pagetable_context,
+        let mmu_context = match &context.context {
+            ContextType::Mmu(mmu_context) => mmu_context,
             _ => return Box::pin(ready((Err(DandelionError::ContextMissmatch), context))),
         };
-        let command = PagetableCommand {
+        let command = MmuCommand {
             cancel: false,
-            storage_id: pagetable_context.storage.id().to_string(),
+            storage_id: mmu_context.storage.id().to_string(),
             protection_requirements: context.protection_requirements.to_vec(),
             entry_point: elf_config.entry_point,
             recorder: Some(recorder),
@@ -297,7 +297,7 @@ impl Engine for PagetableEngine {
             Err(_) => return Box::pin(ready((Err(DandelionError::EngineError), context))),
             Ok(_) => (),
         }
-        let function_future = Box::<PagetableFuture>::pin(PagetableFuture {
+        let function_future = Box::<MmuFuture>::pin(MmuFuture {
             engine: self,
             context: Some(context),
             system_data_offset: elf_config.system_data_offset,
@@ -313,27 +313,27 @@ impl Engine for PagetableEngine {
     }
 }
 
-impl Drop for PagetableEngine {
+impl Drop for MmuEngine {
     fn drop(&mut self) {
         if let Some(handle) = self.thread_handle.take() {
             // drop channel
-            let _res = self.command_sender.send(PagetableCommand {
+            let _res = self.command_sender.send(MmuCommand {
                 cancel: true,
                 storage_id: "".to_string(),
                 protection_requirements: [].to_vec(),
                 entry_point: 0,
                 recorder: None,
             });
-            handle.join().expect("Pagetable thread should not panic");
+            handle.join().expect("Mmu thread should not panic");
         }
     }
 }
 
-pub struct PagetableDriver {}
+pub struct MmuDriver {}
 
 const DEFAULT_SPACE_SIZE: usize = 0x800_0000; // 128MiB
 
-impl Driver for PagetableDriver {
+impl Driver for MmuDriver {
     // // take or release one of the available engines
     fn start_engine(&self, config: Vec<u8>) -> DandelionResult<Box<dyn Engine>> {
         if config.len() != 1 {
@@ -356,7 +356,7 @@ impl Driver for PagetableDriver {
         let (result_sender, result_receiver) = futures::channel::mpsc::channel(0);
         let thread_handle = spawn(move || run_thread(cpu_slot, command_receiver, result_sender));
         let is_running = AtomicBool::new(false);
-        return Ok(Box::new(PagetableEngine {
+        return Ok(Box::new(MmuEngine {
             command_sender,
             result_receiver,
             thread_handle: Some(thread_handle),

@@ -2,8 +2,8 @@
 #[cfg(feature = "cheri")]
 pub mod cheri;
 pub mod malloc;
-#[cfg(feature = "pagetable")]
-pub mod pagetable;
+#[cfg(feature = "mmu")]
+pub mod mmu;
 
 use crate::{DataItem, DataSet, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
@@ -20,8 +20,8 @@ pub enum ContextType {
     Malloc(Box<malloc::MallocContext>),
     #[cfg(feature = "cheri")]
     Cheri(Box<cheri::CheriContext>),
-    #[cfg(feature = "pagetable")]
-    Pagetable(Box<pagetable::PagetableContext>),
+    #[cfg(feature = "mmu")]
+    Mmu(Box<mmu::MmuContext>),
 }
 
 impl ContextTrait for ContextType {
@@ -30,8 +30,8 @@ impl ContextTrait for ContextType {
             ContextType::Malloc(context) => context.write(offset, data),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.write(offset, data),
-            #[cfg(feature = "pagetable")]
-            ContextType::Pagetable(context) => context.write(offset, data),
+            #[cfg(feature = "mmu")]
+            ContextType::Mmu(context) => context.write(offset, data),
         }
     }
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
@@ -39,8 +39,8 @@ impl ContextTrait for ContextType {
             ContextType::Malloc(context) => context.read(offset, read_buffer),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.read(offset, read_buffer),
-            #[cfg(feature = "pagetable")]
-            ContextType::Pagetable(context) => context.read(offset, read_buffer),
+            #[cfg(feature = "mmu")]
+            ContextType::Mmu(context) => context.read(offset, read_buffer),
         }
     }
 }
@@ -51,7 +51,7 @@ pub struct Context {
     pub content: Vec<Option<DataSet>>,
     pub size: usize,
     occupation: Vec<Position>,
-    #[cfg(feature = "pagetable")]
+    #[cfg(feature = "mmu")]
     pub protection_requirements: Vec<(u32, Position)>,
 }
 
@@ -77,7 +77,7 @@ impl Context {
                     size: 0,
                 },
             ],
-            #[cfg(feature = "pagetable")]
+            #[cfg(feature = "mmu")]
             protection_requirements: vec![],
         };
     }
@@ -211,16 +211,14 @@ pub fn transefer_memory(
                 size,
             )
         }
-        #[cfg(feature = "pagetable")]
-        (ContextType::Pagetable(destination_ctxt), ContextType::Pagetable(source_ctxt)) => {
-            pagetable::pagetable_transfer(
-                destination_ctxt,
-                source_ctxt,
-                destination_offset,
-                source_offset,
-                size,
-            )
-        }
+        #[cfg(feature = "mmu")]
+        (ContextType::Mmu(destination_ctxt), ContextType::Mmu(source_ctxt)) => mmu::mmu_transfer(
+            destination_ctxt,
+            source_ctxt,
+            destination_offset,
+            source_offset,
+            size,
+        ),
         // default implementation using reads and writes
         (destination, source) => {
             let mut read_buffer = vec![0; size];

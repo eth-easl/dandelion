@@ -7,14 +7,14 @@ use nix::sys::mman::ProtFlags;
 pub const MMAP_BASE_ADDR: usize = 0x10000;
 
 #[derive(Debug)]
-pub struct PagetableContext {
+pub struct MmuContext {
     pub storage: SharedMem,
 }
 
-impl ContextTrait for PagetableContext {
+impl ContextTrait for MmuContext {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
         if offset < MMAP_BASE_ADDR {
-            // not an issue if this context is not to be used by pagetable_worker
+            // not an issue if this context is not to be used by mmu_worker
             // eprintln!("[WARNING] write to an offset smaller than MMAP_BASE_ADDR");
         }
 
@@ -40,7 +40,7 @@ impl ContextTrait for PagetableContext {
 
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         if offset < MMAP_BASE_ADDR {
-            // not an issue if this context is not to be used by pagetable_worker
+            // not an issue if this context is not to be used by mmu_worker
             // eprintln!("[WARNING] read from an offset smaller than MMAP_BASE_ADDR");
         }
 
@@ -66,11 +66,11 @@ impl ContextTrait for PagetableContext {
 }
 
 #[derive(Debug)]
-pub struct PagetableMemoryDomain {}
+pub struct MmuMemoryDomain {}
 
-impl MemoryDomain for PagetableMemoryDomain {
+impl MemoryDomain for MmuMemoryDomain {
     fn init(_config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>> {
-        Ok(Box::new(PagetableMemoryDomain {}))
+        Ok(Box::new(MmuMemoryDomain {}))
     }
 
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
@@ -81,14 +81,14 @@ impl MemoryDomain for PagetableMemoryDomain {
             Err(_e) => return Err(DandelionError::OutOfMemory),
         };
 
-        let new_context = Box::new(PagetableContext { storage: mem_space });
-        Ok(Context::new(ContextType::Pagetable(new_context), size))
+        let new_context = Box::new(MmuContext { storage: mem_space });
+        Ok(Context::new(ContextType::Mmu(new_context), size))
     }
 }
 
-pub fn pagetable_transfer(
-    destination: &mut PagetableContext,
-    source: &PagetableContext,
+pub fn mmu_transfer(
+    destination: &mut MmuContext,
+    source: &MmuContext,
     destination_offset: usize,
     source_offset: usize,
     size: usize,

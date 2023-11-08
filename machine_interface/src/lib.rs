@@ -1,7 +1,7 @@
 pub mod function_driver;
 pub mod memory_domain;
 
-#[cfg(any(feature = "cheri", feature = "pagetable"))]
+#[cfg(any(feature = "cheri", feature = "mmu"))]
 mod interface;
 pub mod util;
 

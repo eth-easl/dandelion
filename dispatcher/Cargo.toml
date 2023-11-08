@@ -14,4 +14,4 @@ itertools = {version = "0.11", default-features = false, features = ["use_alloc"
 
 [features]
 cheri = ["machine_interface/cheri"]
-pagetable = ["machine_interface/pagetable"]
+mmu = ["machine_interface/mmu"]

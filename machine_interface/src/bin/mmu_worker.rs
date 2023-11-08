@@ -1,6 +1,6 @@
 use core_affinity::CoreId;
 use machine_interface::Position;
-use machine_interface::{memory_domain::pagetable::MMAP_BASE_ADDR, util::shared_mem::SharedMem};
+use machine_interface::{memory_domain::mmu::MMAP_BASE_ADDR, util::shared_mem::SharedMem};
 use nix::sys::{
     mman::{mprotect, ProtFlags},
     ptrace,

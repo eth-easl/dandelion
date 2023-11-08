@@ -1,8 +1,6 @@
 use crate::{
-    function_driver::{
-        compute_driver::pagetable::PagetableDriver, Driver, Function, FunctionConfig,
-    },
-    memory_domain::{pagetable::PagetableMemoryDomain, MemoryDomain},
+    function_driver::{compute_driver::mmu::MmuDriver, Driver, Function, FunctionConfig},
+    memory_domain::{mmu::MmuMemoryDomain, MemoryDomain},
     Position,
 };
 
@@ -22,19 +20,16 @@ fn read_file(name: &str) -> Vec<u8> {
 
 #[test]
 fn test_loader_basic() {
-    let elf_buffer = read_file(&format!(
-        "test_elf_pagetable_{}_basic",
-        std::env::consts::ARCH
-    ));
-    let driver = PagetableDriver {};
-    let mut pagetable_domain =
-        PagetableMemoryDomain::init(Vec::new()).expect("Should be able to get pagetable domain");
+    let elf_buffer = read_file(&format!("test_elf_mmu_{}_basic", std::env::consts::ARCH));
+    let driver = MmuDriver {};
+    let mut mmu_domain =
+        MmuMemoryDomain::init(Vec::new()).expect("Should be able to get mmu domain");
     let Function {
         requirements,
         context,
         config,
     } = driver
-        .parse_function(elf_buffer, &mut pagetable_domain)
+        .parse_function(elf_buffer, &mut mmu_domain)
         .expect("Should correctly parse elf file");
     // check requirement list
     #[cfg(target_arch = "x86_64")]
@@ -129,7 +124,7 @@ fn test_loader_basic() {
     // checks for config
     let function_config = match config {
         FunctionConfig::ElfConfig(conf_struct) => conf_struct,
-        _ => panic!("Non elf FunctionConfig from pagetable loader"),
+        _ => panic!("Non elf FunctionConfig from mmu loader"),
     };
     #[cfg(target_arch = "x86_64")]
     assert_eq!(

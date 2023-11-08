@@ -17,4 +17,4 @@ http = "0.2"
 
 [features]
 cheri = ["machine_interface/cheri"]
-pagetable = ["machine_interface/pagetable"]
+mmu = ["machine_interface/mmu"]

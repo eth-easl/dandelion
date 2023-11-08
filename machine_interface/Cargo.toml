@@ -6,7 +6,7 @@ edition = "2021"
 [features]
 std = []
 cheri = ["std"]
-pagetable = ["std"]
+mmu = ["std"]
 hyper_io = ["std", "dep:hyper"]
 
 [build-dependencies]
@@ -36,13 +36,13 @@ hyper = { version = "0.14", optional = true, features = ["http1", "http2", "clie
 bench = false
 
 [[bin]]
-name = "pagetable_worker"
-required-features = ["pagetable"]
+name = "mmu_worker"
+required-features = ["mmu"]
 
 [[bench]]
 name = "cheri_benchmark"
 harness = false
 
 [[bench]]
-name = "pagetable_benchmark"
+name = "mmu_benchmark"
 harness = false

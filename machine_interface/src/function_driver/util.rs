@@ -54,7 +54,7 @@ pub fn load_static(
         )?;
         max_end = core::cmp::max(max_end, requirement.offset + requirement.size);
     }
-    #[cfg(feature = "pagetable")]
+    #[cfg(feature = "mmu")]
     {
         function_context.protection_requirements = static_context.protection_requirements.clone();
     }

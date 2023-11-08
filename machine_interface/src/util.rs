@@ -1,4 +1,4 @@
-#[cfg(any(feature = "cheri", feature = "pagetable"))]
+#[cfg(any(feature = "cheri", feature = "mmu"))]
 pub mod elf_parser;
-#[cfg(feature = "pagetable")]
+#[cfg(feature = "mmu")]
 pub mod shared_mem;
