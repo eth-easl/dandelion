@@ -81,7 +81,7 @@ pub enum DandelionError {
     // protection errors
     UnauthorizedSyscall,
     SegmentationFault,
-    OtherProctionError
+    OtherProctionError,
 }
 
 pub type DandelionResult<T> = std::result::Result<T, DandelionError>;

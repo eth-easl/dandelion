@@ -50,10 +50,9 @@ pub struct Context {
     pub context: ContextType,
     pub content: Vec<Option<DataSet>>,
     pub size: usize,
-    #[cfg(feature = "pagetable")]
-    // pub protection_requirements: (Vec<Position>, Vec<Position>),
-    pub protection_requirements: Vec<(u32, Position)>,
     occupation: Vec<Position>,
+    #[cfg(feature = "pagetable")]
+    pub protection_requirements: Vec<(u32, Position)>,
 }
 
 impl ContextTrait for Context {
@@ -79,7 +78,7 @@ impl Context {
                 },
             ],
             #[cfg(feature = "pagetable")]
-                protection_requirements: vec![]
+            protection_requirements: vec![],
         };
     }
     /// Mark area between offset and offset + size as occupied

@@ -1,6 +1,5 @@
 use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
 use crate::util::shared_mem::SharedMem;
-use crate::Position;
 use dandelion_commons::{DandelionError, DandelionResult};
 use nix::sys::mman::ProtFlags;
 
@@ -82,20 +81,8 @@ impl MemoryDomain for PagetableMemoryDomain {
             Err(_e) => return Err(DandelionError::OutOfMemory),
         };
 
-        Ok(Context {
-            context: ContextType::Pagetable(Box::new(PagetableContext { storage: mem_space })),
-            content: vec![],
-            size,
-            occupation: vec![
-                Position { offset: 0, size: 0 },
-                Position {
-                    offset: size,
-                    size: 0,
-                },
-            ],
-            #[cfg(feature = "pagetable")]
-            protection_requirements: Vec::new(),
-        })
+        let new_context = Box::new(PagetableContext { storage: mem_space });
+        Ok(Context::new(ContextType::Pagetable(new_context), size))
     }
 }
 

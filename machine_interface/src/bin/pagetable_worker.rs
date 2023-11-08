@@ -1,12 +1,12 @@
 use core_affinity::CoreId;
-use machine_interface::{util::shared_mem::SharedMem, memory_domain::pagetable::MMAP_BASE_ADDR};
+use machine_interface::Position;
+use machine_interface::{memory_domain::pagetable::MMAP_BASE_ADDR, util::shared_mem::SharedMem};
 use nix::sys::{
     mman::{mprotect, ProtFlags},
     ptrace,
 };
-use std::vec::Vec;
-use machine_interface::Position;
 use std::arch::asm;
+use std::vec::Vec;
 
 // these flags are universal for elf files,
 // but for some reason only appear in libc crate on linux
@@ -20,7 +20,7 @@ fn main() {
 
     let core_id: usize = args[1].parse().unwrap();
     let mem_id = &args[2];
-    let entry_point: usize = args[4].parse().unwrap();
+    let entry_point: usize = args[3].parse().unwrap();
     // eprintln!("[worker] started with core {}, shared memory {} and entry point {:#x}", core_id, mem_id, entry_point);
 
     // set cpu affinity
@@ -44,11 +44,10 @@ fn main() {
     };
     // eprintln!("[worker] loaded shared memory");
 
-    // let (read_only, executable): (Vec<Position>, Vec<Position>) = serde_json::from_str(&args[3]).unwrap();
-    let mut executable: Vec<(u32, Position)> = serde_json::from_str(&args[3]).unwrap();
-
+    // set pagetable protection flags
     // TODO: make sure get_free_space return a rw region
-    for position in executable.iter_mut() {
+    let protection_requirements: Vec<(u32, Position)> = serde_json::from_str(&args[4]).unwrap();
+    for position in protection_requirements.iter() {
         unsafe {
             let mut flags: ProtFlags = ProtFlags::PROT_READ;
             if position.0 & PF_X == PF_X {
@@ -57,11 +56,12 @@ fn main() {
             if position.0 & PF_W == PF_W {
                 flags |= ProtFlags::PROT_WRITE
             }
-
-            mprotect(position.1.offset as *mut libc::c_void, 
+            mprotect(
+                position.1.offset as *mut libc::c_void,
                 position.1.size,
-                flags
-            ).expect("mprotect failed!");
+                flags,
+            )
+            .expect("mprotect failed!");
         }
     }
 

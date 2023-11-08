@@ -68,7 +68,7 @@ fn parse_ehdr(file: &Vec<u8>, pf: &ParserFuncs) -> ElfEhdr {
 
 struct ElfPhdr {
     p_type: u32,
-    _p_flags: u32,
+    p_flags: u32,
     p_offset: u64,
     p_vaddr: u64,
     _p_paddr: u64,
@@ -98,13 +98,13 @@ fn parse_phdr_table(
                 _p_paddr: (pf.parse_offset)(file, &mut offset),
                 p_filesz: (pf.parse_offset)(file, &mut offset),
                 p_memsz: (pf.parse_offset)(file, &mut offset),
-                _p_flags: (pf.parse_word)(file, &mut offset),
+                p_flags: (pf.parse_word)(file, &mut offset),
                 _p_align: (pf.parse_offset)(file, &mut offset),
             })
         } else {
             phdr_table.push(ElfPhdr {
                 p_type: (pf.parse_word)(file, &mut offset),
-                _p_flags: (pf.parse_word)(file, &mut offset),
+                p_flags: (pf.parse_word)(file, &mut offset),
                 p_offset: (pf.parse_offset)(file, &mut offset),
                 p_vaddr: (pf.parse_offset)(file, &mut offset),
                 _p_paddr: (pf.parse_offset)(file, &mut offset),
@@ -304,11 +304,8 @@ impl ParsedElf {
         return (requirements, items);
     }
 
-    // pub fn get_memory_protection_layout(&self) -> (Vec<Position>, Vec<Position>) {
     pub fn get_memory_protection_layout(&self) -> Vec<(u32, Position)> {
-        // let mut read_only = Vec::<Position>::new();
-        let mut executable = Vec::<(u32, Position)>::new();
-
+        let mut protection_requirement = Vec::<(u32, Position)>::new();
         for program_header in &self.program_header_table {
             // check if section occupies memory during execution
             if program_header.p_type == 0x1 {
@@ -320,8 +317,8 @@ impl ParsedElf {
                 if end % DEFAULT_ALIGNMENT != 0 {
                     end += DEFAULT_ALIGNMENT - end % DEFAULT_ALIGNMENT;
                 }
-                executable.push((
-                    program_header._p_flags,
+                protection_requirement.push((
+                    program_header.p_flags,
                     Position {
                         offset: start,
                         size: end - start,
@@ -329,7 +326,7 @@ impl ParsedElf {
                 ));
             }
         }
-        executable
+        protection_requirement
     }
 
     pub fn get_symbol_by_name(
