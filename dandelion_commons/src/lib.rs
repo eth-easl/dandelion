@@ -79,8 +79,11 @@ pub enum DandelionError {
     /// error while performing IO on a file
     FileError,
     // protection errors
+    /// the function issued a system call outside the authorized list
     UnauthorizedSyscall,
+    /// the function triggered a memory protection fault
     SegmentationFault,
+    /// other protection errors caused by the function
     OtherProctionError,
 }
 
