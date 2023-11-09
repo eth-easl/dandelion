@@ -1,12 +1,12 @@
 use core_affinity::CoreId;
-use machine_interface::Position;
-use machine_interface::{memory_domain::mmu::MMAP_BASE_ADDR, util::shared_mem::SharedMem};
+use machine_interface::{
+    memory_domain::mmu::MMAP_BASE_ADDR, util::shared_mem::SharedMem, Position,
+};
 use nix::sys::{
     mman::{mprotect, ProtFlags},
     ptrace,
 };
-use std::arch::asm;
-use std::vec::Vec;
+use std::{arch::asm, vec::Vec};
 
 // these flags are universal for elf files,
 // but for some reason only appear in libc crate on linux

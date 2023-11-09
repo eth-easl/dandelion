@@ -1,5 +1,7 @@
-use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
-use crate::util::shared_mem::SharedMem;
+use crate::{
+    memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
+    util::shared_mem::SharedMem,
+};
 use dandelion_commons::{DandelionError, DandelionResult};
 use nix::sys::mman::ProtFlags;
 

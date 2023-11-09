@@ -1,11 +1,13 @@
-use nix::errno::Errno;
-use nix::fcntl::OFlag;
-use nix::sys::mman::{mmap, munmap, shm_open, shm_unlink, MapFlags, ProtFlags};
-use nix::sys::stat::{fstat, Mode};
-use nix::unistd::{close, ftruncate};
-use std::num::NonZeroUsize;
-use std::os::fd::RawFd;
-use std::ptr::null_mut;
+use nix::{
+    errno::Errno,
+    fcntl::OFlag,
+    sys::{
+        mman::{mmap, munmap, shm_open, shm_unlink, MapFlags, ProtFlags},
+        stat::{fstat, Mode},
+    },
+    unistd::{close, ftruncate},
+};
+use std::{num::NonZeroUsize, os::fd::RawFd, ptr::null_mut};
 
 #[derive(Debug)]
 pub struct SharedMem {
