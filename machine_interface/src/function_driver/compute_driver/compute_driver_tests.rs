@@ -515,6 +515,6 @@ mod compute_driver_tests {
         use crate::function_driver::compute_driver::wasm::WasmDriver;
         use crate::memory_domain::wasm::WasmMemoryDomain;
 
-        driverTests!(wasm; wasm; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![1,2,3]; vec![9]);
+        driverTests!(wasm; sysld; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![1,2,3]; vec![9]);
     }
 }
