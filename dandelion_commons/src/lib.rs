@@ -48,6 +48,8 @@ pub enum DandelionError {
     EngineError,
     /// asked driver for engine, but there are no more available
     NoEngineAvailable,
+    /// there was a non recoverable issue when spawning or running the MMU worker
+    MmuWorkerError,
     // system engine errors
     /// The arguments in the context handed to the system function are malformed or otherwise insufissient
     MalformedSystemFuncArg,

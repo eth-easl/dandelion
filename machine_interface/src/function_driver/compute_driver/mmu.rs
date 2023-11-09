@@ -210,17 +210,17 @@ fn mmu_run_static(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .unwrap();
+        .map_err(|_e| DandelionError::MmuWorkerError)?;
     // eprintln!("created a new process");
 
     // intercept worker's syscalls by ptrace
     let pid = Pid::from_raw(worker.id() as i32);
-    let status = wait::waitpid(pid, None).unwrap();
+    let status = wait::waitpid(pid, None).map_err(|_e| DandelionError::MmuWorkerError)?;
     assert_eq!(status, WaitStatus::Stopped(pid, Signal::SIGSTOP));
     ptrace_syscall(pid.as_raw());
 
     loop {
-        let status = wait::waitpid(pid, None).unwrap();
+        let status = wait::waitpid(pid, None).map_err(|_e| DandelionError::MmuWorkerError)?;
         let WaitStatus::Stopped(pid, sig) = status else {
                 panic!("worker should be stopped (status = {:?})", status);
             };
@@ -229,7 +229,7 @@ fn mmu_run_static(
                 SyscallType::Exit => {
                     // eprintln!("detected exit syscall");
                     ptrace_syscall(pid.as_raw());
-                    let _status = worker.wait().unwrap();
+                    let _status = worker.wait().map_err(|_e| DandelionError::MmuWorkerError)?;
                     // eprintln!("worker exited with code {}", status.code().unwrap());
                     return Ok(());
                 }
@@ -240,7 +240,7 @@ fn mmu_run_static(
                 }
                 SyscallType::Unauthorized(syscall_id) => {
                     eprintln!("detected unauthorized syscall with id {}", syscall_id);
-                    worker.kill().unwrap();
+                    worker.kill().map_err(|_e| DandelionError::MmuWorkerError)?;
                     eprintln!("worker killed");
                     return Err(DandelionError::UnauthorizedSyscall);
                 }
