@@ -36,18 +36,14 @@ fn test_loader_basic() {
     let expected_requirements = vec![
         Position {
             offset: 0x200000,
-            size: 0x6bc,
+            size: 0x64c,
         },
         Position {
-            offset: 0x2016c0,
-            size: 0xda8,
+            offset: 0x201650,
+            size: 0xd98,
         },
         Position {
-            offset: 0x203468,
-            size: 0x10,
-        },
-        Position {
-            offset: 0x204478,
+            offset: 0x2033e8,
             size: 0x60,
         },
     ];
@@ -55,18 +51,18 @@ fn test_loader_basic() {
     let expected_requirements = vec![
         Position {
             offset: 0x200000,
-            size: 0x634,
+            size: 0x60c,
         },
         Position {
-            offset: 0x210634,
-            size: 0xf40,
+            offset: 0x21060c,
+            size: 0xedc,
         },
         Position {
-            offset: 0x221578,
+            offset: 0x2214e8,
             size: 0x10,
         },
         Position {
-            offset: 0x231588,
+            offset: 0x2314f8,
             size: 0x60,
         },
     ];
@@ -76,9 +72,9 @@ fn test_loader_basic() {
     );
     // actual sizes in file
     #[cfg(target_arch = "x86_64")]
-    let expected_sizes = vec![0x6bc, 0xda8, 0x10, 0x0];
+    let expected_sizes = vec![0x64c, 0xd98, 0x0];
     #[cfg(target_arch = "aarch64")]
-    let expected_sizes = vec![0x634, 0xf40, 0x10, 0x0];
+    let expected_sizes = vec![0x60c, 0xedc, 0x10, 0x0];
     assert_eq!(
         expected_requirements.len(),
         requirements.static_requirements.len(),
@@ -128,12 +124,12 @@ fn test_loader_basic() {
     };
     #[cfg(target_arch = "x86_64")]
     assert_eq!(
-        0x204490, function_config.system_data_offset,
+        0x203400, function_config.system_data_offset,
         "System data offset missmatch"
     );
     #[cfg(target_arch = "aarch64")]
     assert_eq!(
-        0x2315A0, function_config.system_data_offset,
+        0x231510, function_config.system_data_offset,
         "System data offset missmatch"
     );
     #[cfg(feature = "cheri")]
@@ -144,12 +140,12 @@ fn test_loader_basic() {
     );
     #[cfg(target_arch = "x86_64")]
     assert_eq!(
-        0x2016c0, function_config.entry_point,
+        0x201650, function_config.entry_point,
         "Entry point missmatch"
     );
     #[cfg(target_arch = "aarch64")]
     assert_eq!(
-        0x210634, function_config.entry_point,
+        0x21060c, function_config.entry_point,
         "Entry point missmatch"
     );
 }
