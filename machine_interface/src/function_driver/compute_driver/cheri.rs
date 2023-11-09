@@ -77,8 +77,6 @@ impl Future for CheriFuture<'_> {
             Poll::Ready(Some(Ok(()))) => (),
         }
         let mut context = self.context.take().unwrap();
-        // erase all assumptions on context internal layout
-        context.content.clear();
         // read outputs
         let result = read_output_structs(&mut context, self.system_data_offset);
         self.engine.is_running.store(false, Ordering::Release);
