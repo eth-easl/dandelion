@@ -46,8 +46,8 @@ fn main() {
 
     // set pagetable protection flags
     // TODO: make sure get_free_space return a rw region
-    let protection_requirements: Vec<(u32, Position)> = serde_json::from_str(&args[4]).unwrap();
-    for position in protection_requirements.iter() {
+    let protection_flags: Vec<(u32, Position)> = serde_json::from_str(&args[4]).unwrap();
+    for position in protection_flags.iter() {
         unsafe {
             let mut flags: ProtFlags = ProtFlags::PROT_READ;
             if position.0 & PF_X == PF_X {

@@ -1,22 +1,23 @@
 use crate::{
     memory_domain::{Context, MemoryDomain},
-    DataRequirementList,
+    DataRequirementList, Position,
 };
 use core::pin::Pin;
 use dandelion_commons::{records::Recorder, DandelionResult};
-use std::future::Future;
+use std::{future::Future, sync::Arc};
 
 pub mod compute_driver;
 pub mod system_driver;
 pub mod util;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct ElfConfig {
     // TODO change to positions
     system_data_offset: usize,
     #[cfg(feature = "cheri")]
     return_offset: (usize, usize),
     entry_point: usize,
+    protection_flags: Arc<Vec<(u32, Position)>>,
 }
 
 #[derive(Clone, Copy)]
@@ -24,7 +25,7 @@ pub enum SystemFunction {
     HTTPS,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum FunctionConfig {
     ElfConfig(ElfConfig),
     SysConfig(SystemFunction),
@@ -45,7 +46,7 @@ pub trait Engine: Send {
 // but not sure if that is necessary
 
 // TODO maybe combine driver and loader into one trait or replace them completely with function signatrue types
-pub trait Driver: Send+Sync {
+pub trait Driver: Send + Sync {
     // the resource descirbed by config and make it into an engine of the type
     fn start_engine(&self, config: Vec<u8>) -> DandelionResult<Box<dyn Engine>>;
 

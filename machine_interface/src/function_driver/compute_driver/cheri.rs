@@ -17,7 +17,10 @@ use dandelion_commons::{
 use futures::{task::Poll, Stream};
 use libc::size_t;
 use std::{
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     thread::{spawn, JoinHandle},
 };
 
@@ -252,6 +255,7 @@ impl Driver for CheriDriver {
             system_data_offset: system_data.0,
             return_offset: return_offset,
             entry_point: entry,
+            protection_flags: Arc::new(elf.get_memory_protection_layout()),
         });
         let (static_requirements, source_layout) = elf.get_layout_pair();
         let requirements = DataRequirementList {

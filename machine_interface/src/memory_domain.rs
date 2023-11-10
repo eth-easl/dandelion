@@ -51,8 +51,6 @@ pub struct Context {
     pub content: Vec<Option<DataSet>>,
     pub size: usize,
     occupation: Vec<Position>,
-    #[cfg(feature = "mmu")]
-    pub protection_requirements: Vec<(u32, Position)>,
 }
 
 impl ContextTrait for Context {
@@ -77,8 +75,6 @@ impl Context {
                     size: 0,
                 },
             ],
-            #[cfg(feature = "mmu")]
-            protection_requirements: vec![],
         };
     }
     /// Mark area between offset and offset + size as occupied

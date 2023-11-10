@@ -24,14 +24,17 @@ use nix::{
 };
 use std::{
     process::{Command, Stdio},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     thread::{spawn, JoinHandle},
 };
 
 struct MmuCommand {
     cancel: bool,
     storage_id: String,
-    protection_requirements: Vec<(u32, Position)>,
+    protection_flags: Vec<(u32, Position)>,
     entry_point: usize,
     recorder: Option<Recorder>,
 }
@@ -96,7 +99,7 @@ fn run_thread(
         let message = mmu_run_static(
             core_id,
             &command.storage_id,
-            &command.protection_requirements,
+            &command.protection_flags,
             command.entry_point,
         );
         if let Some(mut recorder) = command.recorder {
@@ -179,7 +182,7 @@ fn check_syscall(pid: libc::pid_t) -> SyscallType {
 fn mmu_run_static(
     cpu_slot: u8,
     storage_id: &str,
-    protection_requirements: &[(u32, Position)],
+    protection_flags: &[(u32, Position)],
     entry_point: usize,
 ) -> Result<(), DandelionError> {
     // TODO: modify ELF header
@@ -203,7 +206,7 @@ fn mmu_run_static(
         .arg(cpu_slot.to_string())
         .arg(storage_id)
         .arg(entry_point.to_string())
-        .arg(serde_json::to_string(protection_requirements).unwrap())
+        .arg(serde_json::to_string(protection_flags).unwrap())
         .env_clear()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -281,7 +284,7 @@ impl Engine for MmuEngine {
         let command = MmuCommand {
             cancel: false,
             storage_id: mmu_context.storage.id().to_string(),
-            protection_requirements: context.protection_requirements.to_vec(),
+            protection_flags: elf_config.protection_flags.to_vec(),
             entry_point: elf_config.entry_point,
             recorder: Some(recorder),
         };
@@ -319,7 +322,7 @@ impl Drop for MmuEngine {
             let _res = self.command_sender.send(MmuCommand {
                 cancel: true,
                 storage_id: "".to_string(),
-                protection_requirements: [].to_vec(),
+                protection_flags: [].to_vec(),
                 entry_point: 0,
                 recorder: None,
             });
@@ -380,6 +383,7 @@ impl Driver for MmuDriver {
             #[cfg(feature = "cheri")]
             return_offset: (0, 0),
             entry_point: entry,
+            protection_flags: Arc::new(elf.get_memory_protection_layout()),
         });
         let (static_requirements, source_layout) = elf.get_layout_pair();
         let requirements = DataRequirementList {
@@ -416,7 +420,6 @@ impl Driver for MmuDriver {
             write_counter += position.size;
         }
         context.content = vec![Some(new_content)];
-        context.protection_requirements = elf.get_memory_protection_layout();
         return Ok(Function {
             requirements,
             context,
