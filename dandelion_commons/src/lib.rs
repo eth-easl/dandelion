@@ -48,6 +48,8 @@ pub enum DandelionError {
     EngineError,
     /// asked driver for engine, but there are no more available
     NoEngineAvailable,
+    /// there was a non recoverable issue when spawning or running the MMU worker
+    MmuWorkerError,
     // system engine errors
     /// The arguments in the context handed to the system function are malformed or otherwise insufissient
     MalformedSystemFuncArg,
@@ -80,6 +82,13 @@ pub enum DandelionError {
     // Gerneral util errors
     /// error while performing IO on a file
     FileError,
+    // protection errors
+    /// the function issued a system call outside the authorized list
+    UnauthorizedSyscall,
+    /// the function triggered a memory protection fault
+    SegmentationFault,
+    /// other protection errors caused by the function
+    OtherProctionError,
 }
 
 pub type DandelionResult<T> = std::result::Result<T, DandelionError>;

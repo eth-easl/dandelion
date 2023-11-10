@@ -35,6 +35,7 @@ extern "C" {
 use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
 use dandelion_commons::{DandelionError, DandelionResult};
 
+#[derive(Debug)]
 pub struct CheriContext {
     pub context: *const cheri_c_context,
     pub size: usize,

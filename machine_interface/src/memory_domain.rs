@@ -2,6 +2,8 @@
 #[cfg(feature = "cheri")]
 pub mod cheri;
 pub mod malloc;
+#[cfg(feature = "mmu")]
+pub mod mmu;
 
 use crate::{DataItem, DataSet, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
@@ -13,10 +15,13 @@ pub trait ContextTrait: Send + Sync {
 
 // https://docs.rs/enum_dispatch/latest/enum_dispatch/index.html
 // check if this would be better way to do it
+#[derive(Debug)]
 pub enum ContextType {
     Malloc(Box<malloc::MallocContext>),
     #[cfg(feature = "cheri")]
     Cheri(Box<cheri::CheriContext>),
+    #[cfg(feature = "mmu")]
+    Mmu(Box<mmu::MmuContext>),
 }
 
 impl ContextTrait for ContextType {
@@ -25,6 +30,8 @@ impl ContextTrait for ContextType {
             ContextType::Malloc(context) => context.write(offset, data),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.write(offset, data),
+            #[cfg(feature = "mmu")]
+            ContextType::Mmu(context) => context.write(offset, data),
         }
     }
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
@@ -32,9 +39,13 @@ impl ContextTrait for ContextType {
             ContextType::Malloc(context) => context.read(offset, read_buffer),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.read(offset, read_buffer),
+            #[cfg(feature = "mmu")]
+            ContextType::Mmu(context) => context.read(offset, read_buffer),
         }
     }
 }
+
+#[derive(Debug)]
 pub struct Context {
     pub context: ContextType,
     pub content: Vec<Option<DataSet>>,
@@ -196,6 +207,14 @@ pub fn transefer_memory(
                 size,
             )
         }
+        #[cfg(feature = "mmu")]
+        (ContextType::Mmu(destination_ctxt), ContextType::Mmu(source_ctxt)) => mmu::mmu_transfer(
+            destination_ctxt,
+            source_ctxt,
+            destination_offset,
+            source_offset,
+            size,
+        ),
         // default implementation using reads and writes
         (destination, source) => {
             let mut read_buffer = vec![0; size];

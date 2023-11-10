@@ -13,7 +13,7 @@ use futures::{
     future::join_all,
     lock::Mutex,
     stream::{FuturesUnordered, StreamExt},
-    Future, FutureExt,
+    Future,
 };
 use itertools::Itertools;
 use machine_interface::{
@@ -34,7 +34,7 @@ pub enum ShardingMode {
 }
 
 /// Struct that has all locations belonging to one set, that is potentially spread over multiple contexts.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CompositionSet {
     /// list of all contexts and the set index in that context that belongs to the composition set
     pub context_list: Vec<Arc<Context>>,
@@ -350,6 +350,8 @@ impl Dispatcher {
         return Ok(composition_sets);
     }
 
+    /// returns a vector of pairs of a index and a composition set
+    /// the index describes which output set the composition belongs to.
     pub fn queue_function<'dispatcher>(
         &'dispatcher self,
         function_id: FunctionId,

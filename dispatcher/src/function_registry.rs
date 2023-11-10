@@ -137,12 +137,12 @@ impl FunctionRegistry {
         }) = lock_guard.get(&(function_id, engine_id))
         {
             let function_context = load_static(domain, &context, &requirements)?;
-            return Ok((function_context, *config));
+            return Ok((function_context, config.clone()));
         }
 
         let function = self.load_local(function_id, engine_id, domain)?;
         let function_context = load_static(domain, &function.context, &function.requirements)?;
-        let function_config = function.config;
+        let function_config = function.config.clone();
         if !non_caching {
             if lock_guard
                 .insert((function_id, engine_id), function)

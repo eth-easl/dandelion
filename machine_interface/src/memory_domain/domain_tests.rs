@@ -217,3 +217,7 @@ domainTests!(malloc; mallocType; Vec::new());
 use super::cheri::CheriMemoryDomain as cheriType;
 #[cfg(feature = "cheri")]
 domainTests!(cheri; cheriType; Vec::new());
+#[cfg(feature = "mmu")]
+use super::mmu::MmuMemoryDomain as mmuType;
+#[cfg(feature = "mmu")]
+domainTests!(mmu; mmuType; Vec::new());
