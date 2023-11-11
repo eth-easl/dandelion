@@ -20,7 +20,14 @@ use machine_interface::{
     DataItem, DataSet, Position,
 };
 
-#[cfg(not(feature = "cheri"))]
+#[cfg(feature = "mmu")]
+use machine_interface::{
+    function_driver::{compute_driver::mmu::MmuDriver, Driver},
+    memory_domain::{mmu::MmuMemoryDomain, Context, ContextTrait, MemoryDomain},
+    DataItem, DataSet, Position,
+};
+
+#[cfg(not(any(feature = "cheri", feature = "mmu")))]
 use machine_interface::{
     memory_domain::{malloc::MallocMemoryDomain, Context, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
@@ -54,7 +61,10 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
     #[cfg(feature = "cheri")]
     let domain = CheriMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
 
-    #[cfg(not(feature = "cheri"))]
+    #[cfg(feature = "mmu")]
+    let domain = MmuMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
+
+    #[cfg(not(any(feature = "cheri", feature = "mmu")))]
     let domain = MallocMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
 
     let mut input_context = domain
@@ -287,7 +297,41 @@ fn main() -> () {
             vec![String::from("")],
         );
     }
-    #[cfg(not(feature = "cheri"))]
+    #[cfg(feature = "mmu")]
+    {
+        let mut drivers = BTreeMap::new();
+        domains.insert(
+            context_id,
+            MmuMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain"),
+        );
+        let driver: Box<dyn Driver> = Box::new(MmuDriver {});
+        drivers.insert(engine_id, driver);
+        let mut drivers: BTreeMap<_, Box<dyn Driver>> = BTreeMap::new();
+        drivers.insert(0, Box::new(MmuDriver {}));
+        registry = FunctionRegistry::new(drivers);
+        let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push(format!(
+            "../machine_interface/tests/data/test_elf_mmu_{}_matmul",
+            std::env::consts::ARCH
+        ));
+        // add for hot function
+        registry.add_local(
+            HOT_ID,
+            engine_id,
+            path.to_str().unwrap(),
+            vec![String::from("")],
+            vec![String::from("")],
+        );
+        // add for cold function
+        registry.add_local(
+            COLD_ID,
+            engine_id,
+            path.to_str().unwrap(),
+            vec![String::from("")],
+            vec![String::from("")],
+        );
+    }
+    #[cfg(not(any(feature = "cheri", feature = "mmu")))]
     {
         // TODO: Add non-cheri driver once implemented
         let loader_map = BTreeMap::new();
@@ -324,7 +368,12 @@ fn main() -> () {
     });
     let server = Server::bind(&addr).serve(make_svc);
 
-    println!("Hello, World");
+    #[cfg(feature = "cheri")]
+    println!("Hello, World (cheri)");
+    #[cfg(feature = "mmu")]
+    println!("Hello, World (mmu)");
+    #[cfg(not(any(feature = "cheri", feature = "mmu")))]
+    println!("Hello, World (native)");
     // Run this server for... forever!
     if let Err(e) = runtime.block_on(server) {
         eprintln!("server error: {}", e);

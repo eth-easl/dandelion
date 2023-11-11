@@ -1,9 +1,11 @@
 pub mod function_driver;
 pub mod memory_domain;
 
-#[cfg(any(feature = "cheri"))]
+#[cfg(any(feature = "cheri", feature = "mmu"))]
 mod interface;
-mod util;
+pub mod util;
+
+use serde::{Deserialize, Serialize};
 
 #[derive(PartialEq, Debug)]
 pub enum OffsetOrAlignment {
@@ -32,7 +34,7 @@ pub struct DataRequirementList {
     pub static_requirements: Vec<Position>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Position {
     pub offset: usize,
     pub size: usize,

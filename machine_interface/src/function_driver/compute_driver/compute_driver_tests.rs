@@ -1,4 +1,4 @@
-#[cfg(all(test, any(feature = "cheri")))]
+#[cfg(all(test, any(feature = "cheri", feature = "mmu")))]
 mod compute_driver_tests {
     use crate::{
         function_driver::{util::load_static, Driver, Engine, Function, FunctionConfig},
@@ -506,5 +506,15 @@ mod compute_driver_tests {
         use crate::function_driver::compute_driver::cheri::CheriDriver;
         use crate::memory_domain::cheri::CheriMemoryDomain;
         driverTests!(cheri; CheriMemoryDomain; Vec::new(); CheriDriver {}; vec![1,2,3]; vec![4]);
+    }
+
+    #[cfg(feature = "mmu")]
+    mod mmu {
+        use crate::function_driver::compute_driver::mmu::MmuDriver;
+        use crate::memory_domain::mmu::MmuMemoryDomain;
+        #[cfg(target_arch = "x86_64")]
+        driverTests!(mmu_x86_64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![1, 2, 3]; vec![255]);
+        #[cfg(target_arch = "aarch64")]
+        driverTests!(mmu_aarch64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![1, 2, 3]; vec![255]);
     }
 }

@@ -1,6 +1,9 @@
 use crate::Position;
 use dandelion_commons::{DandelionError, DandelionResult};
 
+// TODO: replace this with infomation in the ELF header
+pub const DEFAULT_ALIGNMENT: usize = 4096;
+
 macro_rules! parser_code {
     ($name: ident; $in_type: ty; $out_type: ty; $parser: ident; $increment: literal) => {
         fn $name(slice: &Vec<u8>, counter: &mut usize) -> $out_type {
@@ -65,7 +68,7 @@ fn parse_ehdr(file: &Vec<u8>, pf: &ParserFuncs) -> ElfEhdr {
 
 struct ElfPhdr {
     p_type: u32,
-    _p_flags: u32,
+    p_flags: u32,
     p_offset: u64,
     p_vaddr: u64,
     _p_paddr: u64,
@@ -95,13 +98,13 @@ fn parse_phdr_table(
                 _p_paddr: (pf.parse_offset)(file, &mut offset),
                 p_filesz: (pf.parse_offset)(file, &mut offset),
                 p_memsz: (pf.parse_offset)(file, &mut offset),
-                _p_flags: (pf.parse_word)(file, &mut offset),
+                p_flags: (pf.parse_word)(file, &mut offset),
                 _p_align: (pf.parse_offset)(file, &mut offset),
             })
         } else {
             phdr_table.push(ElfPhdr {
                 p_type: (pf.parse_word)(file, &mut offset),
-                _p_flags: (pf.parse_word)(file, &mut offset),
+                p_flags: (pf.parse_word)(file, &mut offset),
                 p_offset: (pf.parse_offset)(file, &mut offset),
                 p_vaddr: (pf.parse_offset)(file, &mut offset),
                 _p_paddr: (pf.parse_offset)(file, &mut offset),
@@ -280,25 +283,50 @@ impl ParsedElf {
             symbol_table: sym_table,
         });
     }
-    pub fn get_layout_pair(self) -> (Vec<Position>, Vec<Position>) {
+    pub fn get_layout_pair(&self) -> (Vec<Position>, Vec<Position>) {
         let mut items = Vec::<Position>::new();
         let mut requirements = Vec::<Position>::new();
         // go through sections and find the ones that need to be loaded
-        for programm_header in self.program_header_table {
+        for program_header in &self.program_header_table {
             // check if section occupies memory during execution
-            if programm_header.p_type == 0x1 {
+            if program_header.p_type == 0x1 {
                 items.push(Position {
-                    offset: programm_header.p_offset as usize,
-                    size: programm_header.p_filesz as usize,
+                    offset: program_header.p_offset as usize,
+                    size: program_header.p_filesz as usize,
                 });
                 requirements.push(Position {
-                    offset: programm_header.p_vaddr as usize,
-                    size: programm_header.p_memsz as usize,
+                    offset: program_header.p_vaddr as usize,
+                    size: program_header.p_memsz as usize,
                 });
             }
         }
 
         return (requirements, items);
+    }
+
+    pub fn get_memory_protection_layout(&self) -> Vec<(u32, Position)> {
+        let mut protection_requirement = Vec::<(u32, Position)>::new();
+        for program_header in &self.program_header_table {
+            // check if section occupies memory during execution
+            if program_header.p_type == 0x1 {
+                let mut start = program_header.p_vaddr as usize;
+                let mut end = start + program_header.p_memsz as usize;
+                if start % DEFAULT_ALIGNMENT != 0 {
+                    start -= start % DEFAULT_ALIGNMENT;
+                }
+                if end % DEFAULT_ALIGNMENT != 0 {
+                    end += DEFAULT_ALIGNMENT - end % DEFAULT_ALIGNMENT;
+                }
+                protection_requirement.push((
+                    program_header.p_flags,
+                    Position {
+                        offset: start,
+                        size: end - start,
+                    },
+                ));
+            }
+        }
+        protection_requirement
     }
 
     pub fn get_symbol_by_name(
