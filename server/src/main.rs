@@ -83,13 +83,16 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
             set_index: 0,
         },
     )];
-
+    let outputs = vec![Some(0)];
     let result = dispatcher
-        .queue_function(is_cold as u64, inputs, is_cold)
+        .queue_function(is_cold as u64, inputs, outputs, is_cold)
         .await;
 
     let result_context = match result {
-        Ok(context) => context,
+        Ok(mut compositon_sets) => {
+            assert_eq!(1, compositon_sets.len());
+            compositon_sets.remove(0).1
+        }
         Err(err) => panic!("Failed to get context with: {:?}", err),
     };
 
@@ -130,8 +133,10 @@ fn add_matmul_inputs(context: &mut Context, _rows: usize, _cols: usize, matrix: 
 }
 
 // Given a result context, return the last element of the resulting matrix
-fn get_checksum(context: Context) -> i64 {
+fn get_checksum(composition_set: CompositionSet) -> i64 {
     // Determine offset of last matrix element
+    assert_eq!(1, composition_set.context_list.len());
+    let context = &composition_set.context_list[0];
     let output_dataset = context.content[0].as_ref().expect("Should contain matrix");
     let output_item = output_dataset
         .buffers

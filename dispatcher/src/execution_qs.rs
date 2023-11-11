@@ -13,6 +13,10 @@ pub struct EngineQueue {
     )>,
 }
 
+// TODO:fix it for cases where single run can be cancelled:
+// - when yielding make sure the one notified is stil uncacnelled
+// - make sure engine is yielded when task is cancelled
+// one option is to use look further into sinks for the engines https://docs.rs/futures/latest/futures/sink/index.html
 impl EngineQueue {
     pub async fn perform_single_run(
         &self,

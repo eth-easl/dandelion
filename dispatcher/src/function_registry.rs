@@ -8,12 +8,28 @@ use machine_interface::{
     memory_domain::{Context, MemoryDomain},
 };
 use std::collections::{BTreeMap, BTreeSet};
+
+use crate::composition::Composition;
+
+#[derive(Clone, Debug)]
+pub enum FunctionType {
+    Function(EngineTypeId),
+    Composition(Composition, BTreeSet<usize>),
+}
+
+#[derive(Clone, Debug)]
+pub struct Alternative {
+    pub function_type: FunctionType,
+    pub in_memory: bool, // can place more information the scheduler would need here later
+}
+
 pub struct FunctionRegistry {
     engine_map: BTreeMap<FunctionId, BTreeSet<EngineTypeId>>,
     pub(crate) drivers: BTreeMap<EngineTypeId, Box<dyn Driver>>,
     // TODO replace with futures compatible RW lock if it becomes a bottleneck
-    registry: Mutex<BTreeMap<(FunctionId, EngineTypeId), Function>>,
-    local_available: BTreeMap<(FunctionId, EngineTypeId), String>,
+    options: Mutex<BTreeMap<FunctionId, Vec<Alternative>>>,
+    in_memory: Mutex<BTreeMap<(FunctionId, EngineTypeId), Function>>,
+    on_disk: BTreeMap<(FunctionId, EngineTypeId), String>,
     set_names: BTreeMap<FunctionId, (Vec<String>, Vec<String>)>,
 }
 
@@ -22,30 +38,31 @@ impl FunctionRegistry {
         return FunctionRegistry {
             engine_map: BTreeMap::new(),
             drivers,
-            registry: Mutex::new(BTreeMap::new()),
-            local_available: BTreeMap::new(),
+            options: Mutex::new(BTreeMap::new()),
+            in_memory: Mutex::new(BTreeMap::new()),
+            on_disk: BTreeMap::new(),
             set_names: BTreeMap::new(),
         };
     }
-    pub async fn get_options(
+    pub async fn get_options(&self, function_id: FunctionId) -> DandelionResult<Vec<Alternative>> {
+        // get the ones that are already loaded
+        let lock_guard = self.options.lock().await;
+        let alternatives = lock_guard.get(&function_id);
+        return alternatives
+            .and_then(|alt| Some(alt.to_vec()))
+            .ok_or(DandelionError::DispatcherUnavailableFunction);
+    }
+
+    pub fn get_set_names(
         &self,
         function_id: FunctionId,
-    ) -> DandelionResult<(BTreeSet<EngineTypeId>, &BTreeSet<EngineTypeId>)> {
-        // get the ones that are already loaded
-        let lock_guard = self.registry.lock().await;
-        let loaded = lock_guard.keys().filter_map(|(function, engine)| {
-            if *function == function_id {
-                Some(*engine)
-            } else {
-                None
-            }
-        });
-        let local_ret_set = match self.engine_map.get(&function_id) {
-            Some(set) => set,
-            None => return Err(DandelionError::DispatcherUnavailableFunction),
-        };
-        return Ok((loaded.collect(), local_ret_set));
+    ) -> DandelionResult<&(Vec<String>, Vec<String>)> {
+        return self
+            .set_names
+            .get(&function_id)
+            .ok_or(DandelionError::DispatcherUnavailableFunction);
     }
+
     pub fn add_local(
         &mut self,
         function_id: FunctionId,
@@ -54,7 +71,7 @@ impl FunctionRegistry {
         input_sets: Vec<String>,
         output_sets: Vec<String>,
     ) {
-        self.local_available
+        self.on_disk
             .insert((function_id, engine_id), path.to_string());
         self.engine_map
             .entry(function_id)
@@ -68,6 +85,19 @@ impl FunctionRegistry {
             });
         self.set_names
             .insert(function_id, (input_sets, output_sets));
+        self.options
+            .get_mut()
+            .entry(function_id)
+            .and_modify(|current_alts| {
+                current_alts.push(Alternative {
+                    function_type: FunctionType::Function(engine_id),
+                    in_memory: false,
+                })
+            })
+            .or_insert(vec![Alternative {
+                function_type: FunctionType::Function(engine_id),
+                in_memory: false,
+            }]);
     }
     fn load_local(
         &self,
@@ -82,7 +112,7 @@ impl FunctionRegistry {
         };
         // get function code
         // TODO replace by queueing of pre added composition to fetch code by id
-        let path = match self.local_available.get(&(function_id, engine_id)) {
+        let path = match self.on_disk.get(&(function_id, engine_id)) {
             Some(s) => s,
             None => return Err(DandelionError::DispatcherUnavailableFunction),
         };
@@ -90,20 +120,16 @@ impl FunctionRegistry {
         let tripple = driver.parse_function(function_buffer, domain)?;
         return Ok(tripple);
     }
+
     pub async fn load(
         &self,
         function_id: FunctionId,
         engine_id: EngineTypeId,
         domain: &Box<dyn MemoryDomain>,
         non_caching: bool,
-    ) -> DandelionResult<(Context, FunctionConfig, &Vec<String>, &Vec<String>)> {
-        // get input and output set names
-        let (in_set_names, out_set_names) = self
-            .set_names
-            .get(&function_id)
-            .ok_or(DandelionError::DispatcherUnavailableFunction)?;
+    ) -> DandelionResult<(Context, FunctionConfig)> {
         // check if function for the engine is in registry already
-        let mut lock_guard = self.registry.lock().await;
+        let mut lock_guard = self.in_memory.lock().await;
         if let Some(Function {
             requirements,
             context,
@@ -111,7 +137,7 @@ impl FunctionRegistry {
         }) = lock_guard.get(&(function_id, engine_id))
         {
             let function_context = load_static(domain, &context, &requirements)?;
-            return Ok((function_context, config.clone(), in_set_names, out_set_names));
+            return Ok((function_context, config.clone()));
         }
 
         let function = self.load_local(function_id, engine_id, domain)?;
@@ -125,11 +151,6 @@ impl FunctionRegistry {
                 panic!("Function not in registry even after Ok from loading");
             };
         }
-        return Ok((
-            function_context,
-            function_config,
-            in_set_names,
-            out_set_names,
-        ));
+        return Ok((function_context, function_config));
     }
 }
