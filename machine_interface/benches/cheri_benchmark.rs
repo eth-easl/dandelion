@@ -4,7 +4,7 @@ mod cheri_bench {
     use dandelion_commons::records::{Archive, RecordPoint, Recorder};
     use machine_interface::{
         function_driver::{
-            compute_driver::cheri::CheriDriver, util::load_static, Driver, Function,
+            compute_driver::cheri::CheriDriver, load_utils::load_static, Driver, Function,
         },
         memory_domain::{cheri::CheriMemoryDomain, MemoryDomain},
         DataItem, DataSet, Position,

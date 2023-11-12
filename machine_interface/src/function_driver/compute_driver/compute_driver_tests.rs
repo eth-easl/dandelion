@@ -1,7 +1,7 @@
 #[cfg(all(test, any(feature = "cheri", feature = "mmu")))]
 mod compute_driver_tests {
     use crate::{
-        function_driver::{util::load_static, Driver, Engine, Function, FunctionConfig},
+        function_driver::{Driver, Engine, FunctionConfig},
         memory_domain::{Context, ContextTrait, MemoryDomain},
         DataItem, DataSet, Position,
     };
@@ -61,19 +61,16 @@ mod compute_driver_tests {
     ) -> (Box<dyn Engine>, Context, FunctionConfig) {
         let elf_buffer = read_file(filename);
         let mut domain = Dom::init(dom_init).expect("Should have initialized domain");
-        let Function {
-            requirements,
-            context,
-            config,
-        } = driver
+        let function = driver
             .parse_function(elf_buffer, &mut domain)
             .expect("Should be able to parse function");
         let engine = driver
             .start_engine(vec![drv_init[0]])
             .expect("Should be able to start engine");
-        let function_context = load_static(&mut domain, &context, &requirements)
+        let function_context = function
+            .load(&mut domain)
             .expect("Should be able to load function");
-        return (engine, function_context, config);
+        return (engine, function_context, function.config);
     }
 
     fn engine_minimal<Dom: MemoryDomain>(
