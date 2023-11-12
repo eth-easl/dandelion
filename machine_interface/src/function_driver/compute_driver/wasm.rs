@@ -21,12 +21,14 @@ use std::{
 };
 use libloading::{Library, Symbol};
 
-type WasmEntryPoint = fn(&mut[u8], &mut DandelionSystemData) -> Option<i32>;
+type WasmEntryPoint = fn(&mut[u8], &mut DandelionSystemData, Option<&mut [u8]>) -> Option<i32>;
 
 struct WasmCommand {
     lib: Rc<Library>,
+    wasm_mem_size: usize,
     context: Arc<Mutex<Option<Context>>>,
     recorder: Option<Recorder>,
+    wasm_mem_on_heap: bool,
 }
 
 unsafe impl Send for WasmCommand {}
@@ -44,7 +46,7 @@ fn run_thread(
     };
 
     let msg = match command_receiver.recv() {
-        Ok( WasmCommand { lib, context, recorder } ) => {
+        Ok( WasmCommand { lib, wasm_mem_size, context, recorder, wasm_mem_on_heap } ) => {
             match unsafe { lib.get::<WasmEntryPoint>(b"run") } {
                 Ok(entry_point) => {
                     // TODO handle errors
@@ -60,8 +62,15 @@ fn run_thread(
                     let sdk_heap: &mut [u8] = wasm_context.data.as_mut_slice();
                     let sdk_sysdata: &mut DandelionSystemData = &mut wasm_context.sdk_sysdata;
 
+                    let mut wasm_mem_buf = if wasm_mem_on_heap {
+                        Some(vec![0; wasm_mem_size])
+                    } else {
+                        None
+                    };
+                    let wasm_mem_slice = wasm_mem_buf.as_mut().map(|v| v.as_mut_slice());
+
                     // call function
-                    let ret = entry_point(sdk_heap, sdk_sysdata);
+                    let ret = entry_point(sdk_heap, sdk_sysdata, wasm_mem_slice);
                     
                     // put context back
                     *guard = Some(ctx);
@@ -193,7 +202,9 @@ impl Engine for WasmEngine {
         let cmd = WasmCommand { 
             context: context_.clone(),
             lib: wasm_config.lib.clone(),
+            wasm_mem_size: wasm_config.wasm_mem_size,
             recorder: Some(recorder),
+            wasm_mem_on_heap: true,
         };
 
         // TODO give back context if send fails (moved it into the Arc)
@@ -253,7 +264,10 @@ impl Driver for WasmDriver {
         static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<Function> {
 
-        let lib = unsafe { Library::new(function_path).map_err(|_| DandelionError::MalformedConfig) }?;
+        let lib = unsafe { Library::new(function_path).map_err(|e| {
+            println!("error: {}", e);
+            DandelionError::MalformedConfig
+        }) }?;
 
         macro_rules! call {
             ($fname:expr, $type:ty) => {
@@ -267,6 +281,7 @@ impl Driver for WasmDriver {
         let sd_struct_offset =  call!("get_wasm_sdk_sysdata_offset",  fn() -> usize);
         let sdk_heap_base =     call!("get_sdk_heap_base",            fn() -> usize);
         let sdk_heap_size =     call!("get_sdk_heap_size",            fn() -> usize);
+        let wasm_mem_size =     call!("get_wasm_mem_size",            fn() -> usize);
 
         // the sdk needs a heap base pointer for `dandelion_alloc()`
         // we define the sdk's heap to be the end of the wasm heap
@@ -285,6 +300,7 @@ impl Driver for WasmDriver {
         Ok(Function {
             config: FunctionConfig::WasmConfig(WasmConfig {
                 lib: Rc::new(lib),
+                wasm_mem_size,
                 sdk_heap_base,
                 sdk_heap_size,
                 system_data_struct_offset: sd_struct_offset,

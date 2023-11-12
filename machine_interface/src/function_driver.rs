@@ -28,6 +28,7 @@ pub enum SystemFunction {
 // #[derive(Clone, Copy)]
 pub struct WasmConfig {
     lib: Rc<Library>,
+    wasm_mem_size: usize,
     sdk_heap_base: usize,
     sdk_heap_size: usize,
     system_data_struct_offset: usize,
