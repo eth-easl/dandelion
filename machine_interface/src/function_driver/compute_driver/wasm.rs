@@ -17,14 +17,13 @@ use core::{
 use std::{
     sync::{atomic::{AtomicBool, Ordering}, Mutex, Arc},
     thread::{spawn, JoinHandle},
-    rc::Rc,
 };
 use libloading::{Library, Symbol};
 
 type WasmEntryPoint = fn(&mut[u8], &mut DandelionSystemData, Option<&mut [u8]>) -> Option<i32>;
 
 struct WasmCommand {
-    lib: Rc<Library>,
+    lib: Arc<Library>,
     wasm_mem_size: usize,
     context: Arc<Mutex<Option<Context>>>,
     recorder: Option<Recorder>,
@@ -299,7 +298,7 @@ impl Driver for WasmDriver {
         )];
         Ok(Function {
             config: FunctionConfig::WasmConfig(WasmConfig {
-                lib: Rc::new(lib),
+                lib: Arc::new(lib),
                 wasm_mem_size,
                 sdk_heap_base,
                 sdk_heap_size,

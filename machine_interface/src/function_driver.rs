@@ -4,7 +4,7 @@ use crate::{
 };
 use core::pin::Pin;
 use dandelion_commons::{records::Recorder, DandelionResult};
-use std::{future::Future, rc::Rc};
+use std::{future::Future, sync::Arc};
 
 use libloading::Library;
 
@@ -12,7 +12,7 @@ pub mod compute_driver;
 pub mod system_driver;
 pub mod util;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct ElfConfig {
     // TODO change to positions
     system_data_offset: usize,
@@ -25,16 +25,16 @@ pub enum SystemFunction {
     HTTPS,
 }
 
-// #[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct WasmConfig {
-    lib: Rc<Library>,
+    lib: Arc<Library>,
     wasm_mem_size: usize,
     sdk_heap_base: usize,
     sdk_heap_size: usize,
     system_data_struct_offset: usize,
 }
 
-// #[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum FunctionConfig {
     ElfConfig(ElfConfig),
     SysConfig(SystemFunction),
