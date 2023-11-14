@@ -1,5 +1,7 @@
 use crate::{
-    function_driver::{Driver, ElfConfig, Engine, Function, FunctionConfig},
+    function_driver::{
+        load_utils::load_u8_from_file, Driver, ElfConfig, Engine, Function, FunctionConfig,
+    },
     interface::{read_output_structs, setup_input_structs},
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
@@ -371,9 +373,10 @@ impl Driver for MmuDriver {
     //  and a layout description for it
     fn parse_function(
         &self,
-        function: Vec<u8>,
+        function_path: String,
         static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<Function> {
+        let function = load_u8_from_file(function_path)?;
         let elf = elf_parser::ParsedElf::new(&function)?;
         let system_data = elf.get_symbol_by_name(&function, "__dandelion_system_data")?;
         //let return_offset = elf.get_symbol_by_name(&function, "__dandelion_return_address")?;

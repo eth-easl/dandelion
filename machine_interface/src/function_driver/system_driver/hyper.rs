@@ -309,10 +309,10 @@ impl Driver for HyperDriver {
 
     fn parse_function(
         &self,
-        function: Vec<u8>,
+        function_path: String,
         static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
     ) -> DandelionResult<Function> {
-        if function.len() != 0 {
+        if function_path.len() != 0 {
             return Err(DandelionError::CalledSystemFuncParser);
         }
         return Ok(Function {

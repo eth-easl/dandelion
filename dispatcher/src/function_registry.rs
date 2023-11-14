@@ -2,7 +2,6 @@ use dandelion_commons::{DandelionError, DandelionResult, EngineTypeId, FunctionI
 use futures::lock::Mutex;
 use machine_interface::{
     function_driver::{
-        load_utils::load_u8_from_file,
         system_driver::{get_system_function_input_sets, get_system_function_output_sets},
         Driver, Function, FunctionConfig,
     },
@@ -14,7 +13,10 @@ use crate::composition::Composition;
 
 #[derive(Clone, Debug)]
 pub enum FunctionType {
+    /// Function available on an engine holding the engine ID
     Function(EngineTypeId),
+    /// Function available as composition, holding the composition graph
+    /// and the set with the inidecs of the sets in the composition that are output sets
     Composition(Composition, BTreeSet<usize>),
 }
 
@@ -82,7 +84,7 @@ impl FunctionRegistry {
         // domain for the static context, expected to not be used
         let malloc_domain = Box::new(MallocMemoryDomain {});
         let function_config =
-            driver.parse_function(vec![], &(malloc_domain as Box<dyn MemoryDomain>))?;
+            driver.parse_function(String::new(), &(malloc_domain as Box<dyn MemoryDomain>))?;
         let system_function = match function_config.config {
             FunctionConfig::SysConfig(sys) => sys,
             _ => return Err(DandelionError::DispatcherConfigError),
@@ -176,8 +178,7 @@ impl FunctionRegistry {
             Some(s) => s,
             None => return Err(DandelionError::DispatcherUnavailableFunction),
         };
-        let function_buffer = load_u8_from_file(path.to_string())?;
-        let tripple = driver.parse_function(function_buffer, domain)?;
+        let tripple = driver.parse_function(path.to_string(), domain)?;
         return Ok(tripple);
     }
 

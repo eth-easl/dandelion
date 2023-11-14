@@ -11,26 +11,12 @@ mod compute_driver_tests {
     };
     use std::sync::{Arc, Mutex};
 
-    fn read_file(name: &str) -> Vec<u8> {
-        // load elf file
-        let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        path.push("tests/data");
-        path.push(name);
-        let mut elf_file = std::fs::File::open(path).expect("Should have found test file");
-        let mut elf_buffer = Vec::<u8>::new();
-        use std::io::Read;
-        let _ = elf_file
-            .read_to_end(&mut elf_buffer)
-            .expect("Should be able to read entire file");
-        return elf_buffer;
-    }
-
     fn loader_empty<Dom: MemoryDomain>(dom_init: Vec<u8>, driver: Box<dyn Driver>) {
         // load elf file
-        let elf_file = Vec::<u8>::new();
+        let elf_path = String::new();
         let mut domain = Dom::init(dom_init).expect("Should be able to get domain");
         driver
-            .parse_function(elf_file, &mut domain)
+            .parse_function(elf_path, &mut domain)
             .expect("Empty string should return error");
     }
 
@@ -59,10 +45,9 @@ mod compute_driver_tests {
         driver: &Box<dyn Driver>,
         drv_init: Vec<u8>,
     ) -> (Box<dyn Engine>, Context, FunctionConfig) {
-        let elf_buffer = read_file(filename);
         let mut domain = Dom::init(dom_init).expect("Should have initialized domain");
         let function = driver
-            .parse_function(elf_buffer, &mut domain)
+            .parse_function(filename.to_string(), &mut domain)
             .expect("Should be able to parse function");
         let engine = driver
             .start_engine(vec![drv_init[0]])
@@ -462,21 +447,33 @@ mod compute_driver_tests {
 
             #[test]
             fn test_engine_minimal() {
-                let name = format!("test_elf_{}_basic", stringify!($name));
+                let name = format!(
+                    "{}/tests/data/test_elf_{}_basic",
+                    env!("CARGO_MANIFEST_DIR"),
+                    stringify!($name)
+                );
                 let driver = Box::new($driver);
                 super::engine_minimal::<$domain>(&name, $dom_init, driver, $drv_init);
             }
 
             #[test]
             fn test_engine_matmul_single() {
-                let name = format!("test_elf_{}_matmul", stringify!($name));
+                let name = format!(
+                    "{}/tests/data/test_elf_{}_matmul",
+                    env!("CARGO_MANIFEST_DIR"),
+                    stringify!($name)
+                );
                 let driver = Box::new($driver);
                 super::engine_matmul_single::<$domain>(&name, $dom_init, driver, $drv_init);
             }
 
             #[test]
             fn test_engine_matmul_size_sweep() {
-                let name = format!("test_elf_{}_matmul", stringify!($name));
+                let name = format!(
+                    "{}/tests/data/test_elf_{}_matmul",
+                    env!("CARGO_MANIFEST_DIR"),
+                    stringify!($name)
+                );
                 let driver = Box::new($driver);
                 super::engine_matmul_size_sweep::<$domain>(&name, $dom_init, driver, $drv_init);
             }
@@ -484,14 +481,22 @@ mod compute_driver_tests {
             #[test]
             #[ignore]
             fn test_engine_stdio() {
-                let name = format!("test_elf_{}_stdio", stringify!($name));
+                let name = format!(
+                    "{}/tests/data/test_elf_{}_stdio",
+                    env!("CARGO_MANIFEST_DIR"),
+                    stringify!($name)
+                );
                 let driver = Box::new($driver);
                 super::engine_stdio::<$domain>(&name, $dom_init, driver, $drv_init);
             }
 
             #[test]
             fn test_engine_fileio() {
-                let name = format!("test_elf_{}_fileio", stringify!($name));
+                let name = format!(
+                    "{}/tests/data/test_elf_{}_fileio",
+                    env!("CARGO_MANIFEST_DIR"),
+                    stringify!($name)
+                );
                 let driver = Box::new($driver);
                 super::engine_fileio::<$domain>(&name, $dom_init, driver, $drv_init)
             }

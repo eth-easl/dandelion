@@ -4,23 +4,13 @@ use crate::{
     Position,
 };
 
-fn read_file(name: &str) -> Vec<u8> {
-    // load elf file
-    let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push("tests/data");
-    path.push(name);
-    let mut elf_file = std::fs::File::open(path).expect("Should have found test file");
-    let mut elf_buffer = Vec::<u8>::new();
-    use std::io::Read;
-    let _ = elf_file
-        .read_to_end(&mut elf_buffer)
-        .expect("Should be able to read entire file");
-    return elf_buffer;
-}
-
 #[test]
 fn test_loader_basic() {
-    let elf_buffer = read_file(&format!("test_elf_mmu_{}_basic", std::env::consts::ARCH));
+    let elf_path = format!(
+        "{}/tests/data/test_elf_mmu_{}_basic",
+        env!("CARGO_MANIFEST_DIR"),
+        std::env::consts::ARCH
+    );
     let driver = MmuDriver {};
     let mut mmu_domain =
         MmuMemoryDomain::init(Vec::new()).expect("Should be able to get mmu domain");
@@ -29,7 +19,7 @@ fn test_loader_basic() {
         context,
         config,
     } = driver
-        .parse_function(elf_buffer, &mut mmu_domain)
+        .parse_function(elf_path, &mut mmu_domain)
         .expect("Should correctly parse elf file");
     // check requirement list
     #[cfg(target_arch = "x86_64")]

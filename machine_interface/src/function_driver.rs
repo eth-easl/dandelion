@@ -7,7 +7,7 @@ use dandelion_commons::{records::Recorder, DandelionResult};
 use std::{future::Future, sync::Arc};
 
 pub mod compute_driver;
-pub mod load_utils;
+mod load_utils;
 pub mod system_driver;
 
 #[derive(Clone)]
@@ -72,7 +72,7 @@ pub trait Driver: Send + Sync {
     //  and a layout description for it
     fn parse_function(
         &self,
-        function: Vec<u8>,
+        function_path: String,
         static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<Function>;
 }
