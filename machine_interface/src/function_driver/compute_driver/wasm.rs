@@ -3,7 +3,7 @@ use crate::{
     function_driver::{Driver, Engine, FunctionConfig, Function, WasmConfig},
     memory_domain::{Context, ContextType, MemoryDomain},
     DataRequirementList,
-    interface::{_32_bit::DandelionSystemData, read_output_structs, setup_input_structs}, 
+    interface::{_32_bit::DandelionSystemData, read_output_structs, setup_input_structs}, Position, DataItem, 
 };
 use dandelion_commons::{
     DandelionResult, DandelionError,
@@ -20,14 +20,24 @@ use std::{
 };
 use libloading::{Library, Symbol};
 
-type WasmEntryPoint = fn(&mut[u8], &mut DandelionSystemData, Option<&mut [u8]>) -> Option<i32>;
+struct WasmStackInit<'a> {
+    dandelion_sdk_heap: &'a mut[u8],
+    sdk_system_data: &'a mut DandelionSystemData,
+}
+struct WasmHeapInit<'a> {
+    wasm_mem: &'a mut [u8],
+}
+enum WasmInit<'a> {
+    Stack(WasmStackInit<'a>),
+    Heap(WasmHeapInit<'a>),
+}
+type WasmEntryPoint = fn(WasmInit) -> Option<i32>;
 
 struct WasmCommand {
     lib: Arc<Library>,
     wasm_mem_size: usize,
     context: Arc<Mutex<Option<Context>>>,
     recorder: Option<Recorder>,
-    wasm_mem_on_heap: bool,
 }
 
 unsafe impl Send for WasmCommand {}
@@ -45,7 +55,7 @@ fn run_thread(
     };
 
     let msg = match command_receiver.recv() {
-        Ok( WasmCommand { lib, wasm_mem_size, context, recorder, wasm_mem_on_heap } ) => {
+        Ok( WasmCommand { lib, wasm_mem_size, context, recorder } ) => {
             match unsafe { lib.get::<WasmEntryPoint>(b"run") } {
                 Ok(entry_point) => {
                     // TODO handle errors
@@ -58,18 +68,21 @@ fn run_thread(
                         ContextType::Wasm(wasm_context) => wasm_context,
                         _ => panic!("invalid context type"),
                     };
-                    let sdk_heap: &mut [u8] = wasm_context.data.as_mut_slice();
-                    let sdk_sysdata: &mut DandelionSystemData = &mut wasm_context.sdk_sysdata;
 
-                    let mut wasm_mem_buf = if wasm_mem_on_heap {
-                        Some(vec![0; wasm_mem_size])
+                    let ret = if WASM_MEM_ON_HEAP {
+                        let arg = WasmInit::Heap(WasmHeapInit { 
+                            wasm_mem: &mut wasm_context.data,
+                        });
+                        entry_point(arg)
                     } else {
-                        None
+                        let sdk_heap: &mut [u8] = wasm_context.data.as_mut_slice();
+                        let sdk_sysdata: &mut DandelionSystemData = &mut wasm_context.sdk_sysdata;
+                        let arg = WasmInit::Stack(WasmStackInit { 
+                            dandelion_sdk_heap: sdk_heap, 
+                            sdk_system_data: sdk_sysdata 
+                        });
+                        entry_point(arg)
                     };
-                    let wasm_mem_slice = wasm_mem_buf.as_mut().map(|v| v.as_mut_slice());
-
-                    // call function
-                    let ret = entry_point(sdk_heap, sdk_sysdata, wasm_mem_slice);
                     
                     // put context back
                     *guard = Some(ctx);
@@ -203,7 +216,6 @@ impl Engine for WasmEngine {
             lib: wasm_config.lib.clone(),
             wasm_mem_size: wasm_config.wasm_mem_size,
             recorder: Some(recorder),
-            wasm_mem_on_heap: true,
         };
 
         // TODO give back context if send fails (moved it into the Arc)
@@ -222,6 +234,8 @@ impl Engine for WasmEngine {
         unimplemented!()
     }
 }
+
+pub const WASM_MEM_ON_HEAP: bool = false;
 
 pub struct WasmDriver {}
 
@@ -287,13 +301,34 @@ impl Driver for WasmDriver {
         // which is not used by the wasm module by default
         // the heap base and end pointers are passed via system data
 
-        let mut context = static_domain.acquire_context(sdk_heap_size, sdk_heap_base)?; //sd_region_offset)?;
+        let mut context = if WASM_MEM_ON_HEAP {
+            static_domain.acquire_context(wasm_mem_size, 0)?
+        } else {
+            static_domain.acquire_context(sdk_heap_size, sdk_heap_base)?
+        };
+
+        let ctx_size = match WASM_MEM_ON_HEAP {
+            true => wasm_mem_size,
+            false => sdk_heap_size,
+        };
+
+        let (static_positions, static_items) = match WASM_MEM_ON_HEAP {
+            true => {
+                let pos = Position {
+                    offset: 0,
+                    size: sdk_heap_base,
+                };
+                let item = DataItem { ident: "".into(), data: pos.clone(), key: 0 };
+                (vec![pos], vec![item])
+            },
+            false => (vec![], vec![]),
+        };
+        
         // there must be one data set, which would normally describe the sections to be copied
-        let static_bufs = vec![];
         context.content = vec![Some(
             DataSet {
                 ident: String::from("static"),
-                buffers: static_bufs,
+                buffers: static_items,
             }
         )];
         Ok(Function {
@@ -305,8 +340,8 @@ impl Driver for WasmDriver {
                 system_data_struct_offset: sd_struct_offset,
             }),
             requirements: DataRequirementList {
-                size: sdk_heap_size,
-                static_requirements: vec![],
+                size: ctx_size,
+                static_requirements: static_positions,
                 input_requirements: vec![],
             },
             context,

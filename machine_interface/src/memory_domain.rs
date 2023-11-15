@@ -213,7 +213,17 @@ pub fn transefer_memory(
                 source_offset,
                 size,
             )
-        }
+        },
+        #[cfg(feature = "wasm")]
+        (ContextType::Wasm(destination_ctxt), ContextType::Wasm(source_ctxt)) => {
+            wasm::wasm_transfer(
+                destination_ctxt,
+                source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+            )
+        },
         // default implementation using reads and writes
         (destination, source) => {
             let mut read_buffer = vec![0; size];
