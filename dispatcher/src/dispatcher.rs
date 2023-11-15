@@ -306,19 +306,6 @@ impl Dispatcher {
         output_mapping: Vec<Option<usize>>,
         non_caching: bool,
     ) -> DandelionResult<Vec<(usize, CompositionSet)>> {
-        // build the cartesian product of all sets that need to be sharded
-        // TODO switch to collect into when it becomes stable
-        // let result_num = input_sets
-        //     .into_iter()
-        //     .map(|(_, set)| match set.sharding_mode {
-        //         ShardingMode::NoSharding => 1,
-        //         ShardingMode::KeySharding(keys) => keys.len(),
-        //     })
-        //     .product();
-        // let mut results = Vec::new();
-        // if results.try_reserve(result_num).is_err() {
-        //     return Err(DandelionError::OutOfMemory);
-        // }
         let results: Vec<_> = input_sets
             .into_iter()
             .map(|(index, composition_set)| composition_set.shard(index))

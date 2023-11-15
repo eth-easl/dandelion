@@ -7,8 +7,8 @@ use dandelion_commons::{records::Recorder, DandelionResult};
 use std::{future::Future, sync::Arc};
 
 pub mod compute_driver;
+mod load_utils;
 pub mod system_driver;
-pub mod util;
 
 #[derive(Clone)]
 pub struct ElfConfig {
@@ -22,13 +22,30 @@ pub struct ElfConfig {
 
 #[derive(Clone, Copy)]
 pub enum SystemFunction {
-    HTTPS,
+    HTTP,
 }
 
 #[derive(Clone)]
 pub enum FunctionConfig {
     ElfConfig(ElfConfig),
     SysConfig(SystemFunction),
+}
+
+pub struct Function {
+    pub requirements: DataRequirementList,
+    pub context: Context,
+    pub config: FunctionConfig,
+}
+
+impl Function {
+    pub fn load(&self, domain: &Box<dyn MemoryDomain>) -> DandelionResult<Context> {
+        return match &self.config {
+            FunctionConfig::ElfConfig(_) => {
+                load_utils::load_static(domain, &self.context, &self.requirements)
+            }
+            FunctionConfig::SysConfig(_) => domain.acquire_context(self.requirements.size),
+        };
+    }
 }
 
 pub trait Engine: Send {
@@ -55,14 +72,7 @@ pub trait Driver: Send + Sync {
     //  and a layout description for it
     fn parse_function(
         &self,
-        function: Vec<u8>,
+        function_path: String,
         static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<Function>;
-}
-
-// TODO should be private?
-pub struct Function {
-    pub requirements: DataRequirementList,
-    pub context: Context,
-    pub config: FunctionConfig,
 }

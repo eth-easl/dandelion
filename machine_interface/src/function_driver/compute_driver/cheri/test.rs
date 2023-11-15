@@ -4,23 +4,12 @@ use crate::{
     Position,
 };
 
-fn read_file(name: &str) -> Vec<u8> {
-    // load elf file
-    let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push("tests/data");
-    path.push(name);
-    let mut elf_file = std::fs::File::open(path).expect("Should have found test file");
-    let mut elf_buffer = Vec::<u8>::new();
-    use std::io::Read;
-    let _ = elf_file
-        .read_to_end(&mut elf_buffer)
-        .expect("Should be able to read entire file");
-    return elf_buffer;
-}
-
 #[test]
 fn test_loader_basic() {
-    let elf_buffer = read_file("test_elf_cheri_basic");
+    let elf_path = format!(
+        "{}/tests/data/test_elf_cheri_basic",
+        env!("CARGO_MANIFEST_DIR")
+    );
     let mut malloc_domain =
         MallocMemoryDomain::init(Vec::new()).expect("Should be able to get malloc domain");
     let driver = CheriDriver {};
@@ -29,7 +18,7 @@ fn test_loader_basic() {
         context,
         config,
     } = driver
-        .parse_function(elf_buffer, &mut malloc_domain)
+        .parse_function(elf_path, &mut malloc_domain)
         .expect("Parsing should work");
     // check requirement list to be list of programm header info for after load
     // meaning addresses and sizes in virtual address space

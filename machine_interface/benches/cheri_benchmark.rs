@@ -4,7 +4,7 @@ mod cheri_bench {
     use dandelion_commons::records::{Archive, RecordPoint, Recorder};
     use machine_interface::{
         function_driver::{
-            compute_driver::cheri::CheriDriver, util::load_static, Driver, Function,
+            compute_driver::cheri::CheriDriver, load_utils::load_static, Driver, Function,
         },
         memory_domain::{cheri::CheriMemoryDomain, MemoryDomain},
         DataItem, DataSet, Position,
@@ -42,18 +42,12 @@ mod cheri_bench {
             .expect("Should be able to get one engine");
         let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         path.push("tests/data/test_elf_cheri_matmul");
-        let mut elf_file = std::fs::File::open(path).expect("Should have found test file");
-        let mut elf_buffer = Vec::<u8>::new();
-        use std::io::Read;
-        elf_file
-            .read_to_end(&mut elf_buffer)
-            .expect("Should be able to read entire file");
         let Function {
             requirements,
             context: mut static_context,
             config,
         } = driver
-            .parse_function(elf_buffer, &mut domain)
+            .parse_function(path, &mut domain)
             .expect("Should success at parsing");
         c.bench_function("matmul", |b| {
             b.iter(|| {

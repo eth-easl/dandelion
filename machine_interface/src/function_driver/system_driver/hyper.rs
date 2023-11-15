@@ -1,5 +1,5 @@
 use crate::{
-    function_driver::{Driver, Engine, FunctionConfig, SystemFunction},
+    function_driver::{Driver, Engine, Function, FunctionConfig, SystemFunction},
     memory_domain::{Context, ContextTrait},
     DataItem, DataSet, Position,
 };
@@ -271,7 +271,7 @@ impl Engine for HyperEngine {
             _ => return Box::pin(ready((Err(DandelionError::ConfigMissmatch), context))),
         };
         return match function {
-            SystemFunction::HTTPS => Box::pin(http_wrapper(
+            SystemFunction::HTTP => Box::pin(http_wrapper(
                 context,
                 output_set_names.clone(),
                 &self.runtime,
@@ -286,6 +286,8 @@ impl Engine for HyperEngine {
 }
 
 pub struct HyperDriver {}
+
+const DEFAULT_HTTP_CONTEXT_SIZE: usize = 0x1000; // 4KiB
 
 impl Driver for HyperDriver {
     fn start_engine(&self, config: Vec<u8>) -> DandelionResult<Box<dyn Engine>> {
@@ -307,9 +309,20 @@ impl Driver for HyperDriver {
 
     fn parse_function(
         &self,
-        _function: Vec<u8>,
-        _static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
-    ) -> DandelionResult<crate::function_driver::Function> {
-        return Err(DandelionError::CalledSystemFuncParser);
+        function_path: String,
+        static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
+    ) -> DandelionResult<Function> {
+        if function_path.len() != 0 {
+            return Err(DandelionError::CalledSystemFuncParser);
+        }
+        return Ok(Function {
+            requirements: crate::DataRequirementList {
+                size: DEFAULT_HTTP_CONTEXT_SIZE,
+                input_requirements: vec![],
+                static_requirements: vec![],
+            },
+            context: static_domain.acquire_context(0)?,
+            config: FunctionConfig::SysConfig(SystemFunction::HTTP),
+        });
     }
 }

@@ -42,18 +42,12 @@ mod mmu_bench {
             "tests/data/test_elf_mmu_{}_matmul",
             std::env::consts::ARCH
         ));
-        let mut elf_file = std::fs::File::open(path).expect("Should have found test file");
-        let mut elf_buffer = Vec::<u8>::new();
-        use std::io::Read;
-        elf_file
-            .read_to_end(&mut elf_buffer)
-            .expect("Should be able to read entire file");
         let Function {
             requirements,
             context: mut static_context,
             config,
         } = driver
-            .parse_function(elf_buffer, &mut domain)
+            .parse_function(path, &mut domain)
             .expect("Should success at parsing");
         c.bench_function("matmul", |b| {
             b.iter(|| {
