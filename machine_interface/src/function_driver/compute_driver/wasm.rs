@@ -20,20 +20,7 @@ use std::{
 };
 use libloading::{Library, Symbol};
 
-#[allow(dead_code)]
-struct WasmStackInit<'a> {
-    dandelion_sdk_heap: &'a mut[u8],
-    sdk_system_data: &'a mut DandelionSystemData,
-}
-#[allow(dead_code)]
-struct WasmHeapInit<'a> {
-    wasm_mem: &'a mut [u8],
-}
-enum WasmInit<'a> {
-    Stack(WasmStackInit<'a>),
-    Heap(WasmHeapInit<'a>),
-}
-type WasmEntryPoint = fn(WasmInit) -> Option<i32>;
+type WasmEntryPoint = fn(&mut [u8]) -> Option<i32>;
 
 struct WasmCommand {
     lib: Arc<Library>,
@@ -70,20 +57,8 @@ fn run_thread(
                         _ => panic!("invalid context type"),
                     };
 
-                    let ret = if WASM_MEM_ON_HEAP {
-                        let arg = WasmInit::Heap(WasmHeapInit { 
-                            wasm_mem: &mut wasm_context.data,
-                        });
-                        entry_point(arg)
-                    } else {
-                        let sdk_heap: &mut [u8] = wasm_context.data.as_mut_slice();
-                        let sdk_sysdata: &mut DandelionSystemData = &mut wasm_context.sdk_sysdata;
-                        let arg = WasmInit::Stack(WasmStackInit { 
-                            dandelion_sdk_heap: sdk_heap, 
-                            sdk_system_data: sdk_sysdata 
-                        });
-                        entry_point(arg)
-                    };
+                    // call entry point
+                    let ret = entry_point(&mut wasm_context.mem);
                     
                     // put context back
                     *guard = Some(ctx);
@@ -223,8 +198,6 @@ impl Engine for WasmEngine {
     }
 }
 
-pub const WASM_MEM_ON_HEAP: bool = true;
-
 pub struct WasmDriver {}
 
 impl Driver for WasmDriver {
@@ -284,33 +257,14 @@ impl Driver for WasmDriver {
         let sdk_heap_size =     call!("get_sdk_heap_size",            fn() -> usize);
         let wasm_mem_size =     call!("get_wasm_mem_size",            fn() -> usize);
 
-        // the sdk needs a heap base pointer for `dandelion_alloc()`
-        // we define the sdk's heap to be the end of the wasm heap
-        // which is not used by the wasm module by default
-        // the heap base and end pointers are passed via system data
-
         let mut context = static_domain.acquire_context(wasm_mem_size)?;
-
-        let ctx_size = match WASM_MEM_ON_HEAP {
-            true => wasm_mem_size,
-            false => sdk_heap_size,
-        };
-
-        let (static_positions, static_items) = {
-            // let pos = Position {
-            //     offset: 0,
-            //     size: sdk_heap_base,
-            // };
-            // let item = DataItem { ident: "".into(), data: pos.clone(), key: 0 };
-            // (vec![pos], vec![item])
-            (vec![], vec![])
-        };
         
-        // there must be one data set, which would normally describe the sections to be copied
+        // there must be one data set, which would normally describe the 
+        // elf sections to be copied
         context.content = vec![Some(
             DataSet {
                 ident: String::from("static"),
-                buffers: static_items,
+                buffers: vec![],
             }
         )];
         Ok(Function {
@@ -322,8 +276,8 @@ impl Driver for WasmDriver {
                 system_data_struct_offset: sd_struct_offset,
             }),
             requirements: DataRequirementList {
-                size: ctx_size,
-                static_requirements: static_positions,
+                size: wasm_mem_size,
+                static_requirements: vec![],
                 input_requirements: vec![],
             },
             context,
