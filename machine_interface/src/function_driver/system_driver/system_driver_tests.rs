@@ -1,7 +1,9 @@
 #[cfg(all(test, any(feature = "hyper_io")))]
 mod system_driver_tests {
     use crate::{
-        function_driver::{Driver, FunctionConfig, SystemFunction},
+        function_driver::{
+            system_driver::get_system_function_output_sets, Driver, FunctionConfig, SystemFunction,
+        },
         memory_domain::{Context, ContextTrait, MemoryDomain},
         DataItem, DataSet, Position,
     };
@@ -12,49 +14,20 @@ mod system_driver_tests {
 
     const _CONTEXT_SIZE: usize = 2048 * 1024;
 
-    fn write_request_line(
-        context: &mut Context,
-        method: Vec<u8>,
-        uri: Vec<u8>,
-        version: Vec<u8>,
-    ) -> DandelionResult<()> {
-        let method_length = method.len();
-        let method_offset = context.get_free_space_and_write_slice(&method)? as usize;
-
-        let version_length = version.len();
-        let version_offset = context.get_free_space_and_write_slice(&version)? as usize;
-
-        let uri_length = uri.len();
-        let uri_offset = context.get_free_space_and_write_slice(&uri)? as usize;
+    fn write_request_line(context: &mut Context, request: Vec<u8>) -> DandelionResult<()> {
+        let request_length = request.len();
+        let request_offset = context.get_free_space_and_write_slice(&request)? as usize;
 
         context.content.push(Some(DataSet {
             ident: String::from("request"),
-            buffers: vec![
-                DataItem {
-                    ident: String::from("method"),
-                    data: Position {
-                        offset: method_offset,
-                        size: method_length,
-                    },
-                    key: 0,
+            buffers: vec![DataItem {
+                ident: String::from("request"),
+                data: Position {
+                    offset: request_offset,
+                    size: request_length,
                 },
-                DataItem {
-                    ident: String::from("version"),
-                    data: Position {
-                        offset: version_offset,
-                        size: version_length,
-                    },
-                    key: 0,
-                },
-                DataItem {
-                    ident: String::from("uri"),
-                    data: Position {
-                        offset: uri_offset,
-                        size: uri_length,
-                    },
-                    key: 0,
-                },
-            ],
+                key: 0,
+            }],
         }));
         return Ok(());
     }
@@ -94,20 +67,15 @@ mod system_driver_tests {
             .expect("Should be able to get engine");
         let config = FunctionConfig::SysConfig(SystemFunction::HTTP);
 
-        let method = "GET".as_bytes().to_vec();
-        let uri = "http://httpbin.org/get".as_bytes().to_vec();
-        let version = "HTTP/1.1".as_bytes().to_vec();
+        let request = "GET http://httpbin.org/get HTTP/1.1\n\r"
+            .as_bytes()
+            .to_vec();
 
-        write_request_line(&mut context, method, uri, version)
-            .expect("Should be able to prepare request line");
+        write_request_line(&mut context, request).expect("Should be able to prepare request line");
 
         let archive = std::sync::Arc::new(std::sync::Mutex::new(Archive::new()));
         let mut recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-        let output_set_names = vec![
-            String::from("headers"),
-            String::from("status line"),
-            String::from("body"),
-        ];
+        let output_set_names = get_system_function_output_sets(SystemFunction::HTTP);
         let (result, result_context) = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -122,38 +90,23 @@ mod system_driver_tests {
             .iter()
             .find(|set_opt| {
                 if let Some(set) = set_opt {
-                    return set.ident == "status line";
+                    return set.ident == "status";
                 } else {
                     return false;
                 }
             })
-            .expect("Should have status line set")
+            .expect("Should have status set")
             .as_ref()
-            .expect("Should have status line set");
-        let status_item = response_line
-            .buffers
-            .iter()
-            .find(|item| item.ident == "status")
-            .expect("Should have status");
+            .expect("Should have status set");
+        assert_eq!(1, response_line.buffers.len());
+        let status_item = &response_line.buffers[0];
         let mut status_buffer = Vec::<u8>::new();
         status_buffer.resize(status_item.data.size, 0);
         result_context
             .read(status_item.data.offset, &mut status_buffer)
             .expect("Should be able to read status");
         let status = String::from_utf8(status_buffer).expect("Should have status string");
-        assert_eq!("200", status);
-        let version_item = response_line
-            .buffers
-            .iter()
-            .find(|item| item.ident == "version")
-            .expect("Should have version");
-        let mut verison_buffer = Vec::<u8>::new();
-        verison_buffer.resize(version_item.data.size, 0);
-        result_context
-            .read(version_item.data.offset, &mut verison_buffer)
-            .expect("Should be able to read version");
-        let version = String::from_utf8(verison_buffer).expect("Should have version string");
-        assert_eq!("HTTP/1.1", version);
+        assert_eq!("HTTP/1.1 200 OK", status);
     }
 
     fn put_http<Dom: MemoryDomain>(
@@ -170,12 +123,9 @@ mod system_driver_tests {
             .expect("Should be able to get engine");
         let config = FunctionConfig::SysConfig(SystemFunction::HTTP);
 
-        let method = "PUT".as_bytes().to_vec();
-        let uri = "http://httpbin.org/put".as_bytes().to_vec();
-        let version = "HTTP/1.1".as_bytes().to_vec();
+        let request = "PUT http://httpbin.org/put HTTP/1.1".as_bytes().to_vec();
 
-        write_request_line(&mut context, method, uri, version)
-            .expect("Should be able to prepare request line");
+        write_request_line(&mut context, request).expect("Should be able to prepare request line");
 
         let headers = vec![("Content-Type", "text/plain")];
         write_headers(&mut context, headers).expect("Should be able to write headers");
@@ -191,11 +141,8 @@ mod system_driver_tests {
 
         let archive = std::sync::Arc::new(std::sync::Mutex::new(Archive::new()));
         let mut recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-        let output_set_names = vec![
-            String::from("headers"),
-            String::from("status line"),
-            String::from("body"),
-        ];
+        let output_set_names = get_system_function_output_sets(SystemFunction::HTTP);
+
         let (result, result_context) = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -205,45 +152,28 @@ mod system_driver_tests {
             .record(RecordPoint::FutureReturn)
             .expect("Should have advanced record");
 
-        let response_line = result_context
+        let status_set = result_context
             .content
             .iter()
             .find(|set_opt| {
                 if let Some(set) = set_opt {
-                    return set.ident == "status line";
+                    return set.ident == "status";
                 } else {
                     return false;
                 }
             })
-            .expect("Should have status line set")
+            .expect("Should have status set")
             .as_ref()
-            .expect("Should have status line set");
-        let status_item = response_line
-            .buffers
-            .iter()
-            .find(|item| item.ident == "status")
-            .expect("Should have status");
-
+            .expect("Should have status set");
+        assert_eq!(1, status_set.buffers.len());
+        let status_item = &status_set.buffers[0];
         let mut status_buffer = Vec::<u8>::new();
         status_buffer.resize(status_item.data.size, 0);
         result_context
             .read(status_item.data.offset, &mut status_buffer)
             .expect("Should be able to read status");
         let status = String::from_utf8(status_buffer).expect("Should have status string");
-        assert_eq!("200", status);
-
-        let version_item = response_line
-            .buffers
-            .iter()
-            .find(|item| item.ident == "version")
-            .expect("Should have version");
-        let mut verison_buffer = Vec::<u8>::new();
-        verison_buffer.resize(version_item.data.size, 0);
-        result_context
-            .read(version_item.data.offset, &mut verison_buffer)
-            .expect("Should be able to read version");
-        let version = String::from_utf8(verison_buffer).expect("Should have version string");
-        assert_eq!("HTTP/1.1", version);
+        assert_eq!("HTTP/1.1 200 OK", status);
     }
 
     // TODO change to start local http server to check against.

@@ -17,7 +17,7 @@ pub enum FunctionType {
     Function(EngineTypeId),
     /// Function available as composition, holding the composition graph
     /// and the set with the inidecs of the sets in the composition that are output sets
-    Composition(Composition, BTreeSet<usize>),
+    Composition(Composition, BTreeMap<usize, usize>),
 }
 
 #[derive(Clone, Debug)]
@@ -70,6 +70,35 @@ impl FunctionRegistry {
             .set_names
             .get(&function_id)
             .ok_or(DandelionError::DispatcherUnavailableFunction);
+    }
+
+    pub fn add_composition(
+        &mut self,
+        function_id: FunctionId,
+        composition: Composition,
+        input_sets: Vec<String>,
+        output_sets: Vec<String>,
+        output_set_map: BTreeMap<usize, usize>,
+    ) {
+        self.set_names
+            .insert(function_id, (input_sets, output_sets));
+        self.options
+            .get_mut()
+            .entry(function_id)
+            .and_modify(|option_vec| {
+                option_vec.push(Alternative {
+                    function_type: FunctionType::Composition(
+                        composition.clone(),
+                        output_set_map.clone(),
+                    ),
+                    in_memory: true,
+                })
+            })
+            .or_insert(vec![Alternative {
+                function_type: FunctionType::Composition(composition, output_set_map),
+                in_memory: true,
+            }]);
+        return;
     }
 
     pub fn add_system(

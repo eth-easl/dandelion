@@ -217,7 +217,7 @@ pub fn transefer_memory(
         ),
         // default implementation using reads and writes
         (destination, source) => {
-            let mut read_buffer = vec![0; size];
+            let mut read_buffer: Vec<u8> = vec![0; size];
             source.read(source_offset, &mut read_buffer)?;
             destination.write(destination_offset, &read_buffer)
         }
