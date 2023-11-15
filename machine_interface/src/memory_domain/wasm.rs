@@ -1,5 +1,3 @@
-use std::{rc::Rc, cell::RefCell, borrow::BorrowMut, sync::Arc, sync::Mutex, ops::{Deref, DerefMut}};
-
 use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
 use dandelion_commons::{DandelionError, DandelionResult};
 use crate::interface::_32_bit::DandelionSystemData;
@@ -14,9 +12,9 @@ pub struct WasmLayoutDescription {
 
 #[derive(Debug)]
 pub struct WasmContext {
-    pub base_offset: usize,
     pub layout: Option<WasmLayoutDescription>,
     pub data: Vec<u8>,
+    pub virtual_size: usize,
     pub sdk_sysdata: DandelionSystemData,
 }
 
@@ -47,7 +45,7 @@ impl ContextTrait for WasmContext {
             //      - these will not be within the region [base_offset..sdk_heap_end]
             //      - we just ignore these writes
             
-            else if offset < self.base_offset {
+            else if self.layout.as_ref().is_some_and(|l| l.sdk_heap_base > offset) {
                 return Ok(());
             }
             
@@ -55,9 +53,9 @@ impl ContextTrait for WasmContext {
             //      - we check that the offset is within the sdk heap region and then
             //        copy the data into the sdk heap memory
             
-            else if offset >= self.base_offset {
+            else {
                 let write_size = data.len() * std::mem::size_of::<T>();
-                let base = self.base_offset;
+                let base = self.virtual_size - self.data.len();
                 if offset < base || offset + write_size > base + self.data.len() {
                     return Err(DandelionError::InvalidWrite);
                 }
@@ -68,19 +66,15 @@ impl ContextTrait for WasmContext {
                 return Ok(());
             }
 
-            return Err(DandelionError::InvalidWrite);
-
         } else {
             let write_size = data.len() * std::mem::size_of::<T>();
-            let base = self.base_offset;
-
-            if offset < base || offset + write_size > base + self.data.len() {
+            if offset + write_size > self.data.len() {
                 return Err(DandelionError::InvalidWrite);
             }
             let data_bytes: &[u8] = unsafe {
                 std::slice::from_raw_parts(data.as_ptr() as *const u8, write_size)
             };
-            self.data[offset-base..offset-base+write_size].copy_from_slice(data_bytes);
+            self.data[offset..offset+write_size].copy_from_slice(data_bytes);
             return Ok(());
         }
         
@@ -90,7 +84,7 @@ impl ContextTrait for WasmContext {
         let self_data = &self.data;
         let self_sdk_data = &self.sdk_sysdata;
 
-        let base = self.base_offset;
+        let base = if WASM_MEM_ON_HEAP { 0 } else { self.virtual_size - self_data.len() };
         let read_size = read_buffer.len() * std::mem::size_of::<T>();
 
         if offset >= base && offset + read_size < base + self_data.len() {
@@ -126,11 +120,12 @@ impl ContextTrait for WasmContext {
 }
 
 impl WasmContext {
-    pub fn new(size: usize, base_offset: usize) -> WasmContext {
+    pub fn new(size: usize) -> WasmContext {
+        let actual_size = if WASM_MEM_ON_HEAP { size } else { 0 };
         WasmContext {
-            base_offset,
             layout: None,
-            data:           vec![0; size],
+            data:           vec![0; actual_size],
+            virtual_size:   size,
             sdk_sysdata:    DandelionSystemData::default(),
         }
     }
@@ -145,6 +140,9 @@ impl WasmContext {
             sdk_heap_size,
             sdk_sysdata_offset,
         });
+        if !WASM_MEM_ON_HEAP {
+            self.data = vec![0; sdk_heap_size];
+        }
     }
 }
 
@@ -155,8 +153,8 @@ impl MemoryDomain for WasmMemoryDomain {
     fn init(_config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>> {
         Ok(Box::new(WasmMemoryDomain {}))
     }
-    fn acquire_context(&self, size: usize, base_offset: usize) -> DandelionResult<Context> {
-        Ok(Context::new(ContextType::Wasm(Box::new(WasmContext::new(size, base_offset))), size, base_offset))
+    fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
+        Ok(Context::new(ContextType::Wasm(Box::new(WasmContext::new(size))), size))
     }
 }
 
@@ -167,14 +165,11 @@ pub fn wasm_transfer(
     source_offset: usize,
     size: usize,
 ) -> DandelionResult<()> {
-    // No need to copy anything before sdk heap region
-    // This is a hack to make the elf loader work
-    if source_offset == 0 { return Ok(()); };
-
-    if source_offset < source.base_offset || size > destination.data.len() {
+    if source_offset + size > source.virtual_size {
         return Err(DandelionError::InvalidRead);
     }
     destination.data[destination_offset..destination_offset + size]
         .copy_from_slice(&source.data[source_offset..source_offset + size]);
+    
     Ok(())
 }

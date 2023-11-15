@@ -1,7 +1,7 @@
 pub mod function_driver;
 pub mod memory_domain;
 
-#[cfg(any(feature = "cheri", feature = "mmu"))]
+#[cfg(any(feature = "cheri", feature = "mmu", feature = "wasm"))]
 mod interface;
 pub mod util;
 

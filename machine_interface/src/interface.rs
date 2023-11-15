@@ -38,6 +38,7 @@ macro_rules! usize_ptr {
     };
 }
 
+#[allow(dead_code)]
 pub mod _32_bit {
     use super::*;
 
@@ -53,6 +54,7 @@ pub mod _32_bit {
     pub type DandelionSystemData = super::DandelionSystemData<u32, u32>;
 }
 
+#[allow(dead_code)]
 pub mod _64_bit {
     use super::*;
 
@@ -68,6 +70,7 @@ pub mod _64_bit {
     pub type DandelionSystemData = super::DandelionSystemData<u64, u64>;
 }
 
+#[allow(dead_code)]
 pub mod _native {
     use super::*;
 
@@ -239,7 +242,7 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>
     let input_buffers_offset: PtrT =    ptr_t!(context.get_free_space_and_write_slice(&input_buffers[..])? as usize);
 
     let heap_begin: PtrT =  ptr_t!(context.get_last_item_end());
-    let heap_end: PtrT =    ptr_t!(context.base_offset + context.size - 128);
+    let heap_end: PtrT =    ptr_t!(context.size - 128);
 
     // fill in data for input sets
     // input set number and pointer (offset)

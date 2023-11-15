@@ -1,9 +1,9 @@
 use crate::{
-    memory_domain::{Context, MemoryDomain},
+    memory_domain::{Context, MemoryDomain, ContextType},
     DataRequirementList, Position,
 };
 use core::pin::Pin;
-use dandelion_commons::{records::Recorder, DandelionResult};
+use dandelion_commons::{records::Recorder, DandelionResult, DandelionError};
 use std::{future::Future, sync::Arc};
 
 use libloading::Library;
@@ -56,6 +56,26 @@ impl Function {
                 load_utils::load_static(domain, &self.context, &self.requirements)
             }
             FunctionConfig::SysConfig(_) => domain.acquire_context(self.requirements.size),
+            FunctionConfig::WasmConfig(c) => {
+                let mut context = domain.acquire_context(c.wasm_mem_size)?;
+                
+                context.occupy_space(0, c.sdk_heap_base)?;
+
+                let ctx = &mut context.context;
+                let wasm_ctx_box = match ctx {
+                    ContextType::Wasm(wasm_ctx) => wasm_ctx,
+                    _ => {
+                        return Err(DandelionError::ConfigMissmatch);
+                    }
+                };
+                wasm_ctx_box.prepare_for_inputs(
+                    c.sdk_heap_base,
+                    c.sdk_heap_size,
+                    c.system_data_struct_offset,
+                );
+        
+                Ok(context)
+            },
         };
     }
 }

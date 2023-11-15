@@ -3,7 +3,7 @@ use crate::{
     function_driver::{Driver, Engine, FunctionConfig, Function, WasmConfig},
     memory_domain::{Context, ContextType, MemoryDomain},
     DataRequirementList,
-    interface::{_32_bit::DandelionSystemData, read_output_structs, setup_input_structs}, Position, DataItem, 
+    interface::{_32_bit::DandelionSystemData, read_output_structs, setup_input_structs}, 
 };
 use dandelion_commons::{
     DandelionResult, DandelionError,
@@ -16,14 +16,16 @@ use core::{
 };
 use std::{
     sync::{atomic::{AtomicBool, Ordering}, Mutex, Arc},
-    thread::{spawn, JoinHandle},
+    thread::spawn,
 };
 use libloading::{Library, Symbol};
 
+#[allow(dead_code)]
 struct WasmStackInit<'a> {
     dandelion_sdk_heap: &'a mut[u8],
     sdk_system_data: &'a mut DandelionSystemData,
 }
+#[allow(dead_code)]
 struct WasmHeapInit<'a> {
     wasm_mem: &'a mut [u8],
 }
@@ -35,7 +37,6 @@ type WasmEntryPoint = fn(WasmInit) -> Option<i32>;
 
 struct WasmCommand {
     lib: Arc<Library>,
-    wasm_mem_size: usize,
     context: Arc<Mutex<Option<Context>>>,
     recorder: Option<Recorder>,
 }
@@ -55,7 +56,7 @@ fn run_thread(
     };
 
     let msg = match command_receiver.recv() {
-        Ok( WasmCommand { lib, wasm_mem_size, context, recorder } ) => {
+        Ok( WasmCommand { lib, context, recorder } ) => {
             match unsafe { lib.get::<WasmEntryPoint>(b"run") } {
                 Ok(entry_point) => {
                     // TODO handle errors
@@ -153,7 +154,7 @@ pub struct WasmEngine {
     is_running: AtomicBool,
     command_sender: std::sync::mpsc::Sender<WasmCommand>,
     result_receiver: futures::channel::mpsc::Receiver<DandelionResult<()>>,
-    thread_handle: Option<JoinHandle<()>>,
+    // thread_handle: Option<JoinHandle<()>>,
 }
 
 impl Engine for WasmEngine {
@@ -188,18 +189,6 @@ impl Engine for WasmEngine {
             _ => err!(ConfigMissmatch),
         };
 
-        // prepare context for inputs
-        match &mut context.context {
-            ContextType::Wasm(ref mut wasm_context) => {
-                wasm_context.prepare_for_inputs(
-                    wasm_config.sdk_heap_base,
-                    wasm_config.sdk_heap_size,
-                    wasm_config.system_data_struct_offset
-                );
-            },
-            _ => err!(ConfigMissmatch),
-        };
-
         // setup input structs
         if let Err(err) = setup_input_structs::<u32, u32>(
             &mut context, 
@@ -214,7 +203,6 @@ impl Engine for WasmEngine {
         let cmd = WasmCommand { 
             context: context_.clone(),
             lib: wasm_config.lib.clone(),
-            wasm_mem_size: wasm_config.wasm_mem_size,
             recorder: Some(recorder),
         };
 
@@ -235,7 +223,7 @@ impl Engine for WasmEngine {
     }
 }
 
-pub const WASM_MEM_ON_HEAP: bool = false;
+pub const WASM_MEM_ON_HEAP: bool = true;
 
 pub struct WasmDriver {}
 
@@ -261,12 +249,12 @@ impl Driver for WasmDriver {
         // create channels and spawn threads
         let (command_sender, command_receiver) = std::sync::mpsc::channel();
         let (result_sender, result_receiver) = futures::channel::mpsc::channel(0);
-        let thread_handle = spawn(move || run_thread(cpu_slot, command_receiver, result_sender));
+        let _thread_handle = spawn(move || run_thread(cpu_slot, command_receiver, result_sender));
         let is_running = AtomicBool::new(false);
         return Ok(Box::new(WasmEngine {
             command_sender,
             result_receiver,
-            thread_handle: Some(thread_handle),
+            // thread_handle: Some(thread_handle),
             is_running,
         }));
     }
@@ -301,27 +289,21 @@ impl Driver for WasmDriver {
         // which is not used by the wasm module by default
         // the heap base and end pointers are passed via system data
 
-        let mut context = if WASM_MEM_ON_HEAP {
-            static_domain.acquire_context(wasm_mem_size, 0)?
-        } else {
-            static_domain.acquire_context(sdk_heap_size, sdk_heap_base)?
-        };
+        let mut context = static_domain.acquire_context(wasm_mem_size)?;
 
         let ctx_size = match WASM_MEM_ON_HEAP {
             true => wasm_mem_size,
             false => sdk_heap_size,
         };
 
-        let (static_positions, static_items) = match WASM_MEM_ON_HEAP {
-            true => {
-                let pos = Position {
-                    offset: 0,
-                    size: sdk_heap_base,
-                };
-                let item = DataItem { ident: "".into(), data: pos.clone(), key: 0 };
-                (vec![pos], vec![item])
-            },
-            false => (vec![], vec![]),
+        let (static_positions, static_items) = {
+            // let pos = Position {
+            //     offset: 0,
+            //     size: sdk_heap_base,
+            // };
+            // let item = DataItem { ident: "".into(), data: pos.clone(), key: 0 };
+            // (vec![pos], vec![item])
+            (vec![], vec![])
         };
         
         // there must be one data set, which would normally describe the sections to be copied

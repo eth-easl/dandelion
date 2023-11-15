@@ -58,12 +58,8 @@ pub struct Context {
     pub context: ContextType,
     pub content: Vec<Option<DataSet>>,
     pub size: usize,
-    pub base_offset: usize,
     occupation: Vec<Position>,
 }
-
-// the base_offset ensures that all positions are in [base_offset, base_offset+size]
-// all offset values handled here are absolute and should always be >=base_offset
 
 impl ContextTrait for Context {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
@@ -75,16 +71,15 @@ impl ContextTrait for Context {
 }
 
 impl Context {
-    pub fn new(con: ContextType, size: usize, base_offset: usize) -> Self {
+    pub fn new(con: ContextType, size: usize) -> Self {
         return Context {
             context: con,
             content: vec![],
             size,
-            base_offset,
             occupation: vec![
-                Position { offset: base_offset, size: 0 },
+                Position { offset: 0, size: 0 },
                 Position {
-                    offset: base_offset+size,
+                    offset: size,
                     size: 0,
                 },
             ],
@@ -121,7 +116,7 @@ impl Context {
     }
     /// Make sure all space between offset and size is marked as occupied, ignoring overlap with previous occupation
     pub fn occupy_space(&mut self, offset: usize, size: usize) -> DandelionResult<()> {
-        if offset - self.base_offset + size > self.size {
+        if offset + size > self.size {
             return Err(DandelionError::InvalidWrite);
         }
         let insertion_index = self
@@ -145,7 +140,7 @@ impl Context {
         // space start holds previous start
         let mut space_size = self.size + 1;
         let mut index = 0;
-        let mut start_address = self.base_offset;
+        let mut start_address = 0;
         for (window_index, occupied) in self.occupation.windows(2).enumerate() {
             let lower_end = occupied[0].offset + occupied[0].size;
             // TODO use next multiple of when stabilized
@@ -177,9 +172,9 @@ impl Context {
     pub fn clear_metadata(&mut self) -> () {
         self.content = vec![];
         self.occupation = vec![
-            Position { offset: self.base_offset, size: 0 },
+            Position { offset: 0, size: 0 },
             Position {
-                offset: self.base_offset + self.size,
+                offset: self.size,
                 size: 0,
             },
         ];
@@ -191,7 +186,7 @@ pub trait MemoryDomain: Sync + Send {
     fn init(config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>>
     where
         Self: Sized;
-    fn acquire_context(&self, size: usize, base_offset: usize) -> DandelionResult<Context>;
+    fn acquire_context(&self, size: usize) -> DandelionResult<Context>;
 }
 
 // Code to specialize transfers between different domains
@@ -211,7 +206,7 @@ pub fn transefer_memory(
                 source_offset,
                 size,
             )
-        }
+        },
         #[cfg(feature = "cheri")]
         (ContextType::Cheri(destination_ctxt), ContextType::Cheri(source_ctxt)) => {
             cheri::cheri_transfer(
@@ -221,15 +216,16 @@ pub fn transefer_memory(
                 source_offset,
                 size,
             )
-        }
+        },
         #[cfg(feature = "mmu")]
-        (ContextType::Mmu(destination_ctxt), ContextType::Mmu(source_ctxt)) => mmu::mmu_transfer(
-            destination_ctxt,
-            source_ctxt,
-            destination_offset,
-            source_offset,
-            size,
-        ),
+        (ContextType::Mmu(destination_ctxt), ContextType::Mmu(source_ctxt)) => {
+            mmu::mmu_transfer(
+                destination_ctxt,
+                source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+            )
         },
         #[cfg(feature = "wasm")]
         (ContextType::Wasm(destination_ctxt), ContextType::Wasm(source_ctxt)) => {
