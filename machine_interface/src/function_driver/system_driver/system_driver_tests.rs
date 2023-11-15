@@ -92,7 +92,7 @@ mod system_driver_tests {
         let mut engine = driver
             .start_engine(drv_init)
             .expect("Should be able to get engine");
-        let config = FunctionConfig::SysConfig(SystemFunction::HTTPS);
+        let config = FunctionConfig::SysConfig(SystemFunction::HTTP);
 
         let method = "GET".as_bytes().to_vec();
         let uri = "http://httpbin.org/get".as_bytes().to_vec();
@@ -168,7 +168,7 @@ mod system_driver_tests {
         let mut engine = driver
             .start_engine(drv_init)
             .expect("Should be able to get engine");
-        let config = FunctionConfig::SysConfig(SystemFunction::HTTPS);
+        let config = FunctionConfig::SysConfig(SystemFunction::HTTP);
 
         let method = "PUT".as_bytes().to_vec();
         let uri = "http://httpbin.org/put".as_bytes().to_vec();

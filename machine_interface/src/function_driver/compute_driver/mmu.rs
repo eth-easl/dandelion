@@ -3,8 +3,8 @@ use crate::{
         load_utils::load_u8_from_file, Driver, ElfConfig, Engine, Function, FunctionConfig,
     },
     interface::{read_output_structs, setup_input_structs},
-    memory_domain::{cheri::cheri_c_context, Context, ContextTrait, ContextType, MemoryDomain},
-    util::{elf_parser, load_u8_from_file},
+    memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
+    util::elf_parser,
     DataItem, DataRequirement, DataRequirementList, DataSet, Position,
 };
 use core::{
@@ -17,8 +17,15 @@ use dandelion_commons::{
     DandelionError, DandelionResult,
 };
 use futures::{task::Poll, Stream};
-use libc::size_t;
+use nix::{
+    sys::{
+        signal::Signal,
+        wait::{self, WaitStatus},
+    },
+    unistd::Pid,
+};
 use std::{
+    process::{Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -26,35 +33,24 @@ use std::{
     thread::{spawn, JoinHandle},
 };
 
-#[link(name = "cheri_lib")]
-extern "C" {
-    fn cheri_run_static(
-        context: *const cheri_c_context,
-        entry_point: size_t,
-        return_pair_offset: size_t,
-        stack_pointer: size_t,
-    ) -> i8;
-}
-
-struct CheriCommand {
+struct MmuCommand {
     cancel: bool,
-    context: *const cheri_c_context,
-    entry_point: size_t,
-    return_pair_offset: size_t,
-    stack_pointer: size_t,
+    storage_id: String,
+    protection_flags: Vec<(u32, Position)>,
+    entry_point: usize,
     recorder: Option<Recorder>,
 }
-unsafe impl Send for CheriCommand {}
+unsafe impl Send for MmuCommand {}
 
-pub struct CheriEngine {
+pub struct MmuEngine {
     is_running: AtomicBool,
-    command_sender: std::sync::mpsc::Sender<CheriCommand>,
+    command_sender: std::sync::mpsc::Sender<MmuCommand>,
     result_receiver: futures::channel::mpsc::Receiver<DandelionResult<()>>,
     thread_handle: Option<JoinHandle<()>>,
 }
 
-struct CheriFuture<'a> {
-    engine: &'a mut CheriEngine,
+struct MmuFuture<'a> {
+    engine: &'a mut MmuEngine,
     context: Option<Context>,
     system_data_offset: usize,
 }
@@ -62,7 +58,7 @@ struct CheriFuture<'a> {
 // TODO find better way than take unwrap to return context
 // or at least a way to ensure that the future is always initialized with a context,
 // so this can only happen when poll is called after it has already returned the context once
-impl Future for CheriFuture<'_> {
+impl Future for MmuFuture<'_> {
     type Output = (DandelionResult<()>, Context);
     fn poll(
         mut self: Pin<&mut Self>,
@@ -83,7 +79,7 @@ impl Future for CheriFuture<'_> {
         }
         let mut context = self.context.take().unwrap();
         // read outputs
-        let result = read_output_structs::<u64, u64>(&mut context, self.system_data_offset);
+        let result = read_output_structs(&mut context, self.system_data_offset);
         self.engine.is_running.store(false, Ordering::Release);
         Poll::Ready((result, context))
     }
@@ -91,7 +87,7 @@ impl Future for CheriFuture<'_> {
 
 fn run_thread(
     core_id: u8,
-    command_receiver: std::sync::mpsc::Receiver<CheriCommand>,
+    command_receiver: std::sync::mpsc::Receiver<MmuCommand>,
     mut result_sender: futures::channel::mpsc::Sender<DandelionResult<()>>,
 ) -> () {
     // set core
@@ -102,21 +98,12 @@ fn run_thread(
         if command.cancel {
             break 'commandloop;
         }
-        let cheri_error;
-        unsafe {
-            cheri_error = cheri_run_static(
-                command.context,
-                command.entry_point,
-                command.return_pair_offset,
-                command.stack_pointer,
-            );
-        }
-
-        let message = match cheri_error {
-            0 => Ok(()),
-            1 => Err(DandelionError::OutOfMemory),
-            _ => Err(DandelionError::NotImplemented),
-        };
+        let message = mmu_run_static(
+            core_id,
+            &command.storage_id,
+            &command.protection_flags,
+            command.entry_point,
+        );
         if let Some(mut recorder) = command.recorder {
             let _ = recorder.record(RecordPoint::EngineEnd);
         }
@@ -132,7 +119,149 @@ fn run_thread(
     }
 }
 
-impl Engine for CheriEngine {
+fn ptrace_syscall(pid: libc::pid_t) {
+    #[cfg(target_os = "linux")]
+    let res = unsafe { libc::ptrace(libc::PTRACE_SYSCALL, pid, 0, 0) };
+    #[cfg(target_os = "freebsd")]
+    let res = unsafe { libc::ptrace(libc::PT_SYSCALL, pid, 1 as *mut _, 0) };
+    assert_eq!(res, 0);
+}
+
+enum SyscallType {
+    Exit,
+    #[cfg(target_arch = "x86_64")]
+    Authorized,
+    Unauthorized(i64),
+}
+
+#[cfg(target_os = "linux")]
+fn check_syscall(pid: libc::pid_t) -> SyscallType {
+    type Regs = libc::user_regs_struct;
+    let regs = unsafe {
+        let mut regs_uninit: core::mem::MaybeUninit<Regs> = core::mem::MaybeUninit::uninit();
+        let io = libc::iovec {
+            iov_base: regs_uninit.as_mut_ptr() as *mut _,
+            iov_len: core::mem::size_of::<Regs>(),
+        };
+        let res = libc::ptrace(libc::PTRACE_GETREGSET, pid, libc::NT_PRSTATUS, &io);
+        assert_eq!(res, 0);
+        regs_uninit.assume_init()
+    };
+    #[cfg(target_arch = "x86_64")]
+    let syscall_id = regs.orig_rax as i64;
+    #[cfg(target_arch = "aarch64")]
+    let syscall_id = regs.regs[8] as i64;
+    match syscall_id {
+        libc::SYS_exit | libc::SYS_exit_group => SyscallType::Exit,
+        #[cfg(target_arch = "x86_64")]
+        libc::SYS_arch_prctl => SyscallType::Authorized, // TODO: check arguments
+        id => SyscallType::Unauthorized(id),
+    }
+}
+
+#[cfg(target_os = "freebsd")]
+fn check_syscall(pid: libc::pid_t) -> SyscallType {
+    #[cfg(target_arch = "x86_64")]
+    type Regs = libc::reg;
+    #[cfg(target_arch = "aarch64")]
+    type Regs = libc::gpregs;
+    let regs = unsafe {
+        let mut regs_uninit: core::mem::MaybeUninit<Regs> = core::mem::MaybeUninit::uninit();
+        let res = libc::ptrace(libc::PT_GETREGS, pid, regs_uninit.as_mut_ptr() as *mut _, 0);
+        assert_eq!(res, 0);
+        regs_uninit.assume_init()
+    };
+    #[cfg(target_arch = "x86_64")]
+    let syscall_id = regs.r_rax;
+    #[cfg(target_arch = "aarch64")]
+    let syscall_id = regs.gp_x[0];
+    match syscall_id {
+        1 => SyscallType::Exit,
+        id => SyscallType::Unauthorized(id),
+    }
+}
+
+fn mmu_run_static(
+    cpu_slot: u8,
+    storage_id: &str,
+    protection_flags: &[(u32, Position)],
+    entry_point: usize,
+) -> Result<(), DandelionError> {
+    // TODO: modify ELF header
+    // to load mmu_worker into a safe address range
+    // that will not collide with those used by user's function
+
+    // this trick gives the desired path of mmu_worker for packages within the workspace
+    // TODO: replace with a more general solution (e.g. environment variable)
+    let path = format!(
+        "{}/../target/{}/mmu_worker",
+        env!("CARGO_MANIFEST_DIR"),
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+    );
+
+    // create a new address space (child process) and pass the shared memory
+    let mut worker = Command::new(path)
+        .arg(cpu_slot.to_string())
+        .arg(storage_id)
+        .arg(entry_point.to_string())
+        .arg(serde_json::to_string(protection_flags).unwrap())
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|_e| DandelionError::MmuWorkerError)?;
+    // TODO: use a leveled logger for debugging messages
+    // eprintln!("created a new process");
+
+    // intercept worker's syscalls by ptrace
+    let pid = Pid::from_raw(worker.id() as i32);
+    let status = wait::waitpid(pid, None).map_err(|_e| DandelionError::MmuWorkerError)?;
+    assert_eq!(status, WaitStatus::Stopped(pid, Signal::SIGSTOP));
+    ptrace_syscall(pid.as_raw());
+
+    loop {
+        let status = wait::waitpid(pid, None).map_err(|_e| DandelionError::MmuWorkerError)?;
+        let WaitStatus::Stopped(pid, sig) = status else {
+                panic!("worker should be stopped (status = {:?})", status);
+            };
+        match sig {
+            Signal::SIGTRAP => match check_syscall(pid.as_raw()) {
+                SyscallType::Exit => {
+                    // eprintln!("detected exit syscall");
+                    ptrace_syscall(pid.as_raw());
+                    let _status = worker.wait().map_err(|_e| DandelionError::MmuWorkerError)?;
+                    // eprintln!("worker exited with code {}", status.code().unwrap());
+                    return Ok(());
+                }
+                #[cfg(target_arch = "x86_64")]
+                SyscallType::Authorized => {
+                    // eprintln!("detected authorized syscall");
+                    ptrace_syscall(pid.as_raw());
+                }
+                SyscallType::Unauthorized(syscall_id) => {
+                    eprintln!("detected unauthorized syscall with id {}", syscall_id);
+                    worker.kill().map_err(|_e| DandelionError::MmuWorkerError)?;
+                    eprintln!("worker killed");
+                    return Err(DandelionError::UnauthorizedSyscall);
+                }
+            },
+            Signal::SIGSEGV => {
+                eprintln!("detected segmentation fault");
+                return Err(DandelionError::SegmentationFault);
+            }
+            s => {
+                eprintln!("detected {}", s);
+                return Err(DandelionError::OtherProctionError);
+            }
+        }
+    }
+}
+
+impl Engine for MmuEngine {
     fn run(
         &mut self,
         config: &FunctionConfig,
@@ -150,19 +279,18 @@ impl Engine for CheriEngine {
             FunctionConfig::ElfConfig(conf) => conf,
             _ => return Box::pin(ready((Err(DandelionError::ConfigMissmatch), context))),
         };
-        let cheri_context = match &context.context {
-            ContextType::Cheri(ref cheri_context) => cheri_context,
+        let mmu_context = match &context.context {
+            ContextType::Mmu(mmu_context) => mmu_context,
             _ => return Box::pin(ready((Err(DandelionError::ContextMissmatch), context))),
         };
-        let command = CheriCommand {
+        let command = MmuCommand {
             cancel: false,
-            context: cheri_context.context,
+            storage_id: mmu_context.storage.id().to_string(),
+            protection_flags: elf_config.protection_flags.to_vec(),
             entry_point: elf_config.entry_point,
-            return_pair_offset: elf_config.return_offset.0,
-            stack_pointer: cheri_context.size - 32,
             recorder: Some(recorder),
         };
-        if let Err(err) = setup_input_structs::<u64, u64>(
+        if let Err(err) = setup_input_structs(
             &mut context,
             elf_config.system_data_offset,
             output_set_names,
@@ -173,7 +301,7 @@ impl Engine for CheriEngine {
             Err(_) => return Box::pin(ready((Err(DandelionError::EngineError), context))),
             Ok(_) => (),
         }
-        let function_future = Box::<CheriFuture>::pin(CheriFuture {
+        let function_future = Box::<MmuFuture>::pin(MmuFuture {
             engine: self,
             context: Some(context),
             system_data_offset: elf_config.system_data_offset,
@@ -189,28 +317,27 @@ impl Engine for CheriEngine {
     }
 }
 
-impl Drop for CheriEngine {
+impl Drop for MmuEngine {
     fn drop(&mut self) {
         if let Some(handle) = self.thread_handle.take() {
             // drop channel
-            let _res = self.command_sender.send(CheriCommand {
+            let _res = self.command_sender.send(MmuCommand {
                 cancel: true,
-                context: std::ptr::null(),
+                storage_id: "".to_string(),
+                protection_flags: [].to_vec(),
                 entry_point: 0,
-                return_pair_offset: 0,
-                stack_pointer: 0,
                 recorder: None,
             });
-            handle.join().expect("Cheri thread should not panic");
+            handle.join().expect("Mmu thread should not panic");
         }
     }
 }
 
-pub struct CheriDriver {}
+pub struct MmuDriver {}
 
-const DEFAULT_SPACE_SIZE: usize = 0x800_0000; // 4MiB
+const DEFAULT_SPACE_SIZE: usize = 0x800_0000; // 128MiB
 
-impl Driver for CheriDriver {
+impl Driver for MmuDriver {
     // // take or release one of the available engines
     fn start_engine(&self, config: Vec<u8>) -> DandelionResult<Box<dyn Engine>> {
         if config.len() != 1 {
@@ -233,7 +360,7 @@ impl Driver for CheriDriver {
         let (result_sender, result_receiver) = futures::channel::mpsc::channel(0);
         let thread_handle = spawn(move || run_thread(cpu_slot, command_receiver, result_sender));
         let is_running = AtomicBool::new(false);
-        return Ok(Box::new(CheriEngine {
+        return Ok(Box::new(MmuEngine {
             command_sender,
             result_receiver,
             thread_handle: Some(thread_handle),
@@ -252,11 +379,12 @@ impl Driver for CheriDriver {
         let function = load_u8_from_file(function_path)?;
         let elf = elf_parser::ParsedElf::new(&function)?;
         let system_data = elf.get_symbol_by_name(&function, "__dandelion_system_data")?;
-        let return_offset = elf.get_symbol_by_name(&function, "__dandelion_return_address")?;
+        //let return_offset = elf.get_symbol_by_name(&function, "__dandelion_return_address")?;
         let entry = elf.get_entry_point();
         let config = FunctionConfig::ElfConfig(ElfConfig {
             system_data_offset: system_data.0,
-            return_offset: return_offset,
+            #[cfg(feature = "cheri")]
+            return_offset: (0, 0),
             entry_point: entry,
             protection_flags: Arc::new(elf.get_memory_protection_layout()),
         });
@@ -271,7 +399,7 @@ impl Driver for CheriDriver {
         for position in source_layout.iter() {
             total_size += position.size;
         }
-        let mut context = static_domain.acquire_context(total_size, 0)?;
+        let mut context = static_domain.acquire_context(total_size)?;
         // copy all
         let mut write_counter = 0;
         let mut new_content = DataSet {

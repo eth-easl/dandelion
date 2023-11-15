@@ -27,7 +27,7 @@ fn main() {
     let processor_string = std::str::from_utf8(&output.stdout).unwrap();
     // morello linux has unkonw for now, check later if this is portability issue / better way to detect
     let is_cheri = processor_string == "aarch64c\n" || processor_string == "unknown\n";
-    if is_cheri {
+    if is_cheri && std::env::var("CARGO_FEATURE_MMU").is_err() {
         println!("cargo:rustc-cfg=feature=\"cheri\"");
         cmake_libraries();
     }

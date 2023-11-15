@@ -4,10 +4,12 @@ use dandelion_commons::FunctionId;
 /// the input and output sets to sets of individual functions to a unified
 /// namespace. The ids in this namespace are used to find out which
 /// functions have become ready.
+#[derive(Clone, Debug)]
 pub struct Composition {
     pub dependencies: Vec<FunctionDependencies>,
 }
 
+#[derive(Clone, Debug)]
 pub struct FunctionDependencies {
     pub function: FunctionId,
     /// composition set ids that the function needs to get ready and

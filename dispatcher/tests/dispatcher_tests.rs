@@ -1,4 +1,4 @@
-#[cfg(all(test, any(feature = "cheri")))]
+#[cfg(all(test, any(feature = "cheri", feature = "mmu")))]
 mod dispatcher_tests {
     use dandelion_commons::{ContextTypeId, EngineTypeId};
     use dispatcher::{
@@ -72,7 +72,7 @@ mod dispatcher_tests {
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(0, Vec::new(), false));
+            .block_on(dispatcher.queue_function(0, Vec::new(), Vec::new(), false));
         match result {
             Ok(_) => (),
             Err(err) => panic!("Failed with: {:?}", err),
@@ -213,14 +213,20 @@ mod dispatcher_tests {
                 set_index: 0,
             },
         )];
+        let outputs = vec![Some(0)];
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(0, inputs, false));
-        let out_context = match result {
+            .block_on(dispatcher.queue_function(0, inputs, outputs, false));
+        let out_sets = match result {
             Ok(context) => context,
             Err(err) => panic!("Failed with: {:?}", err),
         };
+        assert_eq!(1, out_sets.len());
+        let (out_index, out_set) = &out_sets[0];
+        assert_eq!(0, *out_index);
+        assert_eq!(1, out_set.context_list.len());
+        let out_context = &out_set.context_list[0];
         assert_eq!(1, out_context.content.len());
         check_matrix(&out_context, 0, 0, 2, vec![5, 11, 11, 25])
     }
@@ -591,5 +597,16 @@ mod dispatcher_tests {
             memory_domain::cheri::CheriMemoryDomain,
         };
         dispatcherTests!(cheri; CheriMemoryDomain; Vec::new(); CheriDriver {}; vec![1]);
+    }
+
+    #[cfg(feature = "mmu")]
+    mod mmu {
+        use machine_interface::{
+            function_driver::compute_driver::mmu::MmuDriver, memory_domain::mmu::MmuMemoryDomain,
+        };
+        #[cfg(target_arch = "x86_64")]
+        dispatcherTests!(mmu_x86_64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![1]);
+        #[cfg(target_arch = "aarch64")]
+        dispatcherTests!(mmu_aarch64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![1]);
     }
 }

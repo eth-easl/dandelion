@@ -1,43 +1,59 @@
 use crate::{
-    function_driver::{compute_driver::cheri::CheriDriver, Driver, Function, FunctionConfig},
-    memory_domain::{malloc::MallocMemoryDomain, MemoryDomain},
+    function_driver::{compute_driver::mmu::MmuDriver, Driver, Function, FunctionConfig},
+    memory_domain::{mmu::MmuMemoryDomain, MemoryDomain},
     Position,
 };
 
 #[test]
 fn test_loader_basic() {
     let elf_path = format!(
-        "{}/tests/data/test_elf_cheri_basic",
-        env!("CARGO_MANIFEST_DIR")
+        "{}/tests/data/test_elf_mmu_{}_basic",
+        env!("CARGO_MANIFEST_DIR"),
+        std::env::consts::ARCH
     );
-    let mut malloc_domain =
-        MallocMemoryDomain::init(Vec::new()).expect("Should be able to get malloc domain");
-    let driver = CheriDriver {};
+    let driver = MmuDriver {};
+    let mut mmu_domain =
+        MmuMemoryDomain::init(Vec::new()).expect("Should be able to get mmu domain");
     let Function {
         requirements,
         context,
         config,
     } = driver
-        .parse_function(elf_path, &mut malloc_domain)
-        .expect("Parsing should work");
-    // check requirement list to be list of programm header info for after load
-    // meaning addresses and sizes in virtual address space
+        .parse_function(elf_path, &mut mmu_domain)
+        .expect("Should correctly parse elf file");
+    // check requirement list
+    #[cfg(target_arch = "x86_64")]
     let expected_requirements = vec![
         Position {
-            offset: 0x00000,
-            size: 0x1c8,
+            offset: 0x200000,
+            size: 0x64c,
         },
         Position {
-            offset: 0x101c8,
-            size: 0xbb4,
+            offset: 0x201650,
+            size: 0xd98,
         },
         Position {
-            offset: 0x20d80,
-            size: 0x18,
+            offset: 0x2033e8,
+            size: 0x60,
+        },
+    ];
+    #[cfg(target_arch = "aarch64")]
+    let expected_requirements = vec![
+        Position {
+            offset: 0x200000,
+            size: 0x60c,
         },
         Position {
-            offset: 0x30da0,
-            size: 0x70,
+            offset: 0x21060c,
+            size: 0xedc,
+        },
+        Position {
+            offset: 0x2214e8,
+            size: 0x10,
+        },
+        Position {
+            offset: 0x2314f8,
+            size: 0x60,
         },
     ];
     assert_eq!(
@@ -45,7 +61,10 @@ fn test_loader_basic() {
         "Missmatch in expected default context size"
     );
     // actual sizes in file
-    let expected_sizes = vec![0x1c8, 0xbb4, 0x18, 0x0];
+    #[cfg(target_arch = "x86_64")]
+    let expected_sizes = vec![0x64c, 0xd98, 0x0];
+    #[cfg(target_arch = "aarch64")]
+    let expected_sizes = vec![0x60c, 0xedc, 0x10, 0x0];
     assert_eq!(
         expected_requirements.len(),
         requirements.static_requirements.len(),
@@ -91,20 +110,32 @@ fn test_loader_basic() {
     // checks for config
     let function_config = match config {
         FunctionConfig::ElfConfig(conf_struct) => conf_struct,
-        _ => panic!("Non elf FunctionConfig from cheri loader"),
+        _ => panic!("Non elf FunctionConfig from mmu loader"),
     };
+    #[cfg(target_arch = "x86_64")]
     assert_eq!(
-        (0x30db8),
-        function_config.system_data_offset,
+        0x203400, function_config.system_data_offset,
         "System data offset missmatch"
     );
+    #[cfg(target_arch = "aarch64")]
     assert_eq!(
-        (0x30e00, 0x10),
+        0x231510, function_config.system_data_offset,
+        "System data offset missmatch"
+    );
+    #[cfg(feature = "cheri")]
+    assert_eq!(
+        (0x0, 0x0),
         function_config.return_offset,
         "Return offset missmatch"
     );
+    #[cfg(target_arch = "x86_64")]
     assert_eq!(
-        0x101c8, function_config.entry_point,
+        0x201650, function_config.entry_point,
+        "Entry point missmatch"
+    );
+    #[cfg(target_arch = "aarch64")]
+    assert_eq!(
+        0x21060c, function_config.entry_point,
         "Entry point missmatch"
     );
 }

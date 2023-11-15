@@ -4,6 +4,8 @@ pub mod cheri;
 #[cfg(feature = "wasm")]
 pub mod wasm;
 pub mod malloc;
+#[cfg(feature = "mmu")]
+pub mod mmu;
 
 use crate::{DataItem, DataSet, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
@@ -20,6 +22,8 @@ pub enum ContextType {
     Malloc(Box<malloc::MallocContext>),
     #[cfg(feature = "cheri")]
     Cheri(Box<cheri::CheriContext>),
+    #[cfg(feature = "mmu")]
+    Mmu(Box<mmu::MmuContext>),
     #[cfg(feature = "wasm")]
     Wasm(Box<wasm::WasmContext>),
 }
@@ -30,6 +34,8 @@ impl ContextTrait for ContextType {
             ContextType::Malloc(context) => context.write(offset, data),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.write(offset, data),
+            #[cfg(feature = "mmu")]
+            ContextType::Mmu(context) => context.write(offset, data),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.write(offset, data),
         }
@@ -39,6 +45,8 @@ impl ContextTrait for ContextType {
             ContextType::Malloc(context) => context.read(offset, read_buffer),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.read(offset, read_buffer),
+            #[cfg(feature = "mmu")]
+            ContextType::Mmu(context) => context.read(offset, read_buffer),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.read(offset, read_buffer),
         }
@@ -213,6 +221,15 @@ pub fn transefer_memory(
                 source_offset,
                 size,
             )
+        }
+        #[cfg(feature = "mmu")]
+        (ContextType::Mmu(destination_ctxt), ContextType::Mmu(source_ctxt)) => mmu::mmu_transfer(
+            destination_ctxt,
+            source_ctxt,
+            destination_offset,
+            source_offset,
+            size,
+        ),
         },
         #[cfg(feature = "wasm")]
         (ContextType::Wasm(destination_ctxt), ContextType::Wasm(source_ctxt)) => {

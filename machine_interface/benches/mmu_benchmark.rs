@@ -1,20 +1,17 @@
-#[cfg(feature = "cheri")]
-mod cheri_bench {
+#[cfg(feature = "mmu")]
+mod mmu_bench {
     use criterion::{criterion_group, BenchmarkId, Criterion};
     use dandelion_commons::records::{Archive, RecordPoint, Recorder};
     use machine_interface::{
-        function_driver::{
-            compute_driver::cheri::CheriDriver, load_utils::load_static, Driver, Function,
-        },
-        memory_domain::{cheri::CheriMemoryDomain, MemoryDomain},
+        function_driver::{compute_driver::mmu::MmuDriver, util::load_static, Driver, Function},
+        memory_domain::{mmu::MmuMemoryDomain, MemoryDomain},
         DataItem, DataSet, Position,
     };
     use std::sync::{Arc, Mutex};
 
     fn context_benchmark(c: &mut Criterion) {
-        let domain =
-            CheriMemoryDomain::init(Vec::<u8>::new()).expect("Should be able to initialize");
-        let mut group = c.benchmark_group("cheri context aquire and release");
+        let domain = MmuMemoryDomain::init(Vec::<u8>::new()).expect("Should be able to initialize");
+        let mut group = c.benchmark_group("mmu context aquire and release");
         static KB: usize = 1024;
         for size in [128 * KB, 2 * KB * KB].iter() {
             group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, i| {
@@ -35,13 +32,16 @@ mod cheri_bench {
         const MAT_SIZE: usize = 128;
 
         let mut domain =
-            CheriMemoryDomain::init(Vec::<u8>::new()).expect("Should be able to initialize");
-        let driver = CheriDriver {};
+            MmuMemoryDomain::init(Vec::<u8>::new()).expect("Should be able to initialize");
+        let driver = MmuDriver {};
         let mut engine = driver
             .start_engine(vec![1])
             .expect("Should be able to get one engine");
         let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        path.push("tests/data/test_elf_cheri_matmul");
+        path.push(format!(
+            "tests/data/test_elf_mmu_{}_matmul",
+            std::env::consts::ARCH
+        ));
         let Function {
             requirements,
             context: mut static_context,
@@ -98,8 +98,8 @@ mod cheri_bench {
 
 use criterion::criterion_main;
 
-#[cfg(feature = "cheri")]
-criterion_main!(self::cheri_bench::benches);
+#[cfg(feature = "mmu")]
+criterion_main!(self::mmu_bench::benches);
 
-#[cfg(not(feature = "cheri"))]
+#[cfg(not(feature = "mmu"))]
 fn main() {}

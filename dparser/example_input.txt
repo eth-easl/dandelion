@@ -4,13 +4,13 @@
 
 (:composition CompileMulti (SourceFiles Libraries) -> (Binaries) (
     (CompileFiles (
-        (:shard Source <- SourceFile)
+        (:keyed Source <- SourceFile) ; shard by record key
     ) => (
         (ObjectFiles := Out) ; declares a collection ObjectFiles and merges all outputs from the shards of CompileFile into it
     ))
 
     (LinkObjects (
-        (:shard Objects <- ObjectFiles)
+        (:keyed Objects <- ObjectFiles)
         (Libraries <- Libraries) ; no sharding modifier: broadcast libraries to all funciton calls
     ) => (
         (Binaries := Binary) ; declares a collection Binaries and merges all outputs from the shards of CompileFile into it

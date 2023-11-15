@@ -17,3 +17,4 @@ http = "0.2"
 
 [features]
 cheri = ["machine_interface/cheri"]
+mmu = ["machine_interface/mmu"]
