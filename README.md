@@ -80,3 +80,16 @@ They can be built with a normal make command, but have the following requirement
 - make: "/usr/src/sys/conf/kmod.mk" line 549: is ZFSTOP set?
     - solution `export ZFSTOP=/usr/src/sys/contrib/openzfs`
 - currently syscall seems not to work, but loading does, with cpuset -l <core> a specific core can be setup. repeat for each core on machine to set up entire machine.
+
+## MMU worker build
+The `mmu_worker` binary required by the `MmuEngine` is assumed to be present in corresponding `target` directory:
+```
+cargo build --bin mmu_worker --features mmu --target $(arch)-unknown-linux-gnu
+```
+It is also recommended to statically link `mmu_worker` for a faster loading:
+```
+# x86_64
+RUSTFLAGS='-C target-feature=+crt-static'
+# aarch64
+RUSTFLAGS='-C target-feature=+crt-static -C link-arg=-Tmachine_interface/src/bin/mmu_worker/aarch64.ld'
+```
