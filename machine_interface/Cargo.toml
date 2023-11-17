@@ -8,7 +8,7 @@ std = []
 cheri = ["std"]
 mmu = ["std"]
 hyper_io = ["std", "dep:hyper"]
-wasm = []
+wasm = ["dep:libloading"]
 
 [build-dependencies]
 cmake = "0.1"
@@ -30,7 +30,7 @@ core_affinity = { version = "0.8"}
 futures = { version = "0.3.28" }
 tokio = { version = "1", features = ["full"] }
 hyper = { version = "0.14", optional = true, features = ["http1", "http2", "client", "runtime"]}
-libloading = { version = "0.8.1" }
+libloading = { version = "0.8.1", optional = true }
 
 # disable benchmarks in library, to not run all unit tests on every benchmark
 # also needs to be disabled for criterion flags to work that are not available for tests
