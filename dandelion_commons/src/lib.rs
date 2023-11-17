@@ -90,6 +90,9 @@ pub enum DandelionError {
     SegmentationFault,
     /// other protection errors caused by the function
     OtherProctionError,
+    // errors from the functions
+    /// Function indicated it failed
+    FunctionError(i32),
 }
 
 pub type DandelionResult<T> = std::result::Result<T, DandelionError>;

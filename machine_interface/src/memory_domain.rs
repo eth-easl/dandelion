@@ -46,10 +46,17 @@ impl ContextTrait for ContextType {
 }
 
 #[derive(Debug)]
+pub enum ContextState {
+    InPreparation,
+    Run(i32),
+}
+
+#[derive(Debug)]
 pub struct Context {
     pub context: ContextType,
     pub content: Vec<Option<DataSet>>,
     pub size: usize,
+    pub state: ContextState,
     occupation: Vec<Position>,
 }
 
@@ -68,6 +75,7 @@ impl Context {
             context: con,
             content: vec![],
             size: size,
+            state: ContextState::InPreparation,
             occupation: vec![
                 Position { offset: 0, size: 0 },
                 Position {

@@ -1,5 +1,5 @@
 use crate::{
-    memory_domain::{Context, ContextTrait},
+    memory_domain::{Context, ContextState, ContextTrait},
     DataItem, DataSet, Position,
 };
 use dandelion_commons::{DandelionError, DandelionResult};
@@ -191,7 +191,9 @@ pub fn read_output_structs(context: &mut Context, base_address: usize) -> Dandel
     context.read(base_address, core::slice::from_mut(&mut system_struct))?;
 
     // get exit value
-    let _exit_value = system_struct.exit_code;
+    let exit_value = system_struct.exit_code;
+    context.state = ContextState::Run(exit_value);
+
     // get output set number +1 for sentinel set
     let output_set_number = system_struct.output_sets_len;
     if output_set_number == 0 {

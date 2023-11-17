@@ -2,9 +2,10 @@
 mod compute_driver_tests {
     use crate::{
         function_driver::{Driver, Engine, FunctionConfig},
-        memory_domain::{Context, ContextTrait, MemoryDomain},
+        memory_domain::{Context, ContextState, ContextTrait, MemoryDomain},
         DataItem, DataSet, Position,
     };
+    use core::panic;
     use dandelion_commons::{
         records::{Archive, RecordPoint, Recorder},
         DandelionError,
@@ -233,18 +234,44 @@ mod compute_driver_tests {
         let stdin_offset = function_context
             .get_free_space_and_write_slice(stdin_content.as_bytes())
             .expect("Should have space") as usize;
+        let argv_content = "stdio\0flag0\0flag1\0";
+        let argv_offset = function_context
+            .get_free_space_and_write_slice(argv_content.as_bytes())
+            .expect("Should have space") as usize;
+        let env_content = "HOME=test_home\0";
+        let env_offset = function_context
+            .get_free_space_and_write_slice(env_content.as_bytes())
+            .expect("Should have space") as usize;
+
         function_context.content.push(Some(DataSet {
             ident: "stdio".to_string(),
-            buffers: vec![DataItem {
-                ident: "stdin".to_string(),
-                data: Position {
-                    offset: stdin_offset,
-                    size: stdin_content.len(),
+            buffers: vec![
+                DataItem {
+                    ident: "stdin".to_string(),
+                    data: Position {
+                        offset: stdin_offset,
+                        size: stdin_content.len(),
+                    },
+                    key: 0,
                 },
-                key: 0,
-            }],
+                DataItem {
+                    ident: "argv".to_string(),
+                    data: Position {
+                        offset: argv_offset,
+                        size: argv_content.len(),
+                    },
+                    key: 0,
+                },
+                DataItem {
+                    ident: "environ".to_string(),
+                    data: Position {
+                        offset: env_offset,
+                        size: env_content.len(),
+                    },
+                    key: 0,
+                },
+            ],
         }));
-        println!("{:?}", function_context.content);
         let archive = Arc::new(Mutex::new(Archive::new()));
         let mut recorder = Recorder::new(archive, RecordPoint::TransferEnd);
         let (result, result_context) = tokio::runtime::Builder::new_current_thread()
@@ -260,6 +287,11 @@ mod compute_driver_tests {
         recorder
             .record(RecordPoint::FutureReturn)
             .expect("Should have properly advanced recorder state");
+        // check the function exited with exit code 0
+        match result_context.state {
+            ContextState::InPreparation => panic!("context still in preparation, never evaluated "),
+            ContextState::Run(exit_status) => assert_eq!(0, exit_status),
+        }
         // check there is exactly one set called stdio
         assert_eq!(1, result_context.content.len());
         let io_set = &result_context.content[0]
@@ -283,13 +315,21 @@ mod compute_driver_tests {
                         .read(item.data.offset, &mut stderr_vec)
                         .expect("stderr read should succeed")
                 }
-                _ => panic!("found item in stdio set that is neither out nor err"),
+                unexpected_name => panic!(
+                    "found unexpected item named {} in stdio set",
+                    unexpected_name
+                ),
             }
         }
         let stdout_string = std::str::from_utf8(&stdout_vec).expect("should be string");
         let stderr_string = std::str::from_utf8(&stderr_vec).expect("should be string");
         let expected_stdout = format!(
-            "Test string to stdout\nread {} characters from stdin\n{}",
+            "Test string to stdout\n\
+            read {} characters from stdin\n\
+            {}argument 0 is stdio\n\
+            argument 1 is flag0\n\
+            argument 2 is flag1\n\
+            environmental variable HOME is test_home\n",
             stdin_content.len(),
             stdin_content
         );
@@ -479,7 +519,6 @@ mod compute_driver_tests {
             }
 
             #[test]
-            #[ignore]
             fn test_engine_stdio() {
                 let name = format!(
                     "{}/tests/data/test_elf_{}_stdio",

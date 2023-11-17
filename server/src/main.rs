@@ -15,13 +15,14 @@ use hyper::{
 };
 use machine_interface::{
     function_driver::{
-        system_driver::{
-            get_system_function_input_sets, get_system_function_output_sets, hyper::HyperDriver,
-        },
+        system_driver::{get_system_function_input_sets, get_system_function_output_sets},
         SystemFunction,
     },
     memory_domain::malloc::MallocMemoryDomain,
 };
+
+#[cfg(feture = "hyper_io")]
+use machine_interface::function_driver::system_driver::hyper::HyperDriver;
 
 #[cfg(feature = "cheri")]
 use machine_interface::{
@@ -407,7 +408,7 @@ fn main() -> () {
     // insert specific configuration
     #[cfg(all(feature = "cheri", feature = "mmu"))]
     std::compile_error!("Should only have one feature out of mmu or cheri");
-    #[cfg(any(feature = "cheri", feature = "mmu"))]
+    #[cfg(all(any(feature = "cheri", feature = "mmu"), feature = "hyper_io"))]
     {
         let mut drivers = BTreeMap::new();
         let mut mmm_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -502,7 +503,7 @@ fn main() -> () {
             output_set_map,
         );
     }
-    #[cfg(not(any(feature = "cheri", feature = "mmu")))]
+    #[cfg(not(all(any(feature = "cheri", feature = "mmu"), feature = "hyper_io")))]
     {
         let loader_map = BTreeMap::new();
         registry = FunctionRegistry::new(loader_map);
