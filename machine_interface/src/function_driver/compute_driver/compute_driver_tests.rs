@@ -524,6 +524,7 @@ mod compute_driver_tests {
     mod wasm {
         use crate::function_driver::compute_driver::wasm::WasmDriver;
         use crate::memory_domain::wasm::WasmMemoryDomain;
-        driverTests!(sysld_wasm; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![1, 2, 3]; vec![255]);
+        #[cfg(target_arch = "x86_64")]
+        driverTests!(sysld_wasm_x64; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![1, 2, 3]; vec![255]);
     }
 }
