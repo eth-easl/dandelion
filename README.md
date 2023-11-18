@@ -91,5 +91,5 @@ It is also recommended to statically link `mmu_worker` for a faster loading:
 # x86_64
 RUSTFLAGS='-C target-feature=+crt-static'
 # aarch64
-RUSTFLAGS='-C target-feature=+crt-static -C link-arg=-Tmachine_interface/src/bin/mmu_worker/aarch64.ld'
+RUSTFLAGS='-C target-feature=+crt-static -C link-arg=-Wl,-fuse-ld=lld,--image-base=0xaaaaaaaa0000'
 ```
