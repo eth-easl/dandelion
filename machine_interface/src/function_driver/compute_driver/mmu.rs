@@ -79,7 +79,7 @@ impl Future for MmuFuture<'_> {
         }
         let mut context = self.context.take().unwrap();
         // read outputs
-        let result = read_output_structs(&mut context, self.system_data_offset);
+        let result = read_output_structs::<usize, usize>(&mut context, self.system_data_offset);
         self.engine.is_running.store(false, Ordering::Release);
         Poll::Ready((result, context))
     }
@@ -290,7 +290,7 @@ impl Engine for MmuEngine {
             entry_point: elf_config.entry_point,
             recorder: Some(recorder),
         };
-        if let Err(err) = setup_input_structs(
+        if let Err(err) = setup_input_structs::<usize, usize>(
             &mut context,
             elf_config.system_data_offset,
             output_set_names,
