@@ -3,7 +3,7 @@ use crate::{
     function_driver::{Driver, Engine, FunctionConfig, Function, WasmConfig},
     memory_domain::{Context, ContextType, MemoryDomain},
     DataRequirementList,
-    interface::{_32_bit::DandelionSystemData, read_output_structs, setup_input_structs}, 
+    interface::{read_output_structs, setup_input_structs}, 
 };
 use dandelion_commons::{
     DandelionResult, DandelionError,

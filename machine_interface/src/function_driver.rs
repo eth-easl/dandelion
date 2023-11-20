@@ -1,9 +1,9 @@
 use crate::{
-    memory_domain::{Context, MemoryDomain, ContextType},
+    memory_domain::{Context, MemoryDomain},
     DataRequirementList, Position,
 };
 use core::pin::Pin;
-use dandelion_commons::{records::Recorder, DandelionResult, DandelionError};
+use dandelion_commons::{records::Recorder, DandelionResult};
 use std::{future::Future, sync::Arc};
 
 use libloading::Library;
@@ -60,7 +60,7 @@ impl Function {
                 let mut context = domain.acquire_context(c.wasm_mem_size)?;
                 context.occupy_space(0, c.sdk_heap_base)?;
                 Ok(context)
-            },
+            }
         };
     }
 }

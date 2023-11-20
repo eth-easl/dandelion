@@ -40,7 +40,7 @@ use machine_interface::{
 
 #[cfg(not(any(feature = "cheri", feature = "mmu")))]
 use machine_interface::{
-    memory_domain::{malloc::MallocMemoryDomain, Context, ContextTrait, MemoryDomain},
+    memory_domain::{Context, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
 };
 

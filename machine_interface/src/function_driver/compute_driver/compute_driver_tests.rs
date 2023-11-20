@@ -472,12 +472,12 @@ mod compute_driver_tests {
 
     macro_rules! driverTests {
         ($name : ident; $domain : ty; $dom_init: expr; $driver : expr ; $drv_init : expr; $drv_init_wrong : expr) => {
-            // #[test]
-            // #[should_panic]
-            // fn test_loader_empty() {
-            //     let driver = Box::new($driver);
-            //     super::loader_empty::<$domain>($dom_init, driver);
-            // }
+            #[test]
+            #[should_panic]
+            fn test_loader_empty() {
+                let driver = Box::new($driver);
+                super::loader_empty::<$domain>($dom_init, driver);
+            }
 
             #[test]
             fn test_driver() {
