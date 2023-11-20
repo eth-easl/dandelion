@@ -24,7 +24,7 @@ impl ContextTrait for WasmContext {
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         let self_data = &self.mem;
         let read_size = read_buffer.len() * std::mem::size_of::<T>();
-        if offset + read_size < self_data.len() {
+        if offset + read_size <= self_data.len() {
             let data_bytes: &[u8] = &self_data[offset..offset+read_size];
             unsafe {
                 (read_buffer.as_mut_ptr() as *mut u8).copy_from(data_bytes.as_ptr(), read_size)
@@ -32,14 +32,6 @@ impl ContextTrait for WasmContext {
             Ok(())
         } else {
             Err(DandelionError::InvalidRead)
-        }
-    }
-}
-
-impl WasmContext {
-    pub fn new(size: usize) -> WasmContext {
-        WasmContext {
-            mem: vec![0; size],
         }
     }
 }
@@ -52,7 +44,21 @@ impl MemoryDomain for WasmMemoryDomain {
         Ok(Box::new(WasmMemoryDomain {}))
     }
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
-        Ok(Context::new(ContextType::Wasm(Box::new(WasmContext::new(size))), size))
+        let mut mem = Vec::new();
+        if let Ok(()) = mem.try_reserve_exact(size) {
+            mem.resize(size, 0);
+            Ok(Context::new(
+                ContextType::Wasm(Box::new(
+                    WasmContext {
+                        mem
+                    }
+                )), 
+                size
+            ))
+        } else {
+            return Err(DandelionError::OutOfMemory);
+        }
+
     }
 }
 
