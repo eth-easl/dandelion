@@ -54,10 +54,17 @@ impl ContextTrait for ContextType {
 }
 
 #[derive(Debug)]
+pub enum ContextState {
+    InPreparation,
+    Run(i32),
+}
+
+#[derive(Debug)]
 pub struct Context {
     pub context: ContextType,
     pub content: Vec<Option<DataSet>>,
     pub size: usize,
+    pub state: ContextState,
     occupation: Vec<Position>,
 }
 
@@ -75,7 +82,8 @@ impl Context {
         return Context {
             context: con,
             content: vec![],
-            size,
+            size: size,
+            state: ContextState::InPreparation,
             occupation: vec![
                 Position { offset: 0, size: 0 },
                 Position {
@@ -239,7 +247,7 @@ pub fn transefer_memory(
         },
         // default implementation using reads and writes
         (destination, source) => {
-            let mut read_buffer = vec![0; size];
+            let mut read_buffer: Vec<u8> = vec![0; size];
             source.read(source_offset, &mut read_buffer)?;
             destination.write(destination_offset, &read_buffer)
         }

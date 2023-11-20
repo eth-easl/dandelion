@@ -56,7 +56,8 @@ pub enum DandelionError {
     MmuWorkerError,
     // system engine errors
     /// The arguments in the context handed to the system function are malformed or otherwise insufissient
-    MalformedSystemFuncArg,
+    /// the string identifies the argument that was malformed or gives other information about the issue
+    MalformedSystemFuncArg(String),
     /// Argument given to system function was not valid
     InvalidSystemFuncArg(String),
     /// System function did get unexpected response
@@ -93,6 +94,9 @@ pub enum DandelionError {
     SegmentationFault,
     /// other protection errors caused by the function
     OtherProctionError,
+    // errors from the functions
+    /// Function indicated it failed
+    FunctionError(i32),
 }
 
 pub type DandelionResult<T> = std::result::Result<T, DandelionError>;

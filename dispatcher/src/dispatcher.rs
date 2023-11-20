@@ -206,9 +206,9 @@ impl Dispatcher {
         &self,
         composition: Composition,
         mut inputs: BTreeMap<usize, CompositionSet>,
-        output_sets: BTreeSet<usize>,
+        output_sets: BTreeMap<usize, usize>,
         non_caching: bool,
-    ) -> DandelionResult<Vec<(usize, CompositionSet)>> {
+    ) -> DandelionResult<BTreeMap<usize, CompositionSet>> {
         // build up ready sets
         let mut ready_sets = inputs.keys().cloned().collect::<BTreeSet<usize>>();
         let (mut ready_functions, mut non_ready_functions): (Vec<_>, Vec<_>) =
@@ -251,7 +251,8 @@ impl Dispatcher {
             })
             .collect();
 
-        while let Some(Ok(new_compositions)) = running_functions.next().await {
+        while let Some(new_compositions_result) = running_functions.next().await {
+            let new_compositions = new_compositions_result?;
             for (composition_set_index, composition_set) in new_compositions {
                 inputs.insert(composition_set_index, composition_set);
                 ready_sets.insert(composition_set_index);
@@ -295,8 +296,12 @@ impl Dispatcher {
         }
         return Ok(inputs
             .into_iter()
-            .filter(|(set_index, _)| output_sets.contains(set_index))
-            .collect::<Vec<_>>());
+            .filter_map(|(set_index, composition_set)| {
+                output_sets
+                    .get(&set_index)
+                    .and_then(|output_index| Some((*output_index, composition_set)))
+            })
+            .collect::<BTreeMap<_, _>>());
     }
 
     async fn queue_function_sharded<'context>(
@@ -305,7 +310,7 @@ impl Dispatcher {
         input_sets: Vec<(usize, CompositionSet)>,
         output_mapping: Vec<Option<usize>>,
         non_caching: bool,
-    ) -> DandelionResult<Vec<(usize, CompositionSet)>> {
+    ) -> DandelionResult<BTreeMap<usize, CompositionSet>> {
         let results: Vec<_> = input_sets
             .into_iter()
             .map(|(index, composition_set)| composition_set.shard(index))
@@ -319,22 +324,26 @@ impl Dispatcher {
                 ))
             })
             .collect();
-        let composition_sets = join_all(results)
-            .await
-            .into_iter()
-            .flatten()
-            .flatten()
-            .fold(BTreeMap::new(), |mut map, (set_id, mut composition_set)| {
-                map.entry(set_id)
-                    .and_modify(|previous: &mut CompositionSet| {
-                        previous.combine(&mut composition_set);
-                    })
-                    .or_insert(composition_set);
-                return map;
-            })
-            .into_iter()
-            .collect::<Vec<(usize, _)>>();
-        return Ok(composition_sets);
+        let composition_results: DandelionResult<Vec<_>> =
+            join_all(results).await.into_iter().collect();
+        let mut composition_set_maps = composition_results?.into_iter();
+        if let Some(mut result_set_map) = composition_set_maps.next() {
+            for additional_set_map in composition_set_maps {
+                for (key, mut additional_set) in additional_set_map.into_iter() {
+                    result_set_map
+                        .entry(key)
+                        .and_modify(|existing_set| {
+                            existing_set
+                                .combine(&mut additional_set)
+                                .expect("Should not fail to combine");
+                        })
+                        .or_insert(additional_set);
+                }
+            }
+            return Ok(result_set_map);
+        } else {
+            return Ok(BTreeMap::new());
+        };
     }
 
     /// returns a vector of pairs of a index and a composition set
@@ -347,7 +356,9 @@ impl Dispatcher {
         non_caching: bool,
     ) -> Pin<
         Box<
-            dyn Future<Output = DandelionResult<Vec<(usize, CompositionSet)>>> + 'dispatcher + Send,
+            dyn Future<Output = DandelionResult<BTreeMap<usize, CompositionSet>>>
+                + 'dispatcher
+                + Send,
         >,
     > {
         Box::pin(async move {
@@ -377,8 +388,8 @@ impl Dispatcher {
                                 recorder.clone(),
                             )
                             .await;
-                        recorder.record(RecordPoint::FutureReturn)?;
                         result?;
+                        recorder.record(RecordPoint::FutureReturn)?;
                         let context_arc = Arc::new(context);
                         let composition_sets = output_mapping
                             .into_iter()
@@ -414,8 +425,18 @@ impl Dispatcher {
                                 out_sets.clone(),
                                 non_caching,
                             )
-                            .await;
-                        return compositon_output;
+                            .await?;
+                        return Ok(compositon_output
+                            .into_iter()
+                            .filter_map(|(function_id, composition)| {
+                                if output_mapping.len() < function_id {
+                                    return None;
+                                }
+                                return output_mapping[function_id].and_then(|composition_id| {
+                                    Some((composition_id, composition))
+                                });
+                            })
+                            .collect());
                     }
                 }
             } else {
@@ -466,6 +487,7 @@ impl Dispatcher {
                     &mut function_context,
                     &source_context,
                     function_set,
+                    // TODO get allignment information from function
                     128,
                     function_item,
                     set_name,
