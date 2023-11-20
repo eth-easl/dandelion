@@ -9,7 +9,7 @@ use dandelion_commons::{
     records::{RecordPoint, Recorder},
     DandelionError, DandelionResult,
 };
-use hyper::{body::HttpBody, Client, HeaderMap, Method, Request, Version};
+use hyper::{body::HttpBody, Body, Client, HeaderMap, Method, Request, Version};
 use std::pin::Pin;
 use tokio::runtime::{Builder, Runtime};
 
@@ -17,16 +17,17 @@ struct RequestInformation {
     method: Method,
     uri: String,
     version: Version,
+    headermap: Vec<(String, String)>,
+    body: Body,
 }
 struct ResponseInformation {
     status: String,
-    version: String,
     headermap: HeaderMap,
     body: Vec<u8>,
 }
 
 fn http_setup(context: &Context) -> DandelionResult<RequestInformation> {
-    let request_line = match context.content.iter().find(|set_option| {
+    let request_set = match context.content.iter().find(|set_option| {
         if let Some(set) = set_option {
             return set.ident == "request";
         } else {
@@ -34,54 +35,120 @@ fn http_setup(context: &Context) -> DandelionResult<RequestInformation> {
         }
     }) {
         Some(Some(set)) => set,
-        _ => return Err(DandelionError::MalformedSystemFuncArg),
+        _ => {
+            return Err(DandelionError::MalformedSystemFuncArg(String::from(
+                "No request set",
+            )))
+        }
+    };
+    if request_set.buffers.len() != 1 {
+        return Err(DandelionError::MalformedSystemFuncArg(String::from(
+            "More than one request item in set",
+        )));
+    }
+    let request_item = &request_set.buffers[0];
+    let mut request_buffer = Vec::<u8>::with_capacity(request_item.data.size);
+    request_buffer.resize(request_item.data.size, 0);
+    context.read(request_item.data.offset, &mut request_buffer)?;
+    let request_line = match String::from_utf8(request_buffer) {
+        Ok(line) => line,
+        Err(_) => {
+            return Err(DandelionError::InvalidSystemFuncArg(String::from(
+                "Request line not utf8",
+            )));
+        }
+    };
+    let mut request_iter = request_line.split_ascii_whitespace();
+
+    let method_item = request_iter.next();
+    let method = match method_item {
+        Some(method_string) if method_string == "GET" => Method::GET,
+        Some(method_string) if method_string == "PUT" => Method::PUT,
+        Some(method_string) => {
+            return Err(DandelionError::InvalidSystemFuncArg(String::from(
+                method_string,
+            )))
+        }
+        _ => {
+            return Err(DandelionError::MalformedSystemFuncArg(String::from(
+                "No method found",
+            )))
+        }
     };
 
-    let method_item = request_line
-        .buffers
-        .iter()
-        .find(|&buffer| buffer.ident == "method")
-        .ok_or(DandelionError::MalformedSystemFuncArg)?;
+    let uri = String::from(
+        request_iter
+            .next()
+            .ok_or(DandelionError::MalformedSystemFuncArg(String::from(
+                "No uri in request",
+            )))?,
+    );
 
-    let mut method_vec = vec![0u8; method_item.data.size];
-    context.read(method_item.data.offset, &mut method_vec)?;
-    let method = match String::from_utf8(method_vec) {
-        Ok(method_string) if method_string == "GET" => Method::GET,
-        Ok(method_string) if method_string == "PUT" => Method::PUT,
-        Ok(method_string) => return Err(DandelionError::InvalidSystemFuncArg(method_string)),
-        _ => return Err(DandelionError::MalformedSystemFuncArg),
+    let version = match request_iter.next() {
+        Some(version_string) if version_string == "HTTP/0.9" => Version::HTTP_09,
+        Some(version_string) if version_string == "HTTP/1.0" => Version::HTTP_10,
+        Some(version_string) if version_string == "HTTP/1.1" => Version::HTTP_11,
+        Some(version_string) if version_string == "HTTP/2.0" => Version::HTTP_2,
+        Some(version_string) if version_string == "HTTP/3.0" => Version::HTTP_3,
+        Some(version_string) => {
+            return Err(DandelionError::InvalidSystemFuncArg(String::from(
+                version_string,
+            )))
+        }
+        None => {
+            return Err(DandelionError::MalformedSystemFuncArg(String::from(
+                "No http version found",
+            )))
+        }
     };
 
-    let uri_item = request_line
-        .buffers
-        .iter()
-        .find(|&buffer| buffer.ident == "uri")
-        .ok_or(DandelionError::MalformedSystemFuncArg)?;
-    let mut uri_vec = vec![0u8; uri_item.data.size];
-    context.read(uri_item.data.offset, &mut uri_vec)?;
-    let uri = String::from_utf8(uri_vec).or(Err(DandelionError::MalformedSystemFuncArg))?;
+    let headermap = if let Some(Some(header_set)) = context.content.iter().find(|&set_option| {
+        set_option
+            .as_ref()
+            .and_then(|set| Some(set.ident == "headers"))
+            .unwrap_or(false)
+    }) {
+        let mut headermap = Vec::<(String, String)>::with_capacity(header_set.buffers.len());
+        for header_item in &header_set.buffers {
+            let mut header_value = Vec::<u8>::with_capacity(header_item.data.size);
+            header_value.resize(header_item.data.size, 0);
+            context.read(header_item.data.offset, &mut header_value)?;
+            let value_string =
+                String::from_utf8(header_value).or(Err(DandelionError::MalformedSystemFuncArg(
+                    String::from("header value not utf8 conformant"),
+                )))?;
+            headermap.push((header_item.ident.clone(), value_string));
+        }
+        headermap
+    } else {
+        Vec::new()
+    };
 
-    let version_item = request_line
-        .buffers
-        .iter()
-        .find(|&buffer| buffer.ident == "version")
-        .ok_or(DandelionError::MalformedSystemFuncArg)?;
-    let mut version_vec = vec![0u8; version_item.data.size];
-    context.read(version_item.data.offset, &mut version_vec)?;
-    let version = match String::from_utf8(version_vec) {
-        Ok(version_string) if version_string == "HTTP/0.9" => Version::HTTP_09,
-        Ok(version_string) if version_string == "HTTP/1.0" => Version::HTTP_10,
-        Ok(version_string) if version_string == "HTTP/1.1" => Version::HTTP_11,
-        Ok(version_string) if version_string == "HTTP/2.0" => Version::HTTP_2,
-        Ok(version_string) if version_string == "HTTP/3.0" => Version::HTTP_3,
-        Ok(version_string) => return Err(DandelionError::InvalidSystemFuncArg(version_string)),
-        Err(_) => return Err(DandelionError::MalformedSystemFuncArg),
+    let body = if let Some(Some(body_set)) = context.content.iter().find(|&set_option| {
+        set_option
+            .as_ref()
+            .and_then(|set| Some(set.ident == "body"))
+            .unwrap_or(false)
+    }) {
+        if body_set.buffers.len() < 1 {
+            Body::empty()
+        } else {
+            let body_item = &body_set.buffers[0];
+            let mut body_buffer = Vec::<u8>::with_capacity(body_item.data.size);
+            body_buffer.resize(body_item.data.size, 0);
+            context.read(body_item.data.offset, &mut body_buffer)?;
+            Body::from(body_buffer)
+        }
+    } else {
+        Body::empty()
     };
 
     return Ok(RequestInformation {
         method,
         uri,
         version,
+        headermap,
+        body,
     });
 }
 
@@ -90,21 +157,40 @@ async fn http_request(request_info: RequestInformation) -> DandelionResult<Respo
         method,
         uri,
         version,
+        headermap,
+        body,
     } = request_info;
 
-    let request = Request::builder()
+    let mut request_builder = Request::builder()
         .method(method)
-        .uri(uri)
-        .version(version)
-        .body("".into())
-        .or(Err(DandelionError::EngineError))?;
+        .uri(uri.clone())
+        .version(version);
+    for (key, value) in headermap {
+        request_builder = request_builder.header(key, value);
+    }
+    let request = match request_builder.body(body) {
+        Ok(req) => req,
+        Err(http_error) => {
+            println!("URI: {}", uri);
+            return Err(DandelionError::MalformedSystemFuncArg(format!(
+                "{:?}",
+                http_error
+            )));
+        }
+    };
     let client = Client::new();
     let future = client.request(request).await;
-    let mut response = future.or(Err(DandelionError::EngineError))?;
+    let mut response = future
+        .or(Err(DandelionError::EngineError))
+        .expect("response failed");
 
     // write the status line
-    let version = format!("{:?}", response.version());
-    let status = response.status().as_str().to_string();
+    let status = format!(
+        "{:?} {} {}",
+        response.version(),
+        response.status().as_str(),
+        response.status().canonical_reason().unwrap_or("")
+    );
 
     // read the content length in the header
     // TODO also accept chunked data
@@ -122,7 +208,6 @@ async fn http_request(request_info: RequestInformation) -> DandelionResult<Respo
         }
         let response_info = ResponseInformation {
             status,
-            version,
             headermap: response.headers().to_owned(),
             body: chunck.into(),
         };
@@ -144,33 +229,21 @@ fn http_context_write(
     }
     let ResponseInformation {
         status,
-        version,
         headermap,
         body,
     } = response;
-    if output_set_names.iter().any(|elem| elem == "status line") {
+    if output_set_names.iter().any(|elem| elem == "status") {
         let status_offset = context.get_free_space_and_write_slice(status.as_bytes())? as usize;
-        let version_offset = context.get_free_space_and_write_slice(version.as_bytes())? as usize;
         content.push(Some(DataSet {
-            ident: String::from("status line"),
-            buffers: vec![
-                DataItem {
-                    ident: String::from("status"),
-                    data: Position {
-                        offset: status_offset,
-                        size: status.len(),
-                    },
-                    key: 0,
+            ident: String::from("status"),
+            buffers: vec![DataItem {
+                ident: String::from("status"),
+                data: Position {
+                    offset: status_offset,
+                    size: status.len(),
                 },
-                DataItem {
-                    ident: String::from("version"),
-                    data: Position {
-                        offset: version_offset,
-                        size: version.len(),
-                    },
-                    key: 0,
-                },
-            ],
+                key: 0,
+            }],
         }));
     }
 
@@ -229,20 +302,23 @@ async fn http_wrapper(
     let response_future;
     {
         let _guard = runtime.enter();
-        let method = match http_setup(&context) {
-            Ok(method) => method,
+        let request = match http_setup(&context) {
+            Ok(request) => request,
             Err(err) => return (Err(err), context),
         };
 
         if let Err(err) = recorder.record(RecordPoint::EngineStart) {
             return (Err(err), context);
         }
-        response_future = runtime.spawn(http_request(method));
+        response_future = runtime.spawn(http_request(request));
     }
     let response = match response_future.await {
         Ok(Ok(info)) => info,
         Ok(Err(err)) => return (Err(err), context),
-        Err(_) => return (Err(DandelionError::EngineError), context),
+        Err(_) => {
+            println!("response future failed");
+            return (Err(DandelionError::EngineError), context);
+        }
     };
     if let Err(err) = recorder.record(RecordPoint::EngineEnd) {
         return (Err(err), context);

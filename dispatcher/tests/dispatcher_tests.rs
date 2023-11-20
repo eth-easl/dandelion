@@ -1,4 +1,4 @@
-#[cfg(all(test, any(feature = "cheri", feature = "mmu")))]
+#[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "wasm")))]
 mod dispatcher_tests {
     use dandelion_commons::{ContextTypeId, EngineTypeId};
     use dispatcher::{
@@ -223,8 +223,7 @@ mod dispatcher_tests {
             Err(err) => panic!("Failed with: {:?}", err),
         };
         assert_eq!(1, out_sets.len());
-        let (out_index, out_set) = &out_sets[0];
-        assert_eq!(0, *out_index);
+        let out_set = out_sets.get(&0).expect("Should have set 0");
         assert_eq!(1, out_set.context_list.len());
         let out_context = &out_set.context_list[0];
         assert_eq!(1, out_context.content.len());
@@ -267,7 +266,7 @@ mod dispatcher_tests {
                 sharding_mode: ShardingMode::NoSharding,
             },
         )]);
-        let outputs = BTreeSet::from([1]);
+        let outputs = BTreeMap::from([(1, 0)]);
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -277,9 +276,8 @@ mod dispatcher_tests {
             Err(err) => panic!("Failed with: {:?}", err),
         };
         assert_eq!(1, out_contexts.len());
-        let (out_context_id, mut out_context_list) = out_contexts.remove(0);
+        let mut out_context_list = out_contexts.remove(&0).expect("Should have set 0");
 
-        assert_eq!(1, out_context_id);
         assert_eq!(1, out_context_list.context_list.len());
         let out_context = out_context_list.context_list.remove(0);
         assert_eq!(1, out_context.content.len());
@@ -327,7 +325,7 @@ mod dispatcher_tests {
                 sharding_mode: ShardingMode::KeySharding(BTreeSet::from([0, 1])),
             },
         )]);
-        let outputs = BTreeSet::from([1]);
+        let outputs = BTreeMap::from([(1, 0)]);
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -337,9 +335,8 @@ mod dispatcher_tests {
             Err(err) => panic!("Failed with: {:?}", err),
         };
         assert_eq!(1, out_vec.len());
-        let (out_index, out_set) = out_vec.remove(0);
+        let out_set = out_vec.remove(&0).expect("Should have set 0");
         assert_eq!(2, out_set.context_list.len());
-        assert_eq!(1, out_index);
         // check for each shard:
         for matrix_context in out_set.context_list {
             if let Some(matrix_set) = &matrix_context.content[0] {
@@ -400,7 +397,7 @@ mod dispatcher_tests {
                 context_list: vec![Arc::new(in_context)],
             },
         )]);
-        let output_contexts = BTreeSet::from([2]);
+        let output_contexts = BTreeMap::from([(2, 0)]);
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -410,8 +407,7 @@ mod dispatcher_tests {
             Err(err) => panic!("Failed with: {:?}", err),
         };
         assert_eq!(1, out_contexts.len());
-        let (out_context_id, out_composition_set) = &out_contexts[0];
-        assert_eq!(2, *out_context_id);
+        let out_composition_set = out_contexts.get(&0).expect("Should have set 0");
         assert_eq!(1, out_composition_set.context_list.len());
         let out_context = &out_composition_set.context_list[0];
         assert_eq!(1, out_context.content.len());
@@ -505,7 +501,7 @@ mod dispatcher_tests {
                 },
             ),
         ]);
-        let output_contexts = BTreeSet::from([7]);
+        let output_contexts = BTreeMap::from([(7, 0)]);
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -515,8 +511,7 @@ mod dispatcher_tests {
             Err(err) => panic!("Failed with: {:?}", err),
         };
         assert_eq!(1, out_contexts.len());
-        let (out_context_id, out_composition_set) = &out_contexts[0];
-        assert_eq!(7, *out_context_id);
+        let out_composition_set = out_contexts.get(&0).expect("Should have set 0");
         assert_eq!(1, out_composition_set.context_list.len());
         let out_context = &out_composition_set.context_list[0];
         assert_eq!(1, out_context.content.len());
@@ -536,7 +531,7 @@ mod dispatcher_tests {
             #[test]
             fn test_single_domain_and_engine_basic() {
                 let driver = Box::new($driver);
-                let name = format!("test_elf_{}_basic", stringify!($name));
+                let name = format!("test_{}_basic", stringify!($name));
                 super::single_domain_and_engine_basic::<$domain>(
                     $init,
                     &name,
@@ -547,7 +542,7 @@ mod dispatcher_tests {
             #[test]
             fn test_single_domain_and_engine_matmul() {
                 let driver = Box::new($driver);
-                let name = format!("test_elf_{}_matmul", stringify!($name));
+                let name = format!("test_{}_matmul", stringify!($name));
                 super::single_domain_and_engine_matmul::<$domain>(
                     $init,
                     &name,
@@ -558,14 +553,14 @@ mod dispatcher_tests {
             #[test]
             fn test_composition_single_matmul() {
                 let driver = Box::new($driver);
-                let name = format!("test_elf_{}_matmul", stringify!($name));
+                let name = format!("test_{}_matmul", stringify!($name));
                 super::composition_single_matmul::<$domain>($init, &name, driver, $engine_resource)
             }
 
             #[test]
             fn test_composition_parallel() {
                 let driver = Box::new($driver);
-                let name = format!("test_elf_{}_matmul", stringify!($name));
+                let name = format!("test_{}_matmul", stringify!($name));
                 super::composition_parallel_matmul::<$domain>(
                     $init,
                     &name,
@@ -577,13 +572,13 @@ mod dispatcher_tests {
             #[test]
             fn test_composition_chain() {
                 let driver = Box::new($driver);
-                let name = format!("test_elf_{}_matmul", stringify!($name));
+                let name = format!("test_{}_matmul", stringify!($name));
                 super::composition_chain_matmul::<$domain>($init, &name, driver, $engine_resource)
             }
 
             #[test]
             fn test_composition_diamond() {
-                let name = format!("test_elf_{}_matmac", stringify!($name));
+                let name = format!("test_{}_matmac", stringify!($name));
                 let driver = Box::new($driver);
                 super::composition_diamond_matmac::<$domain>($init, &name, driver, $engine_resource)
             }
@@ -596,7 +591,7 @@ mod dispatcher_tests {
             function_driver::compute_driver::cheri::CheriDriver,
             memory_domain::cheri::CheriMemoryDomain,
         };
-        dispatcherTests!(cheri; CheriMemoryDomain; Vec::new(); CheriDriver {}; vec![1]);
+        dispatcherTests!(elf_cheri; CheriMemoryDomain; Vec::new(); CheriDriver {}; vec![1]);
     }
 
     #[cfg(feature = "mmu")]
@@ -605,8 +600,17 @@ mod dispatcher_tests {
             function_driver::compute_driver::mmu::MmuDriver, memory_domain::mmu::MmuMemoryDomain,
         };
         #[cfg(target_arch = "x86_64")]
-        dispatcherTests!(mmu_x86_64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![1]);
+        dispatcherTests!(elf_mmu_x86_64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![1]);
         #[cfg(target_arch = "aarch64")]
-        dispatcherTests!(mmu_aarch64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![1]);
+        dispatcherTests!(elf_mmu_aarch64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![1]);
+    }
+
+    #[cfg(feature = "wasm")]
+    mod wasm {
+        use machine_interface::{
+            function_driver::compute_driver::wasm::WasmDriver, memory_domain::wasm::WasmMemoryDomain,
+        };
+        #[cfg(target_arch = "x86_64")]
+        dispatcherTests!(sysld_wasm_x64; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![1]);
     }
 }

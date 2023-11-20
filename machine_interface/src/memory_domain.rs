@@ -1,6 +1,8 @@
 // list of memory domain implementations
 #[cfg(feature = "cheri")]
 pub mod cheri;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 pub mod malloc;
 #[cfg(feature = "mmu")]
 pub mod mmu;
@@ -22,6 +24,8 @@ pub enum ContextType {
     Cheri(Box<cheri::CheriContext>),
     #[cfg(feature = "mmu")]
     Mmu(Box<mmu::MmuContext>),
+    #[cfg(feature = "wasm")]
+    Wasm(Box<wasm::WasmContext>),
 }
 
 impl ContextTrait for ContextType {
@@ -32,6 +36,8 @@ impl ContextTrait for ContextType {
             ContextType::Cheri(context) => context.write(offset, data),
             #[cfg(feature = "mmu")]
             ContextType::Mmu(context) => context.write(offset, data),
+            #[cfg(feature = "wasm")]
+            ContextType::Wasm(context) => context.write(offset, data),
         }
     }
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
@@ -41,8 +47,16 @@ impl ContextTrait for ContextType {
             ContextType::Cheri(context) => context.read(offset, read_buffer),
             #[cfg(feature = "mmu")]
             ContextType::Mmu(context) => context.read(offset, read_buffer),
+            #[cfg(feature = "wasm")]
+            ContextType::Wasm(context) => context.read(offset, read_buffer),
         }
     }
+}
+
+#[derive(Debug)]
+pub enum ContextState {
+    InPreparation,
+    Run(i32),
 }
 
 #[derive(Debug)]
@@ -50,6 +64,7 @@ pub struct Context {
     pub context: ContextType,
     pub content: Vec<Option<DataSet>>,
     pub size: usize,
+    pub state: ContextState,
     occupation: Vec<Position>,
 }
 
@@ -68,6 +83,7 @@ impl Context {
             context: con,
             content: vec![],
             size: size,
+            state: ContextState::InPreparation,
             occupation: vec![
                 Position { offset: 0, size: 0 },
                 Position {
@@ -82,7 +98,9 @@ impl Context {
     /// Assumes offset is larger than or equal to the offset of occupation at index
     fn insert(&mut self, index: usize, offset: usize, size: usize) {
         let mut check_index = index;
-        if (self.occupation[index].offset + self.occupation[index].size) <= offset {
+        
+        // only merge with previous occupation on seamless insert, leave a hole otherwise
+        if (self.occupation[index].offset + self.occupation[index].size) == offset {
             self.occupation[index].size = offset - self.occupation[index].offset + size;
         } else {
             self.occupation.insert(
@@ -196,7 +214,7 @@ pub fn transefer_memory(
                 source_offset,
                 size,
             )
-        }
+        },
         #[cfg(feature = "cheri")]
         (ContextType::Cheri(destination_ctxt), ContextType::Cheri(source_ctxt)) => {
             cheri::cheri_transfer(
@@ -206,18 +224,30 @@ pub fn transefer_memory(
                 source_offset,
                 size,
             )
-        }
+        },
         #[cfg(feature = "mmu")]
-        (ContextType::Mmu(destination_ctxt), ContextType::Mmu(source_ctxt)) => mmu::mmu_transfer(
-            destination_ctxt,
-            source_ctxt,
-            destination_offset,
-            source_offset,
-            size,
-        ),
+        (ContextType::Mmu(destination_ctxt), ContextType::Mmu(source_ctxt)) => {
+            mmu::mmu_transfer(
+                destination_ctxt,
+                source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+            )
+        },
+        #[cfg(feature = "wasm")]
+        (ContextType::Wasm(destination_ctxt), ContextType::Wasm(source_ctxt)) => {
+            wasm::wasm_transfer(
+                destination_ctxt,
+                source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+            )
+        },
         // default implementation using reads and writes
         (destination, source) => {
-            let mut read_buffer = vec![0; size];
+            let mut read_buffer: Vec<u8> = vec![0; size];
             source.read(source_offset, &mut read_buffer)?;
             destination.write(destination_offset, &read_buffer)
         }
