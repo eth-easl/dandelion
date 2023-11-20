@@ -194,8 +194,9 @@ fn mmu_run_static(
     // this trick gives the desired path of mmu_worker for packages within the workspace
     // TODO: replace with a more general solution (e.g. environment variable)
     let path = format!(
-        "{}/../target/{}/mmu_worker",
+        "{}/../target/{}-unknown-linux-gnu/{}/mmu_worker",
         env!("CARGO_MANIFEST_DIR"),
+        std::env::consts::ARCH,
         if cfg!(debug_assertions) {
             "debug"
         } else {
