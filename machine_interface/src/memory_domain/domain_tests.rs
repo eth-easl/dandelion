@@ -222,7 +222,7 @@ use super::mmu::MmuMemoryDomain as mmuType;
 #[cfg(feature = "mmu")]
 domainTests!(mmu; mmuType; Vec::new());
 
-// #[cfg(feature = "wasm")]
-// use super::wasm::WasmMemoryDomain as wasmType;
-// #[cfg(feature = "wasm")]
-// domainTests!(wasm; wasmType; Vec::new());
+#[cfg(feature = "wasm")]
+use super::wasm::WasmMemoryDomain as wasmType;
+#[cfg(feature = "wasm")]
+domainTests!(wasm; wasmType; Vec::new());
