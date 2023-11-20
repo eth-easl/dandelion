@@ -42,52 +42,50 @@ fn run_thread(
         return;
     };
 
-    let msg = match command_receiver.recv() {
-        Ok( WasmCommand { lib, context, recorder } ) => {
-            match unsafe { lib.get::<WasmEntryPoint>(b"run") } {
-                Ok(entry_point) => {
-                    // TODO handle errors
+    'commandloop: for cmd in command_receiver.iter() {
+        let WasmCommand { lib, context, recorder } = cmd;
+        match unsafe { lib.get::<WasmEntryPoint>(b"run") } {
+            Ok(entry_point) => {
+                // TODO handle errors
 
-                    let mut guard = context.lock().unwrap();
+                let mut guard = context.lock().unwrap();
 
-                    // take out the context
-                    let mut ctx = guard.take().unwrap();
-                    let wasm_context = match &mut ctx.context {
-                        ContextType::Wasm(wasm_context) => wasm_context,
-                        _ => panic!("invalid context type"),
-                    };
+                // take out the context
+                let mut ctx = guard.take().unwrap();
+                let wasm_context = match &mut ctx.context {
+                    ContextType::Wasm(wasm_context) => wasm_context,
+                    _ => panic!("invalid context type"),
+                };
 
-                    // call entry point
-                    let ret = entry_point(&mut wasm_context.mem);
-                    
-                    // put context back
-                    *guard = Some(ctx);
+                // call entry point
+                let ret = entry_point(&mut wasm_context.mem);
+                
+                // put context back
+                *guard = Some(ctx);
 
-                    // record
-                    if let Some(mut recorder) = recorder {
-                        let _ = recorder.record(RecordPoint::EngineEnd);
+                // record
+                if let Some(mut recorder) = recorder {
+                    let _ = recorder.record(RecordPoint::EngineEnd);
+                }
+
+                let msg = match ret {
+                    Some(_) => Ok(()),
+                    None => Err(DandelionError::EngineError)
+                };
+
+                // try sending until succeeds
+                let mut not_sent = true;
+                while not_sent {
+                    not_sent = match result_sender.try_send(msg.clone()) {
+                        Ok(()) => false,
+                        Err(err) if err.is_full() => true,
+                        Err(_) => return ,
                     }
-
-                    match ret {
-                        Some(_) => Ok(()),
-                        None => Err(DandelionError::EngineError)
-                    }
-                },
-                Err(_) => Err(DandelionError::EngineError),
-            }
-        },
-        Err(_) => Err(DandelionError::EngineError),
-    };
-
-    // try sending until succeeds
-    let mut not_sent = true;
-    while not_sent {
-        not_sent = match result_sender.try_send(msg.clone()) {
-            Ok(()) => false,
-            Err(err) if err.is_full() => true,
-            Err(_) => return ,
+                }
+            },
+            Err(_) => break 'commandloop,
         }
-    }
+    };
 }
 
 struct WasmFuture<'a> {

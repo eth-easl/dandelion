@@ -1,4 +1,4 @@
-#[cfg(all(test, any(feature = "cheri", feature = "mmu")))]
+#[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "wasm")))]
 mod dispatcher_tests {
     use dandelion_commons::{ContextTypeId, EngineTypeId};
     use dispatcher::{
@@ -531,7 +531,7 @@ mod dispatcher_tests {
             #[test]
             fn test_single_domain_and_engine_basic() {
                 let driver = Box::new($driver);
-                let name = format!("test_elf_{}_basic", stringify!($name));
+                let name = format!("test_{}_basic", stringify!($name));
                 super::single_domain_and_engine_basic::<$domain>(
                     $init,
                     &name,
@@ -542,7 +542,7 @@ mod dispatcher_tests {
             #[test]
             fn test_single_domain_and_engine_matmul() {
                 let driver = Box::new($driver);
-                let name = format!("test_elf_{}_matmul", stringify!($name));
+                let name = format!("test_{}_matmul", stringify!($name));
                 super::single_domain_and_engine_matmul::<$domain>(
                     $init,
                     &name,
@@ -553,14 +553,14 @@ mod dispatcher_tests {
             #[test]
             fn test_composition_single_matmul() {
                 let driver = Box::new($driver);
-                let name = format!("test_elf_{}_matmul", stringify!($name));
+                let name = format!("test_{}_matmul", stringify!($name));
                 super::composition_single_matmul::<$domain>($init, &name, driver, $engine_resource)
             }
 
             #[test]
             fn test_composition_parallel() {
                 let driver = Box::new($driver);
-                let name = format!("test_elf_{}_matmul", stringify!($name));
+                let name = format!("test_{}_matmul", stringify!($name));
                 super::composition_parallel_matmul::<$domain>(
                     $init,
                     &name,
@@ -572,13 +572,13 @@ mod dispatcher_tests {
             #[test]
             fn test_composition_chain() {
                 let driver = Box::new($driver);
-                let name = format!("test_elf_{}_matmul", stringify!($name));
+                let name = format!("test_{}_matmul", stringify!($name));
                 super::composition_chain_matmul::<$domain>($init, &name, driver, $engine_resource)
             }
 
             #[test]
             fn test_composition_diamond() {
-                let name = format!("test_elf_{}_matmac", stringify!($name));
+                let name = format!("test_{}_matmac", stringify!($name));
                 let driver = Box::new($driver);
                 super::composition_diamond_matmac::<$domain>($init, &name, driver, $engine_resource)
             }
@@ -591,7 +591,7 @@ mod dispatcher_tests {
             function_driver::compute_driver::cheri::CheriDriver,
             memory_domain::cheri::CheriMemoryDomain,
         };
-        dispatcherTests!(cheri; CheriMemoryDomain; Vec::new(); CheriDriver {}; vec![1]);
+        dispatcherTests!(elf_cheri; CheriMemoryDomain; Vec::new(); CheriDriver {}; vec![1]);
     }
 
     #[cfg(feature = "mmu")]
@@ -600,8 +600,17 @@ mod dispatcher_tests {
             function_driver::compute_driver::mmu::MmuDriver, memory_domain::mmu::MmuMemoryDomain,
         };
         #[cfg(target_arch = "x86_64")]
-        dispatcherTests!(mmu_x86_64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![1]);
+        dispatcherTests!(elf_mmu_x86_64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![1]);
         #[cfg(target_arch = "aarch64")]
-        dispatcherTests!(mmu_aarch64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![1]);
+        dispatcherTests!(elf_mmu_aarch64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![1]);
+    }
+
+    #[cfg(feature = "wasm")]
+    mod wasm {
+        use machine_interface::{
+            function_driver::compute_driver::wasm::WasmDriver, memory_domain::wasm::WasmMemoryDomain,
+        };
+        #[cfg(target_arch = "x86_64")]
+        dispatcherTests!(sysld_wasm_x64; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![1]);
     }
 }
