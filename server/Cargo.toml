@@ -18,3 +18,5 @@ http = "0.2"
 [features]
 cheri = ["machine_interface/cheri"]
 mmu = ["machine_interface/mmu"]
+wasm = ["machine_interface/wasm"]
+hyper_io = ["machine_interface/hyper_io"]

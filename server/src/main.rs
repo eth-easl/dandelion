@@ -21,7 +21,7 @@ use machine_interface::{
     memory_domain::malloc::MallocMemoryDomain,
 };
 
-#[cfg(feture = "hyper_io")]
+#[cfg(feature = "hyper_io")]
 use machine_interface::function_driver::system_driver::hyper::HyperDriver;
 
 #[cfg(feature = "cheri")]
@@ -38,7 +38,14 @@ use machine_interface::{
     DataItem, DataSet, Position,
 };
 
-#[cfg(not(any(feature = "cheri", feature = "mmu")))]
+#[cfg(feature = "wasm")]
+use machine_interface::{
+    function_driver::{compute_driver::wasm::WasmDriver, Driver},
+    memory_domain::{wasm::WasmMemoryDomain, Context, ContextTrait, MemoryDomain},
+    DataItem, DataSet, Position,
+};
+
+#[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm")))]
 use machine_interface::{
     memory_domain::{Context, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
@@ -177,7 +184,10 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
     #[cfg(feature = "mmu")]
     let domain = MmuMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
 
-    #[cfg(not(any(feature = "cheri", feature = "mmu")))]
+    #[cfg(feature = "wasm")]
+    let domain = WasmMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
+
+    #[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm")))]
     let domain = MallocMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
 
     let mut input_context = domain
@@ -406,9 +416,9 @@ fn main() -> () {
     );
     let mut registry;
     // insert specific configuration
-    #[cfg(all(feature = "cheri", feature = "mmu"))]
-    std::compile_error!("Should only have one feature out of mmu or cheri");
-    #[cfg(all(any(feature = "cheri", feature = "mmu"), feature = "hyper_io"))]
+    #[cfg(all(feature = "cheri", feature = "mmu", feature = "wasm"))]
+    std::compile_error!("Should only have one feature out of mmu or cheri or wasm");
+    #[cfg(all(any(feature = "cheri", feature = "mmu", feature = "wasm"), feature = "hyper_io"))]
     {
         let mut drivers = BTreeMap::new();
         let mut mmm_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -437,6 +447,22 @@ fn main() -> () {
             ));
             busy_path.push(format!(
                 "../machine_interface/tests/data/test_elf_mmu_{}_busy",
+                std::env::consts::ARCH
+            ));
+        }
+        #[cfg(feature = "wasm")]
+        {
+            domains.insert(
+                COMPUTE_DOMAIN,
+                WasmMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain"),
+            );
+            driver = Box::new(WasmDriver {}) as Box<dyn Driver>;
+            mmm_path.push(format!(
+                "../machine_interface/tests/data/test_sysld_wasm_{}_matmul",
+                std::env::consts::ARCH
+            ));
+            busy_path.push(format!(
+                "../machine_interface/tests/data/test_sysld_wasm_{}_busy",
                 std::env::consts::ARCH
             ));
         }
@@ -503,7 +529,7 @@ fn main() -> () {
             output_set_map,
         );
     }
-    #[cfg(not(all(any(feature = "cheri", feature = "mmu"), feature = "hyper_io")))]
+    #[cfg(not(all(any(feature = "cheri", feature = "mmu", feature = "wasm"), feature = "hyper_io")))]
     {
         let loader_map = BTreeMap::new();
         registry = FunctionRegistry::new(loader_map);
@@ -543,7 +569,9 @@ fn main() -> () {
     println!("Hello, World (cheri)");
     #[cfg(feature = "mmu")]
     println!("Hello, World (mmu)");
-    #[cfg(not(any(feature = "cheri", feature = "mmu")))]
+    #[cfg(feature = "wasm")]
+    println!("Hello, World (wasm)");
+    #[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm")))]
     println!("Hello, World (native)");
     // Run this server for... forever!
     if let Err(e) = runtime.block_on(server) {
