@@ -305,7 +305,6 @@ async fn serve_chain(
     let get_uri = uris[0].to_string();
     let post_uri = uris[1].to_string();
 
-    println!("got GET uri: {}", get_uri);
     let response_vec = run_chain(dispatcher, get_uri, post_uri)
         .await
         .to_be_bytes()
