@@ -21,7 +21,7 @@ use machine_interface::{
     memory_domain::malloc::MallocMemoryDomain,
 };
 
-#[cfg(feture = "hyper_io")]
+#[cfg(feature = "hyper_io")]
 use machine_interface::function_driver::system_driver::hyper::HyperDriver;
 
 #[cfg(feature = "cheri")]
