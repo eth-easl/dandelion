@@ -37,6 +37,10 @@ pub enum DandelionError {
     TransferInputNoSetAvailable,
     /// tried to transfer to a data item that was already present
     TransferItemAlreadyPresent,
+    /// error converting pointers or integers
+    UsizeTypeConversionError,
+    /// context synchronization failed
+    ContextSyncError,
     // engine errors
     /// missmatch between the function config the engine expects and the one given
     ConfigMissmatch,
@@ -90,6 +94,9 @@ pub enum DandelionError {
     SegmentationFault,
     /// other protection errors caused by the function
     OtherProctionError,
+    // errors from the functions
+    /// Function indicated it failed
+    FunctionError(i32),
 }
 
 pub type DandelionResult<T> = std::result::Result<T, DandelionError>;

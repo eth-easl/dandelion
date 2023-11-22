@@ -4,7 +4,7 @@ use crate::{
     },
     interface::{read_output_structs, setup_input_structs},
     memory_domain::{cheri::cheri_c_context, Context, ContextTrait, ContextType, MemoryDomain},
-    util::elf_parser,
+    util::{elf_parser, load_u8_from_file},
     DataItem, DataRequirement, DataRequirementList, DataSet, Position,
 };
 use core::{
@@ -83,7 +83,7 @@ impl Future for CheriFuture<'_> {
         }
         let mut context = self.context.take().unwrap();
         // read outputs
-        let result = read_output_structs(&mut context, self.system_data_offset);
+        let result = read_output_structs::<u64, u64>(&mut context, self.system_data_offset);
         self.engine.is_running.store(false, Ordering::Release);
         Poll::Ready((result, context))
     }
@@ -162,7 +162,7 @@ impl Engine for CheriEngine {
             stack_pointer: cheri_context.size - 32,
             recorder: Some(recorder),
         };
-        if let Err(err) = setup_input_structs(
+        if let Err(err) = setup_input_structs::<u64, u64>(
             &mut context,
             elf_config.system_data_offset,
             output_set_names,
@@ -271,7 +271,7 @@ impl Driver for CheriDriver {
         for position in source_layout.iter() {
             total_size += position.size;
         }
-        let mut context = static_domain.acquire_context(total_size)?;
+        let mut context = static_domain.acquire_context(total_size, 0)?;
         // copy all
         let mut write_counter = 0;
         let mut new_content = DataSet {

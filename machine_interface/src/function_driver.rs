@@ -6,6 +6,8 @@ use core::pin::Pin;
 use dandelion_commons::{records::Recorder, DandelionResult};
 use std::{future::Future, sync::Arc};
 
+use libloading::Library;
+
 pub mod compute_driver;
 mod load_utils;
 pub mod system_driver;
@@ -26,9 +28,19 @@ pub enum SystemFunction {
 }
 
 #[derive(Clone)]
+pub struct WasmConfig {
+    lib: Arc<Library>,
+    wasm_mem_size: usize,
+    sdk_heap_base: usize,
+    sdk_heap_size: usize,
+    system_data_struct_offset: usize,
+}
+
+#[derive(Clone)]
 pub enum FunctionConfig {
     ElfConfig(ElfConfig),
     SysConfig(SystemFunction),
+    WasmConfig(WasmConfig),
 }
 
 pub struct Function {
@@ -44,6 +56,11 @@ impl Function {
                 load_utils::load_static(domain, &self.context, &self.requirements)
             }
             FunctionConfig::SysConfig(_) => domain.acquire_context(self.requirements.size),
+            FunctionConfig::WasmConfig(c) => {
+                let mut context = domain.acquire_context(c.wasm_mem_size)?;
+                context.occupy_space(0, c.sdk_heap_base)?;
+                Ok(context)
+            }
         };
     }
 }
