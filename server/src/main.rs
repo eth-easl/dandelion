@@ -376,9 +376,10 @@ async fn service(
 ) -> Result<Response<Body>, Infallible> {
     let uri = req.uri().path();
     match uri {
-        "/cold" => serve_request(true, req, dispatcher).await,
-        "/hot" => serve_request(false, req, dispatcher).await,
-        "/chain" => serve_chain(req, dispatcher).await,
+        "/cold/matmul" => serve_request(true, req, dispatcher).await,
+        "/hot/matmul" => serve_request(false, req, dispatcher).await,
+        "/cold/compute" => serve_chain(req, dispatcher).await,
+        "/hot/compute" => serve_chain(req, dispatcher).await,
         "/native" => serve_native(req).await,
         "/stats" => serve_stats(req, dispatcher).await,
         _ => Ok::<_, Infallible>(Response::new(
