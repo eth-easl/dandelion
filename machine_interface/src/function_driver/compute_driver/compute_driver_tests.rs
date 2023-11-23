@@ -1,4 +1,4 @@
-#[cfg(all(test, any(feature = "cheri", feature = "mmu")))]
+#[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "wasm")))]
 mod compute_driver_tests {
     use crate::{
         function_driver::{Driver, Engine, FunctionConfig},
@@ -488,7 +488,7 @@ mod compute_driver_tests {
             #[test]
             fn test_engine_minimal() {
                 let name = format!(
-                    "{}/tests/data/test_elf_{}_basic",
+                    "{}/tests/data/test_{}_basic",
                     env!("CARGO_MANIFEST_DIR"),
                     stringify!($name)
                 );
@@ -499,7 +499,7 @@ mod compute_driver_tests {
             #[test]
             fn test_engine_matmul_single() {
                 let name = format!(
-                    "{}/tests/data/test_elf_{}_matmul",
+                    "{}/tests/data/test_{}_matmul",
                     env!("CARGO_MANIFEST_DIR"),
                     stringify!($name)
                 );
@@ -510,7 +510,7 @@ mod compute_driver_tests {
             #[test]
             fn test_engine_matmul_size_sweep() {
                 let name = format!(
-                    "{}/tests/data/test_elf_{}_matmul",
+                    "{}/tests/data/test_{}_matmul",
                     env!("CARGO_MANIFEST_DIR"),
                     stringify!($name)
                 );
@@ -521,7 +521,7 @@ mod compute_driver_tests {
             #[test]
             fn test_engine_stdio() {
                 let name = format!(
-                    "{}/tests/data/test_elf_{}_stdio",
+                    "{}/tests/data/test_{}_stdio",
                     env!("CARGO_MANIFEST_DIR"),
                     stringify!($name)
                 );
@@ -532,7 +532,7 @@ mod compute_driver_tests {
             #[test]
             fn test_engine_fileio() {
                 let name = format!(
-                    "{}/tests/data/test_elf_{}_fileio",
+                    "{}/tests/data/test_{}_fileio",
                     env!("CARGO_MANIFEST_DIR"),
                     stringify!($name)
                 );
@@ -546,7 +546,7 @@ mod compute_driver_tests {
     mod cheri {
         use crate::function_driver::compute_driver::cheri::CheriDriver;
         use crate::memory_domain::cheri::CheriMemoryDomain;
-        driverTests!(cheri; CheriMemoryDomain; Vec::new(); CheriDriver {}; vec![1,2,3]; vec![4]);
+        driverTests!(elf_cheri; CheriMemoryDomain; Vec::new(); CheriDriver {}; vec![1,2,3]; vec![4]);
     }
 
     #[cfg(feature = "mmu")]
@@ -554,8 +554,17 @@ mod compute_driver_tests {
         use crate::function_driver::compute_driver::mmu::MmuDriver;
         use crate::memory_domain::mmu::MmuMemoryDomain;
         #[cfg(target_arch = "x86_64")]
-        driverTests!(mmu_x86_64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![1, 2, 3]; vec![255]);
+        driverTests!(elf_mmu_x86_64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![1, 2, 3]; vec![255]);
         #[cfg(target_arch = "aarch64")]
-        driverTests!(mmu_aarch64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![1, 2, 3]; vec![255]);
+        driverTests!(elf_mmu_aarch64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![1, 2, 3]; vec![255]);
+    }
+
+    #[cfg(feature = "wasm")]
+    mod wasm {
+        use crate::function_driver::compute_driver::wasm::WasmDriver;
+        use crate::memory_domain::wasm::WasmMemoryDomain;
+        driverTests!(sysld_wasm; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![1, 2, 3]; vec![255]);
+        #[cfg(target_arch = "aarch64")]
+        driverTests!(sysld_wasm_aarch64; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![1, 2, 3]; vec![255]);
     }
 }
