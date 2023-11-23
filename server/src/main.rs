@@ -21,7 +21,7 @@ use machine_interface::{
     memory_domain::malloc::MallocMemoryDomain,
 };
 
-#[cfg(feture = "hyper_io")]
+#[cfg(feature = "hyper_io")]
 use machine_interface::function_driver::system_driver::hyper::HyperDriver;
 
 #[cfg(feature = "cheri")]
@@ -40,7 +40,7 @@ use machine_interface::{
 
 #[cfg(not(any(feature = "cheri", feature = "mmu")))]
 use machine_interface::{
-    memory_domain::{malloc::MallocMemoryDomain, Context, ContextTrait, MemoryDomain},
+    memory_domain::{Context, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
 };
 
@@ -296,11 +296,15 @@ async fn serve_chain(
     req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
 ) -> Result<Response<Body>, Infallible> {
-    // let request_buf = hyper::body::to_bytes(req.into_body())
-    //     .await
-    //     .expect("Should be able to parse body");
-    let get_uri = String::from("http://localhost:8000/iterations/17");
-    let post_uri = String::from("http://localhost:8000/post");
+    let request_buf = hyper::body::to_bytes(req.into_body())
+        .await
+        .expect("Should be able to parse body");
+
+    let request_str = std::str::from_utf8(&request_buf).unwrap();
+    let uris: Vec<&str> = request_str.split("::").collect();
+    let get_uri = uris[0].to_string();
+    let post_uri = uris[1].to_string();
+
     let response_vec = run_chain(dispatcher, get_uri, post_uri)
         .await
         .to_be_bytes()
@@ -372,9 +376,10 @@ async fn service(
 ) -> Result<Response<Body>, Infallible> {
     let uri = req.uri().path();
     match uri {
-        "/cold" => serve_request(true, req, dispatcher).await,
-        "/hot" => serve_request(false, req, dispatcher).await,
-        "/chain" => serve_chain(req, dispatcher).await,
+        "/cold/matmul" => serve_request(true, req, dispatcher).await,
+        "/hot/matmul" => serve_request(false, req, dispatcher).await,
+        "/cold/compute" => serve_chain(req, dispatcher).await,
+        "/hot/compute" => serve_chain(req, dispatcher).await,
         "/native" => serve_native(req).await,
         "/stats" => serve_stats(req, dispatcher).await,
         _ => Ok::<_, Infallible>(Response::new(
