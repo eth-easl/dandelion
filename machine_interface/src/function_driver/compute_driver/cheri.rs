@@ -4,7 +4,7 @@ use crate::{
     },
     interface::{read_output_structs, setup_input_structs},
     memory_domain::{cheri::cheri_c_context, Context, ContextTrait, ContextType, MemoryDomain},
-    util::{elf_parser, load_u8_from_file},
+    util::elf_parser,
     DataItem, DataRequirement, DataRequirementList, DataSet, Position,
 };
 use core::{
@@ -271,7 +271,7 @@ impl Driver for CheriDriver {
         for position in source_layout.iter() {
             total_size += position.size;
         }
-        let mut context = static_domain.acquire_context(total_size, 0)?;
+        let mut context = static_domain.acquire_context(total_size)?;
         // copy all
         let mut write_counter = 0;
         let mut new_content = DataSet {
