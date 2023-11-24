@@ -322,10 +322,9 @@ async fn serve_chain(
     req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
 ) -> Result<Response<Body>, Infallible> {
-    
     let request_buf = hyper::body::to_bytes(req.into_body())
-         .await
-         .expect("Should be able to parse body");
+        .await
+        .expect("Should be able to parse body");
 
     let request_str = std::str::from_utf8(&request_buf).unwrap();
     let uris: Vec<&str> = request_str.split("::").collect();
