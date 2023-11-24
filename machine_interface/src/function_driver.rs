@@ -79,7 +79,6 @@ pub trait Engine: Send {
 // we could add a uncallable function with a private token that is not visible outside,
 // but not sure if that is necessary
 
-// TODO maybe combine driver and loader into one trait or replace them completely with function signatrue types
 pub trait Driver: Send + Sync {
     // the resource descirbed by config and make it into an engine of the type
     fn start_engine(&self, config: Vec<u8>) -> DandelionResult<Box<dyn Engine>>;
