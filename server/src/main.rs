@@ -385,7 +385,7 @@ async fn service(
     dispatcher: Arc<Dispatcher>,
 ) -> Result<Response<Body>, Infallible> {
     let uri = req.uri().path();
-    println!("Got request for {}", uri);
+    // println!("Got request for {}", uri);
     match uri {
         "/cold/matmul" => serve_request(true, req, dispatcher).await,
         "/hot/matmul" => serve_request(false, req, dispatcher).await,
