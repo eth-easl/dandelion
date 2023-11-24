@@ -44,7 +44,16 @@ use machine_interface::{
     DataItem, DataSet, Position,
 };
 
-use std::{collections::BTreeMap, convert::Infallible, mem::size_of, net::SocketAddr, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    convert::Infallible,
+    mem::size_of,
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc,
+    },
+};
 use tokio::runtime::Builder;
 
 const HOT_ID: u64 = 0;
@@ -399,9 +408,11 @@ fn main() -> () {
     let mut type_map = BTreeMap::new();
     type_map.insert(COMPUTE_ENGINE, COMPUTE_DOMAIN);
     type_map.insert(SYS_ENGINE, SYS_CONTEXT);
+    let num_cores = u8::try_from(core_affinity::get_core_ids().unwrap().len()).unwrap();
     let mut pool_map = BTreeMap::new();
-    pool_map.insert(COMPUTE_ENGINE, (1..=3).collect());
-    pool_map.insert(SYS_ENGINE, (0..128).collect());
+    pool_map.insert(COMPUTE_ENGINE, (1..num_cores).collect());
+    // TODO: It's not safe to share cores between compute engines and system engines
+    pool_map.insert(SYS_ENGINE, (0..num_cores).collect());
     let resource_pool = ResourcePool {
         engine_pool: Mutex::new(pool_map),
     };
@@ -524,11 +535,12 @@ fn main() -> () {
     // set up tokio runtime, need io in any case
     let mut runtime_builder = Builder::new_multi_thread();
     runtime_builder.enable_io();
+    runtime_builder.worker_threads(1);
     runtime_builder.on_thread_start(|| {
         if !core_affinity::set_for_current(CoreId { id: 0usize }) {
             return;
         }
-        println!("Hello from Tokio thread");
+        println!("Dispatcher running on core {}", 0);
     });
     let runtime = runtime_builder.build().unwrap();
     let _guard = runtime.enter();

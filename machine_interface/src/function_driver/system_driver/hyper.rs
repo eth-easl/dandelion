@@ -389,6 +389,7 @@ impl Driver for HyperDriver {
                 if !set_for_current(core_affinity::CoreId { id: core_id.into() }) {
                     return;
                 }
+                println!("Hyper engine running on core {}", core_id);
             })
             .worker_threads(1)
             .enable_all()

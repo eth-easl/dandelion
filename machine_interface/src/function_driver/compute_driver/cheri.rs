@@ -98,6 +98,7 @@ fn run_thread(
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
         return;
     };
+    println!("CHERI engine running on core {}", core_id);
     'commandloop: for command in command_receiver.iter() {
         if command.cancel {
             break 'commandloop;

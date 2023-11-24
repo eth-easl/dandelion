@@ -41,6 +41,7 @@ fn run_thread(
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
         return;
     };
+    println!("WASM engine running on core {}", core_id);
 
     'commandloop: for cmd in command_receiver.iter() {
         let WasmCommand { lib, context, recorder } = cmd;
