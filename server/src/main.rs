@@ -411,7 +411,7 @@ fn main() -> () {
     type_map.insert(COMPUTE_ENGINE, COMPUTE_DOMAIN);
     type_map.insert(SYS_ENGINE, SYS_CONTEXT);
     let mut pool_map = BTreeMap::new();
-    pool_map.insert(COMPUTE_ENGINE, (1..=60).collect());
+    pool_map.insert(COMPUTE_ENGINE, (1..=63).collect());
     pool_map.insert(SYS_ENGINE, (0..128).collect());
     let resource_pool = ResourcePool {
         engine_pool: Mutex::new(pool_map),
