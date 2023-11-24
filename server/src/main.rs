@@ -525,7 +525,9 @@ fn main() -> () {
     let mut runtime_builder = Builder::new_multi_thread();
     runtime_builder.enable_io();
     runtime_builder.on_thread_start(|| {
-        core_affinity::set_for_current(CoreId { id: 0usize });
+        if !core_affinity::set_for_current(CoreId { id: 0usize }) {
+            return;
+        }
         println!("Hello from Tokio thread");
     });
     let runtime = runtime_builder.build().unwrap();

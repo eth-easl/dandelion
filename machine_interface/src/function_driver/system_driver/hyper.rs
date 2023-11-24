@@ -371,10 +371,24 @@ impl Driver for HyperDriver {
             return Err(DandelionError::ConfigMissmatch);
         }
         let core_id = config[0];
+        // check that core is available
+        let available_cores = match core_affinity::get_core_ids() {
+            None => return Err(DandelionError::EngineError),
+            Some(cores) => cores,
+        };
+        if !available_cores
+            .iter()
+            .find(|x| x.id == usize::from(core_id))
+            .is_some()
+        {
+            return Err(DandelionError::MalformedConfig);
+        }
 
         let runtime = Builder::new_multi_thread()
             .on_thread_start(move || {
-                set_for_current(core_affinity::CoreId { id: core_id.into() });
+                if !set_for_current(core_affinity::CoreId { id: core_id.into() }) {
+                    return;
+                }
             })
             .worker_threads(1)
             .enable_all()
