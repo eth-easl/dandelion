@@ -62,20 +62,6 @@ const COMPOSITION_ID: u64 = 4;
 
 static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
 
-struct counter(u64, u64);
-
-impl counter {
-    const fn new(id: u64) -> Self { 
-        counter(id, 0) 
-    }
-    fn tick(&mut self) {
-        self.1 += 1;
-        println!("tick {} {}", self.0, self.1);
-    }
-}
-
-static mut ctr: counter = counter::new(0);
-
 async fn run_chain(dispatcher: Arc<Dispatcher>, get_uri: String, post_uri: String) -> u64 {
     let domain = MallocMemoryDomain::init(vec![]).expect("Should be able to get malloc domain");
     let mut input_context = domain
@@ -176,8 +162,6 @@ async fn run_chain(dispatcher: Arc<Dispatcher>, get_uri: String, post_uri: Strin
 }
 
 async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, cols: usize) -> i64 {
-    unsafe { ctr.tick() }
-
     let mat_size: usize = rows * cols;
     // [rows] [input_matrix]
     let context_size: usize = (1 + mat_size) * 8;
