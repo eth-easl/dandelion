@@ -15,6 +15,11 @@ core_affinity = "0.8"
 bytes = "1.4"
 http = "0.2"
 
+[dev-dependencies]
+assert_cmd = "2.0"
+byteorder = "1.5"
+reqwest = { version = "0.11", default-features = false, features = ["blocking"] }
+
 [features]
 cheri = ["machine_interface/cheri"]
 mmu = ["machine_interface/mmu"]
