@@ -409,8 +409,10 @@ fn main() -> () {
     type_map.insert(COMPUTE_ENGINE, COMPUTE_DOMAIN);
     type_map.insert(SYS_ENGINE, SYS_CONTEXT);
     let num_cores = u8::try_from(core_affinity::get_core_ids().unwrap().len()).unwrap();
+    // TODO: This calculation makes sense only for running matmul-128x128 workload on MMU engines
+    let num_dispatcher_cores = (num_cores + 13) / 14;
     let mut pool_map = BTreeMap::new();
-    pool_map.insert(COMPUTE_ENGINE, (1..num_cores).collect());
+    pool_map.insert(COMPUTE_ENGINE, (num_dispatcher_cores..num_cores).collect());
     // TODO: It's not safe to share cores between compute engines and system engines
     pool_map.insert(SYS_ENGINE, (0..num_cores).collect());
     let resource_pool = ResourcePool {
@@ -535,12 +537,14 @@ fn main() -> () {
     // set up tokio runtime, need io in any case
     let mut runtime_builder = Builder::new_multi_thread();
     runtime_builder.enable_io();
-    runtime_builder.worker_threads(1);
+    runtime_builder.worker_threads(num_dispatcher_cores.into());
     runtime_builder.on_thread_start(|| {
+        static ATOMIC_ID: AtomicU8 = AtomicU8::new(0);
+        let core_id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
         if !core_affinity::set_for_current(CoreId { id: 0usize }) {
             return;
         }
-        println!("Dispatcher running on core {}", 0);
+        println!("Dispatcher running on core {}", core_id);
     });
     let runtime = runtime_builder.build().unwrap();
     let _guard = runtime.enter();
