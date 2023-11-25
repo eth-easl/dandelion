@@ -541,7 +541,7 @@ fn main() -> () {
     runtime_builder.on_thread_start(|| {
         static ATOMIC_ID: AtomicU8 = AtomicU8::new(0);
         let core_id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
-        if !core_affinity::set_for_current(CoreId { id: 0usize }) {
+        if !core_affinity::set_for_current(CoreId { id: core_id.into() }) {
             return;
         }
         println!("Dispatcher running on core {}", core_id);
