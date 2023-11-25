@@ -44,7 +44,16 @@ use machine_interface::{
     DataItem, DataSet, Position,
 };
 
-use std::{collections::BTreeMap, convert::Infallible, mem::size_of, net::SocketAddr, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    convert::Infallible,
+    mem::size_of,
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc, Once,
+    },
+};
 use tokio::runtime::Builder;
 
 const HOT_ID: u64 = 0;
@@ -53,6 +62,7 @@ const HTTP_ID: u64 = 2;
 const BUSY_ID: u64 = 3;
 const COMPOSITION_ID: u64 = 4;
 
+static INIT_MATRIX: Once = Once::new();
 static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
 
 async fn run_chain(dispatcher: Arc<Dispatcher>, get_uri: String, post_uri: String) -> u64 {
@@ -160,15 +170,14 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
     let context_size: usize = (1 + mat_size) * 8;
 
     // Initialize matrix if necessary
-    // NOTE: Not exactly thread safe but works for now
     unsafe {
-        if DUMMY_MATRIX.is_empty() {
+        INIT_MATRIX.call_once(|| {
             // TODO: add cols
             DUMMY_MATRIX.push(rows as i64);
             for i in 0..mat_size {
                 DUMMY_MATRIX.push(i as i64 + 1)
             }
-        }
+        });
     }
 
     let mut input_context = unsafe { add_matmul_inputs(&DUMMY_MATRIX) };
@@ -316,13 +325,12 @@ async fn serve_native(_req: Request<Body>) -> Result<Response<Body>, Infallible>
     let mat_size: usize = rows * cols;
 
     // Initialize matrix if necessary
-    // NOTE: Not exactly thread safe but works for now
     unsafe {
-        if DUMMY_MATRIX.is_empty() {
+        INIT_MATRIX.call_once(|| {
             for i in 0..mat_size {
                 DUMMY_MATRIX.push(i as i64 + 1)
             }
-        }
+        });
     }
 
     let mut out_mat: Vec<i64> = vec![0; mat_size];
