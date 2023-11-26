@@ -51,7 +51,16 @@ use machine_interface::{
     DataItem, DataSet, Position,
 };
 
-use std::{collections::BTreeMap, convert::Infallible, mem::size_of, net::SocketAddr, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    convert::Infallible,
+    mem::size_of,
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc, Once,
+    },
+};
 use tokio::runtime::Builder;
 
 const HOT_ID: u64 = 0;
@@ -60,6 +69,7 @@ const HTTP_ID: u64 = 2;
 const BUSY_ID: u64 = 3;
 const COMPOSITION_ID: u64 = 4;
 
+static INIT_MATRIX: Once = Once::new();
 static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
 
 async fn run_chain(dispatcher: Arc<Dispatcher>, get_uri: String, post_uri: String) -> u64 {
@@ -167,15 +177,14 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
     let context_size: usize = (1 + mat_size) * 8;
 
     // Initialize matrix if necessary
-    // NOTE: Not exactly thread safe but works for now
     unsafe {
-        if DUMMY_MATRIX.is_empty() {
+        INIT_MATRIX.call_once(|| {
             // TODO: add cols
             DUMMY_MATRIX.push(rows as i64);
             for i in 0..mat_size {
                 DUMMY_MATRIX.push(i as i64 + 1)
             }
-        }
+        });
     }
 
     #[cfg(feature = "cheri")]
@@ -341,13 +350,12 @@ async fn serve_native(_req: Request<Body>) -> Result<Response<Body>, Infallible>
     let mat_size: usize = rows * cols;
 
     // Initialize matrix if necessary
-    // NOTE: Not exactly thread safe but works for now
     unsafe {
-        if DUMMY_MATRIX.is_empty() {
+        INIT_MATRIX.call_once(|| {
             for i in 0..mat_size {
                 DUMMY_MATRIX.push(i as i64 + 1)
             }
-        }
+        });
     }
 
     let mut out_mat: Vec<i64> = vec![0; mat_size];
@@ -410,9 +418,11 @@ fn main() -> () {
     let mut type_map = BTreeMap::new();
     type_map.insert(COMPUTE_ENGINE, COMPUTE_DOMAIN);
     type_map.insert(SYS_ENGINE, SYS_CONTEXT);
+    let num_cores = u8::try_from(core_affinity::get_core_ids().unwrap().len()).unwrap();
+    // TODO: This calculation makes sense only for running matmul-128x128 workload on MMU engines
+    let num_dispatcher_cores = (num_cores + 13) / 14;
     let mut pool_map = BTreeMap::new();
-    pool_map.insert(COMPUTE_ENGINE, (1..=63).collect());
-    pool_map.insert(SYS_ENGINE, (0..128).collect());
+    // TODO: It's not safe to share cores between compute engines and system engines
     let resource_pool = ResourcePool {
         engine_pool: Mutex::new(pool_map),
     };
@@ -551,9 +561,14 @@ fn main() -> () {
     // set up tokio runtime, need io in any case
     let mut runtime_builder = Builder::new_multi_thread();
     runtime_builder.enable_io();
+    runtime_builder.worker_threads(num_dispatcher_cores.into());
     runtime_builder.on_thread_start(|| {
-        core_affinity::set_for_current(CoreId { id: 0usize });
-        println!("Hello from Tokio thread");
+        static ATOMIC_ID: AtomicU8 = AtomicU8::new(0);
+        let core_id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
+        if !core_affinity::set_for_current(CoreId { id: core_id.into() }) {
+            return;
+        }
+        println!("Dispatcher running on core {}", core_id);
     });
     let runtime = runtime_builder.build().unwrap();
     let _guard = runtime.enter();
