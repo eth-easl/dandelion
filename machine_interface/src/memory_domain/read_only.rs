@@ -1,9 +1,12 @@
+extern crate alloc;
 use crate::memory_domain::{Context, ContextTrait};
+use alloc::alloc::Layout;
 use dandelion_commons::{DandelionError, DandelionResult};
 
 #[derive(Debug)]
 pub struct ReadOnlyContext {
-    storage: &'static [u8],
+    storage: &'static mut [u8],
+    layout: Option<Layout>,
 }
 
 impl ContextTrait for ReadOnlyContext {
@@ -33,31 +36,62 @@ impl ContextTrait for ReadOnlyContext {
 }
 
 impl ReadOnlyContext {
-    pub fn new<T>(reference: &[T]) -> Context {
+    pub fn new<T>(reference: Box<[T]>) -> DandelionResult<Context> {
+        let ref_len = core::mem::size_of::<T>() * reference.len();
+        let layout = core::alloc::Layout::from_size_align(ref_len, core::mem::align_of::<T>())
+            .or(Err(DandelionError::ContextReadOnlyLayout))?;
+        let new_ref = unsafe {
+            core::slice::from_raw_parts_mut(Box::leak(reference).as_mut_ptr() as *mut u8, ref_len)
+        };
+        return Ok(Context::new(
+            super::ContextType::ReadOnly(Box::new(ReadOnlyContext {
+                storage: new_ref,
+                layout: Some(layout),
+            })),
+            ref_len,
+        ));
+    }
+    pub fn new_static<T>(reference: &'static mut [T]) -> Context {
         let ref_len = core::mem::size_of::<T>() * reference.len();
         let new_ref =
-            unsafe { core::slice::from_raw_parts(reference.as_ptr() as *const u8, ref_len) };
+            unsafe { core::slice::from_raw_parts_mut(reference.as_mut_ptr() as *mut u8, ref_len) };
         return Context::new(
-            super::ContextType::ReadOnly(Box::new(ReadOnlyContext { storage: new_ref })),
+            super::ContextType::ReadOnly(Box::new(ReadOnlyContext {
+                storage: new_ref,
+                layout: None,
+            })),
             ref_len,
         );
     }
 }
 
+impl Drop for ReadOnlyContext {
+    fn drop(&mut self) {
+        if let Some(layout) = self.layout {
+            unsafe { alloc::alloc::dealloc(self.storage.as_mut_ptr(), layout) }
+        }
+    }
+}
+
 #[test]
 fn read_test() {
-    let test_data = -0x123456789ABCDEFi64;
-    let read_context = ReadOnlyContext::new(&[test_data]);
+    let expected_data = -0x123456789ABCDEFi64;
+    let test_data = vec![expected_data];
+    let read_context = ReadOnlyContext::new(test_data.into_boxed_slice())
+        .expect("should be able to create allocation");
     let mut all_read_vec = Vec::<u8>::new();
     all_read_vec.resize(8, 0);
     read_context
         .read(0, &mut all_read_vec)
         .expect("read should succeed");
-    assert_eq!(test_data.to_ne_bytes(), all_read_vec.as_slice());
+    assert_eq!(expected_data.to_ne_bytes(), all_read_vec.as_slice());
     let mut partial_read_vec = Vec::<u8>::new();
     partial_read_vec.resize(4, 0);
     read_context
         .read(2, &mut partial_read_vec)
         .expect("Partial read should succeed");
-    assert_eq!(&test_data.to_ne_bytes()[2..6], partial_read_vec.as_slice());
+    assert_eq!(
+        &expected_data.to_ne_bytes()[2..6],
+        partial_read_vec.as_slice()
+    );
 }

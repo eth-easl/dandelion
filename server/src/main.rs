@@ -180,7 +180,7 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
         });
     }
 
-    let mut input_context = unsafe { add_matmul_inputs(&DUMMY_MATRIX) };
+    let mut input_context = unsafe { add_matmul_inputs(&mut DUMMY_MATRIX) };
 
     let inputs = vec![(
         0,
@@ -204,11 +204,11 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
 }
 
 // Add the matrix multiplication inputs to the given context
-fn add_matmul_inputs(matrix: &Vec<i64>) -> Context {
+fn add_matmul_inputs(matrix: &'static mut Vec<i64>) -> Context {
     // Allocate a new set entry
-    let mut context = ReadOnlyContext::new(matrix);
-    context.content.resize_with(1, || None);
     let matrix_size = matrix.len() * size_of::<i64>();
+    let mut context = ReadOnlyContext::new_static(matrix);
+    context.content.resize_with(1, || None);
     context.occupy_space(0, matrix_size);
 
     if let Some(set) = &mut context.content[0] {
