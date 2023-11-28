@@ -1,11 +1,12 @@
 // list of memory domain implementations
 #[cfg(feature = "cheri")]
 pub mod cheri;
-#[cfg(feature = "wasm")]
-pub mod wasm;
 pub mod malloc;
 #[cfg(feature = "mmu")]
 pub mod mmu;
+pub mod read_only;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
 use crate::{DataItem, DataSet, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
@@ -20,6 +21,7 @@ pub trait ContextTrait: Send + Sync {
 #[derive(Debug)]
 pub enum ContextType {
     Malloc(Box<malloc::MallocContext>),
+    ReadOnly(Box<read_only::ReadOnlyContext>),
     #[cfg(feature = "cheri")]
     Cheri(Box<cheri::CheriContext>),
     #[cfg(feature = "mmu")]
@@ -32,6 +34,7 @@ impl ContextTrait for ContextType {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
         match self {
             ContextType::Malloc(context) => context.write(offset, data),
+            ContextType::ReadOnly(context) => context.write(offset, data),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.write(offset, data),
             #[cfg(feature = "mmu")]
@@ -43,6 +46,7 @@ impl ContextTrait for ContextType {
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         match self {
             ContextType::Malloc(context) => context.read(offset, read_buffer),
+            ContextType::ReadOnly(context) => context.read(offset, read_buffer),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.read(offset, read_buffer),
             #[cfg(feature = "mmu")]
@@ -98,7 +102,7 @@ impl Context {
     /// Assumes offset is larger than or equal to the offset of occupation at index
     fn insert(&mut self, index: usize, offset: usize, size: usize) {
         let mut check_index = index;
-        
+
         // only merge with previous occupation on seamless insert, leave a hole otherwise
         if (self.occupation[index].offset + self.occupation[index].size) == offset {
             self.occupation[index].size = offset - self.occupation[index].offset + size;
@@ -214,7 +218,7 @@ pub fn transefer_memory(
                 source_offset,
                 size,
             )
-        },
+        }
         #[cfg(feature = "cheri")]
         (ContextType::Cheri(destination_ctxt), ContextType::Cheri(source_ctxt)) => {
             cheri::cheri_transfer(
@@ -224,17 +228,15 @@ pub fn transefer_memory(
                 source_offset,
                 size,
             )
-        },
+        }
         #[cfg(feature = "mmu")]
-        (ContextType::Mmu(destination_ctxt), ContextType::Mmu(source_ctxt)) => {
-            mmu::mmu_transfer(
-                destination_ctxt,
-                source_ctxt,
-                destination_offset,
-                source_offset,
-                size,
-            )
-        },
+        (ContextType::Mmu(destination_ctxt), ContextType::Mmu(source_ctxt)) => mmu::mmu_transfer(
+            destination_ctxt,
+            source_ctxt,
+            destination_offset,
+            source_offset,
+            size,
+        ),
         #[cfg(feature = "wasm")]
         (ContextType::Wasm(destination_ctxt), ContextType::Wasm(source_ctxt)) => {
             wasm::wasm_transfer(
@@ -244,7 +246,7 @@ pub fn transefer_memory(
                 source_offset,
                 size,
             )
-        },
+        }
         // default implementation using reads and writes
         (destination, source) => {
             let mut read_buffer: Vec<u8> = vec![0; size];

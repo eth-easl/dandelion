@@ -18,7 +18,7 @@ use machine_interface::{
         system_driver::{get_system_function_input_sets, get_system_function_output_sets},
         SystemFunction,
     },
-    memory_domain::malloc::MallocMemoryDomain,
+    memory_domain::{malloc::MallocMemoryDomain, read_only::ReadOnlyContext},
 };
 
 #[cfg(feature = "hyper_io")]
@@ -187,25 +187,7 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
         });
     }
 
-    #[cfg(feature = "cheri")]
-    let domain = CheriMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
-
-    #[cfg(feature = "mmu")]
-    let domain = MmuMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
-
-    #[cfg(feature = "wasm")]
-    let domain = WasmMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
-
-    #[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm")))]
-    let domain = MallocMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
-
-    let mut input_context = domain
-        .acquire_context(context_size)
-        .expect("Should always have space");
-
-    unsafe {
-        add_matmul_inputs(&mut input_context, rows, cols, &DUMMY_MATRIX);
-    }
+    let mut input_context = unsafe { add_matmul_inputs(&mut DUMMY_MATRIX) };
 
     let inputs = vec![(
         0,
@@ -229,20 +211,19 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
 }
 
 // Add the matrix multiplication inputs to the given context
-fn add_matmul_inputs(context: &mut Context, _rows: usize, _cols: usize, matrix: &Vec<i64>) -> () {
+fn add_matmul_inputs(matrix: &'static mut Vec<i64>) -> Context {
     // Allocate a new set entry
+    let matrix_size = matrix.len() * size_of::<i64>();
+    let mut context = ReadOnlyContext::new_static(matrix);
     context.content.resize_with(1, || None);
-
-    let mat_offset = context
-        .get_free_space_and_write_slice(matrix)
-        .expect("Should have space") as usize;
+    context.occupy_space(0, matrix_size);
 
     if let Some(set) = &mut context.content[0] {
         set.buffers.push(DataItem {
             ident: String::from(""),
             data: Position {
-                offset: mat_offset,
-                size: matrix.len() * size_of::<i64>(),
+                offset: 0,
+                size: matrix_size,
             },
             key: 0,
         });
@@ -252,13 +233,14 @@ fn add_matmul_inputs(context: &mut Context, _rows: usize, _cols: usize, matrix: 
             buffers: vec![DataItem {
                 ident: "".to_string(),
                 data: Position {
-                    offset: mat_offset,
-                    size: matrix.len() * size_of::<i64>(),
+                    offset: 0,
+                    size: matrix_size,
                 },
                 key: 0,
             }],
         });
     }
+    return context;
 }
 
 // Given a result context, return the last element of the resulting matrix
