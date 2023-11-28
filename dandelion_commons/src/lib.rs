@@ -17,6 +17,8 @@ pub enum DandelionError {
     /// parser did not find symbol that it was searching for
     UnknownSymbol,
     // domain and context errors
+    /// error creating layout for read only context
+    ContextReadOnlyLayout,
     /// context handed to context specific function was wrong type
     ContextMissmatch,
     /// domain could not be allocated because there is no space available
