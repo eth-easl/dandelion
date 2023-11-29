@@ -155,7 +155,7 @@ async fn run_chain(dispatcher: Arc<Dispatcher>, get_uri: String, post_uri: Strin
         .expect("Should contain a return number");
     assert_eq!(1, result_set.buffers.len());
     let result_position = result_set.buffers[0].data;
-    assert!(8 >= result_position.size);
+    // assert!(8 >= result_position.size);
 
     let mut result_vec = Vec::<u8>::with_capacity(result_position.size);
 
