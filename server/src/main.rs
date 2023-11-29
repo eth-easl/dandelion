@@ -60,14 +60,12 @@ const HOT_ID: u64 = 0;
 const COLD_ID: u64 = 1;
 const HTTP_ID: u64 = 2;
 const BUSY_ID: u64 = 3;
-const COMPUTE_COMPOSITION_ID: u64 = 4;
-const IO_COMPOSITION_ID: u64 = 5;
+const COMPOSITION_ID: u64 = 4;
 
 static INIT_MATRIX: Once = Once::new();
 static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
 
-async fn run_io_chain(dispatcher: Arc<Dispatcher>, get_uri: String, post_uri: String) -> u64 {
-    // TODO: Implement dandelion-I/O version
+async fn run_chain(dispatcher: Arc<Dispatcher>, get_uri: String, post_uri: String) -> u64 {
     let domain = MallocMemoryDomain::init(vec![]).expect("Should be able to get malloc domain");
     let mut input_context = domain
         .acquire_context(128)
@@ -124,7 +122,7 @@ async fn run_io_chain(dispatcher: Arc<Dispatcher>, get_uri: String, post_uri: St
     let output_mapping = vec![Some(0), Some(1)];
 
     let result = dispatcher
-        .queue_function(IO_COMPOSITION_ID, inputs, output_mapping, false)
+        .queue_function(COMPOSITION_ID, inputs, output_mapping, false)
         .await
         .expect("Should get response from chain");
     assert_eq!(2, result.len());
@@ -157,112 +155,18 @@ async fn run_io_chain(dispatcher: Arc<Dispatcher>, get_uri: String, post_uri: St
         .expect("Should contain a return number");
     assert_eq!(1, result_set.buffers.len());
     let result_position = result_set.buffers[0].data;
-    assert_eq!(8, result_position.size);
-    let mut result_vec = Vec::<u64>::with_capacity(1);
+    assert!(8 >= result_position.size);
+
+    let mut result_vec = Vec::<u8>::with_capacity(result_position.size);
+
     result_vec.resize(1, 0);
+    let mut result_vec = vec![0u8; result_position.size];
     result_context
         .read(result_position.offset, result_vec.as_mut_slice())
         .expect("Should be able to read result");
-    return result_vec[0];
-}
+    let checksum = u64::from_ne_bytes(result_vec[0..8].try_into().unwrap());
 
-async fn run_compute_chain(dispatcher: Arc<Dispatcher>, get_uri: String, post_uri: String) -> u64 {
-    let domain = MallocMemoryDomain::init(vec![]).expect("Should be able to get malloc domain");
-    let mut input_context = domain
-        .acquire_context(128)
-        .expect("Should be able to get malloc context");
-    let get_request = format!("GET {} HTTP/1.1", get_uri);
-    let post_request = format!("PUT {} HTTP/1.1", post_uri);
-    let get_request_offset = input_context
-        .get_free_space_and_write_slice(get_request.as_bytes())
-        .expect("Should be able to write") as usize;
-    let post_request_offset = input_context
-        .get_free_space_and_write_slice(post_request.as_bytes())
-        .expect("Should be able to write") as usize;
-    input_context.content.push(Some(DataSet {
-        ident: String::from("request"),
-        buffers: vec![DataItem {
-            ident: String::from("request"),
-            data: Position {
-                offset: get_request_offset,
-                size: get_request.len(),
-            },
-            key: 0,
-        }],
-    }));
-    input_context.content.push(Some(DataSet {
-        ident: String::from("request"),
-        buffers: vec![DataItem {
-            ident: String::from("request"),
-            data: Position {
-                offset: post_request_offset,
-                size: post_request.len(),
-            },
-            key: 0,
-        }],
-    }));
-    let input_arc = Arc::new(input_context);
-    let inputs = vec![
-        (
-            0,
-            CompositionSet {
-                context_list: vec![input_arc.clone()],
-                sharding_mode: dispatcher::dispatcher::ShardingMode::NoSharding,
-                set_index: 0,
-            },
-        ),
-        (
-            5,
-            CompositionSet {
-                context_list: vec![input_arc],
-                sharding_mode: dispatcher::dispatcher::ShardingMode::NoSharding,
-                set_index: 1,
-            },
-        ),
-    ];
-    let output_mapping = vec![Some(0), Some(1)];
-
-    let result = dispatcher
-        .queue_function(COMPUTE_COMPOSITION_ID, inputs, output_mapping, false)
-        .await
-        .expect("Should get response from chain");
-    assert_eq!(2, result.len());
-    // check http post response
-    let post_composition_set = result
-        .get(&1)
-        .expect("Should have composition set for post response");
-    assert_eq!(1, post_composition_set.context_list.len());
-    let post_context = &post_composition_set.context_list[0];
-    assert_eq!(3, post_context.content.len());
-    let post_set = post_context.content[0]
-        .as_ref()
-        .expect("Should have status set");
-    assert_eq!(1, post_set.buffers.len());
-    let post_status_position = post_set.buffers[0].data;
-    let mut post_vec = Vec::<u8>::new();
-    post_vec.resize(post_status_position.size, 0);
-    post_context
-        .read(post_status_position.offset, post_vec.as_mut_slice())
-        .expect("Should be able to read post response");
-    assert_eq!("HTTP/1.1 200 OK".as_bytes(), post_vec.as_slice());
-
-    // check iteration result
-    let result_compositon_set = result.get(&0).expect("Should have set 0");
-    assert_eq!(1, result_compositon_set.context_list.len());
-    let result_context = &result_compositon_set.context_list[0];
-    assert_eq!(1, result_context.content.len());
-    let result_set = result_context.content[0]
-        .as_ref()
-        .expect("Should contain a return number");
-    assert_eq!(1, result_set.buffers.len());
-    let result_position = result_set.buffers[0].data;
-    assert_eq!(8, result_position.size);
-    let mut result_vec = Vec::<u64>::with_capacity(1);
-    result_vec.resize(1, 0);
-    result_context
-        .read(result_position.offset, result_vec.as_mut_slice())
-        .expect("Should be able to read result");
-    return result_vec[0];
+    return checksum;
 }
 
 async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, cols: usize) -> i64 {
@@ -387,7 +291,7 @@ async fn serve_request(
     return response;
 }
 
-async fn serve_compute_chain(
+async fn serve_chain(
     req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
 ) -> Result<Response<Body>, Infallible> {
@@ -400,28 +304,7 @@ async fn serve_compute_chain(
     let get_uri = uris[0].to_string();
     let post_uri = uris[1].to_string();
 
-    let response_vec = run_compute_chain(dispatcher, get_uri, post_uri)
-        .await
-        .to_be_bytes()
-        .to_vec();
-    let response = Ok::<_, Infallible>(Response::new(response_vec.into()));
-    return response;
-}
-
-async fn serve_io_chain(
-    req: Request<Body>,
-    dispatcher: Arc<Dispatcher>,
-) -> Result<Response<Body>, Infallible> {
-    let request_buf = hyper::body::to_bytes(req.into_body())
-        .await
-        .expect("Should be able to parse body");
-
-    let request_str = std::str::from_utf8(&request_buf).unwrap();
-    let uris: Vec<&str> = request_str.split("::").collect();
-    let get_uri = uris[0].to_string();
-    let post_uri = uris[1].to_string();
-
-    let response_vec = run_io_chain(dispatcher, get_uri, post_uri)
+    let response_vec = run_chain(dispatcher, get_uri, post_uri)
         .await
         .to_be_bytes()
         .to_vec();
@@ -493,10 +376,10 @@ async fn service(
     match uri {
         "/cold/matmul" => serve_request(true, req, dispatcher).await,
         "/hot/matmul" => serve_request(false, req, dispatcher).await,
-        "/cold/compute" => serve_compute_chain(req, dispatcher).await,
-        "/hot/compute" => serve_compute_chain(req, dispatcher).await,
-        "/hot/io" => serve_io_chain(req, dispatcher).await,
-        "/cold/io" => serve_io_chain(req, dispatcher).await,
+        "/cold/compute" => serve_chain(req, dispatcher).await,
+        "/hot/compute" => serve_chain(req, dispatcher).await,
+        "/hot/io" => serve_chain(req, dispatcher).await,
+        "/cold/io" => serve_chain(req, dispatcher).await,
         "/native" => serve_native(req).await,
         "/stats" => serve_stats(req, dispatcher).await,
         _ => Ok::<_, Infallible>(Response::new(
@@ -595,7 +478,7 @@ fn main() -> () {
         registry
             .add_system(HTTP_ID, SYS_ENGINE)
             .expect("Should be able to add system function");
-        let compute_composition = Composition {
+        let composition = Composition {
             dependencies: vec![
                 FunctionDependencies {
                     function: HTTP_ID,
@@ -614,47 +497,17 @@ fn main() -> () {
                 },
             ],
         };
-        let compute_output_set_map = BTreeMap::from([(4, 0), (6, 1)]);
-        let compute_input_sets = get_system_function_input_sets(SystemFunction::HTTP);
-        let compute_output_sets = get_system_function_output_sets(SystemFunction::HTTP);
+        let output_set_map = BTreeMap::from([(4, 0), (6, 1)]);
+        let input_sets = get_system_function_input_sets(SystemFunction::HTTP);
+        let output_sets = get_system_function_output_sets(SystemFunction::HTTP);
         registry.add_composition(
-            COMPUTE_COMPOSITION_ID,
-            compute_composition,
-            compute_input_sets,
-            compute_output_sets,
-            compute_output_set_map,
+            COMPOSITION_ID,
+            composition,
+            input_sets,
+            output_sets,
+            output_set_map,
         );
 
-        // TODO: Adjust I/O composition
-        let io_composition = Composition {
-            dependencies: vec![
-                FunctionDependencies {
-                    function: HTTP_ID,
-                    input_set_ids: vec![Some(0), None, None],
-                    output_set_ids: vec![Some(1), Some(2), Some(3)],
-                },
-                FunctionDependencies {
-                    function: BUSY_ID,
-                    input_set_ids: vec![Some(3)],
-                    output_set_ids: vec![Some(4)],
-                },
-                FunctionDependencies {
-                    function: HTTP_ID,
-                    input_set_ids: vec![Some(5), None, Some(4)],
-                    output_set_ids: vec![Some(6)],
-                },
-            ],
-        };
-        let io_output_set_map = BTreeMap::from([(4, 0), (6, 1)]);
-        let io_input_sets = get_system_function_input_sets(SystemFunction::HTTP);
-        let io_output_sets = get_system_function_output_sets(SystemFunction::HTTP);
-        registry.add_composition(
-            IO_COMPOSITION_ID,
-            io_composition,
-            io_input_sets,
-            io_output_sets,
-            io_output_set_map,
-        );
     }
     #[cfg(not(all(any(feature = "cheri", feature = "mmu"), feature = "hyper_io")))]
     {
