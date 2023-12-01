@@ -29,6 +29,7 @@ pub fn load_static(
     if static_context.content.len() != 1 {
         return Err(DandelionError::ConfigMissmatch);
     }
+    // copy sections to the new context
     let static_set = static_context.content[0]
         .as_ref()
         .ok_or(DandelionError::ConfigMissmatch)?;
