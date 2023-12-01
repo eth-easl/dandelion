@@ -398,7 +398,7 @@ fn main() -> () {
     let mut pool_map = BTreeMap::new();
     pool_map.insert(COMPUTE_ENGINE, (num_dispatcher_cores..num_cores).collect());
     // TODO: It's not safe to share cores between compute engines and system engines
-    pool_map.insert(SYS_ENGINE, (0..num_cores).collect());
+    pool_map.insert(SYS_ENGINE, (0..num_dispatcher_cores).collect());
     let resource_pool = ResourcePool {
         engine_pool: Mutex::new(pool_map),
     };
