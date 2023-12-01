@@ -18,7 +18,7 @@ use machine_interface::{
         system_driver::{get_system_function_input_sets, get_system_function_output_sets},
         SystemFunction,
     },
-    memory_domain::malloc::MallocMemoryDomain,
+    memory_domain::{malloc::MallocMemoryDomain, read_only::ReadOnlyContext},
 };
 
 #[cfg(feature = "hyper_io")]
@@ -44,7 +44,16 @@ use machine_interface::{
     DataItem, DataSet, Position,
 };
 
-use std::{collections::BTreeMap, convert::Infallible, mem::size_of, net::SocketAddr, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    convert::Infallible,
+    mem::size_of,
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc, Once,
+    },
+};
 use tokio::runtime::Builder;
 
 const HOT_ID: u64 = 0;
@@ -53,6 +62,7 @@ const HTTP_ID: u64 = 2;
 const BUSY_ID: u64 = 3;
 const COMPOSITION_ID: u64 = 4;
 
+static INIT_MATRIX: Once = Once::new();
 static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
 
 async fn run_chain(dispatcher: Arc<Dispatcher>, get_uri: String, post_uri: String) -> u64 {
@@ -131,13 +141,14 @@ async fn run_chain(dispatcher: Arc<Dispatcher>, get_uri: String, post_uri: Strin
         .expect("Should contain a return number");
     assert_eq!(1, result_set.buffers.len());
     let result_position = result_set.buffers[0].data;
-    assert_eq!(8, result_position.size);
-    let mut result_vec = Vec::<u64>::with_capacity(1);
-    result_vec.resize(1, 0);
+
+    let mut result_vec = vec![0u8; result_position.size];
     result_context
         .read(result_position.offset, result_vec.as_mut_slice())
         .expect("Should be able to read result");
-    return result_vec[0];
+    let checksum = u64::from_ne_bytes(result_vec[0..8].try_into().unwrap());
+
+    return checksum;
 }
 
 async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, cols: usize) -> i64 {
@@ -146,33 +157,17 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
     let context_size: usize = (1 + mat_size) * 8;
 
     // Initialize matrix if necessary
-    // NOTE: Not exactly thread safe but works for now
     unsafe {
-        if DUMMY_MATRIX.is_empty() {
+        INIT_MATRIX.call_once(|| {
             // TODO: add cols
             DUMMY_MATRIX.push(rows as i64);
             for i in 0..mat_size {
                 DUMMY_MATRIX.push(i as i64 + 1)
             }
-        }
+        });
     }
 
-    #[cfg(feature = "cheri")]
-    let domain = CheriMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
-
-    #[cfg(feature = "mmu")]
-    let domain = MmuMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
-
-    #[cfg(not(any(feature = "cheri", feature = "mmu")))]
-    let domain = MallocMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain");
-
-    let mut input_context = domain
-        .acquire_context(context_size)
-        .expect("Should always have space");
-
-    unsafe {
-        add_matmul_inputs(&mut input_context, rows, cols, &DUMMY_MATRIX);
-    }
+    let mut input_context = unsafe { add_matmul_inputs(&mut DUMMY_MATRIX) };
 
     let inputs = vec![(
         0,
@@ -192,20 +187,19 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
 }
 
 // Add the matrix multiplication inputs to the given context
-fn add_matmul_inputs(context: &mut Context, _rows: usize, _cols: usize, matrix: &Vec<i64>) -> () {
+fn add_matmul_inputs(matrix: &'static mut Vec<i64>) -> Context {
     // Allocate a new set entry
+    let matrix_size = matrix.len() * size_of::<i64>();
+    let mut context = ReadOnlyContext::new_static(matrix);
     context.content.resize_with(1, || None);
-
-    let mat_offset = context
-        .get_free_space_and_write_slice(matrix)
-        .expect("Should have space") as usize;
+    context.occupy_space(0, matrix_size);
 
     if let Some(set) = &mut context.content[0] {
         set.buffers.push(DataItem {
             ident: String::from(""),
             data: Position {
-                offset: mat_offset,
-                size: matrix.len() * size_of::<i64>(),
+                offset: 0,
+                size: matrix_size,
             },
             key: 0,
         });
@@ -215,13 +209,14 @@ fn add_matmul_inputs(context: &mut Context, _rows: usize, _cols: usize, matrix: 
             buffers: vec![DataItem {
                 ident: "".to_string(),
                 data: Position {
-                    offset: mat_offset,
-                    size: matrix.len() * size_of::<i64>(),
+                    offset: 0,
+                    size: matrix_size,
                 },
                 key: 0,
             }],
         });
     }
+    return context;
 }
 
 // Given a result context, return the last element of the resulting matrix
@@ -313,13 +308,12 @@ async fn serve_native(_req: Request<Body>) -> Result<Response<Body>, Infallible>
     let mat_size: usize = rows * cols;
 
     // Initialize matrix if necessary
-    // NOTE: Not exactly thread safe but works for now
     unsafe {
-        if DUMMY_MATRIX.is_empty() {
+        INIT_MATRIX.call_once(|| {
             for i in 0..mat_size {
                 DUMMY_MATRIX.push(i as i64 + 1)
             }
-        }
+        });
     }
 
     let mut out_mat: Vec<i64> = vec![0; mat_size];
@@ -362,6 +356,8 @@ async fn service(
         "/hot/matmul" => serve_request(false, req, dispatcher).await,
         "/cold/compute" => serve_chain(req, dispatcher).await,
         "/hot/compute" => serve_chain(req, dispatcher).await,
+        "/hot/io" => serve_chain(req, dispatcher).await,
+        "/cold/io" => serve_chain(req, dispatcher).await,
         "/native" => serve_native(req).await,
         "/stats" => serve_stats(req, dispatcher).await,
         _ => Ok::<_, Infallible>(Response::new(
@@ -489,6 +485,7 @@ fn main() -> () {
             output_sets,
             output_set_map,
         );
+
     }
     #[cfg(not(all(any(feature = "cheri", feature = "mmu"), feature = "hyper_io")))]
     {
