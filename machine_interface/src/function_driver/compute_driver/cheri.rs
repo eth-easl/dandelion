@@ -18,6 +18,7 @@ use dandelion_commons::{
 };
 use futures::{task::Poll, Stream};
 use libc::size_t;
+use log::info;
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -98,7 +99,7 @@ fn run_thread(
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
         return;
     };
-    println!("CHERI engine running on core {}", core_id);
+    info!("CHERI engine running on core {}", core_id);
     'commandloop: for command in command_receiver.iter() {
         if command.cancel {
             break 'commandloop;

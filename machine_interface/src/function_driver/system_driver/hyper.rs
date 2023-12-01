@@ -10,6 +10,7 @@ use dandelion_commons::{
     DandelionError, DandelionResult,
 };
 use hyper::{body::HttpBody, Body, Client, HeaderMap, Method, Request, Version};
+use log::{error, info};
 use std::pin::Pin;
 use tokio::runtime::{Builder, Runtime};
 
@@ -171,7 +172,7 @@ async fn http_request(request_info: RequestInformation) -> DandelionResult<Respo
     let request = match request_builder.body(body) {
         Ok(req) => req,
         Err(http_error) => {
-            println!("URI: {}", uri);
+            error!("URI: {}", uri);
             return Err(DandelionError::MalformedSystemFuncArg(format!(
                 "{:?}",
                 http_error
@@ -316,7 +317,7 @@ async fn http_wrapper(
         Ok(Ok(info)) => info,
         Ok(Err(err)) => return (Err(err), context),
         Err(_) => {
-            println!("response future failed");
+            error!("response future failed");
             return (Err(DandelionError::EngineError), context);
         }
     };
@@ -389,7 +390,7 @@ impl Driver for HyperDriver {
                 if !set_for_current(core_affinity::CoreId { id: core_id.into() }) {
                     return;
                 }
-                println!("Hyper engine running on core {}", core_id);
+                info!("Hyper engine running on core {}", core_id);
             })
             .worker_threads(1)
             .enable_all()

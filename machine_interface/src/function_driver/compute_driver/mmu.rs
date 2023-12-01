@@ -17,6 +17,7 @@ use dandelion_commons::{
     DandelionError, DandelionResult,
 };
 use futures::{task::Poll, Stream};
+use log::{debug, info, warn};
 use nix::{
     sys::{
         signal::Signal,
@@ -94,7 +95,7 @@ fn run_thread(
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
         return;
     };
-    println!("MMU engine running on core {}", core_id);
+    info!("MMU engine running on core {}", core_id);
     'commandloop: for command in command_receiver.iter() {
         if command.cancel {
             break 'commandloop;
@@ -216,8 +217,7 @@ fn mmu_run_static(
         .stdout(Stdio::piped())
         .spawn()
         .map_err(|_e| DandelionError::MmuWorkerError)?;
-    // TODO: use a leveled logger for debugging messages
-    // eprintln!("created a new process");
+    debug!("created a new process");
 
     // intercept worker's syscalls by ptrace
     let pid = Pid::from_raw(worker.id() as i32);
@@ -233,30 +233,30 @@ fn mmu_run_static(
         match sig {
             Signal::SIGTRAP => match check_syscall(pid.as_raw()) {
                 SyscallType::Exit => {
-                    // eprintln!("detected exit syscall");
+                    debug!("detected exit syscall");
                     ptrace_syscall(pid.as_raw());
-                    let _status = worker.wait().map_err(|_e| DandelionError::MmuWorkerError)?;
-                    // eprintln!("worker exited with code {}", status.code().unwrap());
+                    let status = worker.wait().map_err(|_e| DandelionError::MmuWorkerError)?;
+                    debug!("worker exited with code {}", status.code().unwrap());
                     return Ok(());
                 }
                 #[cfg(target_arch = "x86_64")]
                 SyscallType::Authorized => {
-                    // eprintln!("detected authorized syscall");
+                    debug!("detected authorized syscall");
                     ptrace_syscall(pid.as_raw());
                 }
                 SyscallType::Unauthorized(syscall_id) => {
-                    eprintln!("detected unauthorized syscall with id {}", syscall_id);
+                    warn!("detected unauthorized syscall with id {}", syscall_id);
                     worker.kill().map_err(|_e| DandelionError::MmuWorkerError)?;
-                    eprintln!("worker killed");
+                    warn!("worker killed");
                     return Err(DandelionError::UnauthorizedSyscall);
                 }
             },
             Signal::SIGSEGV => {
-                eprintln!("detected segmentation fault");
+                warn!("detected segmentation fault");
                 return Err(DandelionError::SegmentationFault);
             }
             s => {
-                eprintln!("detected {}", s);
+                warn!("detected {}", s);
                 return Err(DandelionError::OtherProctionError);
             }
         }
