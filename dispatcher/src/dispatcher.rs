@@ -1,5 +1,5 @@
 use crate::{
-    composition::{Composition, FunctionDependencies},
+    composition::{Composition, CompositionSet, FunctionDependencies, ShardingMode},
     execution_qs::EngineQueue,
     function_registry::{FunctionRegistry, FunctionType},
     resource_pool::ResourcePool,
@@ -25,139 +25,6 @@ use std::{
     sync::Arc,
     sync::Mutex as SyncMutex,
 };
-
-#[derive(Clone, Debug)]
-pub enum ShardingMode {
-    NoSharding,
-    KeySharding(BTreeSet<u32>),
-    // potentailly add an option to provide a map for specific items
-}
-
-/// Struct that has all locations belonging to one set, that is potentially spread over multiple contexts.
-#[derive(Clone, Debug)]
-pub struct CompositionSet {
-    /// list of all contexts and the set index in that context that belongs to the composition set
-    pub context_list: Vec<Arc<Context>>,
-    pub set_index: usize,
-    pub sharding_mode: ShardingMode,
-}
-
-impl CompositionSet {
-    fn shard(self, index: usize) -> Vec<(usize, CompositionSet)> {
-        let keys = match self.sharding_mode {
-            ShardingMode::NoSharding => return vec![(index, self)],
-            ShardingMode::KeySharding(keys) => keys,
-        };
-        return keys
-            .into_iter()
-            .map(|key| {
-                let mut new_shard = BTreeSet::new();
-                new_shard.insert(key);
-                return (
-                    index,
-                    CompositionSet {
-                        context_list: self.context_list.clone(),
-                        set_index: self.set_index,
-                        sharding_mode: ShardingMode::KeySharding(new_shard),
-                    },
-                );
-            })
-            .collect();
-    }
-    fn combine(&mut self, additional: &mut CompositionSet) -> DandelionResult<()> {
-        let CompositionSet {
-            context_list,
-            set_index,
-            sharding_mode,
-        } = additional;
-        if self.set_index != *set_index {
-            return Err(DandelionError::DispatcherCompositionCombine);
-        }
-        match (&mut self.sharding_mode, sharding_mode) {
-            (ShardingMode::KeySharding(current_keys), ShardingMode::KeySharding(foregin_keys)) => {
-                current_keys.append(foregin_keys)
-            }
-            (ShardingMode::NoSharding, ShardingMode::NoSharding) => (),
-            (_, _) => return Err(DandelionError::DispatcherCompositionCombine),
-        }
-        self.context_list.append(context_list);
-        return Ok(());
-    }
-}
-
-pub struct CompositionSetTransferIterator {
-    set: CompositionSet,
-    context_counter: usize,
-    item_counter: usize,
-}
-
-impl IntoIterator for CompositionSet {
-    type Item = (usize, usize, Arc<Context>);
-    type IntoIter = CompositionSetTransferIterator;
-
-    fn into_iter(self) -> Self::IntoIter {
-        CompositionSetTransferIterator {
-            set: self,
-            context_counter: 0,
-            item_counter: 0,
-        }
-    }
-}
-
-impl Iterator for CompositionSetTransferIterator {
-    type Item = (usize, usize, Arc<Context>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        while self.set.context_list.len() > self.context_counter {
-            let set_index = self.set.set_index;
-            let context = self.set.context_list[self.context_counter].clone();
-            if let Some(set) = &context.content[set_index] {
-                while set.buffers.len() > self.item_counter {
-                    let current_item = self.item_counter;
-                    self.item_counter += 1;
-                    match &self.set.sharding_mode {
-                        ShardingMode::NoSharding => {
-                            return Some((set_index, current_item, context));
-                        }
-                        ShardingMode::KeySharding(shard_set)
-                            if shard_set.contains(&set.buffers[current_item].key) =>
-                        {
-                            return Some((set_index, current_item, context));
-                        }
-                        ShardingMode::KeySharding(_) => (),
-                    }
-                }
-            }
-            self.item_counter = 0;
-            self.context_counter += 1;
-        }
-        return None;
-    }
-}
-
-fn get_composition_set(
-    contexts: &Vec<Arc<Context>>,
-    function_set_index: usize,
-) -> Option<CompositionSet> {
-    let keys = contexts
-        .iter()
-        .filter_map(|context_ref| {
-            if context_ref.content.len() <= function_set_index {
-                return None;
-            }
-            let set_keys = context_ref.content[function_set_index]
-                .as_ref()
-                .and_then(|set| Some(set.buffers.iter().map(|buffer| buffer.key)));
-            return set_keys;
-        })
-        .flatten()
-        .collect();
-    return Some(CompositionSet {
-        set_index: function_set_index,
-        sharding_mode: ShardingMode::KeySharding(keys),
-        context_list: contexts.to_vec(),
-    });
-}
 
 // TODO here and in registry can probably replace driver and loader function maps with fixed size arrays
 // That have compile time size and static indexing
@@ -220,7 +87,7 @@ impl Dispatcher {
                  }| {
                     in_ids.iter().all(|index_opt| {
                         index_opt
-                            .and_then(|index| Some(ready_sets.contains(&index)))
+                            .and_then(|(index, _)| Some(ready_sets.contains(&index)))
                             .unwrap_or(true)
                     })
                 },
@@ -233,9 +100,9 @@ impl Dispatcher {
                     .iter()
                     .enumerate()
                     .filter_map(|(function_index, composition_index_opt)| {
-                        if let Some(composition_index) = composition_index_opt {
+                        if let Some((composition_index, mode)) = composition_index_opt {
                             inputs.get(composition_index).and_then(|composition_set| {
-                                Some((function_index, composition_set.clone()))
+                                Some((function_index, *mode, composition_set.clone()))
                             })
                         } else {
                             None
@@ -266,7 +133,8 @@ impl Dispatcher {
                  }| {
                     in_ids.iter().all(|index_opt| {
                         index_opt
-                            .and_then(|index| Some(ready_sets.contains(&index)))
+                            .as_ref()
+                            .and_then(|(index, _)| Some(ready_sets.contains(&index)))
                             .unwrap_or(true)
                     })
                 },
@@ -277,9 +145,9 @@ impl Dispatcher {
                     .iter()
                     .enumerate()
                     .filter_map(|(function_index, composition_index_opt)| {
-                        if let Some(composition_index) = composition_index_opt {
+                        if let Some((composition_index, mode)) = composition_index_opt {
                             inputs.get(composition_index).and_then(|composition_set| {
-                                Some((function_index, composition_set.clone()))
+                                Some((function_index, *mode, composition_set.clone()))
                             })
                         } else {
                             None
@@ -307,13 +175,13 @@ impl Dispatcher {
     async fn queue_function_sharded<'context>(
         &self,
         function_id: FunctionId,
-        input_sets: Vec<(usize, CompositionSet)>,
+        input_sets: Vec<(usize, ShardingMode, CompositionSet)>,
         output_mapping: Vec<Option<usize>>,
         non_caching: bool,
     ) -> DandelionResult<BTreeMap<usize, CompositionSet>> {
         let results: Vec<_> = input_sets
             .into_iter()
-            .map(|(index, composition_set)| composition_set.shard(index))
+            .map(|(index, mode, composition_set)| composition_set.shard(mode, index))
             .multi_cartesian_product()
             .map(|input_sets_local| {
                 Box::pin(self.queue_function(
@@ -396,19 +264,16 @@ impl Dispatcher {
                             .enumerate()
                             .filter_map(|(function_set_id, composition_set_id_opt)| {
                                 return composition_set_id_opt.and_then(|composition_set_id| {
-                                    return get_composition_set(
-                                        &vec![context_arc.clone()],
+                                    return Some(CompositionSet::from((
                                         function_set_id,
-                                    )
+                                        vec![context_arc.clone()],
+                                    )))
                                     .and_then(|comp_set| Some((composition_set_id, comp_set)))
                                     .or(Some((
                                         composition_set_id,
                                         CompositionSet {
                                             set_index: function_set_id,
                                             context_list: vec![],
-                                            sharding_mode: ShardingMode::KeySharding(
-                                                BTreeSet::new(),
-                                            ),
                                         },
                                     )));
                                 });

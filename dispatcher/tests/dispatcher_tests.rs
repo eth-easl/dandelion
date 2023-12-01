@@ -2,8 +2,8 @@
 mod dispatcher_tests {
     use dandelion_commons::{ContextTypeId, EngineTypeId};
     use dispatcher::{
-        composition::{Composition, FunctionDependencies},
-        dispatcher::{CompositionSet, Dispatcher, ShardingMode},
+        composition::{Composition, CompositionSet, FunctionDependencies, ShardingMode},
+        dispatcher::Dispatcher,
         function_registry::FunctionRegistry,
         resource_pool::ResourcePool,
     };
@@ -13,11 +13,7 @@ mod dispatcher_tests {
         memory_domain::{Context, ContextTrait, MemoryDomain},
         DataItem, DataSet, Position,
     };
-    use std::{
-        collections::{BTreeMap, BTreeSet},
-        mem::size_of,
-        sync::Arc,
-    };
+    use std::{collections::BTreeMap, mem::size_of, sync::Arc};
 
     fn setup_dispatcher<Dom: MemoryDomain>(
         domain_arg: Vec<u8>,
@@ -205,14 +201,7 @@ mod dispatcher_tests {
             .expect("Should get input matrix context");
         add_matmul_matrix(&mut in_context, 0, 0, 2, vec![1, 2, 3, 4]);
 
-        let inputs = vec![(
-            0,
-            CompositionSet {
-                context_list: vec![(Arc::new(in_context))],
-                sharding_mode: ShardingMode::NoSharding,
-                set_index: 0,
-            },
-        )];
+        let inputs = vec![(0, CompositionSet::from((0, vec![(Arc::new(in_context))])))];
         let outputs = vec![Some(0)];
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -225,7 +214,7 @@ mod dispatcher_tests {
         assert_eq!(1, out_sets.len());
         let out_set = out_sets.get(&0).expect("Should have set 0");
         assert_eq!(1, out_set.context_list.len());
-        let out_context = &out_set.context_list[0];
+        let out_context = &out_set.context_list[0].0;
         assert_eq!(1, out_context.content.len());
         check_matrix(&out_context, 0, 0, 2, vec![5, 11, 11, 25])
     }
@@ -254,18 +243,11 @@ mod dispatcher_tests {
         let composition = Composition {
             dependencies: vec![FunctionDependencies {
                 function: 0,
-                input_set_ids: vec![Some(0)],
+                input_set_ids: vec![Some((0, ShardingMode::All))],
                 output_set_ids: vec![Some(1)],
             }],
         };
-        let inputs = BTreeMap::from([(
-            0,
-            CompositionSet {
-                set_index: 0,
-                context_list: vec![Arc::new(in_context)],
-                sharding_mode: ShardingMode::NoSharding,
-            },
-        )]);
+        let inputs = BTreeMap::from([(0, CompositionSet::from((0, vec![Arc::new(in_context)])))]);
         let outputs = BTreeMap::from([(1, 0)]);
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -279,7 +261,7 @@ mod dispatcher_tests {
         let mut out_context_list = out_contexts.remove(&0).expect("Should have set 0");
 
         assert_eq!(1, out_context_list.context_list.len());
-        let out_context = out_context_list.context_list.remove(0);
+        let out_context = out_context_list.context_list.remove(0).0;
         assert_eq!(1, out_context.content.len());
         let out_mat_set = out_context.content[0].as_ref().expect("Should have set");
         assert_eq!(1, out_mat_set.buffers.len());
@@ -313,18 +295,11 @@ mod dispatcher_tests {
         let composition = Composition {
             dependencies: vec![FunctionDependencies {
                 function: 0,
-                input_set_ids: vec![Some(0)],
+                input_set_ids: vec![Some((0, ShardingMode::Each))],
                 output_set_ids: vec![Some(1)],
             }],
         };
-        let inputs = BTreeMap::from([(
-            0,
-            CompositionSet {
-                set_index: 0,
-                context_list: vec![Arc::new(in_context)],
-                sharding_mode: ShardingMode::KeySharding(BTreeSet::from([0, 1])),
-            },
-        )]);
+        let inputs = BTreeMap::from([(0, CompositionSet::from((0, vec![Arc::new(in_context)])))]);
         let outputs = BTreeMap::from([(1, 0)]);
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -338,7 +313,7 @@ mod dispatcher_tests {
         let out_set = out_vec.remove(&0).expect("Should have set 0");
         assert_eq!(2, out_set.context_list.len());
         // check for each shard:
-        for matrix_context in out_set.context_list {
+        for (matrix_context, _) in out_set.context_list {
             if let Some(matrix_set) = &matrix_context.content[0] {
                 assert_eq!(1, matrix_set.buffers.len());
                 let matrix_buffer = &matrix_set.buffers[0];
@@ -379,24 +354,17 @@ mod dispatcher_tests {
             dependencies: vec![
                 FunctionDependencies {
                     function: 0,
-                    input_set_ids: vec![Some(0)],
+                    input_set_ids: vec![Some((0, ShardingMode::All))],
                     output_set_ids: vec![Some(1)],
                 },
                 FunctionDependencies {
                     function: 0,
-                    input_set_ids: vec![Some(1)],
+                    input_set_ids: vec![Some((1, ShardingMode::All))],
                     output_set_ids: vec![Some(2)],
                 },
             ],
         };
-        let inputs = BTreeMap::from([(
-            0,
-            CompositionSet {
-                set_index: 0,
-                sharding_mode: ShardingMode::NoSharding,
-                context_list: vec![Arc::new(in_context)],
-            },
-        )]);
+        let inputs = BTreeMap::from([(0, CompositionSet::from((0, vec![Arc::new(in_context)])))]);
         let output_contexts = BTreeMap::from([(2, 0)]);
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -409,7 +377,7 @@ mod dispatcher_tests {
         assert_eq!(1, out_contexts.len());
         let out_composition_set = out_contexts.get(&0).expect("Should have set 0");
         assert_eq!(1, out_composition_set.context_list.len());
-        let out_context = &out_composition_set.context_list[0];
+        let out_context = &out_composition_set.context_list[0].0;
         assert_eq!(1, out_context.content.len());
         check_matrix(&out_context, 0, 0, 2, vec![146, 330, 330, 746]);
     }
@@ -445,61 +413,60 @@ mod dispatcher_tests {
                 // C = A*B
                 FunctionDependencies {
                     function: 0,
-                    input_set_ids: vec![Some(0), Some(1), None],
+                    input_set_ids: vec![
+                        Some((0, ShardingMode::All)),
+                        Some((1, ShardingMode::All)),
+                        None,
+                    ],
                     output_set_ids: vec![Some(3)],
                 },
                 // D = B^T*A
                 FunctionDependencies {
                     function: 0,
-                    input_set_ids: vec![Some(2), Some(0), None],
+                    input_set_ids: vec![
+                        Some((2, ShardingMode::All)),
+                        Some((0, ShardingMode::All)),
+                        None,
+                    ],
                     output_set_ids: vec![Some(4)],
                 },
                 // E = B + C
                 FunctionDependencies {
                     function: 0,
-                    input_set_ids: vec![None, Some(1), Some(3)],
+                    input_set_ids: vec![
+                        None,
+                        Some((1, ShardingMode::All)),
+                        Some((3, ShardingMode::All)),
+                    ],
                     output_set_ids: vec![Some(5)],
                 },
                 // G = D * C
                 FunctionDependencies {
                     function: 0,
-                    input_set_ids: vec![Some(4), Some(3), None],
+                    input_set_ids: vec![
+                        Some((4, ShardingMode::All)),
+                        Some((3, ShardingMode::All)),
+                        None,
+                    ],
                     output_set_ids: vec![Some(6)],
                 },
                 // Result = D*E + G
                 FunctionDependencies {
                     function: 0,
-                    input_set_ids: vec![Some(4), Some(5), Some(6)],
+                    input_set_ids: vec![
+                        Some((4, ShardingMode::All)),
+                        Some((5, ShardingMode::All)),
+                        Some((6, ShardingMode::All)),
+                    ],
                     output_set_ids: vec![Some(7)],
                 },
             ],
         };
         let context_arc = Arc::new(in_context);
         let inputs = BTreeMap::from([
-            (
-                0,
-                CompositionSet {
-                    set_index: 0,
-                    sharding_mode: ShardingMode::NoSharding,
-                    context_list: vec![context_arc.clone()],
-                },
-            ),
-            (
-                1,
-                CompositionSet {
-                    set_index: 1,
-                    sharding_mode: ShardingMode::NoSharding,
-                    context_list: vec![context_arc.clone()],
-                },
-            ),
-            (
-                2,
-                CompositionSet {
-                    set_index: 2,
-                    sharding_mode: ShardingMode::NoSharding,
-                    context_list: vec![context_arc.clone()],
-                },
-            ),
+            (0, CompositionSet::from((0, vec![context_arc.clone()]))),
+            (1, CompositionSet::from((1, vec![context_arc.clone()]))),
+            (2, CompositionSet::from((2, vec![context_arc.clone()]))),
         ]);
         let output_contexts = BTreeMap::from([(7, 0)]);
         let result = tokio::runtime::Builder::new_current_thread()
@@ -513,7 +480,7 @@ mod dispatcher_tests {
         assert_eq!(1, out_contexts.len());
         let out_composition_set = out_contexts.get(&0).expect("Should have set 0");
         assert_eq!(1, out_composition_set.context_list.len());
-        let out_context = &out_composition_set.context_list[0];
+        let out_context = &out_composition_set.context_list[0].0;
         assert_eq!(1, out_context.content.len());
         check_matrix(
             out_context,

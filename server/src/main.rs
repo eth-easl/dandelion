@@ -2,8 +2,8 @@ use bytes::Buf;
 use core_affinity::{self, CoreId};
 use dandelion_commons::{ContextTypeId, EngineTypeId};
 use dispatcher::{
-    composition::{Composition, FunctionDependencies},
-    dispatcher::{CompositionSet, Dispatcher},
+    composition::{Composition, CompositionSet, FunctionDependencies},
+    dispatcher::Dispatcher,
     function_registry::FunctionRegistry,
     resource_pool::ResourcePool,
 };
@@ -92,22 +92,8 @@ async fn run_chain(dispatcher: Arc<Dispatcher>, get_uri: String, post_uri: Strin
     }));
     let input_arc = Arc::new(input_context);
     let inputs = vec![
-        (
-            0,
-            CompositionSet {
-                context_list: vec![input_arc.clone()],
-                sharding_mode: dispatcher::dispatcher::ShardingMode::NoSharding,
-                set_index: 0,
-            },
-        ),
-        (
-            5,
-            CompositionSet {
-                context_list: vec![input_arc],
-                sharding_mode: dispatcher::dispatcher::ShardingMode::NoSharding,
-                set_index: 1,
-            },
-        ),
+        (0, CompositionSet::from((0, vec![input_arc.clone()]))),
+        (5, CompositionSet::from((1, vec![input_arc]))),
     ];
     let output_mapping = vec![Some(0), Some(1)];
 
@@ -121,7 +107,7 @@ async fn run_chain(dispatcher: Arc<Dispatcher>, get_uri: String, post_uri: Strin
         .get(&1)
         .expect("Should have composition set for post response");
     assert_eq!(1, post_composition_set.context_list.len());
-    let post_context = &post_composition_set.context_list[0];
+    let post_context = &post_composition_set.context_list[0].0;
     assert_eq!(3, post_context.content.len());
     let post_set = post_context.content[0]
         .as_ref()
@@ -138,7 +124,7 @@ async fn run_chain(dispatcher: Arc<Dispatcher>, get_uri: String, post_uri: Strin
     // check iteration result
     let result_compositon_set = result.get(&0).expect("Should have set 0");
     assert_eq!(1, result_compositon_set.context_list.len());
-    let result_context = &result_compositon_set.context_list[0];
+    let result_context = &result_compositon_set.context_list[0].0;
     assert_eq!(1, result_context.content.len());
     let result_set = result_context.content[0]
         .as_ref()
@@ -190,11 +176,7 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
 
     let inputs = vec![(
         0,
-        CompositionSet {
-            context_list: vec![(Arc::new(input_context))],
-            sharding_mode: dispatcher::dispatcher::ShardingMode::NoSharding,
-            set_index: 0,
-        },
+        CompositionSet::from((0, vec![(Arc::new(input_context))])),
     )];
     let outputs = vec![Some(0)];
     let result = dispatcher
@@ -246,7 +228,7 @@ fn add_matmul_inputs(context: &mut Context, _rows: usize, _cols: usize, matrix: 
 fn get_checksum(composition_set: CompositionSet) -> i64 {
     // Determine offset of last matrix element
     assert_eq!(1, composition_set.context_list.len());
-    let context = &composition_set.context_list[0];
+    let context = &composition_set.context_list[0].0;
     let output_dataset = context.content[0].as_ref().expect("Should contain matrix");
     let output_item = output_dataset
         .buffers
