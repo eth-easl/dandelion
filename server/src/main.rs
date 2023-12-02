@@ -162,13 +162,14 @@ async fn run_chain(dispatcher: Arc<Dispatcher>, get_uri: String, post_uri: Strin
         .expect("Should contain a return number");
     assert_eq!(1, result_set.buffers.len());
     let result_position = result_set.buffers[0].data;
-    assert_eq!(8, result_position.size);
-    let mut result_vec = Vec::<u64>::with_capacity(1);
-    result_vec.resize(1, 0);
+
+    let mut result_vec = vec![0u8; result_position.size];
     result_context
         .read(result_position.offset, result_vec.as_mut_slice())
         .expect("Should be able to read result");
-    return result_vec[0];
+    let checksum = u64::from_ne_bytes(result_vec[0..8].try_into().unwrap());
+
+    return checksum;
 }
 
 async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, cols: usize) -> i64 {
@@ -381,6 +382,8 @@ async fn service(
         "/hot/matmul" => serve_request(false, req, dispatcher).await,
         "/cold/compute" => serve_chain(req, dispatcher).await,
         "/hot/compute" => serve_chain(req, dispatcher).await,
+        "/hot/io" => serve_chain(req, dispatcher).await,
+        "/cold/io" => serve_chain(req, dispatcher).await,
         "/native" => serve_native(req).await,
         "/stats" => serve_stats(req, dispatcher).await,
         _ => Ok::<_, Infallible>(Response::new(
@@ -528,6 +531,7 @@ fn main() -> () {
             output_sets,
             output_set_map,
         );
+
     }
     #[cfg(not(all(any(feature = "cheri", feature = "mmu", feature = "wasm"), feature = "hyper_io")))]
     {

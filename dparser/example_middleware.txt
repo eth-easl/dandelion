@@ -1,0 +1,11 @@
+(:function SLHandle (AccessToken) -> (HTTPRequest))
+(:function SLAuthorize (HTTPResponse) -> (HTTPRequests))
+(:function SLRender (HTTPResponses) -> (HTMLOutput))
+    
+(:composition GetServiceLogs (AccessToken) -> (HTMLOutput) (
+    (SLHandle ( (:all AccessToken <- AccessToken) ) => ( (AuthHTTPRequest := HTTPRequest) ))
+    (DandelionHTTPGet ( (:each Request <- AuthHTTPRequest) ) => ( (AuthHTTPResponse := Response) ))
+    (SLAuthorize ( (:all HTTPResponse <- AuthHTTPResponse) ) => ( (LogHTTPRequests := AuthHTTPResponse) ))
+    (DandelionHTTPGet ( (:each Request <- LogHTTPRequests) ) => ( (LogHTTPResponses := Response) ))
+    (MakePNGGrayscale ( (:all HTTPResponses <- LogHTTPResponses) ) => ( (HTMLOutput := HTMLOutput) ))
+))
