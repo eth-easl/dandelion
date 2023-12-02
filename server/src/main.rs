@@ -50,18 +50,24 @@ use std::{
     convert::Infallible,
     mem::size_of,
     net::SocketAddr,
+    path::PathBuf,
+    process::Command,
     sync::{
         atomic::{AtomicU8, Ordering},
         Arc, Once,
     },
+    time::Duration,
 };
 use tokio::runtime::Builder;
 
-const HOT_ID: u64 = 0;
-const COLD_ID: u64 = 1;
+const MMM_ID: u64 = 0;
 const HTTP_ID: u64 = 2;
 const BUSY_ID: u64 = 3;
 const COMPOSITION_ID: u64 = 4;
+
+// can support 10000 RPS for 2 mins
+const NUM_COLD: u64 = 0x100000;
+const MMM_COLD_ID_BASE: u64 = 0x1000000;
 
 static INIT_MATRIX: Once = Once::new();
 static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
@@ -193,8 +199,14 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
         },
     )];
     let outputs = vec![Some(0)];
+    let counter = dispatcher.counter.fetch_add(1, Ordering::Relaxed);
+    let function_id = if !is_cold {
+        MMM_ID
+    } else {
+        MMM_COLD_ID_BASE + counter % NUM_COLD
+    };
     let result = dispatcher
-        .queue_function(is_cold as u64, inputs, outputs, is_cold)
+        .queue_function(function_id, inputs, outputs, is_cold)
         .await;
 
     let result_context = result
@@ -386,6 +398,29 @@ async fn service(
     }
 }
 
+fn drop_page_caches() {
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg("echo 1 | sudo tee /proc/sys/vm/drop_caches")
+        .output()
+        .expect("Should be able to drop page caches");
+    assert!(output.status.success());
+}
+
+fn check_page_cache_for(path: PathBuf) {
+    let output = Command::new("fincore")
+        .args(["-n", "-r", "-o", "pages", path.to_str().unwrap()])
+        .output()
+        .expect("Should be able to get page numbers");
+    assert!(output.status.success());
+    assert_eq!(
+        output.stdout[0],
+        '0' as u8,
+        "page cache for {} not fully dropped",
+        path.display(),
+    );
+}
+
 fn main() -> () {
     env_logger::init();
     // set up dispatcher configuration basics
@@ -418,8 +453,8 @@ fn main() -> () {
     #[cfg(all(any(feature = "cheri", feature = "mmu"), feature = "hyper_io"))]
     {
         let mut drivers = BTreeMap::new();
-        let mut mmm_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let mut busy_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut mmm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut busy_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let driver;
         #[cfg(feature = "cheri")]
         {
@@ -451,23 +486,31 @@ fn main() -> () {
         drivers.insert(COMPUTE_ENGINE, driver);
         drivers.insert(SYS_ENGINE, system_driver);
         registry = FunctionRegistry::new(drivers);
-        // add for hot function
+        // add for mmm hot function
         registry.add_local(
-            HOT_ID,
+            MMM_ID,
             COMPUTE_ENGINE,
             mmm_path.to_str().unwrap(),
             vec![String::from("")],
             vec![String::from("")],
         );
-        // add for cold function
-        registry.add_local(
-            COLD_ID,
-            COMPUTE_ENGINE,
-            mmm_path.to_str().unwrap(),
-            vec![String::from("")],
-            vec![String::from("")],
-        );
-        // add for cold function
+        // add for mmm cold functions
+        let tmp_dir = std::path::Path::new("/tmp").join(mmm_path.file_name().unwrap());
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        for i in 0..NUM_COLD {
+            let tmp_path = tmp_dir.join(i.to_string());
+            if !tmp_path.exists() {
+                std::fs::copy(&mmm_path, &tmp_path).unwrap();
+            }
+            registry.add_local(
+                MMM_COLD_ID_BASE + i,
+                COMPUTE_ENGINE,
+                tmp_path.to_str().unwrap(),
+                vec![String::from("")],
+                vec![String::from("")],
+            );
+        }
+        // add for busy function
         registry.add_local(
             BUSY_ID,
             COMPUTE_ENGINE,
@@ -509,7 +552,14 @@ fn main() -> () {
             output_sets,
             output_set_map,
         );
-
+        // drop page caches to ensure cold functions are loaded from disk
+        drop_page_caches();
+        std::thread::sleep(Duration::from_secs(1));
+        // check if page caches are actually dropped
+        for i in (0..NUM_COLD).step_by(1000) {
+            let tmp_path = tmp_dir.join(i.to_string());
+            check_page_cache_for(tmp_path);
+        }
     }
     #[cfg(not(all(any(feature = "cheri", feature = "mmu"), feature = "hyper_io")))]
     {

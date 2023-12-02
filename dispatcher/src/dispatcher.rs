@@ -22,8 +22,8 @@ use machine_interface::{
 };
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    sync::Arc,
     sync::Mutex as SyncMutex,
+    sync::{atomic::AtomicU64, Arc},
 };
 
 #[derive(Clone, Debug)]
@@ -167,6 +167,7 @@ pub struct Dispatcher {
     type_map: BTreeMap<EngineTypeId, ContextTypeId>,
     function_registry: FunctionRegistry,
     pub archive: Arc<SyncMutex<Archive>>,
+    pub counter: AtomicU64,
 }
 
 impl Dispatcher {
@@ -192,12 +193,14 @@ impl Dispatcher {
             engines.insert(engine_id.clone(), engine_queue);
         }
         let archive: Arc<SyncMutex<Archive>> = Arc::new(SyncMutex::new(Archive::new()));
+        let counter = AtomicU64::new(0);
         return Ok(Dispatcher {
             domains,
             engines,
             type_map,
             function_registry,
             archive,
+            counter,
         });
     }
 
