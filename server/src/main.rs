@@ -13,6 +13,7 @@ use hyper::{
     service::{make_service_fn, service_fn},
     Body, Request, Response, Server,
 };
+use log::{error, info};
 use machine_interface::{
     function_driver::{
         system_driver::{get_system_function_input_sets, get_system_function_output_sets},
@@ -386,6 +387,7 @@ async fn service(
 }
 
 fn main() -> () {
+    env_logger::init();
     // set up dispatcher configuration basics
     let mut domains = BTreeMap::new();
     const COMPUTE_DOMAIN: ContextTypeId = 0;
@@ -395,9 +397,13 @@ fn main() -> () {
     let mut type_map = BTreeMap::new();
     type_map.insert(COMPUTE_ENGINE, COMPUTE_DOMAIN);
     type_map.insert(SYS_ENGINE, SYS_CONTEXT);
+    let num_cores = u8::try_from(core_affinity::get_core_ids().unwrap().len()).unwrap();
+    // TODO: This calculation makes sense only for running matmul-128x128 workload on MMU engines
+    let num_dispatcher_cores = (num_cores + 13) / 14;
     let mut pool_map = BTreeMap::new();
-    pool_map.insert(COMPUTE_ENGINE, (1..=3).collect());
-    pool_map.insert(SYS_ENGINE, (0..128).collect());
+    pool_map.insert(COMPUTE_ENGINE, (num_dispatcher_cores..num_cores).collect());
+    // TODO: It's not safe to share cores between compute engines and system engines
+    pool_map.insert(SYS_ENGINE, (0..num_dispatcher_cores).collect());
     let resource_pool = ResourcePool {
         engine_pool: Mutex::new(pool_map),
     };
@@ -521,9 +527,14 @@ fn main() -> () {
     // set up tokio runtime, need io in any case
     let mut runtime_builder = Builder::new_multi_thread();
     runtime_builder.enable_io();
+    runtime_builder.worker_threads(num_dispatcher_cores.into());
     runtime_builder.on_thread_start(|| {
-        core_affinity::set_for_current(CoreId { id: 0usize });
-        println!("Hello from Tokio thread");
+        static ATOMIC_ID: AtomicU8 = AtomicU8::new(0);
+        let core_id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
+        if !core_affinity::set_for_current(CoreId { id: core_id.into() }) {
+            return;
+        }
+        info!("Dispatcher running on core {}", core_id);
     });
     let runtime = runtime_builder.build().unwrap();
     let _guard = runtime.enter();
@@ -549,6 +560,6 @@ fn main() -> () {
     println!("Hello, World (native)");
     // Run this server for... forever!
     if let Err(e) = runtime.block_on(server) {
-        eprintln!("server error: {}", e);
+        error!("server error: {}", e);
     }
 }
