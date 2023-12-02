@@ -407,18 +407,13 @@ fn drop_page_caches() {
     assert!(output.status.success());
 }
 
-fn check_page_cache_for(path: PathBuf) {
+fn no_page_cache_for(path: PathBuf) -> bool {
     let output = Command::new("fincore")
         .args(["-n", "-r", "-o", "pages", path.to_str().unwrap()])
         .output()
         .expect("Should be able to get page numbers");
     assert!(output.status.success());
-    assert_eq!(
-        output.stdout[0],
-        '0' as u8,
-        "page cache for {} not fully dropped",
-        path.display(),
-    );
+    return output.stdout[0] == '0' as u8;
 }
 
 fn main() -> () {
@@ -553,12 +548,22 @@ fn main() -> () {
             output_set_map,
         );
         // drop page caches to ensure cold functions are loaded from disk
-        drop_page_caches();
-        std::thread::sleep(Duration::from_secs(1));
-        // check if page caches are actually dropped
-        for i in (0..NUM_COLD).step_by(1000) {
-            let tmp_path = tmp_dir.join(i.to_string());
-            check_page_cache_for(tmp_path);
+        loop {
+            info!("Waiting for page cache to be clean");
+            drop_page_caches();
+            std::thread::sleep(Duration::from_secs(10));
+            // check if page caches are actually dropped
+            let mut no_page_cache_for_all = true;
+            for i in (0..NUM_COLD).step_by(1000) {
+                let tmp_path = tmp_dir.join(i.to_string());
+                if !no_page_cache_for(tmp_path) {
+                    no_page_cache_for_all = false;
+                    break;
+                }
+            }
+            if no_page_cache_for_all {
+                break;
+            }
         }
     }
     #[cfg(not(all(any(feature = "cheri", feature = "mmu"), feature = "hyper_io")))]
