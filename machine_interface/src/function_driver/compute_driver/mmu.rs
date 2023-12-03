@@ -228,8 +228,8 @@ fn mmu_run_static(
     loop {
         let status = wait::waitpid(pid, None).map_err(|_e| DandelionError::MmuWorkerError)?;
         let WaitStatus::Stopped(pid, sig) = status else {
-                panic!("worker should be stopped (status = {:?})", status);
-            };
+            panic!("worker should be stopped (status = {:?})", status);
+        };
         match sig {
             Signal::SIGTRAP => match check_syscall(pid.as_raw()) {
                 SyscallType::Exit => {
@@ -379,6 +379,18 @@ impl Driver for MmuDriver {
         static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<Function> {
         let function = load_u8_from_file(function_path)?;
+        self.parse_function_preloaded(function, static_domain)
+    }
+
+    fn prefer_function_preloaded(&self) -> bool {
+        true
+    }
+
+    fn parse_function_preloaded(
+        &self,
+        function: Vec<u8>,
+        static_domain: &Box<dyn MemoryDomain>,
+    ) -> DandelionResult<Function> {
         let elf = elf_parser::ParsedElf::new(&function)?;
         let system_data = elf.get_symbol_by_name(&function, "__dandelion_system_data")?;
         //let return_offset = elf.get_symbol_by_name(&function, "__dandelion_return_address")?;

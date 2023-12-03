@@ -252,6 +252,18 @@ impl Driver for CheriDriver {
         static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<Function> {
         let function = load_u8_from_file(function_path)?;
+        return self.parse_function_preloaded(function, static_domain);
+    }
+
+    fn prefer_function_preloaded(&self) -> bool {
+        true
+    }
+
+    fn parse_function_preloaded(
+        &self,
+        function: Vec<u8>,
+        static_domain: &Box<dyn MemoryDomain>,
+    ) -> DandelionResult<Function> {
         let elf = elf_parser::ParsedElf::new(&function)?;
         let system_data = elf.get_symbol_by_name(&function, "__dandelion_system_data")?;
         let return_offset = elf.get_symbol_by_name(&function, "__dandelion_return_address")?;

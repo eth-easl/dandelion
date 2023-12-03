@@ -2,6 +2,7 @@ use async_lock::RwLock;
 use dandelion_commons::{DandelionError, DandelionResult, EngineTypeId, FunctionId};
 use machine_interface::{
     function_driver::{
+        load_utils::load_u8_from_file_non_blocking,
         system_driver::{get_system_function_input_sets, get_system_function_output_sets},
         Driver, Function, FunctionConfig,
     },
@@ -190,7 +191,7 @@ impl FunctionRegistry {
             }]);
     }
 
-    fn load_local(
+    async fn load_local(
         &self,
         function_id: FunctionId,
         engine_id: EngineTypeId,
@@ -207,7 +208,12 @@ impl FunctionRegistry {
             Some(s) => s,
             None => return Err(DandelionError::DispatcherUnavailableFunction),
         };
-        let tripple = driver.parse_function(path.to_string(), domain)?;
+        let tripple = if driver.prefer_function_preloaded() {
+            let function = load_u8_from_file_non_blocking(path.to_string()).await?;
+            driver.parse_function_preloaded(function, domain)
+        } else {
+            driver.parse_function(path.to_string(), domain)
+        }?;
         return Ok(tripple);
     }
 
@@ -228,7 +234,7 @@ impl FunctionRegistry {
         }
 
         // if it is not in memory or disk we return the error from loading as it is not available
-        let function = self.load_local(function_id, engine_id, domain)?;
+        let function = self.load_local(function_id, engine_id, domain).await?;
         let function_context = function.load(domain)?;
         let function_config = function.config.clone();
         if !non_caching {

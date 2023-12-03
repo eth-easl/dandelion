@@ -3,13 +3,13 @@ use crate::{
     DataRequirementList, Position,
 };
 use core::pin::Pin;
-use dandelion_commons::{records::Recorder, DandelionResult};
+use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
 use std::{future::Future, sync::Arc};
 
 use libloading::Library;
 
 pub mod compute_driver;
-mod load_utils;
+pub mod load_utils;
 pub mod system_driver;
 
 #[derive(Clone)]
@@ -91,4 +91,23 @@ pub trait Driver: Send + Sync {
         function_path: String,
         static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<Function>;
+
+    // NOTE: below is a workaround to enable highly concurrent parsing of functions
+    //       while preserving the original interface used by tests
+    // TODO: rethink the interface here
+
+    // whether the driver type supports non-blocking parsing by preloading the file
+    fn prefer_function_preloaded(&self) -> bool {
+        false
+    }
+
+    // parses an executable in a non-blocking way
+    #[allow(unused_variables)]
+    fn parse_function_preloaded(
+        &self,
+        function: Vec<u8>,
+        static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
+    ) -> DandelionResult<Function> {
+        Err(DandelionError::NotImplemented)
+    }
 }

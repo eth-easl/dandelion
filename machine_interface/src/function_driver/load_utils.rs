@@ -19,6 +19,21 @@ pub fn load_u8_from_file(full_path: String) -> DandelionResult<Vec<u8>> {
     return Ok(buffer);
 }
 
+pub async fn load_u8_from_file_non_blocking(full_path: String) -> DandelionResult<Vec<u8>> {
+    let mut file = match tokio::fs::File::open(full_path).await {
+        Ok(f) => f,
+        Err(_) => return Err(DandelionError::FileError),
+    };
+
+    let mut buffer = Vec::<u8>::new();
+    use tokio::io::AsyncReadExt;
+    let _file_size = match file.read_to_end(&mut buffer).await {
+        Ok(s) => s,
+        Err(_) => return Err(DandelionError::FileError),
+    };
+    return Ok(buffer);
+}
+
 pub fn load_static(
     domain: &Box<dyn MemoryDomain>,
     static_context: &Context,
