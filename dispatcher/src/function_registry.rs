@@ -210,7 +210,7 @@ impl FunctionRegistry {
         };
         let tripple = if driver.prefer_function_preloaded() {
             let function = load_u8_from_file_non_blocking(path.to_string()).await?;
-            driver.parse_function_preloaded(function, domain)
+            driver.parse_function_preloaded(&function, domain)
         } else {
             driver.parse_function(path.to_string(), domain)
         }?;

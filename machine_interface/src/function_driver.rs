@@ -105,7 +105,7 @@ pub trait Driver: Send + Sync {
     #[allow(unused_variables)]
     fn parse_function_preloaded(
         &self,
-        function: Vec<u8>,
+        function: &Vec<u8>,
         static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
     ) -> DandelionResult<Function> {
         Err(DandelionError::NotImplemented)
