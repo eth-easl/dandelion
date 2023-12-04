@@ -467,7 +467,13 @@ fn main() -> () {
     type_map.insert(SYS_ENGINE, SYS_CONTEXT);
     let num_cores = u8::try_from(core_affinity::get_core_ids().unwrap().len()).unwrap();
     // TODO: This calculation makes sense only for running matmul-128x128 workload on MMU engines
-    let num_dispatcher_cores = (num_cores + 13) / 14;
+    let num_dispatcher_cores = std::env::var("NUM_DISP_CORES")
+        .map_or_else(|_e| (num_cores + 13) / 14, |n| n.parse::<u8>().unwrap());
+    assert!(
+        num_dispatcher_cores > 0 && num_dispatcher_cores < num_cores,
+        "invalid dispatcher core number: {}",
+        num_dispatcher_cores
+    );
     let mut pool_map = BTreeMap::new();
     pool_map.insert(COMPUTE_ENGINE, (num_dispatcher_cores..num_cores).collect());
     // TODO: It's not safe to share cores between compute engines and system engines
