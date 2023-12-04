@@ -252,7 +252,7 @@ impl Driver for CheriDriver {
         static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<Function> {
         let function = load_u8_from_file(function_path)?;
-        self.parse_function_preloaded(&function, static_domain);
+        self.parse_function_preloaded(&function, static_domain)
     }
 
     fn prefer_function_preloaded(&self) -> bool {
