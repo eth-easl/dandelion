@@ -329,11 +329,12 @@ impl Dispatcher {
             None => return Err(DandelionError::DispatcherConfigError),
         };
         // start doing transfers
-        recorder.record(RecordPoint::TransferStart)?;
+        recorder.record(RecordPoint::LoadStart)?;
         let (mut function_context, function_config) = self
             .function_registry
             .load(function_id, engine_type, domain, non_caching)
             .await?;
+        recorder.record(RecordPoint::TransferStart)?;
         // make sure all input sets are there at the correct index
         for in_set_name in in_set_names {
             function_context
