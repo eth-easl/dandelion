@@ -68,11 +68,18 @@ const COMPOSITION_ID: u64 = 4;
 // can support 10000 RPS for 2 mins
 const NUM_COLD: u64 = 0x100000;
 const MMM_COLD_ID_BASE: u64 = 0x1000000;
+const BUSY_COLD_ID_BASE: u64 = 0x2000000;
+const COMPOSITION_COLD_ID_BASE: u64 = 0x3000000;
 
 static INIT_MATRIX: Once = Once::new();
 static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
 
-async fn run_chain(dispatcher: Arc<Dispatcher>, get_uri: String, post_uri: String) -> u64 {
+async fn run_chain(
+    dispatcher: Arc<Dispatcher>,
+    is_cold: bool,
+    get_uri: String,
+    post_uri: String,
+) -> u64 {
     let domain = MallocMemoryDomain::init(vec![]).expect("Should be able to get malloc domain");
     let mut input_context = domain
         .acquire_context(128)
@@ -128,8 +135,14 @@ async fn run_chain(dispatcher: Arc<Dispatcher>, get_uri: String, post_uri: Strin
     ];
     let output_mapping = vec![Some(0), Some(1)];
 
+    let counter = dispatcher.counter.fetch_add(1, Ordering::Relaxed);
+    let function_id = if !is_cold {
+        COMPOSITION_ID
+    } else {
+        COMPOSITION_COLD_ID_BASE + counter % NUM_COLD
+    };
     let result = dispatcher
-        .queue_function(COMPOSITION_ID, inputs, output_mapping, false)
+        .queue_function(function_id, inputs, output_mapping, false)
         .await
         .expect("Should get response from chain");
     assert_eq!(2, result.len());
@@ -301,6 +314,7 @@ async fn serve_request(
 }
 
 async fn serve_chain(
+    is_cold: bool,
     req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
 ) -> Result<Response<Body>, Infallible> {
@@ -313,7 +327,7 @@ async fn serve_chain(
     let get_uri = uris[0].to_string();
     let post_uri = uris[1].to_string();
 
-    let response_vec = run_chain(dispatcher, get_uri, post_uri)
+    let response_vec = run_chain(dispatcher, is_cold, get_uri, post_uri)
         .await
         .to_be_bytes()
         .to_vec();
@@ -385,10 +399,10 @@ async fn service(
     match uri {
         "/cold/matmul" => serve_request(true, req, dispatcher).await,
         "/hot/matmul" => serve_request(false, req, dispatcher).await,
-        "/cold/compute" => serve_chain(req, dispatcher).await,
-        "/hot/compute" => serve_chain(req, dispatcher).await,
-        "/hot/io" => serve_chain(req, dispatcher).await,
-        "/cold/io" => serve_chain(req, dispatcher).await,
+        "/cold/compute" => serve_chain(true, req, dispatcher).await,
+        "/hot/compute" => serve_chain(false, req, dispatcher).await,
+        "/cold/io" => serve_chain(true, req, dispatcher).await,
+        "/hot/io" => serve_chain(false, req, dispatcher).await,
         "/native" => serve_native(req).await,
         "/stats" => serve_stats(req, dispatcher).await,
         _ => Ok::<_, Infallible>(Response::new(
@@ -414,6 +428,30 @@ fn no_page_cache_for(path: PathBuf) -> bool {
         .expect("Should be able to get page numbers");
     assert!(output.status.success());
     return output.stdout[0] == '0' as u8;
+}
+
+fn add_cold_functions(
+    registry: &mut FunctionRegistry,
+    engine_id: EngineTypeId,
+    path: &PathBuf,
+    cold_id_base: u64,
+) -> PathBuf {
+    let tmp_dir = std::path::Path::new("/tmp").join(path.file_name().unwrap());
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    for i in 0..NUM_COLD {
+        let tmp_path = tmp_dir.join(i.to_string());
+        if !tmp_path.exists() {
+            std::fs::copy(path, &tmp_path).unwrap();
+        }
+        registry.add_local(
+            cold_id_base + i,
+            engine_id,
+            tmp_path.to_str().unwrap(),
+            vec![String::from("")],
+            vec![String::from("")],
+        );
+    }
+    return tmp_dir;
 }
 
 fn main() -> () {
@@ -490,22 +528,9 @@ fn main() -> () {
             vec![String::from("")],
         );
         // add for mmm cold functions
-        let tmp_dir = std::path::Path::new("/tmp").join(mmm_path.file_name().unwrap());
-        std::fs::create_dir_all(&tmp_dir).unwrap();
-        for i in 0..NUM_COLD {
-            let tmp_path = tmp_dir.join(i.to_string());
-            if !tmp_path.exists() {
-                std::fs::copy(&mmm_path, &tmp_path).unwrap();
-            }
-            registry.add_local(
-                MMM_COLD_ID_BASE + i,
-                COMPUTE_ENGINE,
-                tmp_path.to_str().unwrap(),
-                vec![String::from("")],
-                vec![String::from("")],
-            );
-        }
-        // add for busy function
+        let mmm_cold_dir =
+            add_cold_functions(&mut registry, COMPUTE_ENGINE, &mmm_path, MMM_COLD_ID_BASE);
+        // add for busy hot functions
         registry.add_local(
             BUSY_ID,
             COMPUTE_ENGINE,
@@ -513,11 +538,15 @@ fn main() -> () {
             vec![String::from("")],
             vec![String::from("")],
         );
+        // add for busy cold functions
+        let busy_cold_dir =
+            add_cold_functions(&mut registry, COMPUTE_ENGINE, &busy_path, BUSY_COLD_ID_BASE);
         // add http system function
         // first try only download and spin, TODO: add upload
         registry
             .add_system(HTTP_ID, SYS_ENGINE)
             .expect("Should be able to add system function");
+        // add composition using hot busy function
         let composition = Composition {
             dependencies: vec![
                 FunctionDependencies {
@@ -547,6 +576,38 @@ fn main() -> () {
             output_sets,
             output_set_map,
         );
+        // add compositions using cold busy functions
+        for i in 0..NUM_COLD {
+            let composition = Composition {
+                dependencies: vec![
+                    FunctionDependencies {
+                        function: HTTP_ID,
+                        input_set_ids: vec![Some(0), None, None],
+                        output_set_ids: vec![Some(1), Some(2), Some(3)],
+                    },
+                    FunctionDependencies {
+                        function: BUSY_COLD_ID_BASE + i,
+                        input_set_ids: vec![Some(3)],
+                        output_set_ids: vec![Some(4)],
+                    },
+                    FunctionDependencies {
+                        function: HTTP_ID,
+                        input_set_ids: vec![Some(5), None, Some(4)],
+                        output_set_ids: vec![Some(6)],
+                    },
+                ],
+            };
+            let output_set_map = BTreeMap::from([(4, 0), (6, 1)]);
+            let input_sets = get_system_function_input_sets(SystemFunction::HTTP);
+            let output_sets = get_system_function_output_sets(SystemFunction::HTTP);
+            registry.add_composition(
+                COMPOSITION_COLD_ID_BASE + i,
+                composition,
+                input_sets,
+                output_sets,
+                output_set_map,
+            );
+        }
         // drop page caches to ensure cold functions are loaded from disk
         loop {
             info!("Waiting for page cache to be clean");
@@ -555,8 +616,9 @@ fn main() -> () {
             // check if page caches are actually dropped
             let mut no_page_cache_for_all = true;
             for i in (0..NUM_COLD).step_by(1000) {
-                let tmp_path = tmp_dir.join(i.to_string());
-                if !no_page_cache_for(tmp_path) {
+                let mmm_cold_path = mmm_cold_dir.join(i.to_string());
+                let busy_cold_path = busy_cold_dir.join(i.to_string());
+                if !no_page_cache_for(mmm_cold_path) || !no_page_cache_for(busy_cold_path) {
                     no_page_cache_for_all = false;
                     break;
                 }
