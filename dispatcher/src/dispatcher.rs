@@ -183,9 +183,8 @@ impl Dispatcher {
             while let Ok(Some(resource)) =
                 resource_pool.sync_acquire_engine_resource(engine_id.clone())
             {
-                if let Ok(engine) = driver.start_engine(vec![resource]) {
-                    engine_vec.push(engine);
-                }
+                let engine = driver.start_engine(vec![resource])?;
+                engine_vec.push(engine);
             }
             let engine_queue = EngineQueue {
                 internals: Mutex::new((engine_vec, VecDeque::new())),

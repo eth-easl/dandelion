@@ -84,7 +84,7 @@ They can be built with a normal make command, but have the following requirement
 ## MMU worker build
 The `mmu_worker` binary required by the `MmuEngine` is assumed to be present in corresponding `target` directory:
 ```
-cargo build --bin mmu_worker --features mmu --target $(arch)-unknown-linux-gnu
+cargo build --bin mmu_worker --features mmu --target $(arch)-unknown-linux-gnu [--release]
 ```
 It is also recommended to statically link `mmu_worker` for a faster loading:
 ```
@@ -92,4 +92,8 @@ It is also recommended to statically link `mmu_worker` for a faster loading:
 RUSTFLAGS='-C target-feature=+crt-static'
 # aarch64
 RUSTFLAGS='-C target-feature=+crt-static -C link-arg=-Wl,-fuse-ld=lld,--image-base=0xaaaaaaaa0000'
+```
+Also make sure that shared memory objects are executable:
+```
+sudo mount -o remount,exec /dev/shm
 ```
