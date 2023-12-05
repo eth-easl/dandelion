@@ -19,6 +19,7 @@ use std::{
     thread::spawn,
 };
 use libloading::{Library, Symbol};
+use log::{error, info};
 
 type WasmEntryPoint = fn(&mut [u8]) -> Option<i32>;
 
@@ -41,7 +42,7 @@ fn run_thread(
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
         return;
     };
-    println!("WASM engine running on core {}", core_id);
+    info!("WASM engine running on core {}", core_id);
 
     'commandloop: for cmd in command_receiver.iter() {
         let WasmCommand { lib, context, recorder } = cmd;
@@ -238,7 +239,7 @@ impl Driver for WasmDriver {
     ) -> DandelionResult<Function> {
 
         let lib = unsafe { Library::new(function_path).map_err(|e| {
-            println!("error: {}", e);
+            error!("error: {}", e);
             DandelionError::MalformedConfig
         }) }?;
 

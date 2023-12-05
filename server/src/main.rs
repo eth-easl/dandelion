@@ -13,6 +13,7 @@ use hyper::{
     service::{make_service_fn, service_fn},
     Body, Request, Response, Server,
 };
+use log::{error, info};
 use machine_interface::{
     function_driver::{
         system_driver::{get_system_function_input_sets, get_system_function_output_sets},
@@ -394,6 +395,7 @@ async fn service(
 }
 
 fn main() -> () {
+    env_logger::init();
     // set up dispatcher configuration basics
     let mut domains = BTreeMap::new();
     const COMPUTE_DOMAIN: ContextTypeId = 0;
@@ -562,7 +564,7 @@ fn main() -> () {
         if !core_affinity::set_for_current(CoreId { id: core_id.into() }) {
             return;
         }
-        println!("Dispatcher running on core {}", core_id);
+        info!("Dispatcher running on core {}", core_id);
     });
     let runtime = runtime_builder.build().unwrap();
     let _guard = runtime.enter();
@@ -590,6 +592,6 @@ fn main() -> () {
     println!("Hello, World (native)");
     // Run this server for... forever!
     if let Err(e) = runtime.block_on(server) {
-        eprintln!("server error: {}", e);
+        error!("server error: {}", e);
     }
 }
