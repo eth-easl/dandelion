@@ -172,6 +172,22 @@ impl Engine for WasmtimeEngine {
             _ => err!(ConfigMissmatch),
         };
 
+        // compile module
+        {
+            let wasm_context = match &mut context.context {
+                ContextType::Wasmtime(wasm_context) => wasm_context,
+                _ => err!(ConfigMissmatch),
+            };
+            wasm_context.module = Some(
+                match unsafe { 
+                    wasmtime::Module::deserialize(&wasm_context.engine, &wasm_config.precompiled_module) 
+                } {
+                    Ok(module) => module,
+                    Err(_) => err!(EngineError),
+                }
+            );
+        }
+
         // setup input structs
         if let Err(err) = setup_input_structs::<u32, u32>(
             &mut context, 
@@ -252,13 +268,18 @@ impl Driver for WasmtimeDriver {
             }
         }
 
-        // read file into a byte vector
+        let mut store: wasmtime::Store::<()> = wasmtime::Store::default();
+
+        // read file and precompile module
         let wasm_module_content = map_cfg_err!{ std::fs::read(&function_config) };
+        let precompiled_module = map_cfg_err!{ store.engine().precompile_module(&wasm_module_content) };
 
         // instantiate module to extract layout data
-        
-        let mut store: wasmtime::Store::<()> = wasmtime::Store::default();
-        let module =    map_cfg_err!{ wasmtime::Module::from_file(store.engine(), &function_config) };
+        let module = unsafe {
+            map_cfg_err!{ 
+                wasmtime::Module::deserialize(store.engine(), &precompiled_module) 
+            }
+        };
         let memory_ty = module
             .imports().next()
             .ok_or(DandelionError::ConfigMissmatch)?
@@ -293,7 +314,7 @@ impl Driver for WasmtimeDriver {
         )];
         Ok(Function {
             config: FunctionConfig::WasmtimeConfig(WasmtimeConfig {
-                wasm_module_content,
+                precompiled_module,
                 total_mem_size,
                 sdk_heap_base,
                 sdk_heap_size,

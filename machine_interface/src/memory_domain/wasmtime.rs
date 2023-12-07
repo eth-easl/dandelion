@@ -1,16 +1,15 @@
-use std::fmt::{Debug, Formatter};
+use std::{fmt::{Debug, Formatter}, sync::Arc};
 
 use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
 use dandelion_commons::{DandelionError, DandelionResult};
 
 use wasmtime::{Module, Store, Memory, Engine, MemoryType};
 
-
 pub struct WasmtimeContext {
     pub engine: Engine,
     pub store: Store<()>,
-    pub memory: Option<Memory>,  // must be able to take out the memory during execution
-    pub module: Option<Module>,  // initialized at load time
+    pub memory: Option<Memory>,         // must be able to take out the memory during execution
+    pub module: Option<Module>,         // module gets compiled in engine
 }
 
 impl Debug for WasmtimeContext {

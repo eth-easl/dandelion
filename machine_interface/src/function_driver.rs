@@ -10,7 +10,7 @@ use std::{future::Future, sync::Arc};
 use libloading::Library;
 
 #[cfg(feature = "wasmtime")]
-use crate::memory_domain::wasmtime::WasmtimeContext;
+use crate::memory_domain::wasmtime::{WasmtimeContext};
 
 pub mod compute_driver;
 mod load_utils;
@@ -44,7 +44,7 @@ pub struct WasmConfig {
 #[cfg(feature = "wasmtime")]
 #[derive(Clone)]
 pub struct WasmtimeConfig {
-    wasm_module_content: Vec<u8>,
+    precompiled_module: Vec<u8>,
     total_mem_size: usize,
     sdk_heap_base: usize,
     sdk_heap_size: usize,
@@ -82,16 +82,8 @@ impl Function {
             },
             #[cfg(feature = "wasmtime")]
             FunctionConfig::WasmtimeConfig(c) => {
+                // note that the module will be compiled in the engine
                 let mut context = domain.acquire_context(c.total_mem_size)?;
-                match &mut context.context {
-                    ContextType::Wasmtime(ctx) => {
-                        // create wasm module
-                        let module = wasmtime::Module::new(&ctx.engine, &c.wasm_module_content)
-                            .map_err(|_| DandelionError::MalformedConfig)?;
-                        ctx.module = Some(module);
-                    },
-                    _ => unreachable!(),
-                };
                 // occupy clang-generated wasm memory
                 context.occupy_space(0, c.sdk_heap_base)?;
                 Ok(context)

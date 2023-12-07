@@ -434,7 +434,7 @@ fn main() -> () {
     let mut registry;
     // insert specific configuration
     #[cfg(all(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime"))]
-    std::compile_error!("Should only have one feature out of mmu or cheri or wasm");
+    std::compile_error!("Should only have one feature out of mmu or cheri or wasm or wasmtime");
     #[cfg(all(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime"), feature = "hyper_io"))]
     {
         let mut drivers = BTreeMap::new();
