@@ -109,7 +109,7 @@ impl Future for WasmFuture<'_> {
             Poll::Ready(Some(Ok(()))) => {
                 // TODO handle errors (we don't have a context if locking fails)
                 let mut guard = self.context.lock().unwrap();
-                if !guard.is_some() { return Poll::Pending };
+                if !guard.is_some() { return Poll::Pending };   // TODO is this correct?
                 let mut context = guard.take().unwrap();
                 context.content.clear();
                 let res = read_output_structs::<u32, u32>(&mut context, self.system_data_offset);

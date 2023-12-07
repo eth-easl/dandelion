@@ -1,4 +1,4 @@
-#[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "wasm")))]
+#[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime")))]
 mod compute_driver_tests {
     use crate::{
         function_driver::{Driver, Engine, FunctionConfig},
@@ -567,5 +567,12 @@ mod compute_driver_tests {
         driverTests!(sysld_wasm_x86_64; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![1, 2, 3]; vec![255]);
         #[cfg(target_arch = "aarch64")]
         driverTests!(sysld_wasm_aarch64; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![1, 2, 3]; vec![255]);
+    }
+
+    #[cfg(feature = "wasmtime")]
+    mod wasmtime {
+        use crate::function_driver::compute_driver::wasmtime::WasmtimeDriver;
+        use crate::memory_domain::wasmtime::WasmtimeMemoryDomain;
+        driverTests!(wasm; WasmtimeMemoryDomain; Vec::new(); WasmtimeDriver {}; vec![1, 2, 3]; vec![255]);
     }
 }

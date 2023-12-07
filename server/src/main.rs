@@ -45,8 +45,14 @@ use machine_interface::{
     memory_domain::{wasm::WasmMemoryDomain, Context, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
 };
+#[cfg(feature = "wasmtime")]
+use machine_interface::{
+    function_driver::{compute_driver::wasmtime::WasmtimeDriver, Driver},
+    memory_domain::{wasmtime::WasmtimeMemoryDomain, Context, ContextTrait, MemoryDomain},
+    DataItem, DataSet, Position,
+};
 
-#[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm")))]
+#[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime")))]
 use machine_interface::{
     memory_domain::{Context, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
@@ -427,9 +433,9 @@ fn main() -> () {
     );
     let mut registry;
     // insert specific configuration
-    #[cfg(all(feature = "cheri", feature = "mmu", feature = "wasm"))]
+    #[cfg(all(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime"))]
     std::compile_error!("Should only have one feature out of mmu or cheri or wasm");
-    #[cfg(all(any(feature = "cheri", feature = "mmu", feature = "wasm"), feature = "hyper_io"))]
+    #[cfg(all(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime"), feature = "hyper_io"))]
     {
         let mut drivers = BTreeMap::new();
         let mut mmm_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -474,6 +480,22 @@ fn main() -> () {
             ));
             busy_path.push(format!(
                 "../machine_interface/tests/data/test_sysld_wasm_{}_busy",
+                std::env::consts::ARCH
+            ));
+        }
+        #[cfg(feature = "wasmtime")]
+        {
+            domains.insert(
+                COMPUTE_DOMAIN,
+                WasmtimeMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain"),
+            );
+            driver = Box::new(WasmtimeDriver {}) as Box<dyn Driver>;
+            mmm_path.push(format!(
+                "../machine_interface/tests/data/test_wasm_{}_matmul",
+                std::env::consts::ARCH
+            ));
+            busy_path.push(format!(
+                "../machine_interface/tests/data/test_wasm_{}_busy",
                 std::env::consts::ARCH
             ));
         }
@@ -541,7 +563,7 @@ fn main() -> () {
         );
 
     }
-    #[cfg(not(all(any(feature = "cheri", feature = "mmu", feature = "wasm"), feature = "hyper_io")))]
+    #[cfg(not(all(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime"), feature = "hyper_io")))]
     {
         let loader_map = BTreeMap::new();
         registry = FunctionRegistry::new(loader_map);
@@ -588,6 +610,8 @@ fn main() -> () {
     println!("Hello, World (mmu)");
     #[cfg(feature = "wasm")]
     println!("Hello, World (wasm)");
+    #[cfg(feature = "wasmtime")]
+    println!("Hello, World (wasmtime)");
     #[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm")))]
     println!("Hello, World (native)");
     // Run this server for... forever!

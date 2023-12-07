@@ -1,4 +1,4 @@
-#[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "wasm")))]
+#[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime")))]
 mod dispatcher_tests {
     use dandelion_commons::{ContextTypeId, EngineTypeId};
     use dispatcher::{
@@ -614,5 +614,14 @@ mod dispatcher_tests {
         dispatcherTests!(sysld_wasm_x86_64; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![1]);
         #[cfg(target_arch = "aarch64")]
         dispatcherTests!(sysld_wasm_aarch64; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![1]);
+    }
+
+    #[cfg(feature = "wasmtime")]
+    mod wasmtime {
+        use machine_interface::{
+            function_driver::compute_driver::wasmtime::WasmtimeDriver,
+            memory_domain::wasmtime::WasmtimeMemoryDomain,
+        };
+        dispatcherTests!(wasm; WasmtimeMemoryDomain; Vec::new(); WasmtimeDriver {}; vec![1]);
     }
 }

@@ -1,12 +1,16 @@
 use crate::{
-    memory_domain::{Context, MemoryDomain},
+    memory_domain::{Context, ContextType, MemoryDomain},
     DataRequirementList, Position,
 };
 use core::pin::Pin;
-use dandelion_commons::{records::Recorder, DandelionResult};
+use dandelion_commons::{records::Recorder, DandelionResult, DandelionError};
 use std::{future::Future, sync::Arc};
 
+#[cfg(feature = "wasm")]
 use libloading::Library;
+
+#[cfg(feature = "wasmtime")]
+use crate::memory_domain::wasmtime::WasmtimeContext;
 
 pub mod compute_driver;
 mod load_utils;
@@ -27,6 +31,7 @@ pub enum SystemFunction {
     HTTP,
 }
 
+#[cfg(feature = "wasm")]
 #[derive(Clone)]
 pub struct WasmConfig {
     lib: Arc<Library>,
@@ -36,11 +41,24 @@ pub struct WasmConfig {
     system_data_struct_offset: usize,
 }
 
+#[cfg(feature = "wasmtime")]
+#[derive(Clone)]
+pub struct WasmtimeConfig {
+    wasm_module_content: Vec<u8>,
+    total_mem_size: usize,
+    sdk_heap_base: usize,
+    sdk_heap_size: usize,
+    system_data_struct_offset: usize,
+}
+
 #[derive(Clone)]
 pub enum FunctionConfig {
     ElfConfig(ElfConfig),
     SysConfig(SystemFunction),
+    #[cfg(feature = "wasm")]
     WasmConfig(WasmConfig),
+    #[cfg(feature = "wasmtime")]
+    WasmtimeConfig(WasmtimeConfig),
 }
 
 pub struct Function {
@@ -56,11 +74,28 @@ impl Function {
                 load_utils::load_static(domain, &self.context, &self.requirements)
             }
             FunctionConfig::SysConfig(_) => domain.acquire_context(self.requirements.size),
+            #[cfg(feature = "wasm")]
             FunctionConfig::WasmConfig(c) => {
                 let mut context = domain.acquire_context(c.wasm_mem_size)?;
                 context.occupy_space(0, c.sdk_heap_base)?;
                 Ok(context)
-            }
+            },
+            #[cfg(feature = "wasmtime")]
+            FunctionConfig::WasmtimeConfig(c) => {
+                let mut context = domain.acquire_context(c.total_mem_size)?;
+                match &mut context.context {
+                    ContextType::Wasmtime(ctx) => {
+                        // create wasm module
+                        let module = wasmtime::Module::new(&ctx.engine, &c.wasm_module_content)
+                            .map_err(|_| DandelionError::MalformedConfig)?;
+                        ctx.module = Some(module);
+                    },
+                    _ => unreachable!(),
+                };
+                // occupy clang-generated wasm memory
+                context.occupy_space(0, c.sdk_heap_base)?;
+                Ok(context)
+            },
         };
     }
 }

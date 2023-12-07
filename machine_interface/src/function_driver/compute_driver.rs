@@ -7,5 +7,8 @@ pub mod mmu;
 #[cfg(feature = "wasm")]
 pub mod wasm;
 
+#[cfg(feature = "wasmtime")]
+pub mod wasmtime;
+
 #[cfg(test)]
 mod compute_driver_tests;

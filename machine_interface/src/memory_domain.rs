@@ -7,6 +7,8 @@ pub mod mmu;
 pub mod read_only;
 #[cfg(feature = "wasm")]
 pub mod wasm;
+#[cfg(feature = "wasmtime")]
+pub mod wasmtime;
 
 use crate::{DataItem, DataSet, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
@@ -28,6 +30,8 @@ pub enum ContextType {
     Mmu(Box<mmu::MmuContext>),
     #[cfg(feature = "wasm")]
     Wasm(Box<wasm::WasmContext>),
+    #[cfg(feature = "wasmtime")]
+    Wasmtime(Box<wasmtime::WasmtimeContext>),
 }
 
 impl ContextTrait for ContextType {
@@ -41,6 +45,8 @@ impl ContextTrait for ContextType {
             ContextType::Mmu(context) => context.write(offset, data),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.write(offset, data),
+            #[cfg(feature = "wasmtime")]
+            ContextType::Wasmtime(context) => context.write(offset, data),
         }
     }
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
@@ -53,6 +59,8 @@ impl ContextTrait for ContextType {
             ContextType::Mmu(context) => context.read(offset, read_buffer),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.read(offset, read_buffer),
+            #[cfg(feature = "wasmtime")]
+            ContextType::Wasmtime(context) => context.read(offset, read_buffer),
         }
     }
 }
@@ -240,6 +248,16 @@ pub fn transefer_memory(
         #[cfg(feature = "wasm")]
         (ContextType::Wasm(destination_ctxt), ContextType::Wasm(source_ctxt)) => {
             wasm::wasm_transfer(
+                destination_ctxt,
+                source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+            )
+        }
+        #[cfg(feature = "wasmtime")]
+        (ContextType::Wasmtime(destination_ctxt), ContextType::Wasmtime(source_ctxt)) => {
+            wasmtime::wasmtime_transfer(
                 destination_ctxt,
                 source_ctxt,
                 destination_offset,
