@@ -491,12 +491,10 @@ fn main() -> () {
             );
             driver = Box::new(WasmtimeDriver {}) as Box<dyn Driver>;
             mmm_path.push(format!(
-                "../machine_interface/tests/data/test_wasm_{}_matmul",
-                std::env::consts::ARCH
+                "../machine_interface/tests/data/test_wasm_matmul",
             ));
             busy_path.push(format!(
-                "../machine_interface/tests/data/test_wasm_{}_busy",
-                std::env::consts::ARCH
+                "../machine_interface/tests/data/test_wasm_busy",
             ));
         }
         let system_driver = Box::new(HyperDriver {});
@@ -612,7 +610,7 @@ fn main() -> () {
     println!("Hello, World (wasm)");
     #[cfg(feature = "wasmtime")]
     println!("Hello, World (wasmtime)");
-    #[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm")))]
+    #[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime")))]
     println!("Hello, World (native)");
     // Run this server for... forever!
     if let Err(e) = runtime.block_on(server) {
