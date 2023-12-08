@@ -1,16 +1,14 @@
 use crate::{
-    memory_domain::{Context, ContextType, MemoryDomain},
+    memory_domain::{Context, MemoryDomain},
     DataRequirementList, Position,
 };
 use core::pin::Pin;
-use dandelion_commons::{records::Recorder, DandelionResult, DandelionError};
+use dandelion_commons::{records::Recorder, DandelionResult};
 use std::{future::Future, sync::Arc};
 
 #[cfg(feature = "wasm")]
 use libloading::Library;
 
-#[cfg(feature = "wasmtime")]
-use crate::memory_domain::wasmtime::{WasmtimeContext};
 
 pub mod compute_driver;
 mod load_utils;
