@@ -1,14 +1,16 @@
 use crate::{
-    memory_domain::{Context, MemoryDomain},
+    memory_domain::{Context, ContextType, MemoryDomain},
     DataRequirementList, Position,
 };
 use core::pin::Pin;
-use dandelion_commons::{records::Recorder, DandelionResult};
+use dandelion_commons::{records::Recorder, DandelionResult, DandelionError};
 use std::{future::Future, sync::Arc};
 
 #[cfg(feature = "wasm")]
 use libloading::Library;
 
+#[cfg(feature = "wasmtime")]
+use wasmtime;
 
 pub mod compute_driver;
 mod load_utils;
@@ -45,8 +47,8 @@ pub struct WasmtimeConfig {
     precompiled_module: Vec<u8>,
     total_mem_size: usize,
     sdk_heap_base: usize,
-    sdk_heap_size: usize,
     system_data_struct_offset: usize,
+    wasmtime_engine: wasmtime::Engine,  // engine can be shared across threads
 }
 
 #[derive(Clone)]
@@ -80,8 +82,26 @@ impl Function {
             },
             #[cfg(feature = "wasmtime")]
             FunctionConfig::WasmtimeConfig(c) => {
-                // note that the module will be compiled in the engine
                 let mut context = domain.acquire_context(c.total_mem_size)?;
+
+                let mut wasmtime_context = match context.context {
+                    ContextType::Wasmtime(ref mut c) => c,
+                    _ => return Err(DandelionError::ConfigMissmatch),
+                };
+
+                // initialize store and memory
+                let pages = (c.total_mem_size + 65536/2) / 2usize.pow(16);  // round up to next page
+                let mut store = wasmtime::Store::new(&c.wasmtime_engine, ());
+                let mem_type = wasmtime::MemoryType::new(pages as u32, Some(pages as u32));
+                let memory = Some(
+                    wasmtime::Memory::new(&mut store, mem_type)
+                        .map_err(|_| DandelionError::OutOfMemory)?
+                );
+                wasmtime_context.store = Some(store);
+                wasmtime_context.memory = memory;
+
+                // the wasm module will be initialized in the engine
+
                 // occupy clang-generated wasm memory
                 context.occupy_space(0, c.sdk_heap_base)?;
                 Ok(context)

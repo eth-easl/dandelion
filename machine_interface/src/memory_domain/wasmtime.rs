@@ -5,11 +5,16 @@ use dandelion_commons::{DandelionError, DandelionResult};
 
 use wasmtime::{Module, Store, Memory, Engine, MemoryType};
 
+// pub struct WasmtimeLoadedContext {
+//     pub store:  Store<()>,
+//     pub memory: Memory,
+//     pub module: Module,
+// }
+
 pub struct WasmtimeContext {
-    pub engine: Engine,
-    pub store: Store<()>,
+    pub store:  Option<Store<()>>,      // store initialized in load()
     pub memory: Option<Memory>,         // must be able to take out the memory during execution
-    pub module: Option<Module>,         // module gets compiled in engine
+    pub module: Option<Module>,         // module gets compiled in Dandelion engine
 }
 
 impl Debug for WasmtimeContext {
@@ -33,7 +38,7 @@ impl ContextTrait for WasmtimeContext {
             std::slice::from_raw_parts(data.as_ptr() as *const u8, buffer_byte_size)
         };
         self.memory.unwrap().write(
-            &mut self.store, 
+            self.store.as_mut().unwrap(), 
             offset, 
             buffer,
         ).map_err(|_| DandelionError::InvalidWrite)
@@ -44,7 +49,7 @@ impl ContextTrait for WasmtimeContext {
             std::slice::from_raw_parts_mut(read_buffer.as_mut_ptr() as *mut u8, buffer_byte_size)
         };
         self.memory.unwrap().read(
-            &self.store, 
+            self.store.as_ref().unwrap(), 
             offset, 
             buffer,
         ).map_err(|_| DandelionError::InvalidRead)
@@ -67,22 +72,12 @@ impl MemoryDomain for WasmtimeMemoryDomain {
         }
         let pages = next_page_size / 2usize.pow(16);
 
-        // create memory (which is attached to a store (which is attached to an engine))
-        let engine = Engine::default();
-        let mut store = Store::new(&engine, ());
-        let mem_type = MemoryType::new(pages as u32, Some(pages as u32));
-        let memory = Some(
-            Memory::new(&mut store, mem_type)
-                .map_err(|_| DandelionError::OutOfMemory)?
-        );
-
         Ok(Context::new(
             ContextType::Wasmtime(Box::new(
                 WasmtimeContext {
-                    store,
+                    store: None,
                     module: None,
-                    engine,
-                    memory,
+                    memory: None,
                 }
             )),
             next_page_size
@@ -99,17 +94,17 @@ pub fn wasmtime_transfer(
 ) -> DandelionResult<()> {
     
     if source.memory.is_none() || destination.memory.is_none() 
-        || source_offset + size > source.memory.unwrap().data_size(&source.store)
-        || destination_offset + size > destination.memory.unwrap().data_size(&destination.store)
+        || source_offset + size > source.memory.unwrap().data_size(source.store.as_ref().unwrap())
+        || destination_offset + size > destination.memory.unwrap().data_size(destination.store.as_ref().unwrap())
     {
         return Err(DandelionError::InvalidRead);
     }
 
     destination.memory.unwrap()
-        .data_mut(&mut destination.store)[destination_offset..destination_offset+size]
+        .data_mut(destination.store.as_mut().unwrap())[destination_offset..destination_offset+size]
         .copy_from_slice(
             &source.memory.unwrap()
-            .data(&source.store)[source_offset..source_offset+size]
+            .data(source.store.as_ref().unwrap())[source_offset..source_offset+size]
         );
     
     Ok(())

@@ -56,7 +56,7 @@ fn run_thread(
             _ => panic!("invalid context type"),
         };
         let memory = wasm_context.memory.take().unwrap();
-        let store = &mut wasm_context.store;
+        let store = &mut wasm_context.store.as_mut().unwrap();
         let module = wasm_context.module.take().unwrap();
 
         // buffer the system data struct because it will be overridden at instantiation
@@ -67,11 +67,11 @@ fn run_thread(
         let instance = wasmtime::Instance::new(store, &module, &[memory.into()]).unwrap();
 
         // write the system data struct back
-        let _ = memory.write(&mut wasm_context.store, sysdata_offset, &sysdata_buffer);
+        let _ = memory.write(wasm_context.store.as_mut().unwrap(), sysdata_offset, &sysdata_buffer);
 
         // call entry point
-        let entry = instance.get_typed_func::<(), ()>(&mut wasm_context.store, "_start").unwrap();
-        let ret = entry.call(&mut wasm_context.store, ());
+        let entry = instance.get_typed_func::<(), ()>(wasm_context.store.as_mut().unwrap(), "_start").unwrap();
+        let ret = entry.call(wasm_context.store.as_mut().unwrap(), ());
 
         // put memory back into context
         wasm_context.memory = Some(memory);
@@ -180,7 +180,10 @@ impl Engine for WasmtimeEngine {
             };
             wasm_context.module = Some(
                 match unsafe { 
-                    wasmtime::Module::deserialize(&wasm_context.engine, &wasm_config.precompiled_module) 
+                    wasmtime::Module::deserialize(
+                        &wasm_config.wasmtime_engine, 
+                        &wasm_config.precompiled_module,
+                    ) 
                 } {
                     Ok(module) => module,
                     Err(_) => err!(EngineError),
@@ -268,7 +271,8 @@ impl Driver for WasmtimeDriver {
             }
         }
 
-        let mut store: wasmtime::Store::<()> = wasmtime::Store::default();
+        let wasmtime_engine = wasmtime::Engine::default();
+        let mut store: wasmtime::Store::<()> = wasmtime::Store::new(&wasmtime_engine, ());
 
         // read file and precompile module
         let wasm_module_content = map_cfg_err!{ std::fs::read(&function_config) };
@@ -317,8 +321,8 @@ impl Driver for WasmtimeDriver {
                 precompiled_module,
                 total_mem_size,
                 sdk_heap_base,
-                sdk_heap_size,
                 system_data_struct_offset,
+                wasmtime_engine,
             }),
             requirements: DataRequirementList {
                 size: total_mem_size,
