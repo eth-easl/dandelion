@@ -47,7 +47,7 @@ use machine_interface::{
 };
 #[cfg(feature = "wasmtime")]
 use machine_interface::{
-    function_driver::{compute_driver::wasmtime::WasmtimeDriver, Driver},
+    function_driver::{compute_driver::wasmtime::{WasmtimeDriver, USE_PRECOMPILED}, Driver},
     memory_domain::{wasmtime::WasmtimeMemoryDomain, Context, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
 };
@@ -490,12 +490,21 @@ fn main() -> () {
                 WasmtimeMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain"),
             );
             driver = Box::new(WasmtimeDriver {}) as Box<dyn Driver>;
-            mmm_path.push(format!(
-                "../machine_interface/tests/data/test_wasm_matmul",
-            ));
-            busy_path.push(format!(
-                "../machine_interface/tests/data/test_wasm_busy",
-            ));
+            if USE_PRECOMPILED {
+                mmm_path.push(format!(
+                    "../machine_interface/tests/data/test_wasmtime_matmul",
+                ));
+                busy_path.push(format!(
+                    "../machine_interface/tests/data/test_wasmtime_busy",
+                ));
+            } else {
+                mmm_path.push(format!(
+                    "../machine_interface/tests/data/test_wasm_matmul",
+                ));
+                busy_path.push(format!(
+                    "../machine_interface/tests/data/test_wasm_busy",
+                ));
+            }
         }
         let system_driver = Box::new(HyperDriver {});
         drivers.insert(COMPUTE_ENGINE, driver);

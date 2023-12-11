@@ -226,6 +226,7 @@ impl Engine for WasmtimeEngine {
 }
 
 const SDK_HEAP_PAGES : usize = 2048;    // 128MB
+pub const USE_PRECOMPILED: bool = true;
 
 pub struct WasmtimeDriver {}
 
@@ -276,7 +277,11 @@ impl Driver for WasmtimeDriver {
 
         // read file and precompile module
         let wasm_module_content = map_cfg_err!{ std::fs::read(&function_config) };
-        let precompiled_module = map_cfg_err!{ store.engine().precompile_module(&wasm_module_content) };
+        let precompiled_module = if USE_PRECOMPILED {
+            wasm_module_content
+        } else {
+            map_cfg_err!{ store.engine().precompile_module(&wasm_module_content) }
+        };
 
         // instantiate module to extract layout data
         let module = unsafe {

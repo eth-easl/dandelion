@@ -70,7 +70,6 @@ impl MemoryDomain for WasmtimeMemoryDomain {
             next_page_size = size.checked_add( 2usize.pow(16) - (size % 2usize.pow(16)) )
                 .ok_or(DandelionError::OutOfMemory)?;
         }
-        let pages = next_page_size / 2usize.pow(16);
 
         Ok(Context::new(
             ContextType::Wasmtime(Box::new(
