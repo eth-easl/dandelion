@@ -267,8 +267,11 @@ impl Driver for WasmtimeDriver {
 
         // shorthand to map any error below to a config missmatch
         macro_rules! map_cfg_err {
-            ($e:expr) => {
-                $e.map_err(|_| DandelionError::ConfigMissmatch)?
+            ($e:expr, $dbg:expr) => {
+                $e.map_err(|_| {
+                    error!($dbg);
+                    DandelionError::ConfigMissmatch
+                })?
             }
         }
 
@@ -276,36 +279,58 @@ impl Driver for WasmtimeDriver {
         let mut store: wasmtime::Store::<()> = wasmtime::Store::new(&wasmtime_engine, ());
 
         // read file and precompile module
-        let wasm_module_content = map_cfg_err!{ std::fs::read(&function_config) };
+        let wasm_module_content = map_cfg_err!{ 
+            std::fs::read(&function_config),
+            "could not read function file"
+        };
         let precompiled_module = if USE_PRECOMPILED {
             wasm_module_content
         } else {
-            map_cfg_err!{ store.engine().precompile_module(&wasm_module_content) }
+            map_cfg_err!{ 
+                store.engine().precompile_module(&wasm_module_content),
+                "could not precompile module"
+            }
         };
 
         // instantiate module to extract layout data
         let module = unsafe {
             map_cfg_err!{ 
-                wasmtime::Module::deserialize(store.engine(), &precompiled_module) 
+                wasmtime::Module::deserialize(store.engine(), &precompiled_module),
+                "could not deserialize module"
             }
         };
         let memory_ty = module
             .imports().next()
-            .ok_or(DandelionError::ConfigMissmatch)?
+            .ok_or_else(|| {
+                error!("module {} has no imports", function_config);
+                DandelionError::ConfigMissmatch
+            })?
             .ty().memory()
-            .ok_or(DandelionError::ConfigMissmatch)?
+            .ok_or_else(|| {
+                error!("module {} has no memory import", function_config);
+                DandelionError::ConfigMissmatch
+            })?
             .clone();
-        let memory =    map_cfg_err!{ wasmtime::Memory::new(&mut store, memory_ty.clone()) };
-        let instance =  map_cfg_err!{ wasmtime::Instance::new(&mut store, &module, &[memory.into()]) };
+        let memory =    map_cfg_err!{ 
+            wasmtime::Memory::new(&mut store, memory_ty.clone()), 
+            "could not create memory" 
+        };
+        let instance =  map_cfg_err!{ 
+            wasmtime::Instance::new(&mut store, &module, &[memory.into()]),
+            "could not instantiate module"
+        };
         
         let system_data_struct_offset = {
             let v = instance
                 .get_global(&mut store, "__dandelion_system_data")
-                .ok_or(DandelionError::ConfigMissmatch)?
+                .ok_or_else(|| {
+                    error!("module {} has no system data struct", function_config);
+                    DandelionError::ConfigMissmatch
+                })?
                 .get(&mut store);
             match v {
                 wasmtime::Val::I32(x) => x as usize,
-                _ => return Err(DandelionError::ConfigMissmatch),
+                _ => return Err(DandelionError::ConfigMissmatch)
             }
         };
         let wasm_mem_min_pages = memory_ty.minimum() as usize;
