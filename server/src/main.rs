@@ -492,10 +492,12 @@ fn main() -> () {
             driver = Box::new(WasmtimeDriver {}) as Box<dyn Driver>;
             if USE_PRECOMPILED {
                 mmm_path.push(format!(
-                    "../machine_interface/tests/data/test_wasmtime_matmul",
+                    "../machine_interface/tests/data/test_wasmtime_{}_matmul",
+                    std::env::consts::ARCH
                 ));
                 busy_path.push(format!(
-                    "../machine_interface/tests/data/test_wasmtime_busy",
+                    "../machine_interface/tests/data/test_wasmtime_{}_busy",
+                    std::env::consts::ARCH
                 ));
             } else {
                 mmm_path.push(format!(
