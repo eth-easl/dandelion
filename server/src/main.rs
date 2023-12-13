@@ -74,6 +74,20 @@ const COMPOSITION_COLD_ID_BASE: u64 = 0x3000000;
 static INIT_MATRIX: Once = Once::new();
 static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
 
+fn init_matrix() {
+    let rows: usize = std::env::var("MAT_DIM").map_or(128, |n| n.parse().unwrap());
+    let mat_size = rows * rows;
+    unsafe {
+        INIT_MATRIX.call_once(|| {
+            // TODO: add cols
+            DUMMY_MATRIX.push(rows as i64);
+            for i in 0..mat_size {
+                DUMMY_MATRIX.push(i as i64 + 1)
+            }
+        });
+    }
+}
+
 async fn run_chain(
     dispatcher: Arc<Dispatcher>,
     is_cold: bool,
@@ -186,22 +200,9 @@ async fn run_chain(
 }
 
 async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, cols: usize) -> i64 {
-    let mat_size: usize = rows * cols;
-    // [rows] [input_matrix]
-    let context_size: usize = (1 + mat_size) * 8;
-
-    // Initialize matrix if necessary
-    unsafe {
-        INIT_MATRIX.call_once(|| {
-            // TODO: add cols
-            DUMMY_MATRIX.push(rows as i64);
-            for i in 0..mat_size {
-                DUMMY_MATRIX.push(i as i64 + 1)
-            }
-        });
-    }
-
-    let mut input_context = unsafe { add_matmul_inputs(&mut DUMMY_MATRIX) };
+    let _mat_size: usize = rows * cols;
+    // TODO: adjust the input matrix based on mat_size
+    let input_context = unsafe { add_matmul_inputs(&mut DUMMY_MATRIX) };
 
     let inputs = vec![(
         0,
@@ -351,23 +352,13 @@ async fn serve_native(_req: Request<Body>) -> Result<Response<Body>, Infallible>
     let cols = request_buf.get_i64() as usize;
 
     let mat_size: usize = rows * cols;
-
-    // Initialize matrix if necessary
-    unsafe {
-        INIT_MATRIX.call_once(|| {
-            for i in 0..mat_size {
-                DUMMY_MATRIX.push(i as i64 + 1)
-            }
-        });
-    }
-
     let mut out_mat: Vec<i64> = vec![0; mat_size];
     for i in 0..rows {
         for j in 0..rows {
             for k in 0..cols {
                 unsafe {
                     out_mat[i * rows + j] +=
-                        DUMMY_MATRIX[i * cols + k] * DUMMY_MATRIX[j * cols + k];
+                        DUMMY_MATRIX[i * cols + k + 1] * DUMMY_MATRIX[j * cols + k + 1];
                 }
             }
         }
@@ -456,6 +447,7 @@ fn add_cold_functions(
 
 fn main() -> () {
     env_logger::init();
+    init_matrix();
     // set up dispatcher configuration basics
     let mut domains = BTreeMap::new();
     const COMPUTE_DOMAIN: ContextTypeId = 0;
@@ -467,8 +459,8 @@ fn main() -> () {
     type_map.insert(SYS_ENGINE, SYS_CONTEXT);
     let num_cores = u8::try_from(core_affinity::get_core_ids().unwrap().len()).unwrap();
     // TODO: This calculation makes sense only for running matmul-128x128 workload on MMU engines
-    let num_dispatcher_cores = std::env::var("NUM_DISP_CORES")
-        .map_or_else(|_e| (num_cores + 13) / 14, |n| n.parse::<u8>().unwrap());
+    let num_dispatcher_cores: u8 =
+        std::env::var("NUM_DISP_CORES").map_or((num_cores + 13) / 14, |n| n.parse().unwrap());
     assert!(
         num_dispatcher_cores > 0 && num_dispatcher_cores < num_cores,
         "invalid dispatcher core number: {}",
