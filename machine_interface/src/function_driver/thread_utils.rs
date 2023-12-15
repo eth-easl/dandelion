@@ -27,8 +27,12 @@ pub enum ThreadCommand<P: ThreadPayload + Send> {
     Run(Recorder, P),
 }
 
+/// Need the command receiver to be blocking on the worker thread,
+/// that is easier if with this type, as it does not need async to block
 type CommandSender<P> = std::sync::mpsc::Sender<ThreadCommand<P>>;
 type CommandReceiver<P> = std::sync::mpsc::Receiver<ThreadCommand<P>>;
+/// On the result receiver need to not block the thread, as we are inside a runtime,
+/// that can use the thread for other things if receive can yield on waiting.
 type ResultSender = futures::channel::mpsc::Sender<DandelionResult<()>>;
 type ResultReceiver = futures::channel::mpsc::Receiver<DandelionResult<()>>;
 
