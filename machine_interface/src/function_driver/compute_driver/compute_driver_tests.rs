@@ -593,7 +593,9 @@ mod compute_driver_tests {
         use crate::function_driver::compute_driver::wasm::WasmDriver;
         use crate::function_driver::ComputeResource;
         use crate::memory_domain::wasm::WasmMemoryDomain;
-        driverTests!(sysld_wasm; WasmMemoryDomain; Vec::new(); WasmDriver {};
+
+        #[cfg(target_arch = "x86_64")]
+        driverTests!(sysld_wasm_x86_64; WasmMemoryDomain; Vec::new(); WasmDriver {};
         vec![
             ComputeResource::CPU(1),
             ComputeResource::CPU(2),
@@ -603,6 +605,7 @@ mod compute_driver_tests {
             ComputeResource::CPU(255),
             ComputeResource::GPU(0),
         ]);
+
         #[cfg(target_arch = "aarch64")]
         driverTests!(sysld_wasm_aarch64; WasmMemoryDomain; Vec::new(); WasmDriver {};
         vec![

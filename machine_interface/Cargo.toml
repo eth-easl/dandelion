@@ -8,7 +8,7 @@ std = []
 cheri = ["std"]
 mmu = ["std"]
 hyper_io = ["std", "dep:hyper"]
-wasm = []
+wasm = ["std"]
 
 [build-dependencies]
 cmake = "0.1"
