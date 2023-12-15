@@ -573,6 +573,9 @@ mod compute_driver_tests {
     mod wasmtime {
         use crate::function_driver::compute_driver::wasmtime::WasmtimeDriver;
         use crate::memory_domain::wasmtime::WasmtimeMemoryDomain;
-        driverTests!(wasmtime; WasmtimeMemoryDomain; Vec::new(); WasmtimeDriver {}; vec![1, 2, 3]; vec![255]);
+        #[cfg(target_arch = "x86_64")]
+        driverTests!(wasmtime_x86_64; WasmtimeMemoryDomain; Vec::new(); WasmtimeDriver {}; vec![1, 2, 3]; vec![255]);
+        #[cfg(target_arch = "aarch64")]
+        driverTests!(wasmtime_aarch64; WasmtimeMemoryDomain; Vec::new(); WasmtimeDriver {}; vec![1, 2, 3]; vec![255]);
     }
 }

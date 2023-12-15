@@ -21,11 +21,12 @@ use std::{
 use libloading::{Library, Symbol};
 use log::{error, info};
 
-type WasmEntryPoint = fn(&mut [u8]) -> Option<i32>;
+type WasmEntryPoint = fn(&mut [u8], usize) -> Option<i32>;
 
 struct WasmCommand {
     lib: Arc<Library>,
     context: Arc<Mutex<Option<Context>>>,
+    sysdata_offset: usize,
     recorder: Option<Recorder>,
 }
 
@@ -45,7 +46,7 @@ fn run_thread(
     info!("WASM engine running on core {}", core_id);
 
     'commandloop: for cmd in command_receiver.iter() {
-        let WasmCommand { lib, context, recorder } = cmd;
+        let WasmCommand { lib, context, sysdata_offset, recorder } = cmd;
         match unsafe { lib.get::<WasmEntryPoint>(b"run") } {
             Ok(entry_point) => {
                 // TODO handle errors
@@ -60,7 +61,7 @@ fn run_thread(
                 };
 
                 // call entry point
-                let ret = entry_point(&mut wasm_context.mem);
+                let ret = entry_point(&mut wasm_context.mem, sysdata_offset);
                 
                 // put context back
                 *guard = Some(ctx);
@@ -178,6 +179,7 @@ impl Engine for WasmEngine {
         let cmd = WasmCommand { 
             context: context_.clone(),
             lib: wasm_config.lib.clone(),
+            sysdata_offset: wasm_config.system_data_struct_offset,
             recorder: Some(recorder),
         };
 
