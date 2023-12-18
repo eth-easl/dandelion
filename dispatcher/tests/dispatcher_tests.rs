@@ -9,7 +9,7 @@ mod dispatcher_tests {
     };
     use futures::lock::Mutex;
     use machine_interface::{
-        function_driver::Driver,
+        function_driver::{ComputeResource, Driver},
         memory_domain::{Context, ContextTrait, MemoryDomain},
         DataItem, DataSet, Position,
     };
@@ -25,7 +25,7 @@ mod dispatcher_tests {
         in_set_names: Vec<String>,
         out_set_names: Vec<String>,
         driver: Box<dyn Driver>,
-        engine_resource: Vec<u8>,
+        engine_resource: Vec<ComputeResource>,
     ) -> Dispatcher {
         let mut domains = BTreeMap::new();
         let context_id: ContextTypeId = 0;
@@ -59,7 +59,7 @@ mod dispatcher_tests {
         domain_arg: Vec<u8>,
         relative_path: &str,
         driver: Box<dyn Driver>,
-        engine_resource: Vec<u8>,
+        engine_resource: Vec<ComputeResource>,
     ) {
         let dispatcher = setup_dispatcher::<Domain>(
             domain_arg,
@@ -188,7 +188,7 @@ mod dispatcher_tests {
         domain_arg: Vec<u8>,
         relative_path: &str,
         driver: Box<dyn Driver>,
-        engine_resource: Vec<u8>,
+        engine_resource: Vec<ComputeResource>,
     ) {
         let dispatcher = setup_dispatcher::<Domain>(
             Vec::new(),
@@ -234,7 +234,7 @@ mod dispatcher_tests {
         domain_arg: Vec<u8>,
         relative_path: &str,
         driver: Box<dyn Driver>,
-        engine_resource: Vec<u8>,
+        engine_resource: Vec<ComputeResource>,
     ) {
         let dispatcher = setup_dispatcher::<Domain>(
             Vec::new(),
@@ -290,7 +290,7 @@ mod dispatcher_tests {
         domain_arg: Vec<u8>,
         relative_path: &str,
         driver: Box<dyn Driver>,
-        engine_resource: Vec<u8>,
+        engine_resource: Vec<ComputeResource>,
     ) {
         let dispatcher = setup_dispatcher::<Domain>(
             Vec::new(),
@@ -358,7 +358,7 @@ mod dispatcher_tests {
         domain_arg: Vec<u8>,
         relative_path: &str,
         driver: Box<dyn Driver>,
-        engine_resource: Vec<u8>,
+        engine_resource: Vec<ComputeResource>,
     ) {
         let dispatcher = setup_dispatcher::<Domain>(
             Vec::new(),
@@ -418,7 +418,7 @@ mod dispatcher_tests {
         domain_arg: Vec<u8>,
         relative_path: &str,
         driver: Box<dyn Driver>,
-        engine_resource: Vec<u8>,
+        engine_resource: Vec<ComputeResource>,
     ) {
         let dispatcher = self::setup_dispatcher::<Domain>(
             Vec::new(),
@@ -588,32 +588,34 @@ mod dispatcher_tests {
     #[cfg(feature = "cheri")]
     mod cheri {
         use machine_interface::{
-            function_driver::compute_driver::cheri::CheriDriver,
+            function_driver::{compute_driver::cheri::CheriDriver, ComputeResource},
             memory_domain::cheri::CheriMemoryDomain,
         };
-        dispatcherTests!(elf_cheri; CheriMemoryDomain; Vec::new(); CheriDriver {}; vec![1]);
+        dispatcherTests!(elf_cheri; CheriMemoryDomain; Vec::new(); CheriDriver {}; vec![ComputeResource::CPU(1)]);
     }
 
     #[cfg(feature = "mmu")]
     mod mmu {
         use machine_interface::{
-            function_driver::compute_driver::mmu::MmuDriver, memory_domain::mmu::MmuMemoryDomain,
+            function_driver::{compute_driver::mmu::MmuDriver, ComputeResource},
+            memory_domain::mmu::MmuMemoryDomain,
         };
         #[cfg(target_arch = "x86_64")]
-        dispatcherTests!(elf_mmu_x86_64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![1]);
+        dispatcherTests!(elf_mmu_x86_64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![ComputeResource::CPU(1)]);
         #[cfg(target_arch = "aarch64")]
-        dispatcherTests!(elf_mmu_aarch64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![1]);
+        dispatcherTests!(elf_mmu_aarch64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![ComputeResource::CPU(1)]);
     }
 
     #[cfg(feature = "wasm")]
     mod wasm {
         use machine_interface::{
-            function_driver::compute_driver::wasm::WasmDriver, memory_domain::wasm::WasmMemoryDomain,
+            function_driver::{compute_driver::wasm::WasmDriver, ComputeResource},
+            memory_domain::wasm::WasmMemoryDomain,
         };
         #[cfg(target_arch = "x86_64")]
-        dispatcherTests!(sysld_wasm_x86_64; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![1]);
+        dispatcherTests!(sysld_wasm_x86_64; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![ComputeResource::CPU(1)]);
         #[cfg(target_arch = "aarch64")]
-        dispatcherTests!(sysld_wasm_aarch64; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![1]);
+        dispatcherTests!(sysld_wasm_aarch64; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![ComputeResource::CPU(1)]);
     }
 
     #[cfg(feature = "wasmtime")]

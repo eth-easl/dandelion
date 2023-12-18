@@ -46,6 +46,9 @@ pub enum DandelionError {
     // engine errors
     /// missmatch between the function config the engine expects and the one given
     ConfigMissmatch,
+    /// missmatch between the resource an engine was given and what it expects to run on or
+    /// the resource doesn't exist
+    EngineResourceError,
     /// attempted abort when no function was running
     NoRunningFunction,
     /// attempted to run on already busy engine

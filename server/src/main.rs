@@ -17,7 +17,7 @@ use log::{error, info};
 use machine_interface::{
     function_driver::{
         system_driver::{get_system_function_input_sets, get_system_function_output_sets},
-        SystemFunction,
+        ComputeResource, SystemFunction,
     },
     memory_domain::{malloc::MallocMemoryDomain, read_only::ReadOnlyContext},
 };
@@ -25,34 +25,35 @@ use machine_interface::{
 #[cfg(feature = "hyper_io")]
 use machine_interface::function_driver::system_driver::hyper::HyperDriver;
 
+#[cfg(any(feature = "cheri", feature = "mmu", feature = "wasm"))]
+use machine_interface::{
+    function_driver::Driver,
+    memory_domain::{Context, ContextTrait, MemoryDomain},
+    DataItem, DataSet, Position,
+};
+
 #[cfg(feature = "cheri")]
 use machine_interface::{
-    function_driver::{compute_driver::cheri::CheriDriver, Driver},
-    memory_domain::{cheri::CheriMemoryDomain, Context, ContextTrait, MemoryDomain},
-    DataItem, DataSet, Position,
+    function_driver::compute_driver::cheri::CheriDriver, memory_domain::cheri::CheriMemoryDomain,
 };
 
 #[cfg(feature = "mmu")]
 use machine_interface::{
-    function_driver::{compute_driver::mmu::MmuDriver, Driver},
-    memory_domain::{mmu::MmuMemoryDomain, Context, ContextTrait, MemoryDomain},
-    DataItem, DataSet, Position,
+    function_driver::compute_driver::mmu::MmuDriver, memory_domain::mmu::MmuMemoryDomain,
 };
 
 #[cfg(feature = "wasm")]
 use machine_interface::{
-    function_driver::{compute_driver::wasm::WasmDriver, Driver},
-    memory_domain::{wasm::WasmMemoryDomain, Context, ContextTrait, MemoryDomain},
-    DataItem, DataSet, Position,
-};
-#[cfg(feature = "wasmtime")]
-use machine_interface::{
-    function_driver::{compute_driver::wasmtime::{WasmtimeDriver, USE_PRECOMPILED}, Driver},
-    memory_domain::{wasmtime::WasmtimeMemoryDomain, Context, ContextTrait, MemoryDomain},
-    DataItem, DataSet, Position,
+    function_driver::compute_driver::wasm::WasmDriver, memory_domain::wasm::WasmMemoryDomain,
 };
 
-#[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime")))]
+#[cfg(feature = "wasmtime")]
+use machine_interface::{
+    DataItem, DataSet, Position,
+    function_driver::compute_driver::wasmtime::{WasmtimeDriver, USE_PRECOMPILED},
+};
+
+#[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm")))]
 use machine_interface::{
     memory_domain::{Context, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
@@ -63,23 +64,37 @@ use std::{
     convert::Infallible,
     mem::size_of,
     net::SocketAddr,
+    path::PathBuf,
+    process::Command,
     sync::{
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicU64, AtomicU8, Ordering},
         Arc, Once,
     },
+    time::Duration,
 };
 use tokio::runtime::Builder;
 
-const HOT_ID: u64 = 0;
-const COLD_ID: u64 = 1;
+const MMM_ID: u64 = 0;
 const HTTP_ID: u64 = 2;
 const BUSY_ID: u64 = 3;
 const COMPOSITION_ID: u64 = 4;
 
+// can support 10000 RPS for 2 mins
+const NUM_COLD: u64 = 0x100000;
+const MMM_COLD_ID_BASE: u64 = 0x1000000;
+const BUSY_COLD_ID_BASE: u64 = 0x2000000;
+const COMPOSITION_COLD_ID_BASE: u64 = 0x3000000;
+
 static INIT_MATRIX: Once = Once::new();
 static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
+static COLD_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-async fn run_chain(dispatcher: Arc<Dispatcher>, get_uri: String, post_uri: String) -> u64 {
+async fn run_chain(
+    dispatcher: Arc<Dispatcher>,
+    is_cold: bool,
+    get_uri: String,
+    post_uri: String,
+) -> u64 {
     let domain = MallocMemoryDomain::init(vec![]).expect("Should be able to get malloc domain");
     let mut input_context = domain
         .acquire_context(128)
@@ -135,8 +150,14 @@ async fn run_chain(dispatcher: Arc<Dispatcher>, get_uri: String, post_uri: Strin
     ];
     let output_mapping = vec![Some(0), Some(1)];
 
+    let counter = COLD_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let function_id = if !is_cold {
+        COMPOSITION_ID
+    } else {
+        COMPOSITION_COLD_ID_BASE + counter % NUM_COLD
+    };
     let result = dispatcher
-        .queue_function(COMPOSITION_ID, inputs, output_mapping, false)
+        .queue_function(function_id, inputs, output_mapping, false)
         .await
         .expect("Should get response from chain");
     assert_eq!(2, result.len());
@@ -206,8 +227,14 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
         },
     )];
     let outputs = vec![Some(0)];
+    let counter = COLD_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let function_id = if !is_cold {
+        MMM_ID
+    } else {
+        MMM_COLD_ID_BASE + counter % NUM_COLD
+    };
     let result = dispatcher
-        .queue_function(is_cold as u64, inputs, outputs, is_cold)
+        .queue_function(function_id, inputs, outputs, is_cold)
         .await;
 
     let result_context = result
@@ -224,7 +251,7 @@ fn add_matmul_inputs(matrix: &'static mut Vec<i64>) -> Context {
     let matrix_size = matrix.len() * size_of::<i64>();
     let mut context = ReadOnlyContext::new_static(matrix);
     context.content.resize_with(1, || None);
-    context.occupy_space(0, matrix_size);
+    let _ = context.occupy_space(0, matrix_size);
 
     if let Some(set) = &mut context.content[0] {
         set.buffers.push(DataItem {
@@ -302,6 +329,7 @@ async fn serve_request(
 }
 
 async fn serve_chain(
+    is_cold: bool,
     req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
 ) -> Result<Response<Body>, Infallible> {
@@ -314,7 +342,7 @@ async fn serve_chain(
     let get_uri = uris[0].to_string();
     let post_uri = uris[1].to_string();
 
-    let response_vec = run_chain(dispatcher, get_uri, post_uri)
+    let response_vec = run_chain(dispatcher, is_cold, get_uri, post_uri)
         .await
         .to_be_bytes()
         .to_vec();
@@ -387,10 +415,10 @@ async fn service(
     match uri {
         "/cold/matmul" => serve_request(true, req, dispatcher).await,
         "/hot/matmul" => serve_request(false, req, dispatcher).await,
-        "/cold/compute" => serve_chain(req, dispatcher).await,
-        "/hot/compute" => serve_chain(req, dispatcher).await,
-        "/hot/io" => serve_chain(req, dispatcher).await,
-        "/cold/io" => serve_chain(req, dispatcher).await,
+        "/cold/compute" => serve_chain(true, req, dispatcher).await,
+        "/hot/compute" => serve_chain(false, req, dispatcher).await,
+        "/cold/io" => serve_chain(true, req, dispatcher).await,
+        "/hot/io" => serve_chain(false, req, dispatcher).await,
         "/native" => serve_native(req).await,
         "/stats" => serve_stats(req, dispatcher).await,
         _ => Ok::<_, Infallible>(Response::new(
@@ -398,6 +426,48 @@ async fn service(
             format!("Hello, Wor\n").into(),
         )),
     }
+}
+
+fn drop_page_caches() {
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg("echo 1 | sudo tee /proc/sys/vm/drop_caches")
+        .output()
+        .expect("Should be able to drop page caches");
+    assert!(output.status.success());
+}
+
+fn no_page_cache_for(path: PathBuf) -> bool {
+    let output = Command::new("fincore")
+        .args(["-n", "-r", "-o", "pages", path.to_str().unwrap()])
+        .output()
+        .expect("Should be able to get page numbers");
+    assert!(output.status.success());
+    return output.stdout[0] == '0' as u8;
+}
+
+fn add_cold_functions(
+    registry: &mut FunctionRegistry,
+    engine_id: EngineTypeId,
+    path: &PathBuf,
+    cold_id_base: u64,
+) -> PathBuf {
+    let tmp_dir = std::path::Path::new("/tmp").join(path.file_name().unwrap());
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    for i in 0..NUM_COLD {
+        let tmp_path = tmp_dir.join(i.to_string());
+        if !tmp_path.exists() {
+            std::fs::copy(path, &tmp_path).unwrap();
+        }
+        registry.add_local(
+            cold_id_base + i,
+            engine_id,
+            tmp_path.to_str().unwrap(),
+            vec![String::from("")],
+            vec![String::from("")],
+        );
+    }
+    return tmp_dir;
 }
 
 fn main() -> () {
@@ -421,9 +491,19 @@ fn main() -> () {
         num_dispatcher_cores
     );
     let mut pool_map = BTreeMap::new();
-    pool_map.insert(COMPUTE_ENGINE, (num_dispatcher_cores..num_cores).collect());
-    pool_map.insert(SYS_ENGINE, (0..num_cores).collect());
-    // TODO: It's not safe to share cores between compute engines and system engines
+
+    pool_map.insert(
+        COMPUTE_ENGINE,
+        (num_dispatcher_cores..num_cores)
+            .map(|code_id| ComputeResource::CPU(code_id))
+            .collect(),
+    );
+    pool_map.insert(
+        SYS_ENGINE,
+        (0..num_dispatcher_cores)
+            .map(|core_id| ComputeResource::CPU(core_id))
+            .collect(),
+    );
     let resource_pool = ResourcePool {
         engine_pool: Mutex::new(pool_map),
     };
@@ -435,11 +515,14 @@ fn main() -> () {
     // insert specific configuration
     #[cfg(all(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime"))]
     std::compile_error!("Should only have one feature out of mmu or cheri or wasm or wasmtime");
-    #[cfg(all(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime"), feature = "hyper_io"))]
+    #[cfg(all(
+        any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime"),
+        feature = "hyper_io"
+    ))]
     {
         let mut drivers = BTreeMap::new();
-        let mut mmm_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let mut busy_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut mmm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut busy_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let driver;
         #[cfg(feature = "cheri")]
         {
@@ -512,23 +595,18 @@ fn main() -> () {
         drivers.insert(COMPUTE_ENGINE, driver);
         drivers.insert(SYS_ENGINE, system_driver);
         registry = FunctionRegistry::new(drivers);
-        // add for hot function
+        // add for mmm hot function
         registry.add_local(
-            HOT_ID,
+            MMM_ID,
             COMPUTE_ENGINE,
             mmm_path.to_str().unwrap(),
             vec![String::from("")],
             vec![String::from("")],
         );
-        // add for cold function
-        registry.add_local(
-            COLD_ID,
-            COMPUTE_ENGINE,
-            mmm_path.to_str().unwrap(),
-            vec![String::from("")],
-            vec![String::from("")],
-        );
-        // add for cold function
+        // add for mmm cold functions
+        let mmm_cold_dir =
+            add_cold_functions(&mut registry, COMPUTE_ENGINE, &mmm_path, MMM_COLD_ID_BASE);
+        // add for busy hot functions
         registry.add_local(
             BUSY_ID,
             COMPUTE_ENGINE,
@@ -536,11 +614,15 @@ fn main() -> () {
             vec![String::from("")],
             vec![String::from("")],
         );
+        // add for busy cold functions
+        let busy_cold_dir =
+            add_cold_functions(&mut registry, COMPUTE_ENGINE, &busy_path, BUSY_COLD_ID_BASE);
         // add http system function
         // first try only download and spin, TODO: add upload
         registry
             .add_system(HTTP_ID, SYS_ENGINE)
             .expect("Should be able to add system function");
+        // add composition using hot busy function
         let composition = Composition {
             dependencies: vec![
                 FunctionDependencies {
@@ -570,9 +652,62 @@ fn main() -> () {
             output_sets,
             output_set_map,
         );
-
+        // add compositions using cold busy functions
+        for i in 0..NUM_COLD {
+            let composition = Composition {
+                dependencies: vec![
+                    FunctionDependencies {
+                        function: HTTP_ID,
+                        input_set_ids: vec![Some(0), None, None],
+                        output_set_ids: vec![Some(1), Some(2), Some(3)],
+                    },
+                    FunctionDependencies {
+                        function: BUSY_COLD_ID_BASE + i,
+                        input_set_ids: vec![Some(3)],
+                        output_set_ids: vec![Some(4)],
+                    },
+                    FunctionDependencies {
+                        function: HTTP_ID,
+                        input_set_ids: vec![Some(5), None, Some(4)],
+                        output_set_ids: vec![Some(6)],
+                    },
+                ],
+            };
+            let output_set_map = BTreeMap::from([(4, 0), (6, 1)]);
+            let input_sets = get_system_function_input_sets(SystemFunction::HTTP);
+            let output_sets = get_system_function_output_sets(SystemFunction::HTTP);
+            registry.add_composition(
+                COMPOSITION_COLD_ID_BASE + i,
+                composition,
+                input_sets,
+                output_sets,
+                output_set_map,
+            );
+        }
+        // drop page caches to ensure cold functions are loaded from disk
+        loop {
+            info!("Waiting for page cache to be clean");
+            drop_page_caches();
+            std::thread::sleep(Duration::from_secs(10));
+            // check if page caches are actually dropped
+            let mut no_page_cache_for_all = true;
+            for i in (0..NUM_COLD).step_by(1000) {
+                let mmm_cold_path = mmm_cold_dir.join(i.to_string());
+                let busy_cold_path = busy_cold_dir.join(i.to_string());
+                if !no_page_cache_for(mmm_cold_path) || !no_page_cache_for(busy_cold_path) {
+                    no_page_cache_for_all = false;
+                    break;
+                }
+            }
+            if no_page_cache_for_all {
+                break;
+            }
+        }
     }
-    #[cfg(not(all(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime"), feature = "hyper_io")))]
+    #[cfg(not(all(
+        any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime"),
+        feature = "hyper_io"
+    )))]
     {
         let loader_map = BTreeMap::new();
         registry = FunctionRegistry::new(loader_map);
