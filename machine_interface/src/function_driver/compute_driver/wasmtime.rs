@@ -1,6 +1,9 @@
 use crate::{
     DataSet,
-    function_driver::{Driver, Engine, FunctionConfig, Function, WasmtimeConfig},
+    function_driver::{
+        thread_utils::{DefaultState, ThreadCommand, ThreadController, ThreadPayload},
+        ComputeResource, Driver, Engine, FunctionConfig, Function, WasmtimeConfig
+    },
     memory_domain::{Context, ContextType, MemoryDomain, wasmtime::WasmtimeContext},
     DataRequirementList,
     interface::{_32_bit::DandelionSystemData, read_output_structs, setup_input_structs}, 
@@ -26,29 +29,15 @@ use wasmtime;
 struct WasmtimeCommand {
     context: Arc<Mutex<Option<Context>>>,
     sysdata_offset: usize,
-    recorder: Option<Recorder>,
 }
 
 unsafe impl Send for WasmtimeCommand {}
 
-fn run_thread(
-    core_id: u8,
-    command_receiver: std::sync::mpsc::Receiver<WasmtimeCommand>,
-    mut result_sender: futures::channel::mpsc::Sender<DandelionResult<()>>,
-) -> () {
-
-    // set core
-    if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
-        return;
-    };
-    info!("WASMTIME engine running on core {}", core_id);
-
-    '_commandloop: for cmd in command_receiver.iter() {
-        // TODO improve safety
-        let WasmtimeCommand { context, sysdata_offset, recorder } = cmd;
-
+impl ThreadPayload for WasmtimeCommand {
+    type State = DefaultState;
+    fn run(self, _state: &mut Self::State) -> DandelionResult<()> {
         // get context
-        let mut guard = context.lock().unwrap();
+        let mut guard = self.context.lock().unwrap();
         let mut ctx = guard.take().unwrap();
 
         let wasm_context: &mut Box<WasmtimeContext> = match &mut ctx.context {
@@ -61,13 +50,13 @@ fn run_thread(
 
         // buffer the system data struct because it will be overridden at instantiation
         let mut sysdata_buffer = [0u8; core::mem::size_of::<DandelionSystemData>()];
-        let _ = memory.read(&store, sysdata_offset, &mut sysdata_buffer);
+        let _ = memory.read(&store, self.sysdata_offset, &mut sysdata_buffer);
 
         // instantiate module
         let instance = wasmtime::Instance::new(store, &module, &[memory.into()]).unwrap();
 
         // write the system data struct back
-        let _ = memory.write(wasm_context.store.as_mut().unwrap(), sysdata_offset, &sysdata_buffer);
+        let _ = memory.write(wasm_context.store.as_mut().unwrap(), self.sysdata_offset, &sysdata_buffer);
 
         // call entry point
         let entry = instance.get_typed_func::<(), ()>(wasm_context.store.as_mut().unwrap(), "_start").unwrap();
@@ -79,24 +68,9 @@ fn run_thread(
         // put context back
         *guard = Some(ctx);
 
-        // record
-        if let Some(mut recorder) = recorder {
-            let _ = recorder.record(RecordPoint::EngineEnd);
-        }
-
-        let msg = match ret {
+        match ret {
             Ok(_) => Ok(()),
             Err(_) => Err(DandelionError::EngineError),
-        };
-
-        // try sending until succeeds
-        let mut not_sent = true;
-        while not_sent {
-            not_sent = match result_sender.try_send(msg.clone()) {
-                Ok(()) => false,
-                Err(err) if err.is_full() => true,
-                Err(_) => return ,
-            }
         }
     }
 }
@@ -113,7 +87,7 @@ impl Future for WasmtimeFuture<'_> {
         mut self: Pin<&mut Self>,
         cx: &mut futures::task::Context,
     ) -> futures::task::Poll<Self::Output> {
-        match self.engine.result_receiver.poll_next_unpin(cx) {
+        match self.engine.thread_controller.poll_next(cx) {
             Poll::Pending => return Poll::Pending,
             Poll::Ready(Some(Ok(()))) => {
                 let mut guard = self.context.lock().unwrap();
@@ -121,12 +95,10 @@ impl Future for WasmtimeFuture<'_> {
                 let mut context = guard.take().unwrap();
                 context.content.clear();
                 let res = read_output_structs::<u32, u32>(&mut context, self.system_data_struct_offset);
-                self.engine.is_running.store(false, Ordering::Relaxed);
                 Poll::Ready((res, context))
             },
             _ => {
                 // error
-                self.engine.is_running.store(false, Ordering::Relaxed);
                 let context = self.context.lock().unwrap().take().unwrap();
                 Poll::Ready((Err(DandelionError::EngineError), context))
             }
@@ -135,9 +107,7 @@ impl Future for WasmtimeFuture<'_> {
 }
 
 pub struct WasmtimeEngine {
-    is_running: AtomicBool,
-    command_sender: std::sync::mpsc::Sender<WasmtimeCommand>,
-    result_receiver: futures::channel::mpsc::Receiver<DandelionResult<()>>,
+    thread_controller: ThreadController<WasmtimeCommand>,
 }
 
 impl Engine for WasmtimeEngine {
@@ -159,11 +129,6 @@ impl Engine for WasmtimeEngine {
             ($err:expr) => {
                 return Box::pin(ready((Err($err), context)))
             };
-        }
-
-        // check if engine is running
-        if self.is_running.load(Ordering::Relaxed) {
-            err!(EngineAlreadyRunning)
         }
 
         // extract config and context
@@ -202,14 +167,16 @@ impl Engine for WasmtimeEngine {
         let context_ = Arc::new(Mutex::new(Some(context)));
 
         // send run command to thread
-        let cmd = WasmtimeCommand {
-            context: context_.clone(),
-            sysdata_offset: wasm_config.system_data_struct_offset,
-            recorder: Some(recorder),
-        };
+        let cmd = ThreadCommand::Run(
+            recorder,
+            WasmtimeCommand {
+                context: context_.clone(),
+                sysdata_offset: wasm_config.system_data_struct_offset,
+            },
+        );
         
         // TODO give back context if send fails (moved it into the Arc)
-        let r = self.command_sender.send(cmd);
+        let r = self.thread_controller.send_command(cmd);
         match r {
             Ok(()) => (),
             Err(_) => (),
@@ -226,36 +193,37 @@ impl Engine for WasmtimeEngine {
 }
 
 const SDK_HEAP_PAGES : usize = 2048;    // 128MB
+
+#[cfg(features = "wasmtime-precompiled")]
 pub const USE_PRECOMPILED: bool = true;
+#[cfg(not(features = "wasmtime-precompiled"))]
+pub const USE_PRECOMPILED: bool = false;
 
 pub struct WasmtimeDriver {}
 
 impl Driver for WasmtimeDriver {
-    fn start_engine(&self, config: Vec<u8>) -> DandelionResult<Box<dyn Engine>> {
-        if config.len() != 1 {
-            return Err(DandelionError::ConfigMissmatch);
-        }
-        let cpu_slot = config[0];
+    fn start_engine(&self, resource: ComputeResource) -> DandelionResult<Box<dyn Engine>> {
+        // sanity checks; extract core id
+        let cpu_slot = match resource {
+            ComputeResource::CPU(core) => core,
+            _ => return Err(DandelionError::EngineResourceError),
+        };
         // check that core is available
         let available_cores = match core_affinity::get_core_ids() {
-            None => return Err(DandelionError::EngineError),
+            None => return Err(DandelionError::EngineResourceError),
             Some(cores) => cores,
         };
         if !available_cores
             .iter()
             .find(|x| x.id == usize::from(cpu_slot))
             .is_some()
-        { return Err(DandelionError::MalformedConfig); }
+        {
+            return Err(DandelionError::EngineResourceError);
+        }
 
         // create channels and spawn threads
-        let (command_sender, command_receiver) = std::sync::mpsc::channel();
-        let (result_sender, result_receiver) = futures::channel::mpsc::channel(0);
-        let _thread_handle = spawn(move || run_thread(cpu_slot, command_receiver, result_sender));
-        let is_running = AtomicBool::new(false);
         return Ok(Box::new(WasmtimeEngine {
-            command_sender,
-            result_receiver,
-            is_running,
+            thread_controller: ThreadController::new(cpu_slot),
         }));
     }
 

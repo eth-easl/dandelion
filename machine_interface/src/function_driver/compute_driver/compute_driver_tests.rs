@@ -622,8 +622,22 @@ mod compute_driver_tests {
     #[cfg(feature = "wasmtime")]
     mod wasmtime {
         use crate::function_driver::compute_driver::wasmtime::WasmtimeDriver;
+        use crate::function_driver::ComputeResource;
         use crate::memory_domain::wasmtime::WasmtimeMemoryDomain;
-        
+    
+        #[cfg(not(feature = "wasmtime-precompiled"))]
+        driverTests!(wasm; WasmtimeMemoryDomain; Vec::new(); WasmtimeDriver {};
+        vec![
+            ComputeResource::CPU(1),
+            ComputeResource::CPU(2),
+            ComputeResource::CPU(3),
+        ];
+        vec![
+            ComputeResource::CPU(255),
+            ComputeResource::GPU(0),
+        ]);
+
+        #[cfg(features = "wasmtime-precompiled")]
         #[cfg(target_arch = "x86_64")]
         driverTests!(wasmtime_x86_64; WasmtimeMemoryDomain; Vec::new(); WasmtimeDriver {};
         vec![
@@ -635,9 +649,10 @@ mod compute_driver_tests {
             ComputeResource::CPU(255),
             ComputeResource::GPU(0),
         ]);
-        
+
+        #[cfg(not(features = "wasmtime-precompiled"))]
         #[cfg(target_arch = "aarch64")]
-        driverTests!(wasmtime_aarch64; WasmtimeMemoryDomain; Vec::new(); WasmtimeDriver {}; 
+        driverTests!(wasmtime_aarch64; WasmtimeMemoryDomain; Vec::new(); WasmtimeDriver {};
         vec![
             ComputeResource::CPU(1),
             ComputeResource::CPU(2),

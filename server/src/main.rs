@@ -25,7 +25,7 @@ use machine_interface::{
 #[cfg(feature = "hyper_io")]
 use machine_interface::function_driver::system_driver::hyper::HyperDriver;
 
-#[cfg(any(feature = "cheri", feature = "mmu", feature = "wasm"))]
+#[cfg(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime"))]
 use machine_interface::{
     function_driver::Driver,
     memory_domain::{Context, ContextTrait, MemoryDomain},
@@ -49,11 +49,11 @@ use machine_interface::{
 
 #[cfg(feature = "wasmtime")]
 use machine_interface::{
-    DataItem, DataSet, Position,
-    function_driver::compute_driver::wasmtime::{WasmtimeDriver, USE_PRECOMPILED},
+    function_driver::compute_driver::wasmtime::WasmtimeDriver,
+    memory_domain::wasmtime::WasmtimeMemoryDomain,
 };
 
-#[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm")))]
+#[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime")))]
 use machine_interface::{
     memory_domain::{Context, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
@@ -573,7 +573,7 @@ fn main() -> () {
                 WasmtimeMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain"),
             );
             driver = Box::new(WasmtimeDriver {}) as Box<dyn Driver>;
-            if USE_PRECOMPILED {
+            if cfg!(feature = "wasmtime-precompiled") {
                 mmm_path.push(format!(
                     "../machine_interface/tests/data/test_wasmtime_{}_matmul",
                     std::env::consts::ARCH
@@ -747,6 +747,10 @@ fn main() -> () {
         }
     });
     let server = Server::bind(&addr).serve(make_svc);
+
+    println!("asdf");
+    println!("{:?}", cfg!(feature = "wasmtime"));
+    println!("{:?}", cfg!(feature = "wasmtime-precompiled"));
 
     #[cfg(feature = "cheri")]
     println!("Hello, World (cheri)");
