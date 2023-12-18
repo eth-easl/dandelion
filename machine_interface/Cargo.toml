@@ -11,6 +11,7 @@ hyper_io = ["std", "dep:hyper"]
 wasm = ["std"]
 wasmtime = ["std", "dep:wasmtime"]
 wasmtime-precompiled = ["std", "wasmtime"]
+# default = ["wasmtime", "wasm"]
 
 [build-dependencies]
 cmake = "0.1"
