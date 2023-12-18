@@ -17,7 +17,7 @@ use log::{error, info};
 use machine_interface::{
     function_driver::{
         system_driver::{get_system_function_input_sets, get_system_function_output_sets},
-        SystemFunction,
+        ComputeResource, SystemFunction,
     },
     memory_domain::{malloc::MallocMemoryDomain, read_only::ReadOnlyContext},
 };
@@ -218,7 +218,7 @@ fn add_matmul_inputs(matrix: &'static mut Vec<i64>) -> Context {
     let matrix_size = matrix.len() * size_of::<i64>();
     let mut context = ReadOnlyContext::new_static(matrix);
     context.content.resize_with(1, || None);
-    context.occupy_space(0, matrix_size);
+    let _ = context.occupy_space(0, matrix_size);
 
     if let Some(set) = &mut context.content[0] {
         set.buffers.push(DataItem {
@@ -415,9 +415,19 @@ fn main() -> () {
         num_dispatcher_cores
     );
     let mut pool_map = BTreeMap::new();
-    pool_map.insert(COMPUTE_ENGINE, (num_dispatcher_cores..num_cores).collect());
-    pool_map.insert(SYS_ENGINE, (0..num_cores).collect());
-    // TODO: It's not safe to share cores between compute engines and system engines
+  
+    pool_map.insert(
+        COMPUTE_ENGINE,
+        (num_dispatcher_cores..num_cores)
+            .map(|code_id| ComputeResource::CPU(code_id))
+            .collect(),
+    );
+    pool_map.insert(
+        SYS_ENGINE,
+        (0..num_dispatcher_cores)
+            .map(|core_id| ComputeResource::CPU(core_id))
+            .collect(),
+    );
     let resource_pool = ResourcePool {
         engine_pool: Mutex::new(pool_map),
     };
@@ -539,7 +549,6 @@ fn main() -> () {
             output_sets,
             output_set_map,
         );
-
     }
     #[cfg(not(all(any(feature = "cheri", feature = "mmu", feature = "wasm"), feature = "hyper_io")))]
     {

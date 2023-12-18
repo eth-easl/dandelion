@@ -1,7 +1,7 @@
 #[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "wasm")))]
 mod compute_driver_tests {
     use crate::{
-        function_driver::{Driver, Engine, FunctionConfig},
+        function_driver::{ComputeResource, Driver, Engine, FunctionConfig},
         memory_domain::{Context, ContextState, ContextTrait, MemoryDomain},
         DataItem, DataSet, Position,
     };
@@ -21,21 +21,21 @@ mod compute_driver_tests {
             .expect("Empty string should return error");
     }
 
-    fn driver(driver: Box<dyn Driver>, init: Vec<u8>, wrong_init: Vec<u8>) {
-        let no_resource_engine = driver.start_engine(Vec::<u8>::new());
-        match no_resource_engine {
-            Ok(_) => panic!("Should not be able to get engine"),
-            Err(err) => assert_eq!(DandelionError::ConfigMissmatch, err),
-        }
-
-        let wrong_resource_engine = driver.start_engine(wrong_init);
-        match wrong_resource_engine {
-            Ok(_) => panic!("Should not be able to get engine"),
-            Err(err) => assert_eq!(DandelionError::MalformedConfig, err),
+    fn driver(
+        driver: Box<dyn Driver>,
+        init: Vec<ComputeResource>,
+        wrong_init: Vec<ComputeResource>,
+    ) {
+        for wronge_resource in wrong_init {
+            let wrong_resource_engine = driver.start_engine(wronge_resource);
+            match wrong_resource_engine {
+                Ok(_) => panic!("Should not be able to get engine"),
+                Err(err) => assert_eq!(DandelionError::EngineResourceError, err),
+            }
         }
 
         for resource in init {
-            let engine = driver.start_engine(vec![resource]);
+            let engine = driver.start_engine(resource);
             engine.expect("Should be able to get engine");
         }
     }
@@ -44,14 +44,14 @@ mod compute_driver_tests {
         filename: &str,
         dom_init: Vec<u8>,
         driver: &Box<dyn Driver>,
-        drv_init: Vec<u8>,
+        drv_init: Vec<ComputeResource>,
     ) -> (Box<dyn Engine>, Context, FunctionConfig) {
         let mut domain = Dom::init(dom_init).expect("Should have initialized domain");
         let function = driver
             .parse_function(filename.to_string(), &mut domain)
             .expect("Should be able to parse function");
         let engine = driver
-            .start_engine(vec![drv_init[0]])
+            .start_engine(drv_init[0])
             .expect("Should be able to start engine");
         let function_context = function
             .load(&mut domain)
@@ -63,7 +63,7 @@ mod compute_driver_tests {
         filename: &str,
         dom_init: Vec<u8>,
         driver: Box<dyn Driver>,
-        drv_init: Vec<u8>,
+        drv_init: Vec<ComputeResource>,
     ) {
         let (mut engine, function_context, config) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
@@ -80,7 +80,7 @@ mod compute_driver_tests {
         filename: &str,
         dom_init: Vec<u8>,
         driver: Box<dyn Driver>,
-        drv_init: Vec<u8>,
+        drv_init: Vec<ComputeResource>,
     ) {
         let (mut engine, mut function_context, config) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
@@ -152,7 +152,7 @@ mod compute_driver_tests {
         filename: &str,
         dom_init: Vec<u8>,
         driver: Box<dyn Driver>,
-        drv_init: Vec<u8>,
+        drv_init: Vec<ComputeResource>,
     ) {
         const LOWER_SIZE_BOUND: usize = 2;
         const UPPER_SIZE_BOUND: usize = 16;
@@ -226,7 +226,7 @@ mod compute_driver_tests {
         filename: &str,
         dom_init: Vec<u8>,
         driver: Box<dyn Driver>,
-        drv_init: Vec<u8>,
+        drv_init: Vec<ComputeResource>,
     ) {
         let (mut engine, mut function_context, config) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
@@ -341,7 +341,7 @@ mod compute_driver_tests {
         filename: &str,
         dom_init: Vec<u8>,
         driver: Box<dyn Driver>,
-        drv_init: Vec<u8>,
+        drv_init: Vec<ComputeResource>,
     ) {
         let (mut engine, mut function_context, config) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
@@ -545,27 +545,77 @@ mod compute_driver_tests {
     #[cfg(feature = "cheri")]
     mod cheri {
         use crate::function_driver::compute_driver::cheri::CheriDriver;
+        use crate::function_driver::ComputeResource;
         use crate::memory_domain::cheri::CheriMemoryDomain;
-        driverTests!(elf_cheri; CheriMemoryDomain; Vec::new(); CheriDriver {}; vec![1,2,3]; vec![4]);
+        driverTests!(elf_cheri; CheriMemoryDomain; Vec::new(); CheriDriver {};
+        vec![
+            ComputeResource::CPU(1),
+            ComputeResource::CPU(2),
+            ComputeResource::CPU(3)
+        ];
+        vec![
+            ComputeResource::CPU(255),
+            ComputeResource::GPU(0)
+        ]);
     }
 
     #[cfg(feature = "mmu")]
     mod mmu {
         use crate::function_driver::compute_driver::mmu::MmuDriver;
+        use crate::function_driver::ComputeResource;
         use crate::memory_domain::mmu::MmuMemoryDomain;
         #[cfg(target_arch = "x86_64")]
-        driverTests!(elf_mmu_x86_64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![1, 2, 3]; vec![255]);
+        driverTests!(elf_mmu_x86_64; MmuMemoryDomain; Vec::new(); MmuDriver {};
+        vec![
+            ComputeResource::CPU(1),
+            ComputeResource::CPU(2),
+            ComputeResource::CPU(3),
+        ];
+        vec![
+            ComputeResource::CPU(255),
+            ComputeResource::GPU(0)
+        ]);
         #[cfg(target_arch = "aarch64")]
-        driverTests!(elf_mmu_aarch64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![1, 2, 3]; vec![255]);
+        driverTests!(elf_mmu_aarch64; MmuMemoryDomain; Vec::new(); MmuDriver {};
+        vec![
+            ComputeResource::CPU(1),
+            ComputeResource::CPU(2),
+            ComputeResource::CPU(3)
+        ];
+        vec![
+            ComputeResource::CPU(255),
+            ComputeResource::GPU(0),
+        ]);
     }
 
     #[cfg(feature = "wasm")]
     mod wasm {
         use crate::function_driver::compute_driver::wasm::WasmDriver;
+        use crate::function_driver::ComputeResource;
         use crate::memory_domain::wasm::WasmMemoryDomain;
+
         #[cfg(target_arch = "x86_64")]
-        driverTests!(sysld_wasm_x86_64; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![1, 2, 3]; vec![255]);
+        driverTests!(sysld_wasm_x86_64; WasmMemoryDomain; Vec::new(); WasmDriver {};
+        vec![
+            ComputeResource::CPU(1),
+            ComputeResource::CPU(2),
+            ComputeResource::CPU(3),
+        ];
+        vec![
+            ComputeResource::CPU(255),
+            ComputeResource::GPU(0),
+        ]);
+
         #[cfg(target_arch = "aarch64")]
-        driverTests!(sysld_wasm_aarch64; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![1, 2, 3]; vec![255]);
+        driverTests!(sysld_wasm_aarch64; WasmMemoryDomain; Vec::new(); WasmDriver {};
+        vec![
+            ComputeResource::CPU(1),
+            ComputeResource::CPU(2),
+            ComputeResource::CPU(3),
+        ];
+        vec![
+            ComputeResource::CPU(255),
+            ComputeResource::GPU(0),
+        ]);
     }
 }

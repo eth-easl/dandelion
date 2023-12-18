@@ -11,6 +11,7 @@ use libloading::Library;
 pub mod compute_driver;
 mod load_utils;
 pub mod system_driver;
+mod thread_utils;
 
 #[derive(Clone)]
 pub struct ElfConfig {
@@ -65,6 +66,12 @@ impl Function {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum ComputeResource {
+    CPU(u8),
+    GPU(u8),
+}
+
 pub trait Engine: Send {
     fn run(
         &mut self,
@@ -73,6 +80,7 @@ pub trait Engine: Send {
         output_set_names: &Vec<String>,
         recorder: Recorder,
     ) -> Pin<Box<dyn Future<Output = (DandelionResult<()>, Context)> + '_ + Send>>;
+    // TODO make more sensible, as a both functions require self mut, so abort can never be called on a running function
     fn abort(&mut self) -> DandelionResult<()>;
 }
 // TODO figure out if we could / should enforce proper drop behaviour
@@ -81,7 +89,7 @@ pub trait Engine: Send {
 
 pub trait Driver: Send + Sync {
     // the resource descirbed by config and make it into an engine of the type
-    fn start_engine(&self, config: Vec<u8>) -> DandelionResult<Box<dyn Engine>>;
+    fn start_engine(&self, resource: ComputeResource) -> DandelionResult<Box<dyn Engine>>;
 
     // parses an executable,
     // returns the layout requirements and a context containing static data,
