@@ -80,7 +80,7 @@ const BUSY_ID: u64 = 3;
 const COMPOSITION_ID: u64 = 4;
 
 // can support 10000 RPS for 2 mins
-const NUM_COLD: u64 = 0x100000;
+const NUM_COLD: u64 = 0x100;
 const MMM_COLD_ID_BASE: u64 = 0x1000000;
 const BUSY_COLD_ID_BASE: u64 = 0x2000000;
 const COMPOSITION_COLD_ID_BASE: u64 = 0x3000000;
