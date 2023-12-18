@@ -25,25 +25,26 @@ use machine_interface::{
 #[cfg(feature = "hyper_io")]
 use machine_interface::function_driver::system_driver::hyper::HyperDriver;
 
+#[cfg(any(feature = "cheri", feature = "mmu", feature = "wasm"))]
+use machine_interface::{
+    function_driver::Driver,
+    memory_domain::{Context, ContextTrait, MemoryDomain},
+    DataItem, DataSet, Position,
+};
+
 #[cfg(feature = "cheri")]
 use machine_interface::{
-    function_driver::{compute_driver::cheri::CheriDriver, Driver},
-    memory_domain::{cheri::CheriMemoryDomain, Context, ContextTrait, MemoryDomain},
-    DataItem, DataSet, Position,
+    function_driver::compute_driver::cheri::CheriDriver, memory_domain::cheri::CheriMemoryDomain,
 };
 
 #[cfg(feature = "mmu")]
 use machine_interface::{
-    function_driver::{compute_driver::mmu::MmuDriver, Driver},
-    memory_domain::{mmu::MmuMemoryDomain, Context, ContextTrait, MemoryDomain},
-    DataItem, DataSet, Position,
+    function_driver::compute_driver::mmu::MmuDriver, memory_domain::mmu::MmuMemoryDomain,
 };
 
 #[cfg(feature = "wasm")]
 use machine_interface::{
-    function_driver::{compute_driver::wasm::WasmDriver, Driver},
-    memory_domain::{wasm::WasmMemoryDomain, Context, ContextTrait, MemoryDomain},
-    DataItem, DataSet, Position,
+    function_driver::compute_driver::wasm::WasmDriver, memory_domain::wasm::WasmMemoryDomain,
 };
 
 #[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm")))]
@@ -60,7 +61,7 @@ use std::{
     path::PathBuf,
     process::Command,
     sync::{
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicU64, AtomicU8, Ordering},
         Arc, Once,
     },
     time::Duration,
@@ -80,6 +81,7 @@ const COMPOSITION_COLD_ID_BASE: u64 = 0x3000000;
 
 static INIT_MATRIX: Once = Once::new();
 static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
+static COLD_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 async fn run_chain(
     dispatcher: Arc<Dispatcher>,
@@ -142,7 +144,7 @@ async fn run_chain(
     ];
     let output_mapping = vec![Some(0), Some(1)];
 
-    let counter = dispatcher.counter.fetch_add(1, Ordering::Relaxed);
+    let counter = COLD_COUNTER.fetch_add(1, Ordering::Relaxed);
     let function_id = if !is_cold {
         COMPOSITION_ID
     } else {
@@ -219,7 +221,7 @@ async fn run_mat_func(dispatcher: Arc<Dispatcher>, is_cold: bool, rows: usize, c
         },
     )];
     let outputs = vec![Some(0)];
-    let counter = dispatcher.counter.fetch_add(1, Ordering::Relaxed);
+    let counter = COLD_COUNTER.fetch_add(1, Ordering::Relaxed);
     let function_id = if !is_cold {
         MMM_ID
     } else {
@@ -483,7 +485,7 @@ fn main() -> () {
         num_dispatcher_cores
     );
     let mut pool_map = BTreeMap::new();
-  
+
     pool_map.insert(
         COMPUTE_ENGINE,
         (num_dispatcher_cores..num_cores)
@@ -507,7 +509,10 @@ fn main() -> () {
     // insert specific configuration
     #[cfg(all(feature = "cheri", feature = "mmu", feature = "wasm"))]
     std::compile_error!("Should only have one feature out of mmu or cheri or wasm");
-    #[cfg(all(any(feature = "cheri", feature = "mmu", feature = "wasm"), feature = "hyper_io"))]
+    #[cfg(all(
+        any(feature = "cheri", feature = "mmu", feature = "wasm"),
+        feature = "hyper_io"
+    ))]
     {
         let mut drivers = BTreeMap::new();
         let mut mmm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -668,7 +673,10 @@ fn main() -> () {
             }
         }
     }
-    #[cfg(not(all(any(feature = "cheri", feature = "mmu", feature = "wasm"), feature = "hyper_io")))]
+    #[cfg(not(all(
+        any(feature = "cheri", feature = "mmu", feature = "wasm"),
+        feature = "hyper_io"
+    )))]
     {
         let loader_map = BTreeMap::new();
         registry = FunctionRegistry::new(loader_map);
