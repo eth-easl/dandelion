@@ -26,7 +26,6 @@ struct WasmCommand {
     lib: Arc<Library>,
     context: Arc<Mutex<Option<Context>>>,
     sysdata_offset: usize,
-    recorder: Option<Recorder>,
 }
 unsafe impl Send for WasmCommand {}
 
@@ -47,7 +46,7 @@ impl ThreadPayload for WasmCommand {
                 };
 
                 // call entry point
-                let ret = entry_point(&mut wasm_context.mem, sysdata_offset);
+                let ret = entry_point(&mut wasm_context.mem, self.sysdata_offset);
                 
                 // put context back
                 *guard = Some(ctx);
@@ -143,7 +142,6 @@ impl Engine for WasmEngine {
             WasmCommand {
                 context: context_.clone(),
                 lib: wasm_config.lib.clone(),
-                recorder: Some(recorder),
                 sysdata_offset: wasm_config.system_data_struct_offset,
             },
         );
