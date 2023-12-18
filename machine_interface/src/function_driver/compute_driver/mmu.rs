@@ -1,6 +1,8 @@
 use crate::{
     function_driver::{
-        load_utils::load_u8_from_file, Driver, ElfConfig, Engine, Function, FunctionConfig,
+        load_utils::load_u8_from_file,
+        thread_utils::{DefaultState, ThreadCommand, ThreadController, ThreadPayload},
+        ComputeResource, Driver, ElfConfig, Engine, Function, FunctionConfig,
     },
     interface::{read_output_structs, setup_input_structs},
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
@@ -16,8 +18,8 @@ use dandelion_commons::{
     records::{RecordPoint, Recorder},
     DandelionError, DandelionResult,
 };
-use futures::{task::Poll, Stream};
-use log::{debug, info, warn};
+use futures::task::Poll;
+use log::{debug, warn};
 use nix::{
     sys::{
         signal::Signal,
@@ -27,27 +29,32 @@ use nix::{
 };
 use std::{
     process::{Command, Stdio},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-    thread::{spawn, JoinHandle},
+    sync::Arc,
 };
 
 struct MmuCommand {
-    cancel: bool,
+    core_id: u8,
     storage_id: String,
     protection_flags: Vec<(u32, Position)>,
     entry_point: usize,
-    recorder: Option<Recorder>,
 }
 unsafe impl Send for MmuCommand {}
 
+impl ThreadPayload for MmuCommand {
+    type State = DefaultState;
+    fn run(self, _state: &mut Self::State) -> DandelionResult<()> {
+        return mmu_run_static(
+            self.core_id,
+            &self.storage_id,
+            &self.protection_flags,
+            self.entry_point,
+        );
+    }
+}
+
 pub struct MmuEngine {
-    is_running: AtomicBool,
-    command_sender: std::sync::mpsc::Sender<MmuCommand>,
-    result_receiver: futures::channel::mpsc::Receiver<DandelionResult<()>>,
-    thread_handle: Option<JoinHandle<()>>,
+    cpu_slot: u8,
+    thread_controller: ThreadController<MmuCommand>,
 }
 
 struct MmuFuture<'a> {
@@ -65,7 +72,7 @@ impl Future for MmuFuture<'_> {
         mut self: Pin<&mut Self>,
         cx: &mut futures::task::Context,
     ) -> futures::task::Poll<Self::Output> {
-        match Pin::new(&mut self.engine.result_receiver).poll_next(cx) {
+        match self.engine.thread_controller.poll_next(cx) {
             Poll::Pending => return Poll::Pending,
             Poll::Ready(None) => {
                 return Poll::Ready((
@@ -81,43 +88,7 @@ impl Future for MmuFuture<'_> {
         let mut context = self.context.take().unwrap();
         // read outputs
         let result = read_output_structs::<usize, usize>(&mut context, self.system_data_offset);
-        self.engine.is_running.store(false, Ordering::Release);
         Poll::Ready((result, context))
-    }
-}
-
-fn run_thread(
-    core_id: u8,
-    command_receiver: std::sync::mpsc::Receiver<MmuCommand>,
-    mut result_sender: futures::channel::mpsc::Sender<DandelionResult<()>>,
-) -> () {
-    // set core
-    if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
-        return;
-    };
-    info!("MMU engine running on core {}", core_id);
-    'commandloop: for command in command_receiver.iter() {
-        if command.cancel {
-            break 'commandloop;
-        }
-        let message = mmu_run_static(
-            core_id,
-            &command.storage_id,
-            &command.protection_flags,
-            command.entry_point,
-        );
-        if let Some(mut recorder) = command.recorder {
-            let _ = recorder.record(RecordPoint::EngineEnd);
-        }
-        // try sending until succeeds
-        let mut not_sent = true;
-        while not_sent {
-            not_sent = match result_sender.try_send(message.clone()) {
-                Ok(()) => false,
-                Err(err) if err.is_full() => true,
-                Err(_) => break 'commandloop,
-            }
-        }
     }
 }
 
@@ -188,7 +159,7 @@ fn mmu_run_static(
     storage_id: &str,
     protection_flags: &[(u32, Position)],
     entry_point: usize,
-) -> Result<(), DandelionError> {
+) -> DandelionResult<()> {
     // TODO: modify ELF header
     // to load mmu_worker into a safe address range
     // that will not collide with those used by user's function
@@ -274,9 +245,6 @@ impl Engine for MmuEngine {
         if let Err(err) = recorder.record(RecordPoint::EngineStart) {
             return Box::pin(core::future::ready((Err(err), context)));
         }
-        if self.is_running.swap(true, Ordering::AcqRel) {
-            return Box::pin(ready((Err(DandelionError::EngineAlreadyRunning), context)));
-        }
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
             _ => return Box::pin(ready((Err(DandelionError::ConfigMissmatch), context))),
@@ -285,13 +253,15 @@ impl Engine for MmuEngine {
             ContextType::Mmu(mmu_context) => mmu_context,
             _ => return Box::pin(ready((Err(DandelionError::ContextMissmatch), context))),
         };
-        let command = MmuCommand {
-            cancel: false,
-            storage_id: mmu_context.storage.id().to_string(),
-            protection_flags: elf_config.protection_flags.to_vec(),
-            entry_point: elf_config.entry_point,
-            recorder: Some(recorder),
-        };
+        let command = ThreadCommand::Run(
+            recorder,
+            MmuCommand {
+                core_id: self.cpu_slot,
+                storage_id: mmu_context.storage.id().to_string(),
+                protection_flags: elf_config.protection_flags.to_vec(),
+                entry_point: elf_config.entry_point,
+            },
+        );
         if let Err(err) = setup_input_structs::<usize, usize>(
             &mut context,
             elf_config.system_data_offset,
@@ -299,8 +269,8 @@ impl Engine for MmuEngine {
         ) {
             return Box::pin(ready((Err(err), context)));
         }
-        match self.command_sender.send(command) {
-            Err(_) => return Box::pin(ready((Err(DandelionError::EngineError), context))),
+        match self.thread_controller.send_command(command) {
+            Err(err) => return Box::pin(ready((Err(err), context))),
             Ok(_) => (),
         }
         let function_future = Box::<MmuFuture>::pin(MmuFuture {
@@ -311,27 +281,7 @@ impl Engine for MmuEngine {
         return function_future;
     }
     fn abort(&mut self) -> DandelionResult<()> {
-        if !self.is_running.load(Ordering::Acquire) {
-            return Err(DandelionError::NoRunningFunction);
-        }
-        // TODO actually abort
-        Ok(())
-    }
-}
-
-impl Drop for MmuEngine {
-    fn drop(&mut self) {
-        if let Some(handle) = self.thread_handle.take() {
-            // drop channel
-            let _res = self.command_sender.send(MmuCommand {
-                cancel: true,
-                storage_id: "".to_string(),
-                protection_flags: [].to_vec(),
-                entry_point: 0,
-                recorder: None,
-            });
-            handle.join().expect("Mmu thread should not panic");
-        }
+        unimplemented!("Abort currently missimplemented");
     }
 }
 
@@ -341,11 +291,11 @@ const DEFAULT_SPACE_SIZE: usize = 0x800_0000; // 128MiB
 
 impl Driver for MmuDriver {
     // // take or release one of the available engines
-    fn start_engine(&self, config: Vec<u8>) -> DandelionResult<Box<dyn Engine>> {
-        if config.len() != 1 {
-            return Err(DandelionError::ConfigMissmatch);
-        }
-        let cpu_slot: u8 = config[0];
+    fn start_engine(&self, resource: ComputeResource) -> DandelionResult<Box<dyn Engine>> {
+        let cpu_slot = match resource {
+            ComputeResource::CPU(core) => core,
+            _ => return Err(DandelionError::EngineResourceError),
+        };
         // check that core is available
         let available_cores = match core_affinity::get_core_ids() {
             None => return Err(DandelionError::EngineError),
@@ -356,17 +306,11 @@ impl Driver for MmuDriver {
             .find(|x| x.id == usize::from(cpu_slot))
             .is_some()
         {
-            return Err(DandelionError::MalformedConfig);
+            return Err(DandelionError::EngineResourceError);
         }
-        let (command_sender, command_receiver) = std::sync::mpsc::channel();
-        let (result_sender, result_receiver) = futures::channel::mpsc::channel(0);
-        let thread_handle = spawn(move || run_thread(cpu_slot, command_receiver, result_sender));
-        let is_running = AtomicBool::new(false);
         return Ok(Box::new(MmuEngine {
-            command_sender,
-            result_receiver,
-            thread_handle: Some(thread_handle),
-            is_running,
+            cpu_slot,
+            thread_controller: ThreadController::new(cpu_slot),
         }));
     }
 

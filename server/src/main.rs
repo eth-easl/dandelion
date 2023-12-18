@@ -17,7 +17,7 @@ use log::{error, info};
 use machine_interface::{
     function_driver::{
         system_driver::{get_system_function_input_sets, get_system_function_output_sets},
-        SystemFunction,
+        ComputeResource, SystemFunction,
     },
     memory_domain::{malloc::MallocMemoryDomain, read_only::ReadOnlyContext},
 };
@@ -39,7 +39,14 @@ use machine_interface::{
     DataItem, DataSet, Position,
 };
 
-#[cfg(not(any(feature = "cheri", feature = "mmu")))]
+#[cfg(feature = "wasm")]
+use machine_interface::{
+    function_driver::{compute_driver::wasm::WasmDriver, Driver},
+    memory_domain::{wasm::WasmMemoryDomain, Context, ContextTrait, MemoryDomain},
+    DataItem, DataSet, Position,
+};
+
+#[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm")))]
 use machine_interface::{
     memory_domain::{Context, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
@@ -236,7 +243,7 @@ fn add_matmul_inputs(matrix: &'static mut Vec<i64>) -> Context {
     let matrix_size = matrix.len() * size_of::<i64>();
     let mut context = ReadOnlyContext::new_static(matrix);
     context.content.resize_with(1, || None);
-    context.occupy_space(0, matrix_size);
+    let _ = context.occupy_space(0, matrix_size);
 
     if let Some(set) = &mut context.content[0] {
         set.buffers.push(DataItem {
@@ -396,6 +403,7 @@ async fn service(
     dispatcher: Arc<Dispatcher>,
 ) -> Result<Response<Body>, Infallible> {
     let uri = req.uri().path();
+    // println!("Got request for {}", uri);
     match uri {
         "/cold/matmul" => serve_request(true, req, dispatcher).await,
         "/hot/matmul" => serve_request(false, req, dispatcher).await,
@@ -475,9 +483,19 @@ fn main() -> () {
         num_dispatcher_cores
     );
     let mut pool_map = BTreeMap::new();
-    pool_map.insert(COMPUTE_ENGINE, (num_dispatcher_cores..num_cores).collect());
-    // TODO: It's not safe to share cores between compute engines and system engines
-    pool_map.insert(SYS_ENGINE, (0..num_dispatcher_cores).collect());
+  
+    pool_map.insert(
+        COMPUTE_ENGINE,
+        (num_dispatcher_cores..num_cores)
+            .map(|code_id| ComputeResource::CPU(code_id))
+            .collect(),
+    );
+    pool_map.insert(
+        SYS_ENGINE,
+        (0..num_dispatcher_cores)
+            .map(|core_id| ComputeResource::CPU(core_id))
+            .collect(),
+    );
     let resource_pool = ResourcePool {
         engine_pool: Mutex::new(pool_map),
     };
@@ -487,9 +505,9 @@ fn main() -> () {
     );
     let mut registry;
     // insert specific configuration
-    #[cfg(all(feature = "cheri", feature = "mmu"))]
-    std::compile_error!("Should only have one feature out of mmu or cheri");
-    #[cfg(all(any(feature = "cheri", feature = "mmu"), feature = "hyper_io"))]
+    #[cfg(all(feature = "cheri", feature = "mmu", feature = "wasm"))]
+    std::compile_error!("Should only have one feature out of mmu or cheri or wasm");
+    #[cfg(all(any(feature = "cheri", feature = "mmu", feature = "wasm"), feature = "hyper_io"))]
     {
         let mut drivers = BTreeMap::new();
         let mut mmm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -518,6 +536,22 @@ fn main() -> () {
             ));
             busy_path.push(format!(
                 "../machine_interface/tests/data/test_elf_mmu_{}_busy",
+                std::env::consts::ARCH
+            ));
+        }
+        #[cfg(feature = "wasm")]
+        {
+            domains.insert(
+                COMPUTE_DOMAIN,
+                WasmMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain"),
+            );
+            driver = Box::new(WasmDriver {}) as Box<dyn Driver>;
+            mmm_path.push(format!(
+                "../machine_interface/tests/data/test_sysld_wasm_{}_matmul",
+                std::env::consts::ARCH
+            ));
+            busy_path.push(format!(
+                "../machine_interface/tests/data/test_sysld_wasm_{}_busy",
                 std::env::consts::ARCH
             ));
         }
@@ -634,7 +668,7 @@ fn main() -> () {
             }
         }
     }
-    #[cfg(not(all(any(feature = "cheri", feature = "mmu"), feature = "hyper_io")))]
+    #[cfg(not(all(any(feature = "cheri", feature = "mmu", feature = "wasm"), feature = "hyper_io")))]
     {
         let loader_map = BTreeMap::new();
         registry = FunctionRegistry::new(loader_map);
@@ -679,7 +713,9 @@ fn main() -> () {
     println!("Hello, World (cheri)");
     #[cfg(feature = "mmu")]
     println!("Hello, World (mmu)");
-    #[cfg(not(any(feature = "cheri", feature = "mmu")))]
+    #[cfg(feature = "wasm")]
+    println!("Hello, World (wasm)");
+    #[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm")))]
     println!("Hello, World (native)");
     // Run this server for... forever!
     if let Err(e) = runtime.block_on(server) {

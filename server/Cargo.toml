@@ -22,7 +22,13 @@ assert_cmd = "2.0"
 byteorder = "1.5"
 reqwest = { version = "0.11", default-features = false, features = ["blocking"] }
 
+[dev-dependencies]
+assert_cmd = "2.0"
+byteorder = "1.5"
+reqwest = { version = "0.11", default-features = false, features = ["blocking"] }
+
 [features]
 cheri = ["machine_interface/cheri"]
 mmu = ["machine_interface/mmu"]
+wasm = ["machine_interface/wasm"]
 hyper_io = ["machine_interface/hyper_io"]

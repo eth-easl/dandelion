@@ -184,7 +184,7 @@ impl Dispatcher {
             while let Ok(Some(resource)) =
                 resource_pool.sync_acquire_engine_resource(engine_id.clone())
             {
-                let engine = driver.start_engine(vec![resource])?;
+                let engine = driver.start_engine(resource)?;
                 engine_vec.push(engine);
             }
             let engine_queue = EngineQueue {
