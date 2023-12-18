@@ -748,10 +748,6 @@ fn main() -> () {
     });
     let server = Server::bind(&addr).serve(make_svc);
 
-    println!("asdf");
-    println!("{:?}", cfg!(feature = "wasmtime"));
-    println!("{:?}", cfg!(feature = "wasmtime-precompiled"));
-
     #[cfg(feature = "cheri")]
     println!("Hello, World (cheri)");
     #[cfg(feature = "mmu")]
