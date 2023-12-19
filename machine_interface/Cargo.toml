@@ -10,7 +10,7 @@ mmu = ["std"]
 hyper_io = ["std", "dep:hyper"]
 wasm = ["std"]
 wasmtime = ["std", "dep:wasmtime"]
-wasmtime-precompiled = ["std", "wasmtime"]
+wasmtime-precompiled = ["wasmtime"]
 # default = ["wasmtime", "wasm"]
 
 [build-dependencies]

@@ -194,11 +194,6 @@ impl Engine for WasmtimeEngine {
 
 const SDK_HEAP_PAGES : usize = 2048;    // 128MB
 
-#[cfg(features = "wasmtime-precompiled")]
-pub const USE_PRECOMPILED: bool = true;
-#[cfg(not(features = "wasmtime-precompiled"))]
-pub const USE_PRECOMPILED: bool = false;
-
 pub struct WasmtimeDriver {}
 
 impl Driver for WasmtimeDriver {
@@ -233,6 +228,9 @@ impl Driver for WasmtimeDriver {
         static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<Function> {
 
+        info!("parsing wasmtime function {}", &function_config);
+        info!("pre-compilation enabled: {}", cfg!(feature = "wasmtime-precompiled"));
+
         // shorthand to map any error below to a config missmatch
         macro_rules! map_cfg_err {
             ($e:expr, $dbg:expr) => {
@@ -251,7 +249,7 @@ impl Driver for WasmtimeDriver {
             std::fs::read(&function_config),
             "could not read function file"
         };
-        let precompiled_module = if USE_PRECOMPILED {
+        let precompiled_module = if cfg!(feature = "wasmtime-precompiled") {
             wasm_module_content
         } else {
             map_cfg_err!{ 
