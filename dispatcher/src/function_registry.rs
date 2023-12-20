@@ -1,5 +1,5 @@
+use async_lock::RwLock;
 use dandelion_commons::{DandelionError, DandelionResult, EngineTypeId, FunctionId};
-use futures::lock::Mutex;
 use machine_interface::{
     function_driver::{
         system_driver::{get_system_function_input_sets, get_system_function_output_sets},
@@ -33,9 +33,9 @@ pub struct FunctionRegistry {
     pub(crate) drivers: BTreeMap<EngineTypeId, Box<dyn Driver>>,
     // TODO replace with futures compatible RW lock if it becomes a bottleneck
     /// map with list of all options for each function
-    options: Mutex<BTreeMap<FunctionId, Vec<Alternative>>>,
+    options: RwLock<BTreeMap<FunctionId, Vec<Alternative>>>,
     /// map with function information for functions that are available in memory
-    in_memory: Mutex<BTreeMap<(FunctionId, EngineTypeId), Function>>,
+    in_memory: RwLock<BTreeMap<(FunctionId, EngineTypeId), Function>>,
     /// map with file paths for functions for on disk available functons
     on_disk: BTreeMap<(FunctionId, EngineTypeId), String>,
     /// map with input and output set names for functions
@@ -47,15 +47,15 @@ impl FunctionRegistry {
         return FunctionRegistry {
             engine_map: BTreeMap::new(),
             drivers,
-            options: Mutex::new(BTreeMap::new()),
-            in_memory: Mutex::new(BTreeMap::new()),
+            options: RwLock::new(BTreeMap::new()),
+            in_memory: RwLock::new(BTreeMap::new()),
             on_disk: BTreeMap::new(),
             set_names: BTreeMap::new(),
         };
     }
     pub async fn get_options(&self, function_id: FunctionId) -> DandelionResult<Vec<Alternative>> {
         // get the ones that are already loaded
-        let lock_guard = self.options.lock().await;
+        let lock_guard = self.options.read().await;
         let alternatives = lock_guard.get(&function_id);
         return alternatives
             .and_then(|alt| Some(alt.to_vec()))
@@ -219,10 +219,12 @@ impl FunctionRegistry {
         non_caching: bool,
     ) -> DandelionResult<(Context, FunctionConfig)> {
         // check if function for the engine is in registry already
-        let mut lock_guard = self.in_memory.lock().await;
-        if let Some(function) = lock_guard.get(&(function_id, engine_id)) {
-            let function_context = function.load(domain)?;
-            return Ok((function_context, function.config.clone()));
+        {
+            let lock_read_guard = self.in_memory.read().await;
+            if let Some(function) = lock_read_guard.get(&(function_id, engine_id)) {
+                let function_context = function.load(domain)?;
+                return Ok((function_context, function.config.clone()));
+            }
         }
 
         // if it is not in memory or disk we return the error from loading as it is not available
@@ -230,12 +232,9 @@ impl FunctionRegistry {
         let function_context = function.load(domain)?;
         let function_config = function.config.clone();
         if !non_caching {
-            if lock_guard
-                .insert((function_id, engine_id), function)
-                .is_some()
-            {
-                panic!("Function not in registry even after Ok from loading");
-            };
+            let mut lock_write_guard = self.in_memory.write().await;
+            // the same function could be loaded multiple times
+            let _old = lock_write_guard.insert((function_id, engine_id), function);
         }
         return Ok((function_context, function_config));
     }

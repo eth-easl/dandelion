@@ -612,10 +612,10 @@ mod dispatcher_tests {
             function_driver::{compute_driver::wasm::WasmDriver, ComputeResource},
             memory_domain::wasm::WasmMemoryDomain,
         };
-      
+
         #[cfg(target_arch = "x86_64")]
-        dispatcherTests!(sysld_wasmi_x86_64; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![ComputeResource::CPU(1)]);
-      
+        dispatcherTests!(sysld_wasm_x86_64; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![ComputeResource::CPU(1)]);
+
         #[cfg(target_arch = "aarch64")]
         dispatcherTests!(sysld_wasm_aarch64; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![ComputeResource::CPU(1)]);
     }
