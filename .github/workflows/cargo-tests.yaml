@@ -1,0 +1,26 @@
+name: Dandelion Cargo Tests
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main", "dev/**"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # set to fail fast to false so all combinations are tested
+    strategy:
+      fail-fast:false
+      # test different available compute engines with different system engines
+      matrix:
+        compute_driver: [mmu, wasm]
+        system_driver: [hyper_io]
+    steps:
+    # check out the code
+    - uses: action/checkout@v3
+    # run the actual tests
+    - name: run tests
+      shell: bash
+      run: cargo test -F matrix.compute_dirver,matrix.system_driver
+

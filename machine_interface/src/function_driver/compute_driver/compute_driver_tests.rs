@@ -519,6 +519,7 @@ mod compute_driver_tests {
             }
 
             #[test]
+            #[cfg(not(feature = "wasm"))]
             fn test_engine_stdio() {
                 let name = format!(
                     "{}/tests/data/test_{}_stdio",
@@ -530,6 +531,7 @@ mod compute_driver_tests {
             }
 
             #[test]
+            #[cfg(not(feature = "wasm"))]
             fn test_engine_fileio() {
                 let name = format!(
                     "{}/tests/data/test_{}_fileio",
