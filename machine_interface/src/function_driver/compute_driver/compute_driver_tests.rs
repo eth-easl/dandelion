@@ -1,8 +1,11 @@
 #[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "wasm")))]
 mod compute_driver_tests {
     use crate::{
-        function_driver::{Driver, Engine, FunctionConfig},
-        memory_domain::{Context, ContextState, ContextTrait, MemoryDomain},
+        function_driver::{
+            load_utils::{load_python_root, load_python_user_env},
+            Driver, Engine, FunctionConfig,
+        },
+        memory_domain::{transfer_data_set, Context, ContextState, ContextTrait, MemoryDomain},
         DataItem, DataSet, Position,
     };
     use core::panic;
@@ -470,6 +473,125 @@ mod compute_driver_tests {
         }
     }
 
+    fn engine_python<Dom: MemoryDomain>(
+        filename: &str,
+        dom_init: Vec<u8>,
+        driver: Box<dyn Driver>,
+        drv_init: Vec<u8>,
+    ) {
+        let (script_context, stdio_context) = load_python_user_env(
+            &std::path::Path::new(&format!("{}/tests/data", env!("CARGO_MANIFEST_DIR"))),
+            String::from("test_python.py"),
+        )
+        .expect("Should be able to prepare python user env");
+        let (mut engine, mut function_context, config) =
+            prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
+        transfer_data_set(&mut function_context, &script_context, 0, 128, "scripts", 0)
+            .expect("Should be able to transfer script set");
+        transfer_data_set(&mut function_context, &stdio_context, 1, 128, "stdio", 0)
+            .expect("Should be able to transfer stdio set");
+        // todo copy the local /usr/lib/python3.8/encodings folder into the function
+        let module_context = load_python_root(&std::path::Path::new(
+            "/mnt/c/Users/kuchlert/Documents/fuseArch/dandelionProj/app_test/cpython/Lib",
+        ))
+        .expect("Should be able to form module context");
+        // python home for libraries
+        let set_num = function_context.content.len();
+        transfer_data_set(
+            &mut function_context,
+            &module_context,
+            set_num,
+            128,
+            "pylib",
+            0,
+        )
+        .expect("should be able to transfer python root");
+        // data we need from /etc/
+        let localtime_content =
+            std::fs::read("/etc/localtime").expect("Should have localtime file");
+        let localtime_offset = function_context
+            .get_free_space_and_write_slice(localtime_content.as_slice())
+            .expect("Should have space for localtime") as usize;
+        function_context.content.push(Some(DataSet {
+            ident: "etc".to_string(),
+            buffers: vec![DataItem {
+                ident: "localtime".to_string(),
+                data: Position {
+                    offset: localtime_offset,
+                    size: localtime_content.len(),
+                },
+                key: 0,
+            }],
+        }));
+        let archive = Arc::new(Mutex::new(Archive::new()));
+        let mut recorder = Recorder::new(archive, RecordPoint::TransferEnd);
+        let (result, result_context) = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(engine.run(
+                &config,
+                function_context,
+                &vec!["stdio".to_string()],
+                recorder.clone(),
+            ));
+        result.expect("Engine should run ok with basic function");
+        recorder
+            .record(RecordPoint::FutureReturn)
+            .expect("Should have properly advanced recorder state");
+        // check the function exited with exit code 0
+        // match result_context.state {
+        //     ContextState::InPreparation => panic!("context still in preparation, never evaluated "),
+        //     ContextState::Run(exit_status) => assert_eq!(0, exit_status),
+        // }
+        // check there is exactly one set called stdio
+        println!("exit status is: {:?}", result_context.state);
+        assert_eq!(1, result_context.content.len());
+        let io_set = &result_context.content[0]
+            .as_ref()
+            .expect("Set should be present");
+        assert_eq!("stdio", io_set.ident);
+        assert_eq!(2, io_set.buffers.len());
+        let mut stdout_vec = Vec::<u8>::new();
+        let mut stderr_vec = Vec::<u8>::new();
+        for item in &io_set.buffers {
+            match item.ident.as_str() {
+                "stdout" => {
+                    stdout_vec = vec![0; item.data.size];
+                    result_context
+                        .read(item.data.offset, &mut stdout_vec)
+                        .expect("stdout read should succeed")
+                }
+                "stderr" => {
+                    stderr_vec = vec![0; item.data.size];
+                    result_context
+                        .read(item.data.offset, &mut stderr_vec)
+                        .expect("stderr read should succeed")
+                }
+                unexpected_name => panic!(
+                    "found unexpected item named {} in stdio set",
+                    unexpected_name
+                ),
+            }
+        }
+        let stdout_string = std::str::from_utf8(&stdout_vec).expect("should be string");
+        let stderr_string = std::str::from_utf8(&stderr_vec).expect("should be string");
+        println!("Python stdout: {}", stdout_string);
+        println!("Python stderr: {}", stderr_string);
+        // let expected_stdout = format!(
+        //     "Test string to stdout\n\
+        //     read {} characters from stdin\n\
+        //     {}argument 0 is stdio\n\
+        //     argument 1 is flag0\n\
+        //     argument 2 is flag1\n\
+        //     environmental variable HOME is test_home\n",
+        //     stdin_content.len(),
+        //     stdin_content
+        // );
+        // assert_eq!(expected_stdout, stdout_string);
+        // assert_eq!("Test string to stderr\n", stderr_string);
+        panic!("")
+    }
+
     macro_rules! driverTests {
         ($name : ident; $domain : ty; $dom_init: expr; $driver : expr ; $drv_init : expr; $drv_init_wrong : expr) => {
             #[test]
@@ -538,6 +660,17 @@ mod compute_driver_tests {
                 );
                 let driver = Box::new($driver);
                 super::engine_fileio::<$domain>(&name, $dom_init, driver, $drv_init)
+            }
+
+            #[test]
+            fn test_engine_python() {
+                let name = format!(
+                    "{}/tests/data/test_{}_python",
+                    env!("CARGO_MANIFEST_DIR"),
+                    stringify!($name)
+                );
+                let driver = Box::new($driver);
+                super::engine_python::<$domain>(&name, $dom_init, driver, $drv_init)
             }
         };
     }
