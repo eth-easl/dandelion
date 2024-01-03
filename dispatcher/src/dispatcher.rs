@@ -1,7 +1,7 @@
 use crate::{
     composition::{Composition, CompositionSet, FunctionDependencies, ShardingMode},
     execution_qs::EngineQueue,
-    function_registry::{FunctionRegistry, FunctionType},
+    function_registry::{FunctionRegistry, FunctionType, Metadata},
     resource_pool::ResourcePool,
 };
 use core::pin::Pin;
@@ -67,6 +67,22 @@ impl Dispatcher {
             function_registry,
             archive,
         });
+    }
+
+    pub async fn update_func(
+        &self,
+        function_id: FunctionId,
+        engine_type: EngineTypeId,
+        path: &str,
+        metadata: Metadata,
+    ) -> DandelionResult<()> {
+        self.function_registry
+            .insert_metadata(function_id, metadata)
+            .await;
+        return self
+            .function_registry
+            .add_local(function_id, engine_type, path)
+            .await;
     }
 
     pub async fn queue_composition(
@@ -238,7 +254,7 @@ impl Dispatcher {
             if let Some(alternative) = options.iter().next() {
                 match &alternative.function_type {
                     FunctionType::Function(engine_id) => {
-                        let (context, config, out_set_names) = self
+                        let (context, config, metadata) = self
                             .prepare_for_engine(
                                 function_id,
                                 *engine_id,
@@ -251,7 +267,7 @@ impl Dispatcher {
                             .run_on_engine(
                                 *engine_id,
                                 config,
-                                out_set_names,
+                                &metadata.output_sets,
                                 context,
                                 recorder.clone(),
                             )
@@ -317,8 +333,8 @@ impl Dispatcher {
         inputs: Vec<(usize, CompositionSet)>,
         non_caching: bool,
         mut recorder: Recorder,
-    ) -> DandelionResult<(Context, FunctionConfig, &Vec<String>)> {
-        let (in_set_names, out_set_names) = self.function_registry.get_set_names(function_id)?;
+    ) -> DandelionResult<(Context, FunctionConfig, Arc<Metadata>)> {
+        let metadata = self.function_registry.get_metadata(function_id).await?;
         // get context and load static data
         let context_id = match self.type_map.get(&engine_type) {
             Some(id) => id,
@@ -336,19 +352,42 @@ impl Dispatcher {
             .await?;
         recorder.record(RecordPoint::TransferStart)?;
         // make sure all input sets are there at the correct index
-        for in_set_name in in_set_names {
+        let mut static_sets = BTreeSet::new();
+        for (function_set_index, (in_set_name, in_composition_set)) in
+            metadata.input_sets.iter().enumerate()
+        {
             function_context
                 .content
                 .push(Some(machine_interface::DataSet {
                     ident: in_set_name.clone(),
                     buffers: vec![],
-                }))
+                }));
+            if let Some(composition_set) = in_composition_set {
+                static_sets.insert(function_set_index);
+                let mut function_buffer = 0usize;
+                for (subset, item, source_context) in composition_set {
+                    transer_data_item(
+                        &mut function_context,
+                        &source_context,
+                        function_set_index,
+                        128,
+                        function_buffer,
+                        in_set_name,
+                        subset,
+                        item,
+                    )?;
+                    function_buffer += 1;
+                }
+            }
         }
         for (function_set, context_set) in inputs {
+            if static_sets.contains(&function_set) {
+                continue;
+            }
             let mut function_item = 0usize;
             for (subset, item, source_context) in context_set {
                 // TODO get allignment information
-                let set_name = &in_set_names[function_set];
+                let set_name = &metadata.input_sets[function_set].0;
                 transer_data_item(
                     &mut function_context,
                     &source_context,
@@ -364,7 +403,7 @@ impl Dispatcher {
             }
         }
         recorder.record(RecordPoint::TransferEnd)?;
-        return Ok((function_context, function_config, out_set_names));
+        return Ok((function_context, function_config, metadata));
     }
 
     async fn run_on_engine(

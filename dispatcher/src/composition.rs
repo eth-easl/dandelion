@@ -170,3 +170,11 @@ impl IntoIterator for CompositionSet {
         return CompositionSetTransferIterator { set: self };
     }
 }
+
+impl IntoIterator for &CompositionSet {
+    type Item = (usize, usize, Arc<Context>);
+    type IntoIter = CompositionSetTransferIterator;
+    fn into_iter(self) -> Self::IntoIter {
+        return CompositionSetTransferIterator { set: self.clone() };
+    }
+}

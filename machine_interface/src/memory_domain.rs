@@ -259,6 +259,7 @@ pub fn transefer_memory(
 /// Transfer a complete dataset from one context to another.
 /// If there is already a dataset with the given desintation set index present,
 /// the items from the source set will be added to that set, keeping the identifier of the previous set.
+/// TODO consider removing destination set name and require the set be present instead
 pub fn transfer_data_set(
     destination: &mut Context,
     source: &Context,
