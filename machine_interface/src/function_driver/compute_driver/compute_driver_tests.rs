@@ -550,11 +550,13 @@ mod compute_driver_tests {
         use crate::function_driver::ComputeResource;
         use crate::memory_domain::cheri::CheriMemoryDomain;
         driverTests!(elf_cheri; CheriMemoryDomain; Vec::new(); CheriDriver {};
-        vec![
-            ComputeResource::CPU(1),
-            ComputeResource::CPU(2),
-            ComputeResource::CPU(3)
-        ];
+        core_affinity::get_core_ids()
+           .and_then(
+                |core_vec|
+                Some(core_vec
+                    .into_iter()
+                    .map(|id| ComputeResource::CPU(id.id as u8))
+                    .collect())).expect("Should have at least one core");
         vec![
             ComputeResource::CPU(255),
             ComputeResource::GPU(0)
@@ -568,22 +570,26 @@ mod compute_driver_tests {
         use crate::memory_domain::mmu::MmuMemoryDomain;
         #[cfg(target_arch = "x86_64")]
         driverTests!(elf_mmu_x86_64; MmuMemoryDomain; Vec::new(); MmuDriver {};
-        vec![
-            ComputeResource::CPU(1),
-            ComputeResource::CPU(2),
-            ComputeResource::CPU(3),
-        ];
+        core_affinity::get_core_ids()
+           .and_then(
+                |core_vec|
+                Some(core_vec
+                    .into_iter()
+                    .map(|id| ComputeResource::CPU(id.id as u8))
+                    .collect())).expect("Should have at least one core");
         vec![
             ComputeResource::CPU(255),
             ComputeResource::GPU(0)
         ]);
         #[cfg(target_arch = "aarch64")]
         driverTests!(elf_mmu_aarch64; MmuMemoryDomain; Vec::new(); MmuDriver {};
-        vec![
-            ComputeResource::CPU(1),
-            ComputeResource::CPU(2),
-            ComputeResource::CPU(3)
-        ];
+        core_affinity::get_core_ids()
+            .and_then(
+                |core_vec|
+                Some(core_vec
+                    .into_iter()
+                    .map(|id| ComputeResource::CPU(id.id as u8))
+                    .collect())).expect("Should have at least one core");
         vec![
             ComputeResource::CPU(255),
             ComputeResource::GPU(0),
@@ -598,11 +604,13 @@ mod compute_driver_tests {
 
         #[cfg(target_arch = "x86_64")]
         driverTests!(sysld_wasm_x86_64; WasmMemoryDomain; Vec::new(); WasmDriver {};
-        vec![
-            ComputeResource::CPU(1),
-            ComputeResource::CPU(2),
-            ComputeResource::CPU(3),
-        ];
+        core_affinity::get_core_ids()
+            .and_then(
+                |core_vec|
+                Some(core_vec
+                    .into_iter()
+                    .map(|id| ComputeResource::CPU(id.id as u8))
+                    .collect())).expect("Should have at least one core");
         vec![
             ComputeResource::CPU(255),
             ComputeResource::GPU(0),
@@ -610,11 +618,13 @@ mod compute_driver_tests {
 
         #[cfg(target_arch = "aarch64")]
         driverTests!(sysld_wasm_aarch64; WasmMemoryDomain; Vec::new(); WasmDriver {};
-        vec![
-            ComputeResource::CPU(1),
-            ComputeResource::CPU(2),
-            ComputeResource::CPU(3),
-        ];
+        core_affinity::get_core_ids()
+            .and_then(
+                |core_vec|
+                Some(core_vec
+                    .into_iter()
+                    .map(|id| ComputeResource::CPU(id.id as u8))
+                    .collect())).expect("Should have at least one core");
         vec![
             ComputeResource::CPU(255),
             ComputeResource::GPU(0),
