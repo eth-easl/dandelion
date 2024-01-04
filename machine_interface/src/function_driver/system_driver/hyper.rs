@@ -1,16 +1,23 @@
 use crate::{
-    function_driver::{Driver, Engine, Function, FunctionConfig, SystemFunction},
+    function_driver::{
+        thread_utils::{ThreadCommand, ThreadController, ThreadPayload, ThreadState},
+        ComputeResource, Driver, Engine, Function, FunctionConfig, SystemFunction,
+    },
     memory_domain::{Context, ContextTrait},
     DataItem, DataSet, Position,
 };
-use core::future::{ready, Future};
-use core_affinity::set_for_current;
-use dandelion_commons::{
-    records::{RecordPoint, Recorder},
-    DandelionError, DandelionResult,
+use core::{
+    future::{ready, Future},
+    task::Poll,
 };
+use core_affinity::set_for_current;
+use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
 use hyper::{body::HttpBody, Body, Client, HeaderMap, Method, Request, Version};
-use std::pin::Pin;
+use log::error;
+use std::{
+    pin::Pin,
+    sync::{Arc, Mutex},
+};
 use tokio::runtime::{Builder, Runtime};
 
 struct RequestInformation {
@@ -171,45 +178,51 @@ async fn http_request(request_info: RequestInformation) -> DandelionResult<Respo
     let request = match request_builder.body(body) {
         Ok(req) => req,
         Err(http_error) => {
-            println!("URI: {}", uri);
+            error!("URI: {}", uri);
             return Err(DandelionError::MalformedSystemFuncArg(format!(
                 "{:?}",
                 http_error
             )));
         }
     };
+
+    // TODO instead of engine errors on connection issues return the error message(s) as items in a separate set
     let client = Client::new();
     let future = client.request(request).await;
-    let mut response = future
-        .or(Err(DandelionError::EngineError))
-        .expect("response failed");
+    let (parts, mut body) = match future {
+        Ok(body) => body.into_parts(),
+        Err(err) => {
+            println!("message: {}, err: {}", err.message(), err);
+            panic!("Future Error")
+        }
+    };
 
     // write the status line
     let status = format!(
         "{:?} {} {}",
-        response.version(),
-        response.status().as_str(),
-        response.status().canonical_reason().unwrap_or("")
+        parts.version,
+        parts.status.as_str(),
+        parts.status.canonical_reason().unwrap_or("")
     );
 
     // read the content length in the header
     // TODO also accept chunked data
-    let content_length = response
-        .headers()
+    let content_length = parts
+        .headers
         .get("content-length")
         .and_then(|value| value.to_str().ok())
         .and_then(|len_str| len_str.parse::<usize>().ok())
         .ok_or(DandelionError::SystemFuncResponseError)?;
 
-    if let Some(Ok(chunck)) = response.body_mut().data().await {
-        // body_buffer.write_all(&chunck);
-        if chunck.len() != content_length {
-            return Err(DandelionError::SystemFuncResponseError);
-        }
+    let mut response_data = Vec::new();
+    while let Some(Ok(chunk)) = body.data().await {
+        response_data.extend_from_slice(&chunk.slice(0..chunk.len()));
+    }
+    if content_length == response_data.len() {
         let response_info = ResponseInformation {
             status,
-            headermap: response.headers().to_owned(),
-            body: chunck.into(),
+            headermap: parts.headers.to_owned(),
+            body: response_data,
         };
         return Ok(response_info);
     } else {
@@ -293,45 +306,101 @@ fn http_context_write(
     return Ok(());
 }
 
-async fn http_wrapper(
-    mut context: Context,
-    output_set_names: Vec<String>,
+fn http_run(
+    context_ref: &Arc<Mutex<Option<Context>>>,
     runtime: &Runtime,
-    mut recorder: Recorder,
-) -> (DandelionResult<()>, Context) {
-    let response_future;
-    {
+    output_set_names: Vec<String>,
+) -> DandelionResult<()> {
+    let mut context_guard = context_ref.lock().unwrap();
+    let mut context = context_guard.take().unwrap();
+    let response_result = {
         let _guard = runtime.enter();
-        let request = match http_setup(&context) {
-            Ok(request) => request,
-            Err(err) => return (Err(err), context),
-        };
-
-        if let Err(err) = recorder.record(RecordPoint::EngineStart) {
-            return (Err(err), context);
-        }
-        response_future = runtime.spawn(http_request(request));
-    }
-    let response = match response_future.await {
-        Ok(Ok(info)) => info,
-        Ok(Err(err)) => return (Err(err), context),
-        Err(_) => {
-            println!("response future failed");
-            return (Err(DandelionError::EngineError), context);
+        let request = http_setup(&context)?;
+        runtime
+            .block_on(http_request(request))
+            .or(Err(DandelionError::EngineError))
+    };
+    let response = match response_result {
+        Ok(resp) => resp,
+        Err(err) => {
+            let _ = context_guard.insert(context);
+            return Err(err);
         }
     };
-    if let Err(err) = recorder.record(RecordPoint::EngineEnd) {
-        return (Err(err), context);
-    }
+    let write_result = http_context_write(&mut context, output_set_names, response);
+    let _ = context_guard.insert(context);
+    return write_result;
+}
 
-    return (
-        http_context_write(&mut context, output_set_names, response),
-        context,
-    );
+struct HyperState {
+    runtime: Runtime,
+}
+impl ThreadState for HyperState {
+    fn init(core_id: u8) -> DandelionResult<Box<Self>> {
+        let runtime = Builder::new_multi_thread()
+            .on_thread_start(move || {
+                if !set_for_current(core_affinity::CoreId { id: core_id.into() }) {
+                    return;
+                }
+            })
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .or(Err(DandelionError::EngineError))?;
+
+        return Ok(Box::new(HyperState { runtime }));
+    }
+}
+
+struct HyperCommand {
+    system_function: SystemFunction,
+    context: Arc<Mutex<Option<Context>>>,
+    output_set_names: Vec<String>,
+}
+impl ThreadPayload for HyperCommand {
+    type State = HyperState;
+    fn run(self, state: &mut Self::State) -> DandelionResult<()> {
+        return match self.system_function {
+            SystemFunction::HTTP => http_run(&self.context, &state.runtime, self.output_set_names),
+            _ => Err(DandelionError::MalformedConfig),
+        };
+    }
 }
 
 pub struct HyperEngine {
-    runtime: Runtime,
+    thread_controller: ThreadController<HyperCommand>,
+}
+
+// TODO check if there is a better way than this, for here and for wasm
+// potentially coupling the sending back of the message and dropping the contex
+struct HyperFuture<'a> {
+    engine: &'a mut HyperEngine,
+    context: Arc<Mutex<Option<Context>>>,
+}
+
+impl Future for HyperFuture<'_> {
+    type Output = (DandelionResult<()>, Context);
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &mut futures::task::Context,
+    ) -> futures::task::Poll<Self::Output> {
+        match self.engine.thread_controller.poll_next(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Some(Ok(()))) => {
+                // TODO handle errors (we don't have a context if locking fails)
+                let mut guard = self.context.lock().unwrap();
+                if !guard.is_some() {
+                    return Poll::Pending;
+                };
+                let context = guard.take().unwrap();
+                Poll::Ready((Ok(()), context))
+            }
+            _ => {
+                let context = self.context.lock().unwrap().take().unwrap();
+                Poll::Ready((Err(DandelionError::EngineError), context))
+            }
+        }
+    }
 }
 
 impl Engine for HyperEngine {
@@ -340,20 +409,37 @@ impl Engine for HyperEngine {
         config: &FunctionConfig,
         context: Context,
         output_set_names: &Vec<String>,
-        recorder: Recorder,
+        mut recorder: Recorder,
     ) -> Pin<Box<dyn Future<Output = (DandelionResult<()>, Context)> + '_ + Send>> {
         let function = match config {
             FunctionConfig::SysConfig(sys_func) => sys_func,
             _ => return Box::pin(ready((Err(DandelionError::ConfigMissmatch), context))),
         };
-        return match function {
-            SystemFunction::HTTP => Box::pin(http_wrapper(
-                context,
-                output_set_names.clone(),
-                &self.runtime,
-                recorder,
-            )),
-        };
+        if let Err(err) = recorder.record(dandelion_commons::records::RecordPoint::EngineStart) {
+            return Box::pin(core::future::ready((Err(err), context)));
+        }
+        let context_ = Arc::new(Mutex::new(Some(context)));
+        let command = ThreadCommand::Run(
+            recorder,
+            HyperCommand {
+                system_function: *function,
+                context: context_.clone(),
+                output_set_names: output_set_names.clone(),
+            },
+        );
+        match self.thread_controller.send_command(command) {
+            Ok(()) => (),
+            Err(err) => {
+                return Box::pin(futures::future::ready((
+                    Err(err),
+                    context_.lock().unwrap().take().unwrap(),
+                )))
+            }
+        }
+        return Box::pin(HyperFuture {
+            engine: self,
+            context: context_,
+        });
     }
 
     fn abort(&mut self) -> DandelionResult<()> {
@@ -363,24 +449,29 @@ impl Engine for HyperEngine {
 
 pub struct HyperDriver {}
 
-const DEFAULT_HTTP_CONTEXT_SIZE: usize = 0x1000; // 4KiB
+const DEFAULT_HTTP_CONTEXT_SIZE: usize = 0x20_0000; // 2MiB
 
 impl Driver for HyperDriver {
-    fn start_engine(&self, config: Vec<u8>) -> DandelionResult<Box<dyn Engine>> {
-        if config.len() != 1 {
-            return Err(DandelionError::ConfigMissmatch);
+    fn start_engine(&self, resource: ComputeResource) -> DandelionResult<Box<dyn Engine>> {
+        let core_id = match resource {
+            ComputeResource::CPU(core) => core,
+            _ => return Err(DandelionError::EngineResourceError),
+        };
+        // check that core is available
+        let available_cores = match core_affinity::get_core_ids() {
+            None => return Err(DandelionError::EngineResourceError),
+            Some(cores) => cores,
+        };
+        if !available_cores
+            .iter()
+            .find(|x| x.id == usize::from(core_id))
+            .is_some()
+        {
+            return Err(DandelionError::EngineResourceError);
         }
-        let core_id = config[0];
-
-        let runtime = Builder::new_multi_thread()
-            .on_thread_start(move || {
-                set_for_current(core_affinity::CoreId { id: core_id.into() });
-            })
-            .worker_threads(1)
-            .enable_all()
-            .build()
-            .or(Err(DandelionError::EngineError))?;
-        return Ok(Box::new(HyperEngine { runtime }));
+        return Ok(Box::new(HyperEngine {
+            thread_controller: ThreadController::new(core_id),
+        }));
     }
 
     fn parse_function(

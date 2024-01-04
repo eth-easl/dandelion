@@ -2,6 +2,7 @@ extern crate alloc;
 use crate::memory_domain::{Context, ContextTrait};
 use alloc::alloc::Layout;
 use dandelion_commons::{DandelionError, DandelionResult};
+use log::error;
 
 #[derive(Debug)]
 pub struct ReadOnlyContext {
@@ -11,7 +12,7 @@ pub struct ReadOnlyContext {
 
 impl ContextTrait for ReadOnlyContext {
     fn write<T>(&mut self, _offset: usize, _data: &[T]) -> DandelionResult<()> {
-        println!("Tried to write to read only context");
+        error!("Tried to write to read only context");
         return Err(DandelionError::InvalidWrite);
     }
 

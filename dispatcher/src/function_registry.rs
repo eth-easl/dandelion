@@ -1,5 +1,4 @@
 use dandelion_commons::{DandelionError, DandelionResult, EngineTypeId, FunctionId};
-use futures::lock::Mutex;
 use machine_interface::{
     function_driver::{Driver, Function, FunctionConfig},
     memory_domain::{malloc::MallocMemoryDomain, Context, MemoryDomain},
@@ -8,6 +7,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc, 
 };
+use futures::lock::Mutex;
 
 use crate::composition::{Composition, CompositionSet};
 
@@ -45,7 +45,7 @@ pub struct FunctionRegistry {
     /// TODO: change structure to avoid copy on get_options
     options: Mutex<BTreeMap<FunctionId, Vec<Alternative>>>,
     /// map with function information for functions that are available in memory
-    in_memory: Mutex<BTreeMap<(FunctionId, EngineTypeId), Function>>,
+    in_memory: Mutex<BTreeMap<(FunctionId, EngineTypeId), Arc<Function>>>,
     /// map with file paths for functions for on disk available functons
     on_disk: Mutex<BTreeMap<(FunctionId, EngineTypeId), String>>,
     /// map with input and output set names for functions
@@ -64,6 +64,7 @@ impl FunctionRegistry {
             metadata: Mutex::new(BTreeMap::new()),
         };
     }
+
     pub async fn get_options(&self, function_id: FunctionId) -> DandelionResult<Vec<Alternative>> {
         // get the ones that are already loaded
         let lock_guard = self.options.lock().await;
@@ -140,7 +141,7 @@ impl FunctionRegistry {
         };
         self.in_memory
             .get_mut()
-            .insert((function_id, engine_id), function_config);
+            .insert((function_id, engine_id), Arc::new(function_config));
         self.engine_map.get_mut()
             .entry(function_id)
             .and_modify(|set| {
@@ -238,12 +239,14 @@ impl FunctionRegistry {
         non_caching: bool,
     ) -> DandelionResult<(Context, FunctionConfig)> {
         // check if function for the engine is in registry already
-        {
+        let function_opt;
+         {
             let lock_guard = self.in_memory.lock().await;
-            if let Some(function) = lock_guard.get(&(function_id, engine_id)) {
-                let function_context = function.load(domain)?;
-                return Ok((function_context, function.config.clone()));
-            }
+            function_opt = lock_guard.get(&(function_id, engine_id)).and_then(|val| Some(val.clone()))
+        };
+        if let Some(function) = function_opt {
+            let function_context = function.load(domain)?;
+            return Ok((function_context, function.config.clone()));
         }
 
         // if it is not in memory or disk we return the error from loading as it is not available
@@ -255,7 +258,7 @@ impl FunctionRegistry {
                 .in_memory
                 .lock()
                 .await
-                .insert((function_id, engine_id), function)
+                .insert((function_id, engine_id), Arc::new(function))
                 .is_some()
             {
                 panic!("Function not in registry even after Ok from loading");

@@ -2,7 +2,8 @@
 mod system_driver_tests {
     use crate::{
         function_driver::{
-            system_driver::get_system_function_output_sets, Driver, FunctionConfig, SystemFunction,
+            system_driver::get_system_function_output_sets, ComputeResource, Driver,
+            FunctionConfig, SystemFunction,
         },
         memory_domain::{Context, ContextTrait, MemoryDomain},
         DataItem, DataSet, Position,
@@ -56,7 +57,7 @@ mod system_driver_tests {
     fn get_http<Dom: MemoryDomain>(
         dom_init: Vec<u8>,
         driver: Box<dyn Driver>,
-        drv_init: Vec<u8>,
+        drv_init: ComputeResource,
     ) -> () {
         let domain = Dom::init(dom_init).expect("Should be able to get domain");
         let mut context = domain
@@ -112,7 +113,7 @@ mod system_driver_tests {
     fn put_http<Dom: MemoryDomain>(
         dom_init: Vec<u8>,
         driver: Box<dyn Driver>,
-        drv_init: Vec<u8>,
+        drv_init: ComputeResource,
     ) -> () {
         let domain = Dom::init(dom_init).expect("Should be able to get domain");
         let mut context = domain
@@ -196,7 +197,8 @@ mod system_driver_tests {
     #[cfg(feature = "hyper_io")]
     mod hyper_io {
         use crate::function_driver::system_driver::hyper::HyperDriver;
+        use crate::function_driver::ComputeResource;
         use crate::memory_domain::malloc::MallocMemoryDomain as domain;
-        driverTests!(hyper_io; domain; Vec::new(); HyperDriver{}; vec![1]);
+        driverTests!(hyper_io; domain; Vec::new(); HyperDriver{}; ComputeResource::CPU(1));
     }
 }

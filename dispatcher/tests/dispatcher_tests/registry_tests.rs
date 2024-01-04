@@ -2,7 +2,7 @@ use std::vec;
 
 use dispatcher::{composition::CompositionSet, function_registry::Metadata};
 use machine_interface::{
-    function_driver::Driver,
+    function_driver::{ComputeResource, Driver},
     memory_domain::Context,
     memory_domain::{read_only::ReadOnlyContext, MemoryDomain},
     DataItem, DataSet, Position,
@@ -38,7 +38,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
     domain_arg: Vec<u8>,
     relative_path: &str,
     driver: Box<dyn Driver>,
-    engine_resource: Vec<u8>,
+    engine_resource: Vec<ComputeResource>,
 ) {
     let matrix_a = Box::new([1u64, 2u64]);
     let matrix_b = Box::new([1u64, 3u64]);
@@ -136,7 +136,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
     domain_arg: Vec<u8>,
     relative_path: &str,
     driver: Box<dyn Driver>,
-    engine_resource: Vec<u8>,
+    engine_resource: Vec<ComputeResource>,
 ) {
     let matrix_a = Box::new([1u64, 2u64]);
     let matrix_b = Box::new([1u64, 3u64]);

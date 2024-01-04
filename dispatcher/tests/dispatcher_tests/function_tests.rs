@@ -2,7 +2,7 @@ use super::{check_matrix, setup_dispatcher};
 use core::mem::size_of;
 use dispatcher::composition::{Composition, CompositionSet, FunctionDependencies, ShardingMode};
 use machine_interface::{
-    function_driver::Driver,
+    function_driver::{ComputeResource, Driver},
     memory_domain::{Context, MemoryDomain},
     DataItem, DataSet, Position,
 };
@@ -90,7 +90,7 @@ pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
     domain_arg: Vec<u8>,
     relative_path: &str,
     driver: Box<dyn Driver>,
-    engine_resource: Vec<u8>,
+    engine_resource: Vec<ComputeResource>,
 ) {
     let dispatcher = setup_dispatcher::<Domain>(
         domain_arg,
@@ -114,7 +114,7 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
     domain_arg: Vec<u8>,
     relative_path: &str,
     driver: Box<dyn Driver>,
-    engine_resource: Vec<u8>,
+    engine_resource: Vec<ComputeResource>,
 ) {
     let dispatcher = setup_dispatcher::<Domain>(
         Vec::new(),
@@ -153,7 +153,7 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
     domain_arg: Vec<u8>,
     relative_path: &str,
     driver: Box<dyn Driver>,
-    engine_resource: Vec<u8>,
+    engine_resource: Vec<ComputeResource>,
 ) {
     let dispatcher = setup_dispatcher::<Domain>(
         Vec::new(),
@@ -202,7 +202,7 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
     domain_arg: Vec<u8>,
     relative_path: &str,
     driver: Box<dyn Driver>,
-    engine_resource: Vec<u8>,
+    engine_resource: Vec<ComputeResource>,
 ) {
     let dispatcher = setup_dispatcher::<Domain>(
         Vec::new(),
@@ -263,7 +263,7 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
     domain_arg: Vec<u8>,
     relative_path: &str,
     driver: Box<dyn Driver>,
-    engine_resource: Vec<u8>,
+    engine_resource: Vec<ComputeResource>,
 ) {
     let dispatcher = setup_dispatcher::<Domain>(
         Vec::new(),
@@ -316,7 +316,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
     domain_arg: Vec<u8>,
     relative_path: &str,
     driver: Box<dyn Driver>,
-    engine_resource: Vec<u8>,
+    engine_resource: Vec<ComputeResource>,
 ) {
     let dispatcher = self::setup_dispatcher::<Domain>(
         Vec::new(),

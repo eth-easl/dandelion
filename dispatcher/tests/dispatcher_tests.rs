@@ -11,7 +11,7 @@ mod dispatcher_tests {
         resource_pool::ResourcePool,
     };
     use machine_interface::{
-        function_driver::Driver,
+        function_driver::{ComputeResource, Driver},
         memory_domain::{Context, ContextTrait, MemoryDomain},
     };
     use std::collections::BTreeMap;
@@ -22,7 +22,7 @@ mod dispatcher_tests {
         in_set_names: Vec<(String, Option<CompositionSet>)>,
         out_set_names: Vec<String>,
         driver: Box<dyn Driver>,
-        engine_resource: Vec<u8>,
+        engine_resource: Vec<ComputeResource>,
     ) -> Dispatcher {
         let mut domains = BTreeMap::new();
         let context_id: ContextTypeId = 0;
@@ -159,31 +159,35 @@ mod dispatcher_tests {
     #[cfg(feature = "cheri")]
     mod cheri {
         use machine_interface::{
-            function_driver::compute_driver::cheri::CheriDriver,
+            function_driver::{compute_driver::cheri::CheriDriver, ComputeResource},
             memory_domain::cheri::CheriMemoryDomain,
         };
-        dispatcherTests!(elf_cheri; CheriMemoryDomain; Vec::new(); CheriDriver {}; vec![1]);
+        dispatcherTests!(elf_cheri; CheriMemoryDomain; Vec::new(); CheriDriver {}; vec![ComputeResource::CPU(1)]);
     }
 
     #[cfg(feature = "mmu")]
     mod mmu {
         use machine_interface::{
-            function_driver::compute_driver::mmu::MmuDriver, memory_domain::mmu::MmuMemoryDomain,
+            function_driver::{compute_driver::mmu::MmuDriver, ComputeResource},
+            memory_domain::mmu::MmuMemoryDomain,
         };
         #[cfg(target_arch = "x86_64")]
-        dispatcherTests!(elf_mmu_x86_64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![1]);
+        dispatcherTests!(elf_mmu_x86_64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![ComputeResource::CPU(1)]);
         #[cfg(target_arch = "aarch64")]
-        dispatcherTests!(elf_mmu_aarch64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![1]);
+        dispatcherTests!(elf_mmu_aarch64; MmuMemoryDomain; Vec::new(); MmuDriver {}; vec![ComputeResource::CPU(1)]);
     }
 
     #[cfg(feature = "wasm")]
     mod wasm {
         use machine_interface::{
-            function_driver::compute_driver::wasm::WasmDriver,
+            function_driver::{compute_driver::wasm::WasmDriver, ComputeResource},
             memory_domain::wasm::WasmMemoryDomain,
         };
-        dispatcherTests!(sysld_wasm; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![1]);
+
+        #[cfg(target_arch = "x86_64")]
+        dispatcherTests!(sysld_wasm_x86_64; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![ComputeResource::CPU(1)]);
+
         #[cfg(target_arch = "aarch64")]
-        dispatcherTests!(sysld_wasm_aarch64; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![1]);
+        dispatcherTests!(sysld_wasm_aarch64; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![ComputeResource::CPU(1)]);
     }
 }
