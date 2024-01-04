@@ -76,6 +76,8 @@ pub enum DandelionError {
     DispatcherConfigError,
     /// dispatcher was asked to queue function it can't find
     DispatcherUnavailableFunction,
+    /// function to register did not have metadata available
+    DispatcherMetaDataUnavailable,
     /// dispatcher encountered an issue when trasmitting data between tasks
     DispatcherChannelError,
     /// dispatcher found set to transfer that has no registered name

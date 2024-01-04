@@ -11,7 +11,11 @@ mod server_tests {
     #[test]
     fn serve_matmul() {
         let mut cmd = Command::cargo_bin("dandelion_server").unwrap();
-        let mut server = cmd.stdout(Stdio::piped()).spawn().unwrap();
+        let mut server = cmd
+            .stdout(Stdio::piped())
+            .env("NUM_COLD", "1")
+            .spawn()
+            .unwrap();
         let mut reader = BufReader::new(server.stdout.take().unwrap());
         loop {
             let mut buf = String::new();
