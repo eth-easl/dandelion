@@ -22,7 +22,7 @@ jobs:
     # check out the code
     - uses: actions/checkout@v3
     # set up feature specific prerequisits
-    - name mmu worker build
+    - name: mmu worker build
       if: ${{ matrix.compute_driver == mmu }}
       run: cargo build -F ${{matrix.compute_driver}} --bin mmu_worker --target $(arch)-unkown-linux-gnu
     # run the actual tests
