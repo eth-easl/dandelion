@@ -2,20 +2,21 @@ name: Dandelion Cargo Tests
 
 on:
   push:
-    branches: ["main"]
+    branches: [ "main" ]
   pull_request:
-    branches: ["main", "dev/**"]
+    branches: [ "main", "dev/**" ]
 
 jobs:
-  build:
+  test:
+    name: regression tests
     runs-on: ubuntu-latest
     # set to fail fast to false so all combinations are tested
     strategy:
       fail-fast:false
       # test different available compute engines with different system engines
       matrix:
-        compute_driver: [mmu, wasm]
-        system_driver: [hyper_io]
+        compute_driver: [ mmu, wasm ]
+        system_driver: [ hyper_io ]
     steps:
     # check out the code
     - uses: action/checkout@v3
