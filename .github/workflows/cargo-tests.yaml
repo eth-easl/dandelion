@@ -20,7 +20,7 @@ jobs:
         system_driver: [ hyper_io ]
     steps:
     # check out the code
-    - uses: action/checkout@v3
+    - uses: actions/checkout@v3
     # run the actual tests
     - name: run tests
       shell: bash
