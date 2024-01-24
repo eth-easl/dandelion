@@ -56,10 +56,6 @@ fn test_loader_basic() {
             size: 0x60,
         },
     ];
-    assert_eq!(
-        0x800_0000, requirements.size,
-        "Missmatch in expected default context size"
-    );
     // actual sizes in file
     #[cfg(target_arch = "x86_64")]
     let expected_sizes = vec![0x64c, 0xd98, 0x0];

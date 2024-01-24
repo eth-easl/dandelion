@@ -287,7 +287,7 @@ impl Engine for MmuEngine {
 
 pub struct MmuDriver {}
 
-const DEFAULT_SPACE_SIZE: usize = 0x800_0000; // 128MiB
+// const DEFAULT_SPACE_SIZE: usize = 0x800_0000; // 128MiB
 
 impl Driver for MmuDriver {
     // // take or release one of the available engines
@@ -336,7 +336,6 @@ impl Driver for MmuDriver {
         });
         let (static_requirements, source_layout) = elf.get_layout_pair();
         let requirements = DataRequirementList {
-            size: DEFAULT_SPACE_SIZE,
             input_requirements: Vec::<DataRequirement>::new(),
             static_requirements: static_requirements,
         };

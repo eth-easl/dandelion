@@ -153,8 +153,6 @@ impl Engine for CheriEngine {
 
 pub struct CheriDriver {}
 
-const DEFAULT_SPACE_SIZE: usize = 0x800_0000; // 4MiB
-
 impl Driver for CheriDriver {
     // // take or release one of the available engines
     fn start_engine(&self, resource: ComputeResource) -> DandelionResult<Box<dyn Engine>> {

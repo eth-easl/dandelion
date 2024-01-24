@@ -72,6 +72,7 @@ impl Dispatcher {
         &self,
         function_id: FunctionId,
         engine_type: EngineTypeId,
+        ctx_size: usize,
         path: &str,
         metadata: Metadata,
     ) -> DandelionResult<()> {
@@ -80,7 +81,7 @@ impl Dispatcher {
             .await;
         return self
             .function_registry
-            .add_local(function_id, engine_type, path)
+            .add_local(function_id, engine_type, ctx_size, path)
             .await;
     }
 
@@ -252,12 +253,13 @@ impl Dispatcher {
             let options = self.function_registry.get_options(function_id).await?;
             if let Some(alternative) = options.iter().next() {
                 match &alternative.function_type {
-                    FunctionType::Function(engine_id) => {
+                    FunctionType::Function(engine_id, ctx_size) => {
                         let (context, config, metadata) = self
                             .prepare_for_engine(
                                 function_id,
                                 *engine_id,
                                 inputs,
+                                *ctx_size,
                                 non_caching,
                                 recorder.clone(),
                             )
@@ -330,6 +332,7 @@ impl Dispatcher {
         function_id: FunctionId,
         engine_type: EngineTypeId,
         inputs: Vec<(usize, CompositionSet)>,
+        ctx_size: usize,
         non_caching: bool,
         mut recorder: Recorder,
     ) -> DandelionResult<(Context, FunctionConfig, Arc<Metadata>)> {
@@ -347,7 +350,7 @@ impl Dispatcher {
         recorder.record(RecordPoint::LoadStart)?;
         let (mut function_context, function_config) = self
             .function_registry
-            .load(function_id, engine_type, domain, non_caching)
+            .load(function_id, engine_type, domain, ctx_size, non_caching)
             .await?;
         recorder.record(RecordPoint::TransferStart)?;
         // make sure all input sets are there at the correct index

@@ -13,6 +13,8 @@ use crate::dispatcher_tests::check_matrix;
 
 use super::setup_dispatcher;
 
+const DEFAULT_CONTEXT_SIZE: usize = 0x800_0000; // 128MiB
+
 fn create_context(matrix: Box<[u64]>) -> Context {
     let mat_len = matrix.len();
     let mut fixed =
@@ -78,6 +80,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
             .block_on(dispatcher.update_func(
                 0,
                 0,
+                DEFAULT_CONTEXT_SIZE,
                 absolute_path.to_str().expect("Path should be valid string"),
                 Metadata {
                     input_sets: local_names,
@@ -181,6 +184,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
             .block_on(dispatcher.update_func(
                 0,
                 0,
+                DEFAULT_CONTEXT_SIZE,
                 absolute_path.to_str().expect("Path should be valid string"),
                 Metadata {
                     input_sets: local_names,

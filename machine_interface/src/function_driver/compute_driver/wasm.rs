@@ -234,7 +234,6 @@ impl Driver for WasmDriver {
                 system_data_struct_offset: sd_struct_offset,
             }),
             requirements: DataRequirementList {
-                size: wasm_mem_size,
                 static_requirements: vec![],
                 input_requirements: vec![],
             },

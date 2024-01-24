@@ -449,8 +449,6 @@ impl Engine for HyperEngine {
 
 pub struct HyperDriver {}
 
-const DEFAULT_HTTP_CONTEXT_SIZE: usize = 0x20_0000; // 2MiB
-
 impl Driver for HyperDriver {
     fn start_engine(&self, resource: ComputeResource) -> DandelionResult<Box<dyn Engine>> {
         let core_id = match resource {
@@ -484,7 +482,6 @@ impl Driver for HyperDriver {
         }
         return Ok(Function {
             requirements: crate::DataRequirementList {
-                size: DEFAULT_HTTP_CONTEXT_SIZE,
                 input_requirements: vec![],
                 static_requirements: vec![],
             },

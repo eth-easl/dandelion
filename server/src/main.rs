@@ -78,6 +78,10 @@ const MMM_COLD_ID_BASE: u64 = 0x1000000;
 const BUSY_COLD_ID_BASE: u64 = 0x2000000;
 const COMPOSITION_COLD_ID_BASE: u64 = 0x3000000;
 
+// context size for functions
+const DEFAULT_CONTEXT_SIZE: usize = 0x800_0000; // 128MiB
+const SYSTEM_CONTEXT_SIZE: usize = 0x200_0000; // 2MiB
+
 static INIT_MATRIX: Once = Once::new();
 static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
 static COLD_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -432,6 +436,7 @@ fn no_page_cache_for(path: PathBuf) -> bool {
 async fn add_cold_functions(
     registry: &FunctionRegistry,
     engine_id: EngineTypeId,
+    ctx_size: usize,
     path: &PathBuf,
     cold_id_base: u64,
     max_cold: u64,
@@ -449,7 +454,12 @@ async fn add_cold_functions(
         }
         registry.insert_metadata(cold_id_base + i, metadata).await;
         registry
-            .add_local(cold_id_base + i, engine_id, tmp_path.to_str().unwrap())
+            .add_local(
+                cold_id_base + i,
+                engine_id,
+                ctx_size,
+                tmp_path.to_str().unwrap(),
+            )
             .await
             .expect("Failed to add_local cold functions");
     }
@@ -589,12 +599,18 @@ fn main() -> () {
         runtime.block_on(registry.insert_metadata(MMM_ID, mmm_metadata));
         // add for mmm hot function
         runtime
-            .block_on(registry.add_local(MMM_ID, COMPUTE_ENGINE, mmm_path.to_str().unwrap()))
+            .block_on(registry.add_local(
+                MMM_ID,
+                COMPUTE_ENGINE,
+                DEFAULT_CONTEXT_SIZE,
+                mmm_path.to_str().unwrap(),
+            ))
             .expect("Failed to add_local for mmm hot function");
         // add for mmm cold functions
         let mmm_cold_dir = runtime.block_on(add_cold_functions(
             &registry,
             COMPUTE_ENGINE,
+            DEFAULT_CONTEXT_SIZE,
             &mmm_path,
             MMM_COLD_ID_BASE,
             cold_num,
@@ -606,12 +622,18 @@ fn main() -> () {
         };
         runtime.block_on(registry.insert_metadata(BUSY_ID, busy_metadata));
         runtime
-            .block_on(registry.add_local(BUSY_ID, COMPUTE_ENGINE, busy_path.to_str().unwrap()))
+            .block_on(registry.add_local(
+                BUSY_ID,
+                COMPUTE_ENGINE,
+                DEFAULT_CONTEXT_SIZE,
+                busy_path.to_str().unwrap(),
+            ))
             .expect("Failed to add_local busy function");
         // add for busy cold functions
         let busy_cold_dir = runtime.block_on(add_cold_functions(
             &registry,
             COMPUTE_ENGINE,
+            DEFAULT_CONTEXT_SIZE,
             &busy_path,
             BUSY_COLD_ID_BASE,
             cold_num,
@@ -631,7 +653,7 @@ fn main() -> () {
             ),
         );
         registry
-            .add_system(HTTP_ID, SYS_ENGINE)
+            .add_system(HTTP_ID, SYS_ENGINE, SYSTEM_CONTEXT_SIZE)
             .expect("Should be able to add system function");
         // add composition using hot busy function
         let composition = Composition {
@@ -669,7 +691,12 @@ fn main() -> () {
         };
         runtime.block_on(registry.insert_metadata(COMPOSITION_ID, composition_metadata));
         registry
-            .add_composition(COMPOSITION_ID, composition, output_set_map)
+            .add_composition(
+                COMPOSITION_ID,
+                composition,
+                DEFAULT_CONTEXT_SIZE,
+                output_set_map,
+            )
             .expect("Failed to add composition");
         // add compositions using cold busy functions
         for i in 0..cold_num {

@@ -3,7 +3,7 @@ use crate::{
     DataRequirementList, Position,
 };
 use core::pin::Pin;
-use dandelion_commons::{records::Recorder, DandelionResult};
+use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
 use std::{future::Future, sync::Arc};
 
 use libloading::Library;
@@ -51,13 +51,21 @@ pub struct Function {
 }
 
 impl Function {
-    pub fn load(&self, domain: &Box<dyn MemoryDomain>) -> DandelionResult<Context> {
+    pub fn load(
+        &self,
+        domain: &Box<dyn MemoryDomain>,
+        ctx_size: usize,
+    ) -> DandelionResult<Context> {
         return match &self.config {
             FunctionConfig::ElfConfig(_) => {
-                load_utils::load_static(domain, &self.context, &self.requirements)
+                load_utils::load_static(domain, &self.context, &self.requirements, ctx_size)
             }
-            FunctionConfig::SysConfig(_) => domain.acquire_context(self.requirements.size),
+            FunctionConfig::SysConfig(_) => domain.acquire_context(ctx_size),
             FunctionConfig::WasmConfig(c) => {
+                if ctx_size != c.wasm_mem_size {
+                    // TODO: Maybe a more specific error would be better
+                    return Err(DandelionError::OutOfMemory);
+                }
                 let mut context = domain.acquire_context(c.wasm_mem_size)?;
                 context.occupy_space(0, c.sdk_heap_base)?;
                 Ok(context)
