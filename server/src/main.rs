@@ -691,12 +691,7 @@ fn main() -> () {
         };
         runtime.block_on(registry.insert_metadata(COMPOSITION_ID, composition_metadata));
         registry
-            .add_composition(
-                COMPOSITION_ID,
-                composition,
-                DEFAULT_CONTEXT_SIZE,
-                output_set_map,
-            )
+            .add_composition(COMPOSITION_ID, composition, output_set_map)
             .expect("Failed to add composition");
         // add compositions using cold busy functions
         for i in 0..cold_num {
