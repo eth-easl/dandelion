@@ -13,7 +13,7 @@ use crate::dispatcher_tests::check_matrix;
 
 use super::setup_dispatcher;
 
-const DEFAULT_CONTEXT_SIZE: usize = 0x800_0000; // 128MiB
+const DEFAULT_CONTEXT_SIZE: usize = 0x802_0000; // 128MiB
 
 fn create_context(matrix: Box<[u64]>) -> Context {
     let mat_len = matrix.len();

@@ -53,9 +53,8 @@ mod compute_driver_tests {
         let engine = driver
             .start_engine(drv_init[0])
             .expect("Should be able to start engine");
-        // Use a default context size of 128MiB
         let function_context = function
-            .load(&mut domain, 0x800_0000)
+            .load(&mut domain, 0x802_0000)
             .expect("Should be able to load function");
         return (engine, function_context, function.config);
     }

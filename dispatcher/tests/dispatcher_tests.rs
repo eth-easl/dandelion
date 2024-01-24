@@ -16,7 +16,7 @@ mod dispatcher_tests {
     };
     use std::collections::BTreeMap;
 
-    const DEFAULT_CONTEXT_SIZE: usize = 0x800_0000; // 128MiB
+    const DEFAULT_CONTEXT_SIZE: usize = 0x802_0000; // 128MiB
 
     fn setup_dispatcher<Dom: MemoryDomain>(
         domain_arg: Vec<u8>,

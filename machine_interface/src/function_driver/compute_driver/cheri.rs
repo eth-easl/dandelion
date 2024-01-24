@@ -198,7 +198,6 @@ impl Driver for CheriDriver {
         });
         let (static_requirements, source_layout) = elf.get_layout_pair();
         let requirements = DataRequirementList {
-            size: DEFAULT_SPACE_SIZE,
             input_requirements: Vec::<DataRequirement>::new(),
             static_requirements: static_requirements,
         };

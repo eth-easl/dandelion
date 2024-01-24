@@ -79,7 +79,7 @@ const BUSY_COLD_ID_BASE: u64 = 0x2000000;
 const COMPOSITION_COLD_ID_BASE: u64 = 0x3000000;
 
 // context size for functions
-const DEFAULT_CONTEXT_SIZE: usize = 0x800_0000; // 128MiB
+const DEFAULT_CONTEXT_SIZE: usize = 0x802_0000; // 128MiB
 const SYSTEM_CONTEXT_SIZE: usize = 0x200_0000; // 2MiB
 
 static INIT_MATRIX: Once = Once::new();
