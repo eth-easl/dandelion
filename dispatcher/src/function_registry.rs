@@ -68,7 +68,7 @@ impl FunctionRegistry {
 
     pub async fn get_options(&self, function_id: FunctionId) -> DandelionResult<Vec<Alternative>> {
         // get the ones that are already loaded
-        let lock_guard = self.options.read().await;
+        let lock_guard = self.options.lock().await;
         let alternatives = lock_guard.get(&function_id);
         return alternatives
             .and_then(|alt| Some(alt.to_vec()))
