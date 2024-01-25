@@ -534,7 +534,7 @@ fn main() -> () {
     #[cfg(all(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime"))]
     std::compile_error!("Should only have one feature out of mmu or cheri or wasm");
     #[cfg(all(
-        any(feature = "cheri", feature = "mmu", feature = "wasm"),
+        any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime"),
         feature = "hyper_io"
     ))]
     {
