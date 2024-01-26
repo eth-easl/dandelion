@@ -13,6 +13,7 @@ use crate::dispatcher_tests::check_matrix;
 
 use super::setup_dispatcher;
 
+// using 0x802_0000 as that is what the WASM test binaries expect
 const DEFAULT_CONTEXT_SIZE: usize = 0x802_0000; // 128MiB
 
 fn create_context(matrix: Box<[u64]>) -> Context {
