@@ -54,7 +54,7 @@ mod compute_driver_tests {
             .start_engine(drv_init[0])
             .expect("Should be able to start engine");
         let function_context = function
-            .load(&mut domain)
+            .load(&mut domain, 0x802_0000)
             .expect("Should be able to load function");
         return (engine, function_context, function.config);
     }

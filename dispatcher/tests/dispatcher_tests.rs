@@ -16,6 +16,9 @@ mod dispatcher_tests {
     };
     use std::collections::BTreeMap;
 
+    // using 0x802_0000 because that is what WASM specifies
+    const DEFAULT_CONTEXT_SIZE: usize = 0x802_0000; // 128MiB
+
     fn setup_dispatcher<Dom: MemoryDomain>(
         domain_arg: Vec<u8>,
         name: &str,
@@ -56,7 +59,13 @@ mod dispatcher_tests {
         tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.update_func(0, engine_id, path_string, metadata))
+            .block_on(dispatcher.update_func(
+                0,
+                engine_id,
+                DEFAULT_CONTEXT_SIZE,
+                path_string,
+                metadata,
+            ))
             .expect("Should be able to update registry in new dispatcher");
         return dispatcher;
     }

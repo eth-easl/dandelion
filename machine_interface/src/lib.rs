@@ -29,7 +29,6 @@ pub struct DataRequirement {
 #[derive(Debug)]
 pub struct DataRequirementList {
     // domain_id: i32,
-    pub size: usize,
     pub input_requirements: Vec<DataRequirement>,
     pub static_requirements: Vec<Position>,
 }

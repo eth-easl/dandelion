@@ -14,7 +14,8 @@ use crate::composition::{Composition, CompositionSet};
 #[derive(Clone, Debug)]
 pub enum FunctionType {
     /// Function available on an engine holding the engine ID
-    Function(EngineTypeId),
+    /// and the default size of the function context
+    Function(EngineTypeId, usize),
     /// Function available as composition, holding the composition graph
     /// and the set with the inidecs of the sets in the composition that are output sets
     Composition(Composition, BTreeMap<usize, usize>),
@@ -123,6 +124,7 @@ impl FunctionRegistry {
         &mut self,
         function_id: FunctionId,
         engine_id: EngineTypeId,
+        ctx_size: usize,
     ) -> DandelionResult<()> {
         if !self.metadata.get_mut().contains_key(&function_id) {
             return Err(DandelionError::DispatcherMetaDataUnavailable);
@@ -157,12 +159,12 @@ impl FunctionRegistry {
             .entry(function_id)
             .and_modify(|option_vec| {
                 option_vec.push(Alternative {
-                    function_type: FunctionType::Function(engine_id),
+                    function_type: FunctionType::Function(engine_id, ctx_size),
                     in_memory: true,
                 })
             })
             .or_insert(vec![Alternative {
-                function_type: FunctionType::Function(engine_id),
+                function_type: FunctionType::Function(engine_id, ctx_size),
                 in_memory: true,
             }]);
         return Ok(());
@@ -172,6 +174,7 @@ impl FunctionRegistry {
         &self,
         function_id: FunctionId,
         engine_id: EngineTypeId,
+        ctx_size: usize,
         path: &str,
     ) -> DandelionResult<()> {
         if !self.metadata.lock().await.contains_key(&function_id) {
@@ -195,12 +198,12 @@ impl FunctionRegistry {
             .entry(function_id)
             .and_modify(|current_alts| {
                 current_alts.push(Alternative {
-                    function_type: FunctionType::Function(engine_id),
+                    function_type: FunctionType::Function(engine_id, ctx_size),
                     in_memory: false,
                 })
             })
             .or_insert(vec![Alternative {
-                function_type: FunctionType::Function(engine_id),
+                function_type: FunctionType::Function(engine_id, ctx_size),
                 in_memory: false,
             }]);
         return Ok(());
@@ -236,6 +239,7 @@ impl FunctionRegistry {
         function_id: FunctionId,
         engine_id: EngineTypeId,
         domain: &Box<dyn MemoryDomain>,
+        ctx_size: usize,
         non_caching: bool,
     ) -> DandelionResult<(Context, FunctionConfig)> {
         // check if function for the engine is in registry already
@@ -245,13 +249,13 @@ impl FunctionRegistry {
             function_opt = lock_guard.get(&(function_id, engine_id)).and_then(|val| Some(val.clone()))
         };
         if let Some(function) = function_opt {
-            let function_context = function.load(domain)?;
+            let function_context = function.load(domain, ctx_size)?;
             return Ok((function_context, function.config.clone()));
         }
 
         // if it is not in memory or disk we return the error from loading as it is not available
         let function = self.load_local(function_id, engine_id, domain).await?;
-        let function_context = function.load(domain)?;
+        let function_context = function.load(domain, ctx_size)?;
         let function_config = function.config.clone();
         if !non_caching {
             if self
