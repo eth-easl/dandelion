@@ -16,6 +16,7 @@ mod dispatcher_tests {
     };
     use std::collections::BTreeMap;
 
+    // using 0x802_0000 because that is what WASM specifies
     const DEFAULT_CONTEXT_SIZE: usize = 0x802_0000; // 128MiB
 
     fn setup_dispatcher<Dom: MemoryDomain>(
