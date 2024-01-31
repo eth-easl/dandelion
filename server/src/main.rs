@@ -47,7 +47,7 @@ use machine_interface::{
     function_driver::compute_driver::wasm::WasmDriver, memory_domain::wasm::WasmMemoryDomain,
 };
 
-#[cfg(feature = "wasmtime")]
+#[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precompiled"))]
 use machine_interface::{
     function_driver::compute_driver::wasmtime::WasmtimeDriver,
     memory_domain::wasmtime::WasmtimeMemoryDomain,
