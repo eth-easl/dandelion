@@ -251,11 +251,13 @@ impl Driver for WasmtimeDriver {
         };
         let precompiled_module = if cfg!(feature = "wasmtime-precompiled") {
             wasm_module_content
-        } else {
+        } else if cfg!(feature = "wasmtime-jit") {
             map_cfg_err!{ 
                 store.engine().precompile_module(&wasm_module_content),
                 "could not precompile module"
             }
+        } else {
+            unreachable!()
         };
 
         // instantiate module to extract layout data

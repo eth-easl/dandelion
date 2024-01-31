@@ -7,7 +7,7 @@ pub mod mmu;
 #[cfg(feature = "wasm")]
 pub mod wasm;
 
-#[cfg(feature = "wasmtime")]
+#[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precompiled"))]
 pub mod wasmtime;
 
 #[cfg(test)]

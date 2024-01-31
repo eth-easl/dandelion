@@ -1,4 +1,4 @@
-#[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime")))]
+#[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precompiled")))]
 mod compute_driver_tests {
     use crate::{
         function_driver::{ComputeResource, Driver, Engine, FunctionConfig},
@@ -631,13 +631,13 @@ mod compute_driver_tests {
         ]);
     }
 
-    #[cfg(feature = "wasmtime")]
+    #[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precompiled"))]
     mod wasmtime {
         use crate::function_driver::compute_driver::wasmtime::WasmtimeDriver;
         use crate::function_driver::ComputeResource;
         use crate::memory_domain::wasmtime::WasmtimeMemoryDomain;
     
-        #[cfg(not(feature = "wasmtime-precompiled"))]
+        #[cfg(feature = "wasmtime-jit")]
         driverTests!(wasm; WasmtimeMemoryDomain; Vec::new(); WasmtimeDriver {};
         vec![
             ComputeResource::CPU(1),

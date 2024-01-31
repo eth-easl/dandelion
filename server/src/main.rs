@@ -25,7 +25,7 @@ use machine_interface::{
 #[cfg(feature = "hyper_io")]
 use machine_interface::function_driver::system_driver::hyper::HyperDriver;
 
-#[cfg(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime"))]
+#[cfg(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precompiled"))]
 use machine_interface::{
     function_driver::Driver,
     memory_domain::{Context, ContextTrait, MemoryDomain},
@@ -53,7 +53,7 @@ use machine_interface::{
     memory_domain::wasmtime::WasmtimeMemoryDomain,
 };
 
-#[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime")))]
+#[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precompiled")))]
 use machine_interface::{
     memory_domain::{Context, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
@@ -531,10 +531,10 @@ fn main() -> () {
     );
     let mut registry;
     // insert specific configuration
-    #[cfg(all(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime"))]
+    #[cfg(all(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precompiled"))]
     std::compile_error!("Should only have one feature out of mmu or cheri or wasm");
     #[cfg(all(
-        any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime"),
+        any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precompiled"),
         feature = "hyper_io"
     ))]
     {
@@ -584,30 +584,34 @@ fn main() -> () {
                 std::env::consts::ARCH
             ));
         }
-        #[cfg(feature = "wasmtime")]
+        #[cfg(feature = "wasmtime-jit")]
         {
             domains.insert(
                 COMPUTE_DOMAIN,
                 WasmtimeMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain"),
             );
             driver = Box::new(WasmtimeDriver {}) as Box<dyn Driver>;
-            if cfg!(feature = "wasmtime-precompiled") {
-                mmm_path.push(format!(
-                    "../machine_interface/tests/data/test_wasmtime_{}_matmul",
-                    std::env::consts::ARCH
-                ));
-                busy_path.push(format!(
-                    "../machine_interface/tests/data/test_wasmtime_{}_busy",
-                    std::env::consts::ARCH
-                ));
-            } else {
-                mmm_path.push(format!(
-                    "../machine_interface/tests/data/test_wasm_matmul",
-                ));
-                busy_path.push(format!(
-                    "../machine_interface/tests/data/test_wasm_busy",
-                ));
-            }
+            mmm_path.push(format!(
+                "../machine_interface/tests/data/test_wasm_matmul",
+            ));
+            busy_path.push(format!(
+                "../machine_interface/tests/data/test_wasm_busy",
+            ));
+            #[cfg(feature = "wasmtime-precompiled")]
+            panic!("Should only have one feature out of wasmtime-jit or wasmtime-precompiled");
+        }
+        #[cfg(feature = "wasmtime-precompiled")]
+        {
+            mmm_path.push(format!(
+                "../machine_interface/tests/data/test_wasmtime_{}_matmul",
+                std::env::consts::ARCH
+            ));
+            busy_path.push(format!(
+                "../machine_interface/tests/data/test_wasmtime_{}_busy",
+                std::env::consts::ARCH
+            ));
+            #[cfg(feature = "wasmtime-precompiled")]
+            panic!("Should only have one feature out of wasmtime-jit or wasmtime-precompiled");
         }
         let system_driver = Box::new(HyperDriver {});
         drivers.insert(COMPUTE_ENGINE, driver);
@@ -765,7 +769,7 @@ fn main() -> () {
         }
     }
     #[cfg(not(all(
-        any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime"),
+        any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precompiled"),
         feature = "hyper_io"
     )))]
     {
@@ -800,9 +804,11 @@ fn main() -> () {
     println!("Hello, World (mmu)");
     #[cfg(feature = "wasm")]
     println!("Hello, World (wasm)");
-    #[cfg(feature = "wasmtime")]
-    println!("Hello, World (wasmtime)");
-    #[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime")))]
+    #[cfg(feature = "wasmtime-jit")]
+    println!("Hello, World (wasmtime-jit)");
+    #[cfg(feature = "wasmtime-precompiled")]
+    println!("Hello, World (wasmtime-precompiled)");
+    #[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precompiled")))]
     println!("Hello, World (native)");
     // Run this server for... forever!
     if let Err(e) = runtime.block_on(server) {

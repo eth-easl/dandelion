@@ -225,7 +225,7 @@ domainTests!(mmu; mmuType; Vec::new());
 use super::wasm::WasmMemoryDomain as wasmType;
 #[cfg(feature = "wasm")]
 domainTests!(wasm; wasmType; Vec::new());
-#[cfg(feature = "wasmtime")]
+#[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precompiled"))]
 use super::wasmtime::WasmtimeMemoryDomain as wasmtimeType;
-#[cfg(feature = "wasmtime")]
+#[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precompiled"))]
 domainTests!(wasmtime; wasmtimeType; Vec::new());

@@ -9,7 +9,7 @@ use std::{future::Future, sync::Arc};
 #[cfg(feature = "wasm")]
 use libloading::Library;
 
-#[cfg(feature = "wasmtime")]
+#[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precompiled"))]
 use wasmtime;
 
 pub mod compute_driver;
@@ -42,7 +42,7 @@ pub struct WasmConfig {
     system_data_struct_offset: usize,
 }
 
-#[cfg(feature = "wasmtime")]
+#[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precompiled"))]
 #[derive(Clone)]
 pub struct WasmtimeConfig {
     precompiled_module: Vec<u8>,
@@ -58,7 +58,7 @@ pub enum FunctionConfig {
     SysConfig(SystemFunction),
     #[cfg(feature = "wasm")]
     WasmConfig(WasmConfig),
-    #[cfg(feature = "wasmtime")]
+    #[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precompiled"))]
     WasmtimeConfig(WasmtimeConfig),
 }
 
@@ -81,7 +81,7 @@ impl Function {
                 context.occupy_space(0, c.sdk_heap_base)?;
                 Ok(context)
             },
-            #[cfg(feature = "wasmtime")]
+            #[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precompiled"))]
             FunctionConfig::WasmtimeConfig(c) => {
                 let mut context = domain.acquire_context(c.total_mem_size)?;
 
