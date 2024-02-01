@@ -615,7 +615,7 @@ fn main() -> () {
                 "../machine_interface/tests/data/test_wasmtime_{}_busy",
                 std::env::consts::ARCH
             ));
-            #[cfg(feature = "wasmtime-precompiled")]
+            #[cfg(feature = "wasmtime-jit")]
             panic!("Should only have one feature out of wasmtime-jit or wasmtime-precompiled");
         }
         let system_driver = Box::new(HyperDriver {});

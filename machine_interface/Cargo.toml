@@ -10,7 +10,7 @@ mmu = ["std"]
 hyper_io = ["std", "dep:hyper"]
 wasm = ["std"]
 wasmtime-jit = ["std", "dep:wasmtime"]
-wasmtime-precompiled = ["wasmtime-jit"]
+wasmtime-precompiled = ["std", "dep:wasmtime"]
 
 [build-dependencies]
 cmake = "0.1"
