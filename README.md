@@ -97,3 +97,6 @@ Also make sure that shared memory objects are executable:
 ```
 sudo mount -o remount,exec /dev/shm
 ```
+
+### MMU worker path
+To use a `mmu_worker` that is not at the original location it was built in, set the `PROCESS_WORKER_PATH` environment variable to point to the desired binary
