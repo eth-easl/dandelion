@@ -7,7 +7,7 @@ pub mod mmu;
 pub mod read_only;
 #[cfg(feature = "wasm")]
 pub mod wasm;
-#[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precompiled"))]
+#[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precomp"))]
 pub mod wasmtime;
 
 use crate::{DataItem, DataSet, Position};
@@ -30,7 +30,7 @@ pub enum ContextType {
     Mmu(Box<mmu::MmuContext>),
     #[cfg(feature = "wasm")]
     Wasm(Box<wasm::WasmContext>),
-    #[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precompiled"))]
+    #[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precomp"))]
     Wasmtime(Box<wasmtime::WasmtimeContext>),
 }
 
@@ -45,7 +45,7 @@ impl ContextTrait for ContextType {
             ContextType::Mmu(context) => context.write(offset, data),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.write(offset, data),
-            #[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precompiled"))]
+            #[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precomp"))]
             ContextType::Wasmtime(context) => context.write(offset, data),
         }
     }
@@ -59,7 +59,7 @@ impl ContextTrait for ContextType {
             ContextType::Mmu(context) => context.read(offset, read_buffer),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.read(offset, read_buffer),
-            #[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precompiled"))]
+            #[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precomp"))]
             ContextType::Wasmtime(context) => context.read(offset, read_buffer),
         }
     }
@@ -255,7 +255,7 @@ pub fn transefer_memory(
                 size,
             )
         }
-        #[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precompiled"))]
+        #[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precomp"))]
         (ContextType::Wasmtime(destination_ctxt), ContextType::Wasmtime(source_ctxt)) => {
             wasmtime::wasmtime_transfer(
                 destination_ctxt,

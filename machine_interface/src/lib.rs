@@ -1,7 +1,7 @@
 pub mod function_driver;
 pub mod memory_domain;
 
-#[cfg(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precompiled"))]
+#[cfg(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precomp"))]
 mod interface;
 pub mod util;
 

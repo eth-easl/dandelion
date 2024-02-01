@@ -229,7 +229,7 @@ impl Driver for WasmtimeDriver {
     ) -> DandelionResult<Function> {
 
         info!("parsing wasmtime function {}", &function_config);
-        info!("pre-compilation enabled: {}", cfg!(feature = "wasmtime-precompiled"));
+        info!("pre-compilation enabled: {}", cfg!(feature = "wasmtime-precomp"));
 
         // shorthand to map any error below to a config missmatch
         macro_rules! map_cfg_err {
@@ -249,7 +249,7 @@ impl Driver for WasmtimeDriver {
             std::fs::read(&function_config),
             "could not read function file"
         };
-        let precompiled_module = if cfg!(feature = "wasmtime-precompiled") {
+        let precompiled_module = if cfg!(feature = "wasmtime-precomp") {
             wasm_module_content
         } else if cfg!(feature = "wasmtime-jit") {
             map_cfg_err!{ 
