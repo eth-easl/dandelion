@@ -165,8 +165,7 @@ fn mmu_run_static(
     // that will not collide with those used by user's function
 
     // this trick gives the desired path of mmu_worker for packages within the workspace
-    // TODO: replace with a more general solution (e.g. environment variable)
-    let path = format!(
+    let path = std::env::var("PROCESS_WORKER_PATH").unwrap_or(format!(
         "{}/../target/{}-unknown-linux-gnu/{}/mmu_worker",
         env!("CARGO_MANIFEST_DIR"),
         std::env::consts::ARCH,
@@ -175,7 +174,7 @@ fn mmu_run_static(
         } else {
             "release"
         },
-    );
+    ));
 
     // create a new address space (child process) and pass the shared memory
     let mut worker = Command::new(path)
