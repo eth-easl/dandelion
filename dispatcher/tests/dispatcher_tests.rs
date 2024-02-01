@@ -1,4 +1,4 @@
-#[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precompiled")))]
+#[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precomp")))]
 mod dispatcher_tests {
     mod function_tests;
     mod registry_tests;
@@ -191,7 +191,7 @@ mod dispatcher_tests {
         dispatcherTests!(sysld_wasm_aarch64; WasmMemoryDomain; Vec::new(); WasmDriver {}; vec![ComputeResource::CPU(1)]);
     }
 
-    #[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precompiled"))]
+    #[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precomp"))]
     mod wasmtime {
         use machine_interface::{
             function_driver::{compute_driver::wasmtime::WasmtimeDriver, ComputeResource},

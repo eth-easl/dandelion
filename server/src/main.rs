@@ -25,7 +25,7 @@ use machine_interface::{
 #[cfg(feature = "hyper_io")]
 use machine_interface::function_driver::system_driver::hyper::HyperDriver;
 
-#[cfg(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precompiled"))]
+#[cfg(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precomp"))]
 use machine_interface::{
     function_driver::Driver,
     memory_domain::{Context, ContextTrait, MemoryDomain},
@@ -47,13 +47,13 @@ use machine_interface::{
     function_driver::compute_driver::wasm::WasmDriver, memory_domain::wasm::WasmMemoryDomain,
 };
 
-#[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precompiled"))]
+#[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precomp"))]
 use machine_interface::{
     function_driver::compute_driver::wasmtime::WasmtimeDriver,
     memory_domain::wasmtime::WasmtimeMemoryDomain,
 };
 
-#[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precompiled")))]
+#[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precomp")))]
 use machine_interface::{
     memory_domain::{Context, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
@@ -531,10 +531,10 @@ fn main() -> () {
     );
     let mut registry;
     // insert specific configuration
-    #[cfg(all(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precompiled"))]
+    #[cfg(all(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precomp"))]
     std::compile_error!("Should only have one feature out of mmu or cheri or wasm");
     #[cfg(all(
-        any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precompiled"),
+        any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precomp"),
         feature = "hyper_io"
     ))]
     {
@@ -597,10 +597,10 @@ fn main() -> () {
             busy_path.push(format!(
                 "../machine_interface/tests/data/test_wasm_busy",
             ));
-            #[cfg(feature = "wasmtime-precompiled")]
-            panic!("Should only have one feature out of wasmtime-jit or wasmtime-precompiled");
+            #[cfg(feature = "wasmtime-precomp")]
+            panic!("Should only have one feature out of wasmtime-jit or wasmtime-precomp");
         }
-        #[cfg(feature = "wasmtime-precompiled")]
+        #[cfg(feature = "wasmtime-precomp")]
         {
             domains.insert(
                 COMPUTE_DOMAIN,
@@ -616,7 +616,7 @@ fn main() -> () {
                 std::env::consts::ARCH
             ));
             #[cfg(feature = "wasmtime-jit")]
-            panic!("Should only have one feature out of wasmtime-jit or wasmtime-precompiled");
+            panic!("Should only have one feature out of wasmtime-jit or wasmtime-precomp");
         }
         let system_driver = Box::new(HyperDriver {});
         drivers.insert(COMPUTE_ENGINE, driver);
@@ -774,7 +774,7 @@ fn main() -> () {
         }
     }
     #[cfg(not(all(
-        any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precompiled"),
+        any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precomp"),
         feature = "hyper_io"
     )))]
     {
@@ -811,9 +811,9 @@ fn main() -> () {
     println!("Hello, World (wasm)");
     #[cfg(feature = "wasmtime-jit")]
     println!("Hello, World (wasmtime-jit)");
-    #[cfg(feature = "wasmtime-precompiled")]
-    println!("Hello, World (wasmtime-precompiled)");
-    #[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precompiled")))]
+    #[cfg(feature = "wasmtime-precomp")]
+    println!("Hello, World (wasmtime-precomp)");
+    #[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "wasmtime-jit", feature = "wasmtime-precomp")))]
     println!("Hello, World (native)");
     // Run this server for... forever!
     if let Err(e) = runtime.block_on(server) {
