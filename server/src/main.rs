@@ -602,6 +602,11 @@ fn main() -> () {
         }
         #[cfg(feature = "wasmtime-precompiled")]
         {
+            domains.insert(
+                COMPUTE_DOMAIN,
+                WasmtimeMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain"),
+            );
+            driver = Box::new(WasmtimeDriver {}) as Box<dyn Driver>;
             mmm_path.push(format!(
                 "../machine_interface/tests/data/test_wasmtime_{}_matmul",
                 std::env::consts::ARCH
