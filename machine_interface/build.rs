@@ -1,7 +1,9 @@
 fn main() {
     // check if cheri is enabled and build library if so
-    #[cfg(features = "cheri")]
+    println!("from build.rs");
+    #[cfg(feature = "cheri")]
     {
+        println!("from cheri build");
         use cmake::Config;
         // cmake configure and build all
         let _all = Config::new("c_machine_libraries")
