@@ -1,6 +1,6 @@
 fn main() {
     // check if cheri is enabled and build library if so
-    #[cfg(features = "cheri")]
+    #[cfg(feature = "cheri")]
     {
         use cmake::Config;
         // cmake configure and build all
