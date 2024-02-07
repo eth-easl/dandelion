@@ -470,13 +470,13 @@ fn main() -> () {
     env_logger::init();
 
     // read argumets from environment
-    let cold_num: u64 = if let Ok(string_val) = std::env::var("NUM_COLD") {
-        string_val
-            .parse()
-            .expect("NUM_COLD was set but not a parsable number")
-    } else {
-        0x100000
-    };
+    // let cold_num: u64 = if let Ok(string_val) = std::env::var("NUM_COLD") {
+    //     string_val
+    //         .parse()
+    //         .expect("NUM_COLD was set but not a parsable number")
+    // } else {
+    //     0x100000
+    // };
 
     // find available resources
     let num_cores = u8::try_from(core_affinity::get_core_ids().unwrap().len()).unwrap();
@@ -607,14 +607,14 @@ fn main() -> () {
             ))
             .expect("Failed to add_local for mmm hot function");
         // add for mmm cold functions
-        let mmm_cold_dir = runtime.block_on(add_cold_functions(
-            &registry,
-            COMPUTE_ENGINE,
-            DEFAULT_CONTEXT_SIZE,
-            &mmm_path,
-            MMM_COLD_ID_BASE,
-            cold_num,
-        ));
+        // let mmm_cold_dir = runtime.block_on(add_cold_functions(
+        //     &registry,
+        //     COMPUTE_ENGINE,
+        //     DEFAULT_CONTEXT_SIZE,
+        //     &mmm_path,
+        //     MMM_COLD_ID_BASE,
+        //     cold_num,
+        // ));
         // add for busy hot functions
         let busy_metadata = Metadata {
             input_sets: vec![(String::from(""), None)],
@@ -694,66 +694,66 @@ fn main() -> () {
             .add_composition(COMPOSITION_ID, composition, output_set_map)
             .expect("Failed to add composition");
         // add compositions using cold busy functions
-        for i in 0..cold_num {
-            let composition = Composition {
-                dependencies: vec![
-                    FunctionDependencies {
-                        function: HTTP_ID,
-                        input_set_ids: vec![Some((0, ShardingMode::All)), None, None],
-                        output_set_ids: vec![Some(1), Some(2), Some(3)],
-                    },
-                    FunctionDependencies {
-                        function: BUSY_COLD_ID_BASE + i,
-                        input_set_ids: vec![Some((3, ShardingMode::All))],
-                        output_set_ids: vec![Some(4)],
-                    },
-                    FunctionDependencies {
-                        function: HTTP_ID,
-                        input_set_ids: vec![
-                            Some((5, ShardingMode::All)),
-                            None,
-                            Some((4, ShardingMode::All)),
-                        ],
-                        output_set_ids: vec![Some(6)],
-                    },
-                ],
-            };
-            let output_set_map = BTreeMap::from([(4, 0), (6, 1)]);
-            let input_sets = get_system_function_input_sets(SystemFunction::HTTP)
-                .into_iter()
-                .map(|name| (name, None))
-                .collect();
-            let output_sets = get_system_function_output_sets(SystemFunction::HTTP);
-            let cold_comp_metadata = Metadata {
-                input_sets,
-                output_sets,
-            };
-            runtime.block_on(
-                registry.insert_metadata(COMPOSITION_COLD_ID_BASE + i, cold_comp_metadata),
-            );
-            registry
-                .add_composition(COMPOSITION_COLD_ID_BASE + i, composition, output_set_map)
-                .expect("Failed to add cold composition");
-        }
+        // for i in 0..cold_num {
+        //     let composition = Composition {
+        //         dependencies: vec![
+        //             FunctionDependencies {
+        //                 function: HTTP_ID,
+        //                 input_set_ids: vec![Some((0, ShardingMode::All)), None, None],
+        //                 output_set_ids: vec![Some(1), Some(2), Some(3)],
+        //             },
+        //             FunctionDependencies {
+        //                 function: BUSY_COLD_ID_BASE + i,
+        //                 input_set_ids: vec![Some((3, ShardingMode::All))],
+        //                 output_set_ids: vec![Some(4)],
+        //             },
+        //             FunctionDependencies {
+        //                 function: HTTP_ID,
+        //                 input_set_ids: vec![
+        //                     Some((5, ShardingMode::All)),
+        //                     None,
+        //                     Some((4, ShardingMode::All)),
+        //                 ],
+        //                 output_set_ids: vec![Some(6)],
+        //             },
+        //         ],
+        //     };
+        //     let output_set_map = BTreeMap::from([(4, 0), (6, 1)]);
+        //     let input_sets = get_system_function_input_sets(SystemFunction::HTTP)
+        //         .into_iter()
+        //         .map(|name| (name, None))
+        //         .collect();
+        //     let output_sets = get_system_function_output_sets(SystemFunction::HTTP);
+        //     let cold_comp_metadata = Metadata {
+        //         input_sets,
+        //         output_sets,
+        //     };
+        //     runtime.block_on(
+        //         registry.insert_metadata(COMPOSITION_COLD_ID_BASE + i, cold_comp_metadata),
+        //     );
+        //     registry
+        //         .add_composition(COMPOSITION_COLD_ID_BASE + i, composition, output_set_map)
+        //         .expect("Failed to add cold composition");
+        // }
         // drop page caches to ensure cold functions are loaded from disk
-        loop {
-            info!("Waiting for page cache to be clean");
-            drop_page_caches();
-            std::thread::sleep(Duration::from_secs(10));
-            // check if page caches are actually dropped
-            let mut no_page_cache_for_all = true;
-            for i in (0..cold_num).step_by(1000) {
-                let mmm_cold_path = mmm_cold_dir.join(i.to_string());
-                let busy_cold_path = busy_cold_dir.join(i.to_string());
-                if !no_page_cache_for(mmm_cold_path) || !no_page_cache_for(busy_cold_path) {
-                    no_page_cache_for_all = false;
-                    break;
-                }
-            }
-            if no_page_cache_for_all {
-                break;
-            }
-        }
+        // loop {
+        //     info!("Waiting for page cache to be clean");
+        //     drop_page_caches();
+        //     std::thread::sleep(Duration::from_secs(10));
+        //     // check if page caches are actually dropped
+        //     let mut no_page_cache_for_all = true;
+        //     for i in (0..cold_num).step_by(1000) {
+        //         let mmm_cold_path = mmm_cold_dir.join(i.to_string());
+        //         let busy_cold_path = busy_cold_dir.join(i.to_string());
+        //         if !no_page_cache_for(mmm_cold_path) || !no_page_cache_for(busy_cold_path) {
+        //             no_page_cache_for_all = false;
+        //             break;
+        //         }
+        //     }
+        //     if no_page_cache_for_all {
+        //         break;
+        //     }
+        // }
     }
     #[cfg(not(all(
         any(feature = "cheri", feature = "mmu", feature = "wasm"),
