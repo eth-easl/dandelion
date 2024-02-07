@@ -630,14 +630,14 @@ fn main() -> () {
             ))
             .expect("Failed to add_local busy function");
         // add for busy cold functions
-        let busy_cold_dir = runtime.block_on(add_cold_functions(
-            &registry,
-            COMPUTE_ENGINE,
-            DEFAULT_CONTEXT_SIZE,
-            &busy_path,
-            BUSY_COLD_ID_BASE,
-            cold_num,
-        ));
+        // let busy_cold_dir = runtime.block_on(add_cold_functions(
+        //     &registry,
+        //     COMPUTE_ENGINE,
+        //     DEFAULT_CONTEXT_SIZE,
+        //     &busy_path,
+        //     BUSY_COLD_ID_BASE,
+        //     cold_num,
+        // ));
         // add http system function
         // first try only download and spin, TODO: add upload
         runtime.block_on(
@@ -779,7 +779,7 @@ fn main() -> () {
         async move {
             Ok::<_, Infallible>(service_fn(move |req| {
                 let service_dispatcher_ptr = new_dispatcher_ptr.clone();
-                service(req, service_dispatcher_ptr, cold_num)
+                service(req, service_dispatcher_ptr, 0)
             }))
         }
     });
