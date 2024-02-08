@@ -1,5 +1,4 @@
 use core_affinity::CoreId;
-use dandelion_commons::DandelionError;
 use machine_interface::{memory_domain::mmu::MMAP_BASE_ADDR, util::mmap::MmapMem, Position};
 use nix::sys::{
     mman::{mprotect, ProtFlags},

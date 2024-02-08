@@ -3,7 +3,7 @@ use crate::{
     util::mmap::MmapMem,
 };
 use dandelion_commons::{DandelionError, DandelionResult};
-use log::debug;
+use log::warn;
 use nix::sys::mman::ProtFlags;
 
 // TODO: decide this value in a system dependent way
@@ -17,7 +17,7 @@ pub struct MmuContext {
 impl ContextTrait for MmuContext {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
         if offset < MMAP_BASE_ADDR {
-            debug!("offset smaller than MMAP_BASE_ADDR")
+            warn!("write offset smaller than MMAP_BASE_ADDR")
             // TODO: could be an issue if the context will be used by mmu_worker (function context)
         }
 
@@ -43,7 +43,7 @@ impl ContextTrait for MmuContext {
 
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         if offset < MMAP_BASE_ADDR {
-            debug!("offset smaller than MMAP_BASE_ADDR")
+            warn!("read offset smaller than MMAP_BASE_ADDR")
             // TODO: could be an issue if the context will be used by mmu_worker (function context)
         }
 
