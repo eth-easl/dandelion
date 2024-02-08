@@ -19,7 +19,7 @@ use machine_interface::{
         system_driver::{get_system_function_input_sets, get_system_function_output_sets},
         ComputeResource, SystemFunction,
     },
-    memory_domain::{malloc::MallocMemoryDomain, read_only::ReadOnlyContext},
+    memory_domain::{io::IOMemoryDomain, read_only::ReadOnlyContext},
 };
 
 #[cfg(feature = "hyper_io")]
@@ -80,7 +80,7 @@ const COMPOSITION_COLD_ID_BASE: u64 = 0x3000000;
 
 // context size for functions
 const DEFAULT_CONTEXT_SIZE: usize = 0x802_0000; // 128MiB
-const SYSTEM_CONTEXT_SIZE: usize = 0x200_0000; // 2MiB
+const SYSTEM_CONTEXT_SIZE: usize = 0x200_0000; // 32MiB
 
 static INIT_MATRIX: Once = Once::new();
 static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
@@ -93,7 +93,7 @@ async fn run_chain(
     post_uri: String,
     max_cold: u64,
 ) -> u64 {
-    let domain = MallocMemoryDomain::init(vec![]).expect("Should be able to get malloc domain");
+    let domain = IOMemoryDomain::init(vec![]).expect("Should be able to get IO domain");
     let mut input_context = domain
         .acquire_context(128)
         .expect("Should be able to get malloc context");
@@ -531,7 +531,7 @@ fn main() -> () {
     };
     domains.insert(
         SYS_CONTEXT,
-        MallocMemoryDomain::init(Vec::new()).expect("Should be able to initialize malloc domain"),
+        IOMemoryDomain::init(Vec::new()).expect("Should be able to initialize IO memory domain"),
     );
     let mut registry;
     // insert specific configuration

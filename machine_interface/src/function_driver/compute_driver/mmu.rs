@@ -257,7 +257,7 @@ impl Engine for MmuEngine {
             recorder,
             MmuCommand {
                 core_id: self.cpu_slot,
-                storage_id: mmu_context.storage.id().to_string(),
+                storage_id: mmu_context.storage.filename().unwrap().to_string(),
                 protection_flags: elf_config.protection_flags.to_vec(),
                 entry_point: elf_config.entry_point,
             },

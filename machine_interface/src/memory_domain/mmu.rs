@@ -1,6 +1,6 @@
 use crate::{
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
-    util::shared_mem::SharedMem,
+    util::mmap::MmapMem,
 };
 use dandelion_commons::{DandelionError, DandelionResult};
 use log::debug;
@@ -11,7 +11,7 @@ pub const MMAP_BASE_ADDR: usize = 0x10000;
 
 #[derive(Debug)]
 pub struct MmuContext {
-    pub storage: SharedMem,
+    pub storage: MmapMem,
 }
 
 impl ContextTrait for MmuContext {
@@ -78,8 +78,12 @@ impl MemoryDomain for MmuMemoryDomain {
 
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
         // create and map a shared memory region
-        let mem_space = match SharedMem::create(size, ProtFlags::PROT_READ | ProtFlags::PROT_WRITE)
-        {
+        let filename = format!("/shmem_{:X}", rand::random::<u64>());
+        let mem_space = match MmapMem::create(
+            size,
+            ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+            Some(filename),
+        ) {
             Ok(v) => v,
             Err(_e) => return Err(DandelionError::OutOfMemory),
         };

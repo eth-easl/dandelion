@@ -25,6 +25,8 @@ pub enum DandelionError {
     OutOfMemory,
     /// the value specified for the context size does not match the WASM memory size
     WasmContextMemoryMismatch,
+    /// error when trying to allocate memory
+    MemoryAllocationError,
     /// context can't fit additional memory
     ContextFull,
     /// read buffer was misaligned for requested data type

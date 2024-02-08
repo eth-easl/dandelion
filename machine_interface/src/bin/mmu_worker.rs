@@ -1,7 +1,6 @@
 use core_affinity::CoreId;
-use machine_interface::{
-    memory_domain::mmu::MMAP_BASE_ADDR, util::shared_mem::SharedMem, Position,
-};
+use dandelion_commons::DandelionError;
+use machine_interface::{memory_domain::mmu::MMAP_BASE_ADDR, util::mmap::MmapMem, Position};
 use nix::sys::{
     mman::{mprotect, ProtFlags},
     ptrace,
@@ -27,19 +26,17 @@ fn main() {
     assert!(core_affinity::set_for_current(CoreId { id: core_id }));
 
     // open and map a shared memory region
-    let mem = match SharedMem::open(
+    let mem = match MmapMem::open(
         mem_id,
         ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
         MMAP_BASE_ADDR,
     ) {
         Ok(m) => m,
         Err(e) => {
-            if e == nix::errno::Errno::EEXIST {
-                // POTENTIAL ADDRESS COLLISION BETWEEN WORKER AND USER'S FUNCTION!
-                // CHECK "TODO: modify ELF header"
-                eprintln!("address {:#x} in use", MMAP_BASE_ADDR);
-            }
-            panic!("{}", e);
+            // If the error is "address in use", there is a potential
+            // address collision between worker and user's function.
+            // Check "TODO: modify ELF header"
+            panic!("Error opening shared memory: {:?}", e);
         }
     };
     // eprintln!("[worker] loaded shared memory");
