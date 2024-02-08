@@ -93,7 +93,6 @@ impl Dispatcher {
         non_caching: bool,
     ) -> DandelionResult<BTreeMap<usize, CompositionSet>> {
         // build up ready sets
-        let mut ready_sets = inputs.keys().cloned().collect::<BTreeSet<usize>>();
         let (mut ready_functions, mut non_ready_functions): (Vec<_>, Vec<_>) =
             composition.dependencies.into_iter().partition(
                 |FunctionDependencies {
@@ -103,7 +102,7 @@ impl Dispatcher {
                  }| {
                     in_ids.iter().all(|index_opt| {
                         index_opt
-                            .and_then(|(index, _)| Some(ready_sets.contains(&index)))
+                            .and_then(|(index, _)| Some(inputs.contains_key(&index)))
                             .unwrap_or(true)
                     })
                 },
@@ -138,7 +137,6 @@ impl Dispatcher {
             let new_compositions = new_compositions_result?;
             for (composition_set_index, composition_set) in new_compositions {
                 inputs.insert(composition_set_index, composition_set);
-                ready_sets.insert(composition_set_index);
             }
             // add newly ready ones
             (ready_functions, non_ready_functions) = non_ready_functions.into_iter().partition(
@@ -150,7 +148,7 @@ impl Dispatcher {
                     in_ids.iter().all(|index_opt| {
                         index_opt
                             .as_ref()
-                            .and_then(|(index, _)| Some(ready_sets.contains(&index)))
+                            .and_then(|(index, _)| Some(inputs.contains_key(&index)))
                             .unwrap_or(true)
                     })
                 },
