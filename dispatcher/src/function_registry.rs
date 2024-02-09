@@ -124,12 +124,24 @@ impl FunctionRegistry {
             .and_then(|meta| Some(meta.clone()))
             .ok_or(DandelionError::DispatcherUnavailableFunction);
     }
+    
+    pub fn add_composition_from_module(
+        &mut self, // maybe?
+        function_name: FunctionId,
+        module: &str,
+        output_set_map: BTreeMap<usize, usize>, // TODO necessary?
+    ) -> DandelionResult<()> {
+        // TODO actually handle the error in some sensible way
+        // the error contains the parsing failure
+        let module = dparser::parse(module).map_err(|_| DandelionError::InvalidComposition)?;
+        Composition::from_module(&module, self.function_dict.)
+    }
 
     pub fn add_composition(
         &mut self,
         function_id: FunctionId,
         composition: Composition,
-        output_set_map: BTreeMap<usize, usize>,
+        output_set_map: BTreeMap<usize, usize>, // TODO necessary?
     ) -> DandelionResult<()> {
         if !self.metadata.get_mut().contains_key(&function_id) {
             return Err(DandelionError::DispatcherMetaDataUnavailable);

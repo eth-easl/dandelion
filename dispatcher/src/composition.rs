@@ -1,6 +1,6 @@
 use dandelion_commons::{DandelionError, DandelionResult, FunctionId};
 use machine_interface::memory_domain::Context;
-use std::{collections::BTreeMap, sync::Arc, vec};
+use std::{collections::{BTreeMap, HashMap}, sync::Arc, vec};
 
 /// A composition has a composition wide id space that maps ids of
 /// the input and output sets to sets of individual functions to a unified
@@ -23,18 +23,28 @@ pub struct FunctionDependencies {
     pub output_set_ids: Vec<Option<usize>>,
 }
 
-impl FunctionDependencies {
-    pub fn from_module(module: &dparser::Module) -> Vec<(FunctionId, Self)> {
+impl Composition {
+    pub fn from_module(module: &dparser::Module,
+        function_ids: &mut crate::function_registry::FunctionDict) -> DandelionResult<Vec<(FunctionId, Self)>> {
+        
+        let mut known_functions = HashMap::new();
+        // let mut known_collections = HashMap::new();
+
         for item in module.0.iter() {
             match item {
                 dparser::Item::FunctionDecl(fdecl) => {
-                    // TODO: look them up in some Function -> Id mapping
+                    known_functions.insert(fdecl.v.name, (
+                        function_ids.lookup(&fdecl.v.name).ok_or(DandelionError::InvalidComposition)?,
+                        fdecl.v)
+                    );
                 }
                 dparser::Item::Composition(comp) => {
                     
                 }
             }
         }
+        
+        Ok(todo!())
     }
 }
 
