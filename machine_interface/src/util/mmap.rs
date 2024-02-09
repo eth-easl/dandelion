@@ -37,9 +37,8 @@ impl MmapMem {
     ) -> Result<Self, DandelionError> {
         // If a filename is given, create a shared memory file with the given name.
         // Otherwise, skip this step.
-        let (fd, file, map_flags) = match filename {
-            Some(filename) => {
-                let file = filename.to_string();
+        let (fd, map_flags) = match filename {
+            Some(ref file) => {
                 let fd = match shm_open(
                     file.as_str(),
                     OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR,
@@ -60,13 +59,9 @@ impl MmapMem {
                     _ => {}
                 };
 
-                (fd, Some(file), MapFlags::MAP_SHARED)
+                (fd, MapFlags::MAP_SHARED)
             }
-            None => (
-                -1 as RawFd,
-                None,
-                MapFlags::MAP_PRIVATE | MapFlags::MAP_ANONYMOUS,
-            ),
+            None => (-1, MapFlags::MAP_PRIVATE | MapFlags::MAP_ANONYMOUS),
         };
 
         // Map the memory.
@@ -91,7 +86,7 @@ impl MmapMem {
             ptr,
             size,
             fd,
-            filename: file.clone(),
+            filename,
         };
 
         Ok(shmem)
