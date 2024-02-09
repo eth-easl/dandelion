@@ -223,7 +223,7 @@ pub fn transefer_memory(
                 size,
             )
         }
-        (ContextType::IO(destination_ctxt), ContextType::IO(source_ctxt)) => io::mmap_transfer(
+        (ContextType::IO(destination_ctxt), ContextType::IO(source_ctxt)) => io::io_transfer(
             destination_ctxt,
             source_ctxt,
             destination_offset,

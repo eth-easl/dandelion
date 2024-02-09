@@ -80,7 +80,7 @@ impl MemoryDomain for IOMemoryDomain {
     }
 }
 
-pub fn mmap_transfer(
+pub fn io_transfer(
     destination: &mut IOContext,
     source: &IOContext,
     destination_offset: usize,
