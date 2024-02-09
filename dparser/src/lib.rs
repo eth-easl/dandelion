@@ -266,7 +266,7 @@ pub enum Item {
 }
 
 #[derive(Debug)]
-pub struct Module(Vec<Item>);
+pub struct Module(pub Vec<Item>);
 
 fn parser() -> impl Parser<Token, Module, Error = Simple<Token>> {
     let delim = just(Token::ListDelim);

@@ -37,6 +37,35 @@ pub struct Metadata {
     pub output_sets: Vec<String>,
 }
 
+pub struct FunctionDict {
+    next_id: FunctionId,
+    map: BTreeMap<String, FunctionId>,
+}
+
+impl FunctionDict {
+    pub fn new() -> Self {
+        Self { next_id: 1, map: BTreeMap::new() }
+    }
+    
+    pub fn insert_or_lookup(&mut self, function_name: String) -> FunctionId {
+        use std::collections::btree_map::Entry;
+        match self.map.entry(&function_name) {
+            Entry::Vacant(v) => {
+                let new_id = self.next_id;
+                v.insert(new_id);
+                self.next_id += 1;
+                new_id
+            },
+            Entry::Occupied(o) => *o,
+        }
+    }
+    
+    pub fn lookup(&self, function_name: &str) -> Option<FunctionId> {
+        self.map.get(function_name)
+    }
+}
+
+
 pub struct FunctionRegistry {
     /// List of engines available for each function
     engine_map: Mutex<BTreeMap<FunctionId, BTreeSet<EngineTypeId>>>,
@@ -51,6 +80,8 @@ pub struct FunctionRegistry {
     on_disk: Mutex<BTreeMap<(FunctionId, EngineTypeId), String>>,
     /// map with input and output set names for functions
     metadata: Mutex<BTreeMap<FunctionId, Arc<Metadata>>>,
+    /// map name to function id
+    function_dict: Mutex<FunctionDict>, 
 }
 
 impl FunctionRegistry {
@@ -63,6 +94,7 @@ impl FunctionRegistry {
             in_memory: Mutex::new(BTreeMap::new()),
             on_disk: Mutex::new(BTreeMap::new()),
             metadata: Mutex::new(BTreeMap::new()),
+            function_dict: Mutex::new(FunctionDict::new()),
         };
     }
 
@@ -77,7 +109,8 @@ impl FunctionRegistry {
 
     /// function that tries to insert metadata, returns true if metadata was successfully inserted
     /// or false if there was already metadata present
-    pub async fn insert_metadata(&self, function_id: FunctionId, metadata: Metadata) -> () {
+    pub async fn insert_metadata(&self, function_name: String, metadata: Metadata) -> () {
+        self.function_dict.lock().await.insert_or_lookup(function_name);
         self.metadata.lock().await.insert(function_id, Arc::new(metadata));
         return;
     }

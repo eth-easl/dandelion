@@ -23,6 +23,21 @@ pub struct FunctionDependencies {
     pub output_set_ids: Vec<Option<usize>>,
 }
 
+impl FunctionDependencies {
+    pub fn from_module(module: &dparser::Module) -> Vec<(FunctionId, Self)> {
+        for item in module.0.iter() {
+            match item {
+                dparser::Item::FunctionDecl(fdecl) => {
+                    // TODO: look them up in some Function -> Id mapping
+                }
+                dparser::Item::Composition(comp) => {
+                    
+                }
+            }
+        }
+    }
+}
+
 /// Modes for the composition set iteratior to return sharding
 #[derive(Clone, Copy, Debug)]
 pub enum ShardingMode {
