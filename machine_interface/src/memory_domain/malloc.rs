@@ -64,7 +64,11 @@ impl MemoryDomain for MallocMemoryDomain {
         Ok(Box::new(MallocMemoryDomain {}))
     }
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
-        let layout = Layout::from_size_align(size, 64).unwrap();
+        let layout = match Layout::from_size_align(size, 64) {
+            Ok(layout) => layout,
+            Err(_) => return Err(DandelionError::MemoryAllocationError),
+        };
+
         let mem_space: *mut u8 = unsafe { alloc_zeroed(layout) };
         if mem_space.is_null() {
             return Err(DandelionError::MemoryAllocationError);

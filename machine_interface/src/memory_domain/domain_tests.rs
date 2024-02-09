@@ -10,7 +10,9 @@ fn acquire<D: MemoryDomain>(arg: Vec<u8>, acquisition_size: usize, expect_succes
     let domain = init_result.expect("should have initialized memory domain");
     let context_result = domain.acquire_context(acquisition_size);
     match (expect_success, context_result) {
-        (true, Ok(_)) | (false, Err(DandelionError::OutOfMemory)) => assert!(true),
+        (true, Ok(_))
+        | (false, Err(DandelionError::OutOfMemory))
+        | (false, Err(DandelionError::MemoryAllocationError)) => assert!(true),
         (false, Ok(_)) => assert!(
             false,
             "Got okay for allocating context with size {}",
