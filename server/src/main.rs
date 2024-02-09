@@ -452,7 +452,7 @@ async fn add_cold_functions(
         if !tmp_path.exists() {
             std::fs::copy(path, &tmp_path).unwrap();
         }
-        registry.insert_metadata(cold_id_base + i, metadata).await;
+        registry.insert_metadata(todo!("function name: cold_id_base + i"), metadata).await;
         registry
             .add_local(
                 cold_id_base + i,

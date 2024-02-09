@@ -77,7 +77,7 @@ impl Dispatcher {
         metadata: Metadata,
     ) -> DandelionResult<()> {
         self.function_registry
-            .insert_metadata(function_id, metadata)
+            .insert_metadata(todo!("funciton name"), metadata)
             .await;
         return self
             .function_registry

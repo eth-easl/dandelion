@@ -106,6 +106,9 @@ pub enum DandelionError {
     // errors from the functions
     /// Function indicated it failed
     FunctionError(i32),
+    
+    // TODO: resort this
+    InvalidComposition,
 }
 
 pub type DandelionResult<T> = std::result::Result<T, DandelionError>;

@@ -11,6 +11,7 @@ dandelion_commons = {path = "../dandelion_commons"}
 machine_interface = {path = "../machine_interface"}
 futures = {version = "0.3.28", default-features = false}
 itertools = {version = "0.11", default-features = false, features = ["use_alloc"]}
+dparser = {path = "../dparser"}
 
 [features]
 cheri = ["machine_interface/cheri"]
