@@ -124,9 +124,13 @@ impl From<(usize, Vec<Arc<Context>>)> for CompositionSet {
             .into_iter()
             .filter_map(|context| {
                 if context.content.len() > set_index {
-                    context.content[set_index]
-                        .as_ref()
-                        .and_then(|set| Some((context.clone(), 0..set.buffers.len())))
+                    context.content[set_index].as_ref().and_then(|set| {
+                        if set.buffers.len() > 0 {
+                            Some((context.clone(), 0..set.buffers.len()))
+                        } else {
+                            None
+                        }
+                    })
                 } else {
                     None
                 }
@@ -148,18 +152,18 @@ impl Iterator for CompositionSetTransferIterator {
     type Item = (usize, usize, Arc<Context>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some((context, buffer_range)) = self.set.context_list.last_mut() {
-            let buffer_index = buffer_range.start;
-            let ret_context = context.clone();
-            if buffer_range.start + 1 == buffer_range.end {
-                self.set.context_list.pop();
+        // if we can guarnatee that there is always an item, we could simplify this to just taking the last one
+        // would requeire ensuring that property for composition sets
+        // TOOD: make composition set ranges private so the constructor can guarantee this
+        while let Some((context, buffer_range)) = self.set.context_list.last_mut() {
+            if buffer_range.end >= buffer_range.start + 1 {
+                buffer_range.end = buffer_range.end - 1;
+                return Some((self.set.set_index, buffer_range.end, context.clone()));
             } else {
-                buffer_range.start = buffer_range.start + 1;
+                self.set.context_list.pop();
             }
-            return Some((self.set.set_index, buffer_index, ret_context));
-        } else {
-            return None;
         }
+        return None;
     }
 }
 

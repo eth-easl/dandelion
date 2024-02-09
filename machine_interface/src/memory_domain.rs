@@ -314,7 +314,7 @@ pub fn transer_data_item(
 ) -> DandelionResult<()> {
     // check if source has item
     if source.content.len() <= source_set_index {
-        return Err(DandelionError::InvalidRead);
+        return Err(DandelionError::TransferInputNoSetAvailable);
     }
     let source_set = source.content[source_set_index]
         .as_ref()
