@@ -2,6 +2,7 @@ use std::{fmt::{Debug, Formatter}, sync::Arc};
 
 use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
 use dandelion_commons::{DandelionError, DandelionResult};
+use crate::util::mmap::MmapBox;
 
 use wasmtime::{Module, Store, Memory, Engine, MemoryType};
 
@@ -15,6 +16,7 @@ pub struct WasmtimeContext {
     pub store:  Option<Store<()>>,      // store initialized in load()
     pub memory: Option<Memory>,         // must be able to take out the memory during execution
     pub module: Option<Module>,         // module gets compiled in Dandelion engine
+    pub padding: Option<MmapBox>,  // padding for memory allocation
 }
 
 impl Debug for WasmtimeContext {
@@ -77,6 +79,7 @@ impl MemoryDomain for WasmtimeMemoryDomain {
                     store: None,
                     module: None,
                     memory: None,
+                    padding: None,
                 }
             )),
             next_page_size

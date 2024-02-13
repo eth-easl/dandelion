@@ -11,6 +11,8 @@ use libloading::Library;
 
 #[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precomp"))]
 use wasmtime;
+#[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precomp"))]
+use crate::util::mmap::MmapBox;
 
 pub mod compute_driver;
 mod load_utils;
@@ -98,8 +100,10 @@ impl Function {
                     wasmtime::Memory::new(&mut store, mem_type)
                         .map_err(|_| DandelionError::OutOfMemory)?
                 );
+                let padding = MmapBox::new(1)?;
                 wasmtime_context.store = Some(store);
                 wasmtime_context.memory = memory;
+                wasmtime_context.padding = Some(padding);
 
                 // the wasm module will be initialized in the engine
 
