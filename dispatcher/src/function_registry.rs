@@ -8,6 +8,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc, 
 };
+use futures::lock::Mutex;
 
 use crate::composition::{Composition, CompositionSet};
 
@@ -38,36 +39,36 @@ pub struct Metadata {
 
 pub struct FunctionRegistry {
     /// List of engines available for each function
-    engine_map: RwLock<BTreeMap<FunctionId, BTreeSet<EngineTypeId>>>,
+    engine_map: Mutex<BTreeMap<FunctionId, BTreeSet<EngineTypeId>>>,
     /// Drivers for the engines to prepare function (get them from available to ready)
     pub(crate) drivers: BTreeMap<EngineTypeId, Box<dyn Driver>>,
     /// map with list of all options for each function
     /// TODO: change structure to avoid copy on get_options
-    options: RwLock<BTreeMap<FunctionId, Vec<Alternative>>>,
+    options: Mutex<BTreeMap<FunctionId, Vec<Alternative>>>,
     /// map with function information for functions that are available in memory
-    in_memory: RwLock<BTreeMap<(FunctionId, EngineTypeId), Arc<Function>>>,
+    in_memory: Mutex<BTreeMap<(FunctionId, EngineTypeId), Arc<Function>>>,
     /// map with file paths for functions for on disk available functons
-    on_disk: RwLock<BTreeMap<(FunctionId, EngineTypeId), String>>,
+    on_disk: Mutex<BTreeMap<(FunctionId, EngineTypeId), String>>,
     /// map with input and output set names for functions
-    metadata: RwLock<BTreeMap<FunctionId, Arc<Metadata>>>,
+    metadata: Mutex<BTreeMap<FunctionId, Arc<Metadata>>>,
 }
 
 impl FunctionRegistry {
     // TODO registr all system function on creation and make sure that no other method can add to their entries
     pub fn new(drivers: BTreeMap<EngineTypeId, Box<dyn Driver>>) -> Self {
         return FunctionRegistry {
-            engine_map: RwLock::new(BTreeMap::new()),
+            engine_map: Mutex::new(BTreeMap::new()),
             drivers,
-            options: RwLock::new(BTreeMap::new()),
-            in_memory: RwLock::new(BTreeMap::new()),
-            on_disk: RwLock::new(BTreeMap::new()),
-            metadata: RwLock::new(BTreeMap::new()),
+            options: Mutex::new(BTreeMap::new()),
+            in_memory: Mutex::new(BTreeMap::new()),
+            on_disk: Mutex::new(BTreeMap::new()),
+            metadata: Mutex::new(BTreeMap::new()),
         };
     }
 
     pub async fn get_options(&self, function_id: FunctionId) -> DandelionResult<Vec<Alternative>> {
         // get the ones that are already loaded
-        let lock_guard = self.options.read().await;
+        let lock_guard = self.options.lock().await;
         let alternatives = lock_guard.get(&function_id);
         return alternatives
             .and_then(|alt| Some(alt.to_vec()))
@@ -77,14 +78,14 @@ impl FunctionRegistry {
     /// function that tries to insert metadata, returns true if metadata was successfully inserted
     /// or false if there was already metadata present
     pub async fn insert_metadata(&self, function_id: FunctionId, metadata: Metadata) -> () {
-        self.metadata.write().await.insert(function_id, Arc::new(metadata));
+        self.metadata.lock().await.insert(function_id, Arc::new(metadata));
         return;
     }
 
     pub async fn get_metadata(&self, function_id: FunctionId) -> DandelionResult<Arc<Metadata>> {
         return self
             .metadata
-            .read()
+            .lock()
             .await
             .get(&function_id)
             .and_then(|meta| Some(meta.clone()))
@@ -174,14 +175,14 @@ impl FunctionRegistry {
         engine_id: EngineTypeId,
         path: &str,
     ) -> DandelionResult<()> {
-        if !self.metadata.read().await.contains_key(&function_id) {
+        if !self.metadata.lock().await.contains_key(&function_id) {
             return Err(DandelionError::DispatcherMetaDataUnavailable);
         }
         self.on_disk
-            .write().await
+            .lock().await
             .insert((function_id, engine_id), path.to_string());
         self.engine_map
-            .write().await.entry(function_id)
+            .lock().await.entry(function_id)
             .and_modify(|set| {
                 set.insert(engine_id);
             })
@@ -191,7 +192,7 @@ impl FunctionRegistry {
                 set
             });
         self.options
-            .write().await
+            .lock().await
             .entry(function_id)
             .and_modify(|current_alts| {
                 current_alts.push(Alternative {
@@ -221,7 +222,7 @@ impl FunctionRegistry {
         let path = 
         // TODO replace by queueing of pre added composition to fetch code by id
         {
-            let disk_lock = self.on_disk.read().await;
+            let disk_lock = self.on_disk.lock().await;
             match disk_lock.get(&(function_id, engine_id)) {
                 Some(s) => s.clone(),
                 None => return Err(DandelionError::DispatcherUnavailableFunction),
@@ -241,7 +242,7 @@ impl FunctionRegistry {
         // check if function for the engine is in registry already
         let function_opt;
          {
-            let lock_guard = self.in_memory.read().await;
+            let lock_guard = self.in_memory.lock().await;
             function_opt = lock_guard.get(&(function_id, engine_id)).and_then(|val| Some(val.clone()))
         };
         if let Some(function) = function_opt {
@@ -256,7 +257,7 @@ impl FunctionRegistry {
         if !non_caching {
             if self
                 .in_memory
-                .write()
+                .lock()
                 .await
                 .insert((function_id, engine_id), Arc::new(function))
                 .is_some()
