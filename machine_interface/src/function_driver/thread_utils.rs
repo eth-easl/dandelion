@@ -47,14 +47,15 @@ pub struct ThreadController<P: ThreadPayload + Send> {
 
 /// Try to send a result on the channel
 /// returns true on success, false on irecoverable error
-fn try_send(result: DandelionResult<()>, sender: &mut ResultSender) -> bool {
-    loop {
-        match sender.try_send(result.clone()) {
-            Err(err) if err.is_full() => (),
-            Err(_) => return false,
-            Ok(()) => return true,
+fn try_send(mut result: DandelionResult<()>, sender: &mut ResultSender) -> bool {
+    while let Err(try_result) = sender.try_send(result) {
+        if try_result.is_full() {
+            result = try_result.into_inner();
+        } else {
+            return false;
         }
     }
+    return true;
 }
 
 fn run_thread<P: ThreadPayload + Send>(
