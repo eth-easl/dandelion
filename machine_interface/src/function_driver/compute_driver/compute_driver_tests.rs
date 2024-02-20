@@ -11,73 +11,73 @@ mod compute_driver_tests {
     use core::panic;
     use dandelion_commons::{
         records::{Archive, RecordPoint, Recorder},
-        DandelionError, DandelionResult,
+        DandelionError,
     };
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Condvar, Mutex};
 
     struct TestQueueInternal {
         args: Option<EngineArguments>,
         promise: Option<Promise>,
-        waker: Option<core::task::Waker>,
     }
 
     #[derive(Clone)]
     struct TestQueue {
-        internal: Arc<Mutex<TestQueueInternal>>,
+        internal: Arc<(Mutex<TestQueueInternal>, Condvar, Condvar)>,
     }
 
     impl TestQueue {
-        fn enqueu(&self, args: EngineArguments) {
-            if self
-                .internal
-                .lock()
-                .expect("Test queue failed to lock on enqueuing")
-                .args
-                .replace(args)
-                .is_some()
-            {
-                panic!("Tried to enqueu on test queue that already held args");
+        fn enqueu(&self, args: EngineArguments) -> Promise {
+            let (lock, arg_var, promise_var) = self.internal.as_ref();
+            let mut lock_guard = lock.lock().expect("Test queue failed to lock on enqueuing");
+            if lock_guard.args.is_some() {
+                lock_guard = arg_var
+                    .wait_while(lock_guard, |guard| guard.args.is_some())
+                    .expect("Test queue enqueue failed waiting on inserting args");
             }
+            if lock_guard.args.replace(args).is_some() {
+                panic!("Test queue replace args still present")
+            };
+            arg_var.notify_all();
+            if lock_guard.promise.is_none() {
+                lock_guard = promise_var
+                    .wait_while(lock_guard, |guard| guard.promise.is_none())
+                    .expect("Test queue failed to lock on taking promise");
+            }
+            let promise = lock_guard
+                .promise
+                .take()
+                .expect("Test queue return promis should be there because of condvar");
+            promise_var.notify_all();
+            return promise;
         }
     }
 
     impl WorkQueue for TestQueue {
         fn get_engine_args(&self, promise: Promise) -> EngineArguments {
-            let mut lock_guard = self
-                .internal
+            let (lock, arg_var, promise_var) = self.internal.as_ref();
+            let mut lock_guard = lock
                 .lock()
                 .expect("Test queue failed to lock on get_engine_args");
+            if lock_guard.promise.is_some() {
+                lock_guard = promise_var
+                    .wait_while(lock_guard, |guard| guard.promise.is_some())
+                    .expect("Test queue failed to wait to place new promise");
+            }
             if lock_guard.promise.replace(promise).is_some() {
-                panic!("Test queue entered promis when there already was one")
+                panic!("Test queue no promise should be present")
+            };
+            promise_var.notify_all();
+            if lock_guard.args.is_none() {
+                lock_guard = arg_var
+                    .wait_while(lock_guard, |guard| guard.args.is_none())
+                    .expect("Test queue failed waiting to take args");
             }
             let args = lock_guard
                 .args
                 .take()
                 .expect("Test queue tried to take args from empty queue");
-            if let Some(waker) = lock_guard.waker.take() {
-                waker.wake();
-            }
+            arg_var.notify_all();
             return args;
-        }
-    }
-
-    impl futures::Future for TestQueue {
-        type Output = DandelionResult<(Context, Recorder)>;
-        fn poll(
-            self: core::pin::Pin<&mut Self>,
-            cx: &mut core::task::Context<'_>,
-        ) -> core::task::Poll<Self::Output> {
-            let mut lock_guard = self
-                .internal
-                .lock()
-                .expect("Failed to lock test queue on poll");
-            if let Some(promise) = lock_guard.promise {
-                use futures::future::Future;
-                return promise.poll(cx);
-            } else {
-                lock_guard.waker.replace(cx.waker().clone());
-                return core::task::Poll::Pending;
-            }
         }
     }
 
@@ -97,11 +97,14 @@ mod compute_driver_tests {
     ) {
         for wronge_resource in wrong_init {
             let queue_box = Box::new(TestQueue {
-                internal: Arc::new(Mutex::new(TestQueueInternal {
-                    args: None,
-                    promise: None,
-                    waker: None,
-                })),
+                internal: Arc::new((
+                    Mutex::new(TestQueueInternal {
+                        args: None,
+                        promise: None,
+                    }),
+                    Condvar::new(),
+                    Condvar::new(),
+                )),
             });
             let wrong_resource_engine = driver.start_engine(wronge_resource, queue_box);
             match wrong_resource_engine {
@@ -112,11 +115,14 @@ mod compute_driver_tests {
 
         for resource in init {
             let queue_box = Box::new(TestQueue {
-                internal: Arc::new(Mutex::new(TestQueueInternal {
-                    args: None,
-                    promise: None,
-                    waker: None,
-                })),
+                internal: Arc::new((
+                    Mutex::new(TestQueueInternal {
+                        args: None,
+                        promise: None,
+                    }),
+                    Condvar::new(),
+                    Condvar::new(),
+                )),
             });
             let engine = driver.start_engine(resource, queue_box);
             engine.expect("Should be able to get engine");
@@ -130,11 +136,14 @@ mod compute_driver_tests {
         drv_init: Vec<ComputeResource>,
     ) -> (Box<dyn Engine>, Context, FunctionConfig, Box<TestQueue>) {
         let queue = Box::new(TestQueue {
-            internal: Arc::new(Mutex::new(TestQueueInternal {
-                args: None,
-                promise: None,
-                waker: None,
-            })),
+            internal: Arc::new((
+                Mutex::new(TestQueueInternal {
+                    args: None,
+                    promise: None,
+                }),
+                Condvar::new(),
+                Condvar::new(),
+            )),
         });
         let mut domain = Dom::init(dom_init).expect("Should have initialized domain");
         let function = driver
@@ -155,11 +164,11 @@ mod compute_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (mut engine, function_context, config, queue) =
+        let (_engine, function_context, config, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         let archive = Arc::new(Mutex::new(Archive::new()));
         let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-        queue.enqueu(EngineArguments {
+        let promise = queue.enqueu(EngineArguments {
             config: config,
             context: function_context,
             output_sets: Vec::new(),
@@ -168,7 +177,7 @@ mod compute_driver_tests {
         let _ = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(queue)
+            .block_on(promise)
             .expect("Engine should run ok with basic function");
     }
 
@@ -178,7 +187,7 @@ mod compute_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (mut engine, mut function_context, config, queue) =
+        let (_engine, mut function_context, config, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         // add inputs
         let in_size_offset = function_context
@@ -196,8 +205,8 @@ mod compute_driver_tests {
             }],
         }));
         let archive = Arc::new(Mutex::new(Archive::new()));
-        let mut recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-        queue.enqueu(EngineArguments {
+        let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
+        let promise = queue.enqueu(EngineArguments {
             config,
             context: function_context,
             output_sets: vec![String::from("")],
@@ -206,7 +215,7 @@ mod compute_driver_tests {
         let (result_context, mut result_recorder) = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(queue)
+            .block_on(promise)
             .expect("Engine should run ok with basic function");
         result_recorder
             .record(RecordPoint::FutureReturn)
@@ -254,13 +263,12 @@ mod compute_driver_tests {
         const LOWER_SIZE_BOUND: usize = 2;
         const UPPER_SIZE_BOUND: usize = 16;
         for mat_size in LOWER_SIZE_BOUND..UPPER_SIZE_BOUND {
-            let (mut engine, mut function_context, config, queue) =
-                prepare_engine_and_function::<Dom>(
-                    filename,
-                    dom_init.clone(),
-                    &driver,
-                    drv_init.clone(),
-                );
+            let (_engine, mut function_context, config, queue) = prepare_engine_and_function::<Dom>(
+                filename,
+                dom_init.clone(),
+                &driver,
+                drv_init.clone(),
+            );
             // add inputs
             let mut mat_vec = Vec::<i64>::new();
             mat_vec.push(mat_size as i64);
@@ -282,18 +290,20 @@ mod compute_driver_tests {
                 }],
             }));
             let archive = Arc::new(Mutex::new(Archive::new()));
-            let mut recorder = Recorder::new(archive.clone(), RecordPoint::TransferEnd);
-            let (result, result_context) = tokio::runtime::Builder::new_current_thread()
-                .build()
-                .unwrap()
-                .block_on(engine.run(
-                    &config,
-                    function_context,
-                    &vec!["".to_string()],
-                    recorder.clone(),
-                ));
-            result.expect("Engine should run ok with basic function");
-            recorder
+            let recorder = Recorder::new(archive.clone(), RecordPoint::TransferEnd);
+            let promise = queue.enqueu(EngineArguments {
+                config,
+                context: function_context,
+                output_sets: vec![String::from("")],
+                recorder,
+            });
+            let (result_context, mut result_recorder) =
+                tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap()
+                    .block_on(promise)
+                    .expect("Engine should run ok with basic function");
+            result_recorder
                 .record(RecordPoint::FutureReturn)
                 .expect("Should have properly advanced recorder state");
             assert_eq!(1, result_context.content.len());
@@ -326,7 +336,7 @@ mod compute_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (mut engine, mut function_context, config, queue) =
+        let (_engine, mut function_context, config, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         let stdin_content = "Test line \n line 2\n";
         let stdin_offset = function_context
@@ -371,18 +381,19 @@ mod compute_driver_tests {
             ],
         }));
         let archive = Arc::new(Mutex::new(Archive::new()));
-        let mut recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-        let (result, result_context) = tokio::runtime::Builder::new_current_thread()
+        let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
+        let promise = queue.enqueu(EngineArguments {
+            config,
+            context: function_context,
+            output_sets: vec![String::from("stdio")],
+            recorder,
+        });
+        let (result_context, mut result_recorder) = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(engine.run(
-                &config,
-                function_context,
-                &vec!["stdio".to_string()],
-                recorder.clone(),
-            ));
-        result.expect("Engine should run ok with basic function");
-        recorder
+            .block_on(promise)
+            .expect("Engine should run ok with basic function");
+        result_recorder
             .record(RecordPoint::FutureReturn)
             .expect("Should have properly advanced recorder state");
         // check the function exited with exit code 0
@@ -441,7 +452,7 @@ mod compute_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (mut engine, mut function_context, config) =
+        let (_engine, mut function_context, config, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         let in_file_content = "Test file 0\n line 2\n";
         let in_file_offset = function_context
@@ -512,22 +523,23 @@ mod compute_driver_tests {
             ],
         }));
         let archive = Arc::new(Mutex::new(Archive::new()));
-        let mut recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-        let (result, result_context) = tokio::runtime::Builder::new_current_thread()
+        let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
+        let promise = queue.enqueu(EngineArguments {
+            config: config,
+            context: function_context,
+            output_sets: vec![
+                "stdio".to_string(),
+                "out".to_string(),
+                "out_nested".to_string(),
+            ],
+            recorder,
+        });
+        let (result_context, mut result_recorder) = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(engine.run(
-                &config,
-                function_context,
-                &vec![
-                    "stdio".to_string(),
-                    "out".to_string(),
-                    "out_nested".to_string(),
-                ],
-                recorder.clone(),
-            ));
-        result.expect("Engine should run ok with basic function");
-        recorder
+            .block_on(promise)
+            .expect("Engine should run ok with basic function");
+        result_recorder
             .record(RecordPoint::FutureReturn)
             .expect("Should have properly advanced recorder state");
         assert_eq!(3, result_context.content.len());

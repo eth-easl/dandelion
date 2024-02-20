@@ -1,24 +1,16 @@
 use crate::{
     function_driver::{
         load_utils::load_u8_from_file,
-        thread_utils::{DefaultState, ThreadCommand, ThreadController, ThreadPayload},
-        ComputeResource, Driver, ElfConfig, Engine, Function, FunctionConfig,
+        thread_utils::{EngineLoop, ThreadController},
+        ComputeResource, Driver, ElfConfig, Engine, Function, FunctionConfig, WorkQueue,
     },
     interface::{read_output_structs, setup_input_structs},
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
     DataItem, DataRequirement, DataRequirementList, DataSet, Position,
 };
-use core::{
-    future::{ready, Future},
-    pin::Pin,
-};
 use core_affinity;
-use dandelion_commons::{
-    records::{RecordPoint, Recorder},
-    DandelionError, DandelionResult,
-};
-use futures::task::Poll;
+use dandelion_commons::{DandelionError, DandelionResult};
 use log::{debug, warn};
 use nix::{
     sys::{
@@ -31,66 +23,6 @@ use std::{
     process::{Command, Stdio},
     sync::Arc,
 };
-
-struct MmuCommand {
-    core_id: u8,
-    storage_id: String,
-    protection_flags: Vec<(u32, Position)>,
-    entry_point: usize,
-}
-unsafe impl Send for MmuCommand {}
-
-impl ThreadPayload for MmuCommand {
-    type State = DefaultState;
-    fn run(self, _state: &mut Self::State) -> DandelionResult<()> {
-        return mmu_run_static(
-            self.core_id,
-            &self.storage_id,
-            &self.protection_flags,
-            self.entry_point,
-        );
-    }
-}
-
-pub struct MmuEngine {
-    cpu_slot: u8,
-    thread_controller: ThreadController<MmuCommand>,
-}
-
-struct MmuFuture<'a> {
-    engine: &'a mut MmuEngine,
-    context: Option<Context>,
-    system_data_offset: usize,
-}
-
-// TODO find better way than take unwrap to return context
-// or at least a way to ensure that the future is always initialized with a context,
-// so this can only happen when poll is called after it has already returned the context once
-impl Future for MmuFuture<'_> {
-    type Output = (DandelionResult<()>, Context);
-    fn poll(
-        mut self: Pin<&mut Self>,
-        cx: &mut futures::task::Context,
-    ) -> futures::task::Poll<Self::Output> {
-        match self.engine.thread_controller.poll_next(cx) {
-            Poll::Pending => return Poll::Pending,
-            Poll::Ready(None) => {
-                return Poll::Ready((
-                    Err(DandelionError::EngineError),
-                    self.context.take().unwrap(),
-                ))
-            }
-            Poll::Ready(Some(Err(err))) => {
-                return Poll::Ready((Err(err), self.context.take().unwrap()))
-            }
-            Poll::Ready(Some(Ok(()))) => (),
-        }
-        let mut context = self.context.take().unwrap();
-        // read outputs
-        let result = read_output_structs::<usize, usize>(&mut context, self.system_data_offset);
-        Poll::Ready((result, context))
-    }
-}
 
 fn ptrace_syscall(pid: libc::pid_t) {
     #[cfg(target_os = "linux")]
@@ -192,7 +124,9 @@ fn mmu_run_static(
     // intercept worker's syscalls by ptrace
     let pid = Pid::from_raw(worker.id() as i32);
     let status = wait::waitpid(pid, None).map_err(|_e| DandelionError::MmuWorkerError)?;
-    assert_eq!(status, WaitStatus::Stopped(pid, Signal::SIGSTOP));
+    if status != WaitStatus::Stopped(pid, Signal::SIGSTOP) {
+        worker.kill().map_err(|_e| DandelionError::MmuWorkerError)?;
+    }
     ptrace_syscall(pid.as_raw());
 
     loop {
@@ -233,62 +167,63 @@ fn mmu_run_static(
     }
 }
 
-impl Engine for MmuEngine {
+struct MmuLoop {
+    cpu_slot: u8,
+}
+
+impl EngineLoop for MmuLoop {
+    fn init(core_id: u8) -> DandelionResult<Box<Self>> {
+        return Ok(Box::new(MmuLoop { cpu_slot: core_id }));
+    }
     fn run(
         &mut self,
-        config: &FunctionConfig,
+        config: FunctionConfig,
         mut context: Context,
-        output_set_names: &Vec<String>,
-        mut recorder: Recorder,
-    ) -> Pin<Box<dyn futures::Future<Output = (DandelionResult<()>, Context)> + '_ + Send>> {
-        if let Err(err) = recorder.record(RecordPoint::EngineStart) {
-            return Box::pin(core::future::ready((Err(err), context)));
-        }
+        output_sets: Vec<String>,
+    ) -> DandelionResult<Context> {
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
-            _ => return Box::pin(ready((Err(DandelionError::ConfigMissmatch), context))),
+            _ => return Err(DandelionError::ConfigMissmatch),
         };
-        let mmu_context = match &context.context {
-            ContextType::Mmu(mmu_context) => mmu_context,
-            _ => return Box::pin(ready((Err(DandelionError::ContextMissmatch), context))),
-        };
-        let command = ThreadCommand::Run(
-            recorder,
-            MmuCommand {
-                core_id: self.cpu_slot,
-                storage_id: mmu_context.storage.id().to_string(),
-                protection_flags: elf_config.protection_flags.to_vec(),
-                entry_point: elf_config.entry_point,
-            },
-        );
-        if let Err(err) = setup_input_structs::<usize, usize>(
+
+        setup_input_structs::<usize, usize>(
             &mut context,
             elf_config.system_data_offset,
-            output_set_names,
-        ) {
-            return Box::pin(ready((Err(err), context)));
-        }
-        match self.thread_controller.send_command(command) {
-            Err(err) => return Box::pin(ready((Err(err), context))),
-            Ok(_) => (),
-        }
-        let function_future = Box::<MmuFuture>::pin(MmuFuture {
-            engine: self,
-            context: Some(context),
-            system_data_offset: elf_config.system_data_offset,
-        });
-        return function_future;
-    }
-    fn abort(&mut self) -> DandelionResult<()> {
-        unimplemented!("Abort currently missimplemented");
+            &output_sets,
+        )?;
+
+        let mmu_context = match &context.context {
+            ContextType::Mmu(mmu_context) => mmu_context,
+            _ => return Err(DandelionError::ContextMissmatch),
+        };
+
+        mmu_run_static(
+            self.cpu_slot,
+            mmu_context.storage.id(),
+            &elf_config.protection_flags,
+            elf_config.entry_point,
+        )?;
+
+        read_output_structs::<usize, usize>(&mut context, elf_config.system_data_offset)?;
+
+        return Ok(context);
     }
 }
+
+pub struct MmuEngine {
+    thread_controller: ThreadController<MmuLoop>,
+}
+impl Engine for MmuEngine {}
 
 pub struct MmuDriver {}
 
 impl Driver for MmuDriver {
     // // take or release one of the available engines
-    fn start_engine(&self, resource: ComputeResource) -> DandelionResult<Box<dyn Engine>> {
+    fn start_engine(
+        &self,
+        resource: ComputeResource,
+        queue: Box<dyn WorkQueue + Send>,
+    ) -> DandelionResult<Box<dyn Engine>> {
         let cpu_slot = match resource {
             ComputeResource::CPU(core) => core,
             _ => return Err(DandelionError::EngineResourceError),
@@ -306,8 +241,7 @@ impl Driver for MmuDriver {
             return Err(DandelionError::EngineResourceError);
         }
         return Ok(Box::new(MmuEngine {
-            cpu_slot,
-            thread_controller: ThreadController::new(cpu_slot),
+            thread_controller: ThreadController::new(cpu_slot, queue),
         }));
     }
 

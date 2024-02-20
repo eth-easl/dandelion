@@ -14,76 +14,6 @@ use std::sync::Arc;
 
 type WasmEntryPoint = fn(&mut [u8]) -> Option<i32>;
 
-// struct WasmCommand {
-//     lib: Arc<Library>,
-//     context: Arc<Mutex<Option<Context>>>,
-// }
-// unsafe impl Send for WasmCommand {}
-
-// impl ThreadPayload for WasmCommand {
-//     type State = DefaultState;
-//     fn run(self, _state: &mut Self::State) -> DandelionResult<()> {
-//         match unsafe { self.lib.get::<WasmEntryPoint>(b"run") } {
-//             Ok(entry_point) => {
-//                 // TODO handle errors
-
-//                 let mut guard = self.context.lock().unwrap();
-
-//                 // take out the context
-//                 let mut ctx = guard.take().unwrap();
-//                 let wasm_context = match &mut ctx.context {
-//                     ContextType::Wasm(wasm_context) => wasm_context,
-//                     _ => panic!("invalid context type"),
-//                 };
-
-//                 // call entry point
-//                 let ret = entry_point(&mut wasm_context.mem);
-//                 // put context back
-//                 *guard = Some(ctx);
-
-//                 return match ret {
-//                     Some(_) => Ok(()),
-//                     None => Err(DandelionError::EngineError),
-//                 };
-//             }
-//             Err(_) => Err(DandelionError::EngineError),
-//         }
-//     }
-// }
-
-// struct WasmFuture<'a> {
-//     engine: &'a mut WasmEngine,
-//     context: Arc<Mutex<Option<Context>>>,
-//     system_data_offset: usize,
-// }
-
-// exits the function
-// impl Future for WasmFuture<'_> {
-//     type Output = (DandelionResult<()>, Context);
-//     fn poll(
-//         mut self: Pin<&mut Self>,
-//         cx: &mut futures::task::Context,
-//     ) -> futures::task::Poll<Self::Output> {
-//         match self.engine.thread_controller.poll_next(cx) {
-//             Poll::Pending => return Poll::Pending,
-//             Poll::Ready(Some(Ok(()))) => {
-//                 // TODO handle errors (we don't have a context if locking fails)
-//                 let mut guard = self.context.lock().unwrap();
-//                 if !guard.is_some() {
-//                     return Poll::Pending;
-//                 };
-//                 let mut context = guard.take().unwrap();
-//                 let res = read_output_structs::<u32, u32>(&mut context, self.system_data_offset);
-//                 Poll::Ready((res, context))
-//             }
-//             _ => {
-//                 let context = self.context.lock().unwrap().take().unwrap();
-//                 Poll::Ready((Err(DandelionError::EngineError), context))
-//             }
-//         }
-//     }
-// }
-
 struct WasmLoop {}
 
 impl EngineLoop for WasmLoop {
@@ -138,68 +68,7 @@ pub struct WasmEngine {
     thread_controller: ThreadController<WasmLoop>,
 }
 
-impl Engine for WasmEngine {
-    // fn run(
-    //     &mut self,
-    //     config: &FunctionConfig,
-    //     mut context: Context,
-    //     output_set_names: &Vec<String>,
-    //     mut recorder: Recorder,
-    // ) -> Pin<Box<dyn Future<Output = (DandelionResult<()>, Context)> + '_ + Send>> {
-    //     if let Err(err) = recorder.record(RecordPoint::EngineStart) {
-    //         return Box::pin(core::future::ready((Err(err), context)));
-    //     }
-
-    //     // error shorthand
-    //     use DandelionError::*;
-    //     macro_rules! err {
-    //         ($err:expr) => {
-    //             return Box::pin(ready((Err($err), context)))
-    //         };
-    //     }
-
-    //     // extract config and context
-    //     let wasm_config = match config {
-    //         FunctionConfig::WasmConfig(wasm_config) => wasm_config,
-    //         _ => err!(ConfigMissmatch),
-    //     };
-
-    //     // setup input structs
-    //     if let Err(err) = setup_input_structs::<u32, u32>(
-    //         &mut context,
-    //         wasm_config.system_data_struct_offset,
-    //         output_set_names,
-    //     ) {
-    //         err!(err)
-    //     };
-
-    //     // share context with thread
-    //     let context_ = Arc::new(Mutex::new(Some(context)));
-
-    //     // send run command to thread
-    //     let cmd = ThreadCommand::Run(
-    //         recorder,
-    //         WasmCommand {
-    //             context: context_.clone(),
-    //             lib: wasm_config.lib.clone(),
-    //         },
-    //     );
-
-    //     // TODO give back context if send fails (moved it into the Arc)
-    //     match self.thread_controller.send_command(cmd) {
-    //         Ok(()) => (),
-    //         Err(err) => {
-    //             let err_context = context_.lock().unwrap().take().unwrap();
-    //             return Box::pin(futures::future::ready((Err(err), err_context)));
-    //         }
-    //     };
-    //     Box::<WasmFuture>::pin(WasmFuture {
-    //         engine: self,
-    //         context: context_,
-    //         system_data_offset: wasm_config.system_data_struct_offset,
-    //     })
-    // }
-}
+impl Engine for WasmEngine {}
 
 pub struct WasmDriver {}
 
