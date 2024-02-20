@@ -1,16 +1,85 @@
 #[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "wasm")))]
 mod compute_driver_tests {
     use crate::{
-        function_driver::{ComputeResource, Driver, Engine, FunctionConfig},
+        function_driver::{
+            ComputeResource, Driver, Engine, EngineArguments, FunctionConfig, WorkQueue,
+        },
         memory_domain::{Context, ContextState, ContextTrait, MemoryDomain},
+        promise::Promise,
         DataItem, DataSet, Position,
     };
     use core::panic;
     use dandelion_commons::{
         records::{Archive, RecordPoint, Recorder},
-        DandelionError,
+        DandelionError, DandelionResult,
     };
     use std::sync::{Arc, Mutex};
+
+    struct TestQueueInternal {
+        args: Option<EngineArguments>,
+        promise: Option<Promise>,
+        waker: Option<core::task::Waker>,
+    }
+
+    #[derive(Clone)]
+    struct TestQueue {
+        internal: Arc<Mutex<TestQueueInternal>>,
+    }
+
+    impl TestQueue {
+        fn enqueu(&self, args: EngineArguments) {
+            if self
+                .internal
+                .lock()
+                .expect("Test queue failed to lock on enqueuing")
+                .args
+                .replace(args)
+                .is_some()
+            {
+                panic!("Tried to enqueu on test queue that already held args");
+            }
+        }
+    }
+
+    impl WorkQueue for TestQueue {
+        fn get_engine_args(&self, promise: Promise) -> EngineArguments {
+            let mut lock_guard = self
+                .internal
+                .lock()
+                .expect("Test queue failed to lock on get_engine_args");
+            if lock_guard.promise.replace(promise).is_some() {
+                panic!("Test queue entered promis when there already was one")
+            }
+            let args = lock_guard
+                .args
+                .take()
+                .expect("Test queue tried to take args from empty queue");
+            if let Some(waker) = lock_guard.waker.take() {
+                waker.wake();
+            }
+            return args;
+        }
+    }
+
+    impl futures::Future for TestQueue {
+        type Output = DandelionResult<(Context, Recorder)>;
+        fn poll(
+            self: core::pin::Pin<&mut Self>,
+            cx: &mut core::task::Context<'_>,
+        ) -> core::task::Poll<Self::Output> {
+            let mut lock_guard = self
+                .internal
+                .lock()
+                .expect("Failed to lock test queue on poll");
+            if let Some(promise) = lock_guard.promise {
+                use futures::future::Future;
+                return promise.poll(cx);
+            } else {
+                lock_guard.waker.replace(cx.waker().clone());
+                return core::task::Poll::Pending;
+            }
+        }
+    }
 
     fn loader_empty<Dom: MemoryDomain>(dom_init: Vec<u8>, driver: Box<dyn Driver>) {
         // load elf file
@@ -27,7 +96,14 @@ mod compute_driver_tests {
         wrong_init: Vec<ComputeResource>,
     ) {
         for wronge_resource in wrong_init {
-            let wrong_resource_engine = driver.start_engine(wronge_resource);
+            let queue_box = Box::new(TestQueue {
+                internal: Arc::new(Mutex::new(TestQueueInternal {
+                    args: None,
+                    promise: None,
+                    waker: None,
+                })),
+            });
+            let wrong_resource_engine = driver.start_engine(wronge_resource, queue_box);
             match wrong_resource_engine {
                 Ok(_) => panic!("Should not be able to get engine"),
                 Err(err) => assert_eq!(DandelionError::EngineResourceError, err),
@@ -35,7 +111,14 @@ mod compute_driver_tests {
         }
 
         for resource in init {
-            let engine = driver.start_engine(resource);
+            let queue_box = Box::new(TestQueue {
+                internal: Arc::new(Mutex::new(TestQueueInternal {
+                    args: None,
+                    promise: None,
+                    waker: None,
+                })),
+            });
+            let engine = driver.start_engine(resource, queue_box);
             engine.expect("Should be able to get engine");
         }
     }
@@ -45,18 +128,25 @@ mod compute_driver_tests {
         dom_init: Vec<u8>,
         driver: &Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
-    ) -> (Box<dyn Engine>, Context, FunctionConfig) {
+    ) -> (Box<dyn Engine>, Context, FunctionConfig, Box<TestQueue>) {
+        let queue = Box::new(TestQueue {
+            internal: Arc::new(Mutex::new(TestQueueInternal {
+                args: None,
+                promise: None,
+                waker: None,
+            })),
+        });
         let mut domain = Dom::init(dom_init).expect("Should have initialized domain");
         let function = driver
             .parse_function(filename.to_string(), &mut domain)
             .expect("Should be able to parse function");
         let engine = driver
-            .start_engine(drv_init[0])
+            .start_engine(drv_init[0], queue.clone())
             .expect("Should be able to start engine");
         let function_context = function
             .load(&mut domain, 0x802_0000)
             .expect("Should be able to load function");
-        return (engine, function_context, function.config);
+        return (engine, function_context, function.config, queue);
     }
 
     fn engine_minimal<Dom: MemoryDomain>(
@@ -65,15 +155,21 @@ mod compute_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (mut engine, function_context, config) =
+        let (mut engine, function_context, config, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         let archive = Arc::new(Mutex::new(Archive::new()));
         let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-        let (result, _function_context) = tokio::runtime::Builder::new_current_thread()
+        queue.enqueu(EngineArguments {
+            config: config,
+            context: function_context,
+            output_sets: Vec::new(),
+            recorder: recorder.clone(),
+        });
+        let _ = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(engine.run(&config, function_context, &vec![], recorder.clone()));
-        result.expect("Engine should run ok with basic function");
+            .block_on(queue)
+            .expect("Engine should run ok with basic function");
     }
 
     fn engine_matmul_single<Dom: MemoryDomain>(
@@ -82,7 +178,7 @@ mod compute_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (mut engine, mut function_context, config) =
+        let (mut engine, mut function_context, config, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         // add inputs
         let in_size_offset = function_context
@@ -101,17 +197,18 @@ mod compute_driver_tests {
         }));
         let archive = Arc::new(Mutex::new(Archive::new()));
         let mut recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-        let (result, result_context) = tokio::runtime::Builder::new_current_thread()
+        queue.enqueu(EngineArguments {
+            config,
+            context: function_context,
+            output_sets: vec![String::from("")],
+            recorder,
+        });
+        let (result_context, mut result_recorder) = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(engine.run(
-                &config,
-                function_context,
-                &vec!["".to_string()],
-                recorder.clone(),
-            ));
-        result.expect("Engine should run ok with basic function");
-        recorder
+            .block_on(queue)
+            .expect("Engine should run ok with basic function");
+        result_recorder
             .record(RecordPoint::FutureReturn)
             .expect("Should have properly advanced recorder state");
         // check that result is 4
@@ -157,12 +254,13 @@ mod compute_driver_tests {
         const LOWER_SIZE_BOUND: usize = 2;
         const UPPER_SIZE_BOUND: usize = 16;
         for mat_size in LOWER_SIZE_BOUND..UPPER_SIZE_BOUND {
-            let (mut engine, mut function_context, config) = prepare_engine_and_function::<Dom>(
-                filename,
-                dom_init.clone(),
-                &driver,
-                drv_init.clone(),
-            );
+            let (mut engine, mut function_context, config, queue) =
+                prepare_engine_and_function::<Dom>(
+                    filename,
+                    dom_init.clone(),
+                    &driver,
+                    drv_init.clone(),
+                );
             // add inputs
             let mut mat_vec = Vec::<i64>::new();
             mat_vec.push(mat_size as i64);
@@ -228,7 +326,7 @@ mod compute_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (mut engine, mut function_context, config) =
+        let (mut engine, mut function_context, config, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         let stdin_content = "Test line \n line 2\n";
         let stdin_offset = function_context
