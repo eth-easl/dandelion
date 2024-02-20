@@ -1,8 +1,8 @@
 // list of memory domain implementations
 #[cfg(feature = "cheri")]
 pub mod cheri;
-pub mod io;
 pub mod malloc;
+pub mod mmap;
 #[cfg(feature = "mmu")]
 pub mod mmu;
 pub mod read_only;
@@ -22,7 +22,7 @@ pub trait ContextTrait: Send + Sync {
 #[derive(Debug)]
 pub enum ContextType {
     Malloc(Box<malloc::MallocContext>),
-    IO(Box<io::IOContext>),
+    Mmap(Box<mmap::MmapContext>),
     ReadOnly(Box<read_only::ReadOnlyContext>),
     #[cfg(feature = "cheri")]
     Cheri(Box<cheri::CheriContext>),
@@ -36,7 +36,7 @@ impl ContextTrait for ContextType {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
         match self {
             ContextType::Malloc(context) => context.write(offset, data),
-            ContextType::IO(context) => context.write(offset, data),
+            ContextType::Mmap(context) => context.write(offset, data),
             ContextType::ReadOnly(context) => context.write(offset, data),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.write(offset, data),
@@ -49,7 +49,7 @@ impl ContextTrait for ContextType {
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         match self {
             ContextType::Malloc(context) => context.read(offset, read_buffer),
-            ContextType::IO(context) => context.read(offset, read_buffer),
+            ContextType::Mmap(context) => context.read(offset, read_buffer),
             ContextType::ReadOnly(context) => context.read(offset, read_buffer),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.read(offset, read_buffer),
@@ -223,7 +223,7 @@ pub fn transefer_memory(
                 size,
             )
         }
-        (ContextType::IO(destination_ctxt), ContextType::IO(source_ctxt)) => io::io_transfer(
+        (ContextType::Mmap(destination_ctxt), ContextType::Mmap(source_ctxt)) => mmap::io_transfer(
             destination_ctxt,
             source_ctxt,
             destination_offset,

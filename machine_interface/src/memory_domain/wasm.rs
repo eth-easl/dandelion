@@ -1,5 +1,5 @@
 use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
-use crate::util::mmap::MmapMem;
+use crate::util::mmapmem::MmapMem;
 use dandelion_commons::{DandelionError, DandelionResult};
 use nix::sys::mman::ProtFlags;
 
@@ -13,27 +13,10 @@ unsafe impl Sync for WasmContext {}
 
 impl ContextTrait for WasmContext {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
-        let write_size = data.len() * std::mem::size_of::<T>();
-        if offset + write_size > self.mem.len() {
-            return Err(DandelionError::InvalidWrite);
-        }
-        let data_bytes: &[u8] =
-            unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, write_size) };
-        self.mem[offset..offset + write_size].copy_from_slice(data_bytes);
-        Ok(())
+        self.mem.write(offset, data)
     }
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
-        let self_data = &self.mem;
-        let read_size = read_buffer.len() * std::mem::size_of::<T>();
-        if offset + read_size <= self_data.len() {
-            let data_bytes: &[u8] = &self_data[offset..offset + read_size];
-            unsafe {
-                (read_buffer.as_mut_ptr() as *mut u8).copy_from(data_bytes.as_ptr(), read_size)
-            };
-            Ok(())
-        } else {
-            Err(DandelionError::InvalidRead)
-        }
+        self.mem.read(offset, read_buffer)
     }
 }
 
@@ -48,7 +31,7 @@ impl MemoryDomain for WasmMemoryDomain {
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
         Ok(Context::new(
             ContextType::Wasm(Box::new(WasmContext {
-                mem: MmapMem::create(size, ProtFlags::PROT_READ | ProtFlags::PROT_WRITE, None)?,
+                mem: MmapMem::create(size, ProtFlags::PROT_READ | ProtFlags::PROT_WRITE, false)?,
             })),
             size,
         ))
@@ -62,7 +45,7 @@ pub fn wasm_transfer(
     source_offset: usize,
     size: usize,
 ) -> DandelionResult<()> {
-    if source_offset + size > source.mem.len() {
+    if source_offset + size > source.mem.size() {
         return Err(DandelionError::InvalidRead);
     }
     destination.mem[destination_offset..destination_offset + size]

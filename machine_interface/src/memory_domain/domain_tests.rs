@@ -215,6 +215,8 @@ macro_rules! domainTests {
 }
 use super::malloc::MallocMemoryDomain as mallocType;
 domainTests!(malloc; mallocType; Vec::new());
+use super::mmap::MmapMemoryDomain as mmapType;
+domainTests!(mmap; mmapType; Vec::new());
 #[cfg(feature = "cheri")]
 use super::cheri::CheriMemoryDomain as cheriType;
 #[cfg(feature = "cheri")]

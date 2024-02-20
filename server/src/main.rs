@@ -20,7 +20,7 @@ use machine_interface::{
         system_driver::{get_system_function_input_sets, get_system_function_output_sets},
         ComputeResource, SystemFunction,
     },
-    memory_domain::{io::IOMemoryDomain, read_only::ReadOnlyContext},
+    memory_domain::{mmap::MmapMemoryDomain, read_only::ReadOnlyContext},
 };
 use signal_hook::consts::signal::*;
 use signal_hook_tokio::Signals;
@@ -110,7 +110,7 @@ async fn run_chain(
     post_uri: String,
     max_cold: u64,
 ) -> u64 {
-    let domain = IOMemoryDomain::init(vec![]).expect("Should be able to get IO domain");
+    let domain = MmapMemoryDomain::init(vec![]).expect("Should be able to get Mmap domain");
     let mut input_context = domain
         .acquire_context(128)
         .expect("Should be able to get malloc context");
@@ -548,7 +548,8 @@ fn main() -> () {
     };
     domains.insert(
         SYS_CONTEXT,
-        IOMemoryDomain::init(Vec::new()).expect("Should be able to initialize IO memory domain"),
+        MmapMemoryDomain::init(Vec::new())
+            .expect("Should be able to initialize Mmap memory domain"),
     );
     let mut registry;
     // insert specific configuration

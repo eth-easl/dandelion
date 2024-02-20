@@ -1,5 +1,5 @@
-use dandelion_commons::DandelionError;
-use log::error;
+use dandelion_commons::{DandelionError, DandelionResult};
+use log::{debug, error};
 use nix::{
     fcntl::OFlag,
     sys::{
@@ -8,6 +8,7 @@ use nix::{
     },
     unistd::{close, ftruncate},
 };
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     num::NonZeroUsize,
     ops::{Deref, DerefMut},
@@ -26,42 +27,42 @@ pub struct MmapMem {
     filename: Option<String>,
 }
 
+static COUNTER: AtomicU64 = AtomicU64::new(0);
+
 impl MmapMem {
     // Create a memory-mapped file with the given size and protection flags.
     // If a filename is given, memory will be backed by that file,
     // otherwise it will be backed by an anonymous file.
-    pub fn create(
-        size: usize,
-        prot: ProtFlags,
-        filename: Option<String>,
-    ) -> Result<Self, DandelionError> {
-        // If a filename is given, create a shared memory file with the given name.
-        // Otherwise, skip this step.
-        let (fd, map_flags) = match filename {
-            Some(ref file) => {
-                let fd = match shm_open(
-                    file.as_str(),
-                    OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR,
-                    Mode::S_IRUSR | Mode::S_IWUSR,
-                ) {
-                    Err(err) => {
-                        error!("Error creating shared memory file: {}:{}", err, err.desc());
-                        return Err(DandelionError::MemoryAllocationError);
-                    }
-                    fd => fd.unwrap(),
-                };
+    pub fn create(size: usize, prot: ProtFlags, shared: bool) -> Result<Self, DandelionError> {
+        let mut filename = None;
+        let (fd, map_flags) = if shared {
+            filename = Some(format!("/shm_{:X}", COUNTER.fetch_add(1, Ordering::SeqCst)));
+            log::trace!("ctx filename: {:?}", filename);
+            let fd = match shm_open(
+                filename.as_ref().unwrap().as_str(),
+                OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR,
+                Mode::S_IRUSR | Mode::S_IWUSR,
+            ) {
+                Err(err) => {
+                    error!("Error creating shared memory file: {}", err);
+                    return Err(DandelionError::MemoryAllocationError);
+                }
+                fd => fd.unwrap(),
+            };
 
-                match ftruncate(fd, size as _) {
-                    Err(err) => {
-                        error!("Error creating shared memory file: {}:{}", err, err.desc());
-                        return Err(DandelionError::MemoryAllocationError);
-                    }
-                    _ => {}
-                };
+            match ftruncate(fd, size as _) {
+                Err(err) => {
+                    close(fd).unwrap();
+                    shm_unlink(filename.unwrap().as_str()).unwrap();
+                    error!("Error creating shared memory file: {}", err);
+                    return Err(DandelionError::MemoryAllocationError);
+                }
+                _ => {}
+            };
 
-                (fd, MapFlags::MAP_SHARED)
-            }
-            None => (-1, MapFlags::MAP_PRIVATE | MapFlags::MAP_ANONYMOUS),
+            (fd, MapFlags::MAP_SHARED)
+        } else {
+            (-1, MapFlags::MAP_PRIVATE | MapFlags::MAP_ANONYMOUS)
         };
 
         // Map the memory.
@@ -75,6 +76,10 @@ impl MmapMem {
                 0,
             ) {
                 Err(err) => {
+                    if shared {
+                        close(fd).unwrap();
+                        shm_unlink(filename.unwrap().as_str()).unwrap();
+                    }
                     error!("Error mapping memory: {}:{}", err, err.desc());
                     return Err(DandelionError::MemoryAllocationError);
                 }
@@ -166,6 +171,52 @@ impl MmapMem {
     pub unsafe fn as_slice_mut(&mut self) -> &mut [u8] {
         std::slice::from_raw_parts_mut(self.as_ptr(), self.size())
     }
+
+    pub fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
+        // check alignment
+        if offset % core::mem::align_of::<T>() != 0 {
+            debug!("Misaligned write at offset {}", offset);
+            return Err(DandelionError::WriteMisaligned);
+        }
+
+        // check if the write is within bounds
+        let write_length = data.len() * core::mem::size_of::<T>();
+        if offset + write_length > self.size() {
+            debug!("Write out of bounds at offset {}", offset);
+            return Err(DandelionError::InvalidWrite);
+        }
+
+        // write values
+        unsafe {
+            let buffer = core::slice::from_raw_parts(data.as_ptr() as *const u8, write_length);
+            self.as_slice_mut()[offset..offset + buffer.len()].copy_from_slice(&buffer);
+        }
+
+        Ok(())
+    }
+
+    pub fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
+        // check that buffer has proper allighment
+        if offset % core::mem::align_of::<T>() != 0 {
+            debug!("Misaligned write at offset {}", offset);
+            return Err(DandelionError::ReadMisaligned);
+        }
+
+        let read_size = core::mem::size_of::<T>() * read_buffer.len();
+        if offset + read_size > self.size() {
+            debug!("Read out of bounds at offset {}", offset);
+            return Err(DandelionError::InvalidRead);
+        }
+
+        // read values, sanitize if necessary
+        unsafe {
+            let read_memory =
+                core::slice::from_raw_parts_mut(read_buffer.as_mut_ptr() as *mut u8, read_size);
+            read_memory.copy_from_slice(&self.as_slice()[offset..offset + read_size]);
+        }
+
+        Ok(())
+    }
 }
 
 unsafe impl Send for MmapMem {}
@@ -190,11 +241,9 @@ impl Drop for MmapMem {
         if !self.ptr.is_null() {
             unsafe { munmap(self.ptr as *mut _, self.size).unwrap() };
         }
-
-        if self.fd != -1 {
+        if let Some(filename) = &self.filename {
             close(self.fd).unwrap();
-            let file = self.filename.clone();
-            shm_unlink(file.unwrap().as_str()).unwrap();
+            shm_unlink(filename.as_str()).unwrap();
         }
     }
 }
