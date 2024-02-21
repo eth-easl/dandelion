@@ -2,10 +2,9 @@
 mod compute_driver_tests {
     use crate::{
         function_driver::{
-            ComputeResource, Driver, Engine, EngineArguments, FunctionConfig, WorkQueue,
+            test_queue::TestQueue, ComputeResource, Driver, Engine, EngineArguments, FunctionConfig,
         },
         memory_domain::{Context, ContextState, ContextTrait, MemoryDomain},
-        promise::Promise,
         DataItem, DataSet, Position,
     };
     use core::panic;
@@ -13,73 +12,7 @@ mod compute_driver_tests {
         records::{Archive, RecordPoint, Recorder},
         DandelionError,
     };
-    use std::sync::{Arc, Condvar, Mutex};
-
-    struct TestQueueInternal {
-        args: Option<EngineArguments>,
-        promise: Option<Promise>,
-    }
-
-    #[derive(Clone)]
-    struct TestQueue {
-        internal: Arc<(Mutex<TestQueueInternal>, Condvar, Condvar)>,
-    }
-
-    impl TestQueue {
-        fn enqueu(&self, args: EngineArguments) -> Promise {
-            let (lock, arg_var, promise_var) = self.internal.as_ref();
-            let mut lock_guard = lock.lock().expect("Test queue failed to lock on enqueuing");
-            if lock_guard.args.is_some() {
-                lock_guard = arg_var
-                    .wait_while(lock_guard, |guard| guard.args.is_some())
-                    .expect("Test queue enqueue failed waiting on inserting args");
-            }
-            if lock_guard.args.replace(args).is_some() {
-                panic!("Test queue replace args still present")
-            };
-            arg_var.notify_all();
-            if lock_guard.promise.is_none() {
-                lock_guard = promise_var
-                    .wait_while(lock_guard, |guard| guard.promise.is_none())
-                    .expect("Test queue failed to lock on taking promise");
-            }
-            let promise = lock_guard
-                .promise
-                .take()
-                .expect("Test queue return promis should be there because of condvar");
-            promise_var.notify_all();
-            return promise;
-        }
-    }
-
-    impl WorkQueue for TestQueue {
-        fn get_engine_args(&self, promise: Promise) -> EngineArguments {
-            let (lock, arg_var, promise_var) = self.internal.as_ref();
-            let mut lock_guard = lock
-                .lock()
-                .expect("Test queue failed to lock on get_engine_args");
-            if lock_guard.promise.is_some() {
-                lock_guard = promise_var
-                    .wait_while(lock_guard, |guard| guard.promise.is_some())
-                    .expect("Test queue failed to wait to place new promise");
-            }
-            if lock_guard.promise.replace(promise).is_some() {
-                panic!("Test queue no promise should be present")
-            };
-            promise_var.notify_all();
-            if lock_guard.args.is_none() {
-                lock_guard = arg_var
-                    .wait_while(lock_guard, |guard| guard.args.is_none())
-                    .expect("Test queue failed waiting to take args");
-            }
-            let args = lock_guard
-                .args
-                .take()
-                .expect("Test queue tried to take args from empty queue");
-            arg_var.notify_all();
-            return args;
-        }
-    }
+    use std::sync::{Arc, Mutex};
 
     fn loader_empty<Dom: MemoryDomain>(dom_init: Vec<u8>, driver: Box<dyn Driver>) {
         // load elf file
@@ -96,16 +29,7 @@ mod compute_driver_tests {
         wrong_init: Vec<ComputeResource>,
     ) {
         for wronge_resource in wrong_init {
-            let queue_box = Box::new(TestQueue {
-                internal: Arc::new((
-                    Mutex::new(TestQueueInternal {
-                        args: None,
-                        promise: None,
-                    }),
-                    Condvar::new(),
-                    Condvar::new(),
-                )),
-            });
+            let queue_box = Box::new(TestQueue::new());
             let wrong_resource_engine = driver.start_engine(wronge_resource, queue_box);
             match wrong_resource_engine {
                 Ok(_) => panic!("Should not be able to get engine"),
@@ -114,16 +38,7 @@ mod compute_driver_tests {
         }
 
         for resource in init {
-            let queue_box = Box::new(TestQueue {
-                internal: Arc::new((
-                    Mutex::new(TestQueueInternal {
-                        args: None,
-                        promise: None,
-                    }),
-                    Condvar::new(),
-                    Condvar::new(),
-                )),
-            });
+            let queue_box = Box::new(TestQueue::new());
             let engine = driver.start_engine(resource, queue_box);
             engine.expect("Should be able to get engine");
         }
@@ -135,16 +50,7 @@ mod compute_driver_tests {
         driver: &Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) -> (Box<dyn Engine>, Context, FunctionConfig, Box<TestQueue>) {
-        let queue = Box::new(TestQueue {
-            internal: Arc::new((
-                Mutex::new(TestQueueInternal {
-                    args: None,
-                    promise: None,
-                }),
-                Condvar::new(),
-                Condvar::new(),
-            )),
-        });
+        let queue = Box::new(TestQueue::new());
         let mut domain = Dom::init(dom_init).expect("Should have initialized domain");
         let function = driver
             .parse_function(filename.to_string(), &mut domain)

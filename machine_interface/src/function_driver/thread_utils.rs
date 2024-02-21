@@ -34,6 +34,8 @@ pub struct ThreadController<E: EngineLoop> {
     thread_handle: Option<JoinHandle<()>>,
 }
 
+fn thread_abort() -> () {}
+
 fn run_thread<E: EngineLoop>(
     core_id: u8,
     command_receiver: CommandReceiver,
@@ -49,16 +51,24 @@ fn run_thread<E: EngineLoop>(
         if command_receiver.try_recv().is_ok() {
             return;
         }
-        let (promise, debt) = Promise::new();
+        let (promise, debt) = Promise::new(thread_abort);
         let EngineArguments {
             config,
             context,
             output_sets,
             mut recorder,
         } = queue.get_engine_args(promise);
-        recorder.record(RecordPoint::EngineStart);
+        if let Err(err) = recorder.record(RecordPoint::EngineStart) {
+            debt.fulfill(Box::new(Err(err)));
+            continue;
+        }
         let result = engine_state.run(config, context, output_sets);
-        recorder.record(RecordPoint::EngineEnd);
+        if result.is_ok() {
+            if let Err(err) = recorder.record(RecordPoint::EngineEnd) {
+                debt.fulfill(Box::new(Err(err)));
+                continue;
+            }
+        }
         let results = Box::new(result.and_then(|context| Ok((context, recorder))));
         debt.fulfill(results);
     }
@@ -75,6 +85,7 @@ impl<E: EngineLoop> ThreadController<E> {
         };
     }
 
+    // TODO remove if better way to abort is ready
     fn send_command(&mut self) -> DandelionResult<()> {
         match self.command_sender.send(()) {
             Err(_) => Err(DandelionError::EngineError),
@@ -85,12 +96,13 @@ impl<E: EngineLoop> ThreadController<E> {
 
 impl<E: EngineLoop> Drop for ThreadController<E> {
     fn drop(&mut self) {
-        if let Some(handle) = self.thread_handle.take() {
-            // drop channel
-            let _res = self.command_sender.send(());
-            handle
-                .join()
-                .expect("Join thread handle in Thread controller should not panic");
-        }
+        // TODO: actually interrup the thread and handle take down
+        // if let Some(handle) = self.thread_handle.take() {
+        //     // drop channel
+        //     let _res = self.command_sender.send(());
+        //     handle
+        //         .join()
+        //         .expect("Join thread handle in Thread controller should not panic");
+        // }
     }
 }

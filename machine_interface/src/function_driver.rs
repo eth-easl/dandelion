@@ -12,6 +12,8 @@ use libloading::Library;
 pub mod compute_driver;
 mod load_utils;
 pub mod system_driver;
+#[cfg(test)]
+mod test_queue;
 mod thread_utils;
 
 #[derive(Clone)]
