@@ -83,7 +83,12 @@ pub enum ComputeResource {
     GPU(u8),
 }
 
-pub struct EngineArguments {
+pub enum EngineArguments {
+    FunctionArguments(FunctionArguments),
+    Shutdown(fn(Vec<ComputeResource>) -> ()),
+}
+
+pub struct FunctionArguments {
     config: FunctionConfig,
     context: Context,
     output_sets: Vec<String>,
@@ -94,9 +99,6 @@ pub trait WorkQueue {
     fn get_engine_args(&self, promise: crate::promise::Promise) -> EngineArguments;
 }
 
-/// Engines need to free up the resource they occupy when dropped
-pub trait Engine {}
-
 pub trait Driver: Send + Sync {
     // the resource descirbed by config and make it into an engine of the type
     fn start_engine(
@@ -104,7 +106,7 @@ pub trait Driver: Send + Sync {
         resource: ComputeResource,
         // TODO check out why this can't be impl instead of Box<dyn
         queue: Box<dyn WorkQueue + Send>,
-    ) -> DandelionResult<Box<dyn Engine>>;
+    ) -> DandelionResult<()>;
 
     // parses an executable,
     // returns the layout requirements and a context containing static data,

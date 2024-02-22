@@ -1,7 +1,7 @@
 use crate::{
     function_driver::{
-        thread_utils::{EngineLoop, ThreadController},
-        ComputeResource, Driver, Engine, Function, FunctionConfig, WasmConfig, WorkQueue,
+        thread_utils::{start_thread, EngineLoop},
+        ComputeResource, Driver, Function, FunctionConfig, WasmConfig, WorkQueue,
     },
     interface::{read_output_structs, setup_input_structs},
     memory_domain::{Context, ContextType, MemoryDomain},
@@ -64,12 +64,6 @@ impl EngineLoop for WasmLoop {
     }
 }
 
-pub struct WasmEngine {
-    thread_controller: ThreadController<WasmLoop>,
-}
-
-impl Engine for WasmEngine {}
-
 pub struct WasmDriver {}
 
 impl Driver for WasmDriver {
@@ -77,7 +71,7 @@ impl Driver for WasmDriver {
         &self,
         resource: ComputeResource,
         queue: Box<dyn WorkQueue + Send>,
-    ) -> DandelionResult<Box<dyn Engine>> {
+    ) -> DandelionResult<()> {
         // sanity checks; extract core id
         let cpu_slot = match resource {
             ComputeResource::CPU(core) => core,
@@ -97,9 +91,8 @@ impl Driver for WasmDriver {
         }
 
         // create channels and spawn threads
-        return Ok(Box::new(WasmEngine {
-            thread_controller: ThreadController::new(cpu_slot, queue),
-        }));
+        start_thread::<WasmLoop>(cpu_slot, queue);
+        return Ok(());
     }
 
     fn parse_function(

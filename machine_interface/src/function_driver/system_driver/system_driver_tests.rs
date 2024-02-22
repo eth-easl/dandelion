@@ -3,7 +3,7 @@ mod system_driver_tests {
     use crate::{
         function_driver::{
             system_driver::get_system_function_output_sets, test_queue::TestQueue, ComputeResource,
-            Driver, EngineArguments, FunctionConfig, SystemFunction,
+            Driver, EngineArguments, FunctionArguments, FunctionConfig, SystemFunction,
         },
         memory_domain::{Context, ContextTrait, MemoryDomain},
         DataItem, DataSet, Position,
@@ -78,12 +78,12 @@ mod system_driver_tests {
         let archive = std::sync::Arc::new(std::sync::Mutex::new(Archive::new()));
         let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
         let output_sets = get_system_function_output_sets(SystemFunction::HTTP);
-        let promise = queue.enqueu(EngineArguments {
+        let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
             config,
             context,
             output_sets,
             recorder,
-        });
+        }));
         let (result_context, mut result_recorder) = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -151,12 +151,12 @@ mod system_driver_tests {
         let archive = std::sync::Arc::new(std::sync::Mutex::new(Archive::new()));
         let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
         let output_sets = get_system_function_output_sets(SystemFunction::HTTP);
-        let promise = queue.enqueu(EngineArguments {
+        let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
             config,
             context,
             output_sets,
             recorder,
-        });
+        }));
         let (result_context, mut result_recorder) = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()

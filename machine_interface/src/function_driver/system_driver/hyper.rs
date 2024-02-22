@@ -1,7 +1,7 @@
 use crate::{
     function_driver::{
-        thread_utils::{EngineLoop, ThreadController},
-        ComputeResource, Driver, Engine, Function, FunctionConfig, SystemFunction, WorkQueue,
+        thread_utils::{start_thread, EngineLoop},
+        ComputeResource, Driver, Function, FunctionConfig, SystemFunction, WorkQueue,
     },
     memory_domain::{Context, ContextTrait},
     DataItem, DataSet, Position,
@@ -357,12 +357,6 @@ impl EngineLoop for HyperLoop {
     }
 }
 
-pub struct HyperEngine {
-    thread_controller: ThreadController<HyperLoop>,
-}
-
-impl Engine for HyperEngine {}
-
 pub struct HyperDriver {}
 
 impl Driver for HyperDriver {
@@ -370,7 +364,7 @@ impl Driver for HyperDriver {
         &self,
         resource: ComputeResource,
         queue: Box<dyn WorkQueue + Send>,
-    ) -> DandelionResult<Box<dyn Engine>> {
+    ) -> DandelionResult<()> {
         let core_id = match resource {
             ComputeResource::CPU(core) => core,
             _ => return Err(DandelionError::EngineResourceError),
@@ -387,9 +381,8 @@ impl Driver for HyperDriver {
         {
             return Err(DandelionError::EngineResourceError);
         }
-        return Ok(Box::new(HyperEngine {
-            thread_controller: ThreadController::new(core_id, queue),
-        }));
+        start_thread::<HyperLoop>(core_id, queue);
+        return Ok(());
     }
 
     fn parse_function(

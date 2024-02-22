@@ -2,7 +2,8 @@
 mod compute_driver_tests {
     use crate::{
         function_driver::{
-            test_queue::TestQueue, ComputeResource, Driver, Engine, EngineArguments, FunctionConfig,
+            test_queue::TestQueue, ComputeResource, Driver, EngineArguments, FunctionArguments,
+            FunctionConfig,
         },
         memory_domain::{Context, ContextState, ContextTrait, MemoryDomain},
         DataItem, DataSet, Position,
@@ -49,19 +50,19 @@ mod compute_driver_tests {
         dom_init: Vec<u8>,
         driver: &Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
-    ) -> (Box<dyn Engine>, Context, FunctionConfig, Box<TestQueue>) {
+    ) -> (Context, FunctionConfig, Box<TestQueue>) {
         let queue = Box::new(TestQueue::new());
         let mut domain = Dom::init(dom_init).expect("Should have initialized domain");
         let function = driver
             .parse_function(filename.to_string(), &mut domain)
             .expect("Should be able to parse function");
-        let engine = driver
+        driver
             .start_engine(drv_init[0], queue.clone())
             .expect("Should be able to start engine");
         let function_context = function
             .load(&mut domain, 0x802_0000)
             .expect("Should be able to load function");
-        return (engine, function_context, function.config, queue);
+        return (function_context, function.config, queue);
     }
 
     fn engine_minimal<Dom: MemoryDomain>(
@@ -70,16 +71,16 @@ mod compute_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (_engine, function_context, config, queue) =
+        let (function_context, config, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         let archive = Arc::new(Mutex::new(Archive::new()));
         let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-        let promise = queue.enqueu(EngineArguments {
+        let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
             config: config,
             context: function_context,
             output_sets: Vec::new(),
             recorder: recorder.clone(),
-        });
+        }));
         let _ = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -93,7 +94,7 @@ mod compute_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (_engine, mut function_context, config, queue) =
+        let (mut function_context, config, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         // add inputs
         let in_size_offset = function_context
@@ -112,12 +113,12 @@ mod compute_driver_tests {
         }));
         let archive = Arc::new(Mutex::new(Archive::new()));
         let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-        let promise = queue.enqueu(EngineArguments {
+        let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
             config,
             context: function_context,
             output_sets: vec![String::from("")],
             recorder,
-        });
+        }));
         let (result_context, mut result_recorder) = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -169,7 +170,7 @@ mod compute_driver_tests {
         const LOWER_SIZE_BOUND: usize = 2;
         const UPPER_SIZE_BOUND: usize = 16;
         for mat_size in LOWER_SIZE_BOUND..UPPER_SIZE_BOUND {
-            let (_engine, mut function_context, config, queue) = prepare_engine_and_function::<Dom>(
+            let (mut function_context, config, queue) = prepare_engine_and_function::<Dom>(
                 filename,
                 dom_init.clone(),
                 &driver,
@@ -197,12 +198,12 @@ mod compute_driver_tests {
             }));
             let archive = Arc::new(Mutex::new(Archive::new()));
             let recorder = Recorder::new(archive.clone(), RecordPoint::TransferEnd);
-            let promise = queue.enqueu(EngineArguments {
+            let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
                 config,
                 context: function_context,
                 output_sets: vec![String::from("")],
                 recorder,
-            });
+            }));
             let (result_context, mut result_recorder) =
                 tokio::runtime::Builder::new_current_thread()
                     .build()
@@ -242,7 +243,7 @@ mod compute_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (_engine, mut function_context, config, queue) =
+        let (mut function_context, config, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         let stdin_content = "Test line \n line 2\n";
         let stdin_offset = function_context
@@ -288,12 +289,12 @@ mod compute_driver_tests {
         }));
         let archive = Arc::new(Mutex::new(Archive::new()));
         let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-        let promise = queue.enqueu(EngineArguments {
+        let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
             config,
             context: function_context,
             output_sets: vec![String::from("stdio")],
             recorder,
-        });
+        }));
         let (result_context, mut result_recorder) = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -358,7 +359,7 @@ mod compute_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (_engine, mut function_context, config, queue) =
+        let (mut function_context, config, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         let in_file_content = "Test file 0\n line 2\n";
         let in_file_offset = function_context
@@ -430,7 +431,7 @@ mod compute_driver_tests {
         }));
         let archive = Arc::new(Mutex::new(Archive::new()));
         let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-        let promise = queue.enqueu(EngineArguments {
+        let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
             config: config,
             context: function_context,
             output_sets: vec![
@@ -439,7 +440,7 @@ mod compute_driver_tests {
                 "out_nested".to_string(),
             ],
             recorder,
-        });
+        }));
         let (result_context, mut result_recorder) = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()

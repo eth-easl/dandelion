@@ -1,8 +1,8 @@
 use crate::{
     function_driver::{
         load_utils::load_u8_from_file,
-        thread_utils::{EngineLoop, ThreadController},
-        ComputeResource, Driver, ElfConfig, Engine, Function, FunctionConfig, WorkQueue,
+        thread_utils::{start_thread, EngineLoop},
+        ComputeResource, Driver, ElfConfig, Function, FunctionConfig, WorkQueue,
     },
     interface::{read_output_structs, setup_input_structs},
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
@@ -210,11 +210,6 @@ impl EngineLoop for MmuLoop {
     }
 }
 
-pub struct MmuEngine {
-    thread_controller: ThreadController<MmuLoop>,
-}
-impl Engine for MmuEngine {}
-
 pub struct MmuDriver {}
 
 impl Driver for MmuDriver {
@@ -223,7 +218,7 @@ impl Driver for MmuDriver {
         &self,
         resource: ComputeResource,
         queue: Box<dyn WorkQueue + Send>,
-    ) -> DandelionResult<Box<dyn Engine>> {
+    ) -> DandelionResult<()> {
         let cpu_slot = match resource {
             ComputeResource::CPU(core) => core,
             _ => return Err(DandelionError::EngineResourceError),
@@ -240,9 +235,8 @@ impl Driver for MmuDriver {
         {
             return Err(DandelionError::EngineResourceError);
         }
-        return Ok(Box::new(MmuEngine {
-            thread_controller: ThreadController::new(cpu_slot, queue),
-        }));
+        start_thread::<MmuLoop>(cpu_slot, queue);
+        return Ok(());
     }
 
     // parses an executable,
