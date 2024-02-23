@@ -1,6 +1,9 @@
+use crate::function_registry::{FunctionDict, Metadata};
 use dandelion_commons::{DandelionError, DandelionResult, FunctionId};
+use dparser;
+use itertools::Itertools;
 use machine_interface::memory_domain::Context;
-use std::{collections::{BTreeMap, HashMap}, sync::Arc, vec};
+use std::{collections::BTreeMap, sync::Arc};
 
 /// A composition has a composition wide id space that maps ids of
 /// the input and output sets to sets of individual functions to a unified
@@ -23,28 +26,154 @@ pub struct FunctionDependencies {
     pub output_set_ids: Vec<Option<usize>>,
 }
 
-impl Composition {
-    pub fn from_module(module: &dparser::Module,
-        function_ids: &mut crate::function_registry::FunctionDict) -> DandelionResult<Vec<(FunctionId, Self)>> {
-        
-        let mut known_functions = HashMap::new();
-        // let mut known_collections = HashMap::new();
+impl ShardingMode {
+    pub fn from_parser_sharding(sharding: &dparser::Sharding) -> Self {
+        return match sharding {
+            dparser::Sharding::All => Self::All,
+            dparser::Sharding::Keyed => Self::Key,
+            dparser::Sharding::Each => Self::Each,
+        };
+    }
+}
 
+impl Composition {
+    pub fn from_module(
+        module: &dparser::Module,
+        function_ids: &mut FunctionDict,
+    ) -> DandelionResult<Vec<(FunctionId, Self, Metadata)>> {
+        // TODO: do we need module somewhere else outside? Otherwise take ownership to safe a lot of clones
+        let mut known_functions = BTreeMap::new();
+        let mut compositions = Vec::new();
         for item in module.0.iter() {
             match item {
                 dparser::Item::FunctionDecl(fdecl) => {
-                    known_functions.insert(fdecl.v.name, (
-                        function_ids.lookup(&fdecl.v.name).ok_or(DandelionError::InvalidComposition)?,
-                        fdecl.v)
+                    known_functions.insert(
+                        fdecl.v.name.clone(),
+                        (
+                            function_ids
+                                .lookup(&fdecl.v.name)
+                                .ok_or(DandelionError::CompositionContainsInvalidFunction)?,
+                            fdecl,
+                        ),
                     );
                 }
                 dparser::Item::Composition(comp) => {
-                    
+                    let composition_id = function_ids.insert_or_lookup(comp.v.name.clone());
+                    let mut set_counter = 1usize;
+                    let mut set_numbers = BTreeMap::new();
+                    // add composition input sets
+                    for input_set_name in comp.v.params.iter() {
+                        if (set_numbers.insert(input_set_name.clone(), set_counter)).is_some() {
+                            // TODO: handle duplicate set names or guarantee the parser already errored on them
+                        }
+                        set_counter += 1;
+                    }
+                    // add all return sets from functions
+                    let composition_set_identifiers = comp
+                        .v
+                        .statements
+                        .iter()
+                        .flat_map(|statement| match statement {
+                            dparser::Statement::FunctionApplication(a) => {
+                                a.v.rets.iter().map(|ret| ret.v.ident.clone())
+                            }
+                            dparser::Statement::Loop(_) =>
+                                todo!("loop semantics need to be fleshed out and compositions extended to acoomodate them"),
+                        });
+                    for set_identifier in composition_set_identifiers {
+                        if (set_numbers.insert(set_identifier, set_counter)).is_some() {
+                            // TODO: handle duplicate set names or guarantee the parser already errored on them
+                        }
+                        set_counter += 1;
+                    }
+                    // have enumerated all set that are available so can start putting the composition together
+                    let dependencies = comp
+                        .v
+                        .statements
+                        .iter()
+                        .map(|statement| match statement {
+                            dparser::Statement::FunctionApplication(a) => {
+                                let (function_id, function_decl) =
+                                    known_functions.get(&a.v.name).ok_or(
+                                        DandelionError::CompositionContainsInvalidFunction,
+                                    )?;
+                                if function_decl.v.params.len() < a.v.args.len()
+                                    || function_decl.v.params.len() < a.v.rets.len()
+                                {
+                                    return Err(DandelionError::CompositionContainsInvalidFunction);
+                                }
+                                let mut input_set_ids = Vec::new();
+                                input_set_ids
+                                    .try_reserve(function_decl.v.params.len())
+                                    .or(Err(DandelionError::OutOfMemory))?;
+                                input_set_ids.resize(function_decl.v.params.len(), None);
+                                for (index, param_name) in function_decl.v.params.iter().enumerate()
+                                {
+                                    if let Some(arg) =
+                                        a.v.args.iter().find(|&arg| arg.v.name == *param_name)
+                                    {
+                                        let set_id = set_numbers.get(&arg.v.ident).ok_or(
+                                            DandelionError::CompositionFunctionInvalidIdentifier,
+                                        )?;
+                                        input_set_ids[index] = Some((
+                                            *set_id,
+                                            ShardingMode::from_parser_sharding(&arg.v.sharding),
+                                        ));
+                                    }
+                                }
+                                let mut output_set_ids = Vec::new();
+                                output_set_ids
+                                    .try_reserve(function_decl.v.returns.len())
+                                    .or(Err(DandelionError::OutOfMemory))?;
+                                output_set_ids.resize(function_decl.v.returns.len(), None);
+                                for (index, ret_name) in function_decl.v.returns.iter().enumerate()
+                                {
+                                    if a.v
+                                        .rets
+                                        .iter()
+                                        .find(|&arg| arg.v.name == *ret_name)
+                                        .is_some()
+                                    {
+                                        let set_id = set_numbers.get(ret_name).ok_or(
+                                            DandelionError::CompositionContainsInvalidFunction,
+                                        )?;
+                                        output_set_ids[index] = Some(*set_id);
+                                    }
+                                }
+                                Ok(FunctionDependencies {
+                                    function: *function_id,
+                                    input_set_ids,
+                                    output_set_ids,
+                                })
+                            }
+                            dparser::Statement::Loop(_) => {
+                                todo!("Need to implement loop support in compositions")
+                            }
+                        })
+                        .collect::<DandelionResult<Vec<_>>>()?;
+                    let metadata = Metadata {
+                        input_sets: comp
+                            .v
+                            .params
+                            .iter()
+                            .map(|name| (name.clone(), None))
+                            .collect_vec()
+                            .into(),
+                        output_sets: comp
+                            .v
+                            .returns
+                            .iter()
+                            .map(|name| name.clone())
+                            .collect_vec()
+                            .into(),
+                    };
+
+                    compositions.push((composition_id, Composition { dependencies }, metadata));
                 }
             }
         }
-        
-        Ok(todo!())
+
+        Ok(compositions)
     }
 }
 

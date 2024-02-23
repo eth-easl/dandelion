@@ -10,6 +10,7 @@ use core_affinity::set_for_current;
 use dandelion_commons::{DandelionError, DandelionResult};
 use hyper::{body::HttpBody, Body, Client, HeaderMap, Method, Request, Version};
 use log::error;
+use std::sync::Arc;
 use tokio::runtime::{Builder, Runtime};
 
 struct RequestInformation {
@@ -224,7 +225,7 @@ async fn http_request(request_info: RequestInformation) -> DandelionResult<Respo
 
 fn http_context_write(
     context: &mut Context,
-    output_set_names: Vec<String>,
+    output_set_names: Arc<Vec<String>>,
     response: ResponseInformation,
 ) -> DandelionResult<()> {
     context.clear_metadata();
@@ -301,7 +302,7 @@ fn http_context_write(
 fn http_run(
     mut context: Context,
     runtime: &Runtime,
-    output_set_names: Vec<String>,
+    output_set_names: Arc<Vec<String>>,
 ) -> DandelionResult<Context> {
     let response_result = {
         let _guard = runtime.enter();
@@ -343,7 +344,7 @@ impl EngineLoop for HyperLoop {
         &mut self,
         config: FunctionConfig,
         context: Context,
-        output_sets: Vec<String>,
+        output_sets: Arc<Vec<String>>,
     ) -> DandelionResult<Context> {
         let function = match config {
             FunctionConfig::SysConfig(sys_func) => sys_func,

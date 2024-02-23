@@ -89,10 +89,10 @@ pub enum EngineArguments {
 }
 
 pub struct FunctionArguments {
-    config: FunctionConfig,
-    context: Context,
-    output_sets: Vec<String>,
-    recorder: Recorder,
+    pub config: FunctionConfig,
+    pub context: Context,
+    pub output_sets: Arc<Vec<String>>,
+    pub recorder: Recorder,
 }
 
 pub trait WorkQueue {

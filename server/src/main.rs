@@ -445,14 +445,16 @@ async fn add_cold_functions(
     std::fs::create_dir_all(&tmp_dir).unwrap();
     for i in 0..max_cold {
         let metadata = Metadata {
-            input_sets: vec![(String::from(""), None)],
-            output_sets: vec![String::from("")],
+            input_sets: Arc::new(vec![(String::from(""), None)]),
+            output_sets: Arc::new(vec![String::from("")]),
         };
         let tmp_path = tmp_dir.join(i.to_string());
         if !tmp_path.exists() {
             std::fs::copy(path, &tmp_path).unwrap();
         }
-        registry.insert_metadata(todo!("function name: cold_id_base + i"), metadata).await;
+        registry
+            .insert_metadata(todo!("function name: cold_id_base + i"), metadata)
+            .await;
         registry
             .add_local(
                 cold_id_base + i,
@@ -593,8 +595,8 @@ fn main() -> () {
         drivers.insert(SYS_ENGINE, system_driver);
         registry = FunctionRegistry::new(drivers);
         let mmm_metadata = Metadata {
-            input_sets: vec![(String::from(""), None)],
-            output_sets: vec![String::from("")],
+            input_sets: Arc::new(vec![(String::from(""), None)]),
+            output_sets: Arc::new(vec![String::from("")]),
         };
         runtime.block_on(registry.insert_metadata(MMM_ID, mmm_metadata));
         // add for mmm hot function
@@ -617,8 +619,8 @@ fn main() -> () {
         // ));
         // add for busy hot functions
         let busy_metadata = Metadata {
-            input_sets: vec![(String::from(""), None)],
-            output_sets: vec![String::from("")],
+            input_sets: Arc::new(vec![(String::from(""), None)]),
+            output_sets: Arc::new(vec![String::from("")]),
         };
         runtime.block_on(registry.insert_metadata(BUSY_ID, busy_metadata));
         runtime
@@ -644,11 +646,13 @@ fn main() -> () {
             registry.insert_metadata(
                 HTTP_ID,
                 Metadata {
-                    input_sets: get_system_function_input_sets(SystemFunction::HTTP)
-                        .into_iter()
-                        .map(|name| (name, None))
-                        .collect(),
-                    output_sets: get_system_function_output_sets(SystemFunction::HTTP),
+                    input_sets: Arc::new(
+                        get_system_function_input_sets(SystemFunction::HTTP)
+                            .into_iter()
+                            .map(|name| (name, None))
+                            .collect(),
+                    ),
+                    output_sets: Arc::new(get_system_function_output_sets(SystemFunction::HTTP)),
                 },
             ),
         );
@@ -680,11 +684,13 @@ fn main() -> () {
             ],
         };
         let output_set_map = BTreeMap::from([(4, 0), (6, 1)]);
-        let input_sets = get_system_function_input_sets(SystemFunction::HTTP)
-            .into_iter()
-            .map(|name| (name, None))
-            .collect();
-        let output_sets = get_system_function_output_sets(SystemFunction::HTTP);
+        let input_sets = Arc::new(
+            get_system_function_input_sets(SystemFunction::HTTP)
+                .into_iter()
+                .map(|name| (name, None))
+                .collect(),
+        );
+        let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
         let composition_metadata = Metadata {
             input_sets,
             output_sets,

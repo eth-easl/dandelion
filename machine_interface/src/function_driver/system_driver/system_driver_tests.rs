@@ -12,6 +12,7 @@ mod system_driver_tests {
         records::{Archive, RecordPoint, Recorder},
         DandelionResult,
     };
+    use std::sync::Arc;
 
     const _CONTEXT_SIZE: usize = 2048 * 1024;
 
@@ -77,7 +78,7 @@ mod system_driver_tests {
 
         let archive = std::sync::Arc::new(std::sync::Mutex::new(Archive::new()));
         let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-        let output_sets = get_system_function_output_sets(SystemFunction::HTTP);
+        let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
         let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
             config,
             context,
@@ -150,7 +151,7 @@ mod system_driver_tests {
 
         let archive = std::sync::Arc::new(std::sync::Mutex::new(Archive::new()));
         let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-        let output_sets = get_system_function_output_sets(SystemFunction::HTTP);
+        let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
         let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
             config,
             context,

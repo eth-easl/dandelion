@@ -14,7 +14,7 @@ mod dispatcher_tests {
         function_driver::{ComputeResource, Driver},
         memory_domain::{Context, ContextTrait, MemoryDomain},
     };
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, sync::Arc};
 
     // using 0x802_0000 because that is what WASM specifies
     const DEFAULT_CONTEXT_SIZE: usize = 0x802_0000; // 128MiB
@@ -46,8 +46,8 @@ mod dispatcher_tests {
         path.push(name);
         let path_string = path.to_str().expect("Path should be string");
         let metadata = Metadata {
-            input_sets: in_set_names,
-            output_sets: out_set_names,
+            input_sets: Arc::new(in_set_names),
+            output_sets: Arc::new(out_set_names),
         };
         let mut pool_map = BTreeMap::new();
         pool_map.insert(engine_id, engine_resource);

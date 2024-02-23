@@ -28,13 +28,13 @@ pub struct Alternative {
 }
 
 /// Struct to describe meatadata about a function that is true accross all drivers
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Metadata {
     /// input set names and optionally a static composition that is to be used for that input
     /// if the static input set is defined, any new input to that set is to be ignored
-    pub input_sets: Vec<(String, Option<CompositionSet>)>,
+    pub input_sets: Arc<Vec<(String, Option<CompositionSet>)>>,
     /// output set names
-    pub output_sets: Vec<String>,
+    pub output_sets: Arc<Vec<String>>,
 }
 
 pub struct FunctionDict {
@@ -49,19 +49,19 @@ impl FunctionDict {
     
     pub fn insert_or_lookup(&mut self, function_name: String) -> FunctionId {
         use std::collections::btree_map::Entry;
-        match self.map.entry(&function_name) {
+        match self.map.entry(function_name) {
             Entry::Vacant(v) => {
                 let new_id = self.next_id;
                 v.insert(new_id);
                 self.next_id += 1;
                 new_id
             },
-            Entry::Occupied(o) => *o,
+            Entry::Occupied(o) => *o.get(),
         }
     }
     
     pub fn lookup(&self, function_name: &str) -> Option<FunctionId> {
-        self.map.get(function_name)
+        self.map.get(function_name).cloned()
     }
 }
 
@@ -79,7 +79,7 @@ pub struct FunctionRegistry {
     /// map with file paths for functions for on disk available functons
     on_disk: Mutex<BTreeMap<(FunctionId, EngineTypeId), String>>,
     /// map with input and output set names for functions
-    metadata: Mutex<BTreeMap<FunctionId, Arc<Metadata>>>,
+    metadata: Mutex<BTreeMap<FunctionId, Metadata>>,
     /// map name to function id
     function_dict: Mutex<FunctionDict>, 
 }
@@ -109,13 +109,13 @@ impl FunctionRegistry {
 
     /// function that tries to insert metadata, returns true if metadata was successfully inserted
     /// or false if there was already metadata present
-    pub async fn insert_metadata(&self, function_name: String, metadata: Metadata) -> () {
-        self.function_dict.lock().await.insert_or_lookup(function_name);
-        self.metadata.lock().await.insert(function_id, Arc::new(metadata));
+    pub async fn insert_metadata(&self, function_id: FunctionId, metadata: Metadata) -> () {
+        // let function_id = self.function_dict.lock().await.insert_or_lookup(function_name);
+        self.metadata.lock().await.insert(function_id, metadata);
         return;
     }
 
-    pub async fn get_metadata(&self, function_id: FunctionId) -> DandelionResult<Arc<Metadata>> {
+    pub async fn get_metadata(&self, function_id: FunctionId) -> DandelionResult<Metadata> {
         return self
             .metadata
             .lock()
@@ -125,7 +125,7 @@ impl FunctionRegistry {
             .ok_or(DandelionError::DispatcherUnavailableFunction);
     }
     
-    pub fn add_composition_from_module(
+    pub async fn add_composition_from_module(
         &mut self, // maybe?
         function_name: FunctionId,
         module: &str,
@@ -133,8 +133,9 @@ impl FunctionRegistry {
     ) -> DandelionResult<()> {
         // TODO actually handle the error in some sensible way
         // the error contains the parsing failure
-        let module = dparser::parse(module).map_err(|_| DandelionError::InvalidComposition)?;
-        Composition::from_module(&module, self.function_dict.)
+        let module = dparser::parse(module).map_err(|_| DandelionError::CompositionParsingError)?;
+        Composition::from_module(&module, &mut *self.function_dict.lock().await);
+        Ok(todo!())
     }
 
     pub fn add_composition(
@@ -303,15 +304,14 @@ impl FunctionRegistry {
         let function_context = function.load(domain, ctx_size)?;
         let function_config = function.config.clone();
         if !non_caching {
-            if self
+            self
                 .in_memory
                 .lock()
                 .await
-                .insert((function_id, engine_id), Arc::new(function))
-                .is_some()
-            {
-                panic!("Function not in registry even after Ok from loading");
-            };
+                .insert((function_id, engine_id), Arc::new(function));
+            // TODO: insert can return something, so there was something loaded
+            // this happens when the same binary is loaded independently multiple times,
+            // need to figure out how to avoid this
         }
         return Ok((function_context, function_config));
     }

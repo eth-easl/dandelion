@@ -11,7 +11,6 @@ use dandelion_commons::{
 };
 use futures::{
     future::join_all,
-    lock::Mutex,
     stream::{FuturesUnordered, StreamExt},
     Future,
 };
@@ -21,7 +20,7 @@ use machine_interface::{
     memory_domain::{transer_data_item, Context, MemoryDomain},
 };
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet},
     sync::Arc,
     sync::Mutex as SyncMutex,
 };
@@ -30,7 +29,7 @@ use std::{
 // That have compile time size and static indexing
 pub struct Dispatcher {
     domains: BTreeMap<ContextTypeId, Box<dyn MemoryDomain>>,
-    engines: BTreeMap<EngineTypeId, EngineQueue>,
+    engines: BTreeMap<EngineTypeId, Box<EngineQueue>>,
     type_map: BTreeMap<EngineTypeId, ContextTypeId>,
     function_registry: FunctionRegistry,
     pub archive: Arc<SyncMutex<Archive>>,
@@ -47,16 +46,14 @@ impl Dispatcher {
         // Use up all engine resources to start with
         for (engine_id, driver) in function_registry.drivers.iter() {
             let mut engine_vec = Vec::new();
+            let engine_queue = Box::new(EngineQueue::new());
             while let Ok(Some(resource)) =
                 resource_pool.sync_acquire_engine_resource(engine_id.clone())
             {
-                let engine = driver.start_engine(resource)?;
+                let engine = driver.start_engine(resource, engine_queue.clone())?;
                 engine_vec.push(engine);
             }
-            let engine_queue = EngineQueue {
-                internals: Mutex::new((engine_vec, VecDeque::new())),
-            };
-            engines.insert(engine_id.clone(), engine_queue);
+            engines.insert(*engine_id, engine_queue);
         }
         let archive: Arc<SyncMutex<Archive>> = Arc::new(SyncMutex::new(Archive::new()));
         return Ok(Dispatcher {
@@ -76,8 +73,11 @@ impl Dispatcher {
         path: &str,
         metadata: Metadata,
     ) -> DandelionResult<()> {
+        // self.function_registry
+        //     .insert_metadata(todo!("funciton name"), metadata)
+        //     .await;
         self.function_registry
-            .insert_metadata(todo!("funciton name"), metadata)
+            .insert_metadata(function_id, metadata)
             .await;
         return self
             .function_registry
@@ -85,6 +85,7 @@ impl Dispatcher {
             .await;
     }
 
+    // TODO: change test to use the queue function and remove this from being public
     pub async fn queue_composition(
         &self,
         composition: Composition,
@@ -244,7 +245,7 @@ impl Dispatcher {
         >,
     > {
         Box::pin(async move {
-            let mut recorder = Recorder::new(self.archive.clone(), RecordPoint::Arrival);
+            let recorder = Recorder::new(self.archive.clone(), RecordPoint::Arrival);
             // start new record for the function
             // find an engine capable of running the function
             // TODO actual scheduling decisions
@@ -262,16 +263,15 @@ impl Dispatcher {
                                 recorder.clone(),
                             )
                             .await?;
-                        let (result, context) = self
+                        let (context, mut recorder) = self
                             .run_on_engine(
                                 *engine_id,
                                 config,
-                                &metadata.output_sets,
+                                metadata.output_sets,
                                 context,
                                 recorder.clone(),
                             )
-                            .await;
-                        result?;
+                            .await?;
                         recorder.record(RecordPoint::FutureReturn)?;
                         let context_arc = Arc::new(context);
                         let composition_sets = output_mapping
@@ -333,7 +333,7 @@ impl Dispatcher {
         ctx_size: usize,
         non_caching: bool,
         mut recorder: Recorder,
-    ) -> DandelionResult<(Context, FunctionConfig, Arc<Metadata>)> {
+    ) -> DandelionResult<(Context, FunctionConfig, Metadata)> {
         let metadata = self.function_registry.get_metadata(function_id).await?;
         // get context and load static data
         let context_id = match self.type_map.get(&engine_type) {
@@ -410,17 +410,17 @@ impl Dispatcher {
         &self,
         engine_type: EngineTypeId,
         function_config: FunctionConfig,
-        output_sets: &Vec<String>,
+        output_sets: Arc<Vec<String>>,
         function_context: Context,
         recorder: Recorder,
-    ) -> (DandelionResult<()>, Context) {
+    ) -> DandelionResult<(Context, Recorder)> {
         // preparation is done, get engine to receive engine
         let engine_queue = match self.engines.get(&engine_type) {
             Some(q) => q,
-            None => return (Err(DandelionError::DispatcherConfigError), function_context),
+            None => return Err(DandelionError::DispatcherConfigError),
         };
         return engine_queue
-            .perform_single_run(&function_config, function_context, output_sets, recorder)
+            .perform_single_run(function_config, function_context, output_sets, recorder)
             .await;
     }
 }

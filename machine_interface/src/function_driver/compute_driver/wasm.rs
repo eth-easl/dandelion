@@ -24,7 +24,7 @@ impl EngineLoop for WasmLoop {
         &mut self,
         config: FunctionConfig,
         mut context: Context,
-        output_set_names: Vec<String>,
+        output_set_names: Arc<Vec<String>>,
     ) -> DandelionResult<Context> {
         let wasm_config = match config {
             FunctionConfig::WasmConfig(wasm_config) => wasm_config,

@@ -84,8 +84,8 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
                 DEFAULT_CONTEXT_SIZE,
                 absolute_path.to_str().expect("Path should be valid string"),
                 Metadata {
-                    input_sets: local_names,
-                    output_sets: out_set_names.clone(),
+                    input_sets: Arc::new(local_names),
+                    output_sets: Arc::new(out_set_names.clone()),
                 },
             ))
             .expect("should be able to update function");
@@ -188,8 +188,8 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
                 DEFAULT_CONTEXT_SIZE,
                 absolute_path.to_str().expect("Path should be valid string"),
                 Metadata {
-                    input_sets: local_names,
-                    output_sets: out_set_names.clone(),
+                    input_sets: Arc::new(local_names),
+                    output_sets: Arc::new(out_set_names.clone()),
                 },
             ))
             .expect("should be able to update function");

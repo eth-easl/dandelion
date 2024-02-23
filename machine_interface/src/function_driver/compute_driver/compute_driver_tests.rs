@@ -78,7 +78,7 @@ mod compute_driver_tests {
         let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
             config: config,
             context: function_context,
-            output_sets: Vec::new(),
+            output_sets: Arc::new(Vec::new()),
             recorder: recorder.clone(),
         }));
         let _ = tokio::runtime::Builder::new_current_thread()
@@ -116,7 +116,7 @@ mod compute_driver_tests {
         let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
             config,
             context: function_context,
-            output_sets: vec![String::from("")],
+            output_sets: Arc::new(vec![String::from("")]),
             recorder,
         }));
         let (result_context, mut result_recorder) = tokio::runtime::Builder::new_current_thread()
@@ -201,7 +201,7 @@ mod compute_driver_tests {
             let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
                 config,
                 context: function_context,
-                output_sets: vec![String::from("")],
+                output_sets: Arc::new(vec![String::from("")]),
                 recorder,
             }));
             let (result_context, mut result_recorder) =
@@ -292,7 +292,7 @@ mod compute_driver_tests {
         let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
             config,
             context: function_context,
-            output_sets: vec![String::from("stdio")],
+            output_sets: Arc::new(vec![String::from("stdio")]),
             recorder,
         }));
         let (result_context, mut result_recorder) = tokio::runtime::Builder::new_current_thread()
@@ -434,11 +434,11 @@ mod compute_driver_tests {
         let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
             config: config,
             context: function_context,
-            output_sets: vec![
+            output_sets: Arc::new(vec![
                 "stdio".to_string(),
                 "out".to_string(),
                 "out_nested".to_string(),
-            ],
+            ]),
             recorder,
         }));
         let (result_context, mut result_recorder) = tokio::runtime::Builder::new_current_thread()

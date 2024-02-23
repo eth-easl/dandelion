@@ -16,7 +16,7 @@ pub trait EngineLoop {
         &mut self,
         config: FunctionConfig,
         context: Context,
-        output_sets: Vec<String>,
+        output_sets: std::sync::Arc<Vec<String>>,
     ) -> DandelionResult<Context>;
 }
 
