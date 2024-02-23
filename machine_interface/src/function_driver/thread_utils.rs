@@ -3,7 +3,6 @@ use crate::{
         ComputeResource, EngineArguments, FunctionArguments, FunctionConfig, WorkQueue,
     },
     memory_domain::Context,
-    promise::Promise,
 };
 use core::marker::Send;
 use dandelion_commons::{records::RecordPoint, DandelionResult};
@@ -21,8 +20,6 @@ pub trait EngineLoop {
     ) -> DandelionResult<Context>;
 }
 
-fn thread_abort() -> () {}
-
 fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
     // set core affinity
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
@@ -31,9 +28,9 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
     }
     let mut engine_state = E::init(core_id).expect("Failed to initialize thread state");
     loop {
-        let (promise, debt) = Promise::new(thread_abort);
         // TODO catch unwind so we can always return an error or shut down gracefully
-        match queue.get_engine_args(promise) {
+        let (args, debt) = queue.get_engine_args();
+        match args {
             EngineArguments::FunctionArguments(func_args) => {
                 let FunctionArguments {
                     config,

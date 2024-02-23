@@ -14,8 +14,15 @@ pub enum DandelionError {
     // errors in configurations
     /// configuration vector was malformed
     MalformedConfig,
+    // errors in parsing or creating compositions
+    /// failed to parse function
+    CompositionParsingError,
     /// parser did not find symbol that it was searching for
     UnknownSymbol,
+    /// Composition contains function that does not exist
+    CompositionContainsInvalidFunction,
+    /// Function in parsing has identifier that is not defined in composition
+    CompositionFunctionInvalidIdentifier,
     // domain and context errors
     /// error creating layout for read only context
     ContextReadOnlyLayout,
@@ -59,6 +66,8 @@ pub enum DandelionError {
     EngineError,
     /// asked driver for engine, but there are no more available
     NoEngineAvailable,
+    /// debt was dropped without fulfilling it
+    PromiseDroppedDebt,
     /// there was a non recoverable issue when spawning or running the MMU worker
     MmuWorkerError,
     // system engine errors
@@ -106,9 +115,6 @@ pub enum DandelionError {
     // errors from the functions
     /// Function indicated it failed
     FunctionError(i32),
-    
-    // TODO: resort this
-    InvalidComposition,
 }
 
 pub type DandelionResult<T> = std::result::Result<T, DandelionError>;

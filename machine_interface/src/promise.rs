@@ -6,7 +6,7 @@ use core::{
     sync::atomic::{AtomicPtr, AtomicU8, Ordering},
     task::Poll,
 };
-use dandelion_commons::{records::Recorder, DandelionResult};
+use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
 
 pub struct Promise {
     data: *const PromiseData,
@@ -14,9 +14,9 @@ pub struct Promise {
 unsafe impl Send for Promise {}
 
 impl Promise {
-    pub fn new(abort_handle: fn()) -> (Promise, Debt) {
+    pub fn new() -> (Promise, Debt) {
         let data = Box::new(PromiseData {
-            abort_handle: AtomicPtr::new(abort_handle as *mut fn()),
+            abort_handle: AtomicPtr::new(ptr::null_mut()),
             results: AtomicPtr::new(ptr::null_mut()),
             waker: AtomicPtr::new(ptr::null_mut()),
             references: AtomicU8::new(2),
@@ -26,7 +26,10 @@ impl Promise {
         let debt = Debt { data: data_ptr };
         return (promise, debt);
     }
-    pub fn abort(self) -> () {
+    pub fn abort(mut self) -> () {
+        self.abort_internal();
+    }
+    fn abort_internal(&mut self) {
         let data = unsafe { &*self.data };
         let abort_hanlde = data.abort_handle.swap(ptr::null_mut(), Ordering::SeqCst);
         if !abort_hanlde.is_null() {
@@ -65,20 +68,22 @@ pub struct Debt {
 unsafe impl Send for Debt {}
 
 impl Debt {
-    pub fn fulfill(self, results: Box<DandelionResult<(Context, Recorder)>>) -> () {
-        // make sure we are not aborted by this promise anymore
+    pub fn fulfill(self, results: Box<DandelionResult<(Context, Recorder)>>) {
         let data = unsafe { &*self.data };
-        let abort_handle = data.abort_handle.swap(ptr::null_mut(), Ordering::SeqCst);
-        if abort_handle.is_null() {
-            return;
-        }
         // make sure we are not aborted by this promise anymore
+        data.abort_handle.store(ptr::null_mut(), Ordering::Release);
+        // write a result
         data.results.store(Box::into_raw(results), Ordering::SeqCst);
         let waker_ptr = data.waker.swap(ptr::null_mut(), Ordering::SeqCst);
         if !waker_ptr.is_null() {
             let waker = unsafe { Box::from_raw(waker_ptr) };
             waker.wake();
         }
+    }
+    pub fn install_abort_handle(&self, handle: fn()) {
+        let data = unsafe { &*self.data };
+        data.abort_handle
+            .store(handle as *mut fn(), Ordering::Release);
     }
 }
 
@@ -91,11 +96,28 @@ fn drop_promise_data(data_ptr: *const PromiseData) {
 
 impl Drop for Promise {
     fn drop(&mut self) {
+        self.abort_internal();
         drop_promise_data(self.data);
     }
 }
 impl Drop for Debt {
     fn drop(&mut self) {
+        let data = unsafe { &*self.data };
+        // make sure we can't get aborted by this handle anymore
+        data.abort_handle.store(ptr::null_mut(), Ordering::Release);
+        // if abort_handle is not null, there is still a promise waiting for a result
+        if data.results.load(Ordering::Acquire).is_null() {
+            // always pay your debts
+            let error_box = Box::new(Err(DandelionError::PromiseDroppedDebt));
+            // only need to store, because the debt is being dropped and only the debts could be used to fill in a result
+            data.results
+                .store(Box::into_raw(error_box), Ordering::SeqCst);
+            let waker_ptr = data.waker.swap(ptr::null_mut(), Ordering::SeqCst);
+            if !waker_ptr.is_null() {
+                let waker = unsafe { Box::from_raw(waker_ptr) };
+                waker.wake();
+            }
+        }
         drop_promise_data(self.data);
     }
 }

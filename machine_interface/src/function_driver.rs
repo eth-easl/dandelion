@@ -96,7 +96,7 @@ pub struct FunctionArguments {
 }
 
 pub trait WorkQueue {
-    fn get_engine_args(&self, promise: crate::promise::Promise) -> EngineArguments;
+    fn get_engine_args(&self) -> (EngineArguments, crate::promise::Debt);
 }
 
 pub trait Driver: Send + Sync {
