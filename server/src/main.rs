@@ -8,6 +8,7 @@ use dispatcher::{
     resource_pool::ResourcePool,
 };
 use futures::lock::Mutex;
+use futures::stream::StreamExt;
 use http::StatusCode;
 use hyper::{
     service::{make_service_fn, service_fn},
@@ -19,8 +20,10 @@ use machine_interface::{
         system_driver::{get_system_function_input_sets, get_system_function_output_sets},
         ComputeResource, SystemFunction,
     },
-    memory_domain::{malloc::MallocMemoryDomain, read_only::ReadOnlyContext},
+    memory_domain::{mmap::MmapMemoryDomain, read_only::ReadOnlyContext},
 };
+use signal_hook::consts::signal::*;
+use signal_hook_tokio::Signals;
 
 #[cfg(feature = "hyper_io")]
 use machine_interface::function_driver::system_driver::hyper::HyperDriver;
@@ -56,6 +59,7 @@ use machine_interface::{
 use std::{
     collections::BTreeMap,
     convert::Infallible,
+    io,
     mem::size_of,
     net::SocketAddr,
     path::PathBuf,
@@ -80,11 +84,24 @@ const COMPOSITION_COLD_ID_BASE: u64 = 0x3000000;
 
 // context size for functions
 const DEFAULT_CONTEXT_SIZE: usize = 0x802_0000; // 128MiB
-const SYSTEM_CONTEXT_SIZE: usize = 0x200_0000; // 2MiB
+const SYSTEM_CONTEXT_SIZE: usize = 0x200_0000; // 32MiB
 
 static INIT_MATRIX: Once = Once::new();
 static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
 static COLD_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+// Handles graceful shutdown
+async fn handle_signals(mut signals: Signals) -> io::Result<()> {
+    while let Some(signal) = signals.next().await {
+        match signal {
+            SIGTERM | SIGINT | SIGQUIT => {
+                return Ok(());
+            }
+            _ => unreachable!(),
+        }
+    }
+    Ok(())
+}
 
 async fn run_chain(
     dispatcher: Arc<Dispatcher>,
@@ -93,7 +110,7 @@ async fn run_chain(
     post_uri: String,
     max_cold: u64,
 ) -> u64 {
-    let domain = MallocMemoryDomain::init(vec![]).expect("Should be able to get malloc domain");
+    let domain = MmapMemoryDomain::init(vec![]).expect("Should be able to get Mmap domain");
     let mut input_context = domain
         .acquire_context(128)
         .expect("Should be able to get malloc context");
@@ -531,7 +548,8 @@ fn main() -> () {
     };
     domains.insert(
         SYS_CONTEXT,
-        MallocMemoryDomain::init(Vec::new()).expect("Should be able to initialize malloc domain"),
+        MmapMemoryDomain::init(Vec::new())
+            .expect("Should be able to initialize Mmap memory domain"),
     );
     let mut registry;
     // insert specific configuration
@@ -785,6 +803,10 @@ fn main() -> () {
     });
     let server = Server::bind(&addr).serve(make_svc);
 
+    let signals = Signals::new(&[SIGTERM, SIGINT, SIGQUIT]).unwrap();
+    let graceful =
+        server.with_graceful_shutdown(async move { handle_signals(signals).await.unwrap() });
+
     #[cfg(feature = "cheri")]
     println!("Hello, World (cheri)");
     #[cfg(feature = "mmu")]
@@ -793,8 +815,8 @@ fn main() -> () {
     println!("Hello, World (wasm)");
     #[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm")))]
     println!("Hello, World (native)");
-    // Run this server for... forever!
-    if let Err(e) = runtime.block_on(server) {
+    // Run this server for... forever... unless I receive a signal!
+    if let Err(e) = runtime.block_on(graceful) {
         error!("server error: {}", e);
     }
 }
