@@ -5,11 +5,8 @@ use dandelion_commons::{DandelionError, DandelionResult};
 
 use wasmtime::{Module, Store, Memory, Engine, MemoryType};
 
-// pub struct WasmtimeLoadedContext {
-//     pub store:  Store<()>,
-//     pub memory: Memory,
-//     pub module: Module,
-// }
+pub static WASM_PAGE_SIZE: usize = 64 * 1024;                       // 64KiB
+pub static MAX_WASM_MEMORY_SIZE: usize = 4 * 1024 * 1024 * 1024;    // 4GiB
 
 pub struct WasmtimeContext {
     pub store:  Option<Store<()>>,      // store initialized in load()
@@ -64,13 +61,9 @@ impl MemoryDomain for WasmtimeMemoryDomain {
         Ok(Box::new(WasmtimeMemoryDomain {}))
     }
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
-        let mut next_page_size = size;
-        if size % 2usize.pow(16) != 0 {
-            // TODO: maybe this should throw an error, but would currently break domain tests
-            next_page_size = size.checked_add( 2usize.pow(16) - (size % 2usize.pow(16)) )
-                .ok_or(DandelionError::OutOfMemory)?;
+        if size > MAX_WASM_MEMORY_SIZE {
+            return Err(DandelionError::InvalidMemorySize);
         }
-
         Ok(Context::new(
             ContextType::Wasmtime(Box::new(
                 WasmtimeContext {
@@ -79,7 +72,7 @@ impl MemoryDomain for WasmtimeMemoryDomain {
                     memory: None,
                 }
             )),
-            next_page_size
+            (size + WASM_PAGE_SIZE/2) / WASM_PAGE_SIZE * WASM_PAGE_SIZE  // round up to next page
         ))
     }
 }

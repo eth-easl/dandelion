@@ -11,12 +11,15 @@ use libloading::Library;
 
 #[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precomp"))]
 use wasmtime;
+#[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precomp"))]
+use crate::function_driver::compute_driver::wasmtime as wasmtime_driver;
 
 pub mod compute_driver;
 mod load_utils;
 pub mod system_driver;
 mod thread_utils;
 
+#[cfg(any(feature = "mmu", feature = "cheri"))]
 #[derive(Clone)]
 pub struct ElfConfig {
     // TODO change to positions
@@ -54,6 +57,7 @@ pub struct WasmtimeConfig {
 
 #[derive(Clone)]
 pub enum FunctionConfig {
+    #[cfg(any(feature = "mmu", feature = "cheri"))]
     ElfConfig(ElfConfig),
     SysConfig(SystemFunction),
     #[cfg(feature = "wasm")]
@@ -71,9 +75,10 @@ pub struct Function {
 impl Function {
     pub fn load(&self, domain: &Box<dyn MemoryDomain>) -> DandelionResult<Context> {
         return match &self.config {
+            #[cfg(any(feature = "mmu", feature = "cheri"))]
             FunctionConfig::ElfConfig(_) => {
                 load_utils::load_static(domain, &self.context, &self.requirements)
-            }
+            },
             FunctionConfig::SysConfig(_) => domain.acquire_context(self.requirements.size),
             #[cfg(feature = "wasm")]
             FunctionConfig::WasmConfig(c) => {
@@ -83,29 +88,7 @@ impl Function {
             },
             #[cfg(any(feature = "wasmtime-jit", feature = "wasmtime-precomp"))]
             FunctionConfig::WasmtimeConfig(c) => {
-                let mut context = domain.acquire_context(c.total_mem_size)?;
-
-                let mut wasmtime_context = match context.context {
-                    ContextType::Wasmtime(ref mut c) => c,
-                    _ => return Err(DandelionError::ConfigMissmatch),
-                };
-
-                // initialize store and memory
-                let pages = (c.total_mem_size + 65536/2) / 2usize.pow(16);  // round up to next page
-                let mut store = wasmtime::Store::new(&c.wasmtime_engine, ());
-                let mem_type = wasmtime::MemoryType::new(pages as u32, Some(pages as u32));
-                let memory = Some(
-                    wasmtime::Memory::new(&mut store, mem_type)
-                        .map_err(|_| DandelionError::OutOfMemory)?
-                );
-                wasmtime_context.store = Some(store);
-                wasmtime_context.memory = memory;
-
-                // the wasm module will be initialized in the engine
-
-                // occupy clang-generated wasm memory
-                context.occupy_space(0, c.sdk_heap_base)?;
-                Ok(context)
+                wasmtime_driver::load_context(c, domain)
             },
         };
     }

@@ -649,8 +649,7 @@ mod compute_driver_tests {
             ComputeResource::GPU(0),
         ]);
 
-        #[cfg(features = "wasmtime-precomp")]
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(all(feature = "wasmtime-precomp", target_arch = "x86_64"))]
         driverTests!(wasmtime_x86_64; WasmtimeMemoryDomain; Vec::new(); WasmtimeDriver {};
         vec![
             ComputeResource::CPU(1),
@@ -662,8 +661,7 @@ mod compute_driver_tests {
             ComputeResource::GPU(0),
         ]);
 
-        #[cfg(not(features = "wasmtime-precomp"))]
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(all(feature = "wasmtime-precomp", target_arch = "aarch64"))]
         driverTests!(wasmtime_aarch64; WasmtimeMemoryDomain; Vec::new(); WasmtimeDriver {};
         vec![
             ComputeResource::CPU(1),

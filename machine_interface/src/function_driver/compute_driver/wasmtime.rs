@@ -4,7 +4,7 @@ use crate::{
         thread_utils::{DefaultState, ThreadCommand, ThreadController, ThreadPayload},
         ComputeResource, Driver, Engine, FunctionConfig, Function, WasmtimeConfig
     },
-    memory_domain::{Context, ContextType, MemoryDomain, wasmtime::WasmtimeContext},
+    memory_domain::{Context, ContextType, MemoryDomain, wasmtime::{WasmtimeContext, WASM_PAGE_SIZE}},
     DataRequirementList,
     interface::{_32_bit::DandelionSystemData, read_output_structs, setup_input_structs}, 
 };
@@ -24,6 +24,34 @@ use std::{
 use log::{error, info};
 
 use wasmtime;
+
+
+/// Creates and configures a WasmtimeContext given a WasmtimeConfig.
+/// This results in allocation of a new wasmtime::Store and wasmtime::Memory.
+/// The wasmtime::Module will be initialized in the engine.
+pub fn load_context(c: &WasmtimeConfig, domain: &Box<dyn MemoryDomain>) -> DandelionResult<Context> {
+    let mut context = domain.acquire_context(c.total_mem_size)?;
+
+    let mut wasmtime_context = match context.context {
+        ContextType::Wasmtime(ref mut c) => c,
+        _ => return Err(DandelionError::ConfigMissmatch),
+    };
+
+    // initialize store and memory
+    let pages = (c.total_mem_size + WASM_PAGE_SIZE) / WASM_PAGE_SIZE;  // round up to next page
+    let mut store = wasmtime::Store::new(&c.wasmtime_engine, ());
+    let mem_type = wasmtime::MemoryType::new(pages as u32, Some(pages as u32));
+    let memory = Some(
+        wasmtime::Memory::new(&mut store, mem_type)
+            .map_err(|_| DandelionError::OutOfMemory)?
+    );
+    wasmtime_context.store = Some(store);
+    wasmtime_context.memory = memory;
+
+    // occupy clang-generated wasm memory
+    context.occupy_space(0, c.sdk_heap_base)?;
+    Ok(context)
+}
 
 
 struct WasmtimeCommand {

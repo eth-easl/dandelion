@@ -23,6 +23,8 @@ pub enum DandelionError {
     ContextMissmatch,
     /// domain could not be allocated because there is no space available
     OutOfMemory,
+    /// memory size is not allowed, e.g. Wasm memory must be <= 4GiB
+    InvalidMemorySize,
     /// context can't fit additional memory
     ContextFull,
     /// read buffer was misaligned for requested data type

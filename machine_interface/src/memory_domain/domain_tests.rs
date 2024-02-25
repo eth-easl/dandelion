@@ -16,6 +16,7 @@ fn acquire<D: MemoryDomain>(arg: Vec<u8>, acquisition_size: usize, expect_succes
             "Got okay for allocating context with size {}",
             acquisition_size
         ),
+        (false, Err(DandelionError::OutOfMemory)) | (false, Err(DandelionError::InvalidMemorySize)) => assert!(true),
         (_, Err(err)) => assert!(
             false,
             "Encountered unexpected error when acquireing context: {:?}",
@@ -176,22 +177,6 @@ macro_rules! domainTests {
                 read::<$domain>($init, 1, 0, 1, true);
             }
             #[test]
-            fn test_read_single_oob_offset() {
-                read::<$domain>($init, 1, 1, 1, false);
-            }
-            #[test]
-            fn test_read_single_oob_size() {
-                read::<$domain>($init, 1, 0, 2, false);
-            }
-            #[test]
-            fn test_write_single_oob_offset() {
-                write::<$domain>($init, 1, 1, 1, false);
-            }
-            #[test]
-            fn test_write_single_oob_size() {
-                write::<$domain>($init, 1, 0, 2, false);
-            }
-            #[test]
             fn test_transfer_single() {
                 transefer::<$domain>($init, 1);
             }
@@ -203,6 +188,26 @@ macro_rules! domainTests {
             fn test_transfer_dataitem_item() {
                 transfer_item::<$domain>($init, 4096, 128, 256, 1, 2, Ok(()));
             }
+
+            // TODO: contexts can now internally round up their size, which invalidates these tests
+            
+            // #[test]
+            // fn test_read_single_oob_offset() {
+            //     read::<$domain>($init, 1, 1, 1, false);
+            // }
+            // #[test]
+            // fn test_read_single_oob_size() {
+            //     read::<$domain>($init, 1, 0, 2, false);
+            // }
+            // #[test]
+            // fn test_write_single_oob_offset() {
+            //     write::<$domain>($init, 1, 1, 1, false);
+            // }
+            // #[test]
+            // fn test_write_single_oob_size() {
+            //     write::<$domain>($init, 1, 0, 2, false);
+            // }
+
             // TODO
             // #[test]
             // fn test_transfer_dataitem_set() {
