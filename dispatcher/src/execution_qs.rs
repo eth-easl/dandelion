@@ -12,7 +12,7 @@ use std::sync::Arc;
 /// Highest priority queue holds promises if there are any
 #[derive(Clone)]
 pub struct EngineQueue {
-    queue_in: Arc<futures::lock::Mutex<std::sync::mpsc::Sender<(EngineArguments, Debt)>>>,
+    queue_in: Arc<std::sync::mpsc::Sender<(EngineArguments, Debt)>>,
     queue_out: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<(EngineArguments, Debt)>>>,
 }
 
@@ -38,7 +38,7 @@ impl EngineQueue {
     pub fn new() -> Self {
         let (sender, receiver) = std::sync::mpsc::channel();
         return EngineQueue {
-            queue_in: Arc::new(futures::lock::Mutex::new(sender)),
+            queue_in: Arc::new(sender),
             queue_out: Arc::new(std::sync::Mutex::new(receiver)),
         };
     }
@@ -57,8 +57,7 @@ impl EngineQueue {
             recorder,
         });
         let (promise, debt) = Promise::new();
-        let lock_guard = self.queue_in.lock().await;
-        lock_guard.send((args, debt)).unwrap();
+        self.queue_in.send((args, debt)).unwrap();
         return *promise.await;
     }
 }
