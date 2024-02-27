@@ -21,16 +21,12 @@ fn shutdown_fn(_: Vec<ComputeResource>) {}
 /// This is run on the engine so it performs asyncornous access to the local state
 impl WorkQueue for EngineQueue {
     fn get_engine_args(&self) -> (EngineArguments, Debt) {
-        let lock_guard = self.queue_out.lock().unwrap();
-        let args = lock_guard.recv();
-        return match args {
-            Ok(args) => args,
-            Err(_) => {
-                let (_, debt) = Promise::new();
-                let shutdown_args = EngineArguments::Shutdown(shutdown_fn);
-                return (shutdown_args, debt);
+        loop {
+            let (recieved_args, recieved_debt) = self.queue_out.lock().unwrap().recv().unwrap();
+            if recieved_debt.is_alive() {
+                return (recieved_args, recieved_debt);
             }
-        };
+        }
     }
 }
 

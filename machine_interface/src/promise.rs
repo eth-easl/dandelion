@@ -68,6 +68,11 @@ pub struct Debt {
 unsafe impl Send for Debt {}
 
 impl Debt {
+    pub fn is_alive(&self) -> bool {
+        let data = unsafe { &*self.data };
+        return data.references.load(Ordering::Acquire) > 1;
+    }
+
     pub fn fulfill(self, results: Box<DandelionResult<(Context, Recorder)>>) {
         let data = unsafe { &*self.data };
         // make sure we are not aborted by this promise anymore
