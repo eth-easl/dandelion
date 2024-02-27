@@ -16,7 +16,7 @@ jobs:
       fail-fast: false
       # test different available compute engines with different system engines
       matrix:
-        compute_driver: [ mmu, wasm ]
+        compute_driver: [ mmu, wasm, wasmtime-jit, wasmtime-precomp ]
         system_driver: [ hyper_io ]
     steps:
     # check out the code
