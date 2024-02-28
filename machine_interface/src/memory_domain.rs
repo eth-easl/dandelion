@@ -202,7 +202,7 @@ pub trait MemoryDomain: Sync + Send {
 }
 
 // Code to specialize transfers between different domains
-pub fn transefer_memory(
+pub fn transfer_memory(
     destination: &mut Context,
     source: &Context,
     destination_offset: usize,
@@ -285,7 +285,7 @@ pub fn transfer_data_set(
         .and_then(|set| Some(set.buffers.len()))
         .unwrap_or(0);
     for index in 0..source_set.buffers.len() {
-        transer_data_item(
+        transfer_data_item(
             destination,
             source,
             destionation_set_index,
@@ -302,10 +302,10 @@ pub fn transfer_data_set(
 /// Transfer a data item from one context to another.
 /// If the destination does not yet have a set at the index,
 /// a new one is created using the set name given.
-pub fn transer_data_item(
+pub fn transfer_data_item(
     destination: &mut Context,
     source: &Context,
-    destionation_set_index: usize,
+    destination_set_index: usize,
     destination_allignment: usize,
     destination_item_index: usize,
     destination_set_name: &str,
@@ -323,17 +323,17 @@ pub fn transer_data_item(
         return Err(DandelionError::TransferInputNoSetAvailable);
     }
 
-    if destination.content.len() <= destionation_set_index {
+    if destination.content.len() <= destination_set_index {
         destination
             .content
-            .resize_with(destionation_set_index + 1, || None)
+            .resize_with(destination_set_index + 1, || None)
     }
     let source_item = &source_set.buffers[source_item_index];
     let destination_offset =
         destination.get_free_space(source_item.data.size, destination_allignment)?;
     {
         let destination_set =
-            &mut destination.content[destionation_set_index].get_or_insert(DataSet {
+            &mut destination.content[destination_set_index].get_or_insert(DataSet {
                 ident: destination_set_name.to_string(),
                 buffers: vec![],
             });
@@ -353,7 +353,7 @@ pub fn transer_data_item(
         destination_set.buffers[destination_item_index].ident = source_item.ident.clone();
     }
 
-    transefer_memory(
+    transfer_memory(
         destination,
         source,
         destination_offset,

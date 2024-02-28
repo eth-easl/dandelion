@@ -16,8 +16,8 @@ use futures::{
 };
 use itertools::Itertools;
 use machine_interface::{
-    function_driver::FunctionConfig,
-    memory_domain::{transer_data_item, Context, MemoryDomain},
+    function_driver::{EngineArguments, FunctionArguments, FunctionConfig, TransferArguments},
+    memory_domain::{Context, MemoryDomain},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -28,8 +28,8 @@ use std::{
 // TODO here and in registry can probably replace driver and loader function maps with fixed size arrays
 // That have compile time size and static indexing
 pub struct Dispatcher {
-    domains: BTreeMap<ContextTypeId, Box<dyn MemoryDomain>>,
-    engines: BTreeMap<EngineTypeId, Box<EngineQueue>>,
+    domains: BTreeMap<ContextTypeId, (Box<dyn MemoryDomain>, Box<EngineQueue>)>,
+    engine_queues: BTreeMap<EngineTypeId, Box<EngineQueue>>,
     type_map: BTreeMap<EngineTypeId, ContextTypeId>,
     function_registry: FunctionRegistry,
     pub archive: Arc<SyncMutex<Archive>>,
@@ -42,23 +42,30 @@ impl Dispatcher {
         function_registry: FunctionRegistry,
         mut resource_pool: ResourcePool,
     ) -> DandelionResult<Dispatcher> {
-        let mut engines = BTreeMap::new();
+        let work_queue = Box::new(EngineQueue::new());
+
+        // add the work queue for each domain
+        let domain_map = domains
+            .into_iter()
+            .map(|(k, v)| (k, (v, work_queue.clone())))
+            .collect();
+
         // Use up all engine resources to start with
+        let mut engine_queues = BTreeMap::new();
         for (engine_id, driver) in function_registry.drivers.iter() {
             let mut engine_vec = Vec::new();
-            let engine_queue = Box::new(EngineQueue::new());
             while let Ok(Some(resource)) =
                 resource_pool.sync_acquire_engine_resource(engine_id.clone())
             {
-                let engine = driver.start_engine(resource, engine_queue.clone())?;
+                let engine = driver.start_engine(resource, work_queue.clone())?;
                 engine_vec.push(engine);
             }
-            engines.insert(*engine_id, engine_queue);
+            engine_queues.insert(*engine_id, work_queue.clone());
         }
         let archive: Arc<SyncMutex<Archive>> = Arc::new(SyncMutex::new(Archive::new()));
         return Ok(Dispatcher {
-            domains,
-            engines,
+            domains: domain_map,
+            engine_queues,
             type_map,
             function_registry,
             archive,
@@ -340,7 +347,7 @@ impl Dispatcher {
             Some(id) => id,
             None => return Err(DandelionError::DispatcherConfigError),
         };
-        let domain = match self.domains.get(context_id) {
+        let (domain, transfer_queue) = match self.domains.get(context_id) {
             Some(d) => d,
             None => return Err(DandelionError::DispatcherConfigError),
         };
@@ -366,16 +373,18 @@ impl Dispatcher {
                 static_sets.insert(function_set_index);
                 let mut function_buffer = 0usize;
                 for (subset, item, source_context) in composition_set {
-                    transer_data_item(
-                        &mut function_context,
-                        &source_context,
-                        function_set_index,
-                        128,
-                        function_buffer,
-                        in_set_name,
-                        subset,
-                        item,
-                    )?;
+                    let args = EngineArguments::TransferArguments(TransferArguments {
+                        destination: function_context,
+                        source: source_context,
+                        destination_set_index: function_set_index,
+                        destination_allignment: 128,
+                        destination_item_index: function_buffer,
+                        destination_set_name: in_set_name.clone(),
+                        source_set_index: subset,
+                        source_item_index: item,
+                        recorder,
+                    });
+                    (function_context, recorder) = transfer_queue.enqueu_work(args).await?;
                     function_buffer += 1;
                 }
             }
@@ -388,17 +397,19 @@ impl Dispatcher {
             for (subset, item, source_context) in context_set {
                 // TODO get allignment information
                 let set_name = &metadata.input_sets[function_set].0;
-                transer_data_item(
-                    &mut function_context,
-                    &source_context,
-                    function_set,
-                    // TODO get allignment information from function
-                    128,
-                    function_item,
-                    set_name,
-                    subset,
-                    item,
-                )?;
+                // (function_context, recorder) = self.
+                let args = EngineArguments::TransferArguments(TransferArguments {
+                    destination: function_context,
+                    source: source_context,
+                    destination_set_index: function_set,
+                    destination_allignment: 128,
+                    destination_item_index: function_item,
+                    destination_set_name: set_name.clone(),
+                    source_set_index: subset,
+                    source_item_index: item,
+                    recorder,
+                });
+                (function_context, recorder) = transfer_queue.enqueu_work(args).await?;
                 function_item += 1;
             }
         }
@@ -415,12 +426,16 @@ impl Dispatcher {
         recorder: Recorder,
     ) -> DandelionResult<(Context, Recorder)> {
         // preparation is done, get engine to receive engine
-        let engine_queue = match self.engines.get(&engine_type) {
+        let engine_queue = match self.engine_queues.get(&engine_type) {
             Some(q) => q,
             None => return Err(DandelionError::DispatcherConfigError),
         };
-        return engine_queue
-            .perform_single_run(function_config, function_context, output_sets, recorder)
-            .await;
+        let args = EngineArguments::FunctionArguments(FunctionArguments {
+            config: function_config,
+            context: function_context,
+            output_sets,
+            recorder,
+        });
+        return engine_queue.enqueu_work(args).await;
     }
 }

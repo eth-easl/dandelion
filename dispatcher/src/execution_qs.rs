@@ -39,19 +39,7 @@ impl EngineQueue {
         };
     }
 
-    pub async fn perform_single_run(
-        &self,
-        config: FunctionConfig,
-        context: Context,
-        output_sets: Arc<Vec<String>>,
-        recorder: Recorder,
-    ) -> DandelionResult<(Context, Recorder)> {
-        let args = EngineArguments::FunctionArguments(FunctionArguments {
-            config,
-            context,
-            output_sets,
-            recorder,
-        });
+    pub async fn enqueu_work(&self, args: EngineArguments) -> DandelionResult<(Context, Recorder)> {
         let (promise, debt) = Promise::new();
         self.queue_in.send((args, debt)).unwrap();
         return *promise.await;

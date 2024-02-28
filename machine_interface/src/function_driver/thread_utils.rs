@@ -1,8 +1,9 @@
 use crate::{
     function_driver::{
-        ComputeResource, EngineArguments, FunctionArguments, FunctionConfig, WorkQueue,
+        ComputeResource, EngineArguments, FunctionArguments, FunctionConfig, TransferArguments,
+        WorkQueue,
     },
-    memory_domain::Context,
+    memory_domain::{self, Context},
 };
 use core::marker::Send;
 use dandelion_commons::{records::RecordPoint, DandelionResult};
@@ -51,6 +52,32 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                 }
                 let results = Box::new(result.and_then(|context| Ok((context, recorder))));
                 debt.fulfill(results);
+            }
+            EngineArguments::TransferArguments(transfer_args) => {
+                let TransferArguments {
+                    source,
+                    mut destination,
+                    destination_set_index,
+                    destination_allignment,
+                    destination_item_index,
+                    destination_set_name,
+                    source_set_index,
+                    source_item_index,
+                    recorder,
+                } = transfer_args;
+                let transfer_result = memory_domain::transfer_data_item(
+                    &mut destination,
+                    &source,
+                    destination_set_index,
+                    destination_allignment,
+                    destination_item_index,
+                    destination_set_name.as_str(),
+                    source_set_index,
+                    source_item_index,
+                )
+                .and(Ok((destination, recorder)));
+                debt.fulfill(Box::new(transfer_result));
+                continue;
             }
             EngineArguments::Shutdown(resource_returner) => {
                 resource_returner(vec![ComputeResource::CPU(core_id)]);

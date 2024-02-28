@@ -1,6 +1,6 @@
 use std::vec;
 
-use crate::memory_domain::{transefer_memory, transfer_data_set, ContextTrait, MemoryDomain};
+use crate::memory_domain::{transfer_data_set, transfer_memory, ContextTrait, MemoryDomain};
 use dandelion_commons::{DandelionError, DandelionResult};
 // produces binary pattern 0b0101_01010 or 0x55
 const BYTEPATTERN: u8 = 85;
@@ -84,7 +84,7 @@ fn transefer<D: MemoryDomain>(arg: Vec<u8>, size: usize) {
     source
         .write(0, &vec![BYTEPATTERN; size])
         .expect("Writing should succeed");
-    transefer_memory(&mut destination, &mut source, 0, 0, size)
+    transfer_memory(&mut destination, &mut source, 0, 0, size)
         .expect("Should successfully transfer");
     let mut read_buffer = vec![0; size];
     destination

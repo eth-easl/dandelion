@@ -85,6 +85,7 @@ pub enum ComputeResource {
 
 pub enum EngineArguments {
     FunctionArguments(FunctionArguments),
+    TransferArguments(TransferArguments),
     Shutdown(fn(Vec<ComputeResource>) -> ()),
 }
 
@@ -92,6 +93,18 @@ pub struct FunctionArguments {
     pub config: FunctionConfig,
     pub context: Context,
     pub output_sets: Arc<Vec<String>>,
+    pub recorder: Recorder,
+}
+
+pub struct TransferArguments {
+    pub destination: Context,
+    pub source: Arc<Context>,
+    pub destination_set_index: usize,
+    pub destination_allignment: usize,
+    pub destination_item_index: usize,
+    pub destination_set_name: String,
+    pub source_set_index: usize,
+    pub source_item_index: usize,
     pub recorder: Recorder,
 }
 
