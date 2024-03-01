@@ -48,6 +48,14 @@ mod server_tests {
 
         let status = server.try_wait().unwrap();
         assert_eq!(status, None, "Server exited unexpectedly");
-        server.kill().unwrap();
+
+        // Instead of sigkill, send sigterm for clean shutdown
+        let mut kill = Command::new("kill")
+            .stdout(Stdio::piped())
+            .args(["-s", "TERM", &server.id().to_string()])
+            .spawn()
+            .unwrap();
+
+        kill.wait().unwrap();
     }
 }

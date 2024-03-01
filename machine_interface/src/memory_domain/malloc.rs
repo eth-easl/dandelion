@@ -1,9 +1,11 @@
 use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
 use dandelion_commons::{DandelionError, DandelionResult};
+use std::alloc::{alloc_zeroed, Layout};
 
 #[derive(Debug)]
 pub struct MallocContext {
-    storage: Vec<u8>,
+    layout: Layout,
+    storage: Box<u8>,
 }
 
 impl ContextTrait for MallocContext {
@@ -15,16 +17,18 @@ impl ContextTrait for MallocContext {
 
         // check if the write is within bounds
         let write_length = data.len() * core::mem::size_of::<T>();
-        let length = self.storage.capacity();
+        let length = self.layout.size();
         if write_length + offset > length {
             return Err(DandelionError::InvalidWrite);
         }
         let buffer =
             unsafe { core::slice::from_raw_parts(data.as_ptr() as *const u8, write_length) };
-        // write values
-        for (pos, value) in buffer.iter().enumerate() {
-            self.storage[offset + pos] = *value;
-        }
+        // copy values
+        let storage_slice =
+            unsafe { std::slice::from_raw_parts_mut(self.storage.as_mut(), length) };
+        let target = &mut storage_slice[offset..offset + write_length];
+        target.copy_from_slice(buffer);
+
         Ok(())
     }
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
@@ -33,7 +37,7 @@ impl ContextTrait for MallocContext {
             return Err(DandelionError::ReadMisaligned);
         }
 
-        let length = self.storage.len();
+        let length = self.layout.size();
         let read_size = core::mem::size_of::<T>() * read_buffer.len();
         if offset + read_size > length {
             return Err(DandelionError::InvalidRead);
@@ -42,10 +46,11 @@ impl ContextTrait for MallocContext {
         let read_memory = unsafe {
             core::slice::from_raw_parts_mut(read_buffer.as_mut_ptr() as *mut u8, read_size)
         };
+        let storage_slice = unsafe { std::slice::from_raw_parts(self.storage.as_ref(), length) };
 
         // read values, sanitize if necessary
         for index in 0..read_size {
-            read_memory[index] = self.storage[offset + index];
+            read_memory[index] = storage_slice[offset + index];
         }
         return Ok(());
     }
@@ -59,13 +64,20 @@ impl MemoryDomain for MallocMemoryDomain {
         Ok(Box::new(MallocMemoryDomain {}))
     }
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
-        let mut mem_space = Vec::new();
-        if (mem_space.try_reserve_exact(size)) != Ok(()) {
-            return Err(DandelionError::OutOfMemory);
+        let layout = match Layout::from_size_align(size, 64) {
+            Ok(layout) => layout,
+            Err(_) => return Err(DandelionError::MemoryAllocationError),
+        };
+
+        let mem_space: *mut u8 = unsafe { alloc_zeroed(layout) };
+        if mem_space.is_null() {
+            return Err(DandelionError::MemoryAllocationError);
         }
-        mem_space.resize(size, 0);
         return Ok(Context::new(
-            ContextType::Malloc(Box::new(MallocContext { storage: mem_space })),
+            ContextType::Malloc(Box::new(MallocContext {
+                layout,
+                storage: unsafe { Box::from_raw(mem_space) },
+            })),
             size,
         ));
     }
@@ -79,13 +91,20 @@ pub fn malloc_transfer(
     size: usize,
 ) -> DandelionResult<()> {
     // check if there is space in both contexts
-    if source.storage.len() < source_offset + size {
+    if source.layout.size() < source_offset + size {
         return Err(DandelionError::InvalidRead);
     }
-    if destination.storage.len() < destination_offset + size {
+    if destination.layout.size() < destination_offset + size {
         return Err(DandelionError::InvalidWrite);
     }
-    destination.storage[destination_offset..destination_offset + size]
-        .copy_from_slice(&source.storage[source_offset..source_offset + size]);
+
+    let dst_slice = unsafe {
+        std::slice::from_raw_parts_mut(destination.storage.as_mut(), destination.layout.size())
+    };
+    let src_slice =
+        unsafe { std::slice::from_raw_parts(source.storage.as_ref(), source.layout.size()) };
+
+    dst_slice[destination_offset..destination_offset + size]
+        .copy_from_slice(&src_slice[source_offset..source_offset + size]);
     Ok(())
 }
