@@ -1,4 +1,4 @@
-use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
+use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource};
 use dandelion_commons::{DandelionError, DandelionResult};
 
 mod wasm_memory_allocation {
@@ -8,7 +8,7 @@ mod wasm_memory_allocation {
     use std::ops::DerefMut;
 
     /// A smart pointer for memory mapped memory.
-    /// It makes sure that the memory is unmapped when 
+    /// It makes sure that the memory is unmapped when
     /// it is dropped, and prevents Rust from trying to
     /// free the memory through the global allocator.
     #[derive(Debug)]
@@ -19,21 +19,26 @@ mod wasm_memory_allocation {
 
     impl MmapBox {
         pub fn new(size: usize) -> Result<MmapBox, DandelionError> {
-            let addr = unsafe { mmap(
-                0 as *mut _,
-                size,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                -1,
-                0,
-            ) };
+            let addr = unsafe {
+                mmap(
+                    0 as *mut _,
+                    size,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                )
+            };
             match addr {
                 libc::MAP_FAILED => {
                     return Err(DandelionError::OutOfMemory);
-                },
+                }
                 _ => {}
             }
-            Ok(MmapBox { ptr: addr as *mut u8, size })
+            Ok(MmapBox {
+                ptr: addr as *mut u8,
+                size,
+            })
         }
     }
 
@@ -53,7 +58,9 @@ mod wasm_memory_allocation {
 
     impl Drop for MmapBox {
         fn drop(&mut self) {
-            unsafe { munmap(self.ptr as *mut _, self.size); }
+            unsafe {
+                munmap(self.ptr as *mut _, self.size);
+            }
         }
     }
 }
@@ -74,17 +81,16 @@ impl ContextTrait for WasmContext {
         if offset + write_size > self.mem.len() {
             return Err(DandelionError::InvalidWrite);
         }
-        let data_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(data.as_ptr() as *const u8, write_size)
-        };
-        self.mem[offset..offset+write_size].copy_from_slice(data_bytes);
-        Ok(())        
+        let data_bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, write_size) };
+        self.mem[offset..offset + write_size].copy_from_slice(data_bytes);
+        Ok(())
     }
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         let self_data = &self.mem;
         let read_size = read_buffer.len() * std::mem::size_of::<T>();
         if offset + read_size <= self_data.len() {
-            let data_bytes: &[u8] = &self_data[offset..offset+read_size];
+            let data_bytes: &[u8] = &self_data[offset..offset + read_size];
             unsafe {
                 (read_buffer.as_mut_ptr() as *mut u8).copy_from(data_bytes.as_ptr(), read_size)
             };
@@ -99,17 +105,15 @@ impl ContextTrait for WasmContext {
 pub struct WasmMemoryDomain {}
 
 impl MemoryDomain for WasmMemoryDomain {
-    fn init(_config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>> {
+    fn init(_config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
         Ok(Box::new(WasmMemoryDomain {}))
     }
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
         Ok(Context::new(
-            ContextType::Wasm(Box::new(
-                WasmContext {
-                    mem: MmapBox::new(size)?,
-                }
-            )), 
-            size
+            ContextType::Wasm(Box::new(WasmContext {
+                mem: MmapBox::new(size)?,
+            })),
+            size,
         ))
     }
 }

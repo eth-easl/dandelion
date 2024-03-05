@@ -1,11 +1,17 @@
 use std::vec;
 
-use crate::memory_domain::{transfer_data_set, transfer_memory, ContextTrait, MemoryDomain};
+use crate::memory_domain::{
+    transfer_data_set, transfer_memory, ContextTrait, MemoryDomain, MemoryResource,
+};
 use dandelion_commons::{DandelionError, DandelionResult};
 // produces binary pattern 0b0101_01010 or 0x55
 const BYTEPATTERN: u8 = 85;
 
-fn acquire<D: MemoryDomain>(arg: Vec<u8>, acquisition_size: usize, expect_success: bool) -> () {
+fn acquire<D: MemoryDomain>(
+    arg: MemoryResource,
+    acquisition_size: usize,
+    expect_success: bool,
+) -> () {
     let init_result = D::init(arg);
     let domain = init_result.expect("should have initialized memory domain");
     let context_result = domain.acquire_context(acquisition_size);
@@ -24,14 +30,14 @@ fn acquire<D: MemoryDomain>(arg: Vec<u8>, acquisition_size: usize, expect_succes
     }
 }
 
-fn init_domain<D: MemoryDomain>(arg: Vec<u8>) -> Box<dyn MemoryDomain> {
+fn init_domain<D: MemoryDomain>(arg: MemoryResource) -> Box<dyn MemoryDomain> {
     let init_result = D::init(arg);
     let domain = init_result.expect("memory domain should have been initialized");
     return domain;
 }
 
 fn write<D: MemoryDomain>(
-    arg: Vec<u8>,
+    arg: MemoryResource,
     context_size: usize,
     offset: usize,
     size: usize,
@@ -50,7 +56,7 @@ fn write<D: MemoryDomain>(
 }
 
 fn read<D: MemoryDomain>(
-    arg: Vec<u8>,
+    arg: MemoryResource,
     context_size: usize,
     offset: usize,
     size: usize,
@@ -73,7 +79,7 @@ fn read<D: MemoryDomain>(
     }
 }
 
-fn transefer<D: MemoryDomain>(arg: Vec<u8>, size: usize) {
+fn transefer<D: MemoryDomain>(arg: MemoryResource, size: usize) {
     let domain = init_domain::<D>(arg);
     let mut destination = domain
         .acquire_context(size)
@@ -94,7 +100,7 @@ fn transefer<D: MemoryDomain>(arg: Vec<u8>, size: usize) {
 }
 
 fn transfer_item<D: MemoryDomain>(
-    arg: Vec<u8>,
+    arg: MemoryResource,
     context_size: usize,
     offset: usize,
     item_size: usize,
@@ -211,18 +217,19 @@ macro_rules! domainTests {
         }
     };
 }
+
 use super::malloc::MallocMemoryDomain as mallocType;
-domainTests!(malloc; mallocType; Vec::new());
+domainTests!(malloc; mallocType; MemoryResource::None);
 #[cfg(feature = "cheri")]
 use super::cheri::CheriMemoryDomain as cheriType;
 #[cfg(feature = "cheri")]
-domainTests!(cheri; cheriType; Vec::new());
+domainTests!(cheri; cheriType; MemoryResource::None);
 #[cfg(feature = "mmu")]
 use super::mmu::MmuMemoryDomain as mmuType;
 #[cfg(feature = "mmu")]
-domainTests!(mmu; mmuType; Vec::new());
+domainTests!(mmu; mmuType; MemoryResource::None);
 
 #[cfg(feature = "wasm")]
 use super::wasm::WasmMemoryDomain as wasmType;
 #[cfg(feature = "wasm")]
-domainTests!(wasm; wasmType; Vec::new());
+domainTests!(wasm; wasmType; MemoryResource::None);

@@ -193,9 +193,15 @@ impl Context {
     }
 }
 
+/// TODO remove clone / copy once we have an implementation that needs an input
+#[derive(Clone, Copy)]
+pub enum MemoryResource {
+    None,
+}
+
 pub trait MemoryDomain: Sync + Send {
     // allocation and distruction
-    fn init(config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>>
+    fn init(resource: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>>
     where
         Self: Sized;
     fn acquire_context(&self, size: usize) -> DandelionResult<Context>;
