@@ -1,4 +1,4 @@
-use dandelion_commons::{DandelionError, DandelionResult, EngineTypeId, FunctionId};
+use dandelion_commons::{records::{RecordPoint, Recorder}, DandelionError, DandelionResult, EngineTypeId, FunctionId};
 use machine_interface::{
     function_driver::{Driver, Function, FunctionConfig},
     memory_domain::{malloc::MallocMemoryDomain, Context, MemoryDomain},
@@ -287,7 +287,10 @@ impl FunctionRegistry {
         domain: &Box<dyn MemoryDomain>,
         ctx_size: usize,
         non_caching: bool,
-    ) -> DandelionResult<(Context, FunctionConfig)> {
+        mut recorder: Recorder,
+    ) -> DandelionResult<(Context, FunctionConfig, Recorder)> {
+        recorder.record(RecordPoint::LoadStart).unwrap();
+        
         // check if function for the engine is in registry already
         let function_opt;
          {
@@ -296,7 +299,7 @@ impl FunctionRegistry {
         };
         if let Some(function) = function_opt {
             let function_context = function.load(domain, ctx_size)?;
-            return Ok((function_context, function.config.clone()));
+            return Ok((function_context, function.config.clone(), recorder));
         }
 
         // if it is not in memory or disk we return the error from loading as it is not available
@@ -313,6 +316,6 @@ impl FunctionRegistry {
             // this happens when the same binary is loaded independently multiple times,
             // need to figure out how to avoid this
         }
-        return Ok((function_context, function_config));
+        return Ok((function_context, function_config, recorder));
     }
 }

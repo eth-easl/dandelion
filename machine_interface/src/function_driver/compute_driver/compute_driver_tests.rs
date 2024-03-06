@@ -74,12 +74,12 @@ mod compute_driver_tests {
         let (function_context, config, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         let archive = Arc::new(Mutex::new(Archive::new()));
-        let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
+        let mut recorder = Recorder::new(archive);
         let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
             config: config,
             context: function_context,
             output_sets: Arc::new(Vec::new()),
-            recorder: recorder.clone(),
+            recorder,
         }));
         let _ = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -112,7 +112,10 @@ mod compute_driver_tests {
             }],
         }));
         let archive = Arc::new(Mutex::new(Archive::new()));
-        let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
+        let mut recorder = Recorder::new(archive);
+        recorder
+            .record(RecordPoint::TransferEnd)
+            .expect("Should have properly initialized recorder state");
         let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
             config,
             context: function_context,
@@ -197,7 +200,10 @@ mod compute_driver_tests {
                 }],
             }));
             let archive = Arc::new(Mutex::new(Archive::new()));
-            let recorder = Recorder::new(archive.clone(), RecordPoint::TransferEnd);
+            let mut recorder = Recorder::new(archive);
+            recorder
+                .record(RecordPoint::TransferEnd)
+                .expect("Should have properly initialized recorder state");
             let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
                 config,
                 context: function_context,
@@ -288,7 +294,10 @@ mod compute_driver_tests {
             ],
         }));
         let archive = Arc::new(Mutex::new(Archive::new()));
-        let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
+        let mut recorder = Recorder::new(archive);
+        recorder
+            .record(RecordPoint::TransferEnd)
+            .expect("Should have properly initialized recorder state");
         let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
             config,
             context: function_context,
@@ -430,7 +439,10 @@ mod compute_driver_tests {
             ],
         }));
         let archive = Arc::new(Mutex::new(Archive::new()));
-        let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
+        let mut recorder = Recorder::new(archive);
+        recorder
+            .record(RecordPoint::TransferEnd)
+            .expect("Should have properly initialized recorder state");
         let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
             config: config,
             context: function_context,

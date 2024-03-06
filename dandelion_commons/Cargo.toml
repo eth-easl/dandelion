@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 hdrhist = "0.5.0"
+log = "0.4.14"

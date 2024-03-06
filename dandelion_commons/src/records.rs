@@ -1,5 +1,4 @@
 use crate::{DandelionError, DandelionResult};
-use hdrhist::HDRHist;
 use std::{
     sync::{Arc, Mutex},
     time::Instant,
@@ -7,124 +6,103 @@ use std::{
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RecordPoint {
-    Arrival,
-    LoadStart,
-    TransferStart,
-    TransferEnd,
-    EngineStart,
-    EngineEnd,
-    FutureReturn,
+    Arrival,                 // Function request arrives at the server
+    QueueFunctionDispatcher, // Queue request in the dispatcher
+    PrepareEnvQueue,         // Queue to load the function code + ctx
+    LoadQueue,               // Load function code (async)
+    LoadStart,               // Start loading code + alloc ctx
+    TransferStart,           // Start data transfer to the ctx (async)
+    TransferEnd,             // End data transfer to the ctx (async)
+    GetEngineQueue,          // Queue to get an engine for execution
+    ExecutionQueue,          // Queue to get the function executed on the engine
+    EngineStart,             // Start execution of the function on the engine (sync)
+    EngineEnd,               // End execution of the function on the engine (sync)
+    FutureReturn,            // Return from execution engine
+    EndService,              // Send response back to the client
 }
 
-// TODO find better way to pass references without
-// needing to propagate lifetimes everywhere
-// also using sync mutex with futures is not ideal
-struct RecorderState {
-    checkpoint_time: Instant,
-    last_checkpoint: RecordPoint,
-    archive: Arc<Mutex<Archive>>,
-}
-
-#[derive(Clone)]
+// TODO: becomes a trait + feature flag to enable/disable in the server (?) that switches between different recorders.
 pub struct Recorder {
-    state: Arc<Mutex<RecorderState>>,
+    archive: Arc<Mutex<Archive>>,
+    timestamps: Vec<Instant>,
+    recorders: Vec<Recorder>,
 }
 
 impl Recorder {
-    pub fn new(archive: Arc<Mutex<Archive>>, last_checkpoint: RecordPoint) -> Recorder {
-        return Recorder {
-            state: Arc::new(Mutex::new(RecorderState {
-                checkpoint_time: Instant::now(),
-                last_checkpoint: last_checkpoint,
-                archive,
-            })),
-        };
-    }
-    pub fn record(&mut self, current_point: RecordPoint) -> DandelionResult<()> {
-        let current_time = Instant::now();
-        let mut state_guard = match self.state.lock() {
-            Ok(guard) => guard,
-            Err(_) => return Err(DandelionError::RecordLockFailure),
-        };
-        {
-            let mut archive_guard = match state_guard.archive.lock() {
-                Ok(guard) => guard,
-                Err(_) => return Err(DandelionError::RecordLockFailure),
-            };
-            let hist = match (&state_guard.last_checkpoint, &current_point) {
-                (RecordPoint::Arrival, RecordPoint::LoadStart) => &mut archive_guard.initial_time,
-                (RecordPoint::LoadStart, RecordPoint::TransferStart) => {
-                    &mut archive_guard.load_time
-                }
-                (RecordPoint::TransferStart, RecordPoint::TransferEnd) => {
-                    &mut archive_guard.transfer_time
-                }
-                (RecordPoint::TransferEnd, RecordPoint::EngineStart) => {
-                    &mut archive_guard.dispatch_time
-                }
-                (RecordPoint::EngineStart, RecordPoint::EngineEnd) => {
-                    &mut archive_guard.engine_time
-                }
-                (RecordPoint::EngineEnd, RecordPoint::FutureReturn) => {
-                    &mut archive_guard.return_time
-                }
-                (last, current) => {
-                    return Err(DandelionError::RecordSequencingFailure(
-                        last.clone(),
-                        current.clone(),
-                    ))
-                }
-            };
-            let duration = u64::try_from(
-                current_time
-                    .duration_since(state_guard.checkpoint_time)
-                    .as_micros(),
-            )
-            .unwrap_or(u64::MAX);
-            hist.add_value(duration);
+    pub fn new(archive: Arc<Mutex<Archive>>) -> Recorder {
+        let start_time = archive.lock().unwrap().start_time;
+        Recorder {
+            archive,
+            timestamps: vec![start_time; 13],
+            recorders: Vec::with_capacity(10),
         }
-        state_guard.last_checkpoint = current_point;
-        state_guard.checkpoint_time = current_time;
+    }
 
-        return Ok(());
+    pub fn record(&mut self, current_point: RecordPoint) -> DandelionResult<()> {
+        self.timestamps[current_point as usize] = Instant::now();
+        Ok(())
+    }
+
+    pub fn get_new_recorder(&mut self) -> DandelionResult<Recorder> {
+        match self.archive.lock().unwrap().get_recorder() {
+            Some(recorder) => Ok(recorder),
+            None => Err(DandelionError::RecorderNotAvailable),
+        }
+    }
+
+    pub fn link_new_recorder(&mut self, new_recorder: Recorder) {
+        self.recorders.push(new_recorder);
     }
 }
 
 pub struct Archive {
-    initial_time: HDRHist,
-    load_time: HDRHist,
-    transfer_time: HDRHist,
-    dispatch_time: HDRHist,
-    engine_time: HDRHist,
-    return_time: HDRHist,
+    start_time: Instant,
+    free_recorders: Vec<Recorder>,
+    used_recorders: Vec<Recorder>,
 }
 
 impl Archive {
     pub fn new() -> Archive {
-        return Archive {
-            initial_time: HDRHist::new(),
-            load_time: HDRHist::new(),
-            transfer_time: HDRHist::new(),
-            dispatch_time: HDRHist::new(),
-            engine_time: HDRHist::new(),
-            return_time: HDRHist::new(),
-        };
+        Archive {
+            start_time: Instant::now(),
+            free_recorders: Vec::new(),
+            used_recorders: Vec::new(),
+        }
     }
+
+    pub fn init(&mut self, free_recorders: Vec<Recorder>) {
+        self.free_recorders = free_recorders;
+        self.used_recorders.reserve(self.free_recorders.capacity());
+    }
+
+    pub fn get_recorder(&mut self) -> Option<Recorder> {
+        self.free_recorders.pop()
+    }
+
+    pub fn add_recorder(&mut self, recorder: Recorder) {
+        self.used_recorders.push(recorder);
+    }
+
+    fn append_timestamps(&self, recorder: &Recorder, summary: &mut String, level: usize) {
+        let tabs = "\t".repeat(level);
+        for (i, timestamp) in recorder.timestamps.iter().enumerate() {
+            let duration = timestamp.duration_since(self.start_time).as_nanos();
+            if duration > 0 {
+                summary.push_str(&format!("{}{}: {}\n", tabs, i, duration));
+            };
+        }
+
+        for sub_recorder in &recorder.recorders {
+            self.append_timestamps(sub_recorder, summary, level + 1);
+        }
+    }
+
     pub fn get_summary(&self) -> String {
-        format!(
-            "Current statistics summary:\n\
-            Initial time:\n{}\n\
-            Load time:\n{}\n\
-            Transfer time:\n{}\n\
-            Dispatch time:\n{}\n\
-            Engine time:\n{}\n\
-            Return time:\n{}\n",
-            self.initial_time.summary_string(),
-            self.load_time.summary_string(),
-            self.transfer_time.summary_string(),
-            self.dispatch_time.summary_string(),
-            self.engine_time.summary_string(),
-            self.return_time.summary_string(),
-        )
+        // For each recorder, print the timestamps
+        let mut summary = String::new();
+        for recorder in &self.used_recorders {
+            self.append_timestamps(recorder, &mut summary, 0);
+        }
+        summary
     }
 }

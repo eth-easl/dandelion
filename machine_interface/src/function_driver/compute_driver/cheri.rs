@@ -105,7 +105,7 @@ impl Engine for CheriEngine {
         config: &FunctionConfig,
         mut context: Context,
         output_set_names: &Vec<String>,
-        mut recorder: Recorder,
+        mut recorder: &mut Recorder,
     ) -> Pin<Box<dyn futures::Future<Output = (DandelionResult<()>, Context)> + '_ + Send>> {
         if let Err(err) = recorder.record(RecordPoint::EngineStart) {
             return Box::pin(core::future::ready((Err(err), context)));

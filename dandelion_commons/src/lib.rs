@@ -103,7 +103,7 @@ pub enum DandelionError {
     /// Mutex for metering was poisoned
     RecordLockFailure,
     /// Call to record time spans were not called in order
-    RecordSequencingFailure(RecordPoint, RecordPoint),
+    RecorderNotAvailable,
     // Gerneral util errors
     /// error while performing IO on a file
     FileError,
