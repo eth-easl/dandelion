@@ -1,10 +1,7 @@
 use bytes::Buf;
 use core_affinity::{self, CoreId};
-use dandelion_commons::{ContextTypeId, EngineTypeId};
 use dispatcher::{
-    composition::{Composition, CompositionSet, FunctionDependencies, ShardingMode},
-    dispatcher::Dispatcher,
-    function_registry::{FunctionRegistry, Metadata},
+    composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
     resource_pool::ResourcePool,
 };
 use futures::lock::Mutex;
@@ -15,85 +12,40 @@ use hyper::{
 };
 use log::{error, info};
 use machine_interface::{
-    function_driver::{
-        system_driver::{get_system_function_input_sets, get_system_function_output_sets},
-        ComputeResource, SystemFunction,
-    },
+    function_driver::ComputeResource,
+    machine_config::EngineType,
     memory_domain::{malloc::MallocMemoryDomain, read_only::ReadOnlyContext},
-};
-
-#[cfg(feature = "hyper_io")]
-use machine_interface::function_driver::system_driver::hyper::HyperDriver;
-
-#[cfg(any(feature = "cheri", feature = "mmu", feature = "wasm"))]
-use machine_interface::{
-    function_driver::Driver,
     memory_domain::{Context, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
 };
-
-#[cfg(feature = "cheri")]
-use machine_interface::{
-    function_driver::compute_driver::cheri::CheriDriver, memory_domain::cheri::CheriMemoryDomain,
-};
-
-#[cfg(feature = "mmu")]
-use machine_interface::{
-    function_driver::compute_driver::mmu::MmuDriver, memory_domain::mmu::MmuMemoryDomain,
-};
-
-#[cfg(feature = "wasm")]
-use machine_interface::{
-    function_driver::compute_driver::wasm::WasmDriver, memory_domain::wasm::WasmMemoryDomain,
-};
-
-#[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm")))]
-use machine_interface::{
-    memory_domain::{Context, ContextTrait, MemoryDomain},
-    DataItem, DataSet, Position,
-};
-
+use serde::Deserialize;
 use std::{
     collections::BTreeMap,
     convert::Infallible,
+    io::Write,
     mem::size_of,
     net::SocketAddr,
     path::PathBuf,
-    process::Command,
     sync::{
-        atomic::{AtomicU64, AtomicU8, Ordering},
+        atomic::{AtomicU8, Ordering},
         Arc, Once,
     },
-    time::Duration,
 };
 use tokio::runtime::Builder;
 
-const MMM_ID: u64 = 0;
-const HTTP_ID: u64 = 2;
-const BUSY_ID: u64 = 3;
-const COMPOSITION_ID: u64 = 4;
-
-// can support 10000 RPS for 2 mins
-const MMM_COLD_ID_BASE: u64 = 0x1000000;
-const BUSY_COLD_ID_BASE: u64 = 0x2000000;
-const COMPOSITION_COLD_ID_BASE: u64 = 0x3000000;
-
-// context size for functions
-const DEFAULT_CONTEXT_SIZE: usize = 0x802_0000; // 128MiB
-const SYSTEM_CONTEXT_SIZE: usize = 0x200_0000; // 2MiB
-
 static INIT_MATRIX: Once = Once::new();
 static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
-static COLD_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 async fn run_chain(
     dispatcher: Arc<Dispatcher>,
     is_cold: bool,
+    function_name: String,
     get_uri: String,
     post_uri: String,
-    max_cold: u64,
 ) -> u64 {
-    let domain = MallocMemoryDomain::init(vec![]).expect("Should be able to get malloc domain");
+    // TODO just have all the strings concatinated and create const context
+    let domain = MallocMemoryDomain::init(machine_interface::memory_domain::MemoryResource::None)
+        .expect("Should be able to get malloc domain");
     let mut input_context = domain
         .acquire_context(128)
         .expect("Should be able to get malloc context");
@@ -134,14 +86,8 @@ async fn run_chain(
     ];
     let output_mapping = vec![Some(0), Some(1)];
 
-    let counter = COLD_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let function_id = if !is_cold {
-        COMPOSITION_ID
-    } else {
-        COMPOSITION_COLD_ID_BASE + counter % max_cold
-    };
     let result = dispatcher
-        .queue_function(function_id, inputs, output_mapping, false)
+        .queue_function_by_name(function_name, inputs, output_mapping, is_cold)
         .await
         .expect("Should get response from chain");
     assert_eq!(2, result.len());
@@ -189,7 +135,7 @@ async fn run_mat_func(
     is_cold: bool,
     rows: usize,
     cols: usize,
-    max_cold: u64,
+    function_name: String,
 ) -> i64 {
     let mat_size: usize = rows * cols;
 
@@ -211,15 +157,11 @@ async fn run_mat_func(
         CompositionSet::from((0, vec![(Arc::new(input_context))])),
     )];
     let outputs = vec![Some(0)];
-    let counter = COLD_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let function_id = if !is_cold {
-        MMM_ID
-    } else {
-        MMM_COLD_ID_BASE + counter % max_cold
-    };
-    let result = dispatcher
-        .queue_function(function_id, inputs, outputs, is_cold)
-        .await;
+    println!("function name: {}", function_name);
+    let result: Result<BTreeMap<usize, CompositionSet>, dandelion_commons::DandelionError> =
+        dispatcher
+            .queue_function_by_name(function_name, inputs, outputs, is_cold)
+            .await;
 
     let result_context = result
         .expect("should get result from function")
@@ -285,53 +227,67 @@ fn get_checksum(composition_set: CompositionSet) -> i64 {
     return read_buffer[0];
 }
 
+#[derive(Deserialize)]
+struct MatrixRequest {
+    name: String,
+    rows: u64,
+    cols: u64,
+}
+
 async fn serve_request(
     is_cold: bool,
     req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
-    max_cold: u64,
 ) -> Result<Response<Body>, Infallible> {
     // Try to parse the request
-    let mut request_buf = hyper::body::to_bytes(req.into_body())
+    let request_buf = hyper::body::to_bytes(req.into_body())
         .await
         .expect("Could not read request body");
+    let request_map: MatrixRequest =
+        bson::from_slice(&request_buf).expect("Should be able to deserialize matrix request");
 
-    if request_buf.len() != 16 {
-        let mut bad_request = Response::new(Body::empty());
-        *bad_request.status_mut() = StatusCode::BAD_REQUEST;
-        return Ok::<_, Infallible>(bad_request);
-    }
-
-    let rows = request_buf.get_i64() as usize;
-    let cols = request_buf.get_i64() as usize;
-
-    let response_vec: Vec<u8> = run_mat_func(dispatcher, is_cold, rows, cols, max_cold)
-        .await
-        .to_be_bytes()
-        .to_vec();
+    let response_vec: Vec<u8> = run_mat_func(
+        dispatcher,
+        is_cold,
+        request_map.rows as usize,
+        request_map.cols as usize,
+        request_map.name,
+    )
+    .await
+    .to_be_bytes()
+    .to_vec();
     let response = Ok::<_, Infallible>(Response::new(response_vec.into()));
     return response;
+}
+
+#[derive(Deserialize)]
+struct ChainRequest {
+    name: String,
+    get_uri: String,
+    post_uri: String,
 }
 
 async fn serve_chain(
     is_cold: bool,
     req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
-    max_cold: u64,
 ) -> Result<Response<Body>, Infallible> {
     let request_buf = hyper::body::to_bytes(req.into_body())
         .await
         .expect("Should be able to parse body");
+    let request_map: ChainRequest =
+        bson::from_slice(&request_buf).expect("Should be able to deserialize matrix request");
 
-    let request_str = std::str::from_utf8(&request_buf).unwrap();
-    let uris: Vec<&str> = request_str.split("::").collect();
-    let get_uri = uris[0].to_string();
-    let post_uri = uris[1].to_string();
-
-    let response_vec = run_chain(dispatcher, is_cold, get_uri, post_uri, max_cold)
-        .await
-        .to_be_bytes()
-        .to_vec();
+    let response_vec = run_chain(
+        dispatcher,
+        is_cold,
+        request_map.name,
+        request_map.get_uri,
+        request_map.post_uri,
+    )
+    .await
+    .to_be_bytes()
+    .to_vec();
     let response = Ok::<_, Infallible>(Response::new(response_vec.into()));
     return response;
 }
@@ -379,6 +335,80 @@ async fn serve_native(_req: Request<Body>) -> Result<Response<Body>, Infallible>
     Ok::<_, Infallible>(Response::new(checksum.to_be_bytes().to_vec().into()))
 }
 
+#[derive(Debug, Deserialize)]
+struct RegisterFunction {
+    name: String,
+    context_size: u64,
+    engine_type: String,
+    binary: Vec<u8>,
+}
+
+async fn register_function(
+    req: Request<Body>,
+    dispatcher: Arc<Dispatcher>,
+) -> Result<Response<Body>, Infallible> {
+    let bytes = hyper::body::to_bytes(req.into_body())
+        .await
+        .expect("Failed to extract body from function registration");
+    // find first line end character
+    let request_map: RegisterFunction =
+        bson::from_slice(&bytes).expect("Should be able to deserialize request");
+    // write function to file
+    std::fs::create_dir_all("/tmp/dandelion_functions").unwrap();
+    let mut path_buff = PathBuf::from("/tmp/dandelion_functions");
+    path_buff.push(request_map.name.clone());
+    let mut function_file = std::fs::File::create(path_buff.clone())
+        .expect("Failed to create file for registering function");
+    function_file
+        .write_all(&request_map.binary)
+        .expect("Failed to write file with content for registering");
+    let engine_type = match request_map.engine_type.as_str() {
+        #[cfg(feature = "wasm")]
+        "RWasm" => EngineType::RWasm,
+        #[cfg(feature = "mmu")]
+        "Process" => EngineType::Process,
+        #[cfg(feature = "cheri")]
+        "Cheri" => EngineType::Cheri,
+        _ => panic!("Unkown error type string"),
+    };
+    dispatcher
+        .insert_func(
+            request_map.name,
+            engine_type,
+            request_map.context_size as usize,
+            path_buff.to_str().unwrap(),
+            Metadata {
+                input_sets: Arc::new(vec![(String::from(""), None)]),
+                output_sets: Arc::new(vec![String::from("")]),
+            },
+        )
+        .await
+        .expect("Should be able to insert function");
+    return Ok::<_, Infallible>(Response::new("Function registered".into()));
+}
+
+#[derive(Debug, Deserialize)]
+struct RegisterChain {
+    composition: String,
+}
+
+async fn register_composition(
+    req: Request<Body>,
+    dispatcher: Arc<Dispatcher>,
+) -> Result<Response<Body>, Infallible> {
+    let bytes = hyper::body::to_bytes(req.into_body())
+        .await
+        .expect("Failed to extract body from function registration");
+    // find first line end character
+    let request_map: RegisterChain =
+        bson::from_slice(&bytes).expect("Should be able to deserialize request");
+    // write function to file
+    dispatcher
+        .insert_compositions(request_map.composition)
+        .await
+        .expect("Should be able to insert function");
+    return Ok::<_, Infallible>(Response::new("Function registered".into()));
+}
 async fn serve_stats(
     _req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
@@ -395,17 +425,17 @@ async fn serve_stats(
 async fn service(
     req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
-    max_cold: u64,
 ) -> Result<Response<Body>, Infallible> {
     let uri = req.uri().path();
-    // println!("Got request for {}", uri);
     match uri {
-        "/cold/matmul" => serve_request(true, req, dispatcher, max_cold).await,
-        "/hot/matmul" => serve_request(false, req, dispatcher, max_cold).await,
-        "/cold/compute" => serve_chain(true, req, dispatcher, max_cold).await,
-        "/hot/compute" => serve_chain(false, req, dispatcher, max_cold).await,
-        "/cold/io" => serve_chain(true, req, dispatcher, max_cold).await,
-        "/hot/io" => serve_chain(false, req, dispatcher, max_cold).await,
+        "/register/function" => register_function(req, dispatcher).await,
+        "/register/composition" => register_composition(req, dispatcher).await,
+        "/cold/matmul" => serve_request(true, req, dispatcher).await,
+        "/hot/matmul" => serve_request(false, req, dispatcher).await,
+        "/cold/compute" => serve_chain(true, req, dispatcher).await,
+        "/hot/compute" => serve_chain(false, req, dispatcher).await,
+        "/cold/io" => serve_chain(true, req, dispatcher).await,
+        "/hot/io" => serve_chain(false, req, dispatcher).await,
         "/native" => serve_native(req).await,
         "/stats" => serve_stats(req, dispatcher).await,
         _ => Ok::<_, Infallible>(Response::new(
@@ -415,70 +445,8 @@ async fn service(
     }
 }
 
-fn drop_page_caches() {
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg("echo 1 | sudo tee /proc/sys/vm/drop_caches")
-        .output()
-        .expect("Should be able to drop page caches");
-    assert!(output.status.success());
-}
-
-fn no_page_cache_for(path: PathBuf) -> bool {
-    let output = Command::new("fincore")
-        .args(["-n", "-r", "-o", "pages", path.to_str().unwrap()])
-        .output()
-        .expect("Should be able to get page numbers");
-    assert!(output.status.success());
-    return output.stdout[0] == '0' as u8;
-}
-
-async fn add_cold_functions(
-    registry: &FunctionRegistry,
-    engine_id: EngineTypeId,
-    ctx_size: usize,
-    path: &PathBuf,
-    cold_id_base: u64,
-    max_cold: u64,
-) -> PathBuf {
-    let tmp_dir = std::path::Path::new("/tmp").join(path.file_name().unwrap());
-    std::fs::create_dir_all(&tmp_dir).unwrap();
-    for i in 0..max_cold {
-        let metadata = Metadata {
-            input_sets: Arc::new(vec![(String::from(""), None)]),
-            output_sets: Arc::new(vec![String::from("")]),
-        };
-        let tmp_path = tmp_dir.join(i.to_string());
-        if !tmp_path.exists() {
-            std::fs::copy(path, &tmp_path).unwrap();
-        }
-        registry
-            .insert_metadata(todo!("function name: cold_id_base + i"), metadata)
-            .await;
-        registry
-            .add_local(
-                cold_id_base + i,
-                engine_id,
-                ctx_size,
-                tmp_path.to_str().unwrap(),
-            )
-            .await
-            .expect("Failed to add_local cold functions");
-    }
-    return tmp_dir;
-}
-
 fn main() -> () {
     env_logger::init();
-
-    // read argumets from environment
-    // let cold_num: u64 = if let Ok(string_val) = std::env::var("NUM_COLD") {
-    //     string_val
-    //         .parse()
-    //         .expect("NUM_COLD was set but not a parsable number")
-    // } else {
-    //     0x100000
-    // };
 
     // find available resources
     let num_cores = u8::try_from(core_affinity::get_core_ids().unwrap().len()).unwrap();
@@ -506,24 +474,26 @@ fn main() -> () {
     let runtime = runtime_builder.build().unwrap();
 
     // set up dispatcher configuration basics
-    let mut domains = BTreeMap::new();
-    const COMPUTE_DOMAIN: ContextTypeId = 0;
-    const COMPUTE_ENGINE: EngineTypeId = 0;
-    const SYS_CONTEXT: ContextTypeId = 1;
-    const SYS_ENGINE: EngineTypeId = 1;
-    let mut type_map = BTreeMap::new();
-    type_map.insert(COMPUTE_ENGINE, COMPUTE_DOMAIN);
-    type_map.insert(SYS_ENGINE, SYS_CONTEXT);
     let mut pool_map = BTreeMap::new();
 
+    // insert engines for the currentyl selected compute engine type
+    // todo add function to machine config to detect resources and auto generate this
+    #[cfg(feature = "wasm")]
+    let engine_type = EngineType::RWasm;
+    #[cfg(feature = "mmu")]
+    let engine_type = EngineType::Process;
+    #[cfg(feature = "cheri")]
+    let engine_type = EngineType::Cheri;
+    #[cfg(any(feature = "cheri", feature = "wasm", feature = "mmu"))]
     pool_map.insert(
-        COMPUTE_ENGINE,
+        engine_type,
         (num_dispatcher_cores..num_cores)
             .map(|code_id| ComputeResource::CPU(code_id))
             .collect(),
     );
+    #[cfg(hyper_io)]
     pool_map.insert(
-        SYS_ENGINE,
+        EngineType::Hyper,
         (0..num_dispatcher_cores)
             .map(|core_id| ComputeResource::CPU(core_id))
             .collect(),
@@ -531,250 +501,10 @@ fn main() -> () {
     let resource_pool = ResourcePool {
         engine_pool: Mutex::new(pool_map),
     };
-    domains.insert(
-        SYS_CONTEXT,
-        MallocMemoryDomain::init(Vec::new()).expect("Should be able to initialize malloc domain"),
-    );
-    let mut registry;
-    // insert specific configuration
-    #[cfg(all(feature = "cheri", feature = "mmu", feature = "wasm"))]
-    std::compile_error!("Should only have one feature out of mmu or cheri or wasm");
-    #[cfg(all(
-        any(feature = "cheri", feature = "mmu", feature = "wasm"),
-        feature = "hyper_io"
-    ))]
-    {
-        let mut drivers = BTreeMap::new();
-        let mut mmm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let mut busy_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let driver;
-        #[cfg(feature = "cheri")]
-        {
-            domains.insert(
-                COMPUTE_DOMAIN,
-                CheriMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain"),
-            );
-            driver = Box::new(CheriDriver {}) as Box<dyn Driver>;
-            mmm_path.push("../machine_interface/tests/data/test_elf_cheri_matmul");
-            busy_path.push("../machine_interface/tests/data/test_elf_cheri_busy");
-        }
-        #[cfg(feature = "mmu")]
-        {
-            domains.insert(
-                COMPUTE_DOMAIN,
-                MmuMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain"),
-            );
-            driver = Box::new(MmuDriver {}) as Box<dyn Driver>;
-            mmm_path.push(format!(
-                "../machine_interface/tests/data/test_elf_mmu_{}_matmul",
-                std::env::consts::ARCH
-            ));
-            busy_path.push(format!(
-                "../machine_interface/tests/data/test_elf_mmu_{}_busy",
-                std::env::consts::ARCH
-            ));
-        }
-        #[cfg(feature = "wasm")]
-        {
-            domains.insert(
-                COMPUTE_DOMAIN,
-                WasmMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain"),
-            );
-            driver = Box::new(WasmDriver {}) as Box<dyn Driver>;
-            mmm_path.push(format!(
-                "../machine_interface/tests/data/test_sysld_wasm_{}_matmul",
-                std::env::consts::ARCH
-            ));
-            busy_path.push(format!(
-                "../machine_interface/tests/data/test_sysld_wasm_{}_busy",
-                std::env::consts::ARCH
-            ));
-        }
-        let system_driver = Box::new(HyperDriver {});
-        drivers.insert(COMPUTE_ENGINE, driver);
-        drivers.insert(SYS_ENGINE, system_driver);
-        registry = FunctionRegistry::new(drivers);
-        let mmm_metadata = Metadata {
-            input_sets: Arc::new(vec![(String::from(""), None)]),
-            output_sets: Arc::new(vec![String::from("")]),
-        };
-        runtime.block_on(registry.insert_metadata(MMM_ID, mmm_metadata));
-        // add for mmm hot function
-        runtime
-            .block_on(registry.add_local(
-                MMM_ID,
-                COMPUTE_ENGINE,
-                DEFAULT_CONTEXT_SIZE,
-                mmm_path.to_str().unwrap(),
-            ))
-            .expect("Failed to add_local for mmm hot function");
-        // add for mmm cold functions
-        // let mmm_cold_dir = runtime.block_on(add_cold_functions(
-        //     &registry,
-        //     COMPUTE_ENGINE,
-        //     DEFAULT_CONTEXT_SIZE,
-        //     &mmm_path,
-        //     MMM_COLD_ID_BASE,
-        //     cold_num,
-        // ));
-        // add for busy hot functions
-        let busy_metadata = Metadata {
-            input_sets: Arc::new(vec![(String::from(""), None)]),
-            output_sets: Arc::new(vec![String::from("")]),
-        };
-        runtime.block_on(registry.insert_metadata(BUSY_ID, busy_metadata));
-        runtime
-            .block_on(registry.add_local(
-                BUSY_ID,
-                COMPUTE_ENGINE,
-                DEFAULT_CONTEXT_SIZE,
-                busy_path.to_str().unwrap(),
-            ))
-            .expect("Failed to add_local busy function");
-        // add for busy cold functions
-        // let busy_cold_dir = runtime.block_on(add_cold_functions(
-        //     &registry,
-        //     COMPUTE_ENGINE,
-        //     DEFAULT_CONTEXT_SIZE,
-        //     &busy_path,
-        //     BUSY_COLD_ID_BASE,
-        //     cold_num,
-        // ));
-        // add http system function
-        // first try only download and spin, TODO: add upload
-        runtime.block_on(
-            registry.insert_metadata(
-                HTTP_ID,
-                Metadata {
-                    input_sets: Arc::new(
-                        get_system_function_input_sets(SystemFunction::HTTP)
-                            .into_iter()
-                            .map(|name| (name, None))
-                            .collect(),
-                    ),
-                    output_sets: Arc::new(get_system_function_output_sets(SystemFunction::HTTP)),
-                },
-            ),
-        );
-        registry
-            .add_system(HTTP_ID, SYS_ENGINE, SYSTEM_CONTEXT_SIZE)
-            .expect("Should be able to add system function");
-        // add composition using hot busy function
-        let composition = Composition {
-            dependencies: vec![
-                FunctionDependencies {
-                    function: HTTP_ID,
-                    input_set_ids: vec![Some((0, ShardingMode::All)), None, None],
-                    output_set_ids: vec![Some(1), Some(2), Some(3)],
-                },
-                FunctionDependencies {
-                    function: BUSY_ID,
-                    input_set_ids: vec![Some((3, ShardingMode::All))],
-                    output_set_ids: vec![Some(4)],
-                },
-                FunctionDependencies {
-                    function: HTTP_ID,
-                    input_set_ids: vec![
-                        Some((5, ShardingMode::All)),
-                        None,
-                        Some((4, ShardingMode::All)),
-                    ],
-                    output_set_ids: vec![Some(6)],
-                },
-            ],
-        };
-        let output_set_map = BTreeMap::from([(4, 0), (6, 1)]);
-        let input_sets = Arc::new(
-            get_system_function_input_sets(SystemFunction::HTTP)
-                .into_iter()
-                .map(|name| (name, None))
-                .collect(),
-        );
-        let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
-        let composition_metadata = Metadata {
-            input_sets,
-            output_sets,
-        };
-        runtime.block_on(registry.insert_metadata(COMPOSITION_ID, composition_metadata));
-        registry
-            .add_composition(COMPOSITION_ID, composition, output_set_map)
-            .expect("Failed to add composition");
-        // add compositions using cold busy functions
-        // for i in 0..cold_num {
-        //     let composition = Composition {
-        //         dependencies: vec![
-        //             FunctionDependencies {
-        //                 function: HTTP_ID,
-        //                 input_set_ids: vec![Some((0, ShardingMode::All)), None, None],
-        //                 output_set_ids: vec![Some(1), Some(2), Some(3)],
-        //             },
-        //             FunctionDependencies {
-        //                 function: BUSY_COLD_ID_BASE + i,
-        //                 input_set_ids: vec![Some((3, ShardingMode::All))],
-        //                 output_set_ids: vec![Some(4)],
-        //             },
-        //             FunctionDependencies {
-        //                 function: HTTP_ID,
-        //                 input_set_ids: vec![
-        //                     Some((5, ShardingMode::All)),
-        //                     None,
-        //                     Some((4, ShardingMode::All)),
-        //                 ],
-        //                 output_set_ids: vec![Some(6)],
-        //             },
-        //         ],
-        //     };
-        //     let output_set_map = BTreeMap::from([(4, 0), (6, 1)]);
-        //     let input_sets = get_system_function_input_sets(SystemFunction::HTTP)
-        //         .into_iter()
-        //         .map(|name| (name, None))
-        //         .collect();
-        //     let output_sets = get_system_function_output_sets(SystemFunction::HTTP);
-        //     let cold_comp_metadata = Metadata {
-        //         input_sets,
-        //         output_sets,
-        //     };
-        //     runtime.block_on(
-        //         registry.insert_metadata(COMPOSITION_COLD_ID_BASE + i, cold_comp_metadata),
-        //     );
-        //     registry
-        //         .add_composition(COMPOSITION_COLD_ID_BASE + i, composition, output_set_map)
-        //         .expect("Failed to add cold composition");
-        // }
-        // drop page caches to ensure cold functions are loaded from disk
-        // loop {
-        //     info!("Waiting for page cache to be clean");
-        //     drop_page_caches();
-        //     std::thread::sleep(Duration::from_secs(10));
-        //     // check if page caches are actually dropped
-        //     let mut no_page_cache_for_all = true;
-        //     for i in (0..cold_num).step_by(1000) {
-        //         let mmm_cold_path = mmm_cold_dir.join(i.to_string());
-        //         let busy_cold_path = busy_cold_dir.join(i.to_string());
-        //         if !no_page_cache_for(mmm_cold_path) || !no_page_cache_for(busy_cold_path) {
-        //             no_page_cache_for_all = false;
-        //             break;
-        //         }
-        //     }
-        //     if no_page_cache_for_all {
-        //         break;
-        //     }
-        // }
-    }
-    #[cfg(not(all(
-        any(feature = "cheri", feature = "mmu", feature = "wasm"),
-        feature = "hyper_io"
-    )))]
-    {
-        let loader_map = BTreeMap::new();
-        registry = FunctionRegistry::new(loader_map);
-    }
 
     // Create an ARC pointer to the dispatcher for thread-safe access
-    let dispatcher_ptr = Arc::new(
-        Dispatcher::init(domains, type_map, registry, resource_pool)
-            .expect("Should be able to start dispatcher"),
-    );
+    let dispatcher_ptr =
+        Arc::new(Dispatcher::init(resource_pool).expect("Should be able to start dispatcher"));
 
     let _guard = runtime.enter();
 
@@ -785,7 +515,7 @@ fn main() -> () {
         async move {
             Ok::<_, Infallible>(service_fn(move |req| {
                 let service_dispatcher_ptr = new_dispatcher_ptr.clone();
-                service(req, service_dispatcher_ptr, 0)
+                service(req, service_dispatcher_ptr)
             }))
         }
     });

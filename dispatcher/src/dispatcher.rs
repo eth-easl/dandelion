@@ -95,6 +95,23 @@ impl Dispatcher {
             .await;
     }
 
+    pub async fn queue_function_by_name(
+        &self,
+        function_name: String,
+        inputs: Vec<(usize, CompositionSet)>,
+        output_mapping: Vec<Option<usize>>,
+        non_caching: bool,
+    ) -> DandelionResult<BTreeMap<usize, CompositionSet>> {
+        let function_id = self
+            .function_registry
+            .get_function_id(&function_name)
+            .await
+            .ok_or(DandelionError::DispatcherUnavailableFunction)?;
+        return self
+            .queue_function(function_id, inputs, output_mapping, non_caching)
+            .await;
+    }
+
     // TODO: change test to use the queue function and remove this from being public
     pub async fn queue_composition(
         &self,

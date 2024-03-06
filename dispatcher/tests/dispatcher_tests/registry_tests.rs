@@ -4,7 +4,7 @@ use dispatcher::{composition::CompositionSet, function_registry::Metadata};
 use machine_interface::{
     function_driver::ComputeResource,
     machine_config::EngineType,
-    memory_domain::{read_only::ReadOnlyContext, Context, MemoryDomain, MemoryResource},
+    memory_domain::{read_only::ReadOnlyContext, Context, MemoryDomain},
     DataItem, DataSet, Position,
 };
 use std::sync::Arc;

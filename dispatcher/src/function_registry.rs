@@ -140,13 +140,20 @@ impl FunctionRegistry {
     ) -> DandelionResult<()> {
         // TODO actually handle the error in some sensible way
         // the error contains the parsing failure
-        let module = dparser::parse(module).map_err(|_| DandelionError::CompositionParsingError)?;
-        let composition_meta_pairs = Composition::from_module(&module, &mut *self.function_dict.lock().await)?;
+        let mut dictlock = self.function_dict.lock().await;
+        let composition_meta_pairs = {
+            let module = dparser::parse(module).map_err(|_| DandelionError::CompositionParsingError)?;
+            Composition::from_module(&module, &mut dictlock)?
+        };
         for (function_id, composition, metadata) in composition_meta_pairs {
             self.metadata.lock().await.insert(function_id, metadata);
             self.add_composition(function_id, composition).await?;
         }
         return Ok(());
+    }
+
+    pub async fn get_function_id(&self, function_name: &str) -> Option<FunctionId>{
+        return self.function_dict.lock().await.lookup(&function_name);
     }
 
     async fn add_composition(
