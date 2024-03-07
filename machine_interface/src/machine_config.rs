@@ -19,8 +19,9 @@ pub enum EngineType {
     Process,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub enum DomainType {
+    Mmap,
     #[cfg(feature = "cheri")]
     Cheri,
     #[cfg(feature = "wasm")]
@@ -31,6 +32,8 @@ pub enum DomainType {
 
 pub fn get_compatibilty_table() -> BTreeMap<EngineType, DomainType> {
     return BTreeMap::from([
+        #[cfg(feature = "hyper_io")]
+        (EngineType::Hyper, DomainType::Mmap),
         #[cfg(feature = "cheri")]
         (EngineType::Cheri, DomainType::Cheri),
         #[cfg(feature = "wasm")]
@@ -42,6 +45,10 @@ pub fn get_compatibilty_table() -> BTreeMap<EngineType, DomainType> {
 
 pub fn get_available_domains() -> BTreeMap<DomainType, Box<dyn MemoryDomain>> {
     return BTreeMap::from([
+        (
+            DomainType::Mmap,
+            crate::memory_domain::mmap::MmapMemoryDomain::init(MemoryResource::None).unwrap(),
+        ),
         #[cfg(feature = "cheri")]
         (
             DomainType::Cheri,

@@ -43,25 +43,23 @@ impl Dispatcher {
     pub fn init(mut resource_pool: ResourcePool) -> DandelionResult<Dispatcher> {
         // get machine specific configurations
         let type_map = get_compatibilty_table();
-        let domains = get_available_domains();
+        let mut domains = get_available_domains();
         let drivers = get_available_drivers();
 
-        let work_queue = Box::new(EngineQueue::new());
         let function_registry = FunctionRegistry::new(drivers);
         // add the work queue for each domain
-        let domain_map = domains
-            .into_iter()
-            .map(|(k, v)| (k, (v, work_queue.clone())))
-            .collect();
 
         // Use up all engine resources to start with
+        let mut domain_map = BTreeMap::new();
         let mut engine_queues = BTreeMap::new();
         for (engine_id, driver) in function_registry.drivers.iter() {
-            let mut engine_vec = Vec::new();
+            let work_queue = Box::new(EngineQueue::new());
             while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(*engine_id) {
-                let engine = driver.start_engine(resource, work_queue.clone())?;
-                engine_vec.push(engine);
+                driver.start_engine(resource, work_queue.clone())?;
             }
+            let domain_type = type_map.get(engine_id).unwrap();
+            let domain = domains.remove(domain_type).unwrap();
+            domain_map.insert(*domain_type, (domain, work_queue.clone()));
             engine_queues.insert(*engine_id, work_queue.clone());
         }
         let archive: Arc<SyncMutex<Archive>> = Arc::new(SyncMutex::new(Archive::new()));

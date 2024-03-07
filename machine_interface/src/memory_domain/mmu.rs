@@ -1,9 +1,9 @@
 use crate::{
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource},
-    util::shared_mem::SharedMem,
+    util::mmapmem::MmapMem,
 };
 use dandelion_commons::{DandelionError, DandelionResult};
-use log::debug;
+use log::warn;
 use nix::sys::mman::ProtFlags;
 
 // TODO: decide this value in a system dependent way
@@ -11,60 +11,24 @@ pub const MMAP_BASE_ADDR: usize = 0x10000;
 
 #[derive(Debug)]
 pub struct MmuContext {
-    pub storage: SharedMem,
+    pub storage: MmapMem,
 }
 
 impl ContextTrait for MmuContext {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
         if offset < MMAP_BASE_ADDR {
-            debug!("offset smaller than MMAP_BASE_ADDR")
+            warn!("write offset smaller than MMAP_BASE_ADDR")
             // TODO: could be an issue if the context will be used by mmu_worker (function context)
         }
-
-        // check alignment
-        if offset % core::mem::align_of::<T>() != 0 {
-            return Err(DandelionError::WriteMisaligned);
-        }
-
-        // check if the write is within bounds
-        let write_length = data.len() * core::mem::size_of::<T>();
-        if offset + write_length > self.storage.len() {
-            return Err(DandelionError::InvalidWrite);
-        }
-
-        // write values
-        unsafe {
-            let buffer = core::slice::from_raw_parts(data.as_ptr() as *const u8, write_length);
-            self.storage.as_slice_mut()[offset..offset + buffer.len()].copy_from_slice(&buffer);
-        }
-
-        Ok(())
+        self.storage.write(offset, data)
     }
 
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         if offset < MMAP_BASE_ADDR {
-            debug!("offset smaller than MMAP_BASE_ADDR")
+            warn!("read offset smaller than MMAP_BASE_ADDR")
             // TODO: could be an issue if the context will be used by mmu_worker (function context)
         }
-
-        // check that buffer has proper allighment
-        if offset % core::mem::align_of::<T>() != 0 {
-            return Err(DandelionError::ReadMisaligned);
-        }
-
-        let read_size = core::mem::size_of::<T>() * read_buffer.len();
-        if offset + read_size > self.storage.len() {
-            return Err(DandelionError::InvalidRead);
-        }
-
-        // read values, sanitize if necessary
-        unsafe {
-            let read_memory =
-                core::slice::from_raw_parts_mut(read_buffer.as_mut_ptr() as *mut u8, read_size);
-            read_memory.copy_from_slice(&self.storage.as_slice()[offset..offset + read_size]);
-        }
-
-        Ok(())
+        self.storage.read(offset, read_buffer)
     }
 }
 
@@ -78,11 +42,11 @@ impl MemoryDomain for MmuMemoryDomain {
 
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
         // create and map a shared memory region
-        let mem_space = match SharedMem::create(size, ProtFlags::PROT_READ | ProtFlags::PROT_WRITE)
-        {
-            Ok(v) => v,
-            Err(_e) => return Err(DandelionError::OutOfMemory),
-        };
+        let mem_space =
+            match MmapMem::create(size, ProtFlags::PROT_READ | ProtFlags::PROT_WRITE, true) {
+                Ok(v) => v,
+                Err(_e) => return Err(DandelionError::MemoryAllocationError),
+            };
 
         let new_context = Box::new(MmuContext { storage: mem_space });
         Ok(Context::new(ContextType::Mmu(new_context), size))
@@ -97,10 +61,10 @@ pub fn mmu_transfer(
     size: usize,
 ) -> DandelionResult<()> {
     // check if there is space in both contexts
-    if source.storage.len() < source_offset + size {
+    if source.storage.size() < source_offset + size {
         return Err(DandelionError::InvalidRead);
     }
-    if destination.storage.len() < destination_offset + size {
+    if destination.storage.size() < destination_offset + size {
         return Err(DandelionError::InvalidWrite);
     }
     unsafe {

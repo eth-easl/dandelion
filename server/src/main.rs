@@ -5,24 +5,30 @@ use dispatcher::{
     resource_pool::ResourcePool,
 };
 use futures::lock::Mutex;
+use futures::stream::StreamExt;
 use http::StatusCode;
 use hyper::{
     service::{make_service_fn, service_fn},
     Body, Request, Response, Server,
 };
+
 use log::{error, info};
 use machine_interface::{
     function_driver::ComputeResource,
     machine_config::EngineType,
-    memory_domain::{malloc::MallocMemoryDomain, read_only::ReadOnlyContext},
-    memory_domain::{Context, ContextTrait, MemoryDomain},
+    memory_domain::{
+        mmap::MmapMemoryDomain, read_only::ReadOnlyContext, Context, ContextTrait, MemoryDomain,
+    },
     DataItem, DataSet, Position,
 };
+use signal_hook::consts::signal::*;
+use signal_hook_tokio::Signals;
+
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
     convert::Infallible,
-    io::Write,
+    io::{self, Write},
     mem::size_of,
     net::SocketAddr,
     path::PathBuf,
@@ -35,6 +41,20 @@ use tokio::runtime::Builder;
 
 static INIT_MATRIX: Once = Once::new();
 static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
+const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
+
+// Handles graceful shutdown
+async fn handle_signals(mut signals: Signals) -> io::Result<()> {
+    while let Some(signal) = signals.next().await {
+        match signal {
+            SIGTERM | SIGINT | SIGQUIT => {
+                return Ok(());
+            }
+            _ => unreachable!(),
+        }
+    }
+    Ok(())
+}
 
 async fn run_chain(
     dispatcher: Arc<Dispatcher>,
@@ -44,8 +64,8 @@ async fn run_chain(
     post_uri: String,
 ) -> u64 {
     // TODO just have all the strings concatinated and create const context
-    let domain = MallocMemoryDomain::init(machine_interface::memory_domain::MemoryResource::None)
-        .expect("Should be able to get malloc domain");
+    let domain = MmapMemoryDomain::init(machine_interface::memory_domain::MemoryResource::None)
+        .expect("Should be able to get Mmap domain");
     let mut input_context = domain
         .acquire_context(128)
         .expect("Should be able to get malloc context");
@@ -157,7 +177,6 @@ async fn run_mat_func(
         CompositionSet::from((0, vec![(Arc::new(input_context))])),
     )];
     let outputs = vec![Some(0)];
-    println!("function name: {}", function_name);
     let result: Result<BTreeMap<usize, CompositionSet>, dandelion_commons::DandelionError> =
         dispatcher
             .queue_function_by_name(function_name, inputs, outputs, is_cold)
@@ -354,8 +373,8 @@ async fn register_function(
     let request_map: RegisterFunction =
         bson::from_slice(&bytes).expect("Should be able to deserialize request");
     // write function to file
-    std::fs::create_dir_all("/tmp/dandelion_functions").unwrap();
-    let mut path_buff = PathBuf::from("/tmp/dandelion_functions");
+    std::fs::create_dir_all(FUNCTION_FOLDER_PATH).unwrap();
+    let mut path_buff = PathBuf::from(FUNCTION_FOLDER_PATH);
     path_buff.push(request_map.name.clone());
     let mut function_file = std::fs::File::create(path_buff.clone())
         .expect("Failed to create file for registering function");
@@ -521,6 +540,10 @@ fn main() -> () {
     });
     let server = Server::bind(&addr).serve(make_svc);
 
+    let signals = Signals::new(&[SIGTERM, SIGINT, SIGQUIT]).unwrap();
+    let graceful =
+        server.with_graceful_shutdown(async move { handle_signals(signals).await.unwrap() });
+
     #[cfg(feature = "cheri")]
     println!("Hello, World (cheri)");
     #[cfg(feature = "mmu")]
@@ -529,8 +552,11 @@ fn main() -> () {
     println!("Hello, World (wasm)");
     #[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm")))]
     println!("Hello, World (native)");
-    // Run this server for... forever!
-    if let Err(e) = runtime.block_on(server) {
+    // Run this server for... forever... unless I receive a signal!
+    if let Err(e) = runtime.block_on(graceful) {
         error!("server error: {}", e);
     }
+
+    // clean up folder in tmp that is used for function storage
+    std::fs::remove_dir_all(FUNCTION_FOLDER_PATH).unwrap();
 }

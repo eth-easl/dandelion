@@ -38,7 +38,13 @@ mod server_tests {
 
     impl Drop for ServerKiller {
         fn drop(&mut self) {
-            self.server.kill().unwrap();
+            let mut kill = Command::new("kill")
+                .stdout(Stdio::piped())
+                .args(["-s", "TERM", &self.server.id().to_string()])
+                .spawn()
+                .unwrap();
+            kill.wait().unwrap();
+
             let mut child_stdout = self.server.stdout.take().expect("Should have stdout");
             let mut outbuf = Vec::new();
             let _ = child_stdout

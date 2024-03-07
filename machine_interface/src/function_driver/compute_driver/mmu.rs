@@ -199,7 +199,7 @@ impl EngineLoop for MmuLoop {
 
         mmu_run_static(
             self.cpu_slot,
-            mmu_context.storage.id(),
+            mmu_context.storage.filename().unwrap(),
             &elf_config.protection_flags,
             elf_config.entry_point,
         )?;

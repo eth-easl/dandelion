@@ -18,6 +18,8 @@ log = "0.4.20"
 env_logger = "0.10.1"
 serde = "1.0.197"
 bson = "2.9.0"
+signal-hook = "0.3.17"
+signal-hook-tokio = {version = "0.3.1", features = [ "futures-v0_3"]}
 
 [dev-dependencies]
 assert_cmd = "2.0"
