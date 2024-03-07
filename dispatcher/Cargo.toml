@@ -17,3 +17,4 @@ dparser = {path = "../dparser"}
 cheri = ["machine_interface/cheri"]
 wasm = ["machine_interface/wasm"]
 mmu = ["machine_interface/mmu"]
+hyper_io = ["machine_interface/hyper_io"]

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::function_driver::SystemFunction;
 #[allow(unused_imports)]
 use crate::{
     function_driver::Driver,
@@ -41,6 +42,17 @@ pub fn get_compatibilty_table() -> BTreeMap<EngineType, DomainType> {
         #[cfg(feature = "mmu")]
         (EngineType::Process, DomainType::Process),
     ]);
+}
+
+#[cfg(any(feature = "hyper_io"))]
+const SYS_FUNC_DEFAULT_CONTEXT_SIZE: usize = 0x200_0000;
+
+pub fn get_system_functions(engine_type: EngineType) -> Vec<(SystemFunction, usize)> {
+    return match engine_type {
+        #[cfg(feature = "hyper_io")]
+        EngineType::Hyper => vec![(SystemFunction::HTTP, SYS_FUNC_DEFAULT_CONTEXT_SIZE)],
+        _ => Vec::new(),
+    };
 }
 
 pub fn get_available_domains() -> BTreeMap<DomainType, Box<dyn MemoryDomain>> {

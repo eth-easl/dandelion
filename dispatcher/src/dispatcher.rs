@@ -46,21 +46,21 @@ impl Dispatcher {
         let mut domains = get_available_domains();
         let drivers = get_available_drivers();
 
-        let function_registry = FunctionRegistry::new(drivers);
-        // add the work queue for each domain
+        let function_registry = FunctionRegistry::new(drivers, &type_map, &domains);
 
-        // Use up all engine resources to start with
+        // Insert a work queue for each domain and use up all engine resource available
         let mut domain_map = BTreeMap::new();
         let mut engine_queues = BTreeMap::new();
-        for (engine_id, driver) in function_registry.drivers.iter() {
+        for (engine_type, driver) in function_registry.drivers.iter() {
             let work_queue = Box::new(EngineQueue::new());
-            while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(*engine_id) {
+            while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(*engine_type)
+            {
                 driver.start_engine(resource, work_queue.clone())?;
             }
-            let domain_type = type_map.get(engine_id).unwrap();
+            let domain_type = type_map.get(engine_type).unwrap();
             let domain = domains.remove(domain_type).unwrap();
             domain_map.insert(*domain_type, (domain, work_queue.clone()));
-            engine_queues.insert(*engine_id, work_queue.clone());
+            engine_queues.insert(*engine_type, work_queue.clone());
         }
         let archive: Arc<SyncMutex<Archive>> = Arc::new(SyncMutex::new(Archive::new()));
         return Ok(Dispatcher {
