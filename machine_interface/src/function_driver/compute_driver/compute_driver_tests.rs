@@ -1,4 +1,5 @@
 #[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "wasm")))]
+#[allow(clippy::module_inception)]
 mod compute_driver_tests {
     use crate::{
         function_driver::{ComputeResource, Driver, Engine, FunctionConfig},
@@ -579,7 +580,7 @@ mod compute_driver_tests {
                     .collect())).expect("Should have at least one core");
         vec![
             ComputeResource::CPU(255),
-            ComputeResource::GPU(0)
+            ComputeResource::GPU(0, 0)
         ]);
         #[cfg(target_arch = "aarch64")]
         driverTests!(elf_mmu_aarch64; MmuMemoryDomain; Vec::new(); MmuDriver {};
@@ -613,7 +614,7 @@ mod compute_driver_tests {
                     .collect())).expect("Should have at least one core");
         vec![
             ComputeResource::CPU(255),
-            ComputeResource::GPU(0),
+            ComputeResource::GPU(0, 0),
         ]);
 
         #[cfg(target_arch = "aarch64")]
@@ -629,5 +630,24 @@ mod compute_driver_tests {
             ComputeResource::CPU(255),
             ComputeResource::GPU(0),
         ]);
+    }
+
+    #[cfg(feature = "gpu")]
+    mod gpu {
+        use crate::function_driver::{
+            compute_driver::gpu::GpuCommand,
+            thread_utils::{DefaultState, ThreadPayload},
+        };
+
+        #[test]
+        fn trivial() {
+            assert!(true);
+        }
+
+        #[test]
+        fn run_gpu_payload() {
+            let cmd = GpuCommand { gpu_id: 0 };
+            assert!(cmd.run(&mut DefaultState {}).is_ok());
+        }
     }
 }

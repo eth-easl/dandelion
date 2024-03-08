@@ -38,10 +38,14 @@ pub struct WasmConfig {
 }
 
 #[derive(Clone)]
+pub struct GpuConfig {}
+
+#[derive(Clone)]
 pub enum FunctionConfig {
     ElfConfig(ElfConfig),
     SysConfig(SystemFunction),
     WasmConfig(WasmConfig),
+    GpuConfig(GpuConfig),
 }
 
 pub struct Function {
@@ -56,7 +60,7 @@ impl Function {
         domain: &Box<dyn MemoryDomain>,
         ctx_size: usize,
     ) -> DandelionResult<Context> {
-        return match &self.config {
+        match &self.config {
             FunctionConfig::ElfConfig(_) => {
                 load_utils::load_static(domain, &self.context, &self.requirements, ctx_size)
             }
@@ -69,14 +73,15 @@ impl Function {
                 context.occupy_space(0, c.sdk_heap_base)?;
                 Ok(context)
             }
-        };
+            FunctionConfig::GpuConfig(_) => todo!(),
+        }
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub enum ComputeResource {
     CPU(u8),
-    GPU(u8),
+    GPU(u8, u8), // TODO change back to GPU(u8) once Driver.start_engine() takes a vec of ComputeResources
 }
 
 pub trait Engine: Send {
