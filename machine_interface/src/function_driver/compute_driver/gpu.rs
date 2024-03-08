@@ -40,7 +40,7 @@ impl ThreadPayload for GpuCommand {
         unsafe {
             gpu_toy_launch(self.gpu_id);
         }
-        todo!()
+        Ok(())
     }
 }
 

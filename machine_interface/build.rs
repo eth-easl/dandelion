@@ -20,8 +20,11 @@ fn cmake_libraries_cheri() {
 
 fn cmake_libraries_gpu() {
     let install = Config::new("hip_interface").build();
-    println!("cargo:rustc-link-search=native={}", install.display());
+    println!("cargo:rustc-link-search=native={}/build", install.display());
     println!("cargo:rustc-link-lib=static=hip_interface_lib");
+    // link with hip runtime TODO make less hard coded
+    println!("cargo:rustc-link-search=/opt/rocm-5.7.1/lib");
+    println!("cargo:rustc-link-lib=amdhip64");
 }
 
 fn main() {
