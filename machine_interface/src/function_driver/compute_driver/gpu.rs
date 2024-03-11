@@ -55,7 +55,7 @@ impl ThreadPayload for GpuCommand {
         }
 
         // load module
-        let mut module: hip::ModuleT = null();
+        let mut module = hip::ModuleT::new();
         let fname =
             CString::new("/home/smithj/dandelion/machine_interface/hip_interface/module.hsaco")
                 .unwrap();
@@ -71,12 +71,12 @@ impl ThreadPayload for GpuCommand {
         // load kernels
         let mut kernel_set: hip::FunctionT = null();
         let kname = CString::new("set_mem").unwrap();
-        if hip::module_get_function(&mut kernel_set, module, kname) != 0 {
+        if hip::module_get_function(&mut kernel_set, &module, kname) != 0 {
             eprintln!("get_function");
         }
         let mut kernel_check: hip::FunctionT = null();
         let kname = CString::new("check_mem").unwrap();
-        if hip::module_get_function(&mut kernel_check, module, kname) != 0 {
+        if hip::module_get_function(&mut kernel_check, &module, kname) != 0 {
             eprintln!("get_function 2");
         }
 
