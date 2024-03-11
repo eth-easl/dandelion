@@ -1,4 +1,4 @@
-use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
+use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource};
 use crate::util::mmapmem::MmapMem;
 use dandelion_commons::{DandelionError, DandelionResult};
 use nix::sys::mman::ProtFlags;
@@ -24,7 +24,7 @@ impl ContextTrait for WasmContext {
 pub struct WasmMemoryDomain {}
 
 impl MemoryDomain for WasmMemoryDomain {
-    fn init(_config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>> {
+    fn init(_config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
         Ok(Box::new(WasmMemoryDomain {}))
     }
 

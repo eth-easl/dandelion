@@ -5,7 +5,7 @@ mod system_driver_tests {
             system_driver::get_system_function_output_sets, test_queue::TestQueue, ComputeResource,
             Driver, EngineArguments, FunctionArguments, FunctionConfig, SystemFunction,
         },
-        memory_domain::{Context, ContextTrait, MemoryDomain},
+        memory_domain::{Context, ContextTrait, MemoryDomain, MemoryResource},
         DataItem, DataSet, Position,
     };
     use dandelion_commons::{
@@ -56,7 +56,7 @@ mod system_driver_tests {
     }
 
     fn get_http<Dom: MemoryDomain>(
-        dom_init: Vec<u8>,
+        dom_init: MemoryResource,
         driver: Box<dyn Driver>,
         drv_init: ComputeResource,
     ) -> () {
@@ -119,7 +119,7 @@ mod system_driver_tests {
     }
 
     fn put_http<Dom: MemoryDomain>(
-        dom_init: Vec<u8>,
+        dom_init: MemoryResource,
         driver: Box<dyn Driver>,
         drv_init: ComputeResource,
     ) -> () {
@@ -213,6 +213,6 @@ mod system_driver_tests {
         use crate::function_driver::system_driver::hyper::HyperDriver;
         use crate::function_driver::ComputeResource;
         use crate::memory_domain::malloc::MallocMemoryDomain as domain;
-        driverTests!(hyper_io; domain; Vec::new(); HyperDriver{}; ComputeResource::CPU(1));
+        driverTests!(hyper_io; domain; crate::memory_domain::MemoryResource::None; HyperDriver{}; ComputeResource::CPU(1));
     }
 }

@@ -31,6 +31,14 @@ pub enum SystemFunction {
     HTTP,
 }
 
+impl core::fmt::Display for SystemFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> core::fmt::Result {
+        return match self {
+            SystemFunction::HTTP => write!(f, "HTTP"),
+        };
+    }
+}
+
 #[derive(Clone)]
 pub struct WasmConfig {
     #[cfg(feature = "wasm")]

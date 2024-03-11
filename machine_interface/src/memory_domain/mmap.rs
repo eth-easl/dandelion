@@ -6,6 +6,8 @@ use dandelion_commons::{DandelionError, DandelionResult};
 use log::debug;
 use nix::sys::mman::ProtFlags;
 
+use super::MemoryResource;
+
 #[derive(Debug)]
 pub struct MmapContext {
     pub storage: MmapMem,
@@ -25,7 +27,7 @@ impl ContextTrait for MmapContext {
 pub struct MmapMemoryDomain {}
 
 impl MemoryDomain for MmapMemoryDomain {
-    fn init(_config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>> {
+    fn init(_config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
         Ok(Box::new(MmapMemoryDomain {}))
     }
 

@@ -7,7 +7,7 @@ use crate::{
 use core::pin::Pin;
 use dandelion_commons::{
     records::{Archive, RecordPoint, Recorder},
-    ContextTypeId, DandelionError, DandelionResult, EngineTypeId, FunctionId,
+    DandelionError, DandelionResult, FunctionId,
 };
 use futures::{
     future::join_all,
@@ -17,6 +17,10 @@ use futures::{
 use itertools::Itertools;
 use machine_interface::{
     function_driver::{EngineArguments, FunctionArguments, FunctionConfig, TransferArguments},
+    machine_config::{
+        get_available_domains, get_available_drivers, get_compatibilty_table, DomainType,
+        EngineType,
+    },
     memory_domain::{Context, MemoryDomain},
 };
 use std::{
@@ -27,38 +31,34 @@ use std::{
 // TODO here and in registry can probably replace driver and loader function maps with fixed size arrays
 // That have compile time size and static indexing
 pub struct Dispatcher {
-    domains: BTreeMap<ContextTypeId, (Box<dyn MemoryDomain>, Box<EngineQueue>)>,
-    engine_queues: BTreeMap<EngineTypeId, Box<EngineQueue>>,
-    type_map: BTreeMap<EngineTypeId, ContextTypeId>,
+    domains: BTreeMap<DomainType, (Box<dyn MemoryDomain>, Box<EngineQueue>)>,
+    engine_queues: BTreeMap<EngineType, Box<EngineQueue>>,
+    type_map: BTreeMap<EngineType, DomainType>,
     function_registry: FunctionRegistry,
 }
 
 impl Dispatcher {
-    pub fn init(
-        domains: BTreeMap<ContextTypeId, Box<dyn MemoryDomain>>,
-        type_map: BTreeMap<EngineTypeId, ContextTypeId>,
-        function_registry: FunctionRegistry,
-        mut resource_pool: ResourcePool,
-    ) -> DandelionResult<Dispatcher> {
-        let work_queue = Box::new(EngineQueue::new());
+    pub fn init(mut resource_pool: ResourcePool) -> DandelionResult<Dispatcher> {
+        // get machine specific configurations
+        let type_map = get_compatibilty_table();
+        let mut domains = get_available_domains();
+        let drivers = get_available_drivers();
 
-        // add the work queue for each domain
-        let domain_map = domains
-            .into_iter()
-            .map(|(k, v)| (k, (v, work_queue.clone())))
-            .collect();
+        let function_registry = FunctionRegistry::new(drivers, &type_map, &domains);
 
-        // Use up all engine resources to start with
+        // Insert a work queue for each domain and use up all engine resource available
+        let mut domain_map = BTreeMap::new();
         let mut engine_queues = BTreeMap::new();
-        for (engine_id, driver) in function_registry.drivers.iter() {
-            let mut engine_vec = Vec::new();
-            while let Ok(Some(resource)) =
-                resource_pool.sync_acquire_engine_resource(engine_id.clone())
+        for (engine_type, driver) in function_registry.drivers.iter() {
+            let work_queue = Box::new(EngineQueue::new());
+            while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(*engine_type)
             {
-                let engine = driver.start_engine(resource, work_queue.clone())?;
-                engine_vec.push(engine);
+                driver.start_engine(resource, work_queue.clone())?;
             }
-            engine_queues.insert(*engine_id, work_queue.clone());
+            let domain_type = type_map.get(engine_type).unwrap();
+            let domain = domains.remove(domain_type).unwrap();
+            domain_map.insert(*domain_type, (domain, work_queue.clone()));
+            engine_queues.insert(*engine_type, work_queue.clone());
         }
         return Ok(Dispatcher {
             domains: domain_map,
@@ -68,23 +68,42 @@ impl Dispatcher {
         });
     }
 
-    pub async fn update_func(
+    pub async fn insert_func(
         &self,
-        function_id: FunctionId,
-        engine_type: EngineTypeId,
+        function_name: String,
+        engine_type: EngineType,
         ctx_size: usize,
         path: &str,
         metadata: Metadata,
-    ) -> DandelionResult<()> {
-        // self.function_registry
-        //     .insert_metadata(todo!("funciton name"), metadata)
-        //     .await;
-        self.function_registry
-            .insert_metadata(function_id, metadata)
-            .await;
+    ) -> DandelionResult<FunctionId> {
         return self
             .function_registry
-            .add_local(function_id, engine_type, ctx_size, path)
+            .insert_function(function_name, engine_type, ctx_size, path, metadata)
+            .await;
+    }
+
+    pub async fn insert_compositions(&self, compositions: String) -> DandelionResult<()> {
+        return self
+            .function_registry
+            .insert_compositions(&compositions)
+            .await;
+    }
+
+    pub async fn queue_function_by_name(
+        &self,
+        function_name: String,
+        inputs: Vec<(usize, CompositionSet)>,
+        output_mapping: Vec<Option<usize>>,
+        non_caching: bool,
+        recorder: Recorder,
+    ) -> DandelionResult<(BTreeMap<usize, CompositionSet>, Recorder)> {
+        let function_id = self
+            .function_registry
+            .get_function_id(&function_name)
+            .await
+            .ok_or(DandelionError::DispatcherUnavailableFunction)?;
+        return self
+            .queue_function(function_id, inputs, output_mapping, non_caching, recorder)
             .await;
     }
 
@@ -93,7 +112,6 @@ impl Dispatcher {
         &self,
         composition: Composition,
         mut inputs: BTreeMap<usize, CompositionSet>,
-        output_sets: BTreeMap<usize, usize>,
         non_caching: bool,
         mut recorder: Recorder,
     ) -> DandelionResult<(BTreeMap<usize, CompositionSet>, Recorder)> {
@@ -188,7 +206,8 @@ impl Dispatcher {
             inputs
                 .into_iter()
                 .filter_map(|(set_index, composition_set)| {
-                    output_sets
+                    composition
+                        .output_map
                         .get(&set_index)
                         .and_then(|output_index| Some((*output_index, composition_set)))
                 })
@@ -316,13 +335,12 @@ impl Dispatcher {
                             .collect();
                         return Ok((composition_sets, recorder));
                     }
-                    FunctionType::Composition(composition, out_sets) => {
+                    FunctionType::Composition(composition) => {
                         // need to set the inner composition indexing to the outer composition indexing
                         let (compositon_output, recorder) = self
                             .queue_composition(
                                 composition.clone(),
                                 BTreeMap::from_iter(inputs),
-                                out_sets.clone(),
                                 non_caching,
                                 recorder,
                             )
@@ -352,7 +370,7 @@ impl Dispatcher {
     async fn prepare_for_engine(
         &self,
         function_id: FunctionId,
-        engine_type: EngineTypeId,
+        engine_type: EngineType,
         inputs: Vec<(usize, CompositionSet)>,
         ctx_size: usize,
         non_caching: bool,
@@ -443,7 +461,7 @@ impl Dispatcher {
 
     async fn run_on_engine(
         &self,
-        engine_type: EngineTypeId,
+        engine_type: EngineType,
         function_config: FunctionConfig,
         output_sets: Arc<Vec<String>>,
         function_context: Context,

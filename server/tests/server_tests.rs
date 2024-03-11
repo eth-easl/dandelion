@@ -1,19 +1,104 @@
-#[cfg(all(any(feature = "mmu", feature = "cheri"), feature = "hyper_io"))]
+#[cfg(all(
+    any(feature = "wasm", feature = "mmu", feature = "cheri"),
+    feature = "hyper_io"
+))]
 mod server_tests {
 
     use assert_cmd::prelude::*;
-    use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+    use byteorder::{BigEndian, ReadBytesExt};
+    use serde::Serialize;
     use std::{
-        io::{BufRead, BufReader, Cursor},
-        process::{Command, Stdio},
+        io::{BufRead, BufReader, Cursor, Read},
+        process::{Child, Command, Stdio},
     };
+
+    struct ServerKiller {
+        server: Child,
+    }
+
+    #[derive(Serialize)]
+    struct RegisterFunction {
+        name: String,
+        context_size: u64,
+        engine_type: String,
+        binary: Vec<u8>,
+    }
+
+    #[derive(Serialize)]
+    struct RegisterChain {
+        composition: String,
+    }
+
+    #[derive(Serialize)]
+    struct MatrixRequest {
+        name: String,
+        rows: u64,
+        cols: u64,
+    }
+
+    impl Drop for ServerKiller {
+        fn drop(&mut self) {
+            let mut kill = Command::new("kill")
+                .stdout(Stdio::piped())
+                .args(["-s", "TERM", &self.server.id().to_string()])
+                .spawn()
+                .unwrap();
+            kill.wait().unwrap();
+
+            let mut child_stdout = self.server.stdout.take().expect("Should have stdout");
+            let mut outbuf = Vec::new();
+            let _ = child_stdout
+                .read_to_end(&mut outbuf)
+                .expect("should be able to read child output after killing it");
+            print!(
+                "server output:\n{}",
+                String::from_utf8(outbuf)
+                    .expect("Should be able to convert child stdout to string")
+            );
+            let mut errbuf = Vec::new();
+            let _ = self
+                .server
+                .stderr
+                .take()
+                .expect("Should have stderr pipe for child")
+                .read_to_end(&mut errbuf)
+                .expect("Should be able to read child stderr");
+            print!(
+                "server stderr:\n{}",
+                String::from_utf8(errbuf).expect("Server stderr should be string")
+            )
+        }
+    }
+
+    fn send_matrix_request(endpoint: &str, function_name: String) {
+        // call into function
+        let mat_request = MatrixRequest {
+            name: function_name,
+            cols: 1,
+            rows: 1,
+        };
+
+        let client = reqwest::blocking::Client::new();
+        let resp = client
+            .post(endpoint)
+            .body(bson::to_vec(&mat_request).unwrap())
+            .send()
+            .unwrap();
+        assert!(resp.status().is_success());
+
+        let body = resp.bytes().unwrap();
+        assert_eq!(body.len(), 8);
+        let mut reader = Cursor::new(body);
+        let checksum = reader.read_u64::<BigEndian>().unwrap();
+        assert_eq!(checksum, 1);
+    }
 
     #[test]
     fn serve_matmul() {
         let mut cmd = Command::cargo_bin("dandelion_server").unwrap();
         let mut server = cmd
             .stdout(Stdio::piped())
-            .env("NUM_COLD", "1")
+            .stderr(Stdio::piped())
             .spawn()
             .unwrap();
         let mut reader = BufReader::new(server.stdout.take().unwrap());
@@ -25,37 +110,67 @@ mod server_tests {
                 break;
             }
         }
+        let _ = server.stdout.insert(reader.into_inner());
+        let mut server_killer = ServerKiller { server };
 
-        let mat_size = 1;
-        let mut body = Vec::new();
-        let mut writer = Cursor::new(&mut body);
-        writer.write_u64::<BigEndian>(mat_size).unwrap();
-        writer.write_u64::<BigEndian>(mat_size).unwrap();
+        // register function
+        let version;
+        let engine_type;
+        #[cfg(feature = "wasm")]
+        {
+            version = "sysld_wasm";
+            engine_type = String::from("RWasm");
+        }
+        #[cfg(feature = "mmu")]
+        {
+            version = "elf_mmu";
+            engine_type = String::from("Process");
+        }
+        let matmul_path = format!(
+            "{}/../machine_interface/tests/data/test_{}_{}_matmul",
+            env!("CARGO_MANIFEST_DIR"),
+            version,
+            std::env::consts::ARCH
+        );
 
-        let client = reqwest::blocking::Client::new();
-        let resp = client
-            .post("http://localhost:8080/hot/matmul")
-            .body(body)
+        let register_request = RegisterFunction {
+            name: String::from("matmul"),
+            context_size: 0x802_0000,
+            binary: std::fs::read(matmul_path).unwrap(),
+            engine_type,
+        };
+        let registration_client = reqwest::blocking::Client::new();
+        let registration_resp = registration_client
+            .post("http://localhost:8080/register/function")
+            .body(bson::to_vec(&register_request).unwrap())
             .send()
             .unwrap();
-        assert!(resp.status().is_success());
+        assert!(registration_resp.status().is_success());
 
-        let body = resp.bytes().unwrap();
-        assert_eq!(body.len(), 8);
-        let mut reader = Cursor::new(body);
-        let checksum = reader.read_u64::<BigEndian>().unwrap();
-        assert_eq!(checksum, 1);
-
-        let status = server.try_wait().unwrap();
-        assert_eq!(status, None, "Server exited unexpectedly");
-
-        // Instead of sigkill, send sigterm for clean shutdown
-        let mut kill = Command::new("kill")
-            .stdout(Stdio::piped())
-            .args(["-s", "TERM", &server.id().to_string()])
-            .spawn()
+        let chain_request = RegisterChain {
+            composition: String::from(
+                r#"
+                (:function matmul (InMats) -> (OutMats))
+                (:composition chain (CompInMats) -> (CompOutMats) (
+                    (matmul ((:all InMats <- CompInMats)) => ((InterMat := OutMats)))
+                    (matmul ((:all InMats <- InterMat)) => ((CompOutMats := OutMats)))
+                ))
+            "#,
+            ),
+        };
+        let chain_client = reqwest::blocking::Client::new();
+        let chain_resp = chain_client
+            .post("http://localhost:8080/register/composition")
+            .body(bson::to_vec(&chain_request).unwrap())
+            .send()
             .unwrap();
+        assert!(chain_resp.status().is_success());
 
-        kill.wait().unwrap();
+        send_matrix_request("http://localhost:8080/hot/matmul", String::from("matmul"));
+        send_matrix_request("http://localhost:8080/hot/matmul", String::from("chain"));
+
+        let status_result = server_killer.server.try_wait();
+        let status = status_result.unwrap();
+        assert_eq!(status, None, "Server exited unexpectedly");
     }
 }

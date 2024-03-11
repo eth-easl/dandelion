@@ -32,7 +32,7 @@ extern "C" {
     ) -> ();
 }
 
-use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
+use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource};
 use dandelion_commons::{DandelionError, DandelionResult};
 
 #[derive(Debug)]
@@ -95,7 +95,7 @@ impl Drop for CheriContext {
 pub struct CheriMemoryDomain {}
 
 impl MemoryDomain for CheriMemoryDomain {
-    fn init(_config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>> {
+    fn init(_config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
         Ok(Box::new(CheriMemoryDomain {}))
     }
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {

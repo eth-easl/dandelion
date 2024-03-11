@@ -12,8 +12,8 @@ fn test_loader_basic() {
         std::env::consts::ARCH
     );
     let driver = MmuDriver {};
-    let mut mmu_domain =
-        MmuMemoryDomain::init(Vec::new()).expect("Should be able to get mmu domain");
+    let mut mmu_domain = MmuMemoryDomain::init(crate::memory_domain::MemoryResource::None)
+        .expect("Should be able to get mmu domain");
     let Function {
         requirements,
         context,

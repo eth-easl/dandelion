@@ -5,7 +5,7 @@ mod compute_driver_tests {
             test_queue::TestQueue, ComputeResource, Driver, EngineArguments, FunctionArguments,
             FunctionConfig,
         },
-        memory_domain::{Context, ContextState, ContextTrait, MemoryDomain},
+        memory_domain::{Context, ContextState, ContextTrait, MemoryDomain, MemoryResource},
         DataItem, DataSet, Position,
     };
     use core::panic;
@@ -15,7 +15,7 @@ mod compute_driver_tests {
     };
     use std::sync::{Arc, Mutex};
 
-    fn loader_empty<Dom: MemoryDomain>(dom_init: Vec<u8>, driver: Box<dyn Driver>) {
+    fn loader_empty<Dom: MemoryDomain>(dom_init: MemoryResource, driver: Box<dyn Driver>) {
         // load elf file
         let elf_path = String::new();
         let mut domain = Dom::init(dom_init).expect("Should be able to get domain");
@@ -47,7 +47,7 @@ mod compute_driver_tests {
 
     fn prepare_engine_and_function<Dom: MemoryDomain>(
         filename: &str,
-        dom_init: Vec<u8>,
+        dom_init: MemoryResource,
         driver: &Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) -> (Context, FunctionConfig, Box<TestQueue>) {
@@ -67,7 +67,7 @@ mod compute_driver_tests {
 
     fn engine_minimal<Dom: MemoryDomain>(
         filename: &str,
-        dom_init: Vec<u8>,
+        dom_init: MemoryResource,
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
@@ -90,7 +90,7 @@ mod compute_driver_tests {
 
     fn engine_matmul_single<Dom: MemoryDomain>(
         filename: &str,
-        dom_init: Vec<u8>,
+        dom_init: MemoryResource,
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
@@ -166,7 +166,7 @@ mod compute_driver_tests {
 
     fn engine_matmul_size_sweep<Dom: MemoryDomain>(
         filename: &str,
-        dom_init: Vec<u8>,
+        dom_init: MemoryResource,
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
@@ -245,7 +245,7 @@ mod compute_driver_tests {
 
     fn engine_stdio<Dom: MemoryDomain>(
         filename: &str,
-        dom_init: Vec<u8>,
+        dom_init: MemoryResource,
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
@@ -364,7 +364,7 @@ mod compute_driver_tests {
 
     fn engine_fileio<Dom: MemoryDomain>(
         filename: &str,
-        dom_init: Vec<u8>,
+        dom_init: MemoryResource,
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
@@ -594,11 +594,13 @@ mod compute_driver_tests {
 
     #[cfg(feature = "mmu")]
     mod mmu {
-        use crate::function_driver::compute_driver::mmu::MmuDriver;
         use crate::function_driver::ComputeResource;
         use crate::memory_domain::mmu::MmuMemoryDomain;
+        use crate::{
+            function_driver::compute_driver::mmu::MmuDriver, memory_domain::MemoryResource,
+        };
         #[cfg(target_arch = "x86_64")]
-        driverTests!(elf_mmu_x86_64; MmuMemoryDomain; Vec::new(); MmuDriver {};
+        driverTests!(elf_mmu_x86_64; MmuMemoryDomain; MemoryResource::None; MmuDriver {};
         core_affinity::get_core_ids()
            .and_then(
                 |core_vec|
@@ -611,7 +613,7 @@ mod compute_driver_tests {
             ComputeResource::GPU(0)
         ]);
         #[cfg(target_arch = "aarch64")]
-        driverTests!(elf_mmu_aarch64; MmuMemoryDomain; Vec::new(); MmuDriver {};
+        driverTests!(elf_mmu_aarch64; MmuMemoryDomain; MemoryResource::None; MmuDriver {};
         core_affinity::get_core_ids()
             .and_then(
                 |core_vec|
@@ -632,7 +634,7 @@ mod compute_driver_tests {
         use crate::memory_domain::wasm::WasmMemoryDomain;
 
         #[cfg(target_arch = "x86_64")]
-        driverTests!(sysld_wasm_x86_64; WasmMemoryDomain; Vec::new(); WasmDriver {};
+        driverTests!(sysld_wasm_x86_64; WasmMemoryDomain; crate::memory_domain::MemoryResource::None; WasmDriver {};
         core_affinity::get_core_ids()
             .and_then(
                 |core_vec|

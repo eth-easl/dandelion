@@ -3,7 +3,10 @@ use dandelion_commons::{DandelionError, DandelionResult, FunctionId};
 use dparser;
 use itertools::Itertools;
 use machine_interface::memory_domain::Context;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{btree_map::Entry, BTreeMap},
+    sync::Arc,
+};
 
 /// A composition has a composition wide id space that maps ids of
 /// the input and output sets to sets of individual functions to a unified
@@ -12,6 +15,7 @@ use std::{collections::BTreeMap, sync::Arc};
 #[derive(Clone, Debug)]
 pub struct Composition {
     pub dependencies: Vec<FunctionDependencies>,
+    pub output_map: BTreeMap<usize, usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -37,6 +41,9 @@ impl ShardingMode {
 }
 
 impl Composition {
+    /// For each composition the composition set indexes start enumerating the input sets from 0.
+    /// The output sets are enumerated starting with the number directly after the highest input set index.
+    /// For internal numbering there are no guarnatees.
     pub fn from_module(
         module: &dparser::Module,
         function_ids: &mut FunctionDict,
@@ -59,32 +66,60 @@ impl Composition {
                 }
                 dparser::Item::Composition(comp) => {
                     let composition_id = function_ids.insert_or_lookup(comp.v.name.clone());
-                    let mut set_counter = 1usize;
+                    let mut set_counter = 0usize;
                     let mut set_numbers = BTreeMap::new();
                     // add composition input sets
                     for input_set_name in comp.v.params.iter() {
-                        if (set_numbers.insert(input_set_name.clone(), set_counter)).is_some() {
-                            // TODO: handle duplicate set names or guarantee the parser already errored on them
-                        }
+                        match set_numbers.entry(input_set_name.clone()) {
+                            Entry::Vacant(v) => v.insert(set_counter),
+                            Entry::Occupied(_) => {
+                                return Err(DandelionError::CompositionDuplicateSetName)
+                            }
+                        };
                         set_counter += 1;
                     }
+                    let mut output_map = BTreeMap::new();
+                    let output_sets_start = set_counter;
+                    // add composition output sets
+                    for (output_index, output_set_name) in comp.v.returns.iter().enumerate() {
+                        match set_numbers.entry(output_set_name.clone()) {
+                            Entry::Vacant(v) => {
+                                v.insert(set_counter);
+                                output_map.insert(set_counter, output_index);
+                            }
+                            Entry::Occupied(_) => {
+                                return Err(DandelionError::CompositionDuplicateSetName);
+                            }
+                        };
+                        set_counter += 1;
+                    }
+                    let output_sets_end = set_counter;
                     // add all return sets from functions
                     let composition_set_identifiers = comp
                         .v
                         .statements
                         .iter()
                         .flat_map(|statement| match statement {
-                            dparser::Statement::FunctionApplication(a) => {
-                                a.v.rets.iter().map(|ret| ret.v.ident.clone())
+                            dparser::Statement::FunctionApplication(function_application) => {
+                                function_application.v.rets.iter().map(|ret| ret.v.ident.clone())
                             }
                             dparser::Statement::Loop(_) =>
                                 todo!("loop semantics need to be fleshed out and compositions extended to acoomodate them"),
                         });
                     for set_identifier in composition_set_identifiers {
-                        if (set_numbers.insert(set_identifier, set_counter)).is_some() {
-                            // TODO: handle duplicate set names or guarantee the parser already errored on them
+                        match set_numbers.entry(set_identifier.clone()) {
+                            Entry::Vacant(v) => {
+                                v.insert(set_counter);
+                                set_counter += 1;
+                            }
+                            Entry::Occupied(o) => {
+                                if output_sets_start <= *o.get() && *o.get() < output_sets_end {
+                                    continue;
+                                } else {
+                                    return Err(DandelionError::CompositionDuplicateSetName);
+                                }
+                            }
                         }
-                        set_counter += 1;
                     }
                     // have enumerated all set that are available so can start putting the composition together
                     let dependencies = comp
@@ -92,13 +127,13 @@ impl Composition {
                         .statements
                         .iter()
                         .map(|statement| match statement {
-                            dparser::Statement::FunctionApplication(a) => {
-                                let (function_id, function_decl) =
-                                    known_functions.get(&a.v.name).ok_or(
-                                        DandelionError::CompositionContainsInvalidFunction,
-                                    )?;
-                                if function_decl.v.params.len() < a.v.args.len()
-                                    || function_decl.v.params.len() < a.v.rets.len()
+                            dparser::Statement::FunctionApplication(function_application) => {
+                                let (function_id, function_decl) = known_functions
+                                    .get(&function_application.v.name)
+                                    .ok_or(DandelionError::CompositionContainsInvalidFunction)?;
+                                if function_decl.v.params.len() < function_application.v.args.len()
+                                    || function_decl.v.params.len()
+                                        < function_application.v.rets.len()
                                 {
                                     return Err(DandelionError::CompositionContainsInvalidFunction);
                                 }
@@ -109,8 +144,11 @@ impl Composition {
                                 input_set_ids.resize(function_decl.v.params.len(), None);
                                 for (index, param_name) in function_decl.v.params.iter().enumerate()
                                 {
-                                    if let Some(arg) =
-                                        a.v.args.iter().find(|&arg| arg.v.name == *param_name)
+                                    if let Some(arg) = function_application
+                                        .v
+                                        .args
+                                        .iter()
+                                        .find(|&arg| arg.v.name == *param_name)
                                     {
                                         let set_id = set_numbers.get(&arg.v.ident).ok_or(
                                             DandelionError::CompositionFunctionInvalidIdentifier,
@@ -128,16 +166,20 @@ impl Composition {
                                 output_set_ids.resize(function_decl.v.returns.len(), None);
                                 for (index, ret_name) in function_decl.v.returns.iter().enumerate()
                                 {
-                                    if a.v
+                                    if let Some(ret) = function_application
+                                        .v
                                         .rets
                                         .iter()
-                                        .find(|&arg| arg.v.name == *ret_name)
-                                        .is_some()
+                                        .find(|&ret| ret.v.name == *ret_name)
                                     {
-                                        let set_id = set_numbers.get(ret_name).ok_or(
+                                        let set_id = set_numbers.get(&ret.v.ident).ok_or(
                                             DandelionError::CompositionContainsInvalidFunction,
                                         )?;
                                         output_set_ids[index] = Some(*set_id);
+                                    } else {
+                                        return Err(
+                                            DandelionError::CompositionFunctionInvalidIdentifier,
+                                        );
                                     }
                                 }
                                 Ok(FunctionDependencies {
@@ -168,7 +210,14 @@ impl Composition {
                             .into(),
                     };
 
-                    compositions.push((composition_id, Composition { dependencies }, metadata));
+                    compositions.push((
+                        composition_id,
+                        Composition {
+                            dependencies,
+                            output_map,
+                        },
+                        metadata,
+                    ));
                 }
             }
         }
@@ -178,7 +227,7 @@ impl Composition {
 }
 
 /// Modes for the composition set iteratior to return sharding
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ShardingMode {
     All,
     Key,
