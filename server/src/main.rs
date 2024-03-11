@@ -102,7 +102,7 @@ async fn run_chain(
     let input_arc = Arc::new(input_context);
     let inputs = vec![
         (0, CompositionSet::from((0, vec![input_arc.clone()]))),
-        (5, CompositionSet::from((1, vec![input_arc]))),
+        (1, CompositionSet::from((1, vec![input_arc]))),
     ];
     let output_mapping = vec![Some(0), Some(1)];
 
@@ -388,7 +388,7 @@ async fn register_function(
         "Process" => EngineType::Process,
         #[cfg(feature = "cheri")]
         "Cheri" => EngineType::Cheri,
-        _ => panic!("Unkown error type string"),
+        _ => panic!("Unkown engine type string"),
     };
     dispatcher
         .insert_func(
@@ -428,6 +428,7 @@ async fn register_composition(
         .expect("Should be able to insert function");
     return Ok::<_, Infallible>(Response::new("Function registered".into()));
 }
+
 async fn serve_stats(
     _req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
@@ -510,7 +511,7 @@ fn main() -> () {
             .map(|code_id| ComputeResource::CPU(code_id))
             .collect(),
     );
-    #[cfg(hyper_io)]
+    #[cfg(feature = "hyper_io")]
     pool_map.insert(
         EngineType::Hyper,
         (0..num_dispatcher_cores)

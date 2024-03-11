@@ -1,19 +1,18 @@
-use std::vec;
-
-use dispatcher::{composition::CompositionSet, function_registry::Metadata};
+use crate::dispatcher_tests::{check_matrix, setup_dispatcher};
+use dispatcher::{
+    composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
+};
+use futures::lock::Mutex;
 use machine_interface::{
     function_driver::ComputeResource,
     machine_config::EngineType,
     memory_domain::{read_only::ReadOnlyContext, Context, MemoryDomain},
     DataItem, DataSet, Position,
 };
-use std::sync::Arc;
-
-use crate::dispatcher_tests::check_matrix;
-
-use super::setup_dispatcher;
+use std::{collections::BTreeMap, sync::Arc};
 
 // using 0x802_0000 as that is what the WASM test binaries expect
+// TODO fix once the update has been merged allowing for 800_0000
 const DEFAULT_CONTEXT_SIZE: usize = 0x802_0000; // 128MiB
 
 fn create_context(matrix: Box<[u64]>) -> Context {
@@ -227,4 +226,24 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         check_matrix(&result_context, 0, 0, 1, vec![expected[i]]);
         check_matrix(&overwrite_context, 0, 0, 1, vec![expected[i]]);
     }
+}
+
+#[test]
+#[cfg(any(feature = "hyper_io"))]
+fn test_insert_composition_with_http_func() {
+    let dispatcher = Dispatcher::init(dispatcher::resource_pool::ResourcePool {
+        engine_pool: Mutex::new(BTreeMap::new()),
+    })
+    .unwrap();
+    let composition_string = r#"
+        (:function HTTP (request headers body) -> (status headers body))
+        (:composition Composition (comp_request req_body) -> (comp_status resp_body) (
+            (HTTP ((:all request <- comp_request) (:all body <- req_body)) => ((resp_body := body) (comp_status := status)))
+        ))
+    "#;
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(dispatcher.insert_compositions(String::from(composition_string)))
+        .unwrap();
 }

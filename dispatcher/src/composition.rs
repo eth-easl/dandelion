@@ -44,6 +44,7 @@ impl Composition {
     /// For each composition the composition set indexes start enumerating the input sets from 0.
     /// The output sets are enumerated starting with the number directly after the highest input set index.
     /// For internal numbering there are no guarnatees.
+    /// TODO: add validation for the function input / output set names against the locally registered meta data (or at least the number)
     pub fn from_module(
         module: &dparser::Module,
         function_ids: &mut FunctionDict,
@@ -132,53 +133,67 @@ impl Composition {
                                     .get(&function_application.v.name)
                                     .ok_or(DandelionError::CompositionContainsInvalidFunction)?;
                                 if function_decl.v.params.len() < function_application.v.args.len()
-                                    || function_decl.v.params.len()
+                                    || function_decl.v.returns.len()
                                         < function_application.v.rets.len()
                                 {
                                     return Err(DandelionError::CompositionContainsInvalidFunction);
                                 }
+                                // find the indeces of the sets in the function application by looking though the definition
                                 let mut input_set_ids = Vec::new();
                                 input_set_ids
                                     .try_reserve(function_decl.v.params.len())
                                     .or(Err(DandelionError::OutOfMemory))?;
                                 input_set_ids.resize(function_decl.v.params.len(), None);
-                                for (index, param_name) in function_decl.v.params.iter().enumerate()
-                                {
-                                    if let Some(arg) = function_application
-                                        .v
-                                        .args
-                                        .iter()
-                                        .find(|&arg| arg.v.name == *param_name)
+                                for argument in function_application.v.args.iter() {
+                                    if let Some((index, _)) =
+                                        function_decl.v.params.iter().enumerate().find(
+                                            |(_, &ref param_name)| argument.v.name == *param_name,
+                                        )
                                     {
-                                        let set_id = set_numbers.get(&arg.v.ident).ok_or(
-                                            DandelionError::CompositionFunctionInvalidIdentifier,
+                                        let set_id = set_numbers.get(&argument.v.ident).ok_or(
+                                            DandelionError::CompositionFunctionInvalidIdentifier(
+                                                argument.v.ident.clone(),
+                                            ),
                                         )?;
                                         input_set_ids[index] = Some((
                                             *set_id,
-                                            ShardingMode::from_parser_sharding(&arg.v.sharding),
+                                            ShardingMode::from_parser_sharding(
+                                                &argument.v.sharding,
+                                            ),
                                         ));
+                                    } else {
+                                        return Err(
+                                            DandelionError::CompositionFunctionInvalidIdentifier(
+                                                argument.v.ident.clone(),
+                                            ),
+                                        );
                                     }
                                 }
+                                // find the index set index in the original definition for each return set in the application
                                 let mut output_set_ids = Vec::new();
                                 output_set_ids
                                     .try_reserve(function_decl.v.returns.len())
                                     .or(Err(DandelionError::OutOfMemory))?;
                                 output_set_ids.resize(function_decl.v.returns.len(), None);
-                                for (index, ret_name) in function_decl.v.returns.iter().enumerate()
-                                {
-                                    if let Some(ret) = function_application
-                                        .v
-                                        .rets
-                                        .iter()
-                                        .find(|&ret| ret.v.name == *ret_name)
+                                for return_set in function_application.v.rets.iter() {
+                                    if let Some((index, _)) =
+                                        function_decl.v.returns.iter().enumerate().find(
+                                            |(_, &ref return_name)| {
+                                                return_set.v.name == *return_name
+                                            },
+                                        )
                                     {
-                                        let set_id = set_numbers.get(&ret.v.ident).ok_or(
-                                            DandelionError::CompositionContainsInvalidFunction,
+                                        let set_id = set_numbers.get(&return_set.v.ident).ok_or(
+                                            DandelionError::CompositionFunctionInvalidIdentifier(
+                                                return_set.v.ident.clone(),
+                                            ),
                                         )?;
                                         output_set_ids[index] = Some(*set_id);
                                     } else {
                                         return Err(
-                                            DandelionError::CompositionFunctionInvalidIdentifier,
+                                            DandelionError::CompositionFunctionInvalidIdentifier(
+                                                return_set.v.ident.clone(),
+                                            ),
                                         );
                                     }
                                 }
@@ -209,7 +224,6 @@ impl Composition {
                             .collect_vec()
                             .into(),
                     };
-
                     compositions.push((
                         composition_id,
                         Composition {

@@ -414,7 +414,6 @@ impl Dispatcher {
             for (subset, item, source_context) in context_set {
                 // TODO get allignment information
                 let set_name = &metadata.input_sets[function_set].0;
-                // (function_context, recorder) = self.
                 let args = EngineArguments::TransferArguments(TransferArguments {
                     destination: function_context,
                     source: source_context,

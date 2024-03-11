@@ -327,6 +327,7 @@ struct HyperLoop {
 
 impl EngineLoop for HyperLoop {
     fn init(core_id: u8) -> DandelionResult<Box<Self>> {
+        log::debug!("Hyper engine Init");
         let runtime = Builder::new_multi_thread()
             .on_thread_start(move || {
                 if !set_for_current(core_affinity::CoreId { id: core_id.into() }) {
@@ -346,6 +347,7 @@ impl EngineLoop for HyperLoop {
         context: Context,
         output_sets: Arc<Vec<String>>,
     ) -> DandelionResult<Context> {
+        log::debug!("Hyper engine running function");
         let function = match config {
             FunctionConfig::SysConfig(sys_func) => sys_func,
             _ => return Err(DandelionError::ConfigMissmatch),
@@ -366,6 +368,7 @@ impl Driver for HyperDriver {
         resource: ComputeResource,
         queue: Box<dyn WorkQueue + Send>,
     ) -> DandelionResult<()> {
+        log::debug!("Starting hyper engine");
         let core_id = match resource {
             ComputeResource::CPU(core) => core,
             _ => return Err(DandelionError::EngineResourceError),
