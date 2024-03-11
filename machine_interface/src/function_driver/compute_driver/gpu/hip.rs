@@ -2,8 +2,9 @@
 
 use std::ffi::CString;
 
-use libc::c_void;
+use libc::{c_void, size_t};
 
+// TODO improve Types, eg. drop() for ModuleT to not leak memory
 pub type ErrorT = u32;
 /// typedef struct ihipModule_t* hipModule_t
 pub type ModuleT = *const c_void;
@@ -35,8 +36,11 @@ extern "C" {
         kernel_params: *const *const c_void,
         extra: *const *const c_void,
     ) -> self::ErrorT;
-    fn hipGetErrorString(hipError: ErrorT) -> *const i8;
-    fn hipGetLastError() -> ErrorT;
+    fn hipGetErrorString(hipError: self::ErrorT) -> *const i8;
+    fn hipGetLastError() -> self::ErrorT;
+    // TODO add device_ptr type with automatic drop that frees
+    fn hipMalloc(ptr: *mut *const c_void, size: size_t) -> self::ErrorT;
+    fn hipFree(ptr: *const c_void);
 }
 
 // TODO: convert to Result<T, E>
@@ -48,7 +52,7 @@ pub fn device_synchronize() -> self::ErrorT {
     unsafe { hipDeviceSynchronize() }
 }
 
-pub fn get_error_string(hip_error: ErrorT) -> CString {
+pub fn get_error_string(hip_error: self::ErrorT) -> CString {
     unsafe { CString::from_raw(hipGetErrorString(hip_error) as *mut i8) }
 }
 
@@ -97,4 +101,8 @@ pub fn module_launch_kernel(
             extra,
         )
     }
+}
+
+pub fn malloc(ptr: &mut *const c_void, size: size_t) -> self::ErrorT {
+    unsafe { hipMalloc(ptr as *mut *const c_void, size) }
 }

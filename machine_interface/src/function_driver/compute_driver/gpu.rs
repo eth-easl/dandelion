@@ -17,7 +17,7 @@ use dandelion_commons::{
     DandelionError, DandelionResult,
 };
 use futures::task::Poll;
-use libc::c_void;
+use libc::{c_void, size_t};
 use libloading::{Library, Symbol};
 use log::error;
 use std::{
@@ -68,14 +68,65 @@ impl ThreadPayload for GpuCommand {
             );
         }
 
-        // load function, launch it
-        let mut function: hip::FunctionT = null();
-        let kname = CString::new("hello_world").unwrap();
-        if hip::module_get_function(&mut function, module, kname) != 0 {
+        // load kernels
+        let mut kernel_set: hip::FunctionT = null();
+        let kname = CString::new("set_mem").unwrap();
+        if hip::module_get_function(&mut kernel_set, module, kname) != 0 {
             eprintln!("get_function");
         }
+        let mut kernel_check: hip::FunctionT = null();
+        let kname = CString::new("check_mem").unwrap();
+        if hip::module_get_function(&mut kernel_check, module, kname) != 0 {
+            eprintln!("get_function 2");
+        }
 
-        if hip::module_launch_kernel(function, 1, 1, 1, 1, 1, 1, 0, null(), null(), null()) != 0 {
+        // allocate device memory, prepare args
+        let mut array: *const c_void = null();
+        let arr_elem: u32 = 256;
+        let elem_size: u32 = std::mem::size_of::<f64>() as u32;
+        let arr_size: u32 = arr_elem * elem_size;
+        if hip::malloc(&mut array, arr_size as usize) != 0 {
+            eprintln!("malloc");
+        }
+
+        let args: [*const c_void; 2] = [
+            &array as *const _ as *const c_void,
+            &arr_elem as *const _ as *const c_void,
+        ];
+
+        // launch them
+        let block_width: u32 = 1024;
+        if hip::module_launch_kernel(
+            kernel_set,
+            (arr_elem + block_width - 1) / block_width,
+            1,
+            1,
+            block_width,
+            1,
+            1,
+            0,
+            null(),
+            args.as_ptr(),
+            null(),
+        ) != 0
+        {
+            eprintln!("launch_kernel");
+        }
+
+        if hip::module_launch_kernel(
+            kernel_check,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            null(),
+            args.as_ptr(),
+            null(),
+        ) != 0
+        {
             eprintln!("launch_kernel");
         }
 
