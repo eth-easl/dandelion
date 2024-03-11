@@ -20,7 +20,7 @@ pub enum DandelionError {
     /// Composition contains function that does not exist
     CompositionContainsInvalidFunction,
     /// Function in parsing has identifier that is not defined in composition
-    CompositionFunctionInvalidIdentifier,
+    CompositionFunctionInvalidIdentifier(String),
     /// Set indentifier is produced by multiple functions in a composition
     CompositionDuplicateSetName,
     // domain and context errors

@@ -2,6 +2,7 @@ use dandelion_commons::{
     records::{RecordPoint, Recorder},
     DandelionError, DandelionResult, FunctionId,
 };
+use dparser::print_errors;
 use futures::lock::Mutex;
 use machine_interface::{
     function_driver::{
@@ -60,6 +61,7 @@ impl FunctionDict {
 
     pub fn insert_or_lookup(&mut self, function_name: String) -> FunctionId {
         use std::collections::btree_map::Entry;
+        log::debug!("Inserted function with name {}", &function_name);
         match self.map.entry(function_name) {
             Entry::Vacant(v) => {
                 let new_id = self.next_id;
@@ -215,8 +217,10 @@ impl FunctionRegistry {
         // the error contains the parsing failure
         let mut dictlock = self.function_dict.lock().await;
         let composition_meta_pairs = {
-            let module =
-                dparser::parse(module).map_err(|_| DandelionError::CompositionParsingError)?;
+            let module = dparser::parse(module).map_err(|parse_error| {
+                print_errors(module, parse_error);
+                DandelionError::CompositionParsingError
+            })?;
             Composition::from_module(&module, &mut dictlock)?
         };
         for (function_id, composition, metadata) in composition_meta_pairs {

@@ -264,6 +264,70 @@ fn test_from_module_minmal_composition_with_inputs() {
 }
 
 #[test]
+fn test_from_module_minmal_composition_function_with_unused_input() {
+    let composition_string = r#"
+        (:function Function (Fin Unused) -> (Fout))
+        (:composition Composition (Cin) -> (Cout) (
+            (Function ((:all Fin <- Cin)) => ((Cout := Fout)))
+        ))
+    "#;
+    let mut function_dict = FunctionDict::new();
+    let function_id = function_dict.insert_or_lookup(String::from("Function"));
+    let module = get_module(composition_string);
+    let compositions = match Composition::from_module(&module, &mut function_dict) {
+        Ok(c) => c,
+        Err(err) => panic!("Found unexpected error on from_module: {:?}", err),
+    };
+    let expected = vec![(
+        Composition {
+            dependencies: vec![FunctionDependencies {
+                function: function_id,
+                input_set_ids: vec![Some((0, ShardingMode::All)), None],
+                output_set_ids: vec![Some(1)],
+            }],
+            output_map: BTreeMap::from([(1, 0)]),
+        },
+        Metadata {
+            input_sets: Arc::new(vec![(String::from("Cin"), None)]),
+            output_sets: Arc::new(vec![String::from("Cout")]),
+        },
+    )];
+    check_compositions_and_metadata(compositions, expected, 0..1, 1..2);
+}
+
+#[test]
+fn test_from_module_minmal_composition_function_with_unused_output() {
+    let composition_string = r#"
+        (:function Function (Fin) -> (Fout Unused))
+        (:composition Composition (Cin) -> (Cout) (
+            (Function ((:all Fin <- Cin)) => ((Cout := Fout)))
+        ))
+    "#;
+    let mut function_dict = FunctionDict::new();
+    let function_id = function_dict.insert_or_lookup(String::from("Function"));
+    let module = get_module(composition_string);
+    let compositions = match Composition::from_module(&module, &mut function_dict) {
+        Ok(c) => c,
+        Err(err) => panic!("Found unexpected error on from_module: {:?}", err),
+    };
+    let expected = vec![(
+        Composition {
+            dependencies: vec![FunctionDependencies {
+                function: function_id,
+                input_set_ids: vec![Some((0, ShardingMode::All))],
+                output_set_ids: vec![Some(1), None],
+            }],
+            output_map: BTreeMap::from([(1, 0)]),
+        },
+        Metadata {
+            input_sets: Arc::new(vec![(String::from("Cin"), None)]),
+            output_sets: Arc::new(vec![String::from("Cout")]),
+        },
+    )];
+    check_compositions_and_metadata(compositions, expected, 0..1, 1..2);
+}
+
+#[test]
 #[should_panic]
 fn test_from_module_minmal_composition_with_missing_input() {
     let composition_string = r#"
