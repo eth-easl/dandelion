@@ -17,9 +17,22 @@ use dandelion_commons::{
     DandelionError, DandelionResult,
 };
 use futures::task::Poll;
+use libc::c_void;
 use libloading::{Library, Symbol};
 use log::error;
-use std::sync::{Arc, Mutex};
+use std::{
+    ffi::CString,
+    ptr::null,
+    sync::{Arc, Mutex},
+};
+
+mod hip;
+
+// Temporary to get used to FFI and build.rs
+#[link(name = "hip_interface_lib")]
+extern "C" {
+    fn gpu_toy_launch(gpu_id: u8);
+}
 
 // TODO remove pub once Engine.run implemented; this is just for basic testing
 pub struct GpuCommand {
@@ -27,22 +40,53 @@ pub struct GpuCommand {
 }
 unsafe impl Send for GpuCommand {}
 
-// Temporary to get used to FFI
-#[link(name = "hip_interface_lib")]
-extern "C" {
-    fn gpu_toy_launch(gpu_id: u8);
-}
-
 impl ThreadPayload for GpuCommand {
     type State = DefaultState;
 
     fn run(self, state: &mut Self::State) -> DandelionResult<()> {
-        unsafe {
-            gpu_toy_launch(self.gpu_id);
+        // unsafe {
+        //     gpu_toy_launch(self.gpu_id);
+        // }
+
+        // TODO handle errors
+        // set gpu
+        if hip::set_device(self.gpu_id as u32) != 0 {
+            eprintln!("set_device");
+        }
+
+        // load module
+        let mut module: hip::ModuleT = null();
+        let fname =
+            CString::new("/home/smithj/dandelion/machine_interface/hip_interface/module.hsaco")
+                .unwrap();
+        if hip::module_load(&mut module, fname) != 0 {
+            eprintln!(
+                "{}",
+                hip::get_error_string(hip::get_last_error())
+                    .into_string()
+                    .unwrap()
+            );
+        }
+
+        // load function, launch it
+        let mut function: hip::FunctionT = null();
+        let kname = CString::new("hello_world").unwrap();
+        if hip::module_get_function(&mut function, module, kname) != 0 {
+            eprintln!("get_function");
+        }
+
+        if hip::module_launch_kernel(function, 1, 1, 1, 1, 1, 1, 0, null(), null(), null()) != 0 {
+            eprintln!("launch_kernel");
+        }
+
+        if hip::device_synchronize() != 0 {
+            eprintln!("device_synch");
         }
         Ok(())
     }
 }
+
+// TODO GpuFuture
 
 pub struct GpuEngine {
     gpu_id: u8,
