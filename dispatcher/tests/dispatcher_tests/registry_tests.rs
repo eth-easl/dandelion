@@ -1,4 +1,4 @@
-use crate::dispatcher_tests::{check_matrix, setup_dispatcher};
+use crate::dispatcher_tests::{check_matrix, init_recorder_archive, setup_dispatcher};
 use dandelion_commons::records::{Archive, RecordPoint, Recorder};
 use dispatcher::{
     composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
