@@ -98,6 +98,8 @@ pub enum DandelionError {
     // Gerneral util errors
     /// error while performing IO on a file
     FileError,
+    /// error from HIP Runtime
+    HipError(String),
     // protection errors
     /// the function issued a system call outside the authorized list
     UnauthorizedSyscall,

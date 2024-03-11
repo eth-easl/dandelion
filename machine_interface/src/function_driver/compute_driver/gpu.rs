@@ -26,9 +26,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use self::hip::DEFAULT_STREAM;
+
 mod hip;
 
-// Temporary to get used to FFI and build.rs
+// Temporary to get used to FFI and build.rs, can be removed
 #[link(name = "hip_interface_lib")]
 extern "C" {
     fn gpu_toy_launch(gpu_id: u8);
@@ -44,41 +46,17 @@ impl ThreadPayload for GpuCommand {
     type State = DefaultState;
 
     fn run(self, state: &mut Self::State) -> DandelionResult<()> {
-        // unsafe {
-        //     gpu_toy_launch(self.gpu_id);
-        // }
-
-        // TODO handle errors
         // set gpu
-        if hip::set_device(self.gpu_id as u32) != 0 {
-            eprintln!("set_device");
-        }
+        hip::set_device(self.gpu_id)?;
 
         // load module
-        let mut module = hip::ModuleT::new();
-        let fname =
-            CString::new("/home/smithj/dandelion/machine_interface/hip_interface/module.hsaco")
-                .unwrap();
-        if hip::module_load(&mut module, fname) != 0 {
-            eprintln!(
-                "{}",
-                hip::get_error_string(hip::get_last_error())
-                    .into_string()
-                    .unwrap()
-            );
-        }
+        let module = hip::module_load(
+            "/home/smithj/dandelion/machine_interface/hip_interface/module.hsaco",
+        )?;
 
         // load kernels
-        let mut kernel_set: hip::FunctionT = null();
-        let kname = CString::new("set_mem").unwrap();
-        if hip::module_get_function(&mut kernel_set, &module, kname) != 0 {
-            eprintln!("get_function");
-        }
-        let mut kernel_check: hip::FunctionT = null();
-        let kname = CString::new("check_mem").unwrap();
-        if hip::module_get_function(&mut kernel_check, &module, kname) != 0 {
-            eprintln!("get_function 2");
-        }
+        let kernel_set = hip::module_get_function(&module, "set_mem")?;
+        let kernel_check = hip::module_get_function(&module, "check_mem")?;
 
         // allocate device memory, prepare args
         let mut array: *const c_void = null();
@@ -88,15 +66,16 @@ impl ThreadPayload for GpuCommand {
         if hip::malloc(&mut array, arr_size as usize) != 0 {
             eprintln!("malloc");
         }
+        let array = hip::DevicePointer::try_new(arr_size as usize)?;
 
         let args: [*const c_void; 2] = [
-            &array as *const _ as *const c_void,
+            &array.0 as *const _ as *const c_void,
             &arr_elem as *const _ as *const c_void,
         ];
 
         // launch them
         let block_width: u32 = 1024;
-        if hip::module_launch_kernel(
+        hip::module_launch_kernel(
             kernel_set,
             (arr_elem + block_width - 1) / block_width,
             1,
@@ -105,15 +84,12 @@ impl ThreadPayload for GpuCommand {
             1,
             1,
             0,
-            null(),
+            DEFAULT_STREAM,
             args.as_ptr(),
             null(),
-        ) != 0
-        {
-            eprintln!("launch_kernel");
-        }
+        )?;
 
-        if hip::module_launch_kernel(
+        hip::module_launch_kernel(
             kernel_check,
             1,
             1,
@@ -122,17 +98,13 @@ impl ThreadPayload for GpuCommand {
             1,
             1,
             0,
-            null(),
+            DEFAULT_STREAM,
             args.as_ptr(),
             null(),
-        ) != 0
-        {
-            eprintln!("launch_kernel");
-        }
+        )?;
 
-        if hip::device_synchronize() != 0 {
-            eprintln!("device_synch");
-        }
+        hip::device_synchronize()?;
+
         Ok(())
     }
 }
