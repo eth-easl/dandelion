@@ -46,7 +46,6 @@ extern "C" {
         extra: *const *const c_void,
     ) -> ErrorT;
     fn hipGetErrorString(hipError: ErrorT) -> *const i8;
-    // TODO add device_ptr type with automatic drop that frees
     fn hipMalloc(ptr: *mut *const c_void, size: size_t) -> ErrorT;
     #[allow(unused)]
     fn hipFree(ptr: *const c_void) -> ErrorT;

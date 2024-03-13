@@ -45,7 +45,7 @@ unsafe impl Send for GpuCommand {}
 impl ThreadPayload for GpuCommand {
     type State = DefaultState;
 
-    fn run(self, state: &mut Self::State) -> DandelionResult<()> {
+    fn run(self, _state: &mut Self::State) -> DandelionResult<()> {
         // set gpu
         hip::set_device(self.gpu_id)?;
 
