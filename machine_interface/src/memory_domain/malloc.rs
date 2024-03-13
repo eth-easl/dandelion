@@ -1,4 +1,4 @@
-use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
+use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource};
 use dandelion_commons::{DandelionError, DandelionResult};
 use std::alloc::{alloc_zeroed, Layout};
 
@@ -60,7 +60,7 @@ impl ContextTrait for MallocContext {
 pub struct MallocMemoryDomain {}
 
 impl MemoryDomain for MallocMemoryDomain {
-    fn init(_config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>> {
+    fn init(_config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
         Ok(Box::new(MallocMemoryDomain {}))
     }
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {

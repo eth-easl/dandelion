@@ -2,8 +2,6 @@ pub mod records;
 
 use records::RecordPoint;
 
-pub type EngineTypeId = u8;
-pub type ContextTypeId = u8;
 pub type FunctionId = u64;
 
 // TODO define error types, possibly better printing than debug
@@ -14,8 +12,17 @@ pub enum DandelionError {
     // errors in configurations
     /// configuration vector was malformed
     MalformedConfig,
+    // errors in parsing or creating compositions
+    /// failed to parse function
+    CompositionParsingError,
     /// parser did not find symbol that it was searching for
     UnknownSymbol,
+    /// Composition contains function that does not exist
+    CompositionContainsInvalidFunction,
+    /// Function in parsing has identifier that is not defined in composition
+    CompositionFunctionInvalidIdentifier(String),
+    /// Set indentifier is produced by multiple functions in a composition
+    CompositionDuplicateSetName,
     // domain and context errors
     /// error creating layout for read only context
     ContextReadOnlyLayout,
@@ -61,6 +68,8 @@ pub enum DandelionError {
     EngineError,
     /// asked driver for engine, but there are no more available
     NoEngineAvailable,
+    /// debt was dropped without fulfilling it
+    PromiseDroppedDebt,
     /// there was a non recoverable issue when spawning or running the MMU worker
     MmuWorkerError,
     // system engine errors
@@ -75,11 +84,13 @@ pub enum DandelionError {
     CalledSystemFuncParser,
     // dispatcher errors
     /// dispatcher does not find a loader for this engine type
-    DispatcherMissingLoader(EngineTypeId),
+    DispatcherMissingLoader(String),
     /// error from resulting from assumptions based on config passed to dispatcher
     DispatcherConfigError,
     /// dispatcher was asked to queue function it can't find
     DispatcherUnavailableFunction,
+    /// dispatcher was asked to add function to registry that is already present
+    DispatcherDuplicateFunction,
     /// function to register did not have metadata available
     DispatcherMetaDataUnavailable,
     /// dispatcher encountered an issue when trasmitting data between tasks

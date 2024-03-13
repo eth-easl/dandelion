@@ -34,6 +34,14 @@ impl MmapMem {
     // If a filename is given, memory will be backed by that file,
     // otherwise it will be backed by an anonymous file.
     pub fn create(size: usize, prot: ProtFlags, shared: bool) -> Result<Self, DandelionError> {
+        if size == 0 {
+            return Ok(MmapMem {
+                ptr: core::ptr::null_mut(),
+                size,
+                fd: -1,
+                filename: None,
+            });
+        }
         let mut filename = None;
         let (fd, map_flags) = if shared {
             filename = Some(format!("/shm_{:X}", COUNTER.fetch_add(1, Ordering::SeqCst)));

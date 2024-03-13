@@ -1,5 +1,5 @@
 use crate::{
-    memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
+    memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource},
     util::mmapmem::MmapMem,
 };
 use dandelion_commons::{DandelionError, DandelionResult};
@@ -36,7 +36,7 @@ impl ContextTrait for MmuContext {
 pub struct MmuMemoryDomain {}
 
 impl MemoryDomain for MmuMemoryDomain {
-    fn init(_config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>> {
+    fn init(_config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
         Ok(Box::new(MmuMemoryDomain {}))
     }
 

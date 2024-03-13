@@ -1,23 +1,16 @@
 use crate::{
     function_driver::{
-        thread_utils::{ThreadCommand, ThreadController, ThreadPayload, ThreadState},
-        ComputeResource, Driver, Engine, Function, FunctionConfig, SystemFunction,
+        thread_utils::{start_thread, EngineLoop},
+        ComputeResource, Driver, Function, FunctionConfig, SystemFunction, WorkQueue,
     },
     memory_domain::{Context, ContextTrait},
     DataItem, DataSet, Position,
 };
-use core::{
-    future::{ready, Future},
-    task::Poll,
-};
 use core_affinity::set_for_current;
-use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
+use dandelion_commons::{DandelionError, DandelionResult};
 use hyper::{body::HttpBody, Body, Client, HeaderMap, Method, Request, Version};
 use log::error;
-use std::{
-    pin::Pin,
-    sync::{Arc, Mutex},
-};
+use std::sync::Arc;
 use tokio::runtime::{Builder, Runtime};
 
 struct RequestInformation {
@@ -232,7 +225,7 @@ async fn http_request(request_info: RequestInformation) -> DandelionResult<Respo
 
 fn http_context_write(
     context: &mut Context,
-    output_set_names: Vec<String>,
+    output_set_names: Arc<Vec<String>>,
     response: ResponseInformation,
 ) -> DandelionResult<()> {
     context.clear_metadata();
@@ -307,12 +300,10 @@ fn http_context_write(
 }
 
 fn http_run(
-    context_ref: &Arc<Mutex<Option<Context>>>,
+    mut context: Context,
     runtime: &Runtime,
-    output_set_names: Vec<String>,
-) -> DandelionResult<()> {
-    let mut context_guard = context_ref.lock().unwrap();
-    let mut context = context_guard.take().unwrap();
+    output_set_names: Arc<Vec<String>>,
+) -> DandelionResult<Context> {
     let response_result = {
         let _guard = runtime.enter();
         let request = http_setup(&context)?;
@@ -323,20 +314,20 @@ fn http_run(
     let response = match response_result {
         Ok(resp) => resp,
         Err(err) => {
-            let _ = context_guard.insert(context);
             return Err(err);
         }
     };
-    let write_result = http_context_write(&mut context, output_set_names, response);
-    let _ = context_guard.insert(context);
-    return write_result;
+    http_context_write(&mut context, output_set_names, response)?;
+    return Ok(context);
 }
 
-struct HyperState {
+struct HyperLoop {
     runtime: Runtime,
 }
-impl ThreadState for HyperState {
+
+impl EngineLoop for HyperLoop {
     fn init(core_id: u8) -> DandelionResult<Box<Self>> {
+        log::debug!("Hyper engine Init");
         let runtime = Builder::new_multi_thread()
             .on_thread_start(move || {
                 if !set_for_current(core_affinity::CoreId { id: core_id.into() }) {
@@ -348,109 +339,36 @@ impl ThreadState for HyperState {
             .build()
             .or(Err(DandelionError::EngineError))?;
 
-        return Ok(Box::new(HyperState { runtime }));
+        return Ok(Box::new(HyperLoop { runtime }));
     }
-}
-
-struct HyperCommand {
-    system_function: SystemFunction,
-    context: Arc<Mutex<Option<Context>>>,
-    output_set_names: Vec<String>,
-}
-impl ThreadPayload for HyperCommand {
-    type State = HyperState;
-    fn run(self, state: &mut Self::State) -> DandelionResult<()> {
-        return match self.system_function {
-            SystemFunction::HTTP => http_run(&self.context, &state.runtime, self.output_set_names),
-            _ => Err(DandelionError::MalformedConfig),
-        };
-    }
-}
-
-pub struct HyperEngine {
-    thread_controller: ThreadController<HyperCommand>,
-}
-
-// TODO check if there is a better way than this, for here and for wasm
-// potentially coupling the sending back of the message and dropping the contex
-struct HyperFuture<'a> {
-    engine: &'a mut HyperEngine,
-    context: Arc<Mutex<Option<Context>>>,
-}
-
-impl Future for HyperFuture<'_> {
-    type Output = (DandelionResult<()>, Context);
-    fn poll(
-        mut self: Pin<&mut Self>,
-        cx: &mut futures::task::Context,
-    ) -> futures::task::Poll<Self::Output> {
-        match self.engine.thread_controller.poll_next(cx) {
-            Poll::Pending => return Poll::Pending,
-            Poll::Ready(Some(Ok(()))) => {
-                // TODO handle errors (we don't have a context if locking fails)
-                let mut guard = self.context.lock().unwrap();
-                if !guard.is_some() {
-                    return Poll::Pending;
-                };
-                let context = guard.take().unwrap();
-                Poll::Ready((Ok(()), context))
-            }
-            _ => {
-                let context = self.context.lock().unwrap().take().unwrap();
-                Poll::Ready((Err(DandelionError::EngineError), context))
-            }
-        }
-    }
-}
-
-impl Engine for HyperEngine {
     fn run(
         &mut self,
-        config: &FunctionConfig,
+        config: FunctionConfig,
         context: Context,
-        output_set_names: &Vec<String>,
-        mut recorder: Recorder,
-    ) -> Pin<Box<dyn Future<Output = (DandelionResult<()>, Context)> + '_ + Send>> {
+        output_sets: Arc<Vec<String>>,
+    ) -> DandelionResult<Context> {
+        log::debug!("Hyper engine running function");
         let function = match config {
             FunctionConfig::SysConfig(sys_func) => sys_func,
-            _ => return Box::pin(ready((Err(DandelionError::ConfigMissmatch), context))),
+            _ => return Err(DandelionError::ConfigMissmatch),
         };
-        if let Err(err) = recorder.record(dandelion_commons::records::RecordPoint::EngineStart) {
-            return Box::pin(core::future::ready((Err(err), context)));
-        }
-        let context_ = Arc::new(Mutex::new(Some(context)));
-        let command = ThreadCommand::Run(
-            recorder,
-            HyperCommand {
-                system_function: *function,
-                context: context_.clone(),
-                output_set_names: output_set_names.clone(),
-            },
-        );
-        match self.thread_controller.send_command(command) {
-            Ok(()) => (),
-            Err(err) => {
-                return Box::pin(futures::future::ready((
-                    Err(err),
-                    context_.lock().unwrap().take().unwrap(),
-                )))
-            }
-        }
-        return Box::pin(HyperFuture {
-            engine: self,
-            context: context_,
-        });
-    }
 
-    fn abort(&mut self) -> DandelionResult<()> {
-        return Ok(());
+        return match function {
+            SystemFunction::HTTP => http_run(context, &self.runtime, output_sets),
+            _ => Err(DandelionError::MalformedConfig),
+        };
     }
 }
 
 pub struct HyperDriver {}
 
 impl Driver for HyperDriver {
-    fn start_engine(&self, resource: ComputeResource) -> DandelionResult<Box<dyn Engine>> {
+    fn start_engine(
+        &self,
+        resource: ComputeResource,
+        queue: Box<dyn WorkQueue + Send>,
+    ) -> DandelionResult<()> {
+        log::debug!("Starting hyper engine");
         let core_id = match resource {
             ComputeResource::CPU(core) => core,
             _ => return Err(DandelionError::EngineResourceError),
@@ -467,9 +385,8 @@ impl Driver for HyperDriver {
         {
             return Err(DandelionError::EngineResourceError);
         }
-        return Ok(Box::new(HyperEngine {
-            thread_controller: ThreadController::new(core_id),
-        }));
+        start_thread::<HyperLoop>(core_id, queue);
+        return Ok(());
     }
 
     fn parse_function(

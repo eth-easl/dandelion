@@ -2,16 +2,17 @@
 mod system_driver_tests {
     use crate::{
         function_driver::{
-            system_driver::get_system_function_output_sets, ComputeResource, Driver,
-            FunctionConfig, SystemFunction,
+            system_driver::get_system_function_output_sets, test_queue::TestQueue, ComputeResource,
+            Driver, EngineArguments, FunctionArguments, FunctionConfig, SystemFunction,
         },
-        memory_domain::{Context, ContextTrait, MemoryDomain},
+        memory_domain::{Context, ContextTrait, MemoryDomain, MemoryResource},
         DataItem, DataSet, Position,
     };
     use dandelion_commons::{
         records::{Archive, RecordPoint, Recorder},
         DandelionResult,
     };
+    use std::sync::Arc;
 
     const _CONTEXT_SIZE: usize = 2048 * 1024;
 
@@ -55,16 +56,17 @@ mod system_driver_tests {
     }
 
     fn get_http<Dom: MemoryDomain>(
-        dom_init: Vec<u8>,
+        dom_init: MemoryResource,
         driver: Box<dyn Driver>,
         drv_init: ComputeResource,
     ) -> () {
         let domain = Dom::init(dom_init).expect("Should be able to get domain");
+        let queue = Box::new(TestQueue::new());
         let mut context = domain
             .acquire_context(_CONTEXT_SIZE)
             .expect("Should be able to get context");
-        let mut engine = driver
-            .start_engine(drv_init)
+        let _engine = driver
+            .start_engine(drv_init, queue.clone())
             .expect("Should be able to get engine");
         let config = FunctionConfig::SysConfig(SystemFunction::HTTP);
 
@@ -75,14 +77,20 @@ mod system_driver_tests {
         write_request_line(&mut context, request).expect("Should be able to prepare request line");
 
         let archive = std::sync::Arc::new(std::sync::Mutex::new(Archive::new()));
-        let mut recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-        let output_set_names = get_system_function_output_sets(SystemFunction::HTTP);
-        let (result, result_context) = tokio::runtime::Builder::new_current_thread()
+        let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
+        let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
+        let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
+            config,
+            context,
+            output_sets,
+            recorder,
+        }));
+        let (result_context, mut result_recorder) = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(engine.run(&config, context, &output_set_names, recorder.clone()));
-        assert_eq!(Ok(()), result);
-        recorder
+            .block_on(promise)
+            .expect("Engine should return without error");
+        result_recorder
             .record(RecordPoint::FutureReturn)
             .expect("Should have advanced record");
 
@@ -111,16 +119,17 @@ mod system_driver_tests {
     }
 
     fn put_http<Dom: MemoryDomain>(
-        dom_init: Vec<u8>,
+        dom_init: MemoryResource,
         driver: Box<dyn Driver>,
         drv_init: ComputeResource,
     ) -> () {
+        let queue = Box::new(TestQueue::new());
         let domain = Dom::init(dom_init).expect("Should be able to get domain");
         let mut context = domain
             .acquire_context(_CONTEXT_SIZE)
             .expect("Should be able to get context");
-        let mut engine = driver
-            .start_engine(drv_init)
+        let _engine = driver
+            .start_engine(drv_init, queue.clone())
             .expect("Should be able to get engine");
         let config = FunctionConfig::SysConfig(SystemFunction::HTTP);
 
@@ -141,15 +150,20 @@ mod system_driver_tests {
             .expect("Should be able to write body");
 
         let archive = std::sync::Arc::new(std::sync::Mutex::new(Archive::new()));
-        let mut recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-        let output_set_names = get_system_function_output_sets(SystemFunction::HTTP);
-
-        let (result, result_context) = tokio::runtime::Builder::new_current_thread()
+        let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
+        let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
+        let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
+            config,
+            context,
+            output_sets,
+            recorder,
+        }));
+        let (result_context, mut result_recorder) = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(engine.run(&config, context, &output_set_names, recorder.clone()));
-        assert_eq!(Ok(()), result);
-        recorder
+            .block_on(promise)
+            .expect("Engine should not fail");
+        result_recorder
             .record(RecordPoint::FutureReturn)
             .expect("Should have advanced record");
 
@@ -199,6 +213,6 @@ mod system_driver_tests {
         use crate::function_driver::system_driver::hyper::HyperDriver;
         use crate::function_driver::ComputeResource;
         use crate::memory_domain::malloc::MallocMemoryDomain as domain;
-        driverTests!(hyper_io; domain; Vec::new(); HyperDriver{}; ComputeResource::CPU(1));
+        driverTests!(hyper_io; domain; crate::memory_domain::MemoryResource::None; HyperDriver{}; ComputeResource::CPU(1));
     }
 }

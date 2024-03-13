@@ -2,15 +2,18 @@ use crate::{
     memory_domain::{Context, MemoryDomain},
     DataRequirementList, Position,
 };
-use core::pin::Pin;
+extern crate alloc;
+use alloc::sync::Arc;
 use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
-use std::{future::Future, sync::Arc};
 
+#[cfg(feature = "wasm")]
 use libloading::Library;
 
 pub mod compute_driver;
 mod load_utils;
 pub mod system_driver;
+#[cfg(test)]
+mod test_queue;
 mod thread_utils;
 
 #[derive(Clone)]
@@ -28,8 +31,17 @@ pub enum SystemFunction {
     HTTP,
 }
 
+impl core::fmt::Display for SystemFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> core::fmt::Result {
+        return match self {
+            SystemFunction::HTTP => write!(f, "HTTP"),
+        };
+    }
+}
+
 #[derive(Clone)]
 pub struct WasmConfig {
+    #[cfg(feature = "wasm")]
     lib: Arc<Library>,
     wasm_mem_size: usize,
     sdk_heap_base: usize,
@@ -84,24 +96,43 @@ pub enum ComputeResource {
     GPU(u8, u8), // TODO change back to GPU(u8) once Driver.start_engine() takes a vec of ComputeResources
 }
 
-pub trait Engine: Send {
-    fn run(
-        &mut self,
-        config: &FunctionConfig,
-        context: Context,
-        output_set_names: &Vec<String>,
-        recorder: Recorder,
-    ) -> Pin<Box<dyn Future<Output = (DandelionResult<()>, Context)> + '_ + Send>>;
-    // TODO make more sensible, as a both functions require self mut, so abort can never be called on a running function
-    fn abort(&mut self) -> DandelionResult<()>;
+pub enum EngineArguments {
+    FunctionArguments(FunctionArguments),
+    TransferArguments(TransferArguments),
+    Shutdown(fn(Vec<ComputeResource>) -> ()),
 }
-// TODO figure out if we could / should enforce proper drop behaviour
-// we could add a uncallable function with a private token that is not visible outside,
-// but not sure if that is necessary
+
+pub struct FunctionArguments {
+    pub config: FunctionConfig,
+    pub context: Context,
+    pub output_sets: Arc<Vec<String>>,
+    pub recorder: Recorder,
+}
+
+pub struct TransferArguments {
+    pub destination: Context,
+    pub source: Arc<Context>,
+    pub destination_set_index: usize,
+    pub destination_allignment: usize,
+    pub destination_item_index: usize,
+    pub destination_set_name: String,
+    pub source_set_index: usize,
+    pub source_item_index: usize,
+    pub recorder: Recorder,
+}
+
+pub trait WorkQueue {
+    fn get_engine_args(&self) -> (EngineArguments, crate::promise::Debt);
+}
 
 pub trait Driver: Send + Sync {
     // the resource descirbed by config and make it into an engine of the type
-    fn start_engine(&self, resource: ComputeResource) -> DandelionResult<Box<dyn Engine>>;
+    fn start_engine(
+        &self,
+        resource: ComputeResource,
+        // TODO check out why this can't be impl instead of Box<dyn
+        queue: Box<dyn WorkQueue + Send>,
+    ) -> DandelionResult<()>;
 
     // parses an executable,
     // returns the layout requirements and a context containing static data,
