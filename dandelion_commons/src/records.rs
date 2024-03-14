@@ -53,6 +53,16 @@ impl Recorder {
     pub fn link_new_recorder(&mut self, new_recorder: Recorder) {
         self.recorders.push(new_recorder);
     }
+
+    pub fn reset_recorder(&mut self, zero_time: Instant, free_recorders: &mut Vec<Recorder>) {
+        // Reset the timestamps
+        self.timestamps = vec![zero_time; 13];
+        // Reset the sub-recorders
+        for mut recorder in self.recorders.drain(..) {
+            recorder.reset_recorder(zero_time, free_recorders);
+            free_recorders.push(recorder);
+        }
+    }
 }
 
 pub struct Archive {
@@ -104,5 +114,14 @@ impl Archive {
             self.append_timestamps(recorder, &mut summary, 0);
         }
         summary
+    }
+
+    pub fn reset_all(&mut self) {
+        // For each recorder in the used_recorders, reset it and move it to the free_recorders.
+        // Recorders are recursive: each has a vector of sub-recorders.
+        for mut recorder in self.used_recorders.drain(..) {
+            recorder.reset_recorder(self.start_time, &mut self.free_recorders);
+            self.free_recorders.push(recorder);
+        }
     }
 }

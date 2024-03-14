@@ -469,13 +469,15 @@ async fn serve_stats(
     _req: Request<Body>,
     archive: Arc<SyncMutex<Archive>>,
 ) -> Result<Response<Body>, Infallible> {
-    let archive_guard = match archive.lock() {
+    let mut archive_guard = match archive.lock() {
         Ok(guard) => guard,
         Err(_) => {
             return Ok::<_, Infallible>(Response::new("Could not lock archive for stats".into()))
         }
     };
-    return Ok::<_, Infallible>(Response::new(archive_guard.get_summary().into()));
+    let response: Response<Body> = Response::new(archive_guard.get_summary().into());
+    archive_guard.reset_all();
+    return Ok::<_, Infallible>(response);
 }
 
 async fn service(
@@ -565,7 +567,7 @@ fn main() -> () {
 
     // Recording setup
     let tracing_archive: Arc<SyncMutex<Archive>> = Arc::new(SyncMutex::new(Archive::new()));
-    let recorders: Vec<_> = (0..1000000)
+    let recorders: Vec<_> = (0..10000000)
         .map(|_| Recorder::new(tracing_archive.clone()))
         .collect();
     tracing_archive.lock().unwrap().init(recorders);
