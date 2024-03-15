@@ -660,10 +660,14 @@ mod compute_driver_tests {
             function_driver::{
                 compute_driver::gpu::{dummy_run, utils::dummy_config, GpuDriver, GpuLoop},
                 thread_utils::EngineLoop,
-                Driver, FunctionConfig, GpuConfig,
+                ComputeResource, Driver, FunctionConfig, GpuConfig,
             },
-            memory_domain::{gpu::GpuContext, mmu::MmuMemoryDomain, Context, MemoryDomain},
+            memory_domain::{
+                gpu::GpuContext, mmu::MmuMemoryDomain, Context, MemoryDomain, MemoryResource,
+            },
         };
+
+        use super::engine_minimal;
 
         #[test]
         fn run_dummy_gpu_payload() {
@@ -684,6 +688,17 @@ mod compute_driver_tests {
                 eprintln!("{:?}", res);
             }
             assert!(res.is_ok());
+        }
+
+        #[test]
+        fn minimal() {
+            let driver: Box<dyn Driver> = Box::new(GpuDriver {});
+            engine_minimal::<MmuMemoryDomain>(
+                "foo",
+                MemoryResource::None,
+                driver,
+                vec![ComputeResource::GPU(1, 1)],
+            );
         }
     }
 }

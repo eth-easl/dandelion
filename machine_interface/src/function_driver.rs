@@ -95,7 +95,8 @@ impl Function {
                 context.occupy_space(0, c.sdk_heap_base)?;
                 Ok(context)
             }
-            FunctionConfig::GpuConfig(_) => todo!(),
+            // no need to occupy space or anything like that as long as context is only inputs/outputs
+            FunctionConfig::GpuConfig(_) => domain.acquire_context(ctx_size),
         }
     }
 }

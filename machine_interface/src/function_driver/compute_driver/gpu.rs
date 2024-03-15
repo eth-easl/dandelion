@@ -204,7 +204,7 @@ impl Driver for GpuDriver {
         let config = FunctionConfig::GpuConfig(utils::dummy_config()?);
 
         // TODO: change this!
-        let total_size = 4096usize;
+        let total_size = 0usize;
 
         let mut context = static_domain.acquire_context(total_size)?;
 
