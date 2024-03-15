@@ -107,7 +107,6 @@ impl Dispatcher {
             .await;
     }
 
-    // TODO: change test to use the queue function and remove this from being public
     pub async fn queue_composition(
         &self,
         composition: Composition,
