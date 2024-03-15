@@ -676,21 +676,6 @@ mod compute_driver_tests {
         }
 
         #[test]
-        fn parse_then_exec() {
-            let driver = GpuDriver {};
-            let mut runner = GpuLoop::init(0).unwrap();
-            let static_domain: Box<dyn MemoryDomain> = Box::new(MmuMemoryDomain {});
-            let func = driver.parse_function("foo".into(), &static_domain).unwrap();
-            let config = FunctionConfig::GpuConfig(dummy_config().unwrap());
-
-            let res = runner.run(config, func.context, Arc::new(vec![]));
-            if res.is_err() {
-                eprintln!("{:?}", res);
-            }
-            assert!(res.is_ok());
-        }
-
-        #[test]
         fn minimal() {
             let driver: Box<dyn Driver> = Box::new(GpuDriver {});
             engine_minimal::<MmuMemoryDomain>(

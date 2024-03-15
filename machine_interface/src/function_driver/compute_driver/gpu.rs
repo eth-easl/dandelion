@@ -12,7 +12,10 @@ use dandelion_commons::{DandelionError, DandelionResult};
 use libc::c_void;
 use std::{collections::HashMap, ptr::null, thread};
 
-use self::{hip::DEFAULT_STREAM, utils::Action};
+use self::{
+    hip::DEFAULT_STREAM,
+    utils::{Action, Argument},
+};
 
 pub(crate) mod hip;
 pub(crate) mod utils;
@@ -76,6 +79,7 @@ pub fn dummy_run(gpu_loop: &mut GpuLoop) -> DandelionResult<()> {
 }
 
 fn gpu_run(gpu_id: u8, config: GpuConfig, context: Context) -> DandelionResult<Context> {
+    // TODO: handle errors
     let ContextType::Mmu(ref mmu_context) = context.context else {
         return Err(DandelionError::ConfigMissmatch);
     };
@@ -89,12 +93,18 @@ fn gpu_run(gpu_id: u8, config: GpuConfig, context: Context) -> DandelionResult<C
 
     for action in &config.blueprint.control_flow {
         match action {
-            Action::ExecKernel(name, argnames, launch_config) => {
-                let elem: usize = 256;
-                let args = [
-                    &buffers.get("A").unwrap().0 as *const _ as *const c_void,
-                    &elem as *const _ as *const c_void,
-                ];
+            Action::ExecKernel(name, args, launch_config) => {
+                let mut params: Vec<*const c_void> = Vec::with_capacity(args.len());
+                for arg in args {
+                    match arg {
+                        Argument::BufferPtr(id) => {
+                            params.push(&buffers.get(id).unwrap().0 as *const _ as *const c_void)
+                        }
+                        Argument::BufferLen(id) => params
+                            .push(config.blueprint.temps.get(id).unwrap() as *const _
+                                as *const c_void),
+                    };
+                }
 
                 hip::module_launch_kernel(
                     *config.kernels.get(name).unwrap(),
@@ -106,7 +116,7 @@ fn gpu_run(gpu_id: u8, config: GpuConfig, context: Context) -> DandelionResult<C
                     1,
                     0,
                     DEFAULT_STREAM,
-                    args.as_ptr(),
+                    params.as_ptr(),
                     null(),
                 )?;
             }
@@ -203,7 +213,6 @@ impl Driver for GpuDriver {
         // Concept for now: function_path gives config file which contains name of module (.hsaco) file
         let config = FunctionConfig::GpuConfig(utils::dummy_config()?);
 
-        // TODO: change this!
         let total_size = 0usize;
 
         let mut context = static_domain.acquire_context(total_size)?;

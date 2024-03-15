@@ -29,10 +29,14 @@ impl LaunchConfig {
         }
     }
 }
+
+pub enum Argument {
+    BufferPtr(String),
+    BufferLen(String),
+}
 enum Condition {}
 pub enum Action {
-    /// (kernel name, argument names)
-    ExecKernel(String, Vec<String>, LaunchConfig),
+    ExecKernel(String, Vec<Argument>, LaunchConfig),
     RepeatWhile(Condition, Vec<Action>),
 }
 
@@ -52,7 +56,7 @@ pub fn dummy_config() -> DandelionResult<GpuConfig> {
     let kernel_check = hip::module_get_function(&module, "check_mem")?;
 
     Ok(GpuConfig {
-        system_data_struct_offset: 0, // TODO: change this once I understand how it works
+        system_data_struct_offset: 0,
         module: Arc::new(module),
         kernels: Arc::new(HashMap::from([
             ("set_mem".into(), kernel_set),
@@ -65,12 +69,18 @@ pub fn dummy_config() -> DandelionResult<GpuConfig> {
             control_flow: vec![
                 Action::ExecKernel(
                     "set_mem".into(),
-                    vec!["A".into()],
+                    vec![
+                        Argument::BufferPtr("A".into()),
+                        Argument::BufferLen("A".into()),
+                    ],
                     LaunchConfig::one_dimensional((256 + 1024 - 1) / 1024, 1024, 0),
                 ),
                 Action::ExecKernel(
                     "check_mem".into(),
-                    vec!["A".into()],
+                    vec![
+                        Argument::BufferPtr("A".into()),
+                        Argument::BufferLen("A".into()),
+                    ],
                     LaunchConfig::one_dimensional(1, 1, 0),
                 ),
             ],
