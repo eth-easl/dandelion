@@ -1,5 +1,6 @@
 use bytes::Buf;
 use core_affinity::{self, CoreId};
+use dandelion_commons::records::{Archive, RecordPoint, Recorder};
 use dispatcher::{
     composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
     resource_pool::ResourcePool,
@@ -34,7 +35,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicU8, Ordering},
-        Arc, Once,
+        Arc, Mutex as SyncMutex, Once,
     },
 };
 use tokio::runtime::Builder;
@@ -62,7 +63,8 @@ async fn run_chain(
     function_name: String,
     get_uri: String,
     post_uri: String,
-) -> u64 {
+    mut recorder: Recorder,
+) -> (u64, Recorder) {
     // TODO just have all the strings concatinated and create const context
     let domain = MmapMemoryDomain::init(machine_interface::memory_domain::MemoryResource::None)
         .expect("Should be able to get Mmap domain");
@@ -106,8 +108,11 @@ async fn run_chain(
     ];
     let output_mapping = vec![Some(0), Some(1)];
 
-    let result = dispatcher
-        .queue_function_by_name(function_name, inputs, output_mapping, is_cold)
+    recorder
+        .record(RecordPoint::QueueFunctionDispatcher)
+        .unwrap();
+    let (result, recorder) = dispatcher
+        .queue_function_by_name(function_name, inputs, output_mapping, is_cold, recorder)
         .await
         .expect("Should get response from chain");
     assert_eq!(2, result.len());
@@ -147,7 +152,7 @@ async fn run_chain(
         .expect("Should be able to read result");
     let checksum = u64::from_ne_bytes(result_vec[0..8].try_into().unwrap());
 
-    return checksum;
+    return (checksum, recorder);
 }
 
 async fn run_mat_func(
@@ -156,7 +161,8 @@ async fn run_mat_func(
     rows: usize,
     cols: usize,
     function_name: String,
-) -> i64 {
+    mut recorder: Recorder,
+) -> (i64, Recorder) {
     let mat_size: usize = rows * cols;
 
     // Initialize matrix if necessary
@@ -177,17 +183,23 @@ async fn run_mat_func(
         CompositionSet::from((0, vec![(Arc::new(input_context))])),
     )];
     let outputs = vec![Some(0)];
-    let result: Result<BTreeMap<usize, CompositionSet>, dandelion_commons::DandelionError> =
-        dispatcher
-            .queue_function_by_name(function_name, inputs, outputs, is_cold)
-            .await;
+    recorder
+        .record(RecordPoint::QueueFunctionDispatcher)
+        .unwrap();
+    let result: Result<
+        (BTreeMap<usize, CompositionSet>, Recorder),
+        dandelion_commons::DandelionError,
+    > = dispatcher
+        .queue_function_by_name(function_name, inputs, outputs, is_cold, recorder)
+        .await;
 
-    let result_context = result
-        .expect("should get result from function")
+    let (mut result_map, recorder) = result.expect("should get result from function");
+
+    let result_context: CompositionSet = result_map
         .remove(&0)
         .expect("should have composition set 0");
 
-    return get_checksum(result_context);
+    return (get_checksum(result_context), recorder);
 }
 
 // Add the matrix multiplication inputs to the given context
@@ -257,7 +269,11 @@ async fn serve_request(
     is_cold: bool,
     req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
+    archive: Arc<SyncMutex<Archive>>,
 ) -> Result<Response<Body>, Infallible> {
+    let mut recorder = archive.lock().unwrap().get_recorder().unwrap();
+    let _ = recorder.record(RecordPoint::Arrival);
+
     // Try to parse the request
     let request_buf = hyper::body::to_bytes(req.into_body())
         .await
@@ -265,17 +281,24 @@ async fn serve_request(
     let request_map: MatrixRequest =
         bson::from_slice(&request_buf).expect("Should be able to deserialize matrix request");
 
-    let response_vec: Vec<u8> = run_mat_func(
+    let (response_vec, mut recorder) = match run_mat_func(
         dispatcher,
         is_cold,
         request_map.rows as usize,
         request_map.cols as usize,
         request_map.name,
+        recorder,
     )
     .await
-    .to_be_bytes()
-    .to_vec();
+    {
+        (checksum, recorder) => (checksum.to_be_bytes().to_vec(), recorder),
+    };
+
     let response = Ok::<_, Infallible>(Response::new(response_vec.into()));
+
+    recorder.record(RecordPoint::EndService).unwrap();
+    archive.lock().unwrap().add_recorder(recorder);
+
     return response;
 }
 
@@ -290,28 +313,41 @@ async fn serve_chain(
     is_cold: bool,
     req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
+    archive: Arc<SyncMutex<Archive>>,
 ) -> Result<Response<Body>, Infallible> {
+    let mut recorder = archive.lock().unwrap().get_recorder().unwrap();
+    let _ = recorder.record(RecordPoint::Arrival);
+
     let request_buf = hyper::body::to_bytes(req.into_body())
         .await
         .expect("Should be able to parse body");
     let request_map: ChainRequest =
         bson::from_slice(&request_buf).expect("Should be able to deserialize matrix request");
 
-    let response_vec = run_chain(
+    let (response_vec, mut recorder) = match run_chain(
         dispatcher,
         is_cold,
         request_map.name,
         request_map.get_uri,
         request_map.post_uri,
+        recorder,
     )
     .await
-    .to_be_bytes()
-    .to_vec();
+    {
+        (checksum, recorder) => (checksum.to_be_bytes().to_vec(), recorder),
+    };
     let response = Ok::<_, Infallible>(Response::new(response_vec.into()));
+
+    recorder.record(RecordPoint::EndService).unwrap();
+    archive.lock().unwrap().add_recorder(recorder);
+
     return response;
 }
 
-async fn serve_native(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
+async fn serve_native(
+    _req: Request<Body>,
+    _archive: Arc<SyncMutex<Archive>>,
+) -> Result<Response<Body>, Infallible> {
     // Try to parse the request
     let mut request_buf = hyper::body::to_bytes(_req.into_body())
         .await
@@ -431,33 +467,36 @@ async fn register_composition(
 
 async fn serve_stats(
     _req: Request<Body>,
-    dispatcher: Arc<Dispatcher>,
+    archive: Arc<SyncMutex<Archive>>,
 ) -> Result<Response<Body>, Infallible> {
-    let archive_guard = match dispatcher.archive.lock() {
+    let mut archive_guard = match archive.lock() {
         Ok(guard) => guard,
         Err(_) => {
             return Ok::<_, Infallible>(Response::new("Could not lock archive for stats".into()))
         }
     };
-    return Ok::<_, Infallible>(Response::new(archive_guard.get_summary().into()));
+    let response: Response<Body> = Response::new(archive_guard.get_summary().into());
+    archive_guard.reset_all();
+    return Ok::<_, Infallible>(response);
 }
 
 async fn service(
     req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
+    archive: Arc<SyncMutex<Archive>>,
 ) -> Result<Response<Body>, Infallible> {
     let uri = req.uri().path();
     match uri {
         "/register/function" => register_function(req, dispatcher).await,
         "/register/composition" => register_composition(req, dispatcher).await,
-        "/cold/matmul" => serve_request(true, req, dispatcher).await,
-        "/hot/matmul" => serve_request(false, req, dispatcher).await,
-        "/cold/compute" => serve_chain(true, req, dispatcher).await,
-        "/hot/compute" => serve_chain(false, req, dispatcher).await,
-        "/cold/io" => serve_chain(true, req, dispatcher).await,
-        "/hot/io" => serve_chain(false, req, dispatcher).await,
-        "/native" => serve_native(req).await,
-        "/stats" => serve_stats(req, dispatcher).await,
+        "/cold/matmul" => serve_request(true, req, dispatcher, archive).await,
+        "/hot/matmul" => serve_request(false, req, dispatcher, archive).await,
+        "/cold/compute" => serve_chain(true, req, dispatcher, archive).await,
+        "/hot/compute" => serve_chain(false, req, dispatcher, archive).await,
+        "/cold/io" => serve_chain(true, req, dispatcher, archive).await,
+        "/hot/io" => serve_chain(false, req, dispatcher, archive).await,
+        "/native" => serve_native(req, archive).await,
+        "/stats" => serve_stats(req, archive).await,
         _ => Ok::<_, Infallible>(Response::new(
             // format!("Hello, World! You asked for: {}\n", uri).into(),
             format!("Hello, Wor\n").into(),
@@ -526,16 +565,25 @@ fn main() -> () {
     let dispatcher_ptr =
         Arc::new(Dispatcher::init(resource_pool).expect("Should be able to start dispatcher"));
 
+    // Recording setup
+    let tracing_archive: Arc<SyncMutex<Archive>> = Arc::new(SyncMutex::new(Archive::new()));
+    let recorders: Vec<_> = (0..10000000)
+        .map(|_| Recorder::new(tracing_archive.clone()))
+        .collect();
+    tracing_archive.lock().unwrap().init(recorders);
+
     let _guard = runtime.enter();
 
     // ready http endpoint
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     let make_svc = make_service_fn(move |_| {
         let new_dispatcher_ptr = dispatcher_ptr.clone();
+        let new_archive_ptr: Arc<SyncMutex<Archive>> = tracing_archive.clone();
         async move {
             Ok::<_, Infallible>(service_fn(move |req| {
                 let service_dispatcher_ptr = new_dispatcher_ptr.clone();
-                service(req, service_dispatcher_ptr)
+                let service_archive_ptr = new_archive_ptr.clone();
+                service(req, service_dispatcher_ptr, service_archive_ptr)
             }))
         }
     });

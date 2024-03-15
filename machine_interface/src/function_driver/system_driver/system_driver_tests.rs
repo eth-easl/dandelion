@@ -77,7 +77,7 @@ mod system_driver_tests {
         write_request_line(&mut context, request).expect("Should be able to prepare request line");
 
         let archive = std::sync::Arc::new(std::sync::Mutex::new(Archive::new()));
-        let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
+        let mut recorder = Recorder::new(archive);
         let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
         let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
             config,
@@ -150,7 +150,7 @@ mod system_driver_tests {
             .expect("Should be able to write body");
 
         let archive = std::sync::Arc::new(std::sync::Mutex::new(Archive::new()));
-        let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
+        let mut recorder = Recorder::new(archive);
         let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
         let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
             config,

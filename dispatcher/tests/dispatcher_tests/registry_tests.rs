@@ -1,4 +1,5 @@
-use crate::dispatcher_tests::{check_matrix, setup_dispatcher};
+use crate::dispatcher_tests::{check_matrix, init_recorder_archive, setup_dispatcher};
+use dandelion_commons::records::{Archive, RecordPoint, Recorder};
 use dispatcher::{
     composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
 };
@@ -9,7 +10,7 @@ use machine_interface::{
     memory_domain::{read_only::ReadOnlyContext, Context, MemoryDomain},
     DataItem, DataSet, Position,
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, sync::Mutex as SyncMutex};
 
 // using 0x802_0000 as that is what the WASM test binaries expect
 // TODO fix once the update has been merged allowing for 800_0000
@@ -41,6 +42,8 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
+    let archive = init_recorder_archive(10);
+
     let matrix_a = Box::new([1u64, 2u64]);
     let matrix_b = Box::new([1u64, 3u64]);
     let matrix_c = Box::new([1u64, 5u64]);
@@ -103,20 +106,34 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         let mut overwrite_inputs = inputs.clone();
         overwrite_inputs.push((i, CompositionSet::from((0, vec![mat_fault.clone()]))));
         let outputs = vec![Some(0)];
+        let mut recorder = archive.lock().unwrap().get_recorder().unwrap();
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(function_id, inputs, outputs.clone(), false));
+            .block_on(dispatcher.queue_function(
+                function_id,
+                inputs,
+                outputs.clone(),
+                false,
+                recorder,
+            ));
+        recorder = archive.lock().unwrap().get_recorder().unwrap();
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(function_id, overwrite_inputs, outputs, false));
+            .block_on(dispatcher.queue_function(
+                function_id,
+                overwrite_inputs,
+                outputs,
+                false,
+                recorder,
+            ));
         let out_sets = match result {
-            Ok(composition_sets) => composition_sets,
+            Ok((composition_sets, _)) => composition_sets,
             Err(err) => panic!("Non overwrite failed with: {:?}", err),
         };
         let overwrite_sets = match overwrite_result {
-            Ok(compostion_set) => compostion_set,
+            Ok((compostion_set, _)) => compostion_set,
             Err(err) => panic!("Overwrite input failed with: {:?}", err),
         };
         assert!(out_sets.contains_key(&0));
@@ -138,6 +155,8 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
+    let archive = init_recorder_archive(10);
+
     let matrix_a = Box::new([1u64, 2u64]);
     let matrix_b = Box::new([1u64, 3u64]);
     let matrix_c = Box::new([1u64, 5u64]);
@@ -199,20 +218,34 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
             CompositionSet::from((0, vec![mat_fault.clone()])),
         ));
         let outputs = vec![Some(0)];
+        let mut recorder = archive.lock().unwrap().get_recorder().unwrap();
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(function_id, inputs, outputs.clone(), false));
+            .block_on(dispatcher.queue_function(
+                function_id,
+                inputs,
+                outputs.clone(),
+                false,
+                recorder,
+            ));
+        recorder = archive.lock().unwrap().get_recorder().unwrap();
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(function_id, overwrite_inputs, outputs, false));
+            .block_on(dispatcher.queue_function(
+                function_id,
+                overwrite_inputs,
+                outputs,
+                false,
+                recorder,
+            ));
         let out_sets = match result {
-            Ok(composition_sets) => composition_sets,
+            Ok((composition_sets, _)) => composition_sets,
             Err(err) => panic!("Non overwrite failed with: {:?}", err),
         };
         let overwrite_sets = match overwrite_result {
-            Ok(compostion_set) => compostion_set,
+            Ok((compostion_set, _)) => compostion_set,
             Err(err) => panic!("Overwrite input failed with: {:?}", err),
         };
         assert!(out_sets.contains_key(&0));
