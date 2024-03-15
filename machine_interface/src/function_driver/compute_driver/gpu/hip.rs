@@ -10,9 +10,16 @@ type ErrorT = u32;
 type _ModuleT = *const c_void;
 pub struct ModuleT(_ModuleT);
 
+unsafe impl Send for ModuleT {}
+unsafe impl Sync for ModuleT {}
+
 // typedef struct iHipModuleSymbol_t* hipFunction_t
 type _FunctionT = *const c_void;
+#[derive(Clone, Copy)]
 pub struct FunctionT(_FunctionT);
+
+unsafe impl Send for FunctionT {}
+unsafe impl Sync for FunctionT {}
 
 // typedef struct iHipStream_t* hipStream_t
 pub type StreamT = *const c_void;
@@ -40,7 +47,7 @@ extern "C" {
         blockDimX: u32,
         blockDimY: u32,
         blockDimZ: u32,
-        sharedMemBytes: u32,
+        sharedMemBytes: usize,
         stream: StreamT,
         kernel_params: *const *const c_void,
         extra: *const *const c_void,
@@ -109,7 +116,7 @@ pub fn module_launch_kernel(
     block_dim_x: u32,
     block_dim_y: u32,
     block_dim_z: u32,
-    shared_mem_bytes: u32,
+    shared_mem_bytes: usize,
     stream: StreamT,
     kernel_params: *const *const c_void,
     extra: *const *const c_void,

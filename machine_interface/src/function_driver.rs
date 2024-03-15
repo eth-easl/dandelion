@@ -1,13 +1,18 @@
+use std::{collections::HashMap, sync::Mutex};
+
 use crate::{
     memory_domain::{Context, MemoryDomain},
     DataRequirementList, Position,
 };
 extern crate alloc;
+use crate::function_driver::compute_driver::gpu::hip::ModuleT;
 use alloc::sync::Arc;
 use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
 
 #[cfg(feature = "wasm")]
 use libloading::Library;
+
+use self::compute_driver::gpu::{hip::FunctionT, utils::ExecutionBlueprint};
 
 pub mod compute_driver;
 mod load_utils;
@@ -50,7 +55,12 @@ pub struct WasmConfig {
 }
 
 #[derive(Clone)]
-pub struct GpuConfig {}
+pub struct GpuConfig {
+    pub system_data_struct_offset: usize,
+    pub module: Arc<ModuleT>,
+    pub kernels: Arc<HashMap<String, FunctionT>>,
+    pub blueprint: Arc<ExecutionBlueprint>,
+}
 
 #[derive(Clone)]
 pub enum FunctionConfig {

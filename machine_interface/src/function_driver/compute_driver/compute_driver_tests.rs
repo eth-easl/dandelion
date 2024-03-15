@@ -657,30 +657,33 @@ mod compute_driver_tests {
         use std::sync::Arc;
 
         use crate::{
-            function_driver::{thread_utils::EngineLoop, FunctionConfig, GpuConfig},
-            memory_domain::{gpu::GpuContext, Context},
+            function_driver::{
+                compute_driver::gpu::{dummy_run, utils::dummy_config, GpuDriver, GpuLoop},
+                thread_utils::EngineLoop,
+                Driver, FunctionConfig, GpuConfig,
+            },
+            memory_domain::{gpu::GpuContext, mmu::MmuMemoryDomain, Context, MemoryDomain},
         };
 
         #[test]
-        fn trivial() {
-            assert!(true);
+        fn run_dummy_gpu_payload() {
+            let mut runner = GpuLoop::init(0).unwrap();
+            assert!(dummy_run(&mut runner).is_ok());
         }
 
         #[test]
-        fn run_gpu_payload() {
-            let mut runner = crate::function_driver::compute_driver::gpu::GpuLoop::init(0).unwrap();
-            // dummy things
-            let config = FunctionConfig::GpuConfig(GpuConfig {});
-            // TODO: remove pub from occupation! when un-dummying!!
-            let context = Context {
-                context: crate::memory_domain::ContextType::Gpu(Box::new(GpuContext {})),
-                content: vec![],
-                size: 0,
-                state: crate::memory_domain::ContextState::Run(0),
-                occupation: vec![],
-            };
-            let outputs = Arc::new(vec![]);
-            assert!(runner.run(config, context, outputs).is_ok());
+        fn parse_then_exec() {
+            let driver = GpuDriver {};
+            let mut runner = GpuLoop::init(0).unwrap();
+            let static_domain: Box<dyn MemoryDomain> = Box::new(MmuMemoryDomain {});
+            let func = driver.parse_function("foo".into(), &static_domain).unwrap();
+            let config = FunctionConfig::GpuConfig(dummy_config().unwrap());
+
+            let res = runner.run(config, func.context, Arc::new(vec![]));
+            if res.is_err() {
+                eprintln!("{:?}", res);
+            }
+            assert!(res.is_ok());
         }
     }
 }

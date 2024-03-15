@@ -2,6 +2,8 @@ use dandelion_commons::DandelionResult;
 
 use super::ContextTrait;
 
+// NOTE: might be removed in the future
+
 #[derive(Debug)]
 pub struct GpuContext {}
 

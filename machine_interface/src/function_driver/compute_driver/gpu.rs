@@ -5,112 +5,121 @@ use crate::{
         ComputeResource, Driver, Function, FunctionConfig, GpuConfig, WorkQueue,
     },
     interface::{read_output_structs, setup_input_structs},
-    memory_domain::{gpu::GpuContext, Context, ContextType, MemoryDomain},
+    memory_domain::{Context, ContextType},
     DataRequirementList, DataSet,
 };
-use core::{
-    future::{ready, Future},
-    pin::Pin,
-};
-use dandelion_commons::{
-    records::{RecordPoint, Recorder},
-    DandelionError, DandelionResult,
-};
-use futures::task::Poll;
-use libc::{c_void, size_t};
-use libloading::{Library, Symbol};
-use log::error;
-use std::{
-    ffi::CString,
-    ptr::null,
-    sync::{Arc, Mutex},
-};
+use dandelion_commons::{DandelionError, DandelionResult};
+use libc::c_void;
+use std::{collections::HashMap, ptr::null, thread};
 
-use self::hip::DEFAULT_STREAM;
+use self::{hip::DEFAULT_STREAM, utils::Action};
 
-mod hip;
+pub(crate) mod hip;
+pub(crate) mod utils;
 
-// Temporary to get used to FFI and build.rs, can be removed
-#[link(name = "hip_interface_lib")]
-extern "C" {
-    fn gpu_toy_launch(gpu_id: u8);
+pub fn dummy_run(gpu_loop: &mut GpuLoop) -> DandelionResult<()> {
+    // set gpu
+    hip::set_device(gpu_loop.gpu_id)?;
+
+    // load module
+    let module =
+        hip::module_load("/home/smithj/dandelion/machine_interface/hip_interface/module.hsaco")?;
+
+    // load kernels
+    let kernel_set = hip::module_get_function(&module, "set_mem")?;
+    let kernel_check = hip::module_get_function(&module, "check_mem")?;
+
+    // allocate device memory, prepare args
+    let arr_elem: usize = 256;
+    let elem_size: usize = std::mem::size_of::<f64>();
+    let arr_size: usize = arr_elem * elem_size;
+    let array = hip::DevicePointer::try_new(arr_size)?;
+
+    let args: [*const c_void; 2] = [
+        &array.0 as *const _ as *const c_void,
+        &arr_elem as *const _ as *const c_void,
+    ];
+
+    // launch them
+    let block_width: usize = 1024;
+    hip::module_launch_kernel(
+        kernel_set,
+        ((arr_elem + block_width - 1) / block_width) as u32,
+        1,
+        1,
+        block_width as u32,
+        1,
+        1,
+        0,
+        DEFAULT_STREAM,
+        args.as_ptr(),
+        null(),
+    )?;
+
+    hip::module_launch_kernel(
+        kernel_check,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        0,
+        DEFAULT_STREAM,
+        args.as_ptr(),
+        null(),
+    )?;
+
+    hip::device_synchronize()?;
+
+    Ok(())
 }
 
-// TODO remove pub once Engine.run implemented; this is just for basic testing
-// pub struct GpuCommand {
-//     pub gpu_id: u8,
-// }
-// unsafe impl Send for GpuCommand {}
+fn gpu_run(gpu_id: u8, config: GpuConfig, context: Context) -> DandelionResult<Context> {
+    let ContextType::Mmu(ref mmu_context) = context.context else {
+        return Err(DandelionError::ConfigMissmatch);
+    };
 
-// impl ThreadPayload for GpuCommand {
-//     type State = DefaultState;
+    hip::set_device(gpu_id)?;
 
-//     fn run(self, _state: &mut Self::State) -> DandelionResult<()> {
-//         // set gpu
-//         hip::set_device(self.gpu_id)?;
+    let mut buffers = HashMap::new();
+    for (name, size) in &config.blueprint.temps {
+        buffers.insert(name.clone(), hip::DevicePointer::try_new(*size)?);
+    }
 
-//         // load module
-//         let module = hip::module_load(
-//             "/home/smithj/dandelion/machine_interface/hip_interface/module.hsaco",
-//         )?;
+    for action in &config.blueprint.control_flow {
+        match action {
+            Action::ExecKernel(name, argnames, launch_config) => {
+                let elem: usize = 256;
+                let args = [
+                    &buffers.get("A").unwrap().0 as *const _ as *const c_void,
+                    &elem as *const _ as *const c_void,
+                ];
 
-//         // load kernels
-//         let kernel_set = hip::module_get_function(&module, "set_mem")?;
-//         let kernel_check = hip::module_get_function(&module, "check_mem")?;
+                hip::module_launch_kernel(
+                    *config.kernels.get(name).unwrap(),
+                    launch_config.grid_dim_x,
+                    1,
+                    1,
+                    launch_config.block_dim_x,
+                    1,
+                    1,
+                    0,
+                    DEFAULT_STREAM,
+                    args.as_ptr(),
+                    null(),
+                )?;
+            }
+            _ => return Err(DandelionError::NotImplemented),
+        }
+    }
 
-//         // allocate device memory, prepare args
-//         let mut array: *const c_void = null();
-//         let arr_elem: u32 = 256;
-//         let elem_size: u32 = std::mem::size_of::<f64>() as u32;
-//         let arr_size: u32 = arr_elem * elem_size;
-//         if hip::malloc(&mut array, arr_size as usize) != 0 {
-//             eprintln!("malloc");
-//         }
-//         let array = hip::DevicePointer::try_new(arr_size as usize)?;
+    Ok(context)
+}
 
-//         let args: [*const c_void; 2] = [
-//             &array.0 as *const _ as *const c_void,
-//             &arr_elem as *const _ as *const c_void,
-//         ];
-
-//         // launch them
-//         let block_width: u32 = 1024;
-//         hip::module_launch_kernel(
-//             kernel_set,
-//             (arr_elem + block_width - 1) / block_width,
-//             1,
-//             1,
-//             block_width,
-//             1,
-//             1,
-//             0,
-//             DEFAULT_STREAM,
-//             args.as_ptr(),
-//             null(),
-//         )?;
-
-//         hip::module_launch_kernel(
-//             kernel_check,
-//             1,
-//             1,
-//             1,
-//             1,
-//             1,
-//             1,
-//             0,
-//             DEFAULT_STREAM,
-//             args.as_ptr(),
-//             null(),
-//         )?;
-
-//         hip::device_synchronize()?;
-
-//         Ok(())
-//     }
-// }
-
+// TODO: remove pub at some point
 pub struct GpuLoop {
-    cpu_slot: u8,
+    cpu_slot: u8, // needed to set processes to run on that core
     gpu_id: u8,
     // TODO: runner process pool
 }
@@ -122,101 +131,39 @@ impl EngineLoop for GpuLoop {
             cpu_slot: core_id,
             gpu_id: 0,
         }))
+        // this is where the process pool would be launched and the buffer pool initialised
     }
 
     fn run(
         &mut self,
         config: FunctionConfig,
-        context: Context,
+        mut context: Context,
         output_sets: std::sync::Arc<Vec<String>>,
     ) -> DandelionResult<Context> {
-        // set gpu
-        hip::set_device(self.gpu_id)?;
+        let FunctionConfig::GpuConfig(config) = config else {
+            return Err(DandelionError::ConfigMissmatch);
+        };
 
-        // load module
-        let module = hip::module_load(
-            "/home/smithj/dandelion/machine_interface/hip_interface/module.hsaco",
+        setup_input_structs::<usize, usize>(
+            &mut context,
+            config.system_data_struct_offset,
+            &output_sets,
         )?;
 
-        // load kernels
-        let kernel_set = hip::module_get_function(&module, "set_mem")?;
-        let kernel_check = hip::module_get_function(&module, "check_mem")?;
+        // in thread for now, in process pool eventually; maybe add cpu_slot?
+        let gpu_id_clone = self.gpu_id;
+        let config_clone = config.clone();
+        let handle = thread::spawn(move || gpu_run(gpu_id_clone, config_clone, context));
+        let mut context = match handle.join() {
+            Ok(res) => res?,
+            Err(_) => return Err(DandelionError::EngineError),
+        };
 
-        // allocate device memory, prepare args
-        let mut array: *const c_void = null();
-        let arr_elem: usize = 256;
-        let elem_size: usize = std::mem::size_of::<f64>();
-        let arr_size: usize = arr_elem * elem_size;
-        // if hip::malloc(&mut array, arr_size as usize) != 0 {
-        //     eprintln!("malloc");
-        // }
-        let array = hip::DevicePointer::try_new(arr_size)?;
-
-        let args: [*const c_void; 2] = [
-            &array.0 as *const _ as *const c_void,
-            &arr_elem as *const _ as *const c_void,
-        ];
-
-        // launch them
-        let block_width: usize = 1024;
-        hip::module_launch_kernel(
-            kernel_set,
-            ((arr_elem + block_width - 1) / block_width) as u32,
-            1,
-            1,
-            block_width as u32,
-            1,
-            1,
-            0,
-            DEFAULT_STREAM,
-            args.as_ptr(),
-            null(),
-        )?;
-
-        hip::module_launch_kernel(
-            kernel_check,
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            0,
-            DEFAULT_STREAM,
-            args.as_ptr(),
-            null(),
-        )?;
-
-        hip::device_synchronize()?;
+        read_output_structs::<usize, usize>(&mut context, config.system_data_struct_offset)?;
 
         Ok(context)
     }
 }
-
-// pub struct GpuEngine {
-//     gpu_id: u8,
-//     thread_controller: ThreadController<GpuCommand>,
-// }
-
-// impl Engine for GpuEngine {
-//     fn run(
-//         &mut self,
-//         config: &FunctionConfig,
-//         mut context: Context,
-//         output_set_names: &Vec<String>,
-//         mut recorder: Recorder,
-//     ) -> Pin<Box<dyn Future<Output = (DandelionResult<()>, Context)> + '_ + Send>> {
-//         if let Err(err) = recorder.record(RecordPoint::EngineStart) {
-//             return Box::pin(core::future::ready((Err(err), context)));
-//         }
-
-//         todo!()
-//     }
-
-//     fn abort(&mut self) -> DandelionResult<()> {
-//         todo!()
-//     }
-// }
 
 pub struct GpuDriver {}
 
@@ -226,7 +173,7 @@ impl Driver for GpuDriver {
         resource: ComputeResource,
         queue: Box<dyn WorkQueue + Send>,
     ) -> dandelion_commons::DandelionResult<()> {
-        // extract resources TODO: update once we get Vec of ComputeResources
+        // extract resources
         let (cpu_slot, gpu_id) = match resource {
             ComputeResource::GPU(cpu, gpu) => (cpu, gpu),
             _ => return Err(DandelionError::EngineResourceError),
@@ -253,15 +200,30 @@ impl Driver for GpuDriver {
         function_path: String,
         static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
     ) -> dandelion_commons::DandelionResult<crate::function_driver::Function> {
-        // For now ignore function path and domain and hardwire everything to get MVP
-        // Actually might just never call this in the tests for now
+        // Concept for now: function_path gives config file which contains name of module (.hsaco) file
+        let config = FunctionConfig::GpuConfig(utils::dummy_config()?);
+
+        // TODO: change this!
+        let total_size = 4096usize;
+
+        let mut context = static_domain.acquire_context(total_size)?;
+
+        // Taken from wasm.rs; TODO: ask Tom why/if this is the case
+        // there must be one data set, which would normally describe the
+        // elf sections to be copied
+        context.content = vec![Some(DataSet {
+            ident: String::from("static"),
+            buffers: vec![],
+        })];
+        let requirements = DataRequirementList {
+            static_requirements: vec![],
+            input_requirements: vec![],
+        };
+
         Ok(Function {
-            config: FunctionConfig::GpuConfig(GpuConfig {}),
-            requirements: DataRequirementList {
-                static_requirements: vec![],
-                input_requirements: vec![],
-            },
-            context: static_domain.acquire_context(0)?,
+            requirements,
+            context,
+            config,
         })
     }
 }
