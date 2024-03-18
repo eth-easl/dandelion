@@ -5,7 +5,7 @@ use crate::{
         ComputeResource, Driver, Function, FunctionConfig, GpuConfig, WorkQueue,
     },
     interface::{read_output_structs, setup_input_structs},
-    memory_domain::{Context, ContextType},
+    memory_domain::{Context, ContextTrait, ContextType},
     DataRequirementList, DataSet,
 };
 use dandelion_commons::{DandelionError, DandelionResult};
@@ -13,12 +13,12 @@ use libc::c_void;
 use std::{collections::HashMap, ptr::null, thread};
 
 use self::{
-    hip::DEFAULT_STREAM,
-    utils::{Action, Argument},
+    gpu_utils::{Action, Argument},
+    hip::{DevicePointer, DEFAULT_STREAM},
 };
 
+pub(crate) mod gpu_utils;
 pub(crate) mod hip;
-pub(crate) mod utils;
 
 pub fn dummy_run(gpu_loop: &mut GpuLoop) -> DandelionResult<()> {
     // set gpu
@@ -46,7 +46,7 @@ pub fn dummy_run(gpu_loop: &mut GpuLoop) -> DandelionResult<()> {
     // launch them
     let block_width: usize = 1024;
     hip::module_launch_kernel(
-        kernel_set,
+        &kernel_set,
         ((arr_elem + block_width - 1) / block_width) as u32,
         1,
         1,
@@ -60,7 +60,7 @@ pub fn dummy_run(gpu_loop: &mut GpuLoop) -> DandelionResult<()> {
     )?;
 
     hip::module_launch_kernel(
-        kernel_check,
+        &kernel_check,
         1,
         1,
         1,
@@ -78,6 +78,54 @@ pub fn dummy_run(gpu_loop: &mut GpuLoop) -> DandelionResult<()> {
     Ok(())
 }
 
+fn get_data_length(ident: &str, context: &Context) -> DandelionResult<usize> {
+    let dataset = context
+        .content
+        .iter()
+        .find(|&elem| match elem {
+            Some(set) => set.ident == ident,
+            _ => false,
+        })
+        .ok_or(DandelionError::ConfigMissmatch)?
+        .as_ref()
+        .unwrap(); // okay, as we matched successfully
+
+    let length = dataset
+        .buffers
+        .iter()
+        .fold(0usize, |acc, item| acc + item.data.size);
+
+    Ok(length)
+}
+
+fn copy_data_to_device(
+    ident: &str,
+    context: &Context,
+    base: *mut u8,
+    dev_ptr: &DevicePointer,
+) -> DandelionResult<()> {
+    let dataset = context
+        .content
+        .iter()
+        .find(|&elem| match elem {
+            Some(set) => set.ident == ident,
+            _ => false,
+        })
+        .ok_or(DandelionError::ConfigMissmatch)?
+        .as_ref()
+        .unwrap(); // okay, as we matched successfully
+
+    let mut total = 0isize;
+    for item in &dataset.buffers {
+        let length = item.data.size;
+        let offset = item.data.offset;
+        let src = unsafe { base.byte_offset((offset) as isize) } as *const c_void;
+        hip::memcpy_h_to_d(dev_ptr, total, src, length)?;
+        total += length as isize;
+    }
+    Ok(())
+}
+
 fn gpu_run(gpu_id: u8, config: GpuConfig, context: Context) -> DandelionResult<Context> {
     // TODO: handle errors
     let ContextType::Mmu(ref mmu_context) = context.context else {
@@ -86,9 +134,16 @@ fn gpu_run(gpu_id: u8, config: GpuConfig, context: Context) -> DandelionResult<C
 
     hip::set_device(gpu_id)?;
 
+    // TODO: move to pool of buffers approach
     let mut buffers = HashMap::new();
     for (name, size) in &config.blueprint.temps {
-        buffers.insert(name.clone(), hip::DevicePointer::try_new(*size)?);
+        buffers.insert(name.clone(), (hip::DevicePointer::try_new(*size)?, *size));
+    }
+    for name in &config.blueprint.inputs {
+        let size = get_data_length(name, &context)?;
+        let dev_ptr = hip::DevicePointer::try_new(size)?;
+        copy_data_to_device(name, &context, mmu_context.storage.as_ptr(), &dev_ptr)?;
+        buffers.insert(name.clone(), (dev_ptr, size));
     }
 
     for action in &config.blueprint.control_flow {
@@ -98,16 +153,16 @@ fn gpu_run(gpu_id: u8, config: GpuConfig, context: Context) -> DandelionResult<C
                 for arg in args {
                     match arg {
                         Argument::BufferPtr(id) => {
-                            params.push(&buffers.get(id).unwrap().0 as *const _ as *const c_void)
+                            params.push(&buffers.get(id).unwrap().0 .0 as *const _ as *const c_void)
                         }
-                        Argument::BufferLen(id) => params
-                            .push(config.blueprint.temps.get(id).unwrap() as *const _
-                                as *const c_void),
+                        Argument::BufferLen(id) => {
+                            params.push(&buffers.get(id).unwrap().1 as *const _ as *const c_void)
+                        }
                     };
                 }
 
                 hip::module_launch_kernel(
-                    *config.kernels.get(name).unwrap(),
+                    config.kernels.get(name).unwrap(),
                     launch_config.grid_dim_x,
                     1,
                     1,
@@ -160,7 +215,7 @@ impl EngineLoop for GpuLoop {
             &output_sets,
         )?;
 
-        // in thread for now, in process pool eventually; maybe add cpu_slot?
+        // in thread for now, in process pool eventually; maybe add cpu_slot affinity?
         let gpu_id_clone = self.gpu_id;
         let config_clone = config.clone();
         let handle = thread::spawn(move || gpu_run(gpu_id_clone, config_clone, context));
@@ -211,9 +266,13 @@ impl Driver for GpuDriver {
         static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
     ) -> dandelion_commons::DandelionResult<crate::function_driver::Function> {
         // Concept for now: function_path gives config file which contains name of module (.hsaco) file
-        let config = FunctionConfig::GpuConfig(utils::dummy_config()?);
+        let config = if function_path == "foo" {
+            FunctionConfig::GpuConfig(gpu_utils::dummy_config()?)
+        } else {
+            FunctionConfig::GpuConfig(gpu_utils::dummy_config2()?)
+        };
 
-        let total_size = 0usize;
+        let total_size = 0x10000usize;
 
         let mut context = static_domain.acquire_context(total_size)?;
 

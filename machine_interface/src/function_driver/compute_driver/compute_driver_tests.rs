@@ -654,17 +654,25 @@ mod compute_driver_tests {
     #[cfg(feature = "gpu")]
     mod gpu {
 
-        use std::sync::Arc;
+        use std::sync::{Arc, Mutex};
+
+        use dandelion_commons::records::{Archive, RecordPoint, Recorder};
 
         use crate::{
             function_driver::{
-                compute_driver::gpu::{dummy_run, utils::dummy_config, GpuDriver, GpuLoop},
+                compute_driver::{
+                    compute_driver_tests::compute_driver_tests::prepare_engine_and_function,
+                    gpu::{dummy_run, gpu_utils::dummy_config, GpuDriver, GpuLoop},
+                },
                 thread_utils::EngineLoop,
-                ComputeResource, Driver, FunctionConfig, GpuConfig,
+                ComputeResource, Driver, EngineArguments, FunctionArguments, FunctionConfig,
+                GpuConfig,
             },
             memory_domain::{
-                gpu::GpuContext, mmu::MmuMemoryDomain, Context, MemoryDomain, MemoryResource,
+                gpu::GpuContext, mmu::MmuMemoryDomain, Context, ContextTrait, MemoryDomain,
+                MemoryResource,
             },
+            DataItem, DataSet, Position,
         };
 
         use super::engine_minimal;
@@ -684,6 +692,64 @@ mod compute_driver_tests {
                 driver,
                 vec![ComputeResource::GPU(1, 1)],
             );
+        }
+
+        #[test]
+        fn basic_input_output() {
+            let driver: Box<dyn Driver> = Box::new(GpuDriver {});
+            let (mut function_context, config, queue) =
+                prepare_engine_and_function::<MmuMemoryDomain>(
+                    "bar",
+                    MemoryResource::None,
+                    &driver,
+                    vec![ComputeResource::GPU(1, 1)],
+                );
+            // add inputs
+            let in_size_offset = function_context
+                .get_free_space_and_write_slice(&[12345i64])
+                .expect("Should have space for single i64");
+            function_context.content.push(Some(DataSet {
+                ident: "A".to_string(),
+                buffers: vec![DataItem {
+                    ident: "A".to_string(),
+                    data: Position {
+                        offset: in_size_offset as usize,
+                        size: 8,
+                    },
+                    key: 0,
+                }],
+            }));
+            let archive = Arc::new(Mutex::new(Archive::new()));
+            let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
+            let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
+                config,
+                context: function_context,
+                output_sets: Arc::new(vec![String::from("A")]),
+                recorder,
+            }));
+            let (result_context, mut result_recorder) =
+                tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap()
+                    .block_on(promise)
+                    .expect("Engine should run ok with basic function");
+            result_recorder
+                .record(RecordPoint::FutureReturn)
+                .expect("Should have properly advanced recorder state");
+            // check that result is 4
+            assert_eq!(1, result_context.content.len());
+            let output_item = result_context.content[0]
+                .as_ref()
+                .expect("Set should be present");
+            assert_eq!(1, output_item.buffers.len());
+            let position = output_item.buffers[0].data;
+            assert_eq!(8, position.size, "Checking for size of output");
+            let mut read_buffer = vec![0i64; position.size / 8];
+            result_context
+                .context
+                .read(position.offset, &mut read_buffer)
+                .expect("Should succeed in reading");
+            assert_eq!(12345, read_buffer[0]);
         }
     }
 }

@@ -15,7 +15,6 @@ unsafe impl Sync for ModuleT {}
 
 // typedef struct iHipModuleSymbol_t* hipFunction_t
 type _FunctionT = *const c_void;
-#[derive(Clone, Copy)]
 pub struct FunctionT(_FunctionT);
 
 unsafe impl Send for FunctionT {}
@@ -54,8 +53,9 @@ extern "C" {
     ) -> ErrorT;
     fn hipGetErrorString(hipError: ErrorT) -> *const i8;
     fn hipMalloc(ptr: *mut *const c_void, size: size_t) -> ErrorT;
-    #[allow(unused)]
     fn hipFree(ptr: *const c_void) -> ErrorT;
+    fn hipMemcpyHtoD(dst: *const c_void, src: *const c_void, sizeBytes: size_t) -> ErrorT;
+    fn hipMemcpyDtoH(dst: *const c_void, src: *const c_void, sizeBytes: size_t) -> ErrorT;
 }
 
 // TODO: Possibly move away from DandelionResult if HipError not wanted
@@ -109,7 +109,7 @@ pub fn module_get_function(module: &ModuleT, name: &str) -> DandelionResult<Func
 
 #[allow(clippy::too_many_arguments)]
 pub fn module_launch_kernel(
-    function: FunctionT,
+    function: &FunctionT,
     grid_dim_x: u32,
     grid_dim_y: u32,
     grid_dim_z: u32,
@@ -167,4 +167,32 @@ impl Drop for DevicePointer {
             }
         }
     }
+}
+
+pub fn memcpy_h_to_d(
+    dst: &DevicePointer,
+    dev_offset: isize,
+    src: *const c_void,
+    size_bytes: usize,
+) -> DandelionResult<()> {
+    checked_call!(hipMemcpyHtoD(
+        dst.0.byte_offset(dev_offset),
+        src,
+        size_bytes
+    ));
+    Ok(())
+}
+
+pub fn memcpy_d_to_h(
+    dst: *const c_void,
+    src: &DevicePointer,
+    dev_offset: isize,
+    size_bytes: usize,
+) -> DandelionResult<()> {
+    checked_call!(hipMemcpyDtoH(
+        dst,
+        src.0.byte_offset(dev_offset),
+        size_bytes
+    ));
+    Ok(())
 }

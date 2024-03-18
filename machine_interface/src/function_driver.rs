@@ -12,7 +12,7 @@ use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
 #[cfg(feature = "wasm")]
 use libloading::Library;
 
-use self::compute_driver::gpu::{hip::FunctionT, utils::ExecutionBlueprint};
+use self::compute_driver::gpu::{gpu_utils::ExecutionBlueprint, hip::FunctionT};
 
 pub mod compute_driver;
 mod load_utils;

@@ -41,11 +41,10 @@ pub enum Action {
 }
 
 pub struct ExecutionBlueprint {
+    pub inputs: Vec<String>,
     /// buffer names to sizes
-    pub inputs: HashMap<String, usize>,
     pub temps: HashMap<String, usize>,
     pub outputs: HashMap<String, usize>,
-
     pub control_flow: Vec<Action>,
 }
 
@@ -56,14 +55,14 @@ pub fn dummy_config() -> DandelionResult<GpuConfig> {
     let kernel_check = hip::module_get_function(&module, "check_mem")?;
 
     Ok(GpuConfig {
-        system_data_struct_offset: 0,
+        system_data_struct_offset: 0x10000usize,
         module: Arc::new(module),
         kernels: Arc::new(HashMap::from([
             ("set_mem".into(), kernel_set),
             ("check_mem".into(), kernel_check),
         ])),
         blueprint: Arc::new(ExecutionBlueprint {
-            inputs: HashMap::new(),
+            inputs: vec![],
             temps: HashMap::from([("A".into(), 1024)]),
             outputs: HashMap::new(),
             control_flow: vec![
@@ -84,6 +83,28 @@ pub fn dummy_config() -> DandelionResult<GpuConfig> {
                     LaunchConfig::one_dimensional(1, 1, 0),
                 ),
             ],
+        }),
+    })
+}
+
+pub fn dummy_config2() -> DandelionResult<GpuConfig> {
+    let module =
+        hip::module_load("/home/smithj/dandelion/machine_interface/hip_interface/module.hsaco")?;
+    let kernel = hip::module_get_function(&module, "check_then_write")?;
+
+    Ok(GpuConfig {
+        system_data_struct_offset: 0x10000usize,
+        module: Arc::new(module),
+        kernels: Arc::new(HashMap::from([("check_then_write".into(), kernel)])),
+        blueprint: Arc::new(ExecutionBlueprint {
+            inputs: vec!["A".into()],
+            temps: HashMap::new(),
+            outputs: HashMap::new(),
+            control_flow: vec![Action::ExecKernel(
+                "check_then_write".into(),
+                vec![Argument::BufferPtr("A".into())],
+                LaunchConfig::one_dimensional(1, 1, 0),
+            )],
         }),
     })
 }
