@@ -12,7 +12,6 @@ use hyper::{
     service::{make_service_fn, service_fn},
     Body, Request, Response, Server,
 };
-
 use log::{error, info};
 use machine_interface::{
     function_driver::ComputeResource,
@@ -22,10 +21,9 @@ use machine_interface::{
     },
     DataItem, DataSet, Position,
 };
+use serde::Deserialize;
 use signal_hook::consts::signal::*;
 use signal_hook_tokio::Signals;
-
-use serde::Deserialize;
 use std::{
     collections::BTreeMap,
     convert::Infallible,
@@ -35,7 +33,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicU8, Ordering},
-        Arc, Mutex as SyncMutex, Once,
+        Arc, Once, OnceLock,
     },
 };
 use tokio::runtime::Builder;
@@ -269,9 +267,8 @@ async fn serve_request(
     is_cold: bool,
     req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
-    archive: Arc<SyncMutex<Archive>>,
 ) -> Result<Response<Body>, Infallible> {
-    let mut recorder = archive.lock().unwrap().get_recorder().unwrap();
+    let mut recorder = TRACING_ARCHIVE.get().unwrap().get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
 
     // Try to parse the request
@@ -297,7 +294,7 @@ async fn serve_request(
     let response = Ok::<_, Infallible>(Response::new(response_vec.into()));
 
     recorder.record(RecordPoint::EndService).unwrap();
-    archive.lock().unwrap().add_recorder(recorder);
+    TRACING_ARCHIVE.get().unwrap().return_recorder(recorder);
 
     return response;
 }
@@ -313,9 +310,8 @@ async fn serve_chain(
     is_cold: bool,
     req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
-    archive: Arc<SyncMutex<Archive>>,
 ) -> Result<Response<Body>, Infallible> {
-    let mut recorder = archive.lock().unwrap().get_recorder().unwrap();
+    let mut recorder = TRACING_ARCHIVE.get().unwrap().get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
 
     let request_buf = hyper::body::to_bytes(req.into_body())
@@ -339,15 +335,12 @@ async fn serve_chain(
     let response = Ok::<_, Infallible>(Response::new(response_vec.into()));
 
     recorder.record(RecordPoint::EndService).unwrap();
-    archive.lock().unwrap().add_recorder(recorder);
+    TRACING_ARCHIVE.get().unwrap().return_recorder(recorder);
 
     return response;
 }
 
-async fn serve_native(
-    _req: Request<Body>,
-    _archive: Arc<SyncMutex<Archive>>,
-) -> Result<Response<Body>, Infallible> {
+async fn serve_native(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
     // Try to parse the request
     let mut request_buf = hyper::body::to_bytes(_req.into_body())
         .await
@@ -465,38 +458,29 @@ async fn register_composition(
     return Ok::<_, Infallible>(Response::new("Function registered".into()));
 }
 
-async fn serve_stats(
-    _req: Request<Body>,
-    archive: Arc<SyncMutex<Archive>>,
-) -> Result<Response<Body>, Infallible> {
-    let mut archive_guard = match archive.lock() {
-        Ok(guard) => guard,
-        Err(_) => {
-            return Ok::<_, Infallible>(Response::new("Could not lock archive for stats".into()))
-        }
-    };
-    let response: Response<Body> = Response::new(archive_guard.get_summary().into());
-    archive_guard.reset_all();
+async fn serve_stats(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
+    let archive_ref = TRACING_ARCHIVE.get().unwrap();
+    let response: Response<Body> = Response::new(archive_ref.get_summary().into());
+    archive_ref.reset();
     return Ok::<_, Infallible>(response);
 }
 
 async fn service(
     req: Request<Body>,
     dispatcher: Arc<Dispatcher>,
-    archive: Arc<SyncMutex<Archive>>,
 ) -> Result<Response<Body>, Infallible> {
     let uri = req.uri().path();
     match uri {
         "/register/function" => register_function(req, dispatcher).await,
         "/register/composition" => register_composition(req, dispatcher).await,
-        "/cold/matmul" => serve_request(true, req, dispatcher, archive).await,
-        "/hot/matmul" => serve_request(false, req, dispatcher, archive).await,
-        "/cold/compute" => serve_chain(true, req, dispatcher, archive).await,
-        "/hot/compute" => serve_chain(false, req, dispatcher, archive).await,
-        "/cold/io" => serve_chain(true, req, dispatcher, archive).await,
-        "/hot/io" => serve_chain(false, req, dispatcher, archive).await,
-        "/native" => serve_native(req, archive).await,
-        "/stats" => serve_stats(req, archive).await,
+        "/cold/matmul" => serve_request(true, req, dispatcher).await,
+        "/hot/matmul" => serve_request(false, req, dispatcher).await,
+        "/cold/compute" => serve_chain(true, req, dispatcher).await,
+        "/hot/compute" => serve_chain(false, req, dispatcher).await,
+        "/cold/io" => serve_chain(true, req, dispatcher).await,
+        "/hot/io" => serve_chain(false, req, dispatcher).await,
+        "/native" => serve_native(req).await,
+        "/stats" => serve_stats(req).await,
         _ => Ok::<_, Infallible>(Response::new(
             // format!("Hello, World! You asked for: {}\n", uri).into(),
             format!("Hello, Wor\n").into(),
@@ -504,8 +488,17 @@ async fn service(
     }
 }
 
+/// Recording setup
+static TRACING_ARCHIVE: OnceLock<Archive> = OnceLock::new();
+
 fn main() -> () {
     env_logger::init();
+
+    // Initilize metric collection
+    match TRACING_ARCHIVE.set(Archive::init()) {
+        Ok(_) => (),
+        Err(_) => panic!("Failed to initialize tracing archive"),
+    }
 
     // find available resources
     let num_cores = u8::try_from(core_affinity::get_core_ids().unwrap().len()).unwrap();
@@ -565,25 +558,16 @@ fn main() -> () {
     let dispatcher_ptr =
         Arc::new(Dispatcher::init(resource_pool).expect("Should be able to start dispatcher"));
 
-    // Recording setup
-    let tracing_archive: Arc<SyncMutex<Archive>> = Arc::new(SyncMutex::new(Archive::new()));
-    let recorders: Vec<_> = (0..10000000)
-        .map(|_| Recorder::new(tracing_archive.clone()))
-        .collect();
-    tracing_archive.lock().unwrap().init(recorders);
-
     let _guard = runtime.enter();
 
     // ready http endpoint
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     let make_svc = make_service_fn(move |_| {
         let new_dispatcher_ptr = dispatcher_ptr.clone();
-        let new_archive_ptr: Arc<SyncMutex<Archive>> = tracing_archive.clone();
         async move {
             Ok::<_, Infallible>(service_fn(move |req| {
                 let service_dispatcher_ptr = new_dispatcher_ptr.clone();
-                let service_archive_ptr = new_archive_ptr.clone();
-                service(req, service_dispatcher_ptr, service_archive_ptr)
+                service(req, service_dispatcher_ptr)
             }))
         }
     });

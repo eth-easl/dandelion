@@ -1,5 +1,5 @@
-use crate::dispatcher_tests::{check_matrix, init_recorder_archive, setup_dispatcher};
-use dandelion_commons::records::{Archive, RecordPoint, Recorder};
+use crate::dispatcher_tests::{check_matrix, setup_dispatcher};
+use dandelion_commons::records::Archive;
 use dispatcher::{
     composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
 };
@@ -10,7 +10,7 @@ use machine_interface::{
     memory_domain::{read_only::ReadOnlyContext, Context, MemoryDomain},
     DataItem, DataSet, Position,
 };
-use std::{collections::BTreeMap, sync::Arc, sync::Mutex as SyncMutex};
+use std::{collections::BTreeMap, sync::Arc};
 
 // using 0x802_0000 as that is what the WASM test binaries expect
 // TODO fix once the update has been merged allowing for 800_0000
@@ -42,7 +42,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let archive = init_recorder_archive(10);
+    let archive = Box::leak(Box::new(Archive::init()));
 
     let matrix_a = Box::new([1u64, 2u64]);
     let matrix_b = Box::new([1u64, 3u64]);
@@ -106,7 +106,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         let mut overwrite_inputs = inputs.clone();
         overwrite_inputs.push((i, CompositionSet::from((0, vec![mat_fault.clone()]))));
         let outputs = vec![Some(0)];
-        let mut recorder = archive.lock().unwrap().get_recorder().unwrap();
+        let mut recorder = archive.get_recorder().unwrap();
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -117,7 +117,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
                 false,
                 recorder,
             ));
-        recorder = archive.lock().unwrap().get_recorder().unwrap();
+        recorder = archive.get_recorder().unwrap();
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -155,7 +155,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let archive = init_recorder_archive(10);
+    let archive = Box::leak(Box::new(Archive::init()));
 
     let matrix_a = Box::new([1u64, 2u64]);
     let matrix_b = Box::new([1u64, 3u64]);
@@ -218,7 +218,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
             CompositionSet::from((0, vec![mat_fault.clone()])),
         ));
         let outputs = vec![Some(0)];
-        let mut recorder = archive.lock().unwrap().get_recorder().unwrap();
+        let mut recorder = archive.get_recorder().unwrap();
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -229,7 +229,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
                 false,
                 recorder,
             ));
-        recorder = archive.lock().unwrap().get_recorder().unwrap();
+        recorder = archive.get_recorder().unwrap();
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()

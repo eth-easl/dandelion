@@ -10,10 +10,10 @@ mod compute_driver_tests {
     };
     use core::panic;
     use dandelion_commons::{
-        records::{Archive, RecordPoint, Recorder},
+        records::{Archive, RecordPoint},
         DandelionError,
     };
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     fn loader_empty<Dom: MemoryDomain>(dom_init: MemoryResource, driver: Box<dyn Driver>) {
         // load elf file
@@ -73,8 +73,8 @@ mod compute_driver_tests {
     ) {
         let (function_context, config, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
-        let archive = Arc::new(Mutex::new(Archive::new()));
-        let mut recorder = Recorder::new(archive);
+        let archive = Box::leak(Box::new(Archive::init()));
+        let recorder = archive.get_recorder().unwrap();
         let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
             config: config,
             context: function_context,
@@ -111,8 +111,8 @@ mod compute_driver_tests {
                 key: 0,
             }],
         }));
-        let archive = Arc::new(Mutex::new(Archive::new()));
-        let mut recorder = Recorder::new(archive);
+        let archive = Box::leak(Box::new(Archive::init()));
+        let mut recorder = archive.get_recorder().unwrap();
         recorder
             .record(RecordPoint::TransferEnd)
             .expect("Should have properly initialized recorder state");
@@ -199,8 +199,8 @@ mod compute_driver_tests {
                     key: 0,
                 }],
             }));
-            let archive = Arc::new(Mutex::new(Archive::new()));
-            let mut recorder = Recorder::new(archive);
+            let archive = Box::leak(Box::new(Archive::init()));
+            let mut recorder = archive.get_recorder().unwrap();
             recorder
                 .record(RecordPoint::TransferEnd)
                 .expect("Should have properly initialized recorder state");
@@ -293,8 +293,8 @@ mod compute_driver_tests {
                 },
             ],
         }));
-        let archive = Arc::new(Mutex::new(Archive::new()));
-        let mut recorder = Recorder::new(archive);
+        let archive = Box::leak(Box::new(Archive::init()));
+        let mut recorder = archive.get_recorder().unwrap();
         recorder
             .record(RecordPoint::TransferEnd)
             .expect("Should have properly initialized recorder state");
@@ -438,8 +438,8 @@ mod compute_driver_tests {
                 },
             ],
         }));
-        let archive = Arc::new(Mutex::new(Archive::new()));
-        let mut recorder = Recorder::new(archive);
+        let archive = Box::leak(Box::new(Archive::init()));
+        let mut recorder = archive.get_recorder().unwrap();
         recorder
             .record(RecordPoint::TransferEnd)
             .expect("Should have properly initialized recorder state");

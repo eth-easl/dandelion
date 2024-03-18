@@ -1,6 +1,6 @@
-use super::{check_matrix, init_recorder_archive, setup_dispatcher};
+use super::{check_matrix, setup_dispatcher};
 use core::mem::size_of;
-use dandelion_commons::records::{RecordPoint, Recorder};
+use dandelion_commons::records::{Archive, RecordPoint};
 use dispatcher::composition::{Composition, CompositionSet, FunctionDependencies, ShardingMode};
 use machine_interface::{
     function_driver::ComputeResource,
@@ -96,8 +96,8 @@ pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
     let (dispatcher, function_id) =
         setup_dispatcher::<Domain>(relative_path, vec![], vec![], engine_type, engine_resource);
 
-    let archive = init_recorder_archive(100);
-    let mut recorder = archive.lock().unwrap().get_recorder().unwrap();
+    let archive = Box::leak(Box::new(Archive::init()));
+    let mut recorder = archive.get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
 
     let result = tokio::runtime::Builder::new_current_thread()
@@ -133,8 +133,8 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
     let inputs = vec![(0, CompositionSet::from((0, vec![(Arc::new(in_context))])))];
     let outputs = vec![Some(0)];
 
-    let archive = init_recorder_archive(100);
-    let mut recorder = archive.lock().unwrap().get_recorder().unwrap();
+    let archive = Box::leak(Box::new(Archive::init()));
+    let mut recorder = archive.get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
 
     let result = tokio::runtime::Builder::new_current_thread()
@@ -183,8 +183,8 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
     };
     let inputs = BTreeMap::from([(0, CompositionSet::from((0, vec![Arc::new(in_context)])))]);
 
-    let archive = init_recorder_archive(100);
-    let mut recorder = archive.lock().unwrap().get_recorder().unwrap();
+    let archive = Box::leak(Box::new(Archive::init()));
+    let mut recorder = archive.get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
 
     let result = tokio::runtime::Builder::new_current_thread()
@@ -239,8 +239,8 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
     };
     let inputs = BTreeMap::from([(0, CompositionSet::from((0, vec![Arc::new(in_context)])))]);
 
-    let archive = init_recorder_archive(100);
-    let mut recorder = archive.lock().unwrap().get_recorder().unwrap();
+    let archive = Box::leak(Box::new(Archive::init()));
+    let mut recorder = archive.get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
 
     let result = tokio::runtime::Builder::new_current_thread()
@@ -307,8 +307,8 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
         output_map: BTreeMap::from([(2, 0)]),
     };
 
-    let archive = init_recorder_archive(100);
-    let mut recorder = archive.lock().unwrap().get_recorder().unwrap();
+    let archive = Box::leak(Box::new(Archive::init()));
+    let mut recorder = archive.get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
 
     let inputs = BTreeMap::from([(0, CompositionSet::from((0, vec![Arc::new(in_context)])))]);
@@ -413,8 +413,8 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
         output_map: BTreeMap::from([(7, 0)]),
     };
 
-    let archive = init_recorder_archive(100);
-    let mut recorder = archive.lock().unwrap().get_recorder().unwrap();
+    let archive = Box::leak(Box::new(Archive::init()));
+    let mut recorder = archive.get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
 
     let context_arc = Arc::new(in_context);

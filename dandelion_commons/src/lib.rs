@@ -1,7 +1,5 @@
 pub mod records;
 
-use records::RecordPoint;
-
 pub type FunctionId = u64;
 
 // TODO define error types, possibly better printing than debug

@@ -3,10 +3,7 @@ mod dispatcher_tests {
     mod function_tests;
     mod registry_tests;
 
-    use dandelion_commons::{
-        records::{Archive, Recorder},
-        FunctionId,
-    };
+    use dandelion_commons::FunctionId;
     use dispatcher::{
         composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
         resource_pool::ResourcePool,
@@ -16,7 +13,7 @@ mod dispatcher_tests {
         machine_config::EngineType,
         memory_domain::{Context, ContextTrait, MemoryDomain},
     };
-    use std::{collections::BTreeMap, sync::Arc, sync::Mutex as SyncMutex};
+    use std::{collections::BTreeMap, sync::Arc};
 
     // using 0x802_0000 because that is what WASM specifies
     const DEFAULT_CONTEXT_SIZE: usize = 0x802_0000; // 128MiB
@@ -85,17 +82,6 @@ mod dispatcher_tests {
         for i in 0..expected.len() {
             assert_eq!(expected[i], out_mat[1 + i]);
         }
-    }
-
-    fn init_recorder_archive(size: usize) -> Arc<SyncMutex<Archive>> {
-        // Create the archive
-        let tracing_archive: Arc<SyncMutex<Archive>> = Arc::new(SyncMutex::new(Archive::new()));
-        // Initialize recorders for the archive
-        let recorders: Vec<_> = (0..size)
-            .map(|_| Recorder::new(tracing_archive.clone()))
-            .collect();
-        tracing_archive.lock().unwrap().init(recorders);
-        tracing_archive.clone()
     }
 
     macro_rules! dispatcherTests {

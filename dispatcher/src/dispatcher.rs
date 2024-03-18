@@ -6,7 +6,7 @@ use crate::{
 };
 use core::pin::Pin;
 use dandelion_commons::{
-    records::{Archive, RecordPoint, Recorder},
+    records::{RecordPoint, Recorder},
     DandelionError, DandelionResult, FunctionId,
 };
 use futures::{
@@ -161,7 +161,7 @@ impl Dispatcher {
             for (composition_set_index, composition_set) in new_compositions.0 {
                 inputs.insert(composition_set_index, composition_set);
             }
-            recorder.link_new_recorder(new_compositions.1);
+            recorder.link_recorder(new_compositions.1);
             // add newly ready ones
             (ready_functions, non_ready_functions) = non_ready_functions.into_iter().partition(
                 |FunctionDependencies {
@@ -241,13 +241,12 @@ impl Dispatcher {
         let composition_results: DandelionResult<Vec<_>> =
             join_all(results).await.into_iter().collect();
         let mut composition_set_maps = composition_results?.into_iter();
-        if let Some(mut result_set_map) = composition_set_maps.next() {
-            recorder.link_new_recorder(result_set_map.1);
+        if let Some((mut result_set_map, result_recorder)) = composition_set_maps.next() {
+            recorder.link_recorder(result_recorder);
             for additional_set_map in composition_set_maps {
-                recorder.link_new_recorder(additional_set_map.1);
+                recorder.link_recorder(additional_set_map.1);
                 for (key, mut additional_set) in additional_set_map.0.into_iter() {
                     result_set_map
-                        .0
                         .entry(key)
                         .and_modify(|existing_set| {
                             existing_set
@@ -257,12 +256,9 @@ impl Dispatcher {
                         .or_insert(additional_set);
                 }
             }
-            return Ok((result_set_map.0, recorder));
+            return Ok((result_set_map, recorder));
         } else {
-            return Ok((
-                BTreeMap::new(),
-                Recorder::new(Arc::new(std::sync::Mutex::new(Archive::new()))),
-            ));
+            return Ok((BTreeMap::new(), recorder));
         };
     }
 

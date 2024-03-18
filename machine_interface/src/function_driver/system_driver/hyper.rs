@@ -7,7 +7,7 @@ use crate::{
     DataItem, DataSet, Position,
 };
 use core_affinity::set_for_current;
-use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
+use dandelion_commons::{DandelionError, DandelionResult};
 use hyper::{body::HttpBody, Body, Client, HeaderMap, Method, Request, Version};
 use log::error;
 use std::sync::Arc;
