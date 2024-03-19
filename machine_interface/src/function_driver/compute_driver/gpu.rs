@@ -4,7 +4,9 @@ use crate::{
         thread_utils::{start_thread, EngineLoop},
         ComputeResource, Driver, Function, FunctionConfig, GpuConfig, WorkQueue,
     },
-    interface::{read_output_structs, setup_input_structs},
+    interface::{
+        read_output_structs, setup_input_structs, write_sentinel_output, DandelionSystemData,
+    },
     memory_domain::{Context, ContextTrait, ContextType},
     DataRequirementList, DataSet,
 };
@@ -126,7 +128,7 @@ fn copy_data_to_device(
     Ok(())
 }
 
-fn gpu_run(gpu_id: u8, config: GpuConfig, context: Context) -> DandelionResult<Context> {
+fn gpu_run(gpu_id: u8, config: GpuConfig, mut context: Context) -> DandelionResult<Context> {
     // TODO: handle errors
     let ContextType::Mmu(ref mmu_context) = context.context else {
         return Err(DandelionError::ConfigMissmatch);
@@ -223,6 +225,11 @@ impl EngineLoop for GpuLoop {
             Ok(res) => res?,
             Err(_) => return Err(DandelionError::EngineError),
         };
+
+        let write_buf = vec![12345i64];
+        context.write(0, &write_buf)?;
+
+        write_sentinel_output::<usize, usize>(&mut context, config.system_data_struct_offset)?;
 
         read_output_structs::<usize, usize>(&mut context, config.system_data_struct_offset)?;
 

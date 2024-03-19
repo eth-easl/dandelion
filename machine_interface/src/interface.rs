@@ -119,6 +119,58 @@ struct IoBufferDescriptor<PtrT: SizedIntTrait, SizeT: SizedIntTrait> {
     key: SizeT,       // size_t,
 }
 
+/// Used in cases where the Engine is responsible for writing outputs, not the runtime
+pub fn write_sentinel_output<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
+    context: &mut Context,
+    system_data_offset: usize,
+) -> DandelionResult<()> {
+    // read the system buffer
+    let mut system_struct = DandelionSystemData::<PtrT, SizeT>::default();
+    context.read(
+        system_data_offset,
+        core::slice::from_mut(&mut system_struct),
+    )?;
+
+    let output_set_number = usize!(system_struct.output_sets_len);
+    let mut output_set_info = vec![];
+    if output_set_info.try_reserve(output_set_number + 1).is_err() {
+        return Err(DandelionError::OutOfMemory);
+    }
+    let empty_output_set = IoSetInfo::<PtrT, SizeT> {
+        ident: ptr_t!(0),
+        ident_len: size_t!(0),
+        offset: size_t!(0),
+    };
+    output_set_info.resize_with(output_set_number + 1, || empty_output_set.clone());
+    context.read(usize_ptr!(system_struct.output_sets), &mut output_set_info)?;
+
+    // TODO: don't hard code this obviously
+    output_set_info[output_set_number].offset = size_t!(1);
+
+    context.write(usize_ptr!(system_struct.output_sets), &output_set_info)?;
+
+    // buffer offset
+    let mut output_buffers: Vec<IoBufferDescriptor<PtrT, SizeT>> = Vec::new();
+    if output_buffers.try_reserve_exact(1).is_err() {
+        return Err(DandelionError::OutOfMemory);
+    }
+    output_buffers.push(IoBufferDescriptor {
+        ident: ptr_t!(0),
+        ident_len: size_t!(0),
+        data: ptr_t!(0),
+        data_len: size_t!(8),
+        key: size_t!(0),
+    });
+
+    let output_buffers_offset: PtrT =
+        ptr_t!(context.get_free_space_and_write_slice(&output_buffers[..])? as usize);
+
+    system_struct.output_bufs = output_buffers_offset;
+
+    context.write(system_data_offset, core::slice::from_ref(&system_struct))?;
+    Ok(())
+}
+
 pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     context: &mut Context,
     system_data_offset: usize,

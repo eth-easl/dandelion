@@ -719,12 +719,13 @@ mod compute_driver_tests {
                     key: 0,
                 }],
             }));
+            eprintln!("foo: {:?}", function_context.content);
             let archive = Arc::new(Mutex::new(Archive::new()));
             let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
             let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
                 config,
                 context: function_context,
-                output_sets: Arc::new(vec![String::from("A")]),
+                output_sets: Arc::new(vec!["A".into()]),
                 recorder,
             }));
             let (result_context, mut result_recorder) =
@@ -741,6 +742,7 @@ mod compute_driver_tests {
             let output_item = result_context.content[0]
                 .as_ref()
                 .expect("Set should be present");
+            eprintln!("{:?}", output_item);
             assert_eq!(1, output_item.buffers.len());
             let position = output_item.buffers[0].data;
             assert_eq!(8, position.size, "Checking for size of output");
