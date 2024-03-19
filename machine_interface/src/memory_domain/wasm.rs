@@ -62,6 +62,9 @@ mod wasm_memory_allocation {
 
 use wasm_memory_allocation::MmapBox;
 
+pub static WASM_PAGE_SIZE: usize = 64 * 1024;                       // 64KiB
+pub static MAX_WASM_MEMORY_SIZE: usize = 4 * 1024 * 1024 * 1024;    // 4GiB
+
 #[derive(Debug)]
 pub struct WasmContext {
     pub mem: MmapMem,
@@ -88,6 +91,10 @@ impl MemoryDomain for WasmMemoryDomain {
     }
 
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
+        if size > MAX_WASM_MEMORY_SIZE {
+            return Err(DandelionError::InvalidMemorySize);
+        }
+        let size = (size + WASM_PAGE_SIZE - 1) & !(WASM_PAGE_SIZE - 1);     // round up to next page size
         Ok(Context::new(
             ContextType::Wasm(Box::new(WasmContext {
                 mem: MmapMem::create(size, ProtFlags::PROT_READ | ProtFlags::PROT_WRITE, false)?,
