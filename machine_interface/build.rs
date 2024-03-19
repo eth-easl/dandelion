@@ -13,14 +13,13 @@ fn cmake_libraries() -> () {
         .build();
     // install
     let install = Config::new("c_machine_libraries").build();
-    // passing cmake information to cargo
+    // passing cmake information to c
     println!("cargo:rustc-link-search=native={}", install.display());
     println!("cargo:rustc-link-lib=static=cheri_lib");
 }
 
 fn main() {
     // check if cheri is enabled and build library if so
-    if std::env::var("CARGO_FEATURE_CHERI").is_ok() {
-        cmake_libraries();
-    }
+    #[cfg(features = "cheri")]
+    cmake_libraries();
 }

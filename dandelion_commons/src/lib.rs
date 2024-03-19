@@ -23,6 +23,10 @@ pub enum DandelionError {
     ContextMissmatch,
     /// domain could not be allocated because there is no space available
     OutOfMemory,
+    /// the value specified for the context size does not match the WASM memory size
+    WasmContextMemoryMismatch,
+    /// error when trying to allocate memory
+    MemoryAllocationError,
     /// context can't fit additional memory
     ContextFull,
     /// read buffer was misaligned for requested data type
@@ -46,6 +50,9 @@ pub enum DandelionError {
     // engine errors
     /// missmatch between the function config the engine expects and the one given
     ConfigMissmatch,
+    /// missmatch between the resource an engine was given and what it expects to run on or
+    /// the resource doesn't exist
+    EngineResourceError,
     /// attempted abort when no function was running
     NoRunningFunction,
     /// attempted to run on already busy engine
@@ -73,6 +80,8 @@ pub enum DandelionError {
     DispatcherConfigError,
     /// dispatcher was asked to queue function it can't find
     DispatcherUnavailableFunction,
+    /// function to register did not have metadata available
+    DispatcherMetaDataUnavailable,
     /// dispatcher encountered an issue when trasmitting data between tasks
     DispatcherChannelError,
     /// dispatcher found set to transfer that has no registered name

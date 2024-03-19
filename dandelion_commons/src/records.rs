@@ -8,6 +8,7 @@ use std::{
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RecordPoint {
     Arrival,
+    LoadStart,
     TransferStart,
     TransferEnd,
     EngineStart,
@@ -51,8 +52,9 @@ impl Recorder {
                 Err(_) => return Err(DandelionError::RecordLockFailure),
             };
             let hist = match (&state_guard.last_checkpoint, &current_point) {
-                (RecordPoint::Arrival, RecordPoint::TransferStart) => {
-                    &mut archive_guard.initial_time
+                (RecordPoint::Arrival, RecordPoint::LoadStart) => &mut archive_guard.initial_time,
+                (RecordPoint::LoadStart, RecordPoint::TransferStart) => {
+                    &mut archive_guard.load_time
                 }
                 (RecordPoint::TransferStart, RecordPoint::TransferEnd) => {
                     &mut archive_guard.transfer_time
@@ -90,6 +92,7 @@ impl Recorder {
 
 pub struct Archive {
     initial_time: HDRHist,
+    load_time: HDRHist,
     transfer_time: HDRHist,
     dispatch_time: HDRHist,
     engine_time: HDRHist,
@@ -100,6 +103,7 @@ impl Archive {
     pub fn new() -> Archive {
         return Archive {
             initial_time: HDRHist::new(),
+            load_time: HDRHist::new(),
             transfer_time: HDRHist::new(),
             dispatch_time: HDRHist::new(),
             engine_time: HDRHist::new(),
@@ -110,11 +114,13 @@ impl Archive {
         format!(
             "Current statistics summary:\n\
             Initial time:\n{}\n\
+            Load time:\n{}\n\
             Transfer time:\n{}\n\
             Dispatch time:\n{}\n\
             Engine time:\n{}\n\
             Return time:\n{}\n",
             self.initial_time.summary_string(),
+            self.load_time.summary_string(),
             self.transfer_time.summary_string(),
             self.dispatch_time.summary_string(),
             self.engine_time.summary_string(),

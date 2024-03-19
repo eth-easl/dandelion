@@ -23,8 +23,9 @@ pub fn load_static(
     domain: &Box<dyn MemoryDomain>,
     static_context: &Context,
     requirement_list: &DataRequirementList,
+    ctx_size: usize,
 ) -> DandelionResult<Context> {
-    let mut function_context = domain.acquire_context(requirement_list.size)?;
+    let mut function_context = domain.acquire_context(ctx_size)?;
 
     if static_context.content.len() != 1 {
         return Err(DandelionError::ConfigMissmatch);
