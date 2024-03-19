@@ -72,7 +72,7 @@ impl MemoryDomain for WasmtimeMemoryDomain {
                     memory: None,
                 }
             )),
-            (size + WASM_PAGE_SIZE/2) / WASM_PAGE_SIZE * WASM_PAGE_SIZE  // round up to next page
+            (size + WASM_PAGE_SIZE - 1) & !(WASM_PAGE_SIZE - 1)     // round up to next page
         ))
     }
 }
