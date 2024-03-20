@@ -62,7 +62,7 @@ async fn run_chain(
     get_uri: String,
     post_uri: String,
     mut recorder: Recorder,
-) -> (u64, Recorder) {
+) -> u64 {
     // TODO just have all the strings concatinated and create const context
     let domain = MmapMemoryDomain::init(machine_interface::memory_domain::MemoryResource::None)
         .expect("Should be able to get Mmap domain");
@@ -109,7 +109,7 @@ async fn run_chain(
     recorder
         .record(RecordPoint::QueueFunctionDispatcher)
         .unwrap();
-    let (result, recorder) = dispatcher
+    let result = dispatcher
         .queue_function_by_name(function_name, inputs, output_mapping, is_cold, recorder)
         .await
         .expect("Should get response from chain");
@@ -150,7 +150,7 @@ async fn run_chain(
         .expect("Should be able to read result");
     let checksum = u64::from_ne_bytes(result_vec[0..8].try_into().unwrap());
 
-    return (checksum, recorder);
+    return checksum;
 }
 
 async fn run_mat_func(
@@ -160,7 +160,7 @@ async fn run_mat_func(
     cols: usize,
     function_name: String,
     mut recorder: Recorder,
-) -> (i64, Recorder) {
+) -> i64 {
     let mat_size: usize = rows * cols;
 
     // Initialize matrix if necessary
@@ -184,20 +184,14 @@ async fn run_mat_func(
     recorder
         .record(RecordPoint::QueueFunctionDispatcher)
         .unwrap();
-    let result: Result<
-        (BTreeMap<usize, CompositionSet>, Recorder),
-        dandelion_commons::DandelionError,
-    > = dispatcher
+    let result = dispatcher
         .queue_function_by_name(function_name, inputs, outputs, is_cold, recorder)
-        .await;
-
-    let (mut result_map, recorder) = result.expect("should get result from function");
-
-    let result_context: CompositionSet = result_map
+        .await
+        .expect("Should get result from function")
         .remove(&0)
-        .expect("should have composition set 0");
+        .expect("Should have composition set 0");
 
-    return (get_checksum(result_context), recorder);
+    return get_checksum(result);
 }
 
 // Add the matrix multiplication inputs to the given context
@@ -278,18 +272,17 @@ async fn serve_request(
     let request_map: MatrixRequest =
         bson::from_slice(&request_buf).expect("Should be able to deserialize matrix request");
 
-    let (response_vec, mut recorder) = match run_mat_func(
+    let response_vec = run_mat_func(
         dispatcher,
         is_cold,
         request_map.rows as usize,
         request_map.cols as usize,
         request_map.name,
-        recorder,
+        recorder.get_sub_recorder().unwrap(),
     )
     .await
-    {
-        (checksum, recorder) => (checksum.to_be_bytes().to_vec(), recorder),
-    };
+    .to_be_bytes()
+    .to_vec();
 
     let response = Ok::<_, Infallible>(Response::new(response_vec.into()));
 
@@ -320,18 +313,18 @@ async fn serve_chain(
     let request_map: ChainRequest =
         bson::from_slice(&request_buf).expect("Should be able to deserialize matrix request");
 
-    let (response_vec, mut recorder) = match run_chain(
+    let response_vec = run_chain(
         dispatcher,
         is_cold,
         request_map.name,
         request_map.get_uri,
         request_map.post_uri,
-        recorder,
+        recorder.get_sub_recorder().unwrap(),
     )
     .await
-    {
-        (checksum, recorder) => (checksum.to_be_bytes().to_vec(), recorder),
-    };
+    .to_be_bytes()
+    .to_vec();
+
     let response = Ok::<_, Infallible>(Response::new(response_vec.into()));
 
     recorder.record(RecordPoint::EndService).unwrap();
@@ -577,6 +570,7 @@ fn main() -> () {
     let graceful =
         server.with_graceful_shutdown(async move { handle_signals(signals).await.unwrap() });
 
+    // TODO would be nice to just print server ready with all enabled features if that would be possible
     #[cfg(feature = "cheri")]
     println!("Hello, World (cheri)");
     #[cfg(feature = "mmu")]

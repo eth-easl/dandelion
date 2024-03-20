@@ -142,7 +142,7 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
         .unwrap()
         .block_on(dispatcher.queue_function(function_id, inputs, outputs, false, recorder));
     let out_sets = match result {
-        Ok((context, _)) => context,
+        Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
     };
     assert_eq!(1, out_sets.len());
@@ -192,7 +192,7 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
         .unwrap()
         .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
     let mut out_contexts = match result {
-        Ok((context, _)) => context,
+        Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
     };
     assert_eq!(1, out_contexts.len());
@@ -248,7 +248,7 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
         .unwrap()
         .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
     let mut out_vec = match result {
-        Ok((v, _)) => v,
+        Ok(v) => v,
         Err(err) => panic!("Failed with: {:?}", err),
     };
     assert_eq!(1, out_vec.len());
@@ -317,7 +317,7 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
         .unwrap()
         .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
     let out_contexts = match result {
-        Ok((context, _)) => context,
+        Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
     };
     assert_eq!(1, out_contexts.len());
@@ -428,7 +428,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
         .unwrap()
         .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
     let out_contexts = match result {
-        Ok((context, _)) => context,
+        Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
     };
     assert_eq!(1, out_contexts.len());

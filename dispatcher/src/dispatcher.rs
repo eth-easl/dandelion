@@ -96,7 +96,7 @@ impl Dispatcher {
         output_mapping: Vec<Option<usize>>,
         non_caching: bool,
         recorder: Recorder,
-    ) -> DandelionResult<(BTreeMap<usize, CompositionSet>, Recorder)> {
+    ) -> DandelionResult<BTreeMap<usize, CompositionSet>> {
         let function_id = self
             .function_registry
             .get_function_id(&function_name)
@@ -112,8 +112,8 @@ impl Dispatcher {
         composition: Composition,
         mut inputs: BTreeMap<usize, CompositionSet>,
         non_caching: bool,
-        mut recorder: Recorder,
-    ) -> DandelionResult<(BTreeMap<usize, CompositionSet>, Recorder)> {
+        recorder: Recorder,
+    ) -> DandelionResult<BTreeMap<usize, CompositionSet>> {
         // build up ready sets
         let (mut ready_functions, mut non_ready_functions): (Vec<_>, Vec<_>) =
             composition.dependencies.into_iter().partition(
@@ -151,17 +151,16 @@ impl Dispatcher {
                     function_inputs,
                     dependencies.output_set_ids,
                     non_caching,
-                    recorder.get_new_recorder().unwrap(),
+                    recorder.get_sub_recorder().unwrap(),
                 );
             })
             .collect();
 
         while let Some(new_compositions_result) = running_functions.next().await {
             let new_compositions = new_compositions_result?;
-            for (composition_set_index, composition_set) in new_compositions.0 {
+            for (composition_set_index, composition_set) in new_compositions {
                 inputs.insert(composition_set_index, composition_set);
             }
-            recorder.link_recorder(new_compositions.1);
             // add newly ready ones
             (ready_functions, non_ready_functions) = non_ready_functions.into_iter().partition(
                 |FunctionDependencies {
@@ -197,22 +196,19 @@ impl Dispatcher {
                     function_inputs,
                     ready_function.output_set_ids,
                     non_caching,
-                    recorder.get_new_recorder().unwrap(),
+                    recorder.get_sub_recorder().unwrap(),
                 ));
             }
         }
-        return Ok((
-            inputs
-                .into_iter()
-                .filter_map(|(set_index, composition_set)| {
-                    composition
-                        .output_map
-                        .get(&set_index)
-                        .and_then(|output_index| Some((*output_index, composition_set)))
-                })
-                .collect::<BTreeMap<_, _>>(),
-            recorder,
-        ));
+        return Ok(inputs
+            .into_iter()
+            .filter_map(|(set_index, composition_set)| {
+                composition
+                    .output_map
+                    .get(&set_index)
+                    .and_then(|output_index| Some((*output_index, composition_set)))
+            })
+            .collect::<BTreeMap<_, _>>());
     }
 
     // TODO: Solve the composition. How does it work now??
@@ -222,8 +218,8 @@ impl Dispatcher {
         input_sets: Vec<(usize, ShardingMode, CompositionSet)>,
         output_mapping: Vec<Option<usize>>,
         non_caching: bool,
-        mut recorder: Recorder,
-    ) -> DandelionResult<(BTreeMap<usize, CompositionSet>, Recorder)> {
+        recorder: Recorder,
+    ) -> DandelionResult<BTreeMap<usize, CompositionSet>> {
         let results: Vec<_> = input_sets
             .into_iter()
             .map(|(index, mode, composition_set)| composition_set.shard(mode, index))
@@ -234,18 +230,16 @@ impl Dispatcher {
                     input_sets_local,
                     output_mapping.clone(),
                     non_caching,
-                    recorder.get_new_recorder().unwrap(),
+                    recorder.get_sub_recorder().unwrap(),
                 ))
             })
             .collect();
         let composition_results: DandelionResult<Vec<_>> =
             join_all(results).await.into_iter().collect();
         let mut composition_set_maps = composition_results?.into_iter();
-        if let Some((mut result_set_map, result_recorder)) = composition_set_maps.next() {
-            recorder.link_recorder(result_recorder);
+        if let Some(mut result_set_map) = composition_set_maps.next() {
             for additional_set_map in composition_set_maps {
-                recorder.link_recorder(additional_set_map.1);
-                for (key, mut additional_set) in additional_set_map.0.into_iter() {
+                for (key, mut additional_set) in additional_set_map.into_iter() {
                     result_set_map
                         .entry(key)
                         .and_modify(|existing_set| {
@@ -256,9 +250,9 @@ impl Dispatcher {
                         .or_insert(additional_set);
                 }
             }
-            return Ok((result_set_map, recorder));
+            return Ok(result_set_map);
         } else {
-            return Ok((BTreeMap::new(), recorder));
+            return Ok(BTreeMap::new());
         };
     }
 
@@ -273,7 +267,7 @@ impl Dispatcher {
         mut recorder: Recorder,
     ) -> Pin<
         Box<
-            dyn Future<Output = DandelionResult<(BTreeMap<usize, CompositionSet>, Recorder)>>
+            dyn Future<Output = DandelionResult<BTreeMap<usize, CompositionSet>>>
                 + 'dispatcher
                 + Send,
         >,
@@ -286,24 +280,24 @@ impl Dispatcher {
                 match &alternative.function_type {
                     FunctionType::Function(engine_id, ctx_size) => {
                         recorder.record(RecordPoint::PrepareEnvQueue)?;
-                        let (context, config, metadata, mut recorder) = self
+                        let (context, config, metadata) = self
                             .prepare_for_engine(
                                 function_id,
                                 *engine_id,
                                 inputs,
                                 *ctx_size,
                                 non_caching,
-                                recorder,
+                                recorder.get_sub_recorder()?,
                             )
                             .await?;
                         recorder.record(RecordPoint::GetEngineQueue)?;
-                        let (context, mut recorder) = self
+                        let context = self
                             .run_on_engine(
                                 *engine_id,
                                 config,
                                 metadata.output_sets,
                                 context,
-                                recorder,
+                                recorder.get_sub_recorder()?,
                             )
                             .await?;
                         recorder.record(RecordPoint::FutureReturn)?;
@@ -328,11 +322,11 @@ impl Dispatcher {
                                 });
                             })
                             .collect();
-                        return Ok((composition_sets, recorder));
+                        return Ok(composition_sets);
                     }
                     FunctionType::Composition(composition) => {
                         // need to set the inner composition indexing to the outer composition indexing
-                        let (compositon_output, recorder) = self
+                        let compositon_output = self
                             .queue_composition(
                                 composition.clone(),
                                 BTreeMap::from_iter(inputs),
@@ -340,20 +334,17 @@ impl Dispatcher {
                                 recorder,
                             )
                             .await?;
-                        return Ok((
-                            compositon_output
-                                .into_iter()
-                                .filter_map(|(function_id, composition)| {
-                                    if output_mapping.len() < function_id {
-                                        return None;
-                                    }
-                                    return output_mapping[function_id].and_then(
-                                        |composition_id| Some((composition_id, composition)),
-                                    );
-                                })
-                                .collect(),
-                            recorder,
-                        ));
+                        return Ok(compositon_output
+                            .into_iter()
+                            .filter_map(|(function_id, composition)| {
+                                if output_mapping.len() < function_id {
+                                    return None;
+                                }
+                                return output_mapping[function_id].and_then(|composition_id| {
+                                    Some((composition_id, composition))
+                                });
+                            })
+                            .collect());
                     }
                 }
             } else {
@@ -370,7 +361,7 @@ impl Dispatcher {
         ctx_size: usize,
         non_caching: bool,
         mut recorder: Recorder,
-    ) -> DandelionResult<(Context, FunctionConfig, Metadata, Recorder)> {
+    ) -> DandelionResult<(Context, FunctionConfig, Metadata)> {
         let metadata = self.function_registry.get_metadata(function_id).await?;
         // get context and load static data
         let context_id = match self.type_map.get(&engine_type) {
@@ -450,7 +441,7 @@ impl Dispatcher {
             }
         }
         recorder.record(RecordPoint::TransferEnd)?;
-        return Ok((function_context, function_config, metadata, recorder));
+        return Ok((function_context, function_config, metadata));
     }
 
     async fn run_on_engine(
@@ -460,7 +451,7 @@ impl Dispatcher {
         output_sets: Arc<Vec<String>>,
         function_context: Context,
         mut recorder: Recorder,
-    ) -> DandelionResult<(Context, Recorder)> {
+    ) -> DandelionResult<Context> {
         // preparation is done, get engine to receive engine
         let engine_queue = match self.engine_queues.get(&engine_type) {
             Some(q) => q,
@@ -473,6 +464,7 @@ impl Dispatcher {
             output_sets,
             recorder,
         });
-        return engine_queue.enqueu_work(args).await;
+        let (result, _) = engine_queue.enqueu_work(args).await?;
+        return Ok(result);
     }
 }

@@ -129,11 +129,11 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
                 recorder,
             ));
         let out_sets = match result {
-            Ok((composition_sets, _)) => composition_sets,
+            Ok(composition_sets) => composition_sets,
             Err(err) => panic!("Non overwrite failed with: {:?}", err),
         };
         let overwrite_sets = match overwrite_result {
-            Ok((compostion_set, _)) => compostion_set,
+            Ok(compostion_set) => compostion_set,
             Err(err) => panic!("Overwrite input failed with: {:?}", err),
         };
         assert!(out_sets.contains_key(&0));
@@ -241,11 +241,11 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
                 recorder,
             ));
         let out_sets = match result {
-            Ok((composition_sets, _)) => composition_sets,
+            Ok(composition_sets) => composition_sets,
             Err(err) => panic!("Non overwrite failed with: {:?}", err),
         };
         let overwrite_sets = match overwrite_result {
-            Ok((compostion_set, _)) => compostion_set,
+            Ok(compostion_set) => compostion_set,
             Err(err) => panic!("Overwrite input failed with: {:?}", err),
         };
         assert!(out_sets.contains_key(&0));

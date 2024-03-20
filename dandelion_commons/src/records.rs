@@ -22,37 +22,68 @@ mod timestamp {
     use crate::{DandelionError, DandelionResult};
     use std::{
         env,
-        sync::{Arc, Mutex},
+        sync::{atomic::AtomicU16, Arc, Mutex},
         time::Instant,
     };
 
+    use super::RecordPoint;
+
+    struct Timestamp {
+        current_span: u16,
+        parent_span: u16,
+        time: Instant,
+        point: RecordPoint,
+        previous: Option<Box<Timestamp>>,
+    }
+
     pub struct TimestampContainer {
-        timestamps: Vec<Instant>,
-        pub recorders: Arc<Mutex<Vec<TimestampContainer>>>,
+        parent_span: u16,
+        current_span: u16,
+        spans_latest: Arc<(AtomicU16, Mutex<Option<Box<Timestamp>>>)>,
     }
 
     impl TimestampContainer {
-        pub fn record(&mut self, current_point: &super::RecordPoint) {
-            self.timestamps[*current_point as usize] = Instant::now();
+        pub fn new() -> Self {
+            return Self {
+                parent_span: 0,
+                current_span: 0,
+                spans_latest: Arc::new((AtomicU16::new(0), Mutex::new(None))),
+            };
         }
-        fn reset(&mut self, zero_time: Instant, freed: &mut Vec<TimestampContainer>) {
-            self.timestamps = vec![zero_time; 13];
-            for mut container in Arc::get_mut(&mut self.recorders)
-                .unwrap()
-                .get_mut()
-                .unwrap()
-                .drain(..)
-            {
-                container.reset(zero_time, freed);
-                freed.push(container);
+
+        pub fn record(
+            &mut self,
+            current_point: &super::RecordPoint,
+            archive: &'static TimestampArchive,
+        ) -> DandelionResult<()> {
+            let mut new_timestamp = archive.get_timestamp()?;
+            let mut span_guard = self.spans_latest.1.lock().unwrap();
+            new_timestamp.point = *current_point;
+            new_timestamp.time = Instant::now();
+            new_timestamp.parent_span = self.parent_span;
+            new_timestamp.current_span = self.current_span;
+            new_timestamp.previous = span_guard.take();
+            let _ = span_guard.insert(new_timestamp);
+            return Ok(());
+        }
+
+        pub fn get_sub_recorder(&self) -> Self {
+            let current_span = self
+                .spans_latest
+                .0
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Self {
+                parent_span: self.current_span,
+                current_span,
+                spans_latest: self.spans_latest.clone(),
             }
         }
     }
 
     pub struct TimestampArchive {
         start_time: Instant,
-        free_recorders: Mutex<Vec<TimestampContainer>>,
-        used_recorders: Mutex<Vec<TimestampContainer>>,
+        free_timestamps: Mutex<Vec<Box<Timestamp>>>,
+        used_timestamps: Mutex<Vec<Box<Timestamp>>>,
     }
 
     impl TimestampArchive {
@@ -63,64 +94,82 @@ mod timestamp {
             };
             let zero_time = Instant::now();
             let mut free_pool = Vec::new();
-            free_pool.resize_with(pool_size, || TimestampContainer {
-                timestamps: vec![zero_time; 13],
-                recorders: Arc::new(Mutex::new(vec![])),
+            free_pool.resize_with(pool_size, || {
+                Box::new(Timestamp {
+                    parent_span: 0,
+                    current_span: 0,
+                    time: zero_time,
+                    point: RecordPoint::Arrival,
+                    previous: None,
+                })
             });
             let mut used_pool = Vec::new();
             used_pool.reserve(pool_size);
             return Self {
                 start_time: zero_time,
-                free_recorders: Mutex::new(free_pool),
-                used_recorders: Mutex::new(used_pool),
+                free_timestamps: Mutex::new(free_pool),
+                used_timestamps: Mutex::new(used_pool),
             };
         }
 
-        pub fn get_timestamp_container(&self) -> DandelionResult<TimestampContainer> {
+        fn get_timestamp(&self) -> DandelionResult<Box<Timestamp>> {
             return self
-                .free_recorders
+                .free_timestamps
                 .lock()
                 .unwrap()
                 .pop()
                 .ok_or(DandelionError::RecorderNotAvailable);
         }
 
-        pub fn return_timestamp_container(&self, used: TimestampContainer) {
-            self.used_recorders.lock().unwrap().push(used);
+        pub fn return_timestamp(&self, used: TimestampContainer) {
+            if let Some(timestamp) = Arc::into_inner(used.spans_latest)
+                .unwrap()
+                .1
+                .into_inner()
+                .unwrap()
+                .take()
+            {
+                self.used_timestamps.lock().unwrap().push(timestamp);
+            }
         }
 
         pub fn reset(&self) {
             // For each recorder in the used_recorders, reset it and move it to the free_recorders.
             // Recorders are recursive: each has a vector of sub-recorders.
-            let mut free_guard = self.free_recorders.lock().unwrap();
-            for mut container in self.used_recorders.lock().unwrap().drain(..) {
-                container.reset(self.start_time, &mut free_guard);
-                free_guard.push(container);
+            // TODO if we always set all values on record there is no need to do the resetting, apart from putting them into the free queue
+            let mut free_guard = self.free_timestamps.lock().unwrap();
+            for mut timestamp in self.used_timestamps.lock().unwrap().drain(..) {
+                timestamp.parent_span = 0;
+                timestamp.current_span = 0;
+                timestamp.point = RecordPoint::Arrival;
+                let mut timestamp_opt = timestamp.previous.take();
+                free_guard.push(timestamp);
+                while let Some(mut prev_timestamp) = timestamp_opt {
+                    prev_timestamp.parent_span = 0;
+                    prev_timestamp.current_span = 0;
+                    prev_timestamp.point = RecordPoint::Arrival;
+                    timestamp_opt = prev_timestamp.previous.take();
+                    free_guard.push(prev_timestamp)
+                }
             }
         }
 
-        fn append_timestamps(
-            &self,
-            timestamps: &TimestampContainer,
-            summary: &mut String,
-            level: usize,
-        ) {
-            let tabs = "\t".repeat(level);
-            for (i, timestamp) in timestamps.timestamps.iter().enumerate() {
-                let duration = timestamp.duration_since(self.start_time).as_nanos();
-                if duration > 0 {
-                    summary.push_str(&format!("{}{}: {}\n", tabs, i, duration));
-                };
+        fn append_timestamps(&self, timestamp: &Box<Timestamp>, summary: &mut String) {
+            if let Some(previous) = &timestamp.previous {
+                self.append_timestamps(previous, summary);
             }
-
-            for sub_recorder in timestamps.recorders.lock().unwrap().iter() {
-                self.append_timestamps(sub_recorder, summary, level + 1);
-            }
+            summary.push_str(&format!(
+                "parent:{}, span:{}, time:{}, point:{:?}",
+                timestamp.parent_span,
+                timestamp.current_span,
+                timestamp.time.duration_since(self.start_time).as_nanos(),
+                timestamp.point
+            ))
         }
 
         pub fn get_summary(&self, summary: &mut String) {
-            for recorder in self.used_recorders.lock().unwrap().iter() {
-                self.append_timestamps(recorder, summary, 0);
+            for recorder in self.used_timestamps.lock().unwrap().iter() {
+                self.append_timestamps(recorder, summary);
             }
         }
     }
@@ -137,24 +186,19 @@ pub struct Recorder {
 impl Recorder {
     pub fn record(&mut self, _current_point: RecordPoint) -> DandelionResult<()> {
         #[cfg(feature = "timestamp")]
-        self.timestamps.record(&_current_point);
+        self.timestamps
+            .record(&_current_point, &self.archive.timestamp_archive)?;
         Ok(())
     }
 
-    pub fn get_new_recorder(&self) -> DandelionResult<Self> {
-        #[cfg(feature = "recorder")]
-        return self.archive.get_recorder();
-        #[cfg(not(feature = "recorder"))]
-        return Ok(Recorder {});
-    }
-
-    pub fn link_recorder(&mut self, _new_recorder: Recorder) {
-        #[cfg(feature = "timestamp")]
-        self.timestamps
-            .recorders
-            .lock()
-            .unwrap()
-            .push(_new_recorder.timestamps);
+    pub fn get_sub_recorder(&self) -> DandelionResult<Self> {
+        let recorder = Recorder {
+            #[cfg(feature = "recorder")]
+            archive: self.archive,
+            #[cfg(feature = "timestamp")]
+            timestamps: self.timestamps.get_sub_recorder(),
+        };
+        return Ok(recorder);
     }
 }
 
@@ -176,14 +220,14 @@ impl Archive {
             #[cfg(feature = "recorder")]
             archive: self,
             #[cfg(feature = "timestamp")]
-            timestamps: self.timestamp_archive.get_timestamp_container()?,
+            timestamps: timestamp::TimestampContainer::new(),
         });
     }
 
     pub fn return_recorder(&self, _recorder: Recorder) {
         #[cfg(feature = "timestamp")]
         self.timestamp_archive
-            .return_timestamp_container(_recorder.timestamps);
+            .return_timestamp(_recorder.timestamps);
     }
 
     pub fn get_summary(&self) -> String {
