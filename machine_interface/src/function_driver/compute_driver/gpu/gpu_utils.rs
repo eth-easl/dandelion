@@ -28,6 +28,23 @@ impl LaunchConfig {
             shared_mem_bytes,
         }
     }
+    pub fn two_dimensional(
+        grid_dim_x: u32,
+        grid_dim_y: u32,
+        block_dim_x: u32,
+        block_dim_y: u32,
+        shared_mem_bytes: usize,
+    ) -> Self {
+        Self {
+            grid_dim_x,
+            grid_dim_y,
+            grid_dim_z: 1,
+            block_dim_x,
+            block_dim_y,
+            block_dim_z: 1,
+            shared_mem_bytes,
+        }
+    }
 }
 
 pub enum Argument {
@@ -104,6 +121,41 @@ pub fn dummy_config2() -> DandelionResult<GpuConfig> {
                 "check_then_write".into(),
                 vec![Argument::BufferPtr("A".into())],
                 LaunchConfig::one_dimensional(1, 1, 0),
+            )],
+        }),
+    })
+}
+
+pub fn matmul_dummy(parallel: bool) -> DandelionResult<GpuConfig> {
+    let fn_name = if parallel {
+        "matmul_para"
+    } else {
+        "matmul_loop"
+    };
+    let module =
+        hip::module_load("/home/smithj/dandelion/machine_interface/hip_interface/matmul.hsaco")?;
+    let kernel = hip::module_get_function(&module, fn_name)?;
+
+    Ok(GpuConfig {
+        system_data_struct_offset: 0x10000usize,
+        module: Arc::new(module),
+        kernels: Arc::new(HashMap::from([(fn_name.into(), kernel)])),
+        blueprint: Arc::new(ExecutionBlueprint {
+            inputs: vec!["A".into()],
+            buffers: HashMap::from([("B".into(), 80)]),
+            outputs: vec!["B".into()],
+            control_flow: vec![Action::ExecKernel(
+                fn_name.into(),
+                vec![
+                    Argument::BufferPtr("A".into()),
+                    Argument::BufferLen("A".into()),
+                    Argument::BufferPtr("B".into()),
+                ],
+                if parallel {
+                    LaunchConfig::two_dimensional(1, 1, 3, 3, 0)
+                } else {
+                    LaunchConfig::one_dimensional(1, 1, 0)
+                },
             )],
         }),
     })

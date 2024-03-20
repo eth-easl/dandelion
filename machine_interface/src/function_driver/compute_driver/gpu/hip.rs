@@ -56,6 +56,7 @@ extern "C" {
     fn hipFree(ptr: *const c_void) -> ErrorT;
     fn hipMemcpyHtoD(dst: *const c_void, src: *const c_void, sizeBytes: size_t) -> ErrorT;
     fn hipMemcpyDtoH(dst: *const c_void, src: *const c_void, sizeBytes: size_t) -> ErrorT;
+    fn hipMemset(dst: *const c_void, value: i32, sizeBytes: size_t) -> ErrorT;
 }
 
 // TODO: Possibly move away from DandelionResult if HipError not wanted
@@ -155,7 +156,14 @@ impl DevicePointer {
     pub fn try_new(size: usize) -> DandelionResult<Self> {
         let mut ret: *const c_void = null();
         checked_call!(hipMalloc(&mut ret as *mut *const c_void, size));
+        // zero out memory
+        checked_call!(hipMemset(ret, 0, size));
         Ok(Self(ret))
+    }
+
+    pub fn zero_out(&mut self, size: usize) -> DandelionResult<()> {
+        checked_call!(hipMemset(self.0, 0, size));
+        Ok(())
     }
 }
 

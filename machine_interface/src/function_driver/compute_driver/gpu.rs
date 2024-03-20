@@ -170,16 +170,18 @@ fn gpu_run(
                 hip::module_launch_kernel(
                     config.kernels.get(name).unwrap(),
                     launch_config.grid_dim_x,
-                    1,
-                    1,
+                    launch_config.grid_dim_y,
+                    launch_config.grid_dim_z,
                     launch_config.block_dim_x,
-                    1,
-                    1,
-                    0,
+                    launch_config.block_dim_y,
+                    launch_config.block_dim_z,
+                    launch_config.shared_mem_bytes,
                     DEFAULT_STREAM,
                     params.as_ptr(),
                     null(),
                 )?;
+
+                hip::device_synchronize()?;
             }
             _ => return Err(DandelionError::NotImplemented),
         }
@@ -286,8 +288,14 @@ impl Driver for GpuDriver {
         // Concept for now: function_path gives config file which contains name of module (.hsaco) file
         let config = if function_path == "foo" {
             FunctionConfig::GpuConfig(gpu_utils::dummy_config()?)
-        } else {
+        } else if function_path == "bar" {
             FunctionConfig::GpuConfig(gpu_utils::dummy_config2()?)
+        } else if function_path == "matmul_loop" {
+            FunctionConfig::GpuConfig(gpu_utils::matmul_dummy(false)?)
+        } else if function_path == "matmul_para" {
+            FunctionConfig::GpuConfig(gpu_utils::matmul_dummy(true)?)
+        } else {
+            return Err(DandelionError::ConfigMissmatch);
         };
 
         let total_size = 0x10000usize;

@@ -661,7 +661,9 @@ mod compute_driver_tests {
         use crate::{
             function_driver::{
                 compute_driver::{
-                    compute_driver_tests::compute_driver_tests::prepare_engine_and_function,
+                    compute_driver_tests::compute_driver_tests::{
+                        get_expected_mat, prepare_engine_and_function,
+                    },
                     gpu::{dummy_run, gpu_utils::dummy_config, GpuDriver, GpuLoop},
                 },
                 thread_utils::EngineLoop,
@@ -711,7 +713,7 @@ mod compute_driver_tests {
             function_context.content.push(Some(DataSet {
                 ident: "A".to_string(),
                 buffers: vec![DataItem {
-                    ident: "A".to_string(),
+                    ident: "".to_string(),
                     data: Position {
                         offset: in_size_offset as usize,
                         size: 8,
@@ -751,6 +753,160 @@ mod compute_driver_tests {
                 .read(position.offset, &mut read_buffer)
                 .expect("Should succeed in reading");
             assert_eq!(98765, read_buffer[0]);
+        }
+
+        #[test]
+        fn engine_matmul_3x3_loop() {
+            let filename = "matmul_loop";
+            let dom_init = MemoryResource::None;
+            let driver: Box<dyn Driver> = Box::new(GpuDriver {});
+            let drv_init = vec![ComputeResource::GPU(1, 1)];
+            let (mut function_context, config, queue) =
+                prepare_engine_and_function::<MmuMemoryDomain>(
+                    filename, dom_init, &driver, drv_init,
+                );
+            // add inputs, split over two buffers to test concatenating them in GPU memory
+            let in_size_offset = function_context
+                .get_free_space_and_write_slice(&[3i64])
+                .expect("Should have space");
+            let offset2 = function_context
+                .get_free_space_and_write_slice(&[
+                    0i64, 1i64, 2i64, 3i64, 4i64, 5i64, 6i64, 7i64, 8i64,
+                ])
+                .expect("Should have space");
+            function_context.content.push(Some(DataSet {
+                ident: "A".to_string(),
+                buffers: vec![
+                    DataItem {
+                        ident: "".to_string(),
+                        data: Position {
+                            offset: in_size_offset as usize,
+                            size: 8,
+                        },
+                        key: 0,
+                    },
+                    DataItem {
+                        ident: "".to_string(),
+                        data: Position {
+                            offset: offset2 as usize,
+                            size: 72,
+                        },
+                        key: 0,
+                    },
+                ],
+            }));
+            let archive = Arc::new(Mutex::new(Archive::new()));
+            let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
+            let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
+                config,
+                context: function_context,
+                output_sets: Arc::new(vec![String::from("B")]),
+                recorder,
+            }));
+            let (result_context, mut result_recorder) =
+                tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap()
+                    .block_on(promise)
+                    .expect("Engine should run ok with basic function");
+            result_recorder
+                .record(RecordPoint::FutureReturn)
+                .expect("Should have properly advanced recorder state");
+            assert_eq!(1, result_context.content.len());
+            let output_item = result_context.content[0]
+                .as_ref()
+                .expect("Set should be present");
+            assert_eq!(1, output_item.buffers.len());
+            let position = output_item.buffers[0].data;
+            assert_eq!(80, position.size, "Checking for size of output");
+            let mut read_buffer = vec![0i64; position.size / 8];
+            result_context
+                .context
+                .read(position.offset, &mut read_buffer)
+                .expect("Should succeed in reading");
+            assert_eq!(3, read_buffer[0]);
+            let expected = self::get_expected_mat(3);
+            assert_eq!(3i64, read_buffer[0]);
+            for (should, is) in expected.iter().zip(read_buffer[1..].iter()) {
+                assert_eq!(should, is);
+            }
+        }
+
+        #[test]
+        fn engine_matmul_3x3_parallel() {
+            let filename = "matmul_para";
+            let dom_init = MemoryResource::None;
+            let driver: Box<dyn Driver> = Box::new(GpuDriver {});
+            let drv_init = vec![ComputeResource::GPU(1, 1)];
+            let (mut function_context, config, queue) =
+                prepare_engine_and_function::<MmuMemoryDomain>(
+                    filename, dom_init, &driver, drv_init,
+                );
+            // add inputs, split over two buffers to test concatenating them in GPU memory
+            let in_size_offset = function_context
+                .get_free_space_and_write_slice(&[3i64])
+                .expect("Should have space");
+            let offset2 = function_context
+                .get_free_space_and_write_slice(&[
+                    0i64, 1i64, 2i64, 3i64, 4i64, 5i64, 6i64, 7i64, 8i64,
+                ])
+                .expect("Should have space");
+            function_context.content.push(Some(DataSet {
+                ident: "A".to_string(),
+                buffers: vec![
+                    DataItem {
+                        ident: "".to_string(),
+                        data: Position {
+                            offset: in_size_offset as usize,
+                            size: 8,
+                        },
+                        key: 0,
+                    },
+                    DataItem {
+                        ident: "".to_string(),
+                        data: Position {
+                            offset: offset2 as usize,
+                            size: 72,
+                        },
+                        key: 0,
+                    },
+                ],
+            }));
+            let archive = Arc::new(Mutex::new(Archive::new()));
+            let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
+            let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
+                config,
+                context: function_context,
+                output_sets: Arc::new(vec![String::from("B")]),
+                recorder,
+            }));
+            let (result_context, mut result_recorder) =
+                tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap()
+                    .block_on(promise)
+                    .expect("Engine should run ok with basic function");
+            result_recorder
+                .record(RecordPoint::FutureReturn)
+                .expect("Should have properly advanced recorder state");
+            assert_eq!(1, result_context.content.len());
+            let output_item = result_context.content[0]
+                .as_ref()
+                .expect("Set should be present");
+            assert_eq!(1, output_item.buffers.len());
+            let position = output_item.buffers[0].data;
+            assert_eq!(80, position.size, "Checking for size of output");
+            let mut read_buffer = vec![0i64; position.size / 8];
+            result_context
+                .context
+                .read(position.offset, &mut read_buffer)
+                .expect("Should succeed in reading");
+            assert_eq!(3, read_buffer[0]);
+            let expected = self::get_expected_mat(3);
+            assert_eq!(3i64, read_buffer[0]);
+            for (should, is) in expected.iter().zip(read_buffer[1..].iter()) {
+                assert_eq!(should, is);
+            }
         }
     }
 }
