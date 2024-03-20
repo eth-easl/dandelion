@@ -30,25 +30,37 @@ use wasmtime;
 /// This results in allocation of a new wasmtime::Store and wasmtime::Memory.
 /// The wasmtime::Module will be initialized in the engine.
 pub fn load_context(c: &WasmtimeConfig, domain: &Box<dyn MemoryDomain>) -> DandelionResult<Context> {
-    let mut context = domain.acquire_context(c.total_mem_size)?;
+    
+    // TODO: this function currently never uses `domain.acquire_context()`. The reason
+    // is that the `WasmtimeContext` is using the default engine to allocate memory,
+    // in order to allow allocating a `WasmtimeContext` without loading a function first.
+    // Instead here, we just construct the context manually. This is a hack and should be
+    // fixed in the future.
 
-    let mut wasmtime_context = match context.context {
-        ContextType::Wasmtime(ref mut c) => c,
-        _ => return Err(DandelionError::ConfigMissmatch),
+    let pages = (c.total_mem_size + WASM_PAGE_SIZE) / WASM_PAGE_SIZE;  // round up to next page
+    let size = pages * WASM_PAGE_SIZE;
+
+    let mut wasm_ctx = WasmtimeContext {
+        store: None,
+        module: None,
+        memory: None,
     };
 
     // initialize store and memory
-    let pages = (c.total_mem_size + WASM_PAGE_SIZE) / WASM_PAGE_SIZE;  // round up to next page
     let mut store = wasmtime::Store::new(&c.wasmtime_engine, ());
     let mem_type = wasmtime::MemoryType::new(pages as u32, Some(pages as u32));
     let memory = Some(
         wasmtime::Memory::new(&mut store, mem_type)
             .map_err(|_| DandelionError::OutOfMemory)?
     );
-    wasmtime_context.store = Some(store);
-    wasmtime_context.memory = memory;
+    wasm_ctx.store = Some(store);
+    wasm_ctx.memory = memory;
 
     // occupy clang-generated wasm memory
+    let mut context = Context::new(
+        ContextType::Wasmtime(Box::new(wasm_ctx)),
+        size
+    );
     context.occupy_space(0, c.sdk_heap_base)?;
     Ok(context)
 }

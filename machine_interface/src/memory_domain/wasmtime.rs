@@ -64,15 +64,25 @@ impl MemoryDomain for WasmtimeMemoryDomain {
         if size > MAX_WASM_MEMORY_SIZE {
             return Err(DandelionError::InvalidMemorySize);
         }
+        let size = (size + WASM_PAGE_SIZE - 1) & !(WASM_PAGE_SIZE - 1);     // round up to next page
+        // use default wasmtime engine
+        let engine = Engine::default();
+        let pages = size / WASM_PAGE_SIZE;
+        let mut store = Store::new(&engine, ());
+        let mem_type = MemoryType::new(pages as u32, Some(pages as u32));
+        let memory = Some(
+            Memory::new(&mut store, mem_type)
+                .map_err(|_| DandelionError::OutOfMemory)?
+        );
         Ok(Context::new(
             ContextType::Wasmtime(Box::new(
                 WasmtimeContext {
-                    store: None,
+                    store: Some(store),
                     module: None,
-                    memory: None,
+                    memory,
                 }
             )),
-            (size + WASM_PAGE_SIZE - 1) & !(WASM_PAGE_SIZE - 1)     // round up to next page
+            size
         ))
     }
 }
