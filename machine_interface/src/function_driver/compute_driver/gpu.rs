@@ -4,15 +4,13 @@ use crate::{
         thread_utils::{start_thread, EngineLoop},
         ComputeResource, Driver, Function, FunctionConfig, GpuConfig, WorkQueue,
     },
-    interface::{
-        read_output_structs, setup_input_structs, write_sentinel_output, DandelionSystemData,
-    },
+    interface::{read_output_structs, setup_input_structs, write_gpu_outputs, DandelionSystemData},
     memory_domain::{Context, ContextTrait, ContextType},
     DataRequirementList, DataSet,
 };
 use dandelion_commons::{DandelionError, DandelionResult};
 use libc::c_void;
-use std::{collections::HashMap, ptr::null, thread};
+use std::{collections::HashMap, ptr::null, sync::Arc, thread};
 
 use self::{
     gpu_utils::{Action, Argument},
@@ -128,23 +126,29 @@ fn copy_data_to_device(
     Ok(())
 }
 
-fn gpu_run(gpu_id: u8, config: GpuConfig, mut context: Context) -> DandelionResult<Context> {
+fn gpu_run(
+    gpu_id: u8,
+    config: GpuConfig,
+    mut context: Context,
+    output_names: Arc<Vec<String>>,
+) -> DandelionResult<Context> {
     // TODO: handle errors
     let ContextType::Mmu(ref mmu_context) = context.context else {
         return Err(DandelionError::ConfigMissmatch);
     };
+    let base = mmu_context.storage.as_ptr();
 
     hip::set_device(gpu_id)?;
 
     // TODO: move to pool of buffers approach
-    let mut buffers = HashMap::new();
-    for (name, size) in &config.blueprint.temps {
+    let mut buffers: HashMap<String, (DevicePointer, usize)> = HashMap::new();
+    for (name, size) in &config.blueprint.buffers {
         buffers.insert(name.clone(), (hip::DevicePointer::try_new(*size)?, *size));
     }
     for name in &config.blueprint.inputs {
         let size = get_data_length(name, &context)?;
         let dev_ptr = hip::DevicePointer::try_new(size)?;
-        copy_data_to_device(name, &context, mmu_context.storage.as_ptr(), &dev_ptr)?;
+        copy_data_to_device(name, &context, base, &dev_ptr)?;
         buffers.insert(name.clone(), (dev_ptr, size));
     }
 
@@ -181,6 +185,14 @@ fn gpu_run(gpu_id: u8, config: GpuConfig, mut context: Context) -> DandelionResu
         }
     }
 
+    write_gpu_outputs::<usize, usize>(
+        &mut context,
+        config.system_data_struct_offset,
+        base,
+        &output_names,
+        &buffers,
+    )?;
+
     Ok(context)
 }
 
@@ -205,7 +217,7 @@ impl EngineLoop for GpuLoop {
         &mut self,
         config: FunctionConfig,
         mut context: Context,
-        output_sets: std::sync::Arc<Vec<String>>,
+        output_sets: Arc<Vec<String>>,
     ) -> DandelionResult<Context> {
         let FunctionConfig::GpuConfig(config) = config else {
             return Err(DandelionError::ConfigMissmatch);
@@ -220,7 +232,8 @@ impl EngineLoop for GpuLoop {
         // in thread for now, in process pool eventually; maybe add cpu_slot affinity?
         let gpu_id_clone = self.gpu_id;
         let config_clone = config.clone();
-        let handle = thread::spawn(move || gpu_run(gpu_id_clone, config_clone, context));
+        let outputs = output_sets.clone();
+        let handle = thread::spawn(move || gpu_run(gpu_id_clone, config_clone, context, outputs));
         let mut context = match handle.join() {
             Ok(res) => res?,
             Err(_) => return Err(DandelionError::EngineError),
@@ -228,8 +241,6 @@ impl EngineLoop for GpuLoop {
 
         let write_buf = vec![12345i64];
         context.write(0, &write_buf)?;
-
-        write_sentinel_output::<usize, usize>(&mut context, config.system_data_struct_offset)?;
 
         read_output_structs::<usize, usize>(&mut context, config.system_data_struct_offset)?;
 

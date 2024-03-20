@@ -43,8 +43,8 @@ pub enum Action {
 pub struct ExecutionBlueprint {
     pub inputs: Vec<String>,
     /// buffer names to sizes
-    pub temps: HashMap<String, usize>,
-    pub outputs: HashMap<String, usize>,
+    pub buffers: HashMap<String, usize>,
+    pub outputs: Vec<String>, // might not be required
     pub control_flow: Vec<Action>,
 }
 
@@ -63,8 +63,8 @@ pub fn dummy_config() -> DandelionResult<GpuConfig> {
         ])),
         blueprint: Arc::new(ExecutionBlueprint {
             inputs: vec![],
-            temps: HashMap::from([("A".into(), 1024)]),
-            outputs: HashMap::new(),
+            buffers: HashMap::from([("A".into(), 1024)]),
+            outputs: vec![],
             control_flow: vec![
                 Action::ExecKernel(
                     "set_mem".into(),
@@ -98,8 +98,8 @@ pub fn dummy_config2() -> DandelionResult<GpuConfig> {
         kernels: Arc::new(HashMap::from([("check_then_write".into(), kernel)])),
         blueprint: Arc::new(ExecutionBlueprint {
             inputs: vec!["A".into()],
-            temps: HashMap::new(),
-            outputs: HashMap::new(),
+            buffers: HashMap::new(),
+            outputs: vec!["A".into()],
             control_flow: vec![Action::ExecKernel(
                 "check_then_write".into(),
                 vec![Argument::BufferPtr("A".into())],

@@ -186,13 +186,8 @@ pub fn memcpy_h_to_d(
 pub fn memcpy_d_to_h(
     dst: *const c_void,
     src: &DevicePointer,
-    dev_offset: isize,
     size_bytes: usize,
 ) -> DandelionResult<()> {
-    checked_call!(hipMemcpyDtoH(
-        dst,
-        src.0.byte_offset(dev_offset),
-        size_bytes
-    ));
+    checked_call!(hipMemcpyDtoH(dst, src.0, size_bytes));
     Ok(())
 }

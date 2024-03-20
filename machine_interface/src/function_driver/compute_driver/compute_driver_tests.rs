@@ -737,7 +737,6 @@ mod compute_driver_tests {
             result_recorder
                 .record(RecordPoint::FutureReturn)
                 .expect("Should have properly advanced recorder state");
-            // check that result is 4
             assert_eq!(1, result_context.content.len());
             let output_item = result_context.content[0]
                 .as_ref()
@@ -751,7 +750,7 @@ mod compute_driver_tests {
                 .context
                 .read(position.offset, &mut read_buffer)
                 .expect("Should succeed in reading");
-            assert_eq!(12345, read_buffer[0]);
+            assert_eq!(98765, read_buffer[0]);
         }
     }
 }

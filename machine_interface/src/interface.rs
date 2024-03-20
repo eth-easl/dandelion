@@ -1,14 +1,18 @@
+use std::collections::HashMap;
+
 use crate::{
+    function_driver::compute_driver::gpu::hip::{self, DevicePointer},
     memory_domain::{Context, ContextState, ContextTrait},
     DataItem, DataSet, Position,
 };
 use dandelion_commons::{DandelionError, DandelionResult};
-use libc::{c_int, size_t, uintptr_t};
+use libc::{c_int, c_void, size_t, uintptr_t};
 extern crate alloc;
+use std::fmt::Debug;
 
 pub trait SizedIntTrait
 where
-    Self: Sized + Copy + Default,
+    Self: Sized + Copy + Default + Debug,
 {
     fn from_native(ptr: usize) -> DandelionResult<Self>;
     fn to_native(self) -> DandelionResult<usize>;
@@ -101,7 +105,7 @@ pub struct DandelionSystemData<PtrT: SizedIntTrait, SizeT: SizedIntTrait> {
     output_bufs: PtrT,      // *const IoBufferDescriptor,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 #[repr(C)]
 struct IoSetInfo<PtrT: SizedIntTrait, SizeT: SizedIntTrait> {
     ident: PtrT,      // uintptr_t,
@@ -119,10 +123,13 @@ struct IoBufferDescriptor<PtrT: SizedIntTrait, SizeT: SizedIntTrait> {
     key: SizeT,       // size_t,
 }
 
-/// Used in cases where the Engine is responsible for writing outputs, not the runtime
-pub fn write_sentinel_output<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
+/// Only really used for GPU, but defined here so we can access private fields of DandelionSystemData
+pub fn write_gpu_outputs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     context: &mut Context,
     system_data_offset: usize,
+    base: *mut u8,
+    output_set_names: &[String],
+    device_buffers: &HashMap<String, (DevicePointer, usize)>,
 ) -> DandelionResult<()> {
     // read the system buffer
     let mut system_struct = DandelionSystemData::<PtrT, SizeT>::default();
@@ -144,23 +151,35 @@ pub fn write_sentinel_output<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     output_set_info.resize_with(output_set_number + 1, || empty_output_set.clone());
     context.read(usize_ptr!(system_struct.output_sets), &mut output_set_info)?;
 
-    // TODO: don't hard code this obviously
-    output_set_info[output_set_number].offset = size_t!(1);
-
-    context.write(usize_ptr!(system_struct.output_sets), &output_set_info)?;
-
-    // buffer offset
     let mut output_buffers: Vec<IoBufferDescriptor<PtrT, SizeT>> = Vec::new();
-    if output_buffers.try_reserve_exact(1).is_err() {
+    if output_buffers
+        .try_reserve_exact(output_set_names.len())
+        .is_err()
+    {
         return Err(DandelionError::OutOfMemory);
     }
-    output_buffers.push(IoBufferDescriptor {
-        ident: ptr_t!(0),
-        ident_len: size_t!(0),
-        data: ptr_t!(0),
-        data_len: size_t!(8),
-        key: size_t!(0),
-    });
+    for (i, output_name) in output_set_names.iter().enumerate() {
+        // alignment shouldn't really make a huge difference
+        let (dev_ptr, size) = device_buffers
+            .get(output_name)
+            .ok_or(DandelionError::ConfigMissmatch)?;
+        let buf_offset = context.get_free_space(*size, 8)?;
+
+        let src = unsafe { base.byte_offset(buf_offset as isize) } as *const c_void;
+        hip::memcpy_d_to_h(src, dev_ptr, *size)?;
+
+        output_buffers.push(IoBufferDescriptor {
+            ident: ptr_t!(0),
+            ident_len: size_t!(0),
+            data: ptr_t!(buf_offset),
+            data_len: size_t!(*size),
+            key: size_t!(0),
+        });
+        output_set_info[i].offset = size_t!(i);
+    }
+    output_set_info[output_set_number].offset = size_t!(output_set_number);
+
+    context.write(usize_ptr!(system_struct.output_sets), &output_set_info)?;
 
     let output_buffers_offset: PtrT =
         ptr_t!(context.get_free_space_and_write_slice(&output_buffers[..])? as usize);
