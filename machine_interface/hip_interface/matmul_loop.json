@@ -1,0 +1,16 @@
+{
+    "module_path": "/home/smithj/dandelion/machine_interface/hip_interface/matmul.hsaco",
+    "kernels": ["matmul_loop"],
+    "blueprint": {
+        "inputs": ["A"],
+        "buffers": {"B": {"Sizeof": "A"}},
+        "outputs": ["B"],
+        "control_flow": [
+            {"ExecKernel": ["matmul_loop", [{"Ptr": "A"}, {"Sizeof": "A"}, {"Ptr": "B"}], {
+                "grid_dim_x": 1, "grid_dim_y": 1, "grid_dim_z": 1,
+                "block_dim_x": 1, "block_dim_y": 1, "block_dim_z": 1,
+                "shared_mem_bytes": 0
+            }]}
+        ]
+    } 
+}

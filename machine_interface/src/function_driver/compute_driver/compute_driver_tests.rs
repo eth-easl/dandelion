@@ -757,7 +757,8 @@ mod compute_driver_tests {
 
         #[test]
         fn engine_matmul_3x3_loop() {
-            let filename = "matmul_loop";
+            let filename =
+                "/home/smithj/dandelion/machine_interface/hip_interface/matmul_loop.json";
             let dom_init = MemoryResource::None;
             let driver: Box<dyn Driver> = Box::new(GpuDriver {});
             let drv_init = vec![ComputeResource::GPU(1, 1)];

@@ -1,11 +1,20 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    fs::{self, File},
+    io::BufReader,
+    sync::Arc,
+};
 
-use dandelion_commons::DandelionResult;
+use dandelion_commons::{DandelionError, DandelionResult};
+use serde::{Deserialize, Serialize};
 
 use crate::function_driver::GpuConfig;
 
 use super::hip;
 
+const SYSDATA_OFFSET: usize = 0x10000usize;
+
+#[derive(Deserialize, Serialize, Debug)]
 pub struct LaunchConfig {
     pub grid_dim_x: u32,
     pub grid_dim_y: u32,
@@ -47,20 +56,34 @@ impl LaunchConfig {
     }
 }
 
+#[derive(Deserialize, Serialize, Debug)]
 pub enum Argument {
-    BufferPtr(String),
-    BufferLen(String),
-}
-enum Condition {}
-pub enum Action {
-    ExecKernel(String, Vec<Argument>, LaunchConfig),
-    RepeatWhile(Condition, Vec<Action>),
+    Ptr(String),
+    Sizeof(String),
 }
 
+#[derive(Deserialize, Serialize, Debug)]
+pub enum Condition {
+    NTimes(usize),
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+pub enum Action {
+    ExecKernel(String, Vec<Argument>, LaunchConfig),
+    Repeat(Condition, Vec<Action>),
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+pub enum Sizing {
+    Sizeof(String),
+    Absolute(usize),
+}
+
+#[derive(Deserialize, Serialize, Debug)]
 pub struct ExecutionBlueprint {
     pub inputs: Vec<String>,
     /// buffer names to sizes
-    pub buffers: HashMap<String, usize>,
+    pub buffers: HashMap<String, Sizing>,
     pub outputs: Vec<String>, // might not be required
     pub control_flow: Vec<Action>,
 }
@@ -72,7 +95,7 @@ pub fn dummy_config() -> DandelionResult<GpuConfig> {
     let kernel_check = hip::module_get_function(&module, "check_mem")?;
 
     Ok(GpuConfig {
-        system_data_struct_offset: 0x10000usize,
+        system_data_struct_offset: SYSDATA_OFFSET,
         module: Arc::new(module),
         kernels: Arc::new(HashMap::from([
             ("set_mem".into(), kernel_set),
@@ -80,23 +103,17 @@ pub fn dummy_config() -> DandelionResult<GpuConfig> {
         ])),
         blueprint: Arc::new(ExecutionBlueprint {
             inputs: vec![],
-            buffers: HashMap::from([("A".into(), 1024)]),
+            buffers: HashMap::from([("A".into(), Sizing::Absolute(1024))]),
             outputs: vec![],
             control_flow: vec![
                 Action::ExecKernel(
                     "set_mem".into(),
-                    vec![
-                        Argument::BufferPtr("A".into()),
-                        Argument::BufferLen("A".into()),
-                    ],
+                    vec![Argument::Ptr("A".into()), Argument::Sizeof("A".into())],
                     LaunchConfig::one_dimensional((256 + 1024 - 1) / 1024, 1024, 0),
                 ),
                 Action::ExecKernel(
                     "check_mem".into(),
-                    vec![
-                        Argument::BufferPtr("A".into()),
-                        Argument::BufferLen("A".into()),
-                    ],
+                    vec![Argument::Ptr("A".into()), Argument::Sizeof("A".into())],
                     LaunchConfig::one_dimensional(1, 1, 0),
                 ),
             ],
@@ -110,7 +127,7 @@ pub fn dummy_config2() -> DandelionResult<GpuConfig> {
     let kernel = hip::module_get_function(&module, "check_then_write")?;
 
     Ok(GpuConfig {
-        system_data_struct_offset: 0x10000usize,
+        system_data_struct_offset: SYSDATA_OFFSET,
         module: Arc::new(module),
         kernels: Arc::new(HashMap::from([("check_then_write".into(), kernel)])),
         blueprint: Arc::new(ExecutionBlueprint {
@@ -119,7 +136,7 @@ pub fn dummy_config2() -> DandelionResult<GpuConfig> {
             outputs: vec!["A".into()],
             control_flow: vec![Action::ExecKernel(
                 "check_then_write".into(),
-                vec![Argument::BufferPtr("A".into())],
+                vec![Argument::Ptr("A".into())],
                 LaunchConfig::one_dimensional(1, 1, 0),
             )],
         }),
@@ -137,19 +154,19 @@ pub fn matmul_dummy(parallel: bool) -> DandelionResult<GpuConfig> {
     let kernel = hip::module_get_function(&module, fn_name)?;
 
     Ok(GpuConfig {
-        system_data_struct_offset: 0x10000usize,
+        system_data_struct_offset: SYSDATA_OFFSET,
         module: Arc::new(module),
         kernels: Arc::new(HashMap::from([(fn_name.into(), kernel)])),
         blueprint: Arc::new(ExecutionBlueprint {
             inputs: vec!["A".into()],
-            buffers: HashMap::from([("B".into(), 80)]),
+            buffers: HashMap::from([("B".into(), Sizing::Absolute(80))]),
             outputs: vec!["B".into()],
             control_flow: vec![Action::ExecKernel(
                 fn_name.into(),
                 vec![
-                    Argument::BufferPtr("A".into()),
-                    Argument::BufferLen("A".into()),
-                    Argument::BufferPtr("B".into()),
+                    Argument::Ptr("A".into()),
+                    Argument::Sizeof("A".into()),
+                    Argument::Ptr("B".into()),
                 ],
                 if parallel {
                     LaunchConfig::two_dimensional(1, 1, 3, 3, 0)
@@ -161,6 +178,93 @@ pub fn matmul_dummy(parallel: bool) -> DandelionResult<GpuConfig> {
     })
 }
 
-pub fn parse_config() -> DandelionResult<GpuConfig> {
-    todo!()
+#[derive(Deserialize, Serialize, Debug)]
+struct GpuConfigIR {
+    module_path: String,
+    kernels: Vec<String>,
+    blueprint: ExecutionBlueprint,
+}
+
+impl TryFrom<GpuConfigIR> for GpuConfig {
+    type Error = DandelionError;
+    fn try_from(value: GpuConfigIR) -> Result<Self, Self::Error> {
+        let module = hip::module_load(&value.module_path)?;
+        let kernels = value
+            .kernels
+            .iter()
+            .map(|kname| {
+                hip::module_get_function(&module, kname).map(|module| (kname.clone(), module))
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?; // this is kinda ugly but also pretty cool
+        Ok(Self {
+            module: Arc::new(module),
+            system_data_struct_offset: SYSDATA_OFFSET,
+            kernels: Arc::new(kernels),
+            blueprint: Arc::new(value.blueprint),
+        })
+    }
+}
+
+pub fn parse_config(path: &str) -> DandelionResult<GpuConfig> {
+    let file = File::open(path).map_err(|_| DandelionError::ConfigMissmatch)?;
+    let reader = BufReader::new(file);
+    let ir: GpuConfigIR =
+        serde_json::from_reader(reader).map_err(|_| DandelionError::ConfigMissmatch)?;
+    ir.try_into()
+}
+
+#[test]
+fn test_parse() {
+    let cfg = GpuConfigIR {
+        module_path: "/[PATH]/nearest_neigbours.hsaco".into(),
+        kernels: vec!["SUB".into(), "ADD".into(), "MUL".into()],
+        blueprint: ExecutionBlueprint {
+            inputs: vec!["X".into(), "A".into()],
+            buffers: HashMap::from([
+                ("V".into(), Sizing::Sizeof("X".into())),
+                ("X_tmp".into(), Sizing::Sizeof("X".into())),
+            ]),
+            outputs: vec!["V".into()],
+            control_flow: vec![Action::Repeat(
+                Condition::NTimes(25),
+                vec![
+                    Action::ExecKernel(
+                        "SUB".into(),
+                        vec![
+                            Argument::Ptr("X".into()),
+                            Argument::Ptr("V".into()),
+                            Argument::Ptr("X_tmp".into()),
+                            Argument::Sizeof("X".into()),
+                        ],
+                        LaunchConfig::one_dimensional(1, 1, 0),
+                    ),
+                    Action::ExecKernel(
+                        "ADD".into(),
+                        vec![
+                            Argument::Ptr("X".into()),
+                            Argument::Ptr("V".into()),
+                            Argument::Ptr("V".into()),
+                            Argument::Sizeof("X".into()),
+                        ],
+                        LaunchConfig::one_dimensional(1, 1, 0),
+                    ),
+                    Action::ExecKernel(
+                        "MUL".into(),
+                        vec![
+                            Argument::Ptr("A".into()),
+                            Argument::Ptr("X_tmp".into()),
+                            Argument::Ptr("X".into()),
+                            Argument::Sizeof("A".into()),
+                            Argument::Sizeof("X".into()),
+                        ],
+                        LaunchConfig::one_dimensional(1, 1, 0),
+                    ),
+                ],
+            )],
+        },
+    };
+
+    let j = serde_json::to_string(&cfg).unwrap();
+
+    println!("{}", j);
 }

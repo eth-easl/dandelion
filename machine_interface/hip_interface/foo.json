@@ -1,0 +1,38 @@
+{
+    "module_path": "/[PATH]/nearest_neigbours.hsaco",
+    "kernels": ["SUB", "ADD", "MUL"],
+    "blueprint": {
+        "inputs": ["X", "A"],
+        "buffers": {"V": {"Sizeof": "X"}, "X_tmp": {"Sizeof": "X"}},
+        "outputs": ["V"],
+        "control_flow": [
+            {"Repeat": [{"NTimes": 25},[
+                {"ExecKernel": ["SUB",
+                    [{"Ptr": "X"}, {"Ptr": "V"}, {"Ptr": "X_tmp"}, {"Sizeof": "X"}],
+                    {
+                        "grid_dim_x": 1, "grid_dim_y": 1, "grid_dim_z": 1,
+                        "block_dim_x": 1, "block_dim_y": 1, "block_dim_z": 1,
+                        "shared_mem_bytes": 0
+                    }]
+                },
+                {"ExecKernel": ["ADD",
+                    [{"Ptr": "X"}, {"Ptr": "V"}, {"Ptr": "V"}, {"Sizeof": "X"}],
+                    {
+                        "grid_dim_x": 1, "grid_dim_y": 1, "grid_dim_z": 1,
+                        "block_dim_x": 1, "block_dim_y": 1, "block_dim_z": 1,
+                        "shared_mem_bytes": 0
+                    }]
+                },
+                {"ExecKernel": ["MUL",
+                    [{"Ptr": "A"}, {"Ptr": "X_tmp"}, {"Ptr": "X"}, {"Sizeof": "A"}, {"Sizeof": "X"}],
+                        {
+                            "grid_dim_x": 1, "grid_dim_y": 1, "grid_dim_z": 1,
+                            "block_dim_x": 1, "block_dim_y": 1, "block_dim_z": 1,
+                            "shared_mem_bytes": 0
+                        }
+                    ]
+                }]]
+            }
+        ]
+    }
+}

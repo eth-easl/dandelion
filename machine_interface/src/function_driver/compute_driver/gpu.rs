@@ -13,7 +13,7 @@ use libc::c_void;
 use std::{collections::HashMap, ptr::null, sync::Arc, thread};
 
 use self::{
-    gpu_utils::{Action, Argument},
+    gpu_utils::{Action, Argument, Sizing},
     hip::{DevicePointer, DEFAULT_STREAM},
 };
 
@@ -142,14 +142,25 @@ fn gpu_run(
 
     // TODO: move to pool of buffers approach
     let mut buffers: HashMap<String, (DevicePointer, usize)> = HashMap::new();
-    for (name, size) in &config.blueprint.buffers {
-        buffers.insert(name.clone(), (hip::DevicePointer::try_new(*size)?, *size));
-    }
     for name in &config.blueprint.inputs {
         let size = get_data_length(name, &context)?;
         let dev_ptr = hip::DevicePointer::try_new(size)?;
         copy_data_to_device(name, &context, base, &dev_ptr)?;
         buffers.insert(name.clone(), (dev_ptr, size));
+    }
+    for (name, size) in &config.blueprint.buffers {
+        match size {
+            Sizing::Absolute(bytes) => {
+                buffers.insert(name.clone(), (hip::DevicePointer::try_new(*bytes)?, *bytes));
+            }
+            Sizing::Sizeof(id) => {
+                let size_id = buffers.get(id).ok_or(DandelionError::ConfigMissmatch)?.1;
+                buffers.insert(
+                    name.clone(),
+                    (hip::DevicePointer::try_new(size_id)?, size_id),
+                );
+            }
+        }
     }
 
     for action in &config.blueprint.control_flow {
@@ -158,10 +169,10 @@ fn gpu_run(
                 let mut params: Vec<*const c_void> = Vec::with_capacity(args.len());
                 for arg in args {
                     match arg {
-                        Argument::BufferPtr(id) => {
+                        Argument::Ptr(id) => {
                             params.push(&buffers.get(id).unwrap().0 .0 as *const _ as *const c_void)
                         }
-                        Argument::BufferLen(id) => {
+                        Argument::Sizeof(id) => {
                             params.push(&buffers.get(id).unwrap().1 as *const _ as *const c_void)
                         }
                     };
@@ -180,12 +191,12 @@ fn gpu_run(
                     params.as_ptr(),
                     null(),
                 )?;
-
-                hip::device_synchronize()?;
             }
             _ => return Err(DandelionError::NotImplemented),
         }
     }
+
+    hip::device_synchronize()?;
 
     write_gpu_outputs::<usize, usize>(
         &mut context,
@@ -231,7 +242,7 @@ impl EngineLoop for GpuLoop {
             &output_sets,
         )?;
 
-        // in thread for now, in process pool eventually; maybe add cpu_slot affinity?
+        // in thread for now, in process pool eventually; TODO: add cpu_slot affinity?
         let gpu_id_clone = self.gpu_id;
         let config_clone = config.clone();
         let outputs = output_sets.clone();
@@ -295,7 +306,7 @@ impl Driver for GpuDriver {
         } else if function_path == "matmul_para" {
             FunctionConfig::GpuConfig(gpu_utils::matmul_dummy(true)?)
         } else {
-            return Err(DandelionError::ConfigMissmatch);
+            FunctionConfig::GpuConfig(gpu_utils::parse_config(&function_path)?)
         };
 
         let total_size = 0x10000usize;
