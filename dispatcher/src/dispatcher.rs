@@ -300,7 +300,6 @@ impl Dispatcher {
                                 recorder.get_sub_recorder()?,
                             )
                             .await?;
-                        recorder.record(RecordPoint::FutureReturn)?;
                         let context_arc = Arc::new(context);
                         let composition_sets = output_mapping
                             .into_iter()
@@ -457,14 +456,15 @@ impl Dispatcher {
             Some(q) => q,
             None => return Err(DandelionError::DispatcherConfigError),
         };
-        recorder.record(RecordPoint::ExecutionQueue)?;
         let args = EngineArguments::FunctionArguments(FunctionArguments {
             config: function_config,
             context: function_context,
             output_sets,
             recorder,
         });
+        recorder.record(RecordPoint::ExecutionQueue)?;
         let (result, _) = engine_queue.enqueu_work(args).await?;
+        recorder.record(RecordPoint::FutureReturn)?;
         return Ok(result);
     }
 }
