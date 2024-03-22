@@ -159,7 +159,7 @@ mod timestamp {
                 self.append_timestamps(previous, summary);
             }
             summary.push_str(&format!(
-                "parent:{}, span:{}, time:{}, point:{:?} ",
+                "parent:{}, span:{}, time:{}, point:{:?}, ",
                 timestamp.parent_span,
                 timestamp.current_span,
                 timestamp.time.duration_since(self.start_time).as_nanos(),
