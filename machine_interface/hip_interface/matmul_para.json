@@ -1,0 +1,18 @@
+{
+    "module_path": "/home/smithj/dandelion/machine_interface/hip_interface/matmul.hsaco",
+    "kernels": ["matmul_para"],
+    "blueprint": {
+        "inputs": ["A"],
+        "buffers": {"B": {"Sizeof": "A"}},
+        "outputs": ["B"],
+        "control_flow": [
+            {"ExecKernel": ["matmul_para", [{"Ptr": "A"}, {"Sizeof": "A"}, {"Ptr": "B"}], {
+                "grid_dim_x": {"CoverBuffer": {"bufname": "A", "dimensionality": 2, "block_dim": 32}}, 
+                "grid_dim_y": {"CoverBuffer": {"bufname": "A", "dimensionality": 2, "block_dim": 32}}, 
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": 32, "block_dim_y": 32, "block_dim_z": 1,
+                "shared_mem_bytes": 0
+            }]}
+        ]
+    } 
+}

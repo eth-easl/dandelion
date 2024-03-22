@@ -13,7 +13,7 @@ use libc::c_void;
 use std::{collections::HashMap, ptr::null, sync::Arc, thread};
 
 use self::{
-    gpu_utils::{Action, Argument, Sizing},
+    gpu_utils::{Action, Argument, BufferSizing, GridSizing},
     hip::{DevicePointer, DEFAULT_STREAM},
 };
 
@@ -126,6 +126,31 @@ fn copy_data_to_device(
     Ok(())
 }
 
+// subject to change; not super happy with this
+fn get_grid_size(
+    gs: &GridSizing,
+    buffers: &HashMap<String, (DevicePointer, usize)>,
+) -> DandelionResult<u32> {
+    match gs {
+        GridSizing::Absolute(size) => Ok(*size),
+        GridSizing::CoverBuffer {
+            bufname,
+            dimensionality,
+            block_dim,
+        } => {
+            if *dimensionality > 3 || *dimensionality == 0 {
+                return Err(DandelionError::ConfigMissmatch);
+            }
+            let bufsize = buffers
+                .get(bufname)
+                .ok_or(DandelionError::ConfigMissmatch)?
+                .1;
+            let side_length = (bufsize as f64).powf(1.0 / (*dimensionality as f64)).ceil() as u32;
+            Ok((side_length + block_dim - 1) / block_dim)
+        }
+    }
+}
+
 fn gpu_run(
     gpu_id: u8,
     config: GpuConfig,
@@ -150,10 +175,10 @@ fn gpu_run(
     }
     for (name, size) in &config.blueprint.buffers {
         match size {
-            Sizing::Absolute(bytes) => {
+            BufferSizing::Absolute(bytes) => {
                 buffers.insert(name.clone(), (hip::DevicePointer::try_new(*bytes)?, *bytes));
             }
-            Sizing::Sizeof(id) => {
+            BufferSizing::Sizeof(id) => {
                 let size_id = buffers.get(id).ok_or(DandelionError::ConfigMissmatch)?.1;
                 buffers.insert(
                     name.clone(),
@@ -180,9 +205,9 @@ fn gpu_run(
 
                 hip::module_launch_kernel(
                     config.kernels.get(name).unwrap(),
-                    launch_config.grid_dim_x,
-                    launch_config.grid_dim_y,
-                    launch_config.grid_dim_z,
+                    get_grid_size(&launch_config.grid_dim_x, &buffers)?,
+                    get_grid_size(&launch_config.grid_dim_y, &buffers)?,
+                    get_grid_size(&launch_config.grid_dim_z, &buffers)?,
                     launch_config.block_dim_x,
                     launch_config.block_dim_y,
                     launch_config.block_dim_z,

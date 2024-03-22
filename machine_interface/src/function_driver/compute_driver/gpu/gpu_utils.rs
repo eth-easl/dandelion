@@ -14,11 +14,22 @@ use super::hip;
 
 const SYSDATA_OFFSET: usize = 0x10000usize;
 
+// This is subject to change; not very happy with it
+#[derive(Deserialize, Serialize, Debug)]
+pub enum GridSizing {
+    CoverBuffer {
+        bufname: String,
+        dimensionality: u8,
+        block_dim: u32,
+    },
+    Absolute(u32),
+}
+
 #[derive(Deserialize, Serialize, Debug)]
 pub struct LaunchConfig {
-    pub grid_dim_x: u32,
-    pub grid_dim_y: u32,
-    pub grid_dim_z: u32,
+    pub grid_dim_x: GridSizing,
+    pub grid_dim_y: GridSizing,
+    pub grid_dim_z: GridSizing,
     pub block_dim_x: u32,
     pub block_dim_y: u32,
     pub block_dim_z: u32,
@@ -28,9 +39,9 @@ pub struct LaunchConfig {
 impl LaunchConfig {
     pub fn one_dimensional(grid_dim: u32, block_dim: u32, shared_mem_bytes: usize) -> Self {
         Self {
-            grid_dim_x: grid_dim,
-            grid_dim_y: 1,
-            grid_dim_z: 1,
+            grid_dim_x: GridSizing::Absolute(grid_dim),
+            grid_dim_y: GridSizing::Absolute(1),
+            grid_dim_z: GridSizing::Absolute(1),
             block_dim_x: block_dim,
             block_dim_y: 1,
             block_dim_z: 1,
@@ -45,9 +56,9 @@ impl LaunchConfig {
         shared_mem_bytes: usize,
     ) -> Self {
         Self {
-            grid_dim_x,
-            grid_dim_y,
-            grid_dim_z: 1,
+            grid_dim_x: GridSizing::Absolute(grid_dim_x),
+            grid_dim_y: GridSizing::Absolute(grid_dim_y),
+            grid_dim_z: GridSizing::Absolute(1),
             block_dim_x,
             block_dim_y,
             block_dim_z: 1,
@@ -74,7 +85,7 @@ pub enum Action {
 }
 
 #[derive(Deserialize, Serialize, Debug)]
-pub enum Sizing {
+pub enum BufferSizing {
     Sizeof(String),
     Absolute(usize),
 }
@@ -83,7 +94,7 @@ pub enum Sizing {
 pub struct ExecutionBlueprint {
     pub inputs: Vec<String>,
     /// buffer names to sizes
-    pub buffers: HashMap<String, Sizing>,
+    pub buffers: HashMap<String, BufferSizing>,
     pub outputs: Vec<String>, // might not be required
     pub control_flow: Vec<Action>,
 }
@@ -103,7 +114,7 @@ pub fn dummy_config() -> DandelionResult<GpuConfig> {
         ])),
         blueprint: Arc::new(ExecutionBlueprint {
             inputs: vec![],
-            buffers: HashMap::from([("A".into(), Sizing::Absolute(1024))]),
+            buffers: HashMap::from([("A".into(), BufferSizing::Absolute(1024))]),
             outputs: vec![],
             control_flow: vec![
                 Action::ExecKernel(
@@ -159,7 +170,7 @@ pub fn matmul_dummy(parallel: bool) -> DandelionResult<GpuConfig> {
         kernels: Arc::new(HashMap::from([(fn_name.into(), kernel)])),
         blueprint: Arc::new(ExecutionBlueprint {
             inputs: vec!["A".into()],
-            buffers: HashMap::from([("B".into(), Sizing::Absolute(80))]),
+            buffers: HashMap::from([("B".into(), BufferSizing::Absolute(80))]),
             outputs: vec!["B".into()],
             control_flow: vec![Action::ExecKernel(
                 fn_name.into(),
@@ -221,8 +232,8 @@ fn test_parse() {
         blueprint: ExecutionBlueprint {
             inputs: vec!["X".into(), "A".into()],
             buffers: HashMap::from([
-                ("V".into(), Sizing::Sizeof("X".into())),
-                ("X_tmp".into(), Sizing::Sizeof("X".into())),
+                ("V".into(), BufferSizing::Sizeof("X".into())),
+                ("X_tmp".into(), BufferSizing::Sizeof("X".into())),
             ]),
             outputs: vec!["V".into()],
             control_flow: vec![Action::Repeat(
