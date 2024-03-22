@@ -456,11 +456,12 @@ impl Dispatcher {
             Some(q) => q,
             None => return Err(DandelionError::DispatcherConfigError),
         };
+        let subrecoder = recorder.get_sub_recorder()?;
         let args = EngineArguments::FunctionArguments(FunctionArguments {
             config: function_config,
             context: function_context,
             output_sets,
-            recorder,
+            recorder: subrecoder,
         });
         recorder.record(RecordPoint::ExecutionQueue)?;
         let (result, _) = engine_queue.enqueu_work(args).await?;
