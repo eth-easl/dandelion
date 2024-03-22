@@ -494,7 +494,9 @@ fn main() -> () {
     }
 
     // find available resources
-    let num_cores = u8::try_from(core_affinity::get_core_ids().unwrap().len()).unwrap();
+    let num_cores = u8::try_from(num_cpus::get_physical()).unwrap();
+    let num_virt_cores = u8::try_from(core_affinity::get_core_ids().unwrap().len()).unwrap();
+    let threads_per_core = num_virt_cores / num_cores;
     // TODO: This calculation makes sense only for running matmul-128x128 workload on MMU engines
     let num_dispatcher_cores = std::env::var("NUM_DISP_CORES")
         .map_or_else(|_e| (num_cores + 13) / 14, |n| n.parse::<u8>().unwrap());
@@ -532,14 +534,16 @@ fn main() -> () {
     #[cfg(any(feature = "cheri", feature = "wasm", feature = "mmu"))]
     pool_map.insert(
         engine_type,
-        (num_dispatcher_cores..num_cores)
+        (num_dispatcher_cores * threads_per_core..num_virt_cores)
+            .step_by(threads_per_core.into())
             .map(|code_id| ComputeResource::CPU(code_id))
             .collect(),
     );
     #[cfg(feature = "hyper_io")]
     pool_map.insert(
         EngineType::Hyper,
-        (0..num_dispatcher_cores)
+        (0..num_dispatcher_cores * threads_per_core)
+            .step_by(threads_per_core.into())
             .map(|core_id| ComputeResource::CPU(core_id))
             .collect(),
     );
