@@ -575,10 +575,9 @@ mod compute_driver_tests {
 
     #[cfg(feature = "cheri")]
     mod cheri {
-        use crate::function_driver::compute_driver::cheri::CheriDriver;
-        use crate::function_driver::ComputeResource;
-        use crate::memory_domain::cheri::CheriMemoryDomain;
-        driverTests!(elf_cheri; CheriMemoryDomain; Vec::new(); CheriDriver {};
+        use crate::function_driver::{compute_driver::cheri::CheriDriver, ComputeResource};
+        use crate::memory_domain::{cheri::CheriMemoryDomain, MemoryResource};
+        driverTests!(elf_cheri; CheriMemoryDomain; MemoryResource::None; CheriDriver {};
         core_affinity::get_core_ids()
            .and_then(
                 |core_vec|
@@ -594,11 +593,8 @@ mod compute_driver_tests {
 
     #[cfg(feature = "mmu")]
     mod mmu {
-        use crate::function_driver::ComputeResource;
-        use crate::memory_domain::mmu::MmuMemoryDomain;
-        use crate::{
-            function_driver::compute_driver::mmu::MmuDriver, memory_domain::MemoryResource,
-        };
+        use crate::function_driver::{compute_driver::mmu::MmuDriver, ComputeResource};
+        use crate::memory_domain::{mmu::MmuMemoryDomain, MemoryResource};
         #[cfg(target_arch = "x86_64")]
         driverTests!(elf_mmu_x86_64; MmuMemoryDomain; MemoryResource::None; MmuDriver {};
         core_affinity::get_core_ids()
@@ -629,12 +625,11 @@ mod compute_driver_tests {
 
     #[cfg(feature = "wasm")]
     mod wasm {
-        use crate::function_driver::compute_driver::wasm::WasmDriver;
-        use crate::function_driver::ComputeResource;
-        use crate::memory_domain::wasm::WasmMemoryDomain;
+        use crate::function_driver::{compute_driver::wasm::WasmDriver, ComputeResource};
+        use crate::memory_domain::{wasm::WasmMemoryDomain, MemoryResource};
 
         #[cfg(target_arch = "x86_64")]
-        driverTests!(sysld_wasm_x86_64; WasmMemoryDomain; crate::memory_domain::MemoryResource::None; WasmDriver {};
+        driverTests!(sysld_wasm_x86_64; WasmMemoryDomain; MemoryResource::None; WasmDriver {};
         core_affinity::get_core_ids()
             .and_then(
                 |core_vec|
@@ -648,7 +643,7 @@ mod compute_driver_tests {
         ]);
 
         #[cfg(target_arch = "aarch64")]
-        driverTests!(sysld_wasm_aarch64; WasmMemoryDomain; Vec::new(); WasmDriver {};
+        driverTests!(sysld_wasm_aarch64; WasmMemoryDomain; MemoryResource::None; WasmDriver {};
         core_affinity::get_core_ids()
             .and_then(
                 |core_vec|

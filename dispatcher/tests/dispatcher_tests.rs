@@ -151,6 +151,7 @@ mod dispatcher_tests {
     mod cheri {
         use machine_interface::{
             function_driver::ComputeResource,
+            machine_config::EngineType,
             memory_domain::{cheri::CheriMemoryDomain, MemoryResource},
         };
         dispatcherTests!(elf_cheri; CheriMemoryDomain; MemoryResource::None; EngineType::Cheri; vec![ComputeResource::CPU(1)]);
