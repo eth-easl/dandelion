@@ -20,12 +20,12 @@ use std::{
 
 use self::{
     buffer_pool::BufferPool,
-    gpu_utils::{Action, Argument, BufferSizing, GridSizing},
+    config_parsing::{Action, Argument, BufferSizing, GridSizing},
     hip::{DevicePointer, DEFAULT_STREAM},
 };
 
 pub(crate) mod buffer_pool;
-pub(crate) mod gpu_utils;
+pub(crate) mod config_parsing;
 pub(crate) mod hip;
 
 pub fn dummy_run(gpu_loop: &mut GpuLoop) -> DandelionResult<()> {
@@ -356,15 +356,15 @@ impl Driver for GpuDriver {
     ) -> dandelion_commons::DandelionResult<crate::function_driver::Function> {
         // Concept for now: function_path gives config file which contains name of module (.hsaco) file
         let config = if function_path == "foo" {
-            FunctionConfig::GpuConfig(gpu_utils::dummy_config()?)
+            FunctionConfig::GpuConfig(config_parsing::dummy_config()?)
         } else if function_path == "bar" {
-            FunctionConfig::GpuConfig(gpu_utils::dummy_config2()?)
+            FunctionConfig::GpuConfig(config_parsing::dummy_config2()?)
         } else if function_path == "matmul_loop" {
-            FunctionConfig::GpuConfig(gpu_utils::matmul_dummy(false)?)
+            FunctionConfig::GpuConfig(config_parsing::matmul_dummy(false)?)
         } else if function_path == "matmul_para" {
-            FunctionConfig::GpuConfig(gpu_utils::matmul_dummy(true)?)
+            FunctionConfig::GpuConfig(config_parsing::matmul_dummy(true)?)
         } else {
-            FunctionConfig::GpuConfig(gpu_utils::parse_config(&function_path)?)
+            FunctionConfig::GpuConfig(config_parsing::parse_config(&function_path)?)
         };
 
         let total_size = 0x10000usize;

@@ -667,7 +667,7 @@ mod compute_driver_tests {
                     compute_driver_tests::compute_driver_tests::{
                         get_expected_mat, prepare_engine_and_function,
                     },
-                    gpu::{dummy_run, gpu_utils::dummy_config, GpuDriver, GpuLoop},
+                    gpu::{config_parsing::dummy_config, dummy_run, GpuDriver, GpuLoop},
                 },
                 thread_utils::EngineLoop,
                 ComputeResource, Driver, EngineArguments, FunctionArguments, FunctionConfig,

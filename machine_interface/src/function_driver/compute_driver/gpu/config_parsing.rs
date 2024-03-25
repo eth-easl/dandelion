@@ -224,7 +224,9 @@ pub fn parse_config(path: &str) -> DandelionResult<GpuConfig> {
     ir.try_into()
 }
 
-#[test]
+// For me so I could see how the file would look. Keeping it for now until format is finalised
+// #[test]
+#[allow(unused)]
 fn test_parse() {
     let cfg = GpuConfigIR {
         module_path: "/[PATH]/nearest_neigbours.hsaco".into(),
