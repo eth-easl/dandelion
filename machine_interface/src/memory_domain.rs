@@ -8,6 +8,7 @@ pub mod mmu;
 pub mod read_only;
 #[cfg(feature = "wasm")]
 pub mod wasm;
+#[cfg(feature = "fpga")] //fpga uses mmap too
 
 use crate::{DataItem, DataSet, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
@@ -254,6 +255,7 @@ pub fn transfer_memory(
             source_offset,
             size,
         ),
+        
         #[cfg(feature = "wasm")]
         (ContextType::Wasm(destination_ctxt), ContextType::Wasm(source_ctxt)) => {
             wasm::wasm_transfer(

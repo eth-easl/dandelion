@@ -89,6 +89,30 @@ impl Function {
 pub enum ComputeResource {
     CPU(u8),
     GPU(u8),
+    FPGA(u8),
+}
+impl Into<ComputeResource> for u8 {
+    fn into(self) -> ComputeResource {
+        ComputeResource::CPU(self)
+    }
+}
+impl Into<u8> for ComputeResource { 
+    fn into(self) -> u8 {
+        match self {
+            ComputeResource::CPU(n) => n,
+            ComputeResource::GPU(n) => n,
+            ComputeResource::FPGA(n) => n,
+        }
+    }
+}
+impl Into<usize> for ComputeResource { //so we can use into()
+    fn into(self) -> usize {
+        match self {
+            ComputeResource::CPU(n) => n as usize,
+            ComputeResource::GPU(n) => n as usize,
+            ComputeResource::FPGA(n) => n as usize,
+        }
+    }
 }
 
 pub enum EngineArguments {
@@ -121,7 +145,7 @@ pub trait WorkQueue {
 }
 
 pub trait Driver: Send + Sync {
-    // the resource descirbed by config and make it into an engine of the type
+    // the resource described by config and make it into an engine of the type
     fn start_engine(
         &self,
         resource: ComputeResource,

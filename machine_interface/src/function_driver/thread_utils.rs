@@ -12,7 +12,7 @@ use std::thread::spawn;
 extern crate alloc;
 
 pub trait EngineLoop {
-    fn init(core_id: u8) -> DandelionResult<Box<Self>>;
+    fn init(resource: ComputeResource) -> DandelionResult<Box<Self>>;
     fn run(
         &mut self,
         config: FunctionConfig,
@@ -21,7 +21,7 @@ pub trait EngineLoop {
     ) -> DandelionResult<Context>;
 }
 
-fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
+fn run_thread<E: EngineLoop>(core_id: ComputeResource, queue: Box<dyn WorkQueue>) {
     // set core affinity
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
         log::error!("core received core id that could not be set");
@@ -80,13 +80,13 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                 continue;
             }
             EngineArguments::Shutdown(resource_returner) => {
-                resource_returner(vec![ComputeResource::CPU(core_id)]);
+                resource_returner(vec![core_id]);
                 return;
             }
         }
     }
 }
 
-pub fn start_thread<E: EngineLoop>(cpu_slot: u8, queue: Box<dyn WorkQueue + Send>) -> () {
+pub fn start_thread<E: EngineLoop>(cpu_slot: ComputeResource, queue: Box<dyn WorkQueue + Send>) -> () {
     spawn(move || run_thread::<E>(cpu_slot, queue));
 }
