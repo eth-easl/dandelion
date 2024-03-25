@@ -118,19 +118,23 @@ mod server_tests {
         let engine_type;
         #[cfg(feature = "wasm")]
         {
-            version = "sysld_wasm";
+            version = format!("sysld_wasm_{}", std::env::consts::ARCH);
             engine_type = String::from("RWasm");
         }
         #[cfg(feature = "mmu")]
         {
-            version = "elf_mmu";
+            version = format!("elf_mmu_{}", std::env::consts::ARCH);
             engine_type = String::from("Process");
         }
+        #[cfg(feature = "cheri")]
+        {
+            version = "elf_cheri";
+            engine_type = String::from("Cheri");
+        }
         let matmul_path = format!(
-            "{}/../machine_interface/tests/data/test_{}_{}_matmul",
+            "{}/../machine_interface/tests/data/test_{}_matmul",
             env!("CARGO_MANIFEST_DIR"),
             version,
-            std::env::consts::ARCH
         );
 
         let register_request = RegisterFunction {
