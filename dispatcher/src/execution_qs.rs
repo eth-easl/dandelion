@@ -1,3 +1,4 @@
+use crossbeam::channel::TryRecvError;
 use dandelion_commons::{records::Recorder, DandelionResult};
 use log::error;
 use machine_interface::{
@@ -18,9 +19,15 @@ pub struct EngineQueue {
 impl WorkQueue for EngineQueue {
     fn get_engine_args(&self) -> (EngineArguments, Debt) {
         loop {
-            let (recieved_args, recieved_debt) = self.queue_out.recv().unwrap();
-            if recieved_debt.is_alive() {
-                return (recieved_args, recieved_debt);
+            match self.queue_out.try_recv() {
+                Err(TryRecvError::Disconnected) => panic!("Work queue disconnected"),
+                Err(TryRecvError::Empty) => continue,
+                Ok(recieved) => {
+                    let (recieved_args, recevied_dept) = recieved;
+                    if recevied_dept.is_alive() {
+                        return (recieved_args, recevied_dept);
+                    }
+                }
             }
         }
     }
@@ -28,7 +35,7 @@ impl WorkQueue for EngineQueue {
 
 impl EngineQueue {
     pub fn new() -> Self {
-        let (sender, receiver) = crossbeam::channel::unbounded();
+        let (sender, receiver) = crossbeam::channel::bounded(4096);
         return EngineQueue {
             queue_in: sender,
             queue_out: receiver,

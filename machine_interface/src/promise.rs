@@ -26,14 +26,14 @@ impl Promise {
         let debt = Debt { data: data_ptr };
         return (promise, debt);
     }
-    pub fn abort(mut self) -> () {
-        self.abort_internal();
+    pub fn abort(self) -> () {
+        core::mem::drop(self);
     }
     fn abort_internal(&mut self) {
         let data = unsafe { &*self.data };
-        let abort_hanlde = data.abort_handle.swap(ptr::null_mut(), Ordering::SeqCst);
-        if !abort_hanlde.is_null() {
-            unsafe { (*abort_hanlde)() }
+        let abort_handle = data.abort_handle.swap(ptr::null_mut(), Ordering::SeqCst);
+        if !abort_handle.is_null() {
+            unsafe { (*abort_handle)() }
         }
     }
 }
