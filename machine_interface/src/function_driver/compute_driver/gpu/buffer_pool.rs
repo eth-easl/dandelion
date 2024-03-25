@@ -8,10 +8,12 @@ pub struct BufferPool {
 }
 
 impl BufferPool {
-    pub fn new() -> Self {
-        Self { buffers: vec![] }
+    pub fn new(gpu_id: u8) -> Self {
+        let buffers = vec![];
+        Self { buffers }
     }
 
+    // TODO: potentially coalesce / more sophisticated matching method (best fit)?
     pub fn find_buffer(&mut self, size: usize) -> DandelionResult<usize> {
         let idx = match self
             .buffers

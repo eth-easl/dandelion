@@ -1,10 +1,9 @@
-// TODO remove unneeded imports; just took everything from wasm.rs
 use crate::{
     function_driver::{
         thread_utils::{start_thread, EngineLoop},
         ComputeResource, Driver, Function, FunctionConfig, GpuConfig, WorkQueue,
     },
-    interface::{read_output_structs, setup_input_structs, write_gpu_outputs, DandelionSystemData},
+    interface::{read_output_structs, setup_input_structs, write_gpu_outputs},
     memory_domain::{Context, ContextTrait, ContextType},
     DataRequirementList, DataSet,
 };
@@ -20,12 +19,14 @@ use std::{
 
 use self::{
     buffer_pool::BufferPool,
-    config_parsing::{Action, Argument, BufferSizing, GridSizing},
-    hip::{DevicePointer, DEFAULT_STREAM},
+    config_parsing::{Action, Argument, BufferSizing},
+    gpu_utils::{copy_data_to_device, get_data_length, get_grid_size},
+    hip::DEFAULT_STREAM,
 };
 
 pub(crate) mod buffer_pool;
 pub(crate) mod config_parsing;
+mod gpu_utils;
 pub(crate) mod hip;
 
 pub fn dummy_run(gpu_loop: &mut GpuLoop) -> DandelionResult<()> {
@@ -86,79 +87,6 @@ pub fn dummy_run(gpu_loop: &mut GpuLoop) -> DandelionResult<()> {
     Ok(())
 }
 
-fn get_data_length(ident: &str, context: &Context) -> DandelionResult<usize> {
-    let dataset = context
-        .content
-        .iter()
-        .find(|&elem| match elem {
-            Some(set) => set.ident == ident,
-            _ => false,
-        })
-        .ok_or(DandelionError::ConfigMissmatch)?
-        .as_ref()
-        .unwrap(); // okay, as we matched successfully
-
-    let length = dataset
-        .buffers
-        .iter()
-        .fold(0usize, |acc, item| acc + item.data.size);
-
-    Ok(length)
-}
-
-fn copy_data_to_device(
-    ident: &str,
-    context: &Context,
-    base: *mut u8,
-    dev_ptr: &DevicePointer,
-) -> DandelionResult<()> {
-    let dataset = context
-        .content
-        .iter()
-        .find(|&elem| match elem {
-            Some(set) => set.ident == ident,
-            _ => false,
-        })
-        .ok_or(DandelionError::ConfigMissmatch)?
-        .as_ref()
-        .unwrap(); // okay, as we matched successfully
-
-    let mut total = 0isize;
-    for item in &dataset.buffers {
-        let length = item.data.size;
-        let offset = item.data.offset;
-        let src = unsafe { base.byte_offset((offset) as isize) } as *const c_void;
-        hip::memcpy_h_to_d(dev_ptr, total, src, length)?;
-        total += length as isize;
-    }
-    Ok(())
-}
-
-// subject to change; not super happy with this
-fn get_grid_size(
-    gs: &GridSizing,
-    buffers: &HashMap<String, (usize, usize)>,
-) -> DandelionResult<u32> {
-    match gs {
-        GridSizing::Absolute(size) => Ok(*size),
-        GridSizing::CoverBuffer {
-            bufname,
-            dimensionality,
-            block_dim,
-        } => {
-            if *dimensionality > 3 || *dimensionality == 0 {
-                return Err(DandelionError::ConfigMissmatch);
-            }
-            let bufsize = buffers
-                .get(bufname)
-                .ok_or(DandelionError::ConfigMissmatch)?
-                .1;
-            let side_length = (bufsize as f64).powf(1.0 / (*dimensionality as f64)).ceil() as u32;
-            Ok((side_length + block_dim - 1) / block_dim)
-        }
-    }
-}
-
 fn gpu_run(
     cpu_slot: usize,
     gpu_id: u8,
@@ -180,6 +108,7 @@ fn gpu_run(
     // TODO: disable device-side malloc
 
     let mut buffer_pool = buffer_pool.lock().unwrap();
+
     // bufname -> (index in buffer pool, local size)
     let mut buffers: HashMap<String, (usize, usize)> = HashMap::new();
     for name in &config.blueprint.inputs {
@@ -252,6 +181,7 @@ fn gpu_run(
     buffers
         .values()
         .for_each(|(idx, _)| buffer_pool.give_back(*idx));
+
     Ok(context)
 }
 
@@ -268,9 +198,9 @@ impl EngineLoop for GpuLoop {
         Ok(Box::new(Self {
             cpu_slot: core_id,
             gpu_id: 0,
-            buffers: Arc::new(Mutex::new(BufferPool::new())),
+            buffers: Arc::new(Mutex::new(BufferPool::new(0))),
         }))
-        // this is where the process pool would be launched and the buffer pool initialised
+        // this is where the process pool would be launched
     }
 
     fn run(
