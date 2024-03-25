@@ -1,4 +1,7 @@
-#[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "wasm")))]
+#[cfg(all(
+    test,
+    any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "gpu")
+))]
 #[allow(clippy::module_inception)]
 mod compute_driver_tests {
     use crate::{

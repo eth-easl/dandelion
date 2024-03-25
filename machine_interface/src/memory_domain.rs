@@ -5,7 +5,7 @@ pub mod cheri;
 pub mod gpu;
 pub mod malloc;
 pub mod mmap;
-#[cfg(feature = "mmu")]
+#[cfg(any(feature = "mmu", feature = "gpu"))]
 pub mod mmu;
 pub mod read_only;
 #[cfg(feature = "wasm")]
@@ -28,7 +28,7 @@ pub enum ContextType {
     ReadOnly(Box<read_only::ReadOnlyContext>),
     #[cfg(feature = "cheri")]
     Cheri(Box<cheri::CheriContext>),
-    #[cfg(feature = "mmu")]
+    #[cfg(any(feature = "mmu", feature = "gpu"))]
     Mmu(Box<mmu::MmuContext>),
     #[cfg(feature = "wasm")]
     Wasm(Box<wasm::WasmContext>),
@@ -44,7 +44,7 @@ impl ContextTrait for ContextType {
             ContextType::ReadOnly(context) => context.write(offset, data),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.write(offset, data),
-            #[cfg(feature = "mmu")]
+            #[cfg(any(feature = "mmu", feature = "gpu"))]
             ContextType::Mmu(context) => context.write(offset, data),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.write(offset, data),
@@ -59,7 +59,7 @@ impl ContextTrait for ContextType {
             ContextType::ReadOnly(context) => context.read(offset, read_buffer),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.read(offset, read_buffer),
-            #[cfg(feature = "mmu")]
+            #[cfg(any(feature = "mmu", feature = "gpu"))]
             ContextType::Mmu(context) => context.read(offset, read_buffer),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.read(offset, read_buffer),

@@ -8,6 +8,7 @@ use crate::{
     memory_domain::{Context, ContextTrait, ContextType},
     DataRequirementList, DataSet,
 };
+use core_affinity::CoreId;
 use dandelion_commons::{DandelionError, DandelionResult};
 use libc::c_void;
 use std::{collections::HashMap, ptr::null, sync::Arc, thread};
@@ -152,12 +153,16 @@ fn get_grid_size(
 }
 
 fn gpu_run(
+    cpu_slot: usize,
     gpu_id: u8,
     config: GpuConfig,
     mut context: Context,
     output_names: Arc<Vec<String>>,
 ) -> DandelionResult<Context> {
-    // TODO: handle errors
+    if !core_affinity::set_for_current(CoreId { id: cpu_slot }) {
+        return Err(DandelionError::EngineResourceError);
+    }
+
     let ContextType::Mmu(ref mmu_context) = context.context else {
         return Err(DandelionError::ConfigMissmatch);
     };
@@ -238,7 +243,6 @@ fn gpu_run(
 pub struct GpuLoop {
     cpu_slot: u8, // needed to set processes to run on that core
     gpu_id: u8,
-    // TODO: runner process pool
 }
 
 impl EngineLoop for GpuLoop {
@@ -267,11 +271,14 @@ impl EngineLoop for GpuLoop {
             &output_sets,
         )?;
 
-        // in thread for now, in process pool eventually; TODO: add cpu_slot affinity?
+        // in thread for now, in process pool eventually
+        let cpu_slot_clone = self.cpu_slot as usize;
         let gpu_id_clone = self.gpu_id;
         let config_clone = config.clone();
         let outputs = output_sets.clone();
-        let handle = thread::spawn(move || gpu_run(gpu_id_clone, config_clone, context, outputs));
+        let handle = thread::spawn(move || {
+            gpu_run(cpu_slot_clone, gpu_id_clone, config_clone, context, outputs)
+        });
         let mut context = match handle.join() {
             Ok(res) => res?,
             Err(_) => return Err(DandelionError::EngineError),
