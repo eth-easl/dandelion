@@ -25,7 +25,13 @@ pub type StreamT = *const c_void;
 pub const DEFAULT_STREAM: StreamT = null();
 
 // has to be pub to allow address-getting when preparing args
-pub struct DevicePointer(pub *const c_void);
+pub struct DevicePointer {
+    pub ptr: *const c_void,
+    pub size: usize,
+}
+
+unsafe impl Send for DevicePointer {}
+unsafe impl Sync for DevicePointer {}
 
 #[link(name = "amdhip64")]
 extern "C" {
@@ -158,11 +164,11 @@ impl DevicePointer {
         checked_call!(hipMalloc(&mut ret as *mut *const c_void, size));
         // zero out memory
         checked_call!(hipMemset(ret, 0, size));
-        Ok(Self(ret))
+        Ok(Self { ptr: ret, size })
     }
 
-    pub fn zero_out(&mut self, size: usize) -> DandelionResult<()> {
-        checked_call!(hipMemset(self.0, 0, size));
+    pub fn zero_out(&mut self) -> DandelionResult<()> {
+        checked_call!(hipMemset(self.ptr, 0, self.size));
         Ok(())
     }
 }
@@ -170,7 +176,7 @@ impl DevicePointer {
 impl Drop for DevicePointer {
     fn drop(&mut self) {
         unsafe {
-            if hipFree(self.0) != 0 {
+            if hipFree(self.ptr) != 0 {
                 panic!("Freeing a device pointer failed (this shouldn't happen)");
             }
         }
@@ -184,7 +190,7 @@ pub fn memcpy_h_to_d(
     size_bytes: usize,
 ) -> DandelionResult<()> {
     checked_call!(hipMemcpyHtoD(
-        dst.0.byte_offset(dev_offset),
+        dst.ptr.byte_offset(dev_offset),
         src,
         size_bytes
     ));
@@ -196,6 +202,6 @@ pub fn memcpy_d_to_h(
     src: &DevicePointer,
     size_bytes: usize,
 ) -> DandelionResult<()> {
-    checked_call!(hipMemcpyDtoH(dst, src.0, size_bytes));
+    checked_call!(hipMemcpyDtoH(dst, src.ptr, size_bytes));
     Ok(())
 }

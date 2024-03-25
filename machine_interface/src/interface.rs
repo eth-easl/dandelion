@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 
 use crate::{
-    function_driver::compute_driver::gpu::hip::{self, DevicePointer},
+    function_driver::compute_driver::gpu::{
+        buffer_pool::BufferPool,
+        hip::{self, DevicePointer},
+    },
     memory_domain::{Context, ContextState, ContextTrait},
     DataItem, DataSet, Position,
 };
@@ -129,7 +132,8 @@ pub fn write_gpu_outputs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     system_data_offset: usize,
     base: *mut u8,
     output_set_names: &[String],
-    device_buffers: &HashMap<String, (DevicePointer, usize)>,
+    device_buffers: &HashMap<String, (usize, usize)>,
+    buffer_pool: &BufferPool,
 ) -> DandelionResult<()> {
     // read the system buffer
     let mut system_struct = DandelionSystemData::<PtrT, SizeT>::default();
@@ -160,12 +164,13 @@ pub fn write_gpu_outputs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     }
     for (i, output_name) in output_set_names.iter().enumerate() {
         // alignment shouldn't really make a huge difference
-        let (dev_ptr, size) = device_buffers
+        let (dev_ptr_idx, size) = device_buffers
             .get(output_name)
             .ok_or(DandelionError::ConfigMissmatch)?;
         let buf_offset = context.get_free_space(*size, 8)?;
 
         let src = unsafe { base.byte_offset(buf_offset as isize) } as *const c_void;
+        let dev_ptr = buffer_pool.get(*dev_ptr_idx);
         hip::memcpy_d_to_h(src, dev_ptr, *size)?;
 
         output_buffers.push(IoBufferDescriptor {

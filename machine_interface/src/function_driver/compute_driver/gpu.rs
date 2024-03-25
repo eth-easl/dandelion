@@ -11,13 +11,20 @@ use crate::{
 use core_affinity::CoreId;
 use dandelion_commons::{DandelionError, DandelionResult};
 use libc::c_void;
-use std::{collections::HashMap, ptr::null, sync::Arc, thread};
+use std::{
+    collections::HashMap,
+    ptr::null,
+    sync::{Arc, Mutex},
+    thread,
+};
 
 use self::{
+    buffer_pool::BufferPool,
     gpu_utils::{Action, Argument, BufferSizing, GridSizing},
     hip::{DevicePointer, DEFAULT_STREAM},
 };
 
+pub(crate) mod buffer_pool;
 pub(crate) mod gpu_utils;
 pub(crate) mod hip;
 
@@ -40,7 +47,7 @@ pub fn dummy_run(gpu_loop: &mut GpuLoop) -> DandelionResult<()> {
     let array = hip::DevicePointer::try_new(arr_size)?;
 
     let args: [*const c_void; 2] = [
-        &array.0 as *const _ as *const c_void,
+        &array.ptr as *const _ as *const c_void,
         &arr_elem as *const _ as *const c_void,
     ];
 
@@ -130,7 +137,7 @@ fn copy_data_to_device(
 // subject to change; not super happy with this
 fn get_grid_size(
     gs: &GridSizing,
-    buffers: &HashMap<String, (DevicePointer, usize)>,
+    buffers: &HashMap<String, (usize, usize)>,
 ) -> DandelionResult<u32> {
     match gs {
         GridSizing::Absolute(size) => Ok(*size),
@@ -156,6 +163,7 @@ fn gpu_run(
     cpu_slot: usize,
     gpu_id: u8,
     config: GpuConfig,
+    buffer_pool: Arc<Mutex<BufferPool>>,
     mut context: Context,
     output_names: Arc<Vec<String>>,
 ) -> DandelionResult<Context> {
@@ -169,26 +177,27 @@ fn gpu_run(
     let base = mmu_context.storage.as_ptr();
 
     hip::set_device(gpu_id)?;
+    // TODO: disable device-side malloc
 
-    // TODO: move to pool of buffers approach
-    let mut buffers: HashMap<String, (DevicePointer, usize)> = HashMap::new();
+    let mut buffer_pool = buffer_pool.lock().unwrap();
+    // bufname -> (index in buffer pool, local size)
+    let mut buffers: HashMap<String, (usize, usize)> = HashMap::new();
     for name in &config.blueprint.inputs {
         let size = get_data_length(name, &context)?;
-        let dev_ptr = hip::DevicePointer::try_new(size)?;
-        copy_data_to_device(name, &context, base, &dev_ptr)?;
-        buffers.insert(name.clone(), (dev_ptr, size));
+        let idx = buffer_pool.find_buffer(size)?;
+        copy_data_to_device(name, &context, base, buffer_pool.get(idx))?;
+        buffers.insert(name.clone(), (idx, size));
     }
     for (name, size) in &config.blueprint.buffers {
         match size {
             BufferSizing::Absolute(bytes) => {
-                buffers.insert(name.clone(), (hip::DevicePointer::try_new(*bytes)?, *bytes));
+                let idx = buffer_pool.find_buffer(*bytes)?;
+                buffers.insert(name.clone(), (idx, *bytes));
             }
             BufferSizing::Sizeof(id) => {
-                let size_id = buffers.get(id).ok_or(DandelionError::ConfigMissmatch)?.1;
-                buffers.insert(
-                    name.clone(),
-                    (hip::DevicePointer::try_new(size_id)?, size_id),
-                );
+                let size = buffers.get(id).ok_or(DandelionError::ConfigMissmatch)?.1;
+                let idx = buffer_pool.find_buffer(size)?;
+                buffers.insert(name.clone(), (idx, size));
             }
         }
     }
@@ -200,7 +209,9 @@ fn gpu_run(
                 for arg in args {
                     match arg {
                         Argument::Ptr(id) => {
-                            params.push(&buffers.get(id).unwrap().0 .0 as *const _ as *const c_void)
+                            let idx = buffers.get(id).unwrap().0;
+                            let addr = &buffer_pool.get(idx).ptr;
+                            params.push(addr as *const _ as *const c_void)
                         }
                         Argument::Sizeof(id) => {
                             params.push(&buffers.get(id).unwrap().1 as *const _ as *const c_void)
@@ -234,8 +245,13 @@ fn gpu_run(
         base,
         &output_names,
         &buffers,
+        &buffer_pool,
     )?;
 
+    // Mark buffers as useable again
+    buffers
+        .values()
+        .for_each(|(idx, _)| buffer_pool.give_back(*idx));
     Ok(context)
 }
 
@@ -243,6 +259,7 @@ fn gpu_run(
 pub struct GpuLoop {
     cpu_slot: u8, // needed to set processes to run on that core
     gpu_id: u8,
+    buffers: Arc<Mutex<BufferPool>>,
 }
 
 impl EngineLoop for GpuLoop {
@@ -251,6 +268,7 @@ impl EngineLoop for GpuLoop {
         Ok(Box::new(Self {
             cpu_slot: core_id,
             gpu_id: 0,
+            buffers: Arc::new(Mutex::new(BufferPool::new())),
         }))
         // this is where the process pool would be launched and the buffer pool initialised
     }
@@ -276,8 +294,16 @@ impl EngineLoop for GpuLoop {
         let gpu_id_clone = self.gpu_id;
         let config_clone = config.clone();
         let outputs = output_sets.clone();
+        let buffer_pool = self.buffers.clone();
         let handle = thread::spawn(move || {
-            gpu_run(cpu_slot_clone, gpu_id_clone, config_clone, context, outputs)
+            gpu_run(
+                cpu_slot_clone,
+                gpu_id_clone,
+                config_clone,
+                buffer_pool,
+                context,
+                outputs,
+            )
         });
         let mut context = match handle.join() {
             Ok(res) => res?,
