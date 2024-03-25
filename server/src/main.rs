@@ -518,6 +518,8 @@ fn main() -> () {
         }
         info!("Dispatcher running on core {}", core_id);
     });
+    runtime_builder.global_queue_interval(10);
+    runtime_builder.event_interval(10);
     let runtime = runtime_builder.build().unwrap();
 
     // set up dispatcher configuration basics
