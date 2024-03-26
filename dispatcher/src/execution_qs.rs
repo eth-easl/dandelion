@@ -1,5 +1,5 @@
-use crossbeam::channel::TryRecvError;
-use dandelion_commons::{records::Recorder, DandelionResult};
+use crossbeam::channel::{TryRecvError, TrySendError};
+use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
 use log::error;
 use machine_interface::{
     function_driver::{EngineArguments, WorkQueue},
@@ -46,7 +46,10 @@ impl EngineQueue {
         let (promise, debt) = Promise::new();
         match self.queue_in.try_send((args, debt)) {
             Ok(()) => (),
-            Err(err) => error!("Failed to enqueu work with error: {:?}", err),
+            Err(TrySendError::Disconnected(_)) => {
+                error!("Failed to enqueu work, workqueue has been disconnected")
+            }
+            Err(TrySendError::Full(_)) => return Err(DandelionError::WorkQueueFull),
         }
         return *promise.await;
     }

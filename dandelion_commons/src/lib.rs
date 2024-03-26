@@ -117,6 +117,8 @@ pub enum DandelionError {
     // errors from the functions
     /// Function indicated it failed
     FunctionError(i32),
+    /// Work queue from the dispatcher to the engines is full
+    WorkQueueFull,
 }
 
 pub type DandelionResult<T> = std::result::Result<T, DandelionError>;
