@@ -2,19 +2,40 @@ use crate::DandelionResult;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RecordPoint {
-    Arrival,                 // Function request arrives at the server
-    QueueFunctionDispatcher, // Queue request in the dispatcher
-    PrepareEnvQueue,         // Queue to load the function code + ctx
-    LoadQueue,               // Load function code (async)
-    LoadStart,               // Start loading code + alloc ctx
-    TransferStart,           // Start data transfer to the ctx (async)
-    TransferEnd,             // End data transfer to the ctx (async)
-    GetEngineQueue,          // Queue to get an engine for execution
-    ExecutionQueue,          // Queue to get the function executed on the engine
-    EngineStart,             // Start execution of the function on the engine (sync)
-    EngineEnd,               // End execution of the function on the engine (sync)
-    FutureReturn,            // Return from execution engine
-    EndService,              // Send response back to the client
+    /// Function request arrives at the server
+    Arrival,
+    /// Queue request in the dispatcher
+    QueueFunctionDispatcher,
+    /// Queue to load the function code + ctx
+    PrepareEnvQueue,
+    /// Load function code (async)
+    LoadQueue,
+    /// Start loading code + alloc ctx
+    LoadStart,
+    /// End loading coad and ctx allocation
+    LoadEnd,
+    /// Promise await on loading returned
+    LoadDequeu,
+    /// Enqueue transfer on work queue
+    TransferQueue,
+    /// Start data transfer to the ctx (async)
+    TransferStart,
+    /// End data transfer to the ctx (async)
+    TransferEnd,
+    /// Promise await on transfer returned
+    TransferDequeueu,
+    /// Queue to get an engine for execution
+    GetEngineQueue,
+    /// Queue to get the function executed on the engine
+    ExecutionQueue,
+    /// Start execution of the function on the engine (sync)
+    EngineStart,
+    /// End execution of the function on the engine (sync)
+    EngineEnd,
+    /// Return from execution engine
+    FutureReturn,
+    /// Send response back to the client
+    EndService,
 }
 
 #[cfg(feature = "timestamp")]
@@ -90,7 +111,7 @@ mod timestamp {
         pub fn init() -> Self {
             let pool_size = match env::var("DANDELION_TIMESTAMP_COUNT") {
                 Ok(container_count_string) => container_count_string.parse().unwrap_or(100),
-                Err(_) => 100,
+                Err(_) => 1000,
             };
             let zero_time = Instant::now();
             let mut free_pool = Vec::new();

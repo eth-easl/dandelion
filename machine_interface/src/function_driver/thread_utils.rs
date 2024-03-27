@@ -63,8 +63,15 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                     destination_set_name,
                     source_set_index,
                     source_item_index,
-                    recorder,
+                    mut recorder,
                 } = transfer_args;
+                match recorder.record(RecordPoint::TransferStart) {
+                    Ok(()) => (),
+                    Err(err) => {
+                        debt.fulfill(Box::new(Err(err)));
+                        continue;
+                    }
+                }
                 let transfer_result = memory_domain::transfer_data_item(
                     &mut destination,
                     &source,
@@ -74,9 +81,16 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                     destination_set_name.as_str(),
                     source_set_index,
                     source_item_index,
-                )
-                .and(Ok((destination, recorder)));
-                debt.fulfill(Box::new(transfer_result));
+                );
+                match recorder.record(RecordPoint::TransferEnd) {
+                    Ok(()) => (),
+                    Err(err) => {
+                        debt.fulfill(Box::new(Err(err)));
+                        continue;
+                    }
+                }
+                let transfer_return = transfer_result.and(Ok((destination, recorder)));
+                debt.fulfill(Box::new(transfer_return));
                 continue;
             }
             EngineArguments::Shutdown(resource_returner) => {

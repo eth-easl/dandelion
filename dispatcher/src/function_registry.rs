@@ -422,6 +422,7 @@ impl FunctionRegistry {
             // this happens when the same binary is loaded independently multiple times,
             // need to figure out how to avoid this
         }
+        recorder.record(RecordPoint::LoadEnd)?;
         return Ok((function_context, function_config, recorder));
     }
 }

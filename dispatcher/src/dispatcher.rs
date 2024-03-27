@@ -384,7 +384,7 @@ impl Dispatcher {
                 recorder,
             )
             .await?;
-        recorder.record(RecordPoint::TransferStart)?;
+        recorder.record(RecordPoint::LoadDequeu)?;
         // make sure all input sets are there at the correct index
         let mut static_sets = BTreeSet::new();
         for (function_set_index, (in_set_name, in_composition_set)) in
@@ -409,9 +409,11 @@ impl Dispatcher {
                         destination_set_name: in_set_name.clone(),
                         source_set_index: subset,
                         source_item_index: item,
-                        recorder,
+                        recorder: recorder.get_sub_recorder().unwrap(),
                     });
-                    (function_context, recorder) = transfer_queue.enqueu_work(args).await?;
+                    recorder.record(RecordPoint::TransferQueue)?;
+                    (function_context, _) = transfer_queue.enqueu_work(args).await?;
+                    recorder.record(RecordPoint::TransferDequeueu)?;
                     function_buffer += 1;
                 }
             }
@@ -433,13 +435,14 @@ impl Dispatcher {
                     destination_set_name: set_name.clone(),
                     source_set_index: subset,
                     source_item_index: item,
-                    recorder,
+                    recorder: recorder.get_sub_recorder().unwrap(),
                 });
-                (function_context, recorder) = transfer_queue.enqueu_work(args).await?;
+                recorder.record(RecordPoint::TransferQueue).unwrap();
+                (function_context, _) = transfer_queue.enqueu_work(args).await?;
+                recorder.record(RecordPoint::TransferDequeueu).unwrap();
                 function_item += 1;
             }
         }
-        recorder.record(RecordPoint::TransferEnd)?;
         return Ok((function_context, function_config, metadata));
     }
 

@@ -494,7 +494,10 @@ fn main() -> () {
     }
 
     // find available resources
-    let num_cores = u8::try_from(num_cpus::get_physical()).unwrap();
+    let num_cores = std::env::var("NUM_TOTAL_CORES").map_or_else(
+        |_e| u8::try_from(num_cpus::get_physical()).unwrap(),
+        |n| n.parse::<u8>().unwrap(),
+    );
     let num_virt_cores = u8::try_from(core_affinity::get_core_ids().unwrap().len()).unwrap();
     let threads_per_core = num_virt_cores / num_cores;
     // TODO: This calculation makes sense only for running matmul-128x128 workload on MMU engines
