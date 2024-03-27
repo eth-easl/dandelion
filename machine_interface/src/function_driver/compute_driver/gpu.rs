@@ -45,7 +45,7 @@ pub fn dummy_run(gpu_loop: &mut GpuLoop) -> DandelionResult<()> {
     let arr_elem: usize = 256;
     let elem_size: usize = std::mem::size_of::<f64>();
     let arr_size: usize = arr_elem * elem_size;
-    let array = hip::DevicePointer::try_new(arr_size)?;
+    let array = hip::DeviceAllocation::try_new(arr_size)?;
 
     let args: [*const c_void; 2] = [
         &array.ptr as *const _ as *const c_void,
@@ -113,19 +113,19 @@ fn gpu_run(
     let mut buffers: HashMap<String, (usize, usize)> = HashMap::new();
     for name in &config.blueprint.inputs {
         let size = get_data_length(name, &context)?;
-        let idx = buffer_pool.find_buffer(size)?;
-        copy_data_to_device(name, &context, base, buffer_pool.get(idx))?;
+        let idx = buffer_pool.alloc_buffer(size)?;
+        copy_data_to_device(name, &context, base, &buffer_pool.get(idx)?)?;
         buffers.insert(name.clone(), (idx, size));
     }
     for (name, size) in &config.blueprint.buffers {
         match size {
             BufferSizing::Absolute(bytes) => {
-                let idx = buffer_pool.find_buffer(*bytes)?;
+                let idx = buffer_pool.alloc_buffer(*bytes)?;
                 buffers.insert(name.clone(), (idx, *bytes));
             }
             BufferSizing::Sizeof(id) => {
                 let size = buffers.get(id).ok_or(DandelionError::ConfigMissmatch)?.1;
-                let idx = buffer_pool.find_buffer(size)?;
+                let idx = buffer_pool.alloc_buffer(size)?;
                 buffers.insert(name.clone(), (idx, size));
             }
         }
@@ -135,11 +135,14 @@ fn gpu_run(
         match action {
             Action::ExecKernel(name, args, launch_config) => {
                 let mut params: Vec<*const c_void> = Vec::with_capacity(args.len());
+                let mut ptrs = vec![];
                 for arg in args {
                     match arg {
                         Argument::Ptr(id) => {
                             let idx = buffers.get(id).unwrap().0;
-                            let addr = &buffer_pool.get(idx).ptr;
+                            let dev_ptr = buffer_pool.get(idx)?;
+                            ptrs.push(dev_ptr);
+                            let addr = &ptrs.last().unwrap().ptr;
                             params.push(addr as *const _ as *const c_void)
                         }
                         Argument::Sizeof(id) => {
@@ -178,9 +181,7 @@ fn gpu_run(
     )?;
 
     // Mark buffers as useable again
-    buffers
-        .values()
-        .for_each(|(idx, _)| buffer_pool.give_back(*idx));
+    buffer_pool.dealloc_all();
 
     Ok(context)
 }
@@ -198,7 +199,7 @@ impl EngineLoop for GpuLoop {
         Ok(Box::new(Self {
             cpu_slot: core_id,
             gpu_id: 0,
-            buffers: Arc::new(Mutex::new(BufferPool::new(0))),
+            buffers: Arc::new(Mutex::new(BufferPool::try_new(0)?)),
         }))
         // this is where the process pool would be launched
     }
@@ -297,7 +298,7 @@ impl Driver for GpuDriver {
             FunctionConfig::GpuConfig(config_parsing::parse_config(&function_path)?)
         };
 
-        let total_size = 0x10000usize;
+        let total_size = 0usize;
 
         let mut context = static_domain.acquire_context(total_size)?;
 

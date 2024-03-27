@@ -1,45 +1,81 @@
 use dandelion_commons::{DandelionError, DandelionResult};
 
-use super::hip::{self, DevicePointer};
+use super::hip::{self, DeviceAllocation, DevicePointer};
 
+#[allow(non_upper_case_globals)]
+const Gi: usize = 1 << 30;
+
+// REGION_SIZE * #engines_on_device should never exceed total VRAM capacity (64GiB for MI210)
+const REGION_SIZE: usize = 16 * Gi;
+
+#[derive(Debug)]
+struct Buffer {
+    offset: usize,
+    length: usize,
+}
+
+impl Buffer {
+    fn sentinel() -> Self {
+        Self {
+            offset: 0,
+            length: 0,
+        }
+    }
+}
 pub struct BufferPool {
     // (ptr, ptr in use)
-    buffers: Vec<(DevicePointer, bool)>,
+    allocation: DeviceAllocation,
+    buffers: Vec<Buffer>,
 }
 
 impl BufferPool {
-    pub fn new(gpu_id: u8) -> Self {
-        let buffers = vec![];
-        Self { buffers }
+    pub fn try_new(gpu_id: u8) -> DandelionResult<Self> {
+        hip::set_device(gpu_id)?;
+
+        let mut allocation = hip::DeviceAllocation::try_new(REGION_SIZE)?;
+        allocation.zero_out()?;
+        // sentinel buffer to simplify logic
+        let buffers = vec![Buffer::sentinel()];
+        Ok(Self {
+            allocation,
+            buffers,
+        })
     }
 
-    // TODO: potentially coalesce / more sophisticated matching method (best fit)?
-    pub fn find_buffer(&mut self, size: usize) -> DandelionResult<usize> {
-        let idx = match self
+    pub fn alloc_buffer(&mut self, size: usize) -> DandelionResult<usize> {
+        macro_rules! round_to_eight {
+            ($e: expr) => {
+                ($e + 7) / 8 * 8
+            };
+        }
+        // round size to 8 byte alignment; TODO: verfiy if different should be used
+        let length = round_to_eight!(size);
+
+        let last = self
             .buffers
-            .iter()
-            .position(|(dev_ptr, used)| !*used && dev_ptr.size >= size)
-        {
-            Some(idx) => {
-                self.buffers[idx].1 = true;
-                idx
-            }
-            None => {
-                // TODO: maybe round here?
-                let dev_ptr = hip::DevicePointer::try_new(size)?;
-                self.buffers.push((dev_ptr, true));
-                self.buffers.len() - 1
-            }
-        };
-        self.buffers[idx].0.zero_out()?;
-        Ok(idx)
+            .last()
+            .expect("buffers should always hold sentinel");
+
+        let offset = round_to_eight!(last.offset + last.length);
+
+        if offset + length > self.allocation.size {
+            return Err(DandelionError::OutOfMemory);
+        }
+
+        self.buffers.push(Buffer { offset, length });
+
+        Ok(self.buffers.len() - 1)
     }
 
-    pub fn get(&self, idx: usize) -> &DevicePointer {
-        &self.buffers[idx].0
+    pub fn get(&self, idx: usize) -> DandelionResult<DevicePointer> {
+        let buffer = self.buffers.get(idx).ok_or(DandelionError::EngineError)?;
+        Ok(DevicePointer {
+            ptr: unsafe { self.allocation.ptr.byte_add(buffer.offset) },
+        })
     }
 
-    pub fn give_back(&mut self, idx: usize) {
-        self.buffers[idx].1 = false;
+    pub fn dealloc_all(&mut self) {
+        self.buffers.clear();
+        self.buffers.push(Buffer::sentinel());
     }
 }

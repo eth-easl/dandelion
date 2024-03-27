@@ -33,6 +33,7 @@ tokio = { version = "1", features = ["full"] }
 hyper = { version = "0.14", optional = true, features = ["http1", "http2", "client", "runtime"]}
 libloading = { version = "0.8.1" }
 log = "0.4.20"
+lazy_static = "1.4.0"
 
 # disable benchmarks in library, to not run all unit tests on every benchmark
 # also needs to be disabled for criterion flags to work that are not available for tests

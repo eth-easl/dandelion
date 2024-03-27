@@ -85,6 +85,9 @@ mod compute_driver_tests {
             output_sets: Arc::new(Vec::new()),
             recorder: recorder.clone(),
         }));
+        queue.enqueu(EngineArguments::Shutdown(|_| {
+            // GPU allocation automatically dropped when Engine dropped
+        }));
         let _ = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -667,29 +670,32 @@ mod compute_driver_tests {
                     compute_driver_tests::compute_driver_tests::{
                         get_expected_mat, prepare_engine_and_function,
                     },
-                    gpu::{config_parsing::dummy_config, dummy_run, GpuDriver, GpuLoop},
+                    gpu::{dummy_run, GpuDriver, GpuLoop},
                 },
                 thread_utils::EngineLoop,
-                ComputeResource, Driver, EngineArguments, FunctionArguments, FunctionConfig,
-                GpuConfig,
+                ComputeResource, Driver, EngineArguments, FunctionArguments,
             },
-            memory_domain::{
-                gpu::GpuContext, mmu::MmuMemoryDomain, Context, ContextTrait, MemoryDomain,
-                MemoryResource,
-            },
+            memory_domain::{mmu::MmuMemoryDomain, ContextTrait, MemoryResource},
             DataItem, DataSet, Position,
         };
 
         use super::engine_minimal;
 
+        // To force tests to run sequentially as we might otherwise run out of GPU memory
+        lazy_static::lazy_static! {
+            static ref GPU_LOCK: Mutex<()> = Mutex::new(());
+        }
+
         #[test]
         fn run_dummy_gpu_payload() {
+            let _lock = GPU_LOCK.lock().unwrap();
             let mut runner = GpuLoop::init(0).unwrap();
             assert!(dummy_run(&mut runner).is_ok());
         }
 
         #[test]
         fn minimal() {
+            let _lock = GPU_LOCK.lock().unwrap();
             let driver: Box<dyn Driver> = Box::new(GpuDriver {});
             engine_minimal::<MmuMemoryDomain>(
                 "foo",
@@ -701,6 +707,7 @@ mod compute_driver_tests {
 
         #[test]
         fn basic_input_output() {
+            let _lock = GPU_LOCK.lock().unwrap();
             let driver: Box<dyn Driver> = Box::new(GpuDriver {});
             let (mut function_context, config, queue) =
                 prepare_engine_and_function::<MmuMemoryDomain>(
@@ -724,7 +731,6 @@ mod compute_driver_tests {
                     key: 0,
                 }],
             }));
-            eprintln!("foo: {:?}", function_context.content);
             let archive = Arc::new(Mutex::new(Archive::new()));
             let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
             let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
@@ -732,6 +738,9 @@ mod compute_driver_tests {
                 context: function_context,
                 output_sets: Arc::new(vec!["A".into()]),
                 recorder,
+            }));
+            queue.enqueu(EngineArguments::Shutdown(|_| {
+                // GPU allocation automatically dropped when Engine dropped
             }));
             let (result_context, mut result_recorder) =
                 tokio::runtime::Builder::new_current_thread()
@@ -760,6 +769,7 @@ mod compute_driver_tests {
 
         #[test]
         fn engine_matmul_3x3_loop() {
+            let _lock = GPU_LOCK.lock().unwrap();
             let filename =
                 "/home/smithj/dandelion/machine_interface/hip_interface/matmul_loop.json";
             let dom_init = MemoryResource::None;
@@ -807,6 +817,9 @@ mod compute_driver_tests {
                 output_sets: Arc::new(vec![String::from("B")]),
                 recorder,
             }));
+            queue.enqueu(EngineArguments::Shutdown(|_| {
+                // GPU allocation automatically dropped when Engine dropped
+            }));
             let (result_context, mut result_recorder) =
                 tokio::runtime::Builder::new_current_thread()
                     .build()
@@ -838,6 +851,7 @@ mod compute_driver_tests {
 
         #[test]
         fn engine_matmul_size_sweep_parallel() {
+            let _lock = GPU_LOCK.lock().unwrap();
             let filename =
                 "/home/smithj/dandelion/machine_interface/hip_interface/matmul_para.json";
             let dom_init = MemoryResource::None;
@@ -893,6 +907,9 @@ mod compute_driver_tests {
                     context: function_context,
                     output_sets: Arc::new(vec![String::from("B")]),
                     recorder,
+                }));
+                queue.enqueu(EngineArguments::Shutdown(|_| {
+                    // GPU allocation automatically dropped when Engine dropped
                 }));
                 let (result_context, mut result_recorder) =
                     tokio::runtime::Builder::new_current_thread()

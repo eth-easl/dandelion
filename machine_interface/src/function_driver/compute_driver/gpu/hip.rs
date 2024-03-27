@@ -25,13 +25,18 @@ pub type StreamT = *const c_void;
 pub const DEFAULT_STREAM: StreamT = null();
 
 // has to be pub to allow address-getting when preparing args
-pub struct DevicePointer {
+pub struct DeviceAllocation {
     pub ptr: *const c_void,
     pub size: usize,
 }
 
-unsafe impl Send for DevicePointer {}
-unsafe impl Sync for DevicePointer {}
+unsafe impl Send for DeviceAllocation {}
+unsafe impl Sync for DeviceAllocation {}
+
+// Should be associated with a DeviceAllocation; maybe use lifetimes but they are annoying
+pub struct DevicePointer {
+    pub ptr: *const c_void,
+}
 
 #[link(name = "amdhip64")]
 extern "C" {
@@ -158,7 +163,7 @@ pub fn malloc(ptr: &mut *const c_void, size: size_t) -> ErrorT {
     unsafe { hipMalloc(ptr as *mut *const c_void, size) }
 }
 
-impl DevicePointer {
+impl DeviceAllocation {
     pub fn try_new(size: usize) -> DandelionResult<Self> {
         let mut ret: *const c_void = null();
         checked_call!(hipMalloc(&mut ret as *mut *const c_void, size));
@@ -173,8 +178,9 @@ impl DevicePointer {
     }
 }
 
-impl Drop for DevicePointer {
+impl Drop for DeviceAllocation {
     fn drop(&mut self) {
+        eprintln!("Dropping {:?} @ {:?}", self.size, self.ptr);
         unsafe {
             if hipFree(self.ptr) != 0 {
                 panic!("Freeing a device pointer failed (this shouldn't happen)");

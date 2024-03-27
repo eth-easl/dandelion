@@ -4,7 +4,9 @@ use dandelion_commons::{DandelionError, DandelionResult};
 use libc::c_void;
 use std::collections::HashMap;
 
-use self::super::{config_parsing::GridSizing, hip, hip::DevicePointer};
+use self::super::{config_parsing::GridSizing, hip};
+
+use super::hip::DevicePointer;
 
 pub fn get_data_length(ident: &str, context: &Context) -> DandelionResult<usize> {
     let dataset = context
