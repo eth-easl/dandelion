@@ -169,7 +169,8 @@ fn gpu_run(
         }
     }
 
-    hip::device_synchronize()?;
+    // Not required, as hipMemcpy-s synchronise as well
+    // hip::device_synchronize()?;
 
     write_gpu_outputs::<usize, usize>(
         &mut context,

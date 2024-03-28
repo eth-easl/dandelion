@@ -180,7 +180,6 @@ impl DeviceAllocation {
 
 impl Drop for DeviceAllocation {
     fn drop(&mut self) {
-        eprintln!("Dropping {:?} @ {:?}", self.size, self.ptr);
         unsafe {
             if hipFree(self.ptr) != 0 {
                 panic!("Freeing a device pointer failed (this shouldn't happen)");

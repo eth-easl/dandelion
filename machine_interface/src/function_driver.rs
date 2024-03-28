@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Mutex};
 
 use crate::{
+    interface::DandelionSystemData,
     memory_domain::{Context, MemoryDomain},
     DataRequirementList, Position,
 };
@@ -17,9 +18,9 @@ use self::compute_driver::gpu::{config_parsing::ExecutionBlueprint, hip::Functio
 pub mod compute_driver;
 mod load_utils;
 pub mod system_driver;
-#[cfg(test)]
-mod test_queue;
-mod thread_utils;
+// #[cfg(test)]
+pub mod test_queue;
+pub mod thread_utils;
 
 #[derive(Clone)]
 pub struct ElfConfig {
@@ -96,7 +97,13 @@ impl Function {
                 Ok(context)
             }
             // no need to occupy space or anything like that as long as context is only inputs/outputs
-            FunctionConfig::GpuConfig(_) => domain.acquire_context(ctx_size),
+            FunctionConfig::GpuConfig(_) => {
+                let mut ctxt = domain.acquire_context(ctx_size)?;
+                // Make sure sysdata struct isn't overwritten, 0 = system_data_offset
+                ctxt.occupy_space(0, std::mem::size_of::<DandelionSystemData<usize, usize>>())?;
+
+                Ok(ctxt)
+            }
         }
     }
 }

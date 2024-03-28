@@ -12,7 +12,7 @@ use crate::function_driver::GpuConfig;
 
 use super::hip;
 
-const SYSDATA_OFFSET: usize = 0x10000usize;
+const SYSDATA_OFFSET: usize = 0usize;
 
 // This is subject to change; not very happy with it
 #[derive(Deserialize, Serialize, Debug)]
