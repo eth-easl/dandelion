@@ -94,7 +94,7 @@ impl Debt {
 
 fn drop_promise_data(data_ptr: *const PromiseData) {
     let data = unsafe { &*data_ptr };
-    if data.references.fetch_sub(1, Ordering::SeqCst) == 0 {
+    if data.references.fetch_sub(1, Ordering::SeqCst) == 1 {
         let _ = unsafe { Box::from_raw(data_ptr as *mut PromiseData) };
     }
 }

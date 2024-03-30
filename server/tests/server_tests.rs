@@ -6,6 +6,7 @@ mod server_tests {
 
     use assert_cmd::prelude::*;
     use byteorder::{BigEndian, ReadBytesExt};
+    use dandelion_server::{DandelionRequest, InputItem, InputSet};
     use serde::Serialize;
     use std::{
         io::{BufRead, BufReader, Cursor, Read},
@@ -72,10 +73,22 @@ mod server_tests {
 
     fn send_matrix_request(endpoint: &str, function_name: String) {
         // call into function
-        let mat_request = MatrixRequest {
+        let mut data = Vec::new();
+        data.extend_from_slice(&i64::to_le_bytes(1));
+        data.extend_from_slice(&i64::to_le_bytes(1));
+        let data_size = data.len() as u64;
+        let mat_request = DandelionRequest {
             name: function_name,
-            cols: 1,
-            rows: 1,
+            sets: vec![InputSet {
+                identifier: String::from(""),
+                items: vec![InputItem {
+                    identifier: String::from(""),
+                    key: 0,
+                    data_start: 0,
+                    data_size,
+                }],
+            }],
+            data,
         };
 
         let client = reqwest::blocking::Client::new();

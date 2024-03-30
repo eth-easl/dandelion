@@ -15,7 +15,7 @@ pub enum RecordPoint {
     /// End loading coad and ctx allocation
     LoadEnd,
     /// Promise await on loading returned
-    LoadDequeu,
+    LoadDequeue,
     /// Enqueue transfer on work queue
     TransferQueue,
     /// Start data transfer to the ctx (async)
@@ -23,7 +23,7 @@ pub enum RecordPoint {
     /// End data transfer to the ctx (async)
     TransferEnd,
     /// Promise await on transfer returned
-    TransferDequeueu,
+    TransferDequeue,
     /// Queue to get an engine for execution
     GetEngineQueue,
     /// Queue to get the function executed on the engine
@@ -92,7 +92,8 @@ mod timestamp {
             let current_span = self
                 .spans_latest
                 .0
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
             Self {
                 parent_span: self.current_span,
                 current_span,

@@ -384,7 +384,7 @@ impl Dispatcher {
                 recorder,
             )
             .await?;
-        recorder.record(RecordPoint::LoadDequeu)?;
+        recorder.record(RecordPoint::LoadDequeue)?;
         // make sure all input sets are there at the correct index
         let mut static_sets = BTreeSet::new();
         for (function_set_index, (in_set_name, in_composition_set)) in
@@ -413,7 +413,7 @@ impl Dispatcher {
                     });
                     recorder.record(RecordPoint::TransferQueue)?;
                     (function_context, _) = transfer_queue.enqueu_work(args).await?;
-                    recorder.record(RecordPoint::TransferDequeueu)?;
+                    recorder.record(RecordPoint::TransferDequeue)?;
                     function_buffer += 1;
                 }
             }
@@ -439,7 +439,7 @@ impl Dispatcher {
                 });
                 recorder.record(RecordPoint::TransferQueue).unwrap();
                 (function_context, _) = transfer_queue.enqueu_work(args).await?;
-                recorder.record(RecordPoint::TransferDequeueu).unwrap();
+                recorder.record(RecordPoint::TransferDequeue).unwrap();
                 function_item += 1;
             }
         }

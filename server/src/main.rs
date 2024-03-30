@@ -1,6 +1,7 @@
 use bytes::Buf;
 use core_affinity::{self, CoreId};
 use dandelion_commons::records::{Archive, RecordPoint, Recorder};
+use dandelion_server::DandelionRequest;
 use dispatcher::{
     composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
     resource_pool::ResourcePool,
@@ -16,9 +17,7 @@ use log::{error, info};
 use machine_interface::{
     function_driver::ComputeResource,
     machine_config::EngineType,
-    memory_domain::{
-        mmap::MmapMemoryDomain, read_only::ReadOnlyContext, Context, ContextTrait, MemoryDomain,
-    },
+    memory_domain::{mmap::MmapMemoryDomain, ContextTrait, MemoryDomain},
     DataItem, DataSet, Position,
 };
 use serde::Deserialize;
@@ -28,7 +27,6 @@ use std::{
     collections::BTreeMap,
     convert::Infallible,
     io::{self, Write},
-    mem::size_of,
     net::SocketAddr,
     path::PathBuf,
     sync::{
@@ -156,25 +154,10 @@ async fn run_chain(
 async fn run_mat_func(
     dispatcher: Arc<Dispatcher>,
     is_cold: bool,
-    rows: usize,
-    cols: usize,
-    function_name: String,
+    request: DandelionRequest,
     mut recorder: Recorder,
 ) -> i64 {
-    let mat_size: usize = rows * cols;
-
-    // Initialize matrix if necessary
-    unsafe {
-        INIT_MATRIX.call_once(|| {
-            // TODO: add cols
-            DUMMY_MATRIX.push(rows as i64);
-            for i in 0..mat_size {
-                DUMMY_MATRIX.push(i as i64 + 1)
-            }
-        });
-    }
-
-    let input_context = unsafe { add_matmul_inputs(&mut DUMMY_MATRIX) };
+    let (name, input_context) = dandelion_server::parse_request(request);
 
     let inputs = vec![(
         0,
@@ -185,46 +168,13 @@ async fn run_mat_func(
         .record(RecordPoint::QueueFunctionDispatcher)
         .unwrap();
     let result = dispatcher
-        .queue_function_by_name(function_name, inputs, outputs, is_cold, recorder)
+        .queue_function_by_name(name, inputs, outputs, is_cold, recorder)
         .await
         .expect("Should get result from function")
         .remove(&0)
         .expect("Should have composition set 0");
 
     return get_checksum(result);
-}
-
-// Add the matrix multiplication inputs to the given context
-fn add_matmul_inputs(matrix: &'static mut Vec<i64>) -> Context {
-    // Allocate a new set entry
-    let matrix_size = matrix.len() * size_of::<i64>();
-    let mut context = ReadOnlyContext::new_static(matrix);
-    context.content.resize_with(1, || None);
-    let _ = context.occupy_space(0, matrix_size);
-
-    if let Some(set) = &mut context.content[0] {
-        set.buffers.push(DataItem {
-            ident: String::from(""),
-            data: Position {
-                offset: 0,
-                size: matrix_size,
-            },
-            key: 0,
-        });
-    } else {
-        context.content[0] = Some(DataSet {
-            ident: "".to_string(),
-            buffers: vec![DataItem {
-                ident: "".to_string(),
-                data: Position {
-                    offset: 0,
-                    size: matrix_size,
-                },
-                key: 0,
-            }],
-        });
-    }
-    return context;
 }
 
 // Given a result context, return the last element of the resulting matrix
@@ -250,13 +200,6 @@ fn get_checksum(composition_set: CompositionSet) -> i64 {
     return read_buffer[0];
 }
 
-#[derive(Deserialize)]
-struct MatrixRequest {
-    name: String,
-    rows: u64,
-    cols: u64,
-}
-
 async fn serve_request(
     is_cold: bool,
     req: Request<Body>,
@@ -269,15 +212,13 @@ async fn serve_request(
     let request_buf = hyper::body::to_bytes(req.into_body())
         .await
         .expect("Could not read request body");
-    let request_map: MatrixRequest =
+    let request: DandelionRequest =
         bson::from_slice(&request_buf).expect("Should be able to deserialize matrix request");
 
     let response_vec = run_mat_func(
         dispatcher,
         is_cold,
-        request_map.rows as usize,
-        request_map.cols as usize,
-        request_map.name,
+        request,
         recorder.get_sub_recorder().unwrap(),
     )
     .await
