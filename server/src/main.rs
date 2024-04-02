@@ -11,7 +11,7 @@ use hyper::{
     service::service_fn,
     Request, Response, StatusCode,
 };
-use log::{error, info};
+use log::{error, info, warn};
 use machine_interface::{
     function_driver::ComputeResource,
     machine_config::EngineType,
@@ -453,7 +453,7 @@ async fn service_loop(dispacher: Arc<Dispatcher>) {
 }
 
 fn main() -> () {
-    env_logger::init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
     // Initilize metric collection
     match TRACING_ARCHIVE.set(Archive::init()) {
@@ -466,8 +466,14 @@ fn main() -> () {
         |_e| u8::try_from(num_cpus::get_physical()).unwrap(),
         |n| n.parse::<u8>().unwrap(),
     );
-    let num_virt_cores = u8::try_from(core_affinity::get_core_ids().unwrap().len()).unwrap();
-    let threads_per_core = num_virt_cores / num_cores;
+    let num_phyiscal_cores = u8::try_from(num_cpus::get_physical()).unwrap();
+    let num_virt_cores = u8::try_from(num_cpus::get()).unwrap();
+    if num_phyiscal_cores != num_virt_cores {
+        warn!(
+            "Hyperthreading might be enabled detected {} logical and {} physical cores",
+            num_virt_cores, num_phyiscal_cores
+        );
+    }
     // TODO: This calculation makes sense only for running matmul-128x128 workload on MMU engines
     let num_dispatcher_cores = std::env::var("NUM_DISP_CORES")
         .map_or_else(|_e| (num_cores + 13) / 14, |n| n.parse::<u8>().unwrap());
@@ -507,16 +513,14 @@ fn main() -> () {
     #[cfg(any(feature = "cheri", feature = "wasm", feature = "mmu"))]
     pool_map.insert(
         engine_type,
-        (num_dispatcher_cores * threads_per_core..num_virt_cores)
-            .step_by(threads_per_core.into())
+        (num_dispatcher_cores..num_cores)
             .map(|code_id| ComputeResource::CPU(code_id))
             .collect(),
     );
     #[cfg(feature = "hyper_io")]
     pool_map.insert(
         EngineType::Hyper,
-        (0..num_dispatcher_cores * threads_per_core)
-            .step_by(threads_per_core.into())
+        (0..num_dispatcher_cores)
             .map(|core_id| ComputeResource::CPU(core_id))
             .collect(),
     );
