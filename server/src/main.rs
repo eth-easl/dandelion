@@ -1,4 +1,3 @@
-use bytes::Buf;
 use core_affinity::{self, CoreId};
 use dandelion_commons::records::{Archive, RecordPoint, Recorder};
 use dandelion_server::DandelionRequest;
@@ -6,12 +5,11 @@ use dispatcher::{
     composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
     resource_pool::ResourcePool,
 };
-use futures::lock::Mutex;
-use futures::stream::StreamExt;
-use http::StatusCode;
+use http_body_util::{BodyExt, Full};
 use hyper::{
-    service::{make_service_fn, service_fn},
-    Body, Request, Response, Server,
+    body::{Bytes, Incoming},
+    service::service_fn,
+    Request, Response, StatusCode,
 };
 use log::{error, info};
 use machine_interface::{
@@ -21,12 +19,10 @@ use machine_interface::{
     DataItem, DataSet, Position,
 };
 use serde::Deserialize;
-use signal_hook::consts::signal::*;
-use signal_hook_tokio::Signals;
 use std::{
     collections::BTreeMap,
     convert::Infallible,
-    io::{self, Write},
+    io::Write,
     net::SocketAddr,
     path::PathBuf,
     sync::{
@@ -34,24 +30,11 @@ use std::{
         Arc, Once, OnceLock,
     },
 };
-use tokio::runtime::Builder;
+use tokio::{net::TcpListener, runtime::Builder, signal::unix::SignalKind};
 
 static INIT_MATRIX: Once = Once::new();
 static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
 const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
-
-// Handles graceful shutdown
-async fn handle_signals(mut signals: Signals) -> io::Result<()> {
-    while let Some(signal) = signals.next().await {
-        match signal {
-            SIGTERM | SIGINT | SIGQUIT => {
-                return Ok(());
-            }
-            _ => unreachable!(),
-        }
-    }
-    Ok(())
-}
 
 async fn run_chain(
     dispatcher: Arc<Dispatcher>,
@@ -202,16 +185,18 @@ fn get_checksum(composition_set: CompositionSet) -> i64 {
 
 async fn serve_request(
     is_cold: bool,
-    req: Request<Body>,
+    req: Request<Incoming>,
     dispatcher: Arc<Dispatcher>,
-) -> Result<Response<Body>, Infallible> {
+) -> Result<Response<Full<Bytes>>, Infallible> {
     let mut recorder = TRACING_ARCHIVE.get().unwrap().get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
 
     // Try to parse the request
-    let request_buf = hyper::body::to_bytes(req.into_body())
+    let request_buf = req
+        .collect()
         .await
-        .expect("Could not read request body");
+        .expect("Could not read request body")
+        .to_bytes();
     let request: DandelionRequest =
         bson::from_slice(&request_buf).expect("Should be able to deserialize matrix request");
 
@@ -242,15 +227,17 @@ struct ChainRequest {
 
 async fn serve_chain(
     is_cold: bool,
-    req: Request<Body>,
+    req: Request<Incoming>,
     dispatcher: Arc<Dispatcher>,
-) -> Result<Response<Body>, Infallible> {
+) -> Result<Response<Full<Bytes>>, Infallible> {
     let mut recorder = TRACING_ARCHIVE.get().unwrap().get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
 
-    let request_buf = hyper::body::to_bytes(req.into_body())
+    let request_buf = req
+        .collect()
         .await
-        .expect("Should be able to parse body");
+        .expect("Should be able to parse body")
+        .to_bytes();
     let request_map: ChainRequest =
         bson::from_slice(&request_buf).expect("Should be able to deserialize matrix request");
 
@@ -274,20 +261,22 @@ async fn serve_chain(
     return response;
 }
 
-async fn serve_native(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
+async fn serve_native(req: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
     // Try to parse the request
-    let mut request_buf = hyper::body::to_bytes(_req.into_body())
+    let request_buf = req
+        .collect()
         .await
-        .expect("Could not read request body");
+        .expect("Could not read request body")
+        .to_bytes();
 
     if request_buf.len() != 16 {
-        let mut bad_request = Response::new(Body::empty());
+        let mut bad_request = Response::new(Full::new(String::from("").into()));
         *bad_request.status_mut() = StatusCode::BAD_REQUEST;
         return Ok::<_, Infallible>(bad_request);
     }
 
-    let rows = request_buf.get_i64() as usize;
-    let cols = request_buf.get_i64() as usize;
+    let rows = i64::from_le_bytes(request_buf[0..8].try_into().unwrap()) as usize;
+    let cols = i64::from_le_bytes(request_buf[8..16].try_into().unwrap()) as usize;
 
     let mat_size: usize = rows * cols;
 
@@ -326,12 +315,14 @@ struct RegisterFunction {
 }
 
 async fn register_function(
-    req: Request<Body>,
+    req: Request<Incoming>,
     dispatcher: Arc<Dispatcher>,
-) -> Result<Response<Body>, Infallible> {
-    let bytes = hyper::body::to_bytes(req.into_body())
+) -> Result<Response<Full<Bytes>>, Infallible> {
+    let bytes = req
+        .collect()
         .await
-        .expect("Failed to extract body from function registration");
+        .expect("Failed to extract body from function registration")
+        .to_bytes();
     // find first line end character
     let request_map: RegisterFunction =
         bson::from_slice(&bytes).expect("Should be able to deserialize request");
@@ -375,12 +366,14 @@ struct RegisterChain {
 }
 
 async fn register_composition(
-    req: Request<Body>,
+    req: Request<Incoming>,
     dispatcher: Arc<Dispatcher>,
-) -> Result<Response<Body>, Infallible> {
-    let bytes = hyper::body::to_bytes(req.into_body())
+) -> Result<Response<Full<Bytes>>, Infallible> {
+    let bytes = req
+        .collect()
         .await
-        .expect("Failed to extract body from function registration");
+        .expect("Failed to extract body from function registration")
+        .to_bytes();
     // find first line end character
     let request_map: RegisterChain =
         bson::from_slice(&bytes).expect("Should be able to deserialize request");
@@ -392,17 +385,17 @@ async fn register_composition(
     return Ok::<_, Infallible>(Response::new("Function registered".into()));
 }
 
-async fn serve_stats(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
+async fn serve_stats(_req: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
     let archive_ref = TRACING_ARCHIVE.get().unwrap();
-    let response: Response<Body> = Response::new(archive_ref.get_summary().into());
+    let response = Response::new(archive_ref.get_summary().into());
     archive_ref.reset();
     return Ok::<_, Infallible>(response);
 }
 
 async fn service(
-    req: Request<Body>,
+    req: Request<Incoming>,
     dispatcher: Arc<Dispatcher>,
-) -> Result<Response<Body>, Infallible> {
+) -> Result<Response<Full<Bytes>>, Infallible> {
     let uri = req.uri().path();
     match uri {
         "/register/function" => register_function(req, dispatcher).await,
@@ -424,6 +417,40 @@ async fn service(
 
 /// Recording setup
 static TRACING_ARCHIVE: OnceLock<Archive> = OnceLock::new();
+
+async fn service_loop(dispacher: Arc<Dispatcher>) {
+    // socket to listen to
+    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+    let listener = TcpListener::bind(addr).await.unwrap();
+    // signal handlers for gracefull shutdown
+    let mut sigterm_stream = tokio::signal::unix::signal(SignalKind::terminate()).unwrap();
+    let mut sigint_stream = tokio::signal::unix::signal(SignalKind::interrupt()).unwrap();
+    let mut sigquit_stream = tokio::signal::unix::signal(SignalKind::quit()).unwrap();
+    loop {
+        tokio::select! {
+            connection_pair = listener.accept() => {
+                let (stream,_) = connection_pair.unwrap();
+                let loop_dispatcher = dispacher.clone();
+                let io = hyper_util::rt::TokioIo::new(stream);
+                tokio::task::spawn(async move {
+                    let service_dispatcher_ptr = loop_dispatcher.clone();
+                    if let Err(err) = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(
+                            io,
+                            service_fn(|req| service(req, service_dispatcher_ptr.clone())),
+                        )
+                        .await
+                    {
+                        error!("Request serving failed with error: {:?}", err);
+                    }
+                });
+            }
+            _ = sigterm_stream.recv() => break,
+            _ = sigint_stream.recv() => break,
+            _ = sigquit_stream.recv() => break,
+        }
+    }
+}
 
 fn main() -> () {
     env_logger::init();
@@ -494,7 +521,7 @@ fn main() -> () {
             .collect(),
     );
     let resource_pool = ResourcePool {
-        engine_pool: Mutex::new(pool_map),
+        engine_pool: futures::lock::Mutex::new(pool_map),
     };
 
     // Create an ARC pointer to the dispatcher for thread-safe access
@@ -503,36 +530,20 @@ fn main() -> () {
 
     let _guard = runtime.enter();
 
-    // ready http endpoint
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
-    let make_svc = make_service_fn(move |_| {
-        let new_dispatcher_ptr = dispatcher_ptr.clone();
-        async move {
-            Ok::<_, Infallible>(service_fn(move |req| {
-                let service_dispatcher_ptr = new_dispatcher_ptr.clone();
-                service(req, service_dispatcher_ptr)
-            }))
-        }
-    });
-    let server = Server::bind(&addr).serve(make_svc);
-
-    let signals = Signals::new(&[SIGTERM, SIGINT, SIGQUIT]).unwrap();
-    let graceful =
-        server.with_graceful_shutdown(async move { handle_signals(signals).await.unwrap() });
-
     // TODO would be nice to just print server ready with all enabled features if that would be possible
+    print!("Server start with features: ");
     #[cfg(feature = "cheri")]
-    println!("Hello, World (cheri)");
+    print!("cheri, ");
     #[cfg(feature = "mmu")]
-    println!("Hello, World (mmu)");
+    print!("mmu, ");
     #[cfg(feature = "wasm")]
-    println!("Hello, World (wasm)");
-    #[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm")))]
-    println!("Hello, World (native)");
+    print!("wasm, ");
+    #[cfg(feature = "timestamp")]
+    print!("timestamp, ");
+    print!("\n");
+
     // Run this server for... forever... unless I receive a signal!
-    if let Err(e) = runtime.block_on(graceful) {
-        error!("server error: {}", e);
-    }
+    runtime.block_on(service_loop(dispatcher_ptr));
 
     // clean up folder in tmp that is used for function storage
     std::fs::remove_dir_all(FUNCTION_FOLDER_PATH).unwrap();
