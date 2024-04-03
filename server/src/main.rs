@@ -518,12 +518,12 @@ fn main() -> () {
             .collect(),
     );
     #[cfg(feature = "hyper_io")]
-    pool_map.insert(
-        EngineType::Hyper,
-        (0..num_dispatcher_cores)
-            .map(|core_id| ComputeResource::CPU(core_id))
-            .collect(),
-    );
+    // pool_map.insert(
+    //     EngineType::Hyper,
+    //     (0..num_dispatcher_cores)
+    //         .map(|core_id| ComputeResource::CPU(core_id))
+    //         .collect(),
+    // );
     let resource_pool = ResourcePool {
         engine_pool: futures::lock::Mutex::new(pool_map),
     };
