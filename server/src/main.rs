@@ -445,9 +445,9 @@ async fn service_loop(dispacher: Arc<Dispatcher>) {
                     }
                 });
             }
-            _ = sigterm_stream.recv() => break,
-            _ = sigint_stream.recv() => break,
-            _ = sigquit_stream.recv() => break,
+            _ = sigterm_stream.recv() => return,
+            _ = sigint_stream.recv() => return,
+            _ = sigquit_stream.recv() => return,
         }
     }
 }
@@ -551,4 +551,23 @@ fn main() -> () {
 
     // clean up folder in tmp that is used for function storage
     std::fs::remove_dir_all(FUNCTION_FOLDER_PATH).unwrap();
+    // clean up folder with shared files in case the context backed by shared files left some behind
+    for shm_dir_entry in std::fs::read_dir("/dev/shm/").unwrap() {
+        if let Ok(shm_file) = shm_dir_entry {
+            if shm_file
+                .file_name()
+                .into_string()
+                .unwrap()
+                .starts_with("shm_")
+            {
+                warn!(
+                    "Found left over shared memory file: {:?}",
+                    shm_file.file_name()
+                );
+                if std::fs::remove_file(shm_file.path()).is_err() {
+                    warn!("Failed to remove shared memory file {:?}", shm_file.path());
+                }
+            }
+        }
+    }
 }
