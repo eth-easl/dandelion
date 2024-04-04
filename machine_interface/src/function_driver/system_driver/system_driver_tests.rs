@@ -9,7 +9,7 @@ mod system_driver_tests {
         DataItem, DataSet, Position,
     };
     use dandelion_commons::{
-        records::{Archive, RecordPoint},
+        records::{Archive, ArchiveInit, RecordPoint},
         DandelionResult,
     };
     use std::sync::Arc;
@@ -76,7 +76,10 @@ mod system_driver_tests {
 
         write_request_line(&mut context, request).expect("Should be able to prepare request line");
 
-        let archive = Box::leak(Box::new(Archive::init()));
+        let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+            #[cfg(feature = "timestamp")]
+            timestamp_count: 1000,
+        })));
         let recorder = archive.get_recorder().unwrap();
         let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
         let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
@@ -149,7 +152,10 @@ mod system_driver_tests {
             .write(body_offset, request_body)
             .expect("Should be able to write body");
 
-        let archive = Box::leak(Box::new(Archive::init()));
+        let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+            #[cfg(feature = "timestamp")]
+            timestamp_count: 1000,
+        })));
         let recorder = archive.get_recorder().unwrap();
         let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
         let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {

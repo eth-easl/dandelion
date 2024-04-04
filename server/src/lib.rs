@@ -1,3 +1,5 @@
+pub mod config;
+
 use machine_interface::{
     memory_domain::{read_only::ReadOnlyContext, Context},
     DataItem, DataSet, Position,

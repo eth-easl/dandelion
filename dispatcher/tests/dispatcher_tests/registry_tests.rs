@@ -1,5 +1,5 @@
 use crate::dispatcher_tests::{check_matrix, setup_dispatcher};
-use dandelion_commons::records::Archive;
+use dandelion_commons::records::{Archive, ArchiveInit};
 use dispatcher::{
     composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
 };
@@ -42,7 +42,10 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let archive = Box::leak(Box::new(Archive::init()));
+    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+        #[cfg(feature = "timestamp")]
+        timestamp_count: 1000,
+    })));
 
     let matrix_a = Box::new([1u64, 2u64]);
     let matrix_b = Box::new([1u64, 3u64]);
@@ -155,7 +158,10 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let archive = Box::leak(Box::new(Archive::init()));
+    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+        #[cfg(feature = "timestamp")]
+        timestamp_count: 1000,
+    })));
 
     let matrix_a = Box::new([1u64, 2u64]);
     let matrix_b = Box::new([1u64, 3u64]);

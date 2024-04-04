@@ -42,7 +42,6 @@ pub enum RecordPoint {
 mod timestamp {
     use crate::{DandelionError, DandelionResult};
     use std::{
-        env,
         sync::{atomic::AtomicU16, Arc, Mutex},
         time::Instant,
     };
@@ -109,14 +108,10 @@ mod timestamp {
     }
 
     impl TimestampArchive {
-        pub fn init() -> Self {
-            let pool_size = match env::var("DANDELION_TIMESTAMP_COUNT") {
-                Ok(container_count_string) => container_count_string.parse().unwrap_or(100),
-                Err(_) => 1000,
-            };
+        pub fn init(timestamp_number: usize) -> Self {
             let zero_time = Instant::now();
             let mut free_pool = Vec::new();
-            free_pool.resize_with(pool_size, || {
+            free_pool.resize_with(timestamp_number, || {
                 Box::new(Timestamp {
                     parent_span: 0,
                     current_span: 0,
@@ -126,7 +121,7 @@ mod timestamp {
                 })
             });
             let mut used_pool = Vec::new();
-            used_pool.reserve(pool_size);
+            used_pool.reserve(timestamp_number);
             return Self {
                 start_time: zero_time,
                 free_timestamps: Mutex::new(free_pool),
@@ -230,11 +225,16 @@ pub struct Archive {
     timestamp_archive: timestamp::TimestampArchive,
 }
 
+pub struct ArchiveInit {
+    #[cfg(feature = "timestamp")]
+    pub timestamp_count: usize,
+}
+
 impl Archive {
-    pub fn init() -> Self {
+    pub fn init(#[allow(unused_variables)] init_args: ArchiveInit) -> Self {
         return Archive {
             #[cfg(feature = "timestamp")]
-            timestamp_archive: timestamp::TimestampArchive::init(),
+            timestamp_archive: timestamp::TimestampArchive::init(init_args.timestamp_count),
         };
     }
 

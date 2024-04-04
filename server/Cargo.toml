@@ -17,9 +17,10 @@ core_affinity = "0.8"
 num_cpus = "1.16.0"
 bytes = "1.4"
 http = "0.2"
-log = "0.4.20"
+log = { version = "0.4.20", features = ["serde"] }
 env_logger = "0.10.1"
 serde = "1.0.197"
+serde_json = "1.0.115"
 bson = "2.9.0"
 signal-hook = "0.3.17"
 signal-hook-tokio = {version = "0.3.1", features = [ "futures-v0_3"]}

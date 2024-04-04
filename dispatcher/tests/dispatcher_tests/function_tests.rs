@@ -1,6 +1,6 @@
 use super::{check_matrix, setup_dispatcher};
 use core::mem::size_of;
-use dandelion_commons::records::{Archive, RecordPoint};
+use dandelion_commons::records::{Archive, ArchiveInit, RecordPoint};
 use dispatcher::composition::{Composition, CompositionSet, FunctionDependencies, ShardingMode};
 use machine_interface::{
     function_driver::ComputeResource,
@@ -96,7 +96,10 @@ pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
     let (dispatcher, function_id) =
         setup_dispatcher::<Domain>(relative_path, vec![], vec![], engine_type, engine_resource);
 
-    let archive = Box::leak(Box::new(Archive::init()));
+    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+        #[cfg(feature = "timestamp")]
+        timestamp_count: 1000,
+    })));
     let mut recorder = archive.get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
 
@@ -133,7 +136,10 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
     let inputs = vec![(0, CompositionSet::from((0, vec![(Arc::new(in_context))])))];
     let outputs = vec![Some(0)];
 
-    let archive = Box::leak(Box::new(Archive::init()));
+    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+        #[cfg(feature = "timestamp")]
+        timestamp_count: 1000,
+    })));
     let mut recorder = archive.get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
 
@@ -183,7 +189,10 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
     };
     let inputs = BTreeMap::from([(0, CompositionSet::from((0, vec![Arc::new(in_context)])))]);
 
-    let archive = Box::leak(Box::new(Archive::init()));
+    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+        #[cfg(feature = "timestamp")]
+        timestamp_count: 1000,
+    })));
     let mut recorder = archive.get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
 
@@ -239,7 +248,10 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
     };
     let inputs = BTreeMap::from([(0, CompositionSet::from((0, vec![Arc::new(in_context)])))]);
 
-    let archive = Box::leak(Box::new(Archive::init()));
+    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+        #[cfg(feature = "timestamp")]
+        timestamp_count: 1000,
+    })));
     let mut recorder = archive.get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
 
@@ -307,7 +319,10 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
         output_map: BTreeMap::from([(2, 0)]),
     };
 
-    let archive = Box::leak(Box::new(Archive::init()));
+    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+        #[cfg(feature = "timestamp")]
+        timestamp_count: 1000,
+    })));
     let mut recorder = archive.get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
 
@@ -413,7 +428,10 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
         output_map: BTreeMap::from([(7, 0)]),
     };
 
-    let archive = Box::leak(Box::new(Archive::init()));
+    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+        #[cfg(feature = "timestamp")]
+        timestamp_count: 1000,
+    })));
     let mut recorder = archive.get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
 

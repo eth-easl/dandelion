@@ -10,7 +10,7 @@ mod compute_driver_tests {
     };
     use core::panic;
     use dandelion_commons::{
-        records::{Archive, RecordPoint},
+        records::{Archive, ArchiveInit, RecordPoint},
         DandelionError,
     };
     use std::sync::Arc;
@@ -73,7 +73,10 @@ mod compute_driver_tests {
     ) {
         let (function_context, config, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
-        let archive = Box::leak(Box::new(Archive::init()));
+        let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+            #[cfg(feature = "timestamp")]
+            timestamp_count: 1000,
+        })));
         let recorder = archive.get_recorder().unwrap();
         let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
             config: config,
@@ -111,7 +114,11 @@ mod compute_driver_tests {
                 key: 0,
             }],
         }));
-        let archive = Box::leak(Box::new(Archive::init()));
+        let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+            #[cfg(feature = "timestamp")]
+            timestamp_count: 1000,
+        })));
+
         let mut recorder = archive.get_recorder().unwrap();
         recorder
             .record(RecordPoint::TransferEnd)
@@ -199,7 +206,10 @@ mod compute_driver_tests {
                     key: 0,
                 }],
             }));
-            let archive = Box::leak(Box::new(Archive::init()));
+            let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+                #[cfg(feature = "timestamp")]
+                timestamp_count: 1000,
+            })));
             let mut recorder = archive.get_recorder().unwrap();
             recorder
                 .record(RecordPoint::TransferEnd)
@@ -293,7 +303,10 @@ mod compute_driver_tests {
                 },
             ],
         }));
-        let archive = Box::leak(Box::new(Archive::init()));
+        let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+            #[cfg(feature = "timestamp")]
+            timestamp_count: 1000,
+        })));
         let mut recorder = archive.get_recorder().unwrap();
         recorder
             .record(RecordPoint::TransferEnd)
@@ -438,7 +451,10 @@ mod compute_driver_tests {
                 },
             ],
         }));
-        let archive = Box::leak(Box::new(Archive::init()));
+        let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+            #[cfg(feature = "timestamp")]
+            timestamp_count: 1000,
+        })));
         let mut recorder = archive.get_recorder().unwrap();
         recorder
             .record(RecordPoint::TransferEnd)

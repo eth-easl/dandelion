@@ -1,5 +1,5 @@
 use core_affinity::{self, CoreId};
-use dandelion_commons::records::{Archive, RecordPoint, Recorder};
+use dandelion_commons::records::{Archive, ArchiveInit, RecordPoint, Recorder};
 use dandelion_server::DandelionRequest;
 use dispatcher::{
     composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
@@ -453,19 +453,22 @@ async fn service_loop(dispacher: Arc<Dispatcher>) {
 }
 
 fn main() -> () {
+    // check if there is a configuration file
+    let config = dandelion_server::config::get_config();
+
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
     // Initilize metric collection
-    match TRACING_ARCHIVE.set(Archive::init()) {
+    match TRACING_ARCHIVE.set(Archive::init(ArchiveInit {
+        #[cfg(feature = "timestamp")]
+        timestamp_count: config.timestamp_count,
+    })) {
         Ok(_) => (),
         Err(_) => panic!("Failed to initialize tracing archive"),
     }
 
     // find available resources
-    let num_cores = std::env::var("NUM_TOTAL_CORES").map_or_else(
-        |_e| u8::try_from(num_cpus::get_physical()).unwrap(),
-        |n| n.parse::<u8>().unwrap(),
-    );
+    let num_cores = config.total_cores;
     let num_phyiscal_cores = u8::try_from(num_cpus::get_physical()).unwrap();
     let num_virt_cores = u8::try_from(num_cpus::get()).unwrap();
     if num_phyiscal_cores != num_virt_cores {
@@ -475,8 +478,7 @@ fn main() -> () {
         );
     }
     // TODO: This calculation makes sense only for running matmul-128x128 workload on MMU engines
-    let num_dispatcher_cores = std::env::var("NUM_DISP_CORES")
-        .map_or_else(|_e| (num_cores + 13) / 14, |n| n.parse::<u8>().unwrap());
+    let num_dispatcher_cores = config.dispatcher_cores;
     assert!(
         num_dispatcher_cores > 0 && num_dispatcher_cores < num_cores,
         "invalid dispatcher core number: {}",
@@ -514,14 +516,14 @@ fn main() -> () {
     pool_map.insert(
         engine_type,
         (num_dispatcher_cores..num_cores)
-            .map(|code_id| ComputeResource::CPU(code_id))
+            .map(|code_id| ComputeResource::CPU(code_id as u8))
             .collect(),
     );
     #[cfg(feature = "hyper_io")]
     // pool_map.insert(
     //     EngineType::Hyper,
     //     (0..num_dispatcher_cores)
-    //         .map(|core_id| ComputeResource::CPU(core_id))
+    //         .map(|core_id| ComputeResource::CPU(core_id as u8))
     //         .collect(),
     // );
     let resource_pool = ResourcePool {
@@ -535,15 +537,15 @@ fn main() -> () {
     let _guard = runtime.enter();
 
     // TODO would be nice to just print server ready with all enabled features if that would be possible
-    print!("Server start with features: ");
+    print!("Server start with features:");
     #[cfg(feature = "cheri")]
-    print!("cheri, ");
+    print!(" cheri");
     #[cfg(feature = "mmu")]
-    print!("mmu, ");
+    print!(" mmu");
     #[cfg(feature = "wasm")]
-    print!("wasm, ");
+    print!(" wasm");
     #[cfg(feature = "timestamp")]
-    print!("timestamp, ");
+    print!(" timestamp");
     print!("\n");
 
     // Run this server for... forever... unless I receive a signal!
