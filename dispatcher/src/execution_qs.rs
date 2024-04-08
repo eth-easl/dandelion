@@ -1,9 +1,8 @@
 use crossbeam::channel::{TryRecvError, TrySendError};
-use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
+use dandelion_commons::{DandelionError, DandelionResult};
 use log::error;
 use machine_interface::{
-    function_driver::{EngineArguments, WorkQueue},
-    memory_domain::Context,
+    function_driver::{WorkDone, WorkQueue, WorkToDo},
     promise::{Debt, Promise},
 };
 
@@ -11,13 +10,13 @@ use machine_interface::{
 /// Highest priority queue holds promises if there are any
 #[derive(Clone)]
 pub struct EngineQueue {
-    queue_in: crossbeam::channel::Sender<(EngineArguments, Debt)>,
-    queue_out: crossbeam::channel::Receiver<(EngineArguments, Debt)>,
+    queue_in: crossbeam::channel::Sender<(WorkToDo, Debt)>,
+    queue_out: crossbeam::channel::Receiver<(WorkToDo, Debt)>,
 }
 
 /// This is run on the engine so it performs asyncornous access to the local state
 impl WorkQueue for EngineQueue {
-    fn get_engine_args(&self) -> (EngineArguments, Debt) {
+    fn get_engine_args(&self) -> (WorkToDo, Debt) {
         loop {
             match self.queue_out.try_recv() {
                 Err(TryRecvError::Disconnected) => panic!("Work queue disconnected"),
@@ -42,7 +41,7 @@ impl EngineQueue {
         };
     }
 
-    pub async fn enqueu_work(&self, args: EngineArguments) -> DandelionResult<(Context, Recorder)> {
+    pub async fn enqueu_work(&self, args: WorkToDo) -> DandelionResult<WorkDone> {
         let (promise, debt) = Promise::new();
         match self.queue_in.try_send((args, debt)) {
             Ok(()) => (),

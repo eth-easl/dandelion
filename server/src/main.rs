@@ -519,7 +519,7 @@ fn main() -> () {
             .map(|code_id| ComputeResource::CPU(code_id as u8))
             .collect(),
     );
-    #[cfg(feature = "hyper_io")]
+    // #[cfg(feature = "hyper_io")]
     // pool_map.insert(
     //     EngineType::Hyper,
     //     (0..num_dispatcher_cores)

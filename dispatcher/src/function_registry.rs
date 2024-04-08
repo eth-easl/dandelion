@@ -7,17 +7,20 @@ use futures::lock::Mutex;
 use machine_interface::{
     function_driver::{
         system_driver::{get_system_function_input_sets, get_system_function_output_sets},
-        Driver, Function, FunctionConfig,
+        Driver, Function, FunctionConfig, ParsingArguments,
     },
     machine_config::{get_system_functions, DomainType, EngineType},
-    memory_domain::{malloc::MallocMemoryDomain, Context, MemoryDomain},
+    memory_domain::{Context, MemoryDomain},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
 
-use crate::composition::{Composition, CompositionSet};
+use crate::{
+    composition::{Composition, CompositionSet},
+    execution_qs::EngineQueue,
+};
 
 #[derive(Clone, Debug)]
 pub enum FunctionType {
@@ -82,7 +85,7 @@ pub struct FunctionRegistry {
     /// List of engines available for each function
     engine_map: Mutex<BTreeMap<FunctionId, BTreeSet<EngineType>>>,
     /// Drivers for the engines to prepare function (get them from available to ready)
-    pub(crate) drivers: BTreeMap<EngineType, Box<dyn Driver>>,
+    pub(crate) drivers: BTreeMap<EngineType, (&'static dyn Driver, Box<EngineQueue>)>,
     /// map with list of all options for each function
     /// TODO: change structure to avoid copy on get_options
     options: Mutex<BTreeMap<FunctionId, Vec<Alternative>>>,
@@ -100,9 +103,9 @@ pub struct FunctionRegistry {
 impl FunctionRegistry {
     // TODO: make sure that system functions can't be added later for other engines
     pub fn new(
-        drivers: BTreeMap<EngineType, Box<dyn Driver>>,
+        drivers: BTreeMap<EngineType, (&'static dyn Driver, Box<EngineQueue>)>,
         type_map: &BTreeMap<EngineType, DomainType>,
-        domains: &BTreeMap<DomainType, Box<dyn MemoryDomain>>,
+        domains: &BTreeMap<DomainType, &'static dyn MemoryDomain>,
     ) -> Self {
         // insert all system functons
         let mut engine_map = BTreeMap::new();
@@ -110,10 +113,11 @@ impl FunctionRegistry {
         let mut in_memory = BTreeMap::new();
         let mut metadata = BTreeMap::new();
         let mut function_dict = FunctionDict::new();
-        for (engine_type, driver) in drivers.iter() {
+        for (engine_type, (driver, _)) in drivers.iter() {
             let system_functions = get_system_functions(*engine_type);
             for (system_function, context_size) in system_functions {
                 let function_id = function_dict.insert_or_lookup(system_function.to_string());
+                // register engine for the function id of the system function
                 engine_map
                     .entry(function_id)
                     .and_modify(|engine_set: &mut BTreeSet<EngineType>| {
@@ -132,10 +136,11 @@ impl FunctionRegistry {
                         function_type: FunctionType::Function(*engine_type, context_size),
                         in_memory: true,
                     }]);
+                // get the config from the parser
                 let function_config = driver
                     .parse_function(
                         String::from(""),
-                        domains.get(type_map.get(engine_type).unwrap()).unwrap(),
+                        *domains.get(type_map.get(engine_type).unwrap()).unwrap(),
                     )
                     .unwrap();
                 match function_config.config {
@@ -259,60 +264,6 @@ impl FunctionRegistry {
         return Ok(());
     }
 
-    pub fn add_system(
-        &mut self,
-        function_id: FunctionId,
-        engine_id: EngineType,
-        ctx_size: usize,
-    ) -> DandelionResult<()> {
-        if !self.metadata.get_mut().contains_key(&function_id) {
-            return Err(DandelionError::DispatcherMetaDataUnavailable);
-        }
-        let driver =
-            self.drivers
-                .get(&engine_id)
-                .ok_or(DandelionError::DispatcherMissingLoader(format!(
-                    "{:?}",
-                    engine_id
-                )))?;
-        // domain for the static context, expected to not be used
-        let malloc_domain = Box::new(MallocMemoryDomain {});
-        let function_config =
-            driver.parse_function(String::new(), &(malloc_domain as Box<dyn MemoryDomain>))?;
-        match function_config.config {
-            FunctionConfig::SysConfig(_) => (),
-            _ => return Err(DandelionError::DispatcherConfigError),
-        };
-        self.in_memory
-            .get_mut()
-            .insert((function_id, engine_id), Arc::new(function_config));
-        self.engine_map
-            .get_mut()
-            .entry(function_id)
-            .and_modify(|set| {
-                set.insert(engine_id);
-            })
-            .or_insert({
-                let mut set = BTreeSet::new();
-                set.insert(engine_id);
-                set
-            });
-        self.options
-            .get_mut()
-            .entry(function_id)
-            .and_modify(|option_vec| {
-                option_vec.push(Alternative {
-                    function_type: FunctionType::Function(engine_id, ctx_size),
-                    in_memory: true,
-                })
-            })
-            .or_insert(vec![Alternative {
-                function_type: FunctionType::Function(engine_id, ctx_size),
-                in_memory: true,
-            }]);
-        return Ok(());
-    }
-
     pub async fn add_local(
         &self,
         function_id: FunctionId,
@@ -360,10 +311,11 @@ impl FunctionRegistry {
         &self,
         function_id: FunctionId,
         engine_id: EngineType,
-        domain: &Box<dyn MemoryDomain>,
+        domain: &'static dyn MemoryDomain,
+        recorder: &mut Recorder,
     ) -> DandelionResult<Function> {
         // get loader
-        let driver = match self.drivers.get(&engine_id) {
+        let (driver, parse_queue) = match self.drivers.get(&engine_id) {
             Some(l) => l,
             None => {
                 return Err(DandelionError::DispatcherMissingLoader(format!(
@@ -381,7 +333,19 @@ impl FunctionRegistry {
                 None => return Err(DandelionError::DispatcherUnavailableFunction),
             }
         };
-        let tripple = driver.parse_function(path, domain)?;
+        recorder.record(RecordPoint::ParsingQueueu).unwrap();
+        let tripple = parse_queue
+            .enqueu_work(
+                machine_interface::function_driver::WorkToDo::ParsingArguments(ParsingArguments {
+                    driver: *driver,
+                    path,
+                    static_domain: domain,
+                    recorder: recorder.get_sub_recorder().unwrap(),
+                }),
+            )
+            .await?
+            .get_function();
+        recorder.record(RecordPoint::ParsingDequeu).unwrap();
         return Ok(tripple);
     }
 
@@ -389,11 +353,11 @@ impl FunctionRegistry {
         &self,
         function_id: FunctionId,
         engine_id: EngineType,
-        domain: &Box<dyn MemoryDomain>,
+        domain: &'static dyn MemoryDomain,
         ctx_size: usize,
         non_caching: bool,
         mut recorder: Recorder,
-    ) -> DandelionResult<(Context, FunctionConfig, Recorder)> {
+    ) -> DandelionResult<(Context, FunctionConfig)> {
         recorder.record(RecordPoint::LoadStart).unwrap();
 
         // check if function for the engine is in registry already
@@ -406,11 +370,13 @@ impl FunctionRegistry {
         };
         if let Some(function) = function_opt {
             let function_context = function.load(domain, ctx_size)?;
-            return Ok((function_context, function.config.clone(), recorder));
+            return Ok((function_context, function.config.clone()));
         }
-
+        // TODO add check to see if local loading has already been kicked off, to avoid double parsing
         // if it is not in memory or disk we return the error from loading as it is not available
-        let function = self.load_local(function_id, engine_id, domain).await?;
+        let function = self
+            .load_local(function_id, engine_id, domain, &mut recorder)
+            .await?;
         let function_context = function.load(domain, ctx_size)?;
         let function_config = function.config.clone();
         if !non_caching {
@@ -423,6 +389,6 @@ impl FunctionRegistry {
             // need to figure out how to avoid this
         }
         recorder.record(RecordPoint::LoadEnd)?;
-        return Ok((function_context, function_config, recorder));
+        return Ok((function_context, function_config));
     }
 }

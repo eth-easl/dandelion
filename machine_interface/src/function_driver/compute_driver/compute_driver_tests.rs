@@ -2,8 +2,8 @@
 mod compute_driver_tests {
     use crate::{
         function_driver::{
-            test_queue::TestQueue, ComputeResource, Driver, EngineArguments, FunctionArguments,
-            FunctionConfig,
+            test_queue::TestQueue, ComputeResource, Driver, FunctionArguments, FunctionConfig,
+            WorkToDo,
         },
         memory_domain::{Context, ContextState, ContextTrait, MemoryDomain, MemoryResource},
         DataItem, DataSet, Position,
@@ -18,9 +18,9 @@ mod compute_driver_tests {
     fn loader_empty<Dom: MemoryDomain>(dom_init: MemoryResource, driver: Box<dyn Driver>) {
         // load elf file
         let elf_path = String::new();
-        let mut domain = Dom::init(dom_init).expect("Should be able to get domain");
+        let domain = Box::leak(Dom::init(dom_init).expect("Should be able to get domain"));
         driver
-            .parse_function(elf_path, &mut domain)
+            .parse_function(elf_path, domain)
             .expect("Empty string should return error");
     }
 
@@ -52,15 +52,15 @@ mod compute_driver_tests {
         drv_init: Vec<ComputeResource>,
     ) -> (Context, FunctionConfig, Box<TestQueue>) {
         let queue = Box::new(TestQueue::new());
-        let mut domain = Dom::init(dom_init).expect("Should have initialized domain");
+        let domain = Box::leak(Dom::init(dom_init).expect("Should have initialized domain"));
         let function = driver
-            .parse_function(filename.to_string(), &mut domain)
+            .parse_function(filename.to_string(), domain)
             .expect("Should be able to parse function");
         driver
             .start_engine(drv_init[0], queue.clone())
             .expect("Should be able to start engine");
         let function_context = function
-            .load(&mut domain, 0x802_0000)
+            .load(domain, 0x802_0000)
             .expect("Should be able to load function");
         return (function_context, function.config, queue);
     }
@@ -78,7 +78,7 @@ mod compute_driver_tests {
             timestamp_count: 1000,
         })));
         let recorder = archive.get_recorder().unwrap();
-        let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
+        let promise = queue.enqueu(WorkToDo::FunctionArguments(FunctionArguments {
             config: config,
             context: function_context,
             output_sets: Arc::new(Vec::new()),
@@ -123,18 +123,19 @@ mod compute_driver_tests {
         recorder
             .record(RecordPoint::TransferEnd)
             .expect("Should have properly initialized recorder state");
-        let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
+        let promise = queue.enqueu(WorkToDo::FunctionArguments(FunctionArguments {
             config,
             context: function_context,
             output_sets: Arc::new(vec![String::from("")]),
-            recorder,
+            recorder: recorder.get_sub_recorder().unwrap(),
         }));
-        let (result_context, mut result_recorder) = tokio::runtime::Builder::new_current_thread()
+        let result_context = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(promise)
-            .expect("Engine should run ok with basic function");
-        result_recorder
+            .expect("Engine should run ok with basic function")
+            .get_context();
+        recorder
             .record(RecordPoint::FutureReturn)
             .expect("Should have properly advanced recorder state");
         // check that result is 4
@@ -214,19 +215,19 @@ mod compute_driver_tests {
             recorder
                 .record(RecordPoint::TransferEnd)
                 .expect("Should have properly initialized recorder state");
-            let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
+            let promise = queue.enqueu(WorkToDo::FunctionArguments(FunctionArguments {
                 config,
                 context: function_context,
                 output_sets: Arc::new(vec![String::from("")]),
-                recorder,
+                recorder: recorder.get_sub_recorder().unwrap(),
             }));
-            let (result_context, mut result_recorder) =
-                tokio::runtime::Builder::new_current_thread()
-                    .build()
-                    .unwrap()
-                    .block_on(promise)
-                    .expect("Engine should run ok with basic function");
-            result_recorder
+            let result_context = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap()
+                .block_on(promise)
+                .expect("Engine should run ok with basic function")
+                .get_context();
+            recorder
                 .record(RecordPoint::FutureReturn)
                 .expect("Should have properly advanced recorder state");
             assert_eq!(1, result_context.content.len());
@@ -311,18 +312,19 @@ mod compute_driver_tests {
         recorder
             .record(RecordPoint::TransferEnd)
             .expect("Should have properly initialized recorder state");
-        let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
+        let promise = queue.enqueu(WorkToDo::FunctionArguments(FunctionArguments {
             config,
             context: function_context,
             output_sets: Arc::new(vec![String::from("stdio")]),
-            recorder,
+            recorder: recorder.get_sub_recorder().unwrap(),
         }));
-        let (result_context, mut result_recorder) = tokio::runtime::Builder::new_current_thread()
+        let result_context = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(promise)
-            .expect("Engine should run ok with basic function");
-        result_recorder
+            .expect("Engine should run ok with basic function")
+            .get_context();
+        recorder
             .record(RecordPoint::FutureReturn)
             .expect("Should have properly advanced recorder state");
         // check the function exited with exit code 0
@@ -459,7 +461,7 @@ mod compute_driver_tests {
         recorder
             .record(RecordPoint::TransferEnd)
             .expect("Should have properly initialized recorder state");
-        let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
+        let promise = queue.enqueu(WorkToDo::FunctionArguments(FunctionArguments {
             config: config,
             context: function_context,
             output_sets: Arc::new(vec![
@@ -467,14 +469,15 @@ mod compute_driver_tests {
                 "out".to_string(),
                 "out_nested".to_string(),
             ]),
-            recorder,
+            recorder: recorder.get_sub_recorder().unwrap(),
         }));
-        let (result_context, mut result_recorder) = tokio::runtime::Builder::new_current_thread()
+        let result_context = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(promise)
-            .expect("Engine should run ok with basic function");
-        result_recorder
+            .expect("Engine should run ok with basic function")
+            .get_context();
+        recorder
             .record(RecordPoint::FutureReturn)
             .expect("Should have properly advanced recorder state");
         assert_eq!(3, result_context.content.len());

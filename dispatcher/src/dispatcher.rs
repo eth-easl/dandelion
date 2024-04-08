@@ -16,7 +16,7 @@ use futures::{
 };
 use itertools::Itertools;
 use machine_interface::{
-    function_driver::{EngineArguments, FunctionArguments, FunctionConfig, TransferArguments},
+    function_driver::{Driver, FunctionArguments, FunctionConfig, TransferArguments, WorkToDo},
     machine_config::{
         get_available_domains, get_available_drivers, get_compatibilty_table, DomainType,
         EngineType,
@@ -30,8 +30,10 @@ use std::{
 
 // TODO here and in registry can probably replace driver and loader function maps with fixed size arrays
 // That have compile time size and static indexing
+// TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
+// the entire execution time anyway
 pub struct Dispatcher {
-    domains: BTreeMap<DomainType, (Box<dyn MemoryDomain>, Box<EngineQueue>)>,
+    domains: BTreeMap<DomainType, (&'static dyn MemoryDomain, Box<EngineQueue>)>,
     engine_queues: BTreeMap<EngineType, Box<EngineQueue>>,
     type_map: BTreeMap<EngineType, DomainType>,
     function_registry: FunctionRegistry,
@@ -41,25 +43,30 @@ impl Dispatcher {
     pub fn init(mut resource_pool: ResourcePool) -> DandelionResult<Dispatcher> {
         // get machine specific configurations
         let type_map = get_compatibilty_table();
-        let mut domains = get_available_domains();
+        let domains = get_available_domains();
         let drivers = get_available_drivers();
-
-        let function_registry = FunctionRegistry::new(drivers, &type_map, &domains);
 
         // Insert a work queue for each domain and use up all engine resource available
         let mut domain_map = BTreeMap::new();
         let mut engine_queues = BTreeMap::new();
-        for (engine_type, driver) in function_registry.drivers.iter() {
+        let mut registry_drivers: BTreeMap<EngineType, (&'static dyn Driver, Box<EngineQueue>)> =
+            BTreeMap::new();
+        for (engine_type, driver) in drivers.into_iter() {
             let work_queue = Box::new(EngineQueue::new());
-            while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(*engine_type)
-            {
+            while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(engine_type) {
                 driver.start_engine(resource, work_queue.clone())?;
             }
-            let domain_type = type_map.get(engine_type).unwrap();
-            let domain = domains.remove(domain_type).unwrap();
+            let domain_type = type_map.get(&engine_type).unwrap();
+            let domain = *domains.get(domain_type).unwrap();
             domain_map.insert(*domain_type, (domain, work_queue.clone()));
-            engine_queues.insert(*engine_type, work_queue.clone());
+            engine_queues.insert(engine_type, work_queue.clone());
+            registry_drivers.insert(
+                engine_type,
+                (driver as &'static dyn Driver, work_queue.clone()),
+            );
         }
+        let function_registry = FunctionRegistry::new(registry_drivers, &type_map, &domains);
+
         return Ok(Dispatcher {
             domains: domain_map,
             engine_queues,
@@ -373,15 +380,15 @@ impl Dispatcher {
         };
         // start doing transfers
         recorder.record(RecordPoint::LoadQueue)?;
-        let (mut function_context, function_config, mut recorder) = self
+        let (mut function_context, function_config) = self
             .function_registry
             .load(
                 function_id,
                 engine_type,
-                domain,
+                *domain,
                 ctx_size,
                 non_caching,
-                recorder,
+                recorder.get_sub_recorder().unwrap(),
             )
             .await?;
         recorder.record(RecordPoint::LoadDequeue)?;
@@ -400,7 +407,7 @@ impl Dispatcher {
                 static_sets.insert(function_set_index);
                 let mut function_buffer = 0usize;
                 for (subset, item, source_context) in composition_set {
-                    let args = EngineArguments::TransferArguments(TransferArguments {
+                    let args = WorkToDo::TransferArguments(TransferArguments {
                         destination: function_context,
                         source: source_context,
                         destination_set_index: function_set_index,
@@ -412,7 +419,7 @@ impl Dispatcher {
                         recorder: recorder.get_sub_recorder().unwrap(),
                     });
                     recorder.record(RecordPoint::TransferQueue)?;
-                    (function_context, _) = transfer_queue.enqueu_work(args).await?;
+                    function_context = transfer_queue.enqueu_work(args).await?.get_context();
                     recorder.record(RecordPoint::TransferDequeue)?;
                     function_buffer += 1;
                 }
@@ -426,7 +433,7 @@ impl Dispatcher {
             for (subset, item, source_context) in context_set {
                 // TODO get allignment information
                 let set_name = &metadata.input_sets[function_set].0;
-                let args = EngineArguments::TransferArguments(TransferArguments {
+                let args = WorkToDo::TransferArguments(TransferArguments {
                     destination: function_context,
                     source: source_context,
                     destination_set_index: function_set,
@@ -438,7 +445,7 @@ impl Dispatcher {
                     recorder: recorder.get_sub_recorder().unwrap(),
                 });
                 recorder.record(RecordPoint::TransferQueue).unwrap();
-                (function_context, _) = transfer_queue.enqueu_work(args).await?;
+                function_context = transfer_queue.enqueu_work(args).await?.get_context();
                 recorder.record(RecordPoint::TransferDequeue).unwrap();
                 function_item += 1;
             }
@@ -460,14 +467,14 @@ impl Dispatcher {
             None => return Err(DandelionError::DispatcherConfigError),
         };
         let subrecoder = recorder.get_sub_recorder()?;
-        let args = EngineArguments::FunctionArguments(FunctionArguments {
+        let args = WorkToDo::FunctionArguments(FunctionArguments {
             config: function_config,
             context: function_context,
             output_sets,
             recorder: subrecoder,
         });
         recorder.record(RecordPoint::ExecutionQueue)?;
-        let (result, _) = engine_queue.enqueu_work(args).await?;
+        let result = engine_queue.enqueu_work(args).await?.get_context();
         recorder.record(RecordPoint::FutureReturn)?;
         return Ok(result);
     }

@@ -77,7 +77,6 @@ mod dispatcher_tests {
         context
             .read(out_mat_position.data.offset, &mut out_mat)
             .expect("Should read output matrix");
-        println!("matrix {:?}", out_mat);
         assert_eq!(rows, out_mat[0]);
         for i in 0..expected.len() {
             assert_eq!(expected[i], out_mat[1 + i]);

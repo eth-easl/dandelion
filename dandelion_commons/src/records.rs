@@ -8,6 +8,14 @@ pub enum RecordPoint {
     QueueFunctionDispatcher,
     /// Queue to load the function code + ctx
     PrepareEnvQueue,
+    /// Enque parsing operation
+    ParsingQueueu,
+    /// Start parsing
+    ParsingStart,
+    /// Finished Parsing
+    ParsingEnd,
+    /// Dequeue from parsing
+    ParsingDequeu,
     /// Load function code (async)
     LoadQueue,
     /// Start loading code + alloc ctx

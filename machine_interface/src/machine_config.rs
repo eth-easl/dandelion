@@ -55,54 +55,67 @@ pub fn get_system_functions(engine_type: EngineType) -> Vec<(SystemFunction, usi
     };
 }
 
-pub fn get_available_domains() -> BTreeMap<DomainType, Box<dyn MemoryDomain>> {
+pub fn get_available_domains() -> BTreeMap<DomainType, &'static dyn MemoryDomain> {
     return BTreeMap::from([
         (
             DomainType::Mmap,
-            crate::memory_domain::mmap::MmapMemoryDomain::init(MemoryResource::None).unwrap(),
+            Box::leak(
+                crate::memory_domain::mmap::MmapMemoryDomain::init(MemoryResource::None).unwrap(),
+            ) as &'static dyn MemoryDomain,
         ),
         #[cfg(feature = "cheri")]
         (
             DomainType::Cheri,
-            crate::memory_domain::cheri::CheriMemoryDomain::init(MemoryResource::None).unwrap(),
+            Box::leak(
+                crate::memory_domain::cheri::CheriMemoryDomain::init(MemoryResource::None).unwrap(),
+            ) as &'static dyn MemoryDomain,
         ),
         #[cfg(feature = "wasm")]
         (
             DomainType::RWasm,
-            crate::memory_domain::wasm::WasmMemoryDomain::init(MemoryResource::None).unwrap(),
+            Box::leak(
+                crate::memory_domain::wasm::WasmMemoryDomain::init(MemoryResource::None).unwrap(),
+            ) as &'static dyn MemoryDomain,
         ),
         #[cfg(feature = "mmu")]
         (
             DomainType::Process,
-            crate::memory_domain::mmu::MmuMemoryDomain::init(MemoryResource::None).unwrap(),
+            Box::leak(
+                crate::memory_domain::mmu::MmuMemoryDomain::init(MemoryResource::None).unwrap(),
+            ) as &'static dyn MemoryDomain,
         ),
     ]);
 }
 
-pub fn get_available_drivers() -> BTreeMap<EngineType, Box<dyn Driver>> {
-    return BTreeMap::<EngineType, Box<dyn Driver>>::from([
+pub fn get_available_drivers() -> BTreeMap<EngineType, &'static dyn Driver> {
+    return BTreeMap::<EngineType, &'static dyn Driver>::from([
         #[cfg(feature = "hyper_io")]
         (
             EngineType::Hyper,
-            Box::new(crate::function_driver::system_driver::hyper::HyperDriver {})
-                as Box<dyn Driver>,
+            Box::leak(Box::new(
+                crate::function_driver::system_driver::hyper::HyperDriver {},
+            )) as &'static dyn Driver,
         ),
         #[cfg(feature = "cheri")]
         (
             EngineType::Cheri,
-            Box::new(crate::function_driver::compute_driver::cheri::CheriDriver {})
-                as Box<dyn Driver>,
+            Box::leak(Box::new(
+                crate::function_driver::compute_driver::cheri::CheriDriver {},
+            )) as &'static dyn Driver,
         ),
         #[cfg(feature = "wasm")]
         (
             EngineType::RWasm,
-            Box::new(crate::function_driver::compute_driver::wasm::WasmDriver {})
-                as Box<dyn Driver>,
+            Box::leak(Box::new(
+                crate::function_driver::compute_driver::wasm::WasmDriver {},
+            )) as &'static dyn Driver,
         ),
         #[cfg(feature = "mmu")]
         (
             EngineType::Process,
-            Box::new(crate::function_driver::compute_driver::mmu::MmuDriver {}) as Box<dyn Driver>,
+            Box::leak(Box::new(
+                crate::function_driver::compute_driver::mmu::MmuDriver {},
+            )) as &'static dyn Driver,
         ),
     ]);
 }
