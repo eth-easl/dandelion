@@ -139,7 +139,7 @@ async fn run_mat_func(
     is_cold: bool,
     request: DandelionRequest,
     mut recorder: Recorder,
-) -> i64 {
+) -> Vec<u8> {
     let (name, input_context) = dandelion_server::parse_request(request);
 
     let inputs = vec![(
@@ -153,11 +153,9 @@ async fn run_mat_func(
     let result = dispatcher
         .queue_function_by_name(name, inputs, outputs, is_cold, recorder)
         .await
-        .expect("Should get result from function")
-        .remove(&0)
-        .expect("Should have composition set 0");
+        .expect("Should get result from function");
 
-    return get_checksum(result);
+    return dandelion_server::create_response(result);
 }
 
 // Given a result context, return the last element of the resulting matrix
@@ -206,9 +204,7 @@ async fn serve_request(
         request,
         recorder.get_sub_recorder().unwrap(),
     )
-    .await
-    .to_be_bytes()
-    .to_vec();
+    .await;
 
     let response = Ok::<_, Infallible>(Response::new(response_vec.into()));
 

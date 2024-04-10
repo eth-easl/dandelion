@@ -5,8 +5,8 @@
 mod server_tests {
 
     use assert_cmd::prelude::*;
-    use byteorder::{BigEndian, ReadBytesExt};
-    use dandelion_server::{DandelionRequest, InputItem, InputSet};
+    use byteorder::{LittleEndian, ReadBytesExt};
+    use dandelion_server::{DandelionRequest, DandelionResponse, InputItem, InputSet};
     use serde::Serialize;
     use std::{
         io::{BufRead, BufReader, Cursor, Read},
@@ -76,7 +76,6 @@ mod server_tests {
         let mut data = Vec::new();
         data.extend_from_slice(&i64::to_le_bytes(1));
         data.extend_from_slice(&i64::to_le_bytes(1));
-        let data_size = data.len() as u64;
         let mat_request = DandelionRequest {
             name: function_name,
             sets: vec![InputSet {
@@ -84,11 +83,9 @@ mod server_tests {
                 items: vec![InputItem {
                     identifier: String::from(""),
                     key: 0,
-                    data_start: 0,
-                    data_size,
+                    data: data,
                 }],
             }],
-            data,
         };
 
         let client = reqwest::blocking::Client::new();
@@ -100,10 +97,16 @@ mod server_tests {
         assert!(resp.status().is_success());
 
         let body = resp.bytes().unwrap();
-        assert_eq!(body.len(), 8);
-        let mut reader = Cursor::new(body);
-        let checksum = reader.read_u64::<BigEndian>().unwrap();
-        assert_eq!(checksum, 1);
+        let response: DandelionResponse = bson::from_slice(&body).unwrap();
+        assert_eq!(1, response.sets.len());
+        assert_eq!(1, response.sets[0].items.len());
+        let response_data = &response.sets[0].items[0].data;
+        assert_eq!(response_data.len(), 16);
+        let mut reader = Cursor::new(response_data);
+        let mat_size = reader.read_u64::<LittleEndian>().unwrap();
+        assert_eq!(1, mat_size);
+        let checksum = reader.read_u64::<LittleEndian>().unwrap();
+        assert_eq!(1, checksum);
     }
 
     #[test]
