@@ -591,11 +591,7 @@ mod compute_driver_tests {
             ComputeResource::GPU(0)
         ]);
     }
-    #[cfg(feature = "fpga")]
-    mod mmu {
-        use crate::function_driver::ComputeResource;
-        use crate::function_driver::compute_driver::fpga::
-    }
+
     #[cfg(feature = "mmu")]
     mod mmu {
         use crate::function_driver::ComputeResource;

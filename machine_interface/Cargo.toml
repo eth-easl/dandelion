@@ -9,7 +9,6 @@ cheri = ["std"]
 mmu = ["std"]
 hyper_io = ["std", "dep:hyper"]
 wasm = ["std"]
-fpga = ["std"]
 
 [build-dependencies]
 cmake = "0.1"
