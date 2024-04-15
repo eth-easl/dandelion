@@ -4,6 +4,9 @@ pub mod cheri;
 #[cfg(feature = "mmu")]
 pub mod mmu;
 
+#[cfg(feature = "fpga")]
+pub mod fpga;
+
 #[cfg(feature = "wasm")]
 pub mod wasm;
 

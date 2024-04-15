@@ -661,4 +661,26 @@ mod compute_driver_tests {
             ComputeResource::GPU(0),
         ]);
     }
+    #[cfg(feature = "fpga")]
+    mod fpga {
+        use super::engine_minimal;
+        use crate::{
+            function_driver::{
+                compute_driver::fpga, compute_driver::fpga::FpgaDriver, thread_utils::EngineLoop,
+                ComputeResource, Driver, EngineArguments, FunctionArguments,
+            },
+            memory_domain::{mmap::MmapMemoryDomain, ContextTrait, MemoryResource},
+            DataItem, DataSet, Position,
+        };
+        #[test]
+        fn run_dummy_test() {
+            let driver: Box<dyn Driver> = Box::new(FpgaDriver {});
+            engine_minimal::<MmapMemoryDomain>(
+                "dummy",
+                MemoryResource::None,
+                driver,
+                vec![ComputeResource::CPU(1)],
+            );
+        }
+    }
 }
