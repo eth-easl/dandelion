@@ -11,16 +11,72 @@ use core_affinity::set_for_current;
 use dandelion_commons::{DandelionError, DandelionResult};
 use libloading::{Library, Symbol};
 use log;
-use std::{os::unix::net::SocketAddr, str::FromStr, sync::Arc};
-
 use std::net::{Ipv4Addr, SocketAddrV4};
-use tokio::net;
+use std::time::Duration;
+use std::{os::unix::net::SocketAddr, str::FromStr, sync::Arc, sync::Mutex};
+use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
+//use tokio::net;
+use tokio::net::TcpListener;
+use tokio::net::TcpStream;
 use tokio::runtime::{Builder, Runtime};
+
+#[derive(Debug, Clone, Copy)]
+pub enum SendMessage {
+    //TODO: Implement with Struct
+    ErrorMessage,
+    LoadMessage,
+    InputMessage,
+}
+
+type FpgaFunctionId = u64;
+
+#[derive(Debug, Clone, Copy)]
+pub enum TileFunctionState {
+    Computing,
+    Done,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum TileState {
+    Empty,
+    Filled(TileFunctionState, FpgaFunctionId),
+}
+pub type TileStateCollection = Arc<Mutex<Vec<TileState>>>;
+
+fn create_tile_state_collection(n: usize) -> TileStateCollection {
+    let initial_state = vec![TileState::Empty; n]; // Adjust the size as needed
+    Arc::new(Mutex::new(initial_state))
+}
+
+async fn dummy_send(conn: SocketAddrV4) {
+    println!("Connecting to {}", conn);
+    match TcpStream::connect(conn).await {
+        Ok(mut stream) => {
+            let message = "Hello";
+            match stream.write_all(message.as_bytes()).await {
+                Ok(_) => {
+                    println!("Sent: {}", message);
+                    let mut buffer = [0; 1024];
+                    match stream.read(&mut buffer).await {
+                        Ok(_) => {
+                            let received_message = String::from_utf8_lossy(&buffer[..]);
+                            println!("Received: {}", received_message);
+                        }
+                        Err(e) => eprintln!("Failed to read message: {}", e),
+                    }
+                }
+                Err(e) => eprintln!("Failed to send message: {}", e),
+            }
+        }
+        Err(e) => eprintln!("Failed to connect: {}", e),
+    }
+}
 
 pub struct FpgaLoop {
     cpu_slot: u8, //maybe redundant if we have a runtime
     runtime: Runtime,
     //other stuff as well? Like some state keeping
+    tiles: TileStateCollection,
 }
 
 impl EngineLoop for FpgaLoop {
@@ -39,6 +95,7 @@ impl EngineLoop for FpgaLoop {
         return Ok(Box::new(FpgaLoop {
             cpu_slot: core_id,
             runtime, //where do the configs for stuff go?...
+            tiles: create_tile_state_collection(4),
         }));
     }
     fn run(
@@ -48,12 +105,22 @@ impl EngineLoop for FpgaLoop {
         _output_sets: Arc<Vec<String>>, //_ so compiler doesn't complain for now TODO: vFIX
     ) -> DandelionResult<Context> {
         println!("Fpga engine entered run!");
-        let _function_conf = match config {
+        //It's actually not good to pass the connection ips in the function config..
+        //This should be passed to init like a computing resource,
+        //since it's not supposed to change between invokations..
+
+        //for now it'll be a new connection every time, that's ok
+        let function_conf = match config {
             //_ so compiler doesn't complain for now TODO: vFIX
             FunctionConfig::FpgaConfig(fpga_func) => fpga_func,
             _ => return Err(DandelionError::ConfigMissmatch),
         };
         //TODO: here should go the running of stuff
+        //outsource to different functions
+        //first, parse the context to find out function id, input
+        self.runtime
+            .block_on(dummy_send(function_conf.std_connection));
+
         println!("returned bs from run");
         return DandelionResult::Ok(context);
     }
@@ -100,7 +167,7 @@ impl Driver for FpgaDriver {
             FunctionConfig::FpgaConfig(dummyconfig)
         } else {
             //TODO: implement actual config/function parsing
-            log::warn!("Warning, trying to load a real config, NYI!!!!");
+            println!("Warning, trying to load a real config, NYI!!!!");
             let dummyconfig = FpgaConfig {
                 std_connection: SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 3456),
                 special_connection: SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 4567),
