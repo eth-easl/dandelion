@@ -38,6 +38,7 @@ hyper = { version = "0.14", optional = true, features = [
 ] }
 libloading = { version = "0.8.1" }
 log = "0.4.20"
+bincode = { version = "1" }
 
 # disable benchmarks in library, to not run all unit tests on every benchmark
 # also needs to be disabled for criterion flags to work that are not available for tests

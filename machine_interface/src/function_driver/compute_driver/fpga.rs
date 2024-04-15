@@ -11,21 +11,28 @@ use core_affinity::set_for_current;
 use dandelion_commons::{DandelionError, DandelionResult};
 use libloading::{Library, Symbol};
 use log;
+use serde::Deserialize;
 use std::net::{Ipv4Addr, SocketAddrV4};
-use std::time::Duration;
+
 use std::{os::unix::net::SocketAddr, str::FromStr, sync::Arc, sync::Mutex};
 use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
 //use tokio::net;
+//use std::future;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tokio::runtime::{Builder, Runtime};
+use tokio::time::{timeout, Duration};
+
+use bincode::serialize;
+use std::boxed::Box;
 
 #[derive(Debug, Clone, Copy)]
 pub enum SendMessage {
     //TODO: Implement with Struct
-    ErrorMessage,
-    LoadMessage,
-    InputMessage,
+    ErrorMessage(u64),
+    LoadMessage(u32),
+    InputMessage(u64),
+    DummyMessage(u32),
 }
 
 type FpgaFunctionId = u64;
@@ -48,24 +55,52 @@ fn create_tile_state_collection(n: usize) -> TileStateCollection {
     Arc::new(Mutex::new(initial_state))
 }
 
+fn build_send_buf(message: SendMessage) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    //TODO: make this from a struct with all info
+    let serialized = match message {
+        SendMessage::ErrorMessage(_) => serialize("error")?,
+        SendMessage::LoadMessage(ld) => serialize(&format!("load: {ld}"))?,
+        SendMessage::InputMessage(_) => serialize("input")?,
+        SendMessage::DummyMessage(_) => serialize("DUMMYMESSAGE")?,
+    };
+
+    Ok(serialized.into_boxed_slice().into_vec())
+}
+//should probably return a result
+async fn send_msg(stream: &mut TcpStream, message: SendMessage) -> io::Result<()> {
+    let send_buf = build_send_buf(message);
+    match send_buf {
+        Ok(buf) => {
+            if let Err(e) = stream.write(&buf).await {
+                eprintln!("Failed to send message: {}", e);
+                return Err(e);
+            }
+            stream.flush().await.expect("DIDNT FLUSH");
+        }
+        Err(e) => eprintln!("Failed to build send buffer: {}", e),
+    }
+    return Ok(());
+}
+
 async fn dummy_send(conn: SocketAddrV4) {
     println!("Connecting to {}", conn);
     match TcpStream::connect(conn).await {
         Ok(mut stream) => {
-            let message = "Hello";
-            match stream.write_all(message.as_bytes()).await {
-                Ok(_) => {
-                    println!("Sent: {}", message);
-                    let mut buffer = [0; 1024];
-                    match stream.read(&mut buffer).await {
-                        Ok(_) => {
-                            let received_message = String::from_utf8_lossy(&buffer[..]);
-                            println!("Received: {}", received_message);
-                        }
-                        Err(e) => eprintln!("Failed to read message: {}", e),
+            let message = SendMessage::DummyMessage(42);
+            if let Err(e) = send_msg(&mut stream, message).await {
+                eprintln!("failed to send!");
+            } else {
+                println!("Sent: {:?}", message);
+
+                let dur = Duration::from_secs(3);
+                let mut buffer = [0; 1024];
+                match timeout(dur, stream.read(&mut buffer)).await {
+                    Ok(_) => {
+                        let received_message = String::from_utf8_lossy(&buffer[..]);
+                        println!("Received: {}", received_message);
                     }
+                    Err(e) => eprintln!("Failed to read message: {}", e),
                 }
-                Err(e) => eprintln!("Failed to send message: {}", e),
             }
         }
         Err(e) => eprintln!("Failed to connect: {}", e),
