@@ -45,6 +45,7 @@ const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
 // Handles graceful shutdown
 async fn handle_signals(mut signals: Signals) -> io::Result<()> {
+    #[allow(clippy::never_loop)]
     while let Some(signal) = signals.next().await {
         match signal {
             SIGTERM | SIGINT | SIGQUIT => {

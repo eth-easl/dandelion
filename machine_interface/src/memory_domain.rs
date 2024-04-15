@@ -13,6 +13,7 @@ pub mod wasm;
 
 use crate::{DataItem, DataSet, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
+use serde::{Deserialize, Serialize};
 
 pub trait ContextTrait: Send + Sync {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()>;
@@ -69,7 +70,7 @@ impl ContextTrait for ContextType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum ContextState {
     InPreparation,
     Run(i32),

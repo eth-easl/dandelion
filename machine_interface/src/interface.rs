@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 
+#[cfg(feature = "gpu")]
+use crate::function_driver::compute_driver::gpu::{buffer_pool::BufferPool, hip};
+
 use crate::{
-    function_driver::compute_driver::gpu::{
-        buffer_pool::BufferPool,
-        hip::{self, DeviceAllocation},
-    },
     memory_domain::{Context, ContextState, ContextTrait},
     DataItem, DataSet, Position,
 };
@@ -126,6 +125,7 @@ struct IoBufferDescriptor<PtrT: SizedIntTrait, SizeT: SizedIntTrait> {
     key: SizeT,       // size_t,
 }
 
+#[cfg(feature = "gpu")]
 /// Only really used for GPU, but defined here so we can access private fields of DandelionSystemData
 pub fn write_gpu_outputs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     context: &mut Context,
@@ -169,9 +169,9 @@ pub fn write_gpu_outputs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
             .ok_or(DandelionError::ConfigMissmatch)?;
         let buf_offset = context.get_free_space(*size, 8)?;
 
-        let src = unsafe { base.byte_offset(buf_offset as isize) } as *const c_void;
+        let dst = unsafe { base.byte_offset(buf_offset as isize) } as *const c_void;
         let dev_ptr = buffer_pool.get(*dev_ptr_idx)?;
-        hip::memcpy_d_to_h(src, &dev_ptr, *size)?;
+        hip::memcpy_d_to_h(dst, &dev_ptr, *size)?;
 
         output_buffers.push(IoBufferDescriptor {
             ident: ptr_t!(0),

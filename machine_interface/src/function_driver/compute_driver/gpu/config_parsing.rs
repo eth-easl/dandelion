@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::function_driver::GpuConfig;
 
-use super::hip;
+use super::hip::{self, FunctionT, ModuleT};
 
 const SYSDATA_OFFSET: usize = 0usize;
 
@@ -100,18 +100,12 @@ pub struct ExecutionBlueprint {
 }
 
 pub fn dummy_config() -> DandelionResult<GpuConfig> {
-    let module =
-        hip::module_load("/home/smithj/dandelion/machine_interface/hip_interface/module.hsaco")?;
-    let kernel_set = hip::module_get_function(&module, "set_mem")?;
-    let kernel_check = hip::module_get_function(&module, "check_mem")?;
-
     Ok(GpuConfig {
         system_data_struct_offset: SYSDATA_OFFSET,
-        module: Arc::new(module),
-        kernels: Arc::new(HashMap::from([
-            ("set_mem".into(), kernel_set),
-            ("check_mem".into(), kernel_check),
-        ])),
+        module_path: Arc::new(
+            "/home/smithj/dandelion/machine_interface/hip_interface/module.hsaco".into(),
+        ),
+        kernels: Arc::new(vec!["set_mem".into(), "check_mem".into()]),
         blueprint: Arc::new(ExecutionBlueprint {
             inputs: vec![],
             buffers: HashMap::from([("A".into(), BufferSizing::Absolute(1024))]),
@@ -133,14 +127,12 @@ pub fn dummy_config() -> DandelionResult<GpuConfig> {
 }
 
 pub fn dummy_config2() -> DandelionResult<GpuConfig> {
-    let module =
-        hip::module_load("/home/smithj/dandelion/machine_interface/hip_interface/module.hsaco")?;
-    let kernel = hip::module_get_function(&module, "check_then_write")?;
-
     Ok(GpuConfig {
         system_data_struct_offset: SYSDATA_OFFSET,
-        module: Arc::new(module),
-        kernels: Arc::new(HashMap::from([("check_then_write".into(), kernel)])),
+        module_path: Arc::new(
+            "/home/smithj/dandelion/machine_interface/hip_interface/module.hsaco".into(),
+        ),
+        kernels: Arc::new(vec!["check_then_write".into()]),
         blueprint: Arc::new(ExecutionBlueprint {
             inputs: vec!["A".into()],
             buffers: HashMap::new(),
@@ -160,14 +152,13 @@ pub fn matmul_dummy(parallel: bool) -> DandelionResult<GpuConfig> {
     } else {
         "matmul_loop"
     };
-    let module =
-        hip::module_load("/home/smithj/dandelion/machine_interface/hip_interface/matmul.hsaco")?;
-    let kernel = hip::module_get_function(&module, fn_name)?;
 
     Ok(GpuConfig {
         system_data_struct_offset: SYSDATA_OFFSET,
-        module: Arc::new(module),
-        kernels: Arc::new(HashMap::from([(fn_name.into(), kernel)])),
+        module_path: Arc::new(
+            "/home/smithj/dandelion/machine_interface/hip_interface/matmul.hsaco".into(),
+        ),
+        kernels: Arc::new(vec![fn_name.into()]),
         blueprint: Arc::new(ExecutionBlueprint {
             inputs: vec!["A".into()],
             buffers: HashMap::from([("B".into(), BufferSizing::Absolute(80))]),
@@ -196,9 +187,28 @@ struct GpuConfigIR {
     blueprint: ExecutionBlueprint,
 }
 
-impl TryFrom<GpuConfigIR> for GpuConfig {
+impl From<GpuConfigIR> for GpuConfig {
+    fn from(value: GpuConfigIR) -> Self {
+        Self {
+            system_data_struct_offset: SYSDATA_OFFSET,
+            module_path: Arc::new(value.module_path),
+            kernels: Arc::new(value.kernels),
+            blueprint: Arc::new(value.blueprint),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct RuntimeGpuConfig {
+    pub system_data_struct_offset: usize,
+    pub module: Arc<ModuleT>,
+    pub kernels: Arc<HashMap<String, FunctionT>>,
+    pub blueprint: Arc<ExecutionBlueprint>,
+}
+
+impl TryFrom<GpuConfig> for RuntimeGpuConfig {
     type Error = DandelionError;
-    fn try_from(value: GpuConfigIR) -> Result<Self, Self::Error> {
+    fn try_from(value: GpuConfig) -> Result<Self, Self::Error> {
         let module = hip::module_load(&value.module_path)?;
         let kernels = value
             .kernels
@@ -208,10 +218,10 @@ impl TryFrom<GpuConfigIR> for GpuConfig {
             })
             .collect::<Result<HashMap<_, _>, _>>()?; // this is kinda ugly but also pretty cool
         Ok(Self {
-            module: Arc::new(module),
             system_data_struct_offset: SYSDATA_OFFSET,
+            module: Arc::new(module),
             kernels: Arc::new(kernels),
-            blueprint: Arc::new(value.blueprint),
+            blueprint: value.blueprint,
         })
     }
 }
@@ -221,7 +231,7 @@ pub fn parse_config(path: &str) -> DandelionResult<GpuConfig> {
     let reader = BufReader::new(file);
     let ir: GpuConfigIR =
         serde_json::from_reader(reader).map_err(|_| DandelionError::ConfigMissmatch)?;
-    ir.try_into()
+    Ok(ir.into())
 }
 
 // For me so I could see how the file would look. Keeping it for now until format is finalised

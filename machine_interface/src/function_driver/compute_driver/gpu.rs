@@ -5,6 +5,7 @@ use crate::{
     },
     interface::{read_output_structs, setup_input_structs, write_gpu_outputs},
     memory_domain::{Context, ContextTrait, ContextType},
+    promise::Debt,
     DataRequirementList, DataSet,
 };
 use core_affinity::CoreId;
@@ -12,21 +13,22 @@ use dandelion_commons::{DandelionError, DandelionResult};
 use libc::c_void;
 use std::{
     collections::HashMap,
+    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     ptr::null,
     sync::{Arc, Mutex},
-    thread,
+    thread::{self, spawn},
 };
 
 use self::{
     buffer_pool::BufferPool,
-    config_parsing::{Action, Argument, BufferSizing},
-    gpu_utils::{copy_data_to_device, get_data_length, get_grid_size},
+    config_parsing::{Action, Argument, BufferSizing, RuntimeGpuConfig},
+    gpu_utils::{copy_data_to_device, get_data_length, get_grid_size, start_gpu_process_pool},
     hip::DEFAULT_STREAM,
 };
 
 pub(crate) mod buffer_pool;
 pub(crate) mod config_parsing;
-mod gpu_utils;
+pub mod gpu_utils;
 pub(crate) mod hip;
 
 pub fn dummy_run(gpu_loop: &mut GpuLoop) -> DandelionResult<()> {
@@ -87,10 +89,10 @@ pub fn dummy_run(gpu_loop: &mut GpuLoop) -> DandelionResult<()> {
     Ok(())
 }
 
-fn gpu_run(
+pub fn gpu_run(
     cpu_slot: usize,
     gpu_id: u8,
-    config: GpuConfig,
+    config: RuntimeGpuConfig,
     buffer_pool: Arc<Mutex<BufferPool>>,
     mut context: Context,
     output_names: Arc<Vec<String>>,
@@ -114,7 +116,9 @@ fn gpu_run(
     for name in &config.blueprint.inputs {
         let size = get_data_length(name, &context)?;
         let idx = buffer_pool.alloc_buffer(size)?;
-        copy_data_to_device(name, &context, base, &buffer_pool.get(idx)?)?;
+        unsafe {
+            copy_data_to_device(name, &context, base, &buffer_pool.get(idx)?)?;
+        }
         buffers.insert(name.clone(), (idx, size));
     }
     for (name, size) in &config.blueprint.buffers {
@@ -215,23 +219,20 @@ impl EngineLoop for GpuLoop {
             return Err(DandelionError::ConfigMissmatch);
         };
 
-        setup_input_structs::<usize, usize>(
-            &mut context,
-            config.system_data_struct_offset,
-            &output_sets,
-        )?;
+        let sysdata_offset = config.system_data_struct_offset;
+        setup_input_structs::<usize, usize>(&mut context, sysdata_offset, &output_sets)?;
 
-        // in thread for now, in process pool eventually
+        // in thread in case the kernel crashes
         let cpu_slot_clone = self.cpu_slot as usize;
         let gpu_id_clone = self.gpu_id;
-        let config_clone = config.clone();
+        let runtime_config: RuntimeGpuConfig = config.try_into()?;
         let outputs = output_sets.clone();
         let buffer_pool = self.buffers.clone();
         let handle = thread::spawn(move || {
             gpu_run(
                 cpu_slot_clone,
                 gpu_id_clone,
-                config_clone,
+                runtime_config,
                 buffer_pool,
                 context,
                 outputs,
@@ -245,7 +246,7 @@ impl EngineLoop for GpuLoop {
         let write_buf = vec![12345i64];
         context.write(0, &write_buf)?;
 
-        read_output_structs::<usize, usize>(&mut context, config.system_data_struct_offset)?;
+        read_output_structs::<usize, usize>(&mut context, sysdata_offset)?;
 
         Ok(context)
     }
@@ -257,7 +258,7 @@ impl Driver for GpuDriver {
     fn start_engine(
         &self,
         resource: ComputeResource,
-        queue: Box<dyn WorkQueue + Send>,
+        queue: Box<dyn WorkQueue + Send + Sync>,
     ) -> dandelion_commons::DandelionResult<()> {
         // extract resources
         let (cpu_slot, gpu_id) = match resource {
@@ -277,7 +278,9 @@ impl Driver for GpuDriver {
         }
         // TODO: check gpu is available
 
-        start_thread::<GpuLoop>(cpu_slot, queue);
+        // To switch between single executor and process pool
+        // start_thread::<GpuLoop>(cpu_slot, queue);
+        spawn(move || start_gpu_process_pool(cpu_slot, gpu_id, queue));
         Ok(())
     }
 

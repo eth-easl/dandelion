@@ -6,7 +6,7 @@ use super::hip::{self, DeviceAllocation, DevicePointer};
 const Gi: usize = 1 << 30;
 
 // REGION_SIZE * #engines_on_device should never exceed total VRAM capacity (64GiB for MI210)
-const REGION_SIZE: usize = 16 * Gi;
+const REGION_SIZE: usize = 15 * Gi;
 
 #[derive(Debug)]
 struct Buffer {

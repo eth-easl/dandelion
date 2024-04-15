@@ -70,7 +70,7 @@ impl Driver for WasmDriver {
     fn start_engine(
         &self,
         resource: ComputeResource,
-        queue: Box<dyn WorkQueue + Send>,
+        queue: Box<dyn WorkQueue + Send + Sync>,
     ) -> DandelionResult<()> {
         // sanity checks; extract core id
         let cpu_slot = match resource {

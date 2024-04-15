@@ -6,13 +6,14 @@ use crate::{
     DataRequirementList, Position,
 };
 extern crate alloc;
-use crate::function_driver::compute_driver::gpu::hip::ModuleT;
 use alloc::sync::Arc;
 use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
 
 #[cfg(feature = "wasm")]
 use libloading::Library;
+use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "gpu")]
 use self::compute_driver::gpu::{config_parsing::ExecutionBlueprint, hip::FunctionT};
 
 pub mod compute_driver;
@@ -55,11 +56,12 @@ pub struct WasmConfig {
     system_data_struct_offset: usize,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct GpuConfig {
     pub system_data_struct_offset: usize,
-    pub module: Arc<ModuleT>,
-    pub kernels: Arc<HashMap<String, FunctionT>>,
+    pub module_path: Arc<String>,
+    pub kernels: Arc<Vec<String>>,
+    #[cfg(feature = "gpu")]
     pub blueprint: Arc<ExecutionBlueprint>,
 }
 
@@ -97,10 +99,13 @@ impl Function {
                 Ok(context)
             }
             // no need to occupy space or anything like that as long as context is only inputs/outputs
-            FunctionConfig::GpuConfig(_) => {
+            FunctionConfig::GpuConfig(cfg) => {
                 let mut ctxt = domain.acquire_context(ctx_size)?;
                 // Make sure sysdata struct isn't overwritten, 0 = system_data_offset
-                ctxt.occupy_space(0, std::mem::size_of::<DandelionSystemData<usize, usize>>())?;
+                ctxt.occupy_space(
+                    cfg.system_data_struct_offset,
+                    std::mem::size_of::<DandelionSystemData<usize, usize>>(),
+                )?;
 
                 Ok(ctxt)
             }
@@ -149,7 +154,7 @@ pub trait Driver: Send + Sync {
         &self,
         resource: ComputeResource,
         // TODO check out why this can't be impl instead of Box<dyn
-        queue: Box<dyn WorkQueue + Send>,
+        queue: Box<dyn WorkQueue + Send + Sync>,
     ) -> DandelionResult<()>;
 
     // parses an executable,

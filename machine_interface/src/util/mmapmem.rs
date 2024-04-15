@@ -25,6 +25,7 @@ pub struct MmapMem {
     size: usize,
     fd: RawFd,
     filename: Option<String>,
+    unmap_on_drop: bool,
 }
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -40,6 +41,7 @@ impl MmapMem {
                 size,
                 fd: -1,
                 filename: None,
+                unmap_on_drop: true,
             });
         }
         let mut filename = None;
@@ -100,6 +102,7 @@ impl MmapMem {
             size,
             fd,
             filename,
+            unmap_on_drop: true,
         };
 
         Ok(shmem)
@@ -151,6 +154,59 @@ impl MmapMem {
             size,
             fd: shmem_fd,
             filename: Some(filename.to_string()),
+            unmap_on_drop: false,
+        };
+
+        Ok(shmem)
+    }
+
+    // Memory-maps a file and protection flags, at the given address.
+    // TODO good name; replace eprintln with error again
+    pub fn alt_open(filename: &str, prot: ProtFlags) -> Result<MmapMem, DandelionError> {
+        let shmem_fd = match shm_open(filename, OFlag::O_RDWR, Mode::S_IRUSR) {
+            Err(err) => {
+                error!("Error opening shared memory file: {}:{}", err, err.desc());
+                return Err(DandelionError::FileError);
+            }
+            Ok(fd) => fd,
+        };
+
+        let size = match fstat(shmem_fd) {
+            Err(err) => {
+                error!("Error getting file stats: {}:{}", err, err.desc());
+                return Err(DandelionError::FileError);
+            }
+            Ok(stat) => stat.st_size as usize,
+        };
+
+        let ptr = unsafe {
+            match mmap(
+                None,
+                NonZeroUsize::new(size).unwrap(),
+                prot,
+                MapFlags::MAP_SHARED,
+                shmem_fd,
+                0,
+            ) {
+                Err(err) => {
+                    eprintln!(
+                        "Error mapping memory from file {}: {}:{}",
+                        filename,
+                        err,
+                        err.desc()
+                    );
+                    return Err(DandelionError::MemoryAllocationError);
+                }
+                Ok(ptr) => ptr as *mut _,
+            }
+        };
+
+        let shmem = MmapMem {
+            ptr,
+            size,
+            fd: shmem_fd,
+            filename: Some(filename.to_string()),
+            unmap_on_drop: false,
         };
 
         Ok(shmem)
@@ -249,9 +305,11 @@ impl Drop for MmapMem {
         if !self.ptr.is_null() {
             unsafe { munmap(self.ptr as *mut _, self.size).unwrap() };
         }
-        if let Some(filename) = &self.filename {
-            close(self.fd).unwrap();
-            shm_unlink(filename.as_str()).unwrap();
+        if self.unmap_on_drop {
+            if let Some(filename) = &self.filename {
+                close(self.fd).unwrap();
+                shm_unlink(filename.as_str()).unwrap();
+            }
         }
     }
 }
