@@ -119,6 +119,21 @@ pub enum DandelionError {
     FunctionError(i32),
     /// Work queue from the dispatcher to the engines is full
     WorkQueueFull,
+    // Frontend errors
+    /// Error in the frontend receiveing requests
+    RequestError(FrontendError),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FrontendError {
+    /// Failed to get more frames from the connection
+    FailledToGetFrames,
+    /// Attemped to read bytes form stream to desiarialize but stream ran out
+    StreamEnd,
+    /// The stream was not formated according to the expected specification
+    ViolatedSpec,
+    /// The structure descibed does not cofrom with the expected message
+    MalformedMessage,
 }
 
 pub type DandelionResult<T> = std::result::Result<T, DandelionError>;

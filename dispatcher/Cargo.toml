@@ -19,5 +19,5 @@ crossbeam = "0.8.4"
 cheri = ["machine_interface/cheri"]
 wasm = ["machine_interface/wasm"]
 mmu = ["machine_interface/mmu"]
-hyper_io = ["machine_interface/hyper_io"]
+reqwest_io = ["machine_interface/reqwest_io"]
 timestamp = ["dandelion_commons/timestamp"]

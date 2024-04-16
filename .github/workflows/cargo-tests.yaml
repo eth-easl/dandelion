@@ -17,7 +17,7 @@ jobs:
       # test different available compute engines with different system engines
       matrix:
         compute_driver: [ mmu, wasm ]
-        system_driver: [ hyper_io ]
+        system_driver: [ reqwest_io ]
     steps:
     # check out the code
     - uses: actions/checkout@v3

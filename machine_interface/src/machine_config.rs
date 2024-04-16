@@ -10,8 +10,8 @@ use crate::{
 /// Enum for all engine types that allows use in lookup structures
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EngineType {
-    #[cfg(feature = "hyper_io")]
-    Hyper,
+    #[cfg(feature = "reqwest_io")]
+    Reqwest,
     #[cfg(feature = "cheri")]
     Cheri,
     #[cfg(feature = "wasm")]
@@ -33,8 +33,8 @@ pub enum DomainType {
 
 pub fn get_compatibilty_table() -> BTreeMap<EngineType, DomainType> {
     return BTreeMap::from([
-        #[cfg(feature = "hyper_io")]
-        (EngineType::Hyper, DomainType::Mmap),
+        #[cfg(feature = "reqwest_io")]
+        (EngineType::Reqwest, DomainType::Mmap),
         #[cfg(feature = "cheri")]
         (EngineType::Cheri, DomainType::Cheri),
         #[cfg(feature = "wasm")]
@@ -44,13 +44,14 @@ pub fn get_compatibilty_table() -> BTreeMap<EngineType, DomainType> {
     ]);
 }
 
-#[cfg(any(feature = "hyper_io"))]
+#[cfg(any(feature = "reqwest_io"))]
 const SYS_FUNC_DEFAULT_CONTEXT_SIZE: usize = 0x200_0000;
 
 pub fn get_system_functions(engine_type: EngineType) -> Vec<(SystemFunction, usize)> {
     return match engine_type {
-        #[cfg(feature = "hyper_io")]
-        EngineType::Hyper => vec![(SystemFunction::HTTP, SYS_FUNC_DEFAULT_CONTEXT_SIZE)],
+        #[cfg(feature = "reqwest_io")]
+        EngineType::Reqwest => vec![(SystemFunction::HTTP, SYS_FUNC_DEFAULT_CONTEXT_SIZE)],
+        #[allow(unreachable_patterns)]
         _ => Vec::new(),
     };
 }
@@ -89,11 +90,11 @@ pub fn get_available_domains() -> BTreeMap<DomainType, &'static dyn MemoryDomain
 
 pub fn get_available_drivers() -> BTreeMap<EngineType, &'static dyn Driver> {
     return BTreeMap::<EngineType, &'static dyn Driver>::from([
-        #[cfg(feature = "hyper_io")]
+        #[cfg(feature = "reqwest_io")]
         (
-            EngineType::Hyper,
+            EngineType::Reqwest,
             Box::leak(Box::new(
-                crate::function_driver::system_driver::hyper::HyperDriver {},
+                crate::function_driver::system_driver::reqwest::ReqwestDriver {},
             )) as &'static dyn Driver,
         ),
         #[cfg(feature = "cheri")]

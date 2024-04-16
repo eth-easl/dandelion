@@ -1,4 +1,4 @@
-#[cfg(all(test, any(feature = "hyper_io")))]
+#[cfg(all(test, any(feature = "reqwest_io")))]
 mod system_driver_tests {
     use crate::{
         function_driver::{
@@ -229,11 +229,11 @@ mod system_driver_tests {
         };
     }
 
-    #[cfg(feature = "hyper_io")]
-    mod hyper_io {
-        use crate::function_driver::system_driver::hyper::HyperDriver;
+    #[cfg(feature = "reqwest_io")]
+    mod reqwest_io {
+        use crate::function_driver::system_driver::reqwest::ReqwestDriver;
         use crate::function_driver::ComputeResource;
         use crate::memory_domain::malloc::MallocMemoryDomain as domain;
-        driverTests!(hyper_io; domain; crate::memory_domain::MemoryResource::None; HyperDriver{}; ComputeResource::CPU(1));
+        driverTests!(reqwest_io; domain; crate::memory_domain::MemoryResource::None; ReqwestDriver{}; ComputeResource::CPU(1));
     }
 }

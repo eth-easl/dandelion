@@ -268,7 +268,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
 }
 
 #[test]
-#[cfg(any(feature = "hyper_io"))]
+#[cfg(any(feature = "reqwest_io"))]
 fn test_insert_composition_with_http_func() {
     let dispatcher = Dispatcher::init(dispatcher::resource_pool::ResourcePool {
         engine_pool: Mutex::new(BTreeMap::new()),

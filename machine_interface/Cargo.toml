@@ -7,7 +7,8 @@ edition = "2021"
 std = []
 cheri = ["std"]
 mmu = ["std"]
-hyper_io = ["std", "dep:hyper"]
+reqwest_io = ["std", "dep:reqwest", "dep:http", "dep:bytes"]
+hyper_context = ["std", "dep:hyper", "dep:bytes"]
 wasm = ["std"]
 timestamp = ["dandelion_commons/timestamp"]
 
@@ -30,7 +31,10 @@ serde_json = "1.0"
 core_affinity = { version = "0.8"}
 futures = { version = "0.3.28" }
 tokio = { version = "1", features = ["full"] }
-hyper = { version = "0.14", optional = true, features = ["http1", "http2", "client", "runtime"]}
+hyper = { version = "1.2", optional = true, features = ["full"]}
+reqwest = { version = "0.12", optional = true }
+http = { version = "1.1", optional = true }
+bytes = { version = "1.6", optional = true}
 libloading = { version = "0.8.1" }
 log = "0.4.20"
 

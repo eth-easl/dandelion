@@ -1,6 +1,5 @@
 use core_affinity::{self, CoreId};
 use dandelion_commons::records::{Archive, ArchiveInit, RecordPoint, Recorder};
-use dandelion_server::DandelionRequest;
 use dispatcher::{
     composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
     resource_pool::ResourcePool,
@@ -15,7 +14,9 @@ use log::{error, info, warn};
 use machine_interface::{
     function_driver::ComputeResource,
     machine_config::EngineType,
-    memory_domain::{mmap::MmapMemoryDomain, ContextTrait, MemoryDomain},
+    memory_domain::{
+        hyper::HyperContext, mmap::MmapMemoryDomain, Context, ContextTrait, MemoryDomain,
+    },
     DataItem, DataSet, Position,
 };
 use serde::Deserialize;
@@ -137,21 +138,19 @@ async fn run_chain(
 async fn run_mat_func(
     dispatcher: Arc<Dispatcher>,
     is_cold: bool,
-    request: DandelionRequest,
+    function_name: String,
+    request: Context,
     mut recorder: Recorder,
 ) -> Vec<u8> {
-    let (name, input_context) = dandelion_server::parse_request(request);
+    // let (name, input_context) = dandelion_server::parse_request(request);
 
-    let inputs = vec![(
-        0,
-        CompositionSet::from((0, vec![(Arc::new(input_context))])),
-    )];
+    let inputs = vec![(0, CompositionSet::from((0, vec![(Arc::new(request))])))];
     let outputs = vec![Some(0)];
     recorder
         .record(RecordPoint::QueueFunctionDispatcher)
         .unwrap();
     let result = dispatcher
-        .queue_function_by_name(name, inputs, outputs, is_cold, recorder)
+        .queue_function_by_name(function_name, inputs, outputs, is_cold, recorder)
         .await
         .expect("Should get result from function");
 
@@ -188,20 +187,16 @@ async fn serve_request(
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let mut recorder = TRACING_ARCHIVE.get().unwrap().get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
-
-    // Try to parse the request
-    let request_buf = req
-        .collect()
-        .await
-        .expect("Could not read request body")
-        .to_bytes();
-    let request: DandelionRequest =
-        bson::from_slice(&request_buf).expect("Should be able to deserialize matrix request");
-
+    let request_context_result = HyperContext::from_stream(req).await;
+    if request_context_result.is_err() {
+        warn!("request parsing failed with: {:?}", request_context_result);
+    }
+    let (function_name, request_context) = request_context_result.unwrap();
     let response_vec = run_mat_func(
         dispatcher,
         is_cold,
-        request,
+        function_name,
+        request_context,
         recorder.get_sub_recorder().unwrap(),
     )
     .await;
@@ -452,7 +447,14 @@ fn main() -> () {
     // check if there is a configuration file
     let config = dandelion_server::config::get_config();
 
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    let default_warn_level = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "warn"
+    };
+
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_warn_level))
+        .init();
 
     // Initilize metric collection
     match TRACING_ARCHIVE.set(Archive::init(ArchiveInit {
@@ -515,7 +517,7 @@ fn main() -> () {
             .map(|code_id| ComputeResource::CPU(code_id as u8))
             .collect(),
     );
-    // #[cfg(feature = "hyper_io")]
+    // #[cfg(feature = "reqwest_io")]
     // pool_map.insert(
     //     EngineType::Hyper,
     //     (0..num_dispatcher_cores)
