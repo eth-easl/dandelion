@@ -1,8 +1,8 @@
 // list of memory domain implementations
+#[cfg(feature = "bytes_context")]
+pub mod bytes;
 #[cfg(feature = "cheri")]
 pub mod cheri;
-#[cfg(feature = "hyper_context")]
-pub mod hyper;
 pub mod malloc;
 pub mod mmap;
 #[cfg(feature = "mmu")]
@@ -26,8 +26,8 @@ pub enum ContextType {
     Malloc(Box<malloc::MallocContext>),
     Mmap(Box<mmap::MmapContext>),
     ReadOnly(Box<read_only::ReadOnlyContext>),
-    #[cfg(feature = "hyper_context")]
-    Hyper(Box<hyper::HyperContext>),
+    #[cfg(feature = "bytes_context")]
+    Bytes(Box<bytes::BytesContext>),
     #[cfg(feature = "cheri")]
     Cheri(Box<cheri::CheriContext>),
     #[cfg(feature = "mmu")]
@@ -48,8 +48,8 @@ impl ContextTrait for ContextType {
             ContextType::Mmu(context) => context.write(offset, data),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.write(offset, data),
-            #[cfg(feature = "hyper_context")]
-            ContextType::Hyper(context) => context.write(offset, data),
+            #[cfg(feature = "bytes_context")]
+            ContextType::Bytes(context) => context.write(offset, data),
         }
     }
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
@@ -63,8 +63,8 @@ impl ContextTrait for ContextType {
             ContextType::Mmu(context) => context.read(offset, read_buffer),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.read(offset, read_buffer),
-            #[cfg(feature = "hyper_context")]
-            ContextType::Hyper(context) => context.read(offset, read_buffer),
+            #[cfg(feature = "bytes_context")]
+            ContextType::Bytes(context) => context.read(offset, read_buffer),
         }
     }
 }
@@ -262,9 +262,29 @@ pub fn transfer_memory(
             source_offset,
             size,
         ),
+        #[cfg(all(feature = "mmu", feature = "bytes_context"))]
+        (ContextType::Mmu(destination_ctxt), ContextType::Bytes(source_ctxt)) => {
+            mmu::bytest_to_mmu_transfer(
+                destination_ctxt,
+                source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+            )
+        }
         #[cfg(feature = "wasm")]
         (ContextType::Wasm(destination_ctxt), ContextType::Wasm(source_ctxt)) => {
             wasm::wasm_transfer(
+                destination_ctxt,
+                source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+            )
+        }
+        #[cfg(all(feature = "wasm", feature = "bytes_context"))]
+        (ContextType::Wasm(destination_ctxt), ContextType::Bytes(source_ctxt)) => {
+            wasm::bytes_to_wasm_transfer(
                 destination_ctxt,
                 source_ctxt,
                 destination_offset,

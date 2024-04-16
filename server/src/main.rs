@@ -6,7 +6,7 @@ use dispatcher::{
 };
 use http_body_util::{BodyExt, Full};
 use hyper::{
-    body::{Bytes, Incoming},
+    body::{Body, Bytes, Incoming},
     service::service_fn,
     Request, Response, StatusCode,
 };
@@ -15,7 +15,7 @@ use machine_interface::{
     function_driver::ComputeResource,
     machine_config::EngineType,
     memory_domain::{
-        hyper::HyperContext, mmap::MmapMemoryDomain, Context, ContextTrait, MemoryDomain,
+        bytes::BytesContext, mmap::MmapMemoryDomain, Context, ContextTrait, MemoryDomain,
     },
     DataItem, DataSet, Position,
 };
@@ -142,8 +142,7 @@ async fn run_mat_func(
     request: Context,
     mut recorder: Recorder,
 ) -> Vec<u8> {
-    // let (name, input_context) = dandelion_server::parse_request(request);
-
+    // TODO match set names to assign sets to composition sets
     let inputs = vec![(0, CompositionSet::from((0, vec![(Arc::new(request))])))];
     let outputs = vec![Some(0)];
     recorder
@@ -187,7 +186,30 @@ async fn serve_request(
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let mut recorder = TRACING_ARCHIVE.get().unwrap().get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
-    let request_context_result = HyperContext::from_stream(req).await;
+
+    // pull all frames from the network
+    let mut incomming = req.into_body();
+    let mut body_pin = std::pin::Pin::new(&mut incomming);
+    let mut frame_data = Vec::new();
+    let mut total_size = 0usize;
+    loop {
+        if let Some(frame_result) =
+            futures::future::poll_fn(|cx| body_pin.as_mut().poll_frame(cx)).await
+        {
+            let data_frame = frame_result.unwrap().into_data().unwrap();
+            total_size += data_frame.len();
+            frame_data.push(data_frame);
+        } else {
+            if body_pin.is_end_stream() {
+                break;
+            } else {
+                continue;
+            }
+        }
+    }
+
+    // from context from frame bytes
+    let request_context_result = BytesContext::from_bytes_vec(frame_data, total_size).await;
     if request_context_result.is_err() {
         warn!("request parsing failed with: {:?}", request_context_result);
     }

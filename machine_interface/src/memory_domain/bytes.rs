@@ -2,22 +2,17 @@ use crate::{
     memory_domain::{Context, ContextTrait},
     DataItem, DataSet,
 };
-use bytes::Buf;
+use bytes::{Buf, Bytes};
 use core::mem::size_of;
 use dandelion_commons::{DandelionError, DandelionResult, FrontendError};
-use futures::future::poll_fn;
-use hyper::{
-    body::{Body, Bytes, Incoming},
-    Request,
-};
 use log::{debug, error};
 
 #[derive(Debug)]
-pub struct HyperContext {
+pub struct BytesContext {
     frames: Vec<Bytes>,
 }
 
-impl ContextTrait for HyperContext {
+impl ContextTrait for BytesContext {
     fn write<T>(&mut self, _offset: usize, _data: &[T]) -> dandelion_commons::DandelionResult<()> {
         error!("Tried to write to read only contet");
         return Err(dandelion_commons::DandelionError::InvalidWrite);
@@ -57,36 +52,6 @@ impl ContextTrait for HyperContext {
             }
         }
         return Err(DandelionError::InvalidRead);
-    }
-}
-
-struct IncomingFrames {
-    incoming: Incoming,
-}
-
-impl IncomingFrames {
-    async fn get_all_frames(&mut self) -> DandelionResult<(usize, Vec<Bytes>)> {
-        let mut body_pin = std::pin::Pin::new(&mut self.incoming);
-        let mut frames = Vec::new();
-        let mut total_size = 0;
-        loop {
-            if let Some(frame_result) = poll_fn(|cx| body_pin.as_mut().poll_frame(cx)).await {
-                let frame = frame_result.or(Err(DandelionError::RequestError(
-                    FrontendError::FailledToGetFrames,
-                )))?;
-                let data_frame = frame.into_data().or(Err(DandelionError::RequestError(
-                    FrontendError::FailledToGetFrames,
-                )))?;
-                total_size += data_frame.len();
-                frames.push(data_frame);
-            } else {
-                if body_pin.is_end_stream() {
-                    return Ok((total_size, frames));
-                } else {
-                    continue;
-                }
-            }
-        }
     }
 }
 
@@ -322,12 +287,11 @@ fn read_data_set(
     }));
 }
 
-impl HyperContext {
-    pub async fn from_stream(incoming: Request<Incoming>) -> DandelionResult<(String, Context)> {
-        let body = incoming.into_body();
-        let mut frames = IncomingFrames { incoming: body };
-        let (total_size, frame_data) = frames.get_all_frames().await?;
-
+impl BytesContext {
+    pub async fn from_bytes_vec(
+        frame_data: Vec<Bytes>,
+        total_size: usize,
+    ) -> DandelionResult<(String, Context)> {
         let mut frame_buf = FrameBuf {
             byte_iter: &frame_data,
             remaining: total_size,
@@ -365,11 +329,37 @@ impl HyperContext {
             return Err(DandelionError::RequestError(FrontendError::ViolatedSpec));
         }
         let mut context = Context::new(
-            crate::memory_domain::ContextType::Hyper(Box::new(HyperContext { frames: frame_data })),
+            crate::memory_domain::ContextType::Bytes(Box::new(BytesContext { frames: frame_data })),
             bson_dict_length,
         );
         context.occupy_space(0, bson_dict_length)?;
         context.content = sets;
         return Ok((function_name, context));
     }
+}
+
+#[test]
+fn read_test() {
+    let first = vec![1u8, 2u8, 3u8, 4u8];
+    let second = vec![];
+    let third = vec![5u8, 6u8, 7u8];
+    let fourth = vec![8u8];
+    let frames = vec![first, second, third, fourth]
+        .into_iter()
+        .map(|vec| Bytes::from(vec))
+        .collect();
+    let read_context = BytesContext { frames };
+    let expected_data = vec![1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8];
+    let mut all_read_vec = Vec::<u8>::new();
+    all_read_vec.resize(8, 0);
+    read_context
+        .read(0, &mut all_read_vec)
+        .expect("read should succeed");
+    assert_eq!(expected_data, all_read_vec.as_slice());
+    let mut partial_read_vec = Vec::<u8>::new();
+    partial_read_vec.resize(4, 0);
+    read_context
+        .read(2, &mut partial_read_vec)
+        .expect("Partial read should succeed");
+    assert_eq!(&expected_data[2..6], partial_read_vec.as_slice());
 }

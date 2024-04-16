@@ -73,3 +73,20 @@ pub fn mmu_transfer(
     }
     Ok(())
 }
+
+#[cfg(feature = "bytes_context")]
+pub fn bytest_to_mmu_transfer(
+    destination: &mut MmuContext,
+    source: &crate::memory_domain::bytes::BytesContext,
+    destination_offset: usize,
+    source_offset: usize,
+    size: usize,
+) -> DandelionResult<()> {
+    // check if bounds for mmu context
+    if destination.storage.size() < destination_offset + size {
+        return Err(DandelionError::InvalidWrite);
+    }
+    let mmu_slice = &mut destination.storage[destination_offset..destination_offset + size];
+    source.read(source_offset, mmu_slice)?;
+    Ok(())
+}
