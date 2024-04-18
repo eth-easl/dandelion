@@ -660,7 +660,11 @@ mod compute_driver_tests {
     #[cfg(feature = "gpu")]
     mod gpu {
 
-        use std::sync::{Arc, Mutex};
+        use std::{
+            os::raw::c_void,
+            ptr::null,
+            sync::{Arc, Mutex},
+        };
 
         use dandelion_commons::records::{Archive, RecordPoint, Recorder};
 
@@ -670,8 +674,13 @@ mod compute_driver_tests {
                     compute_driver_tests::compute_driver_tests::{
                         get_expected_mat, prepare_engine_and_function,
                     },
-                    gpu::{dummy_run, GpuDriver, GpuLoop},
+                    gpu::{
+                        dummy_run,
+                        hip::{self, DEFAULT_STREAM},
+                        GpuDriver, GpuLoop,
+                    },
                 },
+                load_utils::load_u8_from_file,
                 thread_utils::EngineLoop,
                 ComputeResource, Driver, EngineArguments, FunctionArguments,
             },
@@ -687,9 +696,40 @@ mod compute_driver_tests {
         }
 
         #[test]
+        fn module_load_data_test() {
+            let file = load_u8_from_file(
+                "/home/smithj/dandelion/machine_interface/hip_interface/module.hsaco".into(),
+            )
+            .unwrap();
+
+            let image = file.as_ptr() as *const c_void;
+
+            let module = hip::module_load_data(image).unwrap();
+
+            let func = hip::module_get_function(&module, "hello_world").unwrap();
+
+            let args: [*const c_void; 0] = [];
+
+            assert!(hip::module_launch_kernel(
+                &func,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                DEFAULT_STREAM,
+                args.as_ptr(),
+                null()
+            )
+            .is_ok())
+        }
+
+        #[test]
         fn run_dummy_gpu_payload() {
             let _lock = GPU_LOCK.lock().unwrap();
-            let mut runner = GpuLoop::init(0).unwrap();
+            let mut runner = GpuLoop::init(ComputeResource::GPU(7, 0)).unwrap();
             assert!(dummy_run(&mut runner).is_ok());
         }
 
@@ -701,7 +741,7 @@ mod compute_driver_tests {
                 "foo",
                 MemoryResource::None,
                 driver,
-                vec![ComputeResource::GPU(1, 1)],
+                vec![ComputeResource::GPU(7, 0)],
             );
         }
 
@@ -714,7 +754,7 @@ mod compute_driver_tests {
                     "bar",
                     MemoryResource::None,
                     &driver,
-                    vec![ComputeResource::GPU(1, 1)],
+                    vec![ComputeResource::GPU(7, 0)],
                 );
             // add inputs
             let in_size_offset = function_context
@@ -774,7 +814,7 @@ mod compute_driver_tests {
                 "/home/smithj/dandelion/machine_interface/hip_interface/matmul_loop.json";
             let dom_init = MemoryResource::None;
             let driver: Box<dyn Driver> = Box::new(GpuDriver {});
-            let drv_init = vec![ComputeResource::GPU(1, 1)];
+            let drv_init = vec![ComputeResource::GPU(7, 0)];
             let (mut function_context, config, queue) =
                 prepare_engine_and_function::<MmuMemoryDomain>(
                     filename, dom_init, &driver, drv_init,
@@ -856,7 +896,7 @@ mod compute_driver_tests {
                 "/home/smithj/dandelion/machine_interface/hip_interface/matmul_para.json";
             let dom_init = MemoryResource::None;
             let driver: Box<dyn Driver> = Box::new(GpuDriver {});
-            let drv_init = vec![ComputeResource::GPU(1, 1)];
+            let drv_init = vec![ComputeResource::GPU(7, 0)];
             const LOWER_SIZE_BOUND: usize = 2;
             const UPPER_SIZE_BOUND: usize = 16;
             for mat_size in LOWER_SIZE_BOUND..UPPER_SIZE_BOUND {

@@ -12,7 +12,7 @@ use std::thread::spawn;
 extern crate alloc;
 
 pub trait EngineLoop {
-    fn init(core_id: u8) -> DandelionResult<Box<Self>>;
+    fn init(resource: ComputeResource) -> DandelionResult<Box<Self>>;
     fn run(
         &mut self,
         config: FunctionConfig,
@@ -27,7 +27,8 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
         log::error!("core received core id that could not be set");
         return;
     }
-    let mut engine_state = E::init(core_id).expect("Failed to initialize thread state");
+    let mut engine_state =
+        E::init(ComputeResource::CPU(core_id)).expect("Failed to initialize thread state");
     loop {
         // TODO catch unwind so we can always return an error or shut down gracefully
         let (args, debt) = queue.get_engine_args();

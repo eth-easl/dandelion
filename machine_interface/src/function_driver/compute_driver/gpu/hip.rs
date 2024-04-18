@@ -40,9 +40,11 @@ pub struct DevicePointer {
 
 #[link(name = "amdhip64")]
 extern "C" {
+    fn hipGetDeviceCount(count: *const i32) -> ErrorT;
     fn hipSetDevice(gpu_id: i32) -> ErrorT;
     fn hipDeviceSynchronize() -> ErrorT;
     fn hipModuleLoad(module: *mut _ModuleT, fname: *const i8) -> ErrorT;
+    fn hipModuleLoadData(module: *mut _ModuleT, image: *const c_void) -> ErrorT;
     fn hipModuleUnload(module: _ModuleT) -> ErrorT;
     fn hipModuleGetFunction(
         function: *mut _FunctionT,
@@ -70,7 +72,6 @@ extern "C" {
     fn hipMemset(dst: *const c_void, value: i32, sizeBytes: size_t) -> ErrorT;
 }
 
-// TODO: Possibly move away from DandelionResult if HipError not wanted
 macro_rules! checked_call {
     ($fcall: expr) => {
         unsafe {
@@ -85,6 +86,14 @@ macro_rules! checked_call {
 pub fn set_device(gpu_id: u8) -> DandelionResult<()> {
     checked_call!(hipSetDevice(gpu_id as i32));
     Ok(())
+}
+
+pub fn get_device_count() -> DandelionResult<usize> {
+    let mut ret: i32 = -1;
+    checked_call!(hipGetDeviceCount(&mut ret as *const i32));
+
+    ret.try_into()
+        .map_err(|_| DandelionError::EngineResourceError)
 }
 
 pub fn device_synchronize() -> DandelionResult<()> {
@@ -108,6 +117,15 @@ pub fn module_load(path: &str) -> DandelionResult<ModuleT> {
     Ok(ModuleT(ret))
 }
 
+// TODO: mark these functions as unsafe
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub fn module_load_data(image: *const c_void) -> DandelionResult<ModuleT> {
+    let mut ret: _ModuleT = null();
+
+    checked_call!(hipModuleLoadData(&mut ret as *mut _ModuleT, image));
+    Ok(ModuleT(ret))
+}
+
 pub fn module_get_function(module: &ModuleT, name: &str) -> DandelionResult<FunctionT> {
     let mut ret: _FunctionT = null();
     let kname = CString::new(name).or(Err(DandelionError::HipError("Invalid Name".into())))?;
@@ -119,7 +137,7 @@ pub fn module_get_function(module: &ModuleT, name: &str) -> DandelionResult<Func
     Ok(FunctionT(ret))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::not_unsafe_ptr_arg_deref)]
 pub fn module_launch_kernel(
     function: &FunctionT,
     grid_dim_x: u32,
@@ -188,6 +206,7 @@ impl Drop for DeviceAllocation {
     }
 }
 
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn memcpy_h_to_d(
     dst: &DevicePointer,
     dev_offset: isize,
@@ -202,6 +221,7 @@ pub fn memcpy_h_to_d(
     Ok(())
 }
 
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn memcpy_d_to_h(
     dst: *const c_void,
     src: &DevicePointer,

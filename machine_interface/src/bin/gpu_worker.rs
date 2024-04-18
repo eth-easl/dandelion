@@ -9,7 +9,7 @@ use machine_interface::{
             GpuLoop,
         },
         thread_utils::EngineLoop,
-        FunctionConfig,
+        ComputeResource, FunctionConfig,
     },
     memory_domain::{Context, ContextTrait},
 };
@@ -27,7 +27,8 @@ fn main() {
     }));
 
     // setup worker struct TODO: add GPU ID
-    let mut worker = GpuLoop::init(core_id).expect("Should be able to create worker");
+    let mut worker = GpuLoop::init(ComputeResource::GPU(core_id, gpu_id))
+        .expect("Should be able to create worker");
 
     // unwrap okay, as all lines are valid Strings
     for inp in io::stdin().lines().map(|l| l.unwrap()) {

@@ -53,6 +53,7 @@ impl Dispatcher {
         let mut engine_queues = BTreeMap::new();
         for (engine_type, driver) in function_registry.drivers.iter() {
             let work_queue = Box::new(EngineQueue::new());
+            // TODO: change Driver.start_engine to take a Vec<ComputeResource> and possibly consume more than one resource here
             while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(*engine_type)
             {
                 driver.start_engine(resource, work_queue.clone())?;

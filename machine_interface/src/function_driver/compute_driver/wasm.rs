@@ -17,8 +17,8 @@ type WasmEntryPoint = fn(&mut [u8]) -> Option<i32>;
 struct WasmLoop {}
 
 impl EngineLoop for WasmLoop {
-    fn init(_core_id: u8) -> DandelionResult<Box<Self>> {
-        return Ok(Box::new(WasmLoop {}));
+    fn init(_core_id: ComputeResource) -> DandelionResult<Box<Self>> {
+        Ok(Box::new(WasmLoop {}))
     }
     fn run(
         &mut self,

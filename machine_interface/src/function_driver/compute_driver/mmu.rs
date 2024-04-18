@@ -172,7 +172,10 @@ struct MmuLoop {
 }
 
 impl EngineLoop for MmuLoop {
-    fn init(core_id: u8) -> DandelionResult<Box<Self>> {
+    fn init(resource: ComputeResource) -> DandelionResult<Box<Self>> {
+        let ComputeResource::CPU(core_id) = resource else {
+            return Err(DandelionError::ConfigMissmatch);
+        };
         return Ok(Box::new(MmuLoop { cpu_slot: core_id }));
     }
     fn run(

@@ -29,7 +29,7 @@ use self::{
 pub(crate) mod buffer_pool;
 pub(crate) mod config_parsing;
 pub mod gpu_utils;
-pub(crate) mod hip;
+pub mod hip;
 
 pub fn dummy_run(gpu_loop: &mut GpuLoop) -> DandelionResult<()> {
     // set gpu
@@ -191,7 +191,6 @@ pub fn gpu_run(
     Ok(context)
 }
 
-// TODO: remove pub at some point
 pub struct GpuLoop {
     cpu_slot: u8, // needed to set processes to run on that core
     gpu_id: u8,
@@ -199,14 +198,16 @@ pub struct GpuLoop {
 }
 
 impl EngineLoop for GpuLoop {
-    // TODO: have init take a ComputeResource to set gpu_id
-    fn init(core_id: u8) -> DandelionResult<Box<Self>> {
+    fn init(resource: ComputeResource) -> DandelionResult<Box<Self>> {
+        let ComputeResource::GPU(cpu_slot, gpu_id) = resource else {
+            return Err(DandelionError::ConfigMissmatch);
+        };
+
         Ok(Box::new(Self {
-            cpu_slot: core_id,
-            gpu_id: 0,
+            cpu_slot,
+            gpu_id,
             buffers: Arc::new(Mutex::new(BufferPool::try_new(0)?)),
         }))
-        // this is where the process pool would be launched
     }
 
     fn run(
@@ -276,7 +277,10 @@ impl Driver for GpuDriver {
         {
             return Err(DandelionError::EngineResourceError);
         }
-        // TODO: check gpu is available
+        // check gpu is available
+        if usize::from(gpu_id) >= hip::get_device_count()? {
+            return Err(DandelionError::EngineResourceError);
+        }
 
         // To switch between single executor and process pool
         // start_thread::<GpuLoop>(cpu_slot, queue);

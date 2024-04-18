@@ -1,7 +1,11 @@
+use std::fs;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use dandelion_commons::records::{Archive, RecordPoint, Recorder};
+use libc::c_void;
+use machine_interface::function_driver::compute_driver::gpu::hip;
 use machine_interface::function_driver::thread_utils::EngineLoop;
 use machine_interface::{
     function_driver::{
@@ -53,7 +57,7 @@ fn context_allocation(c: &mut Criterion) {
     }
 }
 
-fn matmul_benchmark(c: &mut Criterion) {
+fn engine_loop_run_matmul(c: &mut Criterion) {
     let core_id = 3u8;
     let mut group = c.benchmark_group("matmul_benchmark");
     group.measurement_time(std::time::Duration::new(30, 0));
@@ -66,7 +70,8 @@ fn matmul_benchmark(c: &mut Criterion) {
     let function = driver
         .parse_function(filename.to_string(), &domain)
         .expect("Should be able to parse function");
-    let mut engine_loop = GpuLoop::init(core_id).expect("Should be able to init engineloop");
+    let mut engine_loop =
+        GpuLoop::init(ComputeResource::GPU(core_id, 0)).expect("Should be able to init engineloop");
     // set core affinity
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
         log::error!("core received core id that could not be set");
@@ -78,7 +83,7 @@ fn matmul_benchmark(c: &mut Criterion) {
         group.throughput(Throughput::Bytes((rows * rows * 8) as u64));
 
         group.bench_with_input(
-            BenchmarkId::from_parameter(format!("{} x {}", rows, rows)),
+            BenchmarkId::new(format!("{} x {}", rows, rows), rows),
             &rows,
             |b, &rows| {
                 b.iter_custom(|iters| {
@@ -124,7 +129,94 @@ fn matmul_benchmark(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, matmul_benchmark);
+fn module_load_helper(iters: u64, path: &str) -> Duration {
+    let mut total = Duration::new(0, 0);
+
+    for _ in 0..iters {
+        let begin = std::time::Instant::now();
+        let module = hip::module_load(path).unwrap();
+        let duration = begin.elapsed();
+
+        drop(module);
+        total += duration
+    }
+    total
+}
+
+fn module_load_data_helper(iters: u64, path: &str) -> Duration {
+    let mut total = Duration::new(0, 0);
+
+    let file = fs::read(path).unwrap();
+    let image = file.as_ptr() as *const c_void;
+
+    for _ in 0..iters {
+        let begin = std::time::Instant::now();
+        let module = hip::module_load_data(image).unwrap();
+        let duration = begin.elapsed();
+
+        drop(module);
+        total += duration
+    }
+    total
+}
+
+fn loading(c: &mut Criterion) {
+    let mut group = c.benchmark_group("Loading");
+
+    // hipModuleLoad
+    group.bench_with_input(
+        BenchmarkId::new("hipModuleLoad", 34),
+        "/home/smithj/dandelion/machine_interface/hip_interface/matmul.hsaco",
+        |b, path| b.iter_custom(|iters| module_load_helper(iters, path)),
+    );
+
+    group.bench_with_input(
+        BenchmarkId::new("hipModuleLoad", 61),
+        "/home/smithj/dandelion/machine_interface/hip_interface/module.hsaco",
+        |b, path| b.iter_custom(|iters| module_load_helper(iters, path)),
+    );
+
+    group.bench_with_input(
+        BenchmarkId::new("hipModuleLoad", 87),
+        "/home/smithj/dandelion/machine_interface/hip_interface/combined.hsaco",
+        |b, path| b.iter_custom(|iters| module_load_helper(iters, path)),
+    );
+
+    group.bench_with_input(
+        BenchmarkId::new("hipModuleLoad", 121),
+        "/home/smithj/dandelion/machine_interface/hip_interface/bigger.hsaco",
+        |b, path| b.iter_custom(|iters| module_load_helper(iters, path)),
+    );
+
+    // hipModuleLoadData
+    group.bench_with_input(
+        BenchmarkId::new("hipModuleLoadData", 34),
+        "/home/smithj/dandelion/machine_interface/hip_interface/matmul.hsaco",
+        |b, path| b.iter_custom(|iters| module_load_data_helper(iters, path)),
+    );
+
+    group.bench_with_input(
+        BenchmarkId::new("hipModuleLoadData", 61),
+        "/home/smithj/dandelion/machine_interface/hip_interface/module.hsaco",
+        |b, path| b.iter_custom(|iters| module_load_data_helper(iters, path)),
+    );
+
+    group.bench_with_input(
+        BenchmarkId::new("hipModuleLoadData", 87),
+        "/home/smithj/dandelion/machine_interface/hip_interface/combined.hsaco",
+        |b, path| b.iter_custom(|iters| module_load_data_helper(iters, path)),
+    );
+
+    group.bench_with_input(
+        BenchmarkId::new("hipModuleLoadData", 121),
+        "/home/smithj/dandelion/machine_interface/hip_interface/bigger.hsaco",
+        |b, path| b.iter_custom(|iters| module_load_data_helper(iters, path)),
+    );
+
+    group.finish();
+}
+
+criterion_group!(benches, loading);
 
 #[cfg(feature = "gpu")]
 criterion_main!(benches);
