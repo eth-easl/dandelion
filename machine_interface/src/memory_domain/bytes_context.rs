@@ -53,6 +53,18 @@ impl ContextTrait for BytesContext {
         }
         return Err(DandelionError::InvalidRead);
     }
+    fn get_chunk_ref(&self, mut offset: usize, length: usize) -> DandelionResult<&[u8]> {
+        for frame in self.frames.iter() {
+            if offset > frame.len() {
+                offset -= frame.len();
+            } else if frame.len() >= offset + length {
+                return Ok(&frame[offset..offset + length]);
+            } else {
+                return Ok(&frame[offset..]);
+            }
+        }
+        return Err(DandelionError::InvalidRead);
+    }
 }
 
 struct FrameBuf<'data> {

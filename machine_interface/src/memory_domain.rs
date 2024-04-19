@@ -1,6 +1,6 @@
 // list of memory domain implementations
 #[cfg(feature = "bytes_context")]
-pub mod bytes;
+pub mod bytes_context;
 #[cfg(feature = "cheri")]
 pub mod cheri;
 pub mod malloc;
@@ -15,8 +15,17 @@ use crate::{DataItem, DataSet, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
 
 pub trait ContextTrait: Send + Sync {
+    /// Write data at the given offset into the context
+    /// May fail if the range offset..offset+data lenght in bytes is not completely within the context size
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()>;
+    /// Read data from the context into the read buffer
+    /// May fail if the range offset..offset+buffer length in bytes is not completely within context size
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()>;
+    /// Get a &[u8] reference to a chunck of at reference with size up to length.
+    /// May return a slice smaller then the requwested length if there is internal fragementation that
+    /// prevents an efficient slice representation of the entire chunck
+    /// May fail if the range offset..offset+length is not completely within the context size
+    fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]>;
 }
 
 // https://docs.rs/enum_dispatch/latest/enum_dispatch/index.html
@@ -27,7 +36,7 @@ pub enum ContextType {
     Mmap(Box<mmap::MmapContext>),
     ReadOnly(Box<read_only::ReadOnlyContext>),
     #[cfg(feature = "bytes_context")]
-    Bytes(Box<bytes::BytesContext>),
+    Bytes(Box<bytes_context::BytesContext>),
     #[cfg(feature = "cheri")]
     Cheri(Box<cheri::CheriContext>),
     #[cfg(feature = "mmu")]
@@ -67,6 +76,21 @@ impl ContextTrait for ContextType {
             ContextType::Bytes(context) => context.read(offset, read_buffer),
         }
     }
+    fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
+        match self {
+            ContextType::Malloc(context) => context.get_chunk_ref(offset, length),
+            ContextType::Mmap(context) => context.get_chunk_ref(offset, length),
+            ContextType::ReadOnly(context) => context.get_chunk_ref(offset, length),
+            #[cfg(feature = "cheri")]
+            ContextType::Cheri(context) => context.get_chunk_ref(offset, length),
+            #[cfg(feature = "mmu")]
+            ContextType::Mmu(context) => context.get_chunk_ref(offset, length),
+            #[cfg(feature = "wasm")]
+            ContextType::Wasm(context) => context.get_chunk_ref(offset, length),
+            #[cfg(feature = "bytes_context")]
+            ContextType::Bytes(context) => context.get_chunk_ref(offset, length),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -90,6 +114,9 @@ impl ContextTrait for Context {
     }
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         self.context.read(offset, read_buffer)
+    }
+    fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
+        self.context.get_chunk_ref(offset, length)
     }
 }
 

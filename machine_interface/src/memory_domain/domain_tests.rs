@@ -68,9 +68,11 @@ fn read<D: MemoryDomain>(
     let mut context = domain
         .acquire_context(context_size)
         .expect("Context should always be allocatable");
-    context
-        .write(0, &vec![BYTEPATTERN; context_size])
-        .expect("Writing should succeed");
+    if expect_success {
+        context
+            .write(offset, &vec![BYTEPATTERN; size])
+            .expect("Writing should succeed");
+    }
     let mut read_buffer = vec![0; size];
     let read_error = context.read(offset, &mut read_buffer);
     match (expect_success, read_error) {
@@ -78,6 +80,37 @@ fn read<D: MemoryDomain>(
         (false, Ok(())) => panic!("Unexpected ok from read that should fail with context size: {}, read offset: {}, read size: {}", context_size, offset, size),
         (false, Err(DandelionError::InvalidRead)) => (),
         (_, Err(err)) => panic!("Unexpected error while reading: {:?}", err),
+    }
+}
+
+fn get_chunks<D: MemoryDomain>(
+    arg: MemoryResource,
+    context_size: usize,
+    offset: usize,
+    size: usize,
+    expect_success: bool,
+) {
+    let domain = init_domain::<D>(arg);
+    let mut context = domain
+        .acquire_context(context_size)
+        .expect("Context should always be allocatable");
+    if expect_success {
+        context
+            .write(offset, &vec![BYTEPATTERN; size])
+            .expect("Writing should succeed");
+    }
+    let mut total_read = 0usize;
+    while total_read < size {
+        let chunk_ref_result = context.get_chunk_ref(offset + total_read, size - total_read);
+        match (expect_success, chunk_ref_result) {
+            (true, Ok(chunk_ref)) => {
+                assert_eq!(&vec![BYTEPATTERN; chunk_ref.len()], chunk_ref);
+                total_read += chunk_ref.len()
+            }
+            (false, Ok(_)) => panic!("Unexpected ok from get_chunk_ref"),
+            (false, Err(DandelionError::InvalidRead)) => return,
+            (_, Err(err)) => panic!("Unexpected error from get_chunk_ref {:?}", err),
+        }
     }
 }
 
@@ -184,12 +217,32 @@ macro_rules! domainTests {
                 read::<$domain>($init, 1, 0, 1, true);
             }
             #[test]
+            fn test_read_large_success() {
+                read::<$domain>($init, 12288, 2048, 8192, true);
+            }
+            #[test]
             fn test_read_single_oob_offset() {
                 read::<$domain>($init, 1, 1, 1, false);
             }
             #[test]
             fn test_read_single_oob_size() {
                 read::<$domain>($init, 1, 0, 2, false);
+            }
+            #[test]
+            fn test_chunk_ref_single_success() {
+                get_chunks::<$domain>($init, 1, 0, 1, true);
+            }
+            #[test]
+            fn test_chunk_ref_single_oob_offset() {
+                get_chunks::<$domain>($init, 1, 1, 1, false);
+            }
+            #[test]
+            fn test_chunk_ref_single_oob_size() {
+                read::<$domain>($init, 1, 0, 2, false);
+            }
+            #[test]
+            fn test_chunk_ref_large_success() {
+                read::<$domain>($init, 12288, 2048, 8192, true);
             }
             #[test]
             fn test_write_single_oob_offset() {

@@ -23,6 +23,7 @@ extern "C" {
         context_offset: size_t,
         size: size_t,
     ) -> ();
+    fn cheri_get_chunk_ref(context: *const cheri_c_context, context_offset: size_t) -> *const u8;
     fn cheri_transfer_context(
         destination: *const cheri_c_context,
         source: *const cheri_c_context,
@@ -81,6 +82,14 @@ impl ContextTrait for CheriContext {
             )
         }
         Ok(())
+    }
+    fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
+        if offset + length > self.size {
+            return Err(DandelionError::InvalidRead);
+        }
+        Ok(unsafe {
+            core::slice::from_raw_parts(cheri_get_chunk_ref(self.context, offset), length)
+        })
     }
 }
 

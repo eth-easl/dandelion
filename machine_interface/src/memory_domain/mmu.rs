@@ -30,6 +30,14 @@ impl ContextTrait for MmuContext {
         }
         self.storage.read(offset, read_buffer)
     }
+
+    fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
+        if offset < MMAP_BASE_ADDR {
+            warn!("read offset smaller than MMAP_BASE_ADDR")
+            // TODO: could be an issue if the context will be used by mmu_worker (function context)
+        }
+        self.storage.get_chunk_ref(offset, length)
+    }
 }
 
 #[derive(Debug)]
@@ -77,7 +85,7 @@ pub fn mmu_transfer(
 #[cfg(feature = "bytes_context")]
 pub fn bytest_to_mmu_transfer(
     destination: &mut MmuContext,
-    source: &crate::memory_domain::bytes::BytesContext,
+    source: &crate::memory_domain::bytes_context::BytesContext,
     destination_offset: usize,
     source_offset: usize,
     size: usize,

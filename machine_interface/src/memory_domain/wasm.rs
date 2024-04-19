@@ -18,6 +18,9 @@ impl ContextTrait for WasmContext {
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         self.mem.read(offset, read_buffer)
     }
+    fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
+        self.mem.get_chunk_ref(offset, length)
+    }
 }
 
 #[derive(Debug)]
@@ -56,7 +59,7 @@ pub fn wasm_transfer(
 #[cfg(feature = "bytes_context")]
 pub fn bytes_to_wasm_transfer(
     destination: &mut WasmContext,
-    source: &crate::memory_domain::bytes::BytesContext,
+    source: &crate::memory_domain::bytes_context::BytesContext,
     destination_offset: usize,
     source_offset: usize,
     size: usize,
