@@ -6,7 +6,7 @@ mod server_tests {
 
     use assert_cmd::prelude::*;
     use byteorder::{LittleEndian, ReadBytesExt};
-    use dandelion_server::{DandelionRequest, DandelionResponse, InputItem, InputSet};
+    use dandelion_server::{DandelionDeserializeResponse, DandelionRequest, InputItem, InputSet};
     use serde::Serialize;
     use std::{
         io::{BufRead, BufReader, Cursor, Read},
@@ -83,7 +83,7 @@ mod server_tests {
                 items: vec![InputItem {
                     identifier: String::from(""),
                     key: 0,
-                    data: data,
+                    data: &data,
                 }],
             }],
         };
@@ -97,10 +97,10 @@ mod server_tests {
         assert!(resp.status().is_success());
 
         let body = resp.bytes().unwrap();
-        let response: DandelionResponse = bson::from_slice(&body).unwrap();
+        let response: DandelionDeserializeResponse = bson::from_slice(&body).unwrap();
         assert_eq!(1, response.sets.len());
         assert_eq!(1, response.sets[0].items.len());
-        let response_data = &response.sets[0].items[0].data;
+        let response_data = response.sets[0].items[0].data;
         assert_eq!(response_data.len(), 16);
         let mut reader = Cursor::new(response_data);
         let mat_size = reader.read_u64::<LittleEndian>().unwrap();

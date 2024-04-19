@@ -1,73 +1,76 @@
 pub mod config;
 
 use dispatcher::composition::CompositionSet;
-use machine_interface::{
-    memory_domain::{read_only::ReadOnlyContext, Context, ContextTrait},
-    DataItem, DataSet, Position,
-};
+use machine_interface::memory_domain::{Context, ContextTrait};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Serialize, Deserialize)]
-#[allow(dead_code)]
-pub struct DandelionRequest {
+pub struct DandelionRequest<'data> {
     pub name: String,
-    pub sets: Vec<InputSet>,
+    #[serde(borrow)]
+    pub sets: Vec<InputSet<'data>>,
 }
 
 #[derive(Serialize, Deserialize)]
-#[allow(dead_code)]
-pub struct DandelionResponse {
-    pub sets: Vec<InputSet>,
-}
-#[derive(Deserialize, Serialize)]
-#[allow(dead_code)]
-pub struct InputSet {
-    pub identifier: String,
-    pub items: Vec<InputItem>,
+pub struct DandelionDeserializeResponse<'data> {
+    #[serde(borrow)]
+    pub sets: Vec<InputSet<'data>>,
 }
 
-#[derive(Deserialize, Serialize)]
-#[allow(dead_code)]
-pub struct InputItem {
+#[derive(Serialize, Deserialize)]
+pub struct InputSet<'data> {
+    pub identifier: String,
+    #[serde(borrow)]
+    pub items: Vec<InputItem<'data>>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct InputItem<'data> {
     pub identifier: String,
     pub key: u32,
     #[serde(with = "serde_bytes")]
-    pub data: Vec<u8>,
+    pub data: &'data [u8],
 }
 
-pub fn parse_request(request: DandelionRequest) -> (String, Context) {
-    let DandelionRequest { name, sets } = request;
-    let mut context_buffer = Vec::new();
-    let mut buffer_offset = 0usize;
-    let mut context_sets = Vec::new();
-    for InputSet { identifier, items } in sets {
-        let mut set_items = Vec::new();
-        for InputItem {
-            identifier,
-            key,
-            data,
-        } in items
-        {
-            set_items.push(DataItem {
-                ident: identifier,
-                key,
-                data: Position {
-                    offset: buffer_offset,
-                    size: buffer_offset + data.len(),
-                },
-            });
-            buffer_offset += data.len();
-            context_buffer.extend_from_slice(&data);
-        }
-        context_sets.push(Some(DataSet {
-            ident: identifier,
-            buffers: set_items,
-        }));
+#[derive(Serialize)]
+pub struct DandelionResponse {
+    pub sets: Vec<OutputSet>,
+}
+#[derive(Serialize)]
+pub struct OutputSet {
+    pub identifier: String,
+    pub items: Vec<OutputItem>,
+}
+
+#[derive(Serialize)]
+pub struct OutputItem {
+    pub identifier: String,
+    pub key: u32,
+    #[serde(with = "serde_bytes")]
+    data: ReadSlice,
+}
+
+struct ReadSlice {
+    context: Arc<Context>,
+    offset: usize,
+    size: usize,
+}
+
+impl core::ops::Deref for ReadSlice {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target {
+        return self.context.get_chunk_ref(self.offset, self.size).unwrap();
     }
-    let mut context = ReadOnlyContext::new(context_buffer.into()).unwrap();
-    context.content = context_sets;
-    return (name, context);
+}
+
+impl serde_bytes::Serialize for ReadSlice {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_bytes(&self)
+    }
 }
 
 pub fn create_response(response_sets: BTreeMap<usize, CompositionSet>) -> Vec<u8> {
@@ -82,20 +85,21 @@ pub fn create_response(response_sets: BTreeMap<usize, CompositionSet>) -> Vec<u8
         };
         let mut response_items = Vec::new();
         for (set_index, item_index, context) in composition_set_iter {
-            let item = &context.content[set_index].as_ref().unwrap().buffers[item_index];
-            let mut read_buffer = Vec::<u8>::with_capacity(item.data.size);
-            read_buffer.resize(item.data.size, 0);
-            context
-                .context
-                .read(item.data.offset, &mut read_buffer)
-                .unwrap();
-            response_items.push(InputItem {
+            let local_context = context.clone();
+            let item = &local_context.content[set_index].as_ref().unwrap().buffers[item_index];
+            let offset = item.data.offset;
+            let size = item.data.size;
+            response_items.push(OutputItem {
                 identifier: item.ident.clone(),
                 key: item.key,
-                data: read_buffer,
+                data: ReadSlice {
+                    context: local_context,
+                    offset: offset,
+                    size: size,
+                },
             });
         }
-        response_data.push(InputSet {
+        response_data.push(OutputSet {
             identifier: set_name,
             items: response_items,
         });

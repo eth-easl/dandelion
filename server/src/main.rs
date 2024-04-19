@@ -15,7 +15,7 @@ use machine_interface::{
     function_driver::ComputeResource,
     machine_config::EngineType,
     memory_domain::{
-        bytes::BytesContext, mmap::MmapMemoryDomain, Context, ContextTrait, MemoryDomain,
+        bytes_context::BytesContext, mmap::MmapMemoryDomain, Context, ContextTrait, MemoryDomain,
     },
     DataItem, DataSet, Position,
 };
@@ -154,29 +154,6 @@ async fn run_mat_func(
         .expect("Should get result from function");
 
     return dandelion_server::create_response(result);
-}
-
-// Given a result context, return the last element of the resulting matrix
-fn get_checksum(composition_set: CompositionSet) -> i64 {
-    // Determine offset of last matrix element
-    assert_eq!(1, composition_set.context_list.len());
-    let context = &composition_set.context_list[0].0;
-    let output_dataset = context.content[0].as_ref().expect("Should contain matrix");
-    let output_item = output_dataset
-        .buffers
-        .iter()
-        .find(|buffer| buffer.key == 0)
-        .expect("should find a buffer with the correct key")
-        .data;
-    let checksum_offset = output_item.offset + output_item.size - 8;
-
-    // Read out the checksum
-    let mut read_buffer: Vec<i64> = vec![0; 1];
-    context
-        .read(checksum_offset, &mut read_buffer)
-        .expect("Context should contain matrix");
-
-    return read_buffer[0];
 }
 
 async fn serve_request(
