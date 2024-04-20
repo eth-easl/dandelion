@@ -1,0 +1,18 @@
+{
+    "module_path": "/home/smithj/dandelion/machine_interface/hip_interface/module.hsaco",
+    "kernels": ["check_then_write"],
+    "blueprint": {
+        "inputs": ["A"],
+        "buffers": {},
+        "outputs": ["A"],
+        "control_flow": [
+            {"ExecKernel": ["check_then_write", [{"Ptr": "A"}], {
+                "grid_dim_x": {"Absolute": 1}, 
+                "grid_dim_y": {"Absolute": 1}, 
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": 1, "block_dim_y": 1, "block_dim_z": 1,
+                "shared_mem_bytes": 0
+            }]}
+        ]
+    } 
+}

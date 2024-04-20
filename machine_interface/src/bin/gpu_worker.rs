@@ -36,8 +36,8 @@ fn main() {
             Ok(()) => {
                 println!("__OK__");
             }
-            Err(_) => {
-                println!("__ERROR__");
+            Err(e) => {
+                println!("__ERROR__ {:?}", e);
             }
         }
     }

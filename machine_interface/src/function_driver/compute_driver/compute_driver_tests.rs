@@ -697,6 +697,7 @@ mod compute_driver_tests {
 
         #[test]
         fn module_load_data_test() {
+            let _lock = GPU_LOCK.lock().unwrap();
             let file = load_u8_from_file(
                 "/home/smithj/dandelion/machine_interface/hip_interface/module.hsaco".into(),
             )
@@ -738,7 +739,7 @@ mod compute_driver_tests {
             let _lock = GPU_LOCK.lock().unwrap();
             let driver: Box<dyn Driver> = Box::new(GpuDriver {});
             engine_minimal::<MmuMemoryDomain>(
-                "foo",
+                "/home/smithj/dandelion/machine_interface/hip_interface/minimal.json",
                 MemoryResource::None,
                 driver,
                 vec![ComputeResource::GPU(7, 0)],
@@ -751,7 +752,7 @@ mod compute_driver_tests {
             let driver: Box<dyn Driver> = Box::new(GpuDriver {});
             let (mut function_context, config, queue) =
                 prepare_engine_and_function::<MmuMemoryDomain>(
-                    "bar",
+                    "/home/smithj/dandelion/machine_interface/hip_interface/basic_io.json",
                     MemoryResource::None,
                     &driver,
                     vec![ComputeResource::GPU(7, 0)],

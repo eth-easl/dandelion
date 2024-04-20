@@ -167,7 +167,8 @@ async fn process_output(worker: Arc<Worker>) {
             }
             if let Err(e) = recorder.record(RecordPoint::EngineEnd) {
                 debt.fulfill(Box::new(Err(e)));
-            } else if line.trim() == "__ERROR__" {
+            } else if line.trim().starts_with("__ERROR__") {
+                eprintln!("GPU error: {}", line);
                 debt.fulfill(Box::new(Err(DandelionError::EngineError)));
             } else {
                 read_output_structs::<usize, usize>(&mut context, 0).unwrap();

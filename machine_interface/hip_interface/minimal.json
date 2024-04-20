@@ -1,0 +1,18 @@
+{
+    "module_path": "/home/smithj/dandelion/machine_interface/hip_interface/module.hsaco",
+    "kernels": ["set_mem", "check_mem"],
+    "blueprint": {
+        "inputs": [],
+        "buffers": {"A": {"Absolute": 1024}},
+        "outputs": [],
+        "control_flow": [
+            {"ExecKernel": ["set_mem", [{"Ptr": "A"}, {"Sizeof": "A"}], {
+                "grid_dim_x": {"CoverBuffer": {"bufname": "A", "dimensionality": 1, "block_dim": 1024}}, 
+                "grid_dim_y": {"Absolute": 1}, 
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": 1024, "block_dim_y": 1, "block_dim_z": 1,
+                "shared_mem_bytes": 0
+            }]}
+        ]
+    } 
+}

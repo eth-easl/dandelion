@@ -1,18 +1,20 @@
 use crate::{
     function_driver::{
+        load_utils::load_u8_from_file,
         thread_utils::{start_thread, EngineLoop},
         ComputeResource, Driver, Function, FunctionConfig, GpuConfig, WorkQueue,
     },
-    interface::{read_output_structs, setup_input_structs, write_gpu_outputs},
+    interface::{read_output_structs, setup_input_structs, write_gpu_outputs, DandelionSystemData},
     memory_domain::{Context, ContextTrait, ContextType},
     promise::Debt,
-    DataRequirementList, DataSet,
+    DataItem, DataRequirementList, DataSet, Position,
 };
 use core_affinity::CoreId;
 use dandelion_commons::{DandelionError, DandelionResult};
 use libc::c_void;
 use std::{
     collections::HashMap,
+    mem::size_of,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     ptr::null,
     sync::{Arc, Mutex},
@@ -92,7 +94,7 @@ pub fn dummy_run(gpu_loop: &mut GpuLoop) -> DandelionResult<()> {
 pub fn gpu_run(
     cpu_slot: usize,
     gpu_id: u8,
-    config: RuntimeGpuConfig,
+    config: GpuConfig,
     buffer_pool: Arc<Mutex<BufferPool>>,
     mut context: Context,
     output_names: Arc<Vec<String>>,
@@ -105,6 +107,7 @@ pub fn gpu_run(
         return Err(DandelionError::ConfigMissmatch);
     };
     let base = mmu_context.storage.as_ptr();
+    let config = config.load(base)?;
 
     hip::set_device(gpu_id)?;
     // TODO: disable device-side malloc
@@ -226,14 +229,14 @@ impl EngineLoop for GpuLoop {
         // in thread in case the kernel crashes
         let cpu_slot_clone = self.cpu_slot as usize;
         let gpu_id_clone = self.gpu_id;
-        let runtime_config: RuntimeGpuConfig = config.try_into()?;
+        let config_clone = config.clone();
         let outputs = output_sets.clone();
         let buffer_pool = self.buffers.clone();
         let handle = thread::spawn(move || {
             gpu_run(
                 cpu_slot_clone,
                 gpu_id_clone,
-                runtime_config,
+                config_clone,
                 buffer_pool,
                 context,
                 outputs,
@@ -294,28 +297,34 @@ impl Driver for GpuDriver {
         static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
     ) -> dandelion_commons::DandelionResult<crate::function_driver::Function> {
         // Concept for now: function_path gives config file which contains name of module (.hsaco) file
-        let config = if function_path == "foo" {
-            FunctionConfig::GpuConfig(config_parsing::dummy_config()?)
-        } else if function_path == "bar" {
-            FunctionConfig::GpuConfig(config_parsing::dummy_config2()?)
-        } else if function_path == "matmul_loop" {
-            FunctionConfig::GpuConfig(config_parsing::matmul_dummy(false)?)
-        } else if function_path == "matmul_para" {
-            FunctionConfig::GpuConfig(config_parsing::matmul_dummy(true)?)
-        } else {
-            FunctionConfig::GpuConfig(config_parsing::parse_config(&function_path)?)
-        };
+        // let config = if function_path == "foo" {
+        //     FunctionConfig::GpuConfig(config_parsing::dummy_config()?)
+        // } else if function_path == "bar" {
+        //     FunctionConfig::GpuConfig(config_parsing::dummy_config2()?)
+        // } else if function_path == "matmul_loop" {
+        //     FunctionConfig::GpuConfig(config_parsing::matmul_dummy(false)?)
+        // } else if function_path == "matmul_para" {
+        //     FunctionConfig::GpuConfig(config_parsing::matmul_dummy(true)?)
+        // } else {
+        //     FunctionConfig::GpuConfig(config_parsing::parse_config(&function_path)?)
+        // };
+        let (mut gpu_config, module_path) = config_parsing::parse_config(&function_path)?;
 
-        let total_size = 0usize;
+        let code_object = load_u8_from_file(module_path)?;
+        let size = code_object.len() * size_of::<u8>();
+        let mut context = static_domain.acquire_context(size)?;
+        context.write(0, &code_object)?;
+        gpu_config.module_offset = std::mem::size_of::<DandelionSystemData<usize, usize>>();
 
-        let mut context = static_domain.acquire_context(total_size)?;
-
-        // Taken from wasm.rs; TODO: ask Tom why/if this is the case
-        // there must be one data set, which would normally describe the
-        // elf sections to be copied
+        let config = FunctionConfig::GpuConfig(gpu_config);
+        // Location of code object
         context.content = vec![Some(DataSet {
             ident: String::from("static"),
-            buffers: vec![],
+            buffers: vec![DataItem {
+                ident: String::from(""),
+                data: Position { offset: 0, size },
+                key: 0,
+            }],
         })];
         let requirements = DataRequirementList {
             static_requirements: vec![],

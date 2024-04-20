@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Mutex};
 
 use crate::{
     interface::DandelionSystemData,
-    memory_domain::{Context, MemoryDomain},
+    memory_domain::{transfer_memory, Context, MemoryDomain},
     DataRequirementList, Position,
 };
 extern crate alloc;
@@ -59,7 +59,7 @@ pub struct WasmConfig {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct GpuConfig {
     pub system_data_struct_offset: usize,
-    pub module_path: Arc<String>,
+    pub module_offset: usize,
     pub kernels: Arc<Vec<String>>,
     #[cfg(feature = "gpu")]
     pub blueprint: Arc<ExecutionBlueprint>,
@@ -106,7 +106,14 @@ impl Function {
                     cfg.system_data_struct_offset,
                     std::mem::size_of::<DandelionSystemData<usize, usize>>(),
                 )?;
-
+                transfer_memory(
+                    &mut ctxt,
+                    &self.context,
+                    cfg.module_offset,
+                    0,
+                    self.context.size,
+                )?;
+                ctxt.occupy_space(cfg.module_offset, self.context.size)?;
                 Ok(ctxt)
             }
         }
