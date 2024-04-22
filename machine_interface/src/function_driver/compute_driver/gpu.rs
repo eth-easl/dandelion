@@ -209,7 +209,7 @@ impl EngineLoop for GpuLoop {
         Ok(Box::new(Self {
             cpu_slot,
             gpu_id,
-            buffers: Arc::new(Mutex::new(BufferPool::try_new(0)?)),
+            buffers: Arc::new(Mutex::new(BufferPool::try_new(gpu_id)?)),
         }))
     }
 

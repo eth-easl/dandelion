@@ -1,8 +1,6 @@
 // list of memory domain implementations
 #[cfg(feature = "cheri")]
 pub mod cheri;
-#[cfg(feature = "gpu")]
-pub mod gpu;
 pub mod malloc;
 pub mod mmap;
 #[cfg(any(feature = "mmu", feature = "gpu"))]
@@ -33,8 +31,6 @@ pub enum ContextType {
     Mmu(Box<mmu::MmuContext>),
     #[cfg(feature = "wasm")]
     Wasm(Box<wasm::WasmContext>),
-    #[cfg(feature = "gpu")]
-    Gpu(Box<gpu::GpuContext>),
 }
 
 impl ContextTrait for ContextType {
@@ -49,8 +45,6 @@ impl ContextTrait for ContextType {
             ContextType::Mmu(context) => context.write(offset, data),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.write(offset, data),
-            #[cfg(feature = "gpu")]
-            ContextType::Gpu(context) => context.write(offset, data),
         }
     }
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
@@ -64,8 +58,6 @@ impl ContextTrait for ContextType {
             ContextType::Mmu(context) => context.read(offset, read_buffer),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.read(offset, read_buffer),
-            #[cfg(feature = "gpu")]
-            ContextType::Gpu(context) => context.read(offset, read_buffer),
         }
     }
 }

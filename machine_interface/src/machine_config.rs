@@ -18,6 +18,8 @@ pub enum EngineType {
     RWasm,
     #[cfg(feature = "mmu")]
     Process,
+    #[cfg(feature = "gpu")]
+    Gpu,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -29,6 +31,8 @@ pub enum DomainType {
     RWasm,
     #[cfg(feature = "mmu")]
     Process,
+    #[cfg(feature = "gpu")]
+    Gpu,
 }
 
 pub fn get_compatibilty_table() -> BTreeMap<EngineType, DomainType> {
@@ -41,6 +45,8 @@ pub fn get_compatibilty_table() -> BTreeMap<EngineType, DomainType> {
         (EngineType::RWasm, DomainType::RWasm),
         #[cfg(feature = "mmu")]
         (EngineType::Process, DomainType::Process),
+        #[cfg(feature = "gpu")]
+        (EngineType::Gpu, DomainType::Gpu),
     ]);
 }
 
@@ -76,6 +82,11 @@ pub fn get_available_domains() -> BTreeMap<DomainType, Box<dyn MemoryDomain>> {
             DomainType::Process,
             crate::memory_domain::mmu::MmuMemoryDomain::init(MemoryResource::None).unwrap(),
         ),
+        #[cfg(feature = "gpu")]
+        (
+            DomainType::Gpu,
+            crate::memory_domain::mmu::MmuMemoryDomain::init(MemoryResource::None).unwrap(),
+        ),
     ]);
 }
 
@@ -103,6 +114,11 @@ pub fn get_available_drivers() -> BTreeMap<EngineType, Box<dyn Driver>> {
         (
             EngineType::Process,
             Box::new(crate::function_driver::compute_driver::mmu::MmuDriver {}) as Box<dyn Driver>,
+        ),
+        #[cfg(feature = "gpu")]
+        (
+            EngineType::Gpu,
+            Box::new(crate::function_driver::compute_driver::gpu::GpuDriver {}) as Box<dyn Driver>,
         ),
     ]);
 }

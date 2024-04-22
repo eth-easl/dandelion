@@ -389,6 +389,8 @@ async fn register_function(
         "Process" => EngineType::Process,
         #[cfg(feature = "cheri")]
         "Cheri" => EngineType::Cheri,
+        #[cfg(feature = "gpu")]
+        "Gpu" => EngineType::Gpu,
         _ => panic!("Unkown engine type string"),
     };
     dispatcher
@@ -505,6 +507,8 @@ fn main() -> () {
     let engine_type = EngineType::Process;
     #[cfg(feature = "cheri")]
     let engine_type = EngineType::Cheri;
+    #[cfg(feature = "gpu")]
+    let engine_type = EngineType::Gpu;
     #[cfg(any(feature = "cheri", feature = "wasm", feature = "mmu"))]
     pool_map.insert(
         engine_type,
@@ -512,6 +516,17 @@ fn main() -> () {
             .map(|code_id| ComputeResource::CPU(code_id))
             .collect(),
     );
+    #[cfg(feature = "gpu")]
+    {
+        let gpu_count: u8 = 4; // TODO: don't hard code this
+        pool_map.insert(
+            engine_type,
+            (num_dispatcher_cores..num_cores)
+                .zip(0..gpu_count)
+                .map(|(cpu_id, gpu_id)| ComputeResource::GPU(cpu_id, gpu_id))
+                .collect(),
+        );
+    }
     #[cfg(feature = "hyper_io")]
     pool_map.insert(
         EngineType::Hyper,
@@ -552,7 +567,9 @@ fn main() -> () {
     println!("Hello, World (mmu)");
     #[cfg(feature = "wasm")]
     println!("Hello, World (wasm)");
-    #[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm")))]
+    #[cfg(feature = "gpu")]
+    println!("Hello, World (gpu)");
+    #[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "gpu")))]
     println!("Hello, World (native)");
     // Run this server for... forever... unless I receive a signal!
     if let Err(e) = runtime.block_on(graceful) {
