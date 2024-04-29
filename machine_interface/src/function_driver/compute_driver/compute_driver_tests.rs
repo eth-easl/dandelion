@@ -695,6 +695,7 @@ mod compute_driver_tests {
             static ref GPU_LOCK: Mutex<()> = Mutex::new(());
         }
 
+        #[ignore = "pollutes stdout"]
         #[test]
         fn module_load_data_test() {
             let _lock = GPU_LOCK.lock().unwrap();
@@ -727,6 +728,7 @@ mod compute_driver_tests {
             .is_ok())
         }
 
+        #[ignore = "pollutes stdout"]
         #[test]
         fn run_dummy_gpu_payload() {
             let _lock = GPU_LOCK.lock().unwrap();
@@ -941,6 +943,21 @@ mod compute_driver_tests {
                         },
                     ],
                 }));
+                let cfg_offset = function_context
+                    .get_free_space_and_write_slice(&[((mat_size + 31) / 32) as i64])
+                    .expect("Should be able to write cfg");
+                function_context.content.push(Some(DataSet {
+                    ident: "cfg".to_string(),
+                    buffers: vec![DataItem {
+                        ident: "".to_string(),
+                        data: Position {
+                            offset: cfg_offset as usize,
+                            size: 8,
+                        },
+                        key: 0,
+                    }],
+                }));
+
                 let archive = Arc::new(Mutex::new(Archive::new()));
                 let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
                 let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {

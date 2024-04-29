@@ -17,7 +17,7 @@ fn cmake_libraries() -> () {
     println!("cargo:rustc-link-lib=static=cheri_lib");
 }
 
-fn cmake_libraries_gpu() {
+fn libraries_gpu() {
     // TODO: cleanup/remove the CMake files/C++ code
     // let install = Config::new("hip_interface").build();
     // println!("cargo:rustc-link-search=native={}/build", install.display());
@@ -34,5 +34,5 @@ fn main() {
     cmake_libraries();
 
     #[cfg(feature = "gpu")]
-    cmake_libraries_gpu();
+    libraries_gpu();
 }

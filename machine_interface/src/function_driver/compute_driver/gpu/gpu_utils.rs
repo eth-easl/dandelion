@@ -4,11 +4,7 @@ use crate::{
         TransferArguments, WorkQueue,
     },
     interface::read_output_structs,
-    memory_domain::{
-        self,
-        mmu::{MmuContext, MMAP_BASE_ADDR},
-        Context, ContextState, ContextType,
-    },
+    memory_domain::{self, mmu::MmuContext, Context, ContextState, ContextTrait, ContextType},
     promise::Debt,
     util::mmapmem::MmapMem,
     DataSet, Position,
@@ -28,9 +24,9 @@ use tokio::{
     task,
 };
 
-use self::super::{config_parsing::GridSizing, hip};
+use self::super::hip;
 
-use super::hip::DevicePointer;
+use super::{config_parsing::Sizing, hip::DevicePointer};
 
 pub fn get_data_length(ident: &str, context: &Context) -> DandelionResult<usize> {
     let dataset = context
@@ -52,6 +48,8 @@ pub fn get_data_length(ident: &str, context: &Context) -> DandelionResult<usize>
     Ok(length)
 }
 
+/// # Safety
+/// Requires *base* to point to the stat of *context*
 pub unsafe fn copy_data_to_device(
     ident: &str,
     context: &Context,
@@ -80,28 +78,45 @@ pub unsafe fn copy_data_to_device(
     Ok(())
 }
 
-// subject to change; not super happy with this
-pub fn get_grid_size(
-    gs: &GridSizing,
+// used to be called get_grid_size
+pub fn get_size(
+    sizing: &Sizing,
     buffers: &HashMap<String, (usize, usize)>,
-) -> DandelionResult<u32> {
-    match gs {
-        GridSizing::Absolute(size) => Ok(*size),
-        GridSizing::CoverBuffer {
-            bufname,
-            dimensionality,
-            block_dim,
-        } => {
-            if *dimensionality > 3 || *dimensionality == 0 {
+    context: &Context,
+) -> DandelionResult<usize> {
+    match sizing {
+        Sizing::Absolute(size) => Ok(*size),
+        Sizing::FromInput { bufname, idx } => {
+            let dataset = context
+                .content
+                .iter()
+                .find(|&elem| match elem {
+                    Some(set) => &set.ident == bufname,
+                    _ => false,
+                })
+                .ok_or(DandelionError::ConfigMissmatch)?
+                .as_ref()
+                .unwrap(); // okay, as we matched successfully
+
+            let data_item = dataset
+                .buffers
+                .first()
+                .ok_or(DandelionError::ConfigMissmatch)?;
+
+            let relative_offset = *idx * std::mem::size_of::<i64>();
+            if relative_offset > data_item.data.size {
                 return Err(DandelionError::ConfigMissmatch);
             }
-            let bufsize = buffers
-                .get(bufname)
-                .ok_or(DandelionError::ConfigMissmatch)?
-                .1;
-            let side_length = (bufsize as f64).powf(1.0 / (*dimensionality as f64)).ceil() as u32;
-            Ok((side_length + block_dim - 1) / block_dim)
+
+            let mut buf: [usize; 1] = [0];
+            context.read(data_item.data.offset + relative_offset, &mut buf)?;
+
+            Ok(buf[0])
         }
+        Sizing::Sizeof(bufname) => Ok(buffers
+            .get(bufname)
+            .ok_or(DandelionError::ConfigMissmatch)?
+            .1),
     }
 }
 

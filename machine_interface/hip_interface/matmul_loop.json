@@ -1,5 +1,5 @@
 {
-    "module_path": "/home/smithj/dandelion/machine_interface/hip_interface/matmul.hsaco",
+    "module_path": "/home/smithj/dandelion/machine_interface/hip_interface/mlops.hsaco",
     "kernels": ["matmul_loop"],
     "blueprint": {
         "inputs": ["A"],
@@ -10,8 +10,10 @@
                 "grid_dim_x": {"Absolute": 1}, 
                 "grid_dim_y": {"Absolute": 1}, 
                 "grid_dim_z": {"Absolute": 1},
-                "block_dim_x": 1, "block_dim_y": 1, "block_dim_z": 1,
-                "shared_mem_bytes": 0
+                "block_dim_x": {"Absolute": 1}, 
+                "block_dim_y": {"Absolute": 1}, 
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
             }]}
         ]
     } 

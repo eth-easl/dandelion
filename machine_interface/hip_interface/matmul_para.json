@@ -1,17 +1,19 @@
 {
-    "module_path": "/home/smithj/dandelion/machine_interface/hip_interface/matmul.hsaco",
+    "module_path": "/home/smithj/dandelion/machine_interface/hip_interface/mlops.hsaco",
     "kernels": ["matmul_para"],
     "blueprint": {
-        "inputs": ["A"],
+        "inputs": ["cfg", "A"],
         "buffers": {"B": {"Sizeof": "A"}},
         "outputs": ["B"],
         "control_flow": [
             {"ExecKernel": ["matmul_para", [{"Ptr": "A"}, {"Sizeof": "A"}, {"Ptr": "B"}], {
-                "grid_dim_x": {"CoverBuffer": {"bufname": "A", "dimensionality": 2, "block_dim": 32}}, 
-                "grid_dim_y": {"CoverBuffer": {"bufname": "A", "dimensionality": 2, "block_dim": 32}}, 
+                "grid_dim_x": {"FromInput": {"bufname": "cfg", "idx": 0}}, 
+                "grid_dim_y": {"FromInput": {"bufname": "cfg", "idx": 0}}, 
                 "grid_dim_z": {"Absolute": 1},
-                "block_dim_x": 32, "block_dim_y": 32, "block_dim_z": 1,
-                "shared_mem_bytes": 0
+                "block_dim_x": {"Absolute": 32}, 
+                "block_dim_y": {"Absolute": 32}, 
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
             }]}
         ]
     } 

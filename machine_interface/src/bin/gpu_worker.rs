@@ -1,17 +1,14 @@
-use std::{io, thread::sleep, time::Duration};
+use std::io;
 
 use core_affinity::CoreId;
 use dandelion_commons::DandelionResult;
 use machine_interface::{
     function_driver::{
-        compute_driver::gpu::{
-            gpu_utils::{SendContext, SendFunctionArgs},
-            GpuLoop,
-        },
+        compute_driver::gpu::{gpu_utils::SendFunctionArgs, GpuLoop},
         thread_utils::EngineLoop,
         ComputeResource, FunctionConfig,
     },
-    memory_domain::{Context, ContextTrait},
+    memory_domain::Context,
 };
 
 fn main() {

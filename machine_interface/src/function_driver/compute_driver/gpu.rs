@@ -1,12 +1,10 @@
 use crate::{
     function_driver::{
-        load_utils::load_u8_from_file,
-        thread_utils::{start_thread, EngineLoop},
-        ComputeResource, Driver, Function, FunctionConfig, GpuConfig, WorkQueue,
+        load_utils::load_u8_from_file, thread_utils::EngineLoop, ComputeResource, Driver, Function,
+        FunctionConfig, GpuConfig, WorkQueue,
     },
     interface::{read_output_structs, setup_input_structs, write_gpu_outputs, DandelionSystemData},
     memory_domain::{Context, ContextTrait, ContextType},
-    promise::Debt,
     DataItem, DataRequirementList, DataSet, Position,
 };
 use core_affinity::CoreId;
@@ -15,7 +13,6 @@ use libc::c_void;
 use std::{
     collections::HashMap,
     mem::size_of,
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     ptr::null,
     sync::{Arc, Mutex},
     thread::{self, spawn},
@@ -23,8 +20,8 @@ use std::{
 
 use self::{
     buffer_pool::BufferPool,
-    config_parsing::{Action, Argument, BufferSizing, RuntimeGpuConfig},
-    gpu_utils::{copy_data_to_device, get_data_length, get_grid_size, start_gpu_process_pool},
+    config_parsing::{Action, Argument},
+    gpu_utils::{copy_data_to_device, get_data_length, get_size, start_gpu_process_pool},
     hip::DEFAULT_STREAM,
 };
 
@@ -124,18 +121,10 @@ pub fn gpu_run(
         }
         buffers.insert(name.clone(), (idx, size));
     }
-    for (name, size) in &config.blueprint.buffers {
-        match size {
-            BufferSizing::Absolute(bytes) => {
-                let idx = buffer_pool.alloc_buffer(*bytes)?;
-                buffers.insert(name.clone(), (idx, *bytes));
-            }
-            BufferSizing::Sizeof(id) => {
-                let size = buffers.get(id).ok_or(DandelionError::ConfigMissmatch)?.1;
-                let idx = buffer_pool.alloc_buffer(size)?;
-                buffers.insert(name.clone(), (idx, size));
-            }
-        }
+    for (name, sizing) in &config.blueprint.buffers {
+        let size = get_size(sizing, &buffers, &context)?;
+        let idx = buffer_pool.alloc_buffer(size)?;
+        buffers.insert(name.clone(), (idx, size));
     }
 
     for action in &config.blueprint.control_flow {
@@ -143,6 +132,7 @@ pub fn gpu_run(
             Action::ExecKernel(name, args, launch_config) => {
                 let mut params: Vec<*const c_void> = Vec::with_capacity(args.len());
                 let mut ptrs = vec![];
+                let mut constants = vec![];
                 for arg in args {
                     match arg {
                         Argument::Ptr(id) => {
@@ -150,23 +140,29 @@ pub fn gpu_run(
                             let dev_ptr = buffer_pool.get(idx)?;
                             ptrs.push(dev_ptr);
                             let addr = &ptrs.last().unwrap().ptr;
-                            params.push(addr as *const _ as *const c_void)
+                            params.push(addr as *const _ as *const c_void);
                         }
                         Argument::Sizeof(id) => {
-                            params.push(&buffers.get(id).unwrap().1 as *const _ as *const c_void)
+                            params.push(&buffers.get(id).unwrap().1 as *const _ as *const c_void);
+                        }
+                        Argument::Constant(constant) => {
+                            // TODO: test this!
+                            constants.push(*constant);
+                            let addr = constants.last().unwrap();
+                            params.push(addr as *const _ as *const c_void);
                         }
                     };
                 }
 
                 hip::module_launch_kernel(
                     config.kernels.get(name).unwrap(),
-                    get_grid_size(&launch_config.grid_dim_x, &buffers)?,
-                    get_grid_size(&launch_config.grid_dim_y, &buffers)?,
-                    get_grid_size(&launch_config.grid_dim_z, &buffers)?,
-                    launch_config.block_dim_x,
-                    launch_config.block_dim_y,
-                    launch_config.block_dim_z,
-                    launch_config.shared_mem_bytes,
+                    get_size(&launch_config.grid_dim_x, &buffers, &context)? as u32,
+                    get_size(&launch_config.grid_dim_y, &buffers, &context)? as u32,
+                    get_size(&launch_config.grid_dim_z, &buffers, &context)? as u32,
+                    get_size(&launch_config.block_dim_x, &buffers, &context)? as u32,
+                    get_size(&launch_config.block_dim_y, &buffers, &context)? as u32,
+                    get_size(&launch_config.block_dim_z, &buffers, &context)? as u32,
+                    get_size(&launch_config.shared_mem_bytes, &buffers, &context)?,
                     DEFAULT_STREAM,
                     params.as_ptr(),
                     null(),
@@ -175,9 +171,6 @@ pub fn gpu_run(
             _ => return Err(DandelionError::NotImplemented),
         }
     }
-
-    // Not required, as hipMemcpy-s synchronise as well
-    // hip::device_synchronize()?;
 
     write_gpu_outputs::<usize, usize>(
         &mut context,
