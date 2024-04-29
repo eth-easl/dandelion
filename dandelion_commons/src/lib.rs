@@ -124,6 +124,15 @@ pub enum DandelionError {
     RequestError(FrontendError),
 }
 
+// Implement display to be compliant with core::error::Error
+impl core::fmt::Display for DandelionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return f.write_fmt(format_args!("{:?}", self));
+    }
+}
+
+impl std::error::Error for DandelionError {}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FrontendError {
     /// Failed to get more frames from the connection

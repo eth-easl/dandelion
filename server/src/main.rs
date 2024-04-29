@@ -1,23 +1,21 @@
 use core_affinity::{self, CoreId};
 use dandelion_commons::records::{Archive, ArchiveInit, RecordPoint, Recorder};
+use dandelion_server::DandelionBody;
 use dispatcher::{
     composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
     resource_pool::ResourcePool,
 };
-use http_body_util::{BodyExt, Full};
+use http_body_util::BodyExt;
 use hyper::{
-    body::{Body, Bytes, Incoming},
+    body::{Body, Incoming},
     service::service_fn,
-    Request, Response, StatusCode,
+    Request, Response,
 };
 use log::{error, info, warn};
 use machine_interface::{
     function_driver::ComputeResource,
     machine_config::EngineType,
-    memory_domain::{
-        bytes_context::BytesContext, mmap::MmapMemoryDomain, Context, ContextTrait, MemoryDomain,
-    },
-    DataItem, DataSet, Position,
+    memory_domain::{bytes_context::BytesContext, Context},
 };
 use serde::Deserialize;
 use std::{
@@ -28,120 +26,119 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicU8, Ordering},
-        Arc, Once, OnceLock,
+        Arc, OnceLock,
     },
 };
 use tokio::{net::TcpListener, runtime::Builder, signal::unix::SignalKind};
 
-static INIT_MATRIX: Once = Once::new();
-static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
 const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
-async fn run_chain(
-    dispatcher: Arc<Dispatcher>,
-    is_cold: bool,
-    function_name: String,
-    get_uri: String,
-    post_uri: String,
-    mut recorder: Recorder,
-) -> u64 {
-    // TODO just have all the strings concatinated and create const context
-    let domain = MmapMemoryDomain::init(machine_interface::memory_domain::MemoryResource::None)
-        .expect("Should be able to get Mmap domain");
-    let mut input_context = domain
-        .acquire_context(128)
-        .expect("Should be able to get malloc context");
-    let get_request = format!("GET {} HTTP/1.1", get_uri);
-    let post_request = format!("PUT {} HTTP/1.1", post_uri);
-    let get_request_offset = input_context
-        .get_free_space_and_write_slice(get_request.as_bytes())
-        .expect("Should be able to write") as usize;
-    let post_request_offset = input_context
-        .get_free_space_and_write_slice(post_request.as_bytes())
-        .expect("Should be able to write") as usize;
-    input_context.content.push(Some(DataSet {
-        ident: String::from("request"),
-        buffers: vec![DataItem {
-            ident: String::from("request"),
-            data: Position {
-                offset: get_request_offset,
-                size: get_request.len(),
-            },
-            key: 0,
-        }],
-    }));
-    input_context.content.push(Some(DataSet {
-        ident: String::from("request"),
-        buffers: vec![DataItem {
-            ident: String::from("request"),
-            data: Position {
-                offset: post_request_offset,
-                size: post_request.len(),
-            },
-            key: 0,
-        }],
-    }));
-    let input_arc = Arc::new(input_context);
-    let inputs = vec![
-        (0, CompositionSet::from((0, vec![input_arc.clone()]))),
-        (1, CompositionSet::from((1, vec![input_arc]))),
-    ];
-    let output_mapping = vec![Some(0), Some(1)];
+// async fn run_chain(
+//     dispatcher: Arc<Dispatcher>,
+//     is_cold: bool,
+//     function_name: String,
+//     get_uri: String,
+//     post_uri: String,
+//     mut recorder: Recorder,
+// ) -> u64 {
+//     // TODO just have all the strings concatinated and create const context
+//     let domain = MmapMemoryDomain::init(machine_interface::memory_domain::MemoryResource::None)
+//         .expect("Should be able to get Mmap domain");
+//     let mut input_context = domain
+//         .acquire_context(128)
+//         .expect("Should be able to get malloc context");
+//     let get_request = format!("GET {} HTTP/1.1", get_uri);
+//     let post_request = format!("PUT {} HTTP/1.1", post_uri);
+//     let get_request_offset = input_context
+//         .get_free_space_and_write_slice(get_request.as_bytes())
+//         .expect("Should be able to write") as usize;
+//     let post_request_offset = input_context
+//         .get_free_space_and_write_slice(post_request.as_bytes())
+//         .expect("Should be able to write") as usize;
+//     input_context.content.push(Some(DataSet {
+//         ident: String::from("request"),
+//         buffers: vec![DataItem {
+//             ident: String::from("request"),
+//             data: Position {
+//                 offset: get_request_offset,
+//                 size: get_request.len(),
+//             },
+//             key: 0,
+//         }],
+//     }));
+//     input_context.content.push(Some(DataSet {
+//         ident: String::from("request"),
+//         buffers: vec![DataItem {
+//             ident: String::from("request"),
+//             data: Position {
+//                 offset: post_request_offset,
+//                 size: post_request.len(),
+//             },
+//             key: 0,
+//         }],
+//     }));
+//     let input_arc = Arc::new(input_context);
+//     let inputs = vec![
+//         (0, CompositionSet::from((0, vec![input_arc.clone()]))),
+//         (1, CompositionSet::from((1, vec![input_arc]))),
+//     ];
+//     let output_mapping = vec![Some(0), Some(1)];
 
-    recorder
-        .record(RecordPoint::QueueFunctionDispatcher)
-        .unwrap();
-    let result = dispatcher
-        .queue_function_by_name(function_name, inputs, output_mapping, is_cold, recorder)
-        .await
-        .expect("Should get response from chain");
-    assert_eq!(2, result.len());
-    // check http post response
-    let post_composition_set = result
-        .get(&1)
-        .expect("Should have composition set for post response");
-    assert_eq!(1, post_composition_set.context_list.len());
-    let post_context = &post_composition_set.context_list[0].0;
-    assert_eq!(3, post_context.content.len());
-    let post_set = post_context.content[0]
-        .as_ref()
-        .expect("Should have status set");
-    assert_eq!(1, post_set.buffers.len());
-    let post_status_position = post_set.buffers[0].data;
-    let mut post_vec = Vec::<u8>::new();
-    post_vec.resize(post_status_position.size, 0);
-    post_context
-        .read(post_status_position.offset, post_vec.as_mut_slice())
-        .expect("Should be able to read post response");
-    assert_eq!("HTTP/1.1 200 OK".as_bytes(), post_vec.as_slice());
+//     recorder
+//         .record(RecordPoint::QueueFunctionDispatcher)
+//         .unwrap();
+//     let result = dispatcher
+//         .queue_function_by_name(function_name, inputs, output_mapping, is_cold, recorder)
+//         .await
+//         .expect("Should get response from chain");
+//     assert_eq!(2, result.len());
+//     // check http post response
+//     let post_composition_set = result
+//         .get(&1)
+//         .expect("Should have composition set for post response");
+//     assert_eq!(1, post_composition_set.context_list.len());
+//     let post_context = &post_composition_set.context_list[0].0;
+//     assert_eq!(3, post_context.content.len());
+//     let post_set = post_context.content[0]
+//         .as_ref()
+//         .expect("Should have status set");
+//     assert_eq!(1, post_set.buffers.len());
+//     let post_status_position = post_set.buffers[0].data;
+//     let mut post_vec = Vec::<u8>::new();
+//     post_vec.resize(post_status_position.size, 0);
+//     post_context
+//         .read(post_status_position.offset, post_vec.as_mut_slice())
+//         .expect("Should be able to read post response");
+//     assert_eq!("HTTP/1.1 200 OK".as_bytes(), post_vec.as_slice());
 
-    // check iteration result
-    let result_compositon_set = result.get(&0).expect("Should have set 0");
-    assert_eq!(1, result_compositon_set.context_list.len());
-    let result_context = &result_compositon_set.context_list[0].0;
-    assert_eq!(1, result_context.content.len());
-    let result_set = result_context.content[0]
-        .as_ref()
-        .expect("Should contain a return number");
-    assert_eq!(1, result_set.buffers.len());
-    let result_position = result_set.buffers[0].data;
+//     // check iteration result
+//     let result_compositon_set = result.get(&0).expect("Should have set 0");
+//     assert_eq!(1, result_compositon_set.context_list.len());
+//     let result_context = &result_compositon_set.context_list[0].0;
+//     assert_eq!(1, result_context.content.len());
+//     let result_set = result_context.content[0]
+//         .as_ref()
+//         .expect("Should contain a return number");
+//     assert_eq!(1, result_set.buffers.len());
+//     let result_position = result_set.buffers[0].data;
 
-    let mut result_vec = vec![0u8; result_position.size];
-    result_context
-        .read(result_position.offset, result_vec.as_mut_slice())
-        .expect("Should be able to read result");
-    let checksum = u64::from_ne_bytes(result_vec[0..8].try_into().unwrap());
+//     let mut result_vec = vec![0u8; result_position.size];
+//     result_context
+//         .read(result_position.offset, result_vec.as_mut_slice())
+//         .expect("Should be able to read result");
+//     let checksum = u64::from_ne_bytes(result_vec[0..8].try_into().unwrap());
 
-    return checksum;
-}
+//     return checksum;
+// }
 
+// TODO: integrate into serve request
 async fn run_mat_func(
     dispatcher: Arc<Dispatcher>,
     is_cold: bool,
     function_name: String,
     request: Context,
     mut recorder: Recorder,
-) -> Vec<u8> {
+) -> DandelionBody {
     // TODO match set names to assign sets to composition sets
     let inputs = vec![(0, CompositionSet::from((0, vec![(Arc::new(request))])))];
     let outputs = vec![Some(0)];
@@ -153,14 +150,14 @@ async fn run_mat_func(
         .await
         .expect("Should get result from function");
 
-    return dandelion_server::create_response(result);
+    return dandelion_server::DandelionBody::new(result);
 }
 
 async fn serve_request(
     is_cold: bool,
     req: Request<Incoming>,
     dispatcher: Arc<Dispatcher>,
-) -> Result<Response<Full<Bytes>>, Infallible> {
+) -> Result<Response<DandelionBody>, Infallible> {
     let mut recorder = TRACING_ARCHIVE.get().unwrap().get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
 
@@ -191,7 +188,7 @@ async fn serve_request(
         warn!("request parsing failed with: {:?}", request_context_result);
     }
     let (function_name, request_context) = request_context_result.unwrap();
-    let response_vec = run_mat_func(
+    let response_body = run_mat_func(
         dispatcher,
         is_cold,
         function_name,
@@ -200,7 +197,7 @@ async fn serve_request(
     )
     .await;
 
-    let response = Ok::<_, Infallible>(Response::new(response_vec.into()));
+    let response = Ok::<_, Infallible>(Response::new(response_body));
 
     recorder.record(RecordPoint::EndService).unwrap();
     TRACING_ARCHIVE.get().unwrap().return_recorder(recorder);
@@ -208,93 +205,48 @@ async fn serve_request(
     return response;
 }
 
-#[derive(Deserialize)]
-struct ChainRequest {
-    name: String,
-    get_uri: String,
-    post_uri: String,
-}
+// #[derive(Deserialize)]
+// struct ChainRequest {
+//     name: String,
+//     get_uri: String,
+//     post_uri: String,
+// }
 
-async fn serve_chain(
-    is_cold: bool,
-    req: Request<Incoming>,
-    dispatcher: Arc<Dispatcher>,
-) -> Result<Response<Full<Bytes>>, Infallible> {
-    let mut recorder = TRACING_ARCHIVE.get().unwrap().get_recorder().unwrap();
-    let _ = recorder.record(RecordPoint::Arrival);
+// async fn serve_chain(
+//     is_cold: bool,
+//     req: Request<Incoming>,
+//     dispatcher: Arc<Dispatcher>,
+// ) -> Result<Response<Either<Full<Bytes>, DandelionBody>>, Infallible> {
+//     let mut recorder = TRACING_ARCHIVE.get().unwrap().get_recorder().unwrap();
+//     let _ = recorder.record(RecordPoint::Arrival);
 
-    let request_buf = req
-        .collect()
-        .await
-        .expect("Should be able to parse body")
-        .to_bytes();
-    let request_map: ChainRequest =
-        bson::from_slice(&request_buf).expect("Should be able to deserialize matrix request");
+//     let request_buf = req
+//         .collect()
+//         .await
+//         .expect("Should be able to parse body")
+//         .to_bytes();
+//     let request_map: ChainRequest =
+//         bson::from_slice(&request_buf).expect("Should be able to deserialize matrix request");
 
-    let response_vec = run_chain(
-        dispatcher,
-        is_cold,
-        request_map.name,
-        request_map.get_uri,
-        request_map.post_uri,
-        recorder.get_sub_recorder().unwrap(),
-    )
-    .await
-    .to_be_bytes()
-    .to_vec();
+//     let response_vec = run_chain(
+//         dispatcher,
+//         is_cold,
+//         request_map.name,
+//         request_map.get_uri,
+//         request_map.post_uri,
+//         recorder.get_sub_recorder().unwrap(),
+//     )
+//     .await
+//     .to_be_bytes()
+//     .to_vec();
 
-    let response = Ok::<_, Infallible>(Response::new(response_vec.into()));
+//     let response = Ok::<_, Infallible>(Response::new(Either::Left(response_vec.into())));
 
-    recorder.record(RecordPoint::EndService).unwrap();
-    TRACING_ARCHIVE.get().unwrap().return_recorder(recorder);
+//     recorder.record(RecordPoint::EndService).unwrap();
+//     TRACING_ARCHIVE.get().unwrap().return_recorder(recorder);
 
-    return response;
-}
-
-async fn serve_native(req: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
-    // Try to parse the request
-    let request_buf = req
-        .collect()
-        .await
-        .expect("Could not read request body")
-        .to_bytes();
-
-    if request_buf.len() != 16 {
-        let mut bad_request = Response::new(Full::new(String::from("").into()));
-        *bad_request.status_mut() = StatusCode::BAD_REQUEST;
-        return Ok::<_, Infallible>(bad_request);
-    }
-
-    let rows = i64::from_le_bytes(request_buf[0..8].try_into().unwrap()) as usize;
-    let cols = i64::from_le_bytes(request_buf[8..16].try_into().unwrap()) as usize;
-
-    let mat_size: usize = rows * cols;
-
-    // Initialize matrix if necessary
-    unsafe {
-        INIT_MATRIX.call_once(|| {
-            for i in 0..mat_size {
-                DUMMY_MATRIX.push(i as i64 + 1)
-            }
-        });
-    }
-
-    let mut out_mat: Vec<i64> = vec![0; mat_size];
-    for i in 0..rows {
-        for j in 0..rows {
-            for k in 0..cols {
-                unsafe {
-                    out_mat[i * rows + j] +=
-                        DUMMY_MATRIX[i * cols + k] * DUMMY_MATRIX[j * cols + k];
-                }
-            }
-        }
-    }
-
-    let checksum = out_mat[rows * cols - 1];
-
-    Ok::<_, Infallible>(Response::new(checksum.to_be_bytes().to_vec().into()))
-}
+//     return response;
+// }
 
 #[derive(Debug, Deserialize)]
 struct RegisterFunction {
@@ -307,7 +259,7 @@ struct RegisterFunction {
 async fn register_function(
     req: Request<Incoming>,
     dispatcher: Arc<Dispatcher>,
-) -> Result<Response<Full<Bytes>>, Infallible> {
+) -> Result<Response<DandelionBody>, Infallible> {
     let bytes = req
         .collect()
         .await
@@ -347,7 +299,9 @@ async fn register_function(
         )
         .await
         .expect("Should be able to insert function");
-    return Ok::<_, Infallible>(Response::new("Function registered".into()));
+    return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
+        "Function registered".as_bytes().to_vec(),
+    )));
 }
 
 #[derive(Debug, Deserialize)]
@@ -358,7 +312,7 @@ struct RegisterChain {
 async fn register_composition(
     req: Request<Incoming>,
     dispatcher: Arc<Dispatcher>,
-) -> Result<Response<Full<Bytes>>, Infallible> {
+) -> Result<Response<DandelionBody>, Infallible> {
     let bytes = req
         .collect()
         .await
@@ -372,12 +326,16 @@ async fn register_composition(
         .insert_compositions(request_map.composition)
         .await
         .expect("Should be able to insert function");
-    return Ok::<_, Infallible>(Response::new("Function registered".into()));
+    return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
+        "Function registered".as_bytes().to_vec(),
+    )));
 }
 
-async fn serve_stats(_req: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
+async fn serve_stats(_req: Request<Incoming>) -> Result<Response<DandelionBody>, Infallible> {
     let archive_ref = TRACING_ARCHIVE.get().unwrap();
-    let response = Response::new(archive_ref.get_summary().into());
+    let response = Response::new(DandelionBody::from_vec(
+        archive_ref.get_summary().into_bytes(),
+    ));
     archive_ref.reset();
     return Ok::<_, Infallible>(response);
 }
@@ -385,23 +343,22 @@ async fn serve_stats(_req: Request<Incoming>) -> Result<Response<Full<Bytes>>, I
 async fn service(
     req: Request<Incoming>,
     dispatcher: Arc<Dispatcher>,
-) -> Result<Response<Full<Bytes>>, Infallible> {
+) -> Result<Response<DandelionBody>, Infallible> {
     let uri = req.uri().path();
     match uri {
+        // TODO rename to cold func and hot func, remove matmul, compute, io
         "/register/function" => register_function(req, dispatcher).await,
         "/register/composition" => register_composition(req, dispatcher).await,
         "/cold/matmul" => serve_request(true, req, dispatcher).await,
         "/hot/matmul" => serve_request(false, req, dispatcher).await,
-        "/cold/compute" => serve_chain(true, req, dispatcher).await,
-        "/hot/compute" => serve_chain(false, req, dispatcher).await,
-        "/cold/io" => serve_chain(true, req, dispatcher).await,
-        "/hot/io" => serve_chain(false, req, dispatcher).await,
-        "/native" => serve_native(req).await,
+        // "/cold/compute" => serve_chain(true, req, dispatcher).await,
+        // "/hot/compute" => serve_chain(false, req, dispatcher).await,
+        // "/cold/io" => serve_chain(true, req, dispatcher).await,
+        // "/hot/io" => serve_chain(false, req, dispatcher).await,
         "/stats" => serve_stats(req).await,
-        _ => Ok::<_, Infallible>(Response::new(
-            // format!("Hello, World! You asked for: {}\n", uri).into(),
-            format!("Hello, Wor\n").into(),
-        )),
+        _ => Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
+            format!("Hello, Wor\n").into_bytes(),
+        ))),
     }
 }
 
