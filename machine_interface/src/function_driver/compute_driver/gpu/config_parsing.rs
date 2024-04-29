@@ -28,14 +28,9 @@ pub enum Argument {
 }
 
 #[derive(Deserialize, Serialize, Debug)]
-pub enum Condition {
-    NTimes(usize),
-}
-
-#[derive(Deserialize, Serialize, Debug)]
 pub enum Action {
     ExecKernel(String, Vec<Argument>, Box<LaunchConfig>),
-    Repeat(Condition, Vec<Action>),
+    Repeat(u8, Vec<Action>),
 }
 
 #[derive(Deserialize, Serialize, Debug)]

@@ -1180,10 +1180,6 @@ mod compute_driver_tests {
                 .read(position.offset, &mut read_buffer)
                 .expect("Should succeed in reading");
             let expected = get_expected_inference_output();
-            eprintln!(
-                "{:?}, {:?}, {:?}",
-                read_buffer[2], read_buffer[3], read_buffer[4]
-            );
             for (idx, (should, is)) in expected.iter().zip(read_buffer[..].iter()).enumerate() {
                 assert_eq!(should, is, "Comparing args at {}", idx);
             }

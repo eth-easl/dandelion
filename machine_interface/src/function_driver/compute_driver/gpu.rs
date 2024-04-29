@@ -14,13 +14,13 @@ use std::{
     collections::HashMap,
     mem::size_of,
     ptr::null,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
     thread::{self, spawn},
 };
 
 use self::{
     buffer_pool::BufferPool,
-    config_parsing::{Action, Argument},
+    config_parsing::{Action, Argument, RuntimeGpuConfig},
     gpu_utils::{
         copy_data_to_device, get_data_length, get_size, start_gpu_process_pool, start_gpu_thread,
     },
@@ -90,6 +90,64 @@ pub fn dummy_run(gpu_loop: &mut GpuLoop) -> DandelionResult<()> {
     Ok(())
 }
 
+fn execute(
+    actions: &Vec<Action>,
+    buffers: &HashMap<String, (usize, usize)>,
+    buffer_pool: &MutexGuard<BufferPool>,
+    context: &Context,
+    config: &RuntimeGpuConfig,
+) -> DandelionResult<()> {
+    for action in actions {
+        match action {
+            Action::ExecKernel(name, args, launch_config) => {
+                let mut params: Vec<*const c_void> = Vec::with_capacity(args.len());
+                let mut ptrs = vec![];
+                let mut constants = vec![];
+                for arg in args {
+                    match arg {
+                        Argument::Ptr(id) => {
+                            let idx = buffers.get(id).unwrap().0;
+                            let dev_ptr = buffer_pool.get(idx)?;
+                            ptrs.push(dev_ptr);
+                            let addr = &ptrs.last().unwrap().ptr;
+                            params.push(addr as *const _ as *const c_void);
+                        }
+                        Argument::Sizeof(id) => {
+                            params.push(&buffers.get(id).unwrap().1 as *const _ as *const c_void);
+                        }
+                        Argument::Constant(constant) => {
+                            // TODO: test this!
+                            constants.push(*constant);
+                            let addr = constants.last().unwrap();
+                            params.push(addr as *const _ as *const c_void);
+                        }
+                    };
+                }
+
+                hip::module_launch_kernel(
+                    config.kernels.get(name).unwrap(),
+                    get_size(&launch_config.grid_dim_x, buffers, context)? as u32,
+                    get_size(&launch_config.grid_dim_y, buffers, context)? as u32,
+                    get_size(&launch_config.grid_dim_z, buffers, context)? as u32,
+                    get_size(&launch_config.block_dim_x, buffers, context)? as u32,
+                    get_size(&launch_config.block_dim_y, buffers, context)? as u32,
+                    get_size(&launch_config.block_dim_z, buffers, context)? as u32,
+                    get_size(&launch_config.shared_mem_bytes, buffers, context)?,
+                    DEFAULT_STREAM,
+                    params.as_ptr(),
+                    null(),
+                )?;
+            }
+            Action::Repeat(times, actions) => {
+                for _ in 0..*times {
+                    execute(actions, buffers, buffer_pool, context, config)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn gpu_run(
     cpu_slot: usize,
     gpu_id: u8,
@@ -129,50 +187,13 @@ pub fn gpu_run(
         buffers.insert(name.clone(), (idx, size));
     }
 
-    for action in &config.blueprint.control_flow {
-        match action {
-            Action::ExecKernel(name, args, launch_config) => {
-                let mut params: Vec<*const c_void> = Vec::with_capacity(args.len());
-                let mut ptrs = vec![];
-                let mut constants = vec![];
-                for arg in args {
-                    match arg {
-                        Argument::Ptr(id) => {
-                            let idx = buffers.get(id).unwrap().0;
-                            let dev_ptr = buffer_pool.get(idx)?;
-                            ptrs.push(dev_ptr);
-                            let addr = &ptrs.last().unwrap().ptr;
-                            params.push(addr as *const _ as *const c_void);
-                        }
-                        Argument::Sizeof(id) => {
-                            params.push(&buffers.get(id).unwrap().1 as *const _ as *const c_void);
-                        }
-                        Argument::Constant(constant) => {
-                            // TODO: test this!
-                            constants.push(*constant);
-                            let addr = constants.last().unwrap();
-                            params.push(addr as *const _ as *const c_void);
-                        }
-                    };
-                }
-
-                hip::module_launch_kernel(
-                    config.kernels.get(name).unwrap(),
-                    get_size(&launch_config.grid_dim_x, &buffers, &context)? as u32,
-                    get_size(&launch_config.grid_dim_y, &buffers, &context)? as u32,
-                    get_size(&launch_config.grid_dim_z, &buffers, &context)? as u32,
-                    get_size(&launch_config.block_dim_x, &buffers, &context)? as u32,
-                    get_size(&launch_config.block_dim_y, &buffers, &context)? as u32,
-                    get_size(&launch_config.block_dim_z, &buffers, &context)? as u32,
-                    get_size(&launch_config.shared_mem_bytes, &buffers, &context)?,
-                    DEFAULT_STREAM,
-                    params.as_ptr(),
-                    null(),
-                )?;
-            }
-            _ => return Err(DandelionError::NotImplemented),
-        }
-    }
+    execute(
+        &config.blueprint.control_flow,
+        &buffers,
+        &buffer_pool,
+        &context,
+        &config,
+    )?;
 
     write_gpu_outputs::<usize, usize>(
         &mut context,

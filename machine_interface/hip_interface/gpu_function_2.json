@@ -6,7 +6,7 @@
         "buffers": {"V": {"Sizeof": "X"}, "X_tmp": {"Sizeof": "X"}},
         "outputs": ["V"],
         "control_flow": [
-            {"Repeat": [{"NTimes": 25},[
+            {"Repeat": [25, [
                 {"ExecKernel": ["SUB",
                     [{"Ptr": "X"}, {"Ptr": "V"}, {"Ptr": "X_tmp"}, {"Sizeof": "X"}],
                     {
