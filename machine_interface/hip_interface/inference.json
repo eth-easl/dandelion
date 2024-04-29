@@ -3,11 +3,11 @@
     "kernels": ["matmul_f", "convolution_f", "relu_2d_f", "maxpool_f"],
     "blueprint": {
         "inputs": ["cfg", "A", "B"],
-        "buffers": {"C": {"Sizeof": "A"}, "D": {"FromInput": {"bufname": "cfg", "idx": 2}}},
+        "buffers": {"C": {"Sizeof": "A"}, "D": {"FromInput": {"bufname": "cfg", "idx": 0}}},
         "outputs": ["D"],
         "control_flow": [
             {"ExecKernel": ["convolution_f", [{"Ptr": "C"}, {"Ptr": "A"}, {"Ptr": "B"}], {
-                "grid_dim_x": {"FromInput": {"bufname": "cfg", "idx": 0}}, 
+                "grid_dim_x": {"FromInput": {"bufname": "cfg", "idx": 1}}, 
                 "grid_dim_y": {"FromInput": {"bufname": "cfg", "idx": 1}}, 
                 "grid_dim_z": {"Absolute": 1},
                 "block_dim_x": {"Absolute": 32},
@@ -16,7 +16,7 @@
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
             {"ExecKernel": ["relu_2d_f", [{"Ptr": "C"}], {
-                "grid_dim_x": {"FromInput": {"bufname": "cfg", "idx": 0}}, 
+                "grid_dim_x": {"FromInput": {"bufname": "cfg", "idx": 1}}, 
                 "grid_dim_y": {"FromInput": {"bufname": "cfg", "idx": 1}}, 
                 "grid_dim_z": {"Absolute": 1},
                 "block_dim_x": {"Absolute": 32},
@@ -24,9 +24,9 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["maxpool_f", [{"Ptr": "D", "Constant": 2}], {
-                "grid_dim_x": {"FromInput": {"bufname": "cfg", "idx": 3}}, 
-                "grid_dim_y": {"FromInput": {"bufname": "cfg", "idx": 4}}, 
+            {"ExecKernel": ["maxpool_f", [{"Ptr": "D"}, {"Ptr": "C"}, {"Constant": 2}], {
+                "grid_dim_x": {"FromInput": {"bufname": "cfg", "idx": 2}}, 
+                "grid_dim_y": {"FromInput": {"bufname": "cfg", "idx": 2}}, 
                 "grid_dim_z": {"Absolute": 1},
                 "block_dim_x": {"Absolute": 32},
                 "block_dim_y": {"Absolute": 32},

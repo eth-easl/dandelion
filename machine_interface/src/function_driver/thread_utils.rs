@@ -51,7 +51,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                         continue;
                     }
                 }
-                let results = Box::new(result.and_then(|context| Ok((context, recorder))));
+                let results = Box::new(result.map(|context| (context, recorder)));
                 debt.fulfill(results);
             }
             EngineArguments::TransferArguments(transfer_args) => {

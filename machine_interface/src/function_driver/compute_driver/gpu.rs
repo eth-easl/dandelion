@@ -21,7 +21,9 @@ use std::{
 use self::{
     buffer_pool::BufferPool,
     config_parsing::{Action, Argument},
-    gpu_utils::{copy_data_to_device, get_data_length, get_size, start_gpu_process_pool},
+    gpu_utils::{
+        copy_data_to_device, get_data_length, get_size, start_gpu_process_pool, start_gpu_thread,
+    },
     hip::DEFAULT_STREAM,
 };
 
@@ -240,9 +242,6 @@ impl EngineLoop for GpuLoop {
             Err(_) => return Err(DandelionError::EngineError),
         };
 
-        let write_buf = vec![12345i64];
-        context.write(0, &write_buf)?;
-
         read_output_structs::<usize, usize>(&mut context, sysdata_offset)?;
 
         Ok(context)
@@ -279,7 +278,7 @@ impl Driver for GpuDriver {
         }
 
         // To switch between single executor and process pool
-        // start_thread::<GpuLoop>(cpu_slot, queue);
+        // spawn(move || start_gpu_thread(cpu_slot, gpu_id, queue));
         spawn(move || start_gpu_process_pool(cpu_slot, gpu_id, queue));
         Ok(())
     }

@@ -661,12 +661,14 @@ mod compute_driver_tests {
     mod gpu {
 
         use std::{
+            cmp::max,
             os::raw::c_void,
             ptr::null,
             sync::{Arc, Mutex},
         };
 
         use dandelion_commons::records::{Archive, RecordPoint, Recorder};
+        use futures::SinkExt;
 
         use crate::{
             function_driver::{
@@ -944,7 +946,7 @@ mod compute_driver_tests {
                     ],
                 }));
                 let cfg_offset = function_context
-                    .get_free_space_and_write_slice(&[((mat_size + 31) / 32) as i64])
+                    .get_free_space_and_write_slice(&[(mat_size + 31) / 32])
                     .expect("Should be able to write cfg");
                 function_context.content.push(Some(DataSet {
                     ident: "cfg".to_string(),
@@ -999,6 +1001,191 @@ mod compute_driver_tests {
                 for (should, is) in expected.iter().zip(output[1..].iter()) {
                     assert_eq!(should, is);
                 }
+            }
+        }
+
+        fn get_inference_inputs() -> (Vec<f32>, Vec<f32>) {
+            let mut a: Vec<f32> = Vec::with_capacity(224 * 224 + 2);
+            let mut b: Vec<f32> = Vec::with_capacity(5 * 5 + 2);
+
+            a.push(224.0);
+            a.push(224.0);
+            for i in 0..224 * 224 {
+                a.push(i as f32);
+            }
+
+            b.push(5.0);
+            b.push(5.0);
+            for i in 0..5 * 5 {
+                b.push(i as f32);
+            }
+
+            (a, b)
+        }
+
+        fn get_expected_inference_output() -> Vec<f32> {
+            let (a, b) = get_inference_inputs();
+            let mut c = vec![0f32; a.len()];
+            let mut d = vec![0f32; c.len() / 2 + 1];
+
+            // convolution
+            c[0] = 224f32;
+            c[1] = 224f32;
+            for i in 0..224 {
+                for j in 0..224 {
+                    let mut sum = 0f32;
+                    for k in -2..=2i32 {
+                        for l in -2..=2i32 {
+                            let cur_row = i - k;
+                            let cur_col = j - l;
+
+                            let filter_row = 2 + k;
+                            let filter_col = 2 + l;
+
+                            if (0..224).contains(&cur_row) && (0..224).contains(&cur_col) {
+                                let cur_row = cur_row as usize; // There has to be a better way to do this...
+                                let cur_col = cur_col as usize;
+                                let filter_row = filter_row as usize;
+                                let filter_col = filter_col as usize;
+                                sum += a[2 + cur_row * 224 + cur_col]
+                                    * b[2 + filter_row * 5 + filter_col];
+                            }
+                        }
+                    }
+                    let i = i as usize;
+                    let j = j as usize;
+                    c[2 + i * 224 + j] = sum;
+                }
+            }
+
+            // relu
+            for i in 0..224 * 224 {
+                c[2 + i] = c[2 + i].max(0f32);
+            }
+
+            // max pooling
+            d[0] = 112f32;
+            d[1] = 112f32;
+            for i in 0..112 {
+                for j in 0..112 {
+                    let mut max = f32::NEG_INFINITY;
+                    let base_row = i * 2;
+                    let base_col = j * 2;
+                    for k in 0..2 {
+                        for l in 0..2 {
+                            max = max.max(c[2 + (base_row + k) * 224 + (base_col + l)]);
+                        }
+                    }
+                    d[2 + i * 112 + j] = max;
+                }
+            }
+
+            d
+        }
+
+        #[test]
+        fn inference_benchmark_function() {
+            let _lock = GPU_LOCK.lock().unwrap();
+            let filename = "/home/smithj/dandelion/machine_interface/hip_interface/inference.json";
+            let dom_init = MemoryResource::None;
+            let driver: Box<dyn Driver> = Box::new(GpuDriver {});
+            let drv_init = vec![ComputeResource::GPU(7, 0)];
+            let (mut function_context, config, queue) =
+                prepare_engine_and_function::<MmuMemoryDomain>(
+                    filename, dom_init, &driver, drv_init,
+                );
+            let d_size: usize = 112 * 112 * 4 + 8; //side_len * side_len * sizeof(float) + [[size convention at start]]
+            let a_grid_dim: usize = (224 + 31) / 32;
+            let d_grid_dim: usize = (112 + 31) / 32;
+            let (a_matrix, b_matrix) = get_inference_inputs();
+            let cfg_offset = function_context
+                .get_free_space_and_write_slice(&[d_size, a_grid_dim, d_grid_dim])
+                .expect("Should have space for cfg");
+            let a_offset = function_context
+                .get_free_space_and_write_slice(&a_matrix)
+                .expect("Should have space for A");
+            let b_offset = function_context
+                .get_free_space_and_write_slice(&b_matrix)
+                .expect("Should have space for B");
+
+            function_context.content.append(&mut vec![
+                Some(DataSet {
+                    ident: "cfg".to_string(),
+                    buffers: vec![DataItem {
+                        ident: "".to_string(),
+                        data: Position {
+                            offset: cfg_offset as usize,
+                            size: 3 * 8,
+                        },
+                        key: 0,
+                    }],
+                }),
+                Some(DataSet {
+                    ident: "A".to_string(),
+                    buffers: vec![DataItem {
+                        ident: "".to_string(),
+                        data: Position {
+                            offset: a_offset as usize,
+                            size: a_matrix.len() * 4,
+                        },
+                        key: 0,
+                    }],
+                }),
+                Some(DataSet {
+                    ident: "B".to_string(),
+                    buffers: vec![DataItem {
+                        ident: "".to_string(),
+                        data: Position {
+                            offset: b_offset as usize,
+                            size: b_matrix.len() * 4,
+                        },
+                        key: 0,
+                    }],
+                }),
+            ]);
+            let archive = Arc::new(Mutex::new(Archive::new()));
+            let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
+            let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
+                config,
+                context: function_context,
+                output_sets: Arc::new(vec![String::from("D")]),
+                recorder,
+            }));
+            queue.enqueu(EngineArguments::Shutdown(|_| {
+                // GPU allocation automatically dropped when Engine dropped
+            }));
+            let (result_context, mut result_recorder) =
+                tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap()
+                    .block_on(promise)
+                    .expect("Engine should run ok with basic function");
+            result_recorder
+                .record(RecordPoint::FutureReturn)
+                .expect("Should have properly advanced recorder state");
+            assert_eq!(1, result_context.content.len());
+            let output_item = result_context.content[0]
+                .as_ref()
+                .expect("Set should be present");
+            assert_eq!(1, output_item.buffers.len());
+            let position = output_item.buffers[0].data;
+            assert_eq!(
+                112 * 112 * 4 + 8,
+                position.size,
+                "Checking for size of output"
+            );
+            let mut read_buffer = vec![0f32; position.size / 4];
+            result_context
+                .context
+                .read(position.offset, &mut read_buffer)
+                .expect("Should succeed in reading");
+            let expected = get_expected_inference_output();
+            eprintln!(
+                "{:?}, {:?}, {:?}",
+                read_buffer[2], read_buffer[3], read_buffer[4]
+            );
+            for (idx, (should, is)) in expected.iter().zip(read_buffer[..].iter()).enumerate() {
+                assert_eq!(should, is, "Comparing args at {}", idx);
             }
         }
     }
