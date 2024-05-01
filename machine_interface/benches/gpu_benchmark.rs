@@ -7,6 +7,7 @@ use dandelion_commons::records::{Archive, RecordPoint, Recorder};
 use libc::c_void;
 use machine_interface::function_driver::compute_driver::gpu::hip;
 use machine_interface::function_driver::thread_utils::EngineLoop;
+use machine_interface::promise::Promise;
 use machine_interface::{
     function_driver::{
         compute_driver::gpu::{GpuDriver, GpuLoop},
@@ -129,6 +130,119 @@ fn engine_loop_run_matmul(c: &mut Criterion) {
     }
 }
 
+fn get_inference_inputs() -> (Vec<f32>, Vec<f32>) {
+    let mut a: Vec<f32> = Vec::with_capacity(224 * 224 + 2);
+    let mut b: Vec<f32> = Vec::with_capacity(5 * 5 + 2);
+
+    a.push(224.0);
+    a.push(224.0);
+    for i in 0..224 * 224 {
+        a.push(i as f32);
+    }
+
+    b.push(5.0);
+    b.push(5.0);
+    for i in 0..5 * 5 {
+        b.push(i as f32);
+    }
+
+    (a, b)
+}
+
+fn inference_benchmark_latency(c: &mut Criterion) {
+    let filename = "/home/smithj/dandelion/machine_interface/hip_interface/inference.json";
+    let dom_init = MemoryResource::None;
+    let driver: Box<dyn Driver> = Box::new(GpuDriver {});
+    let drv_init = ComputeResource::GPU(7, 0);
+    let queue = Box::new(TestQueue::new());
+    let domain = MmuMemoryDomain::init(dom_init).expect("Should have initialized domain");
+    let function = driver
+        .parse_function(filename.to_string(), &domain)
+        .expect("Should be able to parse function");
+    driver
+        .start_engine(drv_init, queue.clone())
+        .expect("Should be able to start engine");
+
+    c.bench_function("Engine Latency", |b| {
+        b.iter_custom(|iters| {
+            let mut total = Duration::new(0, 0);
+            for _ in 0..iters {
+                let mut function_context = function
+                    .load(&domain, 1 << 25)
+                    .expect("Should be able to load function");
+                let config = function.config.clone();
+                let d_size: usize = 112 * 112 * 4 + 8; //side_len * side_len * sizeof(float) + [[size convention at start]]
+                let a_grid_dim: usize = (224 + 31) / 32;
+                let d_grid_dim: usize = (112 + 31) / 32;
+                let (a_matrix, b_matrix) = get_inference_inputs();
+                let cfg_offset = function_context
+                    .get_free_space_and_write_slice(&[d_size, a_grid_dim, d_grid_dim])
+                    .expect("Should have space for cfg");
+                let a_offset = function_context
+                    .get_free_space_and_write_slice(&a_matrix)
+                    .expect("Should have space for A");
+                let b_offset = function_context
+                    .get_free_space_and_write_slice(&b_matrix)
+                    .expect("Should have space for B");
+
+                function_context.content.append(&mut vec![
+                    Some(DataSet {
+                        ident: "cfg".to_string(),
+                        buffers: vec![DataItem {
+                            ident: "".to_string(),
+                            data: Position {
+                                offset: cfg_offset as usize,
+                                size: 3 * 8,
+                            },
+                            key: 0,
+                        }],
+                    }),
+                    Some(DataSet {
+                        ident: "A".to_string(),
+                        buffers: vec![DataItem {
+                            ident: "".to_string(),
+                            data: Position {
+                                offset: a_offset as usize,
+                                size: a_matrix.len() * 4,
+                            },
+                            key: 0,
+                        }],
+                    }),
+                    Some(DataSet {
+                        ident: "B".to_string(),
+                        buffers: vec![DataItem {
+                            ident: "".to_string(),
+                            data: Position {
+                                offset: b_offset as usize,
+                                size: b_matrix.len() * 4,
+                            },
+                            key: 0,
+                        }],
+                    }),
+                ]);
+                let archive = Arc::new(Mutex::new(Archive::new()));
+                let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
+
+                let begin = std::time::Instant::now();
+                let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
+                    config,
+                    context: function_context,
+                    output_sets: Arc::new(vec![String::from("D")]),
+                    recorder,
+                }));
+                let _ = tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap()
+                    .block_on(promise)
+                    .expect("Engine should run ok with basic function");
+                let duration = begin.elapsed();
+                total += duration;
+            }
+            total
+        })
+    });
+}
+
 fn module_load_helper(iters: u64, path: &str) -> Duration {
     let mut total = Duration::new(0, 0);
 
@@ -216,7 +330,7 @@ fn loading(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, loading);
+criterion_group!(benches, inference_benchmark_latency);
 
 #[cfg(feature = "gpu")]
 criterion_main!(benches);

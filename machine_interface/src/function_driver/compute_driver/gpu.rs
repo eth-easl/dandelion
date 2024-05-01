@@ -299,8 +299,8 @@ impl Driver for GpuDriver {
         }
 
         // To switch between single executor and process pool
-        // spawn(move || start_gpu_thread(cpu_slot, gpu_id, queue));
-        spawn(move || start_gpu_process_pool(cpu_slot, gpu_id, queue));
+        spawn(move || start_gpu_thread(cpu_slot, gpu_id, queue));
+        // spawn(move || start_gpu_process_pool(cpu_slot, gpu_id, queue));
         Ok(())
     }
 
@@ -309,18 +309,6 @@ impl Driver for GpuDriver {
         function_path: String,
         static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
     ) -> dandelion_commons::DandelionResult<crate::function_driver::Function> {
-        // Concept for now: function_path gives config file which contains name of module (.hsaco) file
-        // let config = if function_path == "foo" {
-        //     FunctionConfig::GpuConfig(config_parsing::dummy_config()?)
-        // } else if function_path == "bar" {
-        //     FunctionConfig::GpuConfig(config_parsing::dummy_config2()?)
-        // } else if function_path == "matmul_loop" {
-        //     FunctionConfig::GpuConfig(config_parsing::matmul_dummy(false)?)
-        // } else if function_path == "matmul_para" {
-        //     FunctionConfig::GpuConfig(config_parsing::matmul_dummy(true)?)
-        // } else {
-        //     FunctionConfig::GpuConfig(config_parsing::parse_config(&function_path)?)
-        // };
         let (mut gpu_config, module_path) = config_parsing::parse_config(&function_path)?;
 
         let code_object = load_u8_from_file(module_path)?;

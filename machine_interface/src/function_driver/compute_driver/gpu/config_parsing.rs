@@ -30,7 +30,7 @@ pub enum Argument {
 #[derive(Deserialize, Serialize, Debug)]
 pub enum Action {
     ExecKernel(String, Vec<Argument>, Box<LaunchConfig>),
-    Repeat(u8, Vec<Action>),
+    Repeat(u32, Vec<Action>),
 }
 
 #[derive(Deserialize, Serialize, Debug)]
