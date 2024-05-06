@@ -55,8 +55,8 @@ pub struct WasmConfig {
 #[derive(Clone)]
 pub struct FpgaConfig {
     #[cfg(feature = "fpga")]
-    std_connection: std::net::SocketAddrV4, //ip/port for normal usage
-    special_connection: std::net::SocketAddrV4, //different port for special control stuff
+    //TODO: other type of identifier?
+    bitstream_id: u16,
 }
 
 #[derive(Clone)]

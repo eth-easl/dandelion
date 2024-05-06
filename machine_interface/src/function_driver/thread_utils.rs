@@ -20,7 +20,7 @@ pub trait EngineLoop {
         output_sets: std::sync::Arc<Vec<String>>,
     ) -> DandelionResult<Context>;
 }
-
+//TODO: Victor build an alterantive run-thread to give over the debt
 fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
     // set core affinity
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
@@ -30,6 +30,8 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
     let mut engine_state = E::init(core_id).expect("Failed to initialize thread state");
     loop {
         // TODO catch unwind so we can always return an error or shut down gracefully
+        //TODO: VICTOR have handler loop with budget for how many unfulfilled debts are allowed to be in-flight
+        //keep the recorder around with the debt, and timestamp both when you get it and when you are done wiht it
         let (args, debt) = queue.get_engine_args();
         match args {
             EngineArguments::FunctionArguments(func_args) => {
