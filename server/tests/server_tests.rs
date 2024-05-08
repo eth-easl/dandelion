@@ -161,7 +161,7 @@ mod server_tests {
         };
         let registration_client = reqwest::blocking::Client::new();
         let registration_resp = registration_client
-            .post("http://localhost:8080/register/function")
+            .post("http://localhost:8082/register/function")
             .body(bson::to_vec(&register_request).unwrap())
             .send()
             .unwrap();
@@ -180,14 +180,14 @@ mod server_tests {
         };
         let chain_client = reqwest::blocking::Client::new();
         let chain_resp = chain_client
-            .post("http://localhost:8080/register/composition")
+            .post("http://localhost:8082/register/composition")
             .body(bson::to_vec(&chain_request).unwrap())
             .send()
             .unwrap();
         assert!(chain_resp.status().is_success());
 
-        send_matrix_request("http://localhost:8080/hot/matmul", String::from("matmul"));
-        send_matrix_request("http://localhost:8080/hot/matmul", String::from("chain"));
+        send_matrix_request("http://localhost:8082/hot/matmul", String::from("matmul"));
+        send_matrix_request("http://localhost:8082/hot/matmul", String::from("chain"));
 
         let status_result = server_killer.server.try_wait();
         let status = status_result.unwrap();

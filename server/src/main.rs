@@ -367,7 +367,7 @@ static TRACING_ARCHIVE: OnceLock<Archive> = OnceLock::new();
 
 async fn service_loop(dispacher: Arc<Dispatcher>) {
     // socket to listen to
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+    let addr = SocketAddr::from(([0, 0, 0, 0], 8082));
     let listener = TcpListener::bind(addr).await.unwrap();
     // signal handlers for gracefull shutdown
     let mut sigterm_stream = tokio::signal::unix::signal(SignalKind::terminate()).unwrap();
