@@ -168,15 +168,20 @@ async fn run_mat_func(
             for i in 0..mat_size {
                 DUMMY_MATRIX.push(i as i64 + 1)
             }
+            // Add cfg input for GPU functions
+            #[cfg(feature = "gpu")]
+            DUMMY_MATRIX.push((rows as i64 + 31) / 32);
         });
     }
 
     let input_context = unsafe { add_matmul_inputs(&mut DUMMY_MATRIX) };
+    let input_arc = Arc::new(input_context);
 
-    let inputs = vec![(
-        0,
-        CompositionSet::from((0, vec![(Arc::new(input_context))])),
-    )];
+    // Debug marker: this might be wrong!
+    let inputs = vec![
+        (0, CompositionSet::from((0, vec![input_arc.clone()]))),
+        (1, CompositionSet::from((1, vec![input_arc]))),
+    ];
     let outputs = vec![Some(0)];
     let result: Result<BTreeMap<usize, CompositionSet>, dandelion_commons::DandelionError> =
         dispatcher
@@ -200,6 +205,7 @@ fn add_matmul_inputs(matrix: &'static mut Vec<i64>) -> Context {
     let _ = context.occupy_space(0, matrix_size);
 
     if let Some(set) = &mut context.content[0] {
+        set.ident = "A".to_string();
         set.buffers.push(DataItem {
             ident: String::from(""),
             data: Position {
@@ -210,7 +216,8 @@ fn add_matmul_inputs(matrix: &'static mut Vec<i64>) -> Context {
         });
     } else {
         context.content[0] = Some(DataSet {
-            ident: "".to_string(),
+            // TODO: verify this doesn't break non-GPU engines (I think it's fine)
+            ident: "A".to_string(),
             buffers: vec![DataItem {
                 ident: "".to_string(),
                 data: Position {
@@ -220,6 +227,36 @@ fn add_matmul_inputs(matrix: &'static mut Vec<i64>) -> Context {
                 key: 0,
             }],
         });
+    }
+
+    #[cfg(feature = "gpu")]
+    {
+        context.content.resize_with(2, || None);
+        let _ = context.occupy_space(matrix_size, 8); // cfg is only one i64 here
+
+        if let Some(set) = &mut context.content[1] {
+            set.ident = "cfg".to_string();
+            set.buffers.push(DataItem {
+                ident: String::from(""),
+                data: Position {
+                    offset: matrix_size,
+                    size: 8,
+                },
+                key: 0,
+            });
+        } else {
+            context.content[0] = Some(DataSet {
+                ident: "cfg".to_string(),
+                buffers: vec![DataItem {
+                    ident: "".to_string(),
+                    data: Position {
+                        offset: matrix_size,
+                        size: 8,
+                    },
+                    key: 0,
+                }],
+            });
+        }
     }
     return context;
 }
