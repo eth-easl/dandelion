@@ -64,10 +64,11 @@ fn http_setup(context: &Context) -> DandelionResult<RequestInformation> {
     let method_item = request_iter.next();
     let method = match method_item {
         Some(method_string) if method_string == "GET" => Method::GET,
-        Some(method_string) if method_string == "PUT" => Method::PUT,
+        Some(method_string) if method_string == "POST" => Method::POST,
         Some(method_string) => {
-            return Err(DandelionError::InvalidSystemFuncArg(String::from(
-                method_string,
+            return Err(DandelionError::InvalidSystemFuncArg(format!(
+                "Unsupported Method: {}",
+                method_string
             )))
         }
         _ => {
@@ -172,6 +173,7 @@ async fn http_request(
 
     let request_builder = match method {
         Method::PUT => client.put(uri.clone()),
+        Method::POST => client.post(uri.clone()),
         Method::GET => client.get(uri.clone()),
         _ => {
             return Err(DandelionError::MalformedSystemFuncArg(String::from(
@@ -318,19 +320,12 @@ fn http_run(
     client: &Client,
     output_set_names: Arc<Vec<String>>,
 ) -> DandelionResult<Context> {
-    let response_result = {
+    let response = {
         let _guard = runtime.enter();
         let request = http_setup(&context)?;
-        runtime
-            .block_on(http_request(client.clone(), request))
-            .or(Err(DandelionError::EngineError))
+        runtime.block_on(http_request(client.clone(), request))?
     };
-    let response = match response_result {
-        Ok(resp) => resp,
-        Err(err) => {
-            return Err(err);
-        }
-    };
+
     http_context_write(&mut context, output_set_names, response)?;
     return Ok(context);
 }
@@ -342,7 +337,7 @@ struct ReqwestLoop {
 
 impl EngineLoop for ReqwestLoop {
     fn init(core_id: u8) -> DandelionResult<Box<Self>> {
-        log::debug!("Hyper engine Init");
+        log::debug!("Reqwest engine Init");
         let runtime = Builder::new_multi_thread()
             .on_thread_start(move || {
                 if !set_for_current(core_affinity::CoreId { id: core_id.into() }) {
@@ -362,7 +357,7 @@ impl EngineLoop for ReqwestLoop {
         context: Context,
         output_sets: Arc<Vec<String>>,
     ) -> DandelionResult<Context> {
-        log::debug!("Hyper engine running function");
+        log::debug!("Reqwest engine running function");
         let function = match config {
             FunctionConfig::SysConfig(sys_func) => sys_func,
             _ => return Err(DandelionError::ConfigMissmatch),
