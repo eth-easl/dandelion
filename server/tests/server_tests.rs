@@ -1,5 +1,5 @@
 #[cfg(all(
-    any(feature = "wasm", feature = "mmu", feature = "cheri"),
+    any(feature = "wasm", feature = "mmu", feature = "cheri", feature = "gpu"),
     feature = "reqwest_io"
 ))]
 mod server_tests {
@@ -79,7 +79,7 @@ mod server_tests {
         let mat_request = DandelionRequest {
             name: function_name,
             sets: vec![InputSet {
-                identifier: String::from(""),
+                identifier: String::from("A"),
                 items: vec![InputItem {
                     identifier: String::from(""),
                     key: 0,
@@ -130,7 +130,7 @@ mod server_tests {
         let mut server_killer = ServerKiller { server };
 
         // register function
-        let version;
+        let version: String;
         let engine_type;
         #[cfg(feature = "wasm")]
         {
@@ -147,12 +147,24 @@ mod server_tests {
             version = "elf_cheri";
             engine_type = String::from("Cheri");
         }
-        let matmul_path = format!(
-            "{}/../machine_interface/tests/data/test_{}_matmul",
-            env!("CARGO_MANIFEST_DIR"),
-            version,
-        );
-
+        let matmul_path;
+        #[cfg(any(feature = "wasm", feature = "mmu", feature = "cheri"))]
+        {
+            matmul_path = format!(
+                "{}/../machine_interface/tests/data/test_{}_matmul",
+                env!("CARGO_MANIFEST_DIR"),
+                version,
+            );
+        }
+        // TODO: unify with other engines
+        #[cfg(feature = "gpu")]
+        {
+            matmul_path = format!(
+                "{}/../machine_interface/hip_interface/matmul_para.json",
+                env!("CARGO_MANIFEST_DIR"),
+            );
+            engine_type = String::from("Gpu");
+        }
         let register_request = RegisterFunction {
             name: String::from("matmul"),
             context_size: 0x802_0000,

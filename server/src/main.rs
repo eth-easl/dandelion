@@ -289,21 +289,6 @@ async fn register_function(
         _ => panic!("Unkown engine type string"),
     };
 
-    // remove this, just trying to hack it together
-    let cfg = vec![(128i64 + 31) / 32];
-    let mut cfg_context = ReadOnlyContext::new(cfg.into_boxed_slice()).unwrap();
-    cfg_context.content.resize_with(1, || None);
-    let _ = cfg_context.occupy_space(0, 8);
-    cfg_context.content[0] = Some(DataSet {
-        ident: "cfg".to_string(),
-        buffers: vec![DataItem {
-            ident: "".to_string(),
-            data: Position { offset: 0, size: 8 },
-            key: 0,
-        }],
-    });
-    let cfg_set = CompositionSet::from((0usize, vec![Arc::new(cfg_context)]));
-
     dispatcher
         .insert_func(
             request_map.name,
@@ -311,10 +296,7 @@ async fn register_function(
             request_map.context_size as usize,
             path_buff.to_str().unwrap(),
             Metadata {
-                input_sets: Arc::new(vec![
-                    (String::from("A"), None),
-                    (String::from("cfg"), Some(cfg_set)),
-                ]),
+                input_sets: Arc::new(vec![(String::from("A"), None)]),
                 output_sets: Arc::new(vec![String::from("B")]),
             },
         )
@@ -503,7 +485,7 @@ fn main() -> () {
             engine_type,
             (num_dispatcher_cores..num_cores)
                 .zip(0..gpu_count)
-                .map(|(cpu_id, gpu_id)| ComputeResource::GPU(cpu_id, gpu_id))
+                .map(|(cpu_id, gpu_id)| ComputeResource::GPU(cpu_id as u8, gpu_id))
                 .collect(),
         );
     }
