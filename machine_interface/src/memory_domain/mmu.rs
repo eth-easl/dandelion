@@ -62,6 +62,12 @@ pub fn mmu_transfer(
 ) -> DandelionResult<()> {
     // check if there is space in both contexts
     if source.storage.size() < source_offset + size {
+        eprintln!(
+            "Out of bounds: storage_size {}, source_offset {}, size {}",
+            source.storage.size(),
+            source_offset,
+            size
+        );
         return Err(DandelionError::InvalidRead);
     }
     if destination.storage.size() < destination_offset + size {

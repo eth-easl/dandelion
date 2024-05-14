@@ -159,15 +159,14 @@ pub fn gpu_run(
     if !core_affinity::set_for_current(CoreId { id: cpu_slot }) {
         return Err(DandelionError::EngineResourceError);
     }
+    // TODO: disable device-side malloc
+    hip::set_device(gpu_id)?;
 
     let ContextType::Mmu(ref mmu_context) = context.context else {
         return Err(DandelionError::ConfigMissmatch);
     };
     let base = mmu_context.storage.as_ptr();
     let config = config.load(base)?;
-
-    hip::set_device(gpu_id)?;
-    // TODO: disable device-side malloc
 
     let mut buffer_pool = buffer_pool.lock().unwrap();
 
@@ -238,7 +237,6 @@ impl EngineLoop for GpuLoop {
         let FunctionConfig::GpuConfig(config) = config else {
             return Err(DandelionError::ConfigMissmatch);
         };
-
         let sysdata_offset = config.system_data_struct_offset;
         setup_input_structs::<usize, usize>(&mut context, sysdata_offset, &output_sets)?;
 

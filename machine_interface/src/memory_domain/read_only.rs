@@ -23,6 +23,12 @@ impl ContextTrait for ReadOnlyContext {
 
         let read_size = core::mem::size_of::<T>() * read_buffer.len();
         if offset + read_size > self.storage.len() {
+            eprintln!(
+                "Invalid in ROC: len {}, offset {}, read_size {}",
+                self.storage.len(),
+                offset,
+                read_size
+            );
             return Err(DandelionError::InvalidRead);
         }
         let byte_buffer = unsafe {

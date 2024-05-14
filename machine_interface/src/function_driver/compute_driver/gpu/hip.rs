@@ -2,7 +2,10 @@
 
 use dandelion_commons::{DandelionError, DandelionResult};
 use libc::{c_void, size_t};
-use std::{ffi::CString, ptr::null};
+use std::{
+    ffi::{CStr, CString},
+    ptr::null,
+};
 
 type ErrorT = u32;
 
@@ -28,6 +31,7 @@ pub const DEFAULT_STREAM: StreamT = null();
 pub struct DeviceAllocation {
     pub ptr: *const c_void,
     pub size: usize,
+    device: u8,
 }
 
 unsafe impl Send for DeviceAllocation {}
@@ -42,6 +46,7 @@ pub struct DevicePointer {
 extern "C" {
     fn hipGetDeviceCount(count: *const i32) -> ErrorT;
     fn hipSetDevice(gpu_id: i32) -> ErrorT;
+    fn hipGetDevice(deviceId: *const i32) -> ErrorT;
     fn hipDeviceSynchronize() -> ErrorT;
     fn hipModuleLoad(module: *mut _ModuleT, fname: *const i8) -> ErrorT;
     fn hipModuleLoadData(module: *mut _ModuleT, image: *const c_void) -> ErrorT;
@@ -96,6 +101,14 @@ pub fn get_device_count() -> DandelionResult<usize> {
         .map_err(|_| DandelionError::EngineResourceError)
 }
 
+pub fn get_device() -> DandelionResult<u8> {
+    let mut ret: i32 = 0;
+    checked_call!(hipGetDevice(&mut ret as *const i32));
+
+    ret.try_into()
+        .map_err(|_| DandelionError::EngineResourceError)
+}
+
 pub fn device_synchronize() -> DandelionResult<()> {
     checked_call!(hipDeviceSynchronize());
     Ok(())
@@ -103,9 +116,10 @@ pub fn device_synchronize() -> DandelionResult<()> {
 
 fn get_error_string(hip_error: ErrorT) -> String {
     unsafe {
-        CString::from_raw(hipGetErrorString(hip_error) as *mut i8)
-            .into_string()
+        CStr::from_ptr(hipGetErrorString(hip_error) as *mut i8)
+            .to_str()
             .expect("Invalid ROCm error string (shouldn't happen)")
+            .to_string()
     }
 }
 
@@ -187,7 +201,13 @@ impl DeviceAllocation {
         checked_call!(hipMalloc(&mut ret as *mut *const c_void, size));
         // zero out memory
         checked_call!(hipMemset(ret, 0, size));
-        Ok(Self { ptr: ret, size })
+
+        let device = get_device()?;
+        Ok(Self {
+            ptr: ret,
+            size,
+            device,
+        })
     }
 
     pub fn zero_out(&mut self) -> DandelionResult<()> {
@@ -198,11 +218,15 @@ impl DeviceAllocation {
 
 impl Drop for DeviceAllocation {
     fn drop(&mut self) {
+        // Not entirely sure if this is required but device allocations are freed off the hot path anyway
+        let curr_dev = get_device().expect("Need to be able to get current device before freeing");
+        set_device(self.device).expect("Need to be able to set device before freeing");
         unsafe {
             if hipFree(self.ptr) != 0 {
                 panic!("Freeing a device pointer failed (this shouldn't happen)");
             }
         }
+        set_device(curr_dev).expect("Need to be able to restore device after freeing");
     }
 }
 

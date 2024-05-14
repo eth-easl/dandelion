@@ -248,7 +248,7 @@ pub fn transfer_memory(
                 size,
             )
         }
-        #[cfg(feature = "mmu")]
+        #[cfg(any(feature = "mmu", feature = "gpu"))]
         (ContextType::Mmu(destination_ctxt), ContextType::Mmu(source_ctxt)) => mmu::mmu_transfer(
             destination_ctxt,
             source_ctxt,

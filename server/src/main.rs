@@ -200,6 +200,13 @@ async fn run_mat_func(
 fn add_matmul_inputs(matrix: &'static mut Vec<i64>) -> Context {
     // Allocate a new set entry
     let matrix_size = matrix.len() * size_of::<i64>();
+    // This is horrible
+    let mut offset = 0;
+    #[cfg(feature = "gpu")]
+    {
+        offset = 8;
+    }
+
     let mut context = ReadOnlyContext::new_static(matrix);
     context.content.resize_with(1, || None);
     let _ = context.occupy_space(0, matrix_size);
@@ -210,7 +217,7 @@ fn add_matmul_inputs(matrix: &'static mut Vec<i64>) -> Context {
             ident: String::from(""),
             data: Position {
                 offset: 0,
-                size: matrix_size,
+                size: matrix_size - offset,
             },
             key: 0,
         });
@@ -222,7 +229,7 @@ fn add_matmul_inputs(matrix: &'static mut Vec<i64>) -> Context {
                 ident: "".to_string(),
                 data: Position {
                     offset: 0,
-                    size: matrix_size,
+                    size: matrix_size - offset,
                 },
                 key: 0,
             }],
@@ -239,18 +246,18 @@ fn add_matmul_inputs(matrix: &'static mut Vec<i64>) -> Context {
             set.buffers.push(DataItem {
                 ident: String::from(""),
                 data: Position {
-                    offset: matrix_size,
+                    offset: matrix_size - offset,
                     size: 8,
                 },
                 key: 0,
             });
         } else {
-            context.content[0] = Some(DataSet {
+            context.content[1] = Some(DataSet {
                 ident: "cfg".to_string(),
                 buffers: vec![DataItem {
                     ident: "".to_string(),
                     data: Position {
-                        offset: matrix_size,
+                        offset: matrix_size - offset,
                         size: 8,
                     },
                     key: 0,
@@ -430,6 +437,22 @@ async fn register_function(
         "Gpu" => EngineType::Gpu,
         _ => panic!("Unkown engine type string"),
     };
+
+    // remove this, just trying to hack it together
+    let cfg = vec![(128i64 + 31) / 32];
+    let mut cfg_context = ReadOnlyContext::new(cfg.into_boxed_slice()).unwrap();
+    cfg_context.content.resize_with(1, || None);
+    let _ = cfg_context.occupy_space(0, 8);
+    cfg_context.content[0] = Some(DataSet {
+        ident: "cfg".to_string(),
+        buffers: vec![DataItem {
+            ident: "".to_string(),
+            data: Position { offset: 0, size: 8 },
+            key: 0,
+        }],
+    });
+    let cfg_set = CompositionSet::from((0usize, vec![Arc::new(cfg_context)]));
+
     dispatcher
         .insert_func(
             request_map.name,
@@ -437,8 +460,11 @@ async fn register_function(
             request_map.context_size as usize,
             path_buff.to_str().unwrap(),
             Metadata {
-                input_sets: Arc::new(vec![(String::from(""), None)]),
-                output_sets: Arc::new(vec![String::from("")]),
+                input_sets: Arc::new(vec![
+                    (String::from("A"), None),
+                    (String::from("cfg"), Some(cfg_set)),
+                ]),
+                output_sets: Arc::new(vec![String::from("B")]),
             },
         )
         .await
