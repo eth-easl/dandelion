@@ -148,7 +148,7 @@ async fn run_mat_func(
     let result = dispatcher
         .queue_function_by_name(function_name, inputs, outputs, is_cold, recorder)
         .await
-        .expect("Should get result from function");
+        .expect("Should get result from function" + &function_name);
 
     return dandelion_server::DandelionBody::new(result);
 }
