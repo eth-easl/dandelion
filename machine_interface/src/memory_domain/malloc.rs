@@ -54,6 +54,14 @@ impl ContextTrait for MallocContext {
         }
         return Ok(());
     }
+    fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
+        if offset + length > self.layout.size() {
+            return Err(DandelionError::InvalidRead);
+        }
+        return Ok(unsafe {
+            core::slice::from_raw_parts(self.storage.as_ref(), self.layout.size())
+        });
+    }
 }
 
 #[derive(Debug)]

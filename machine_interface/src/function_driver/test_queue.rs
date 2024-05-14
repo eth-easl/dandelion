@@ -1,11 +1,11 @@
 use crate::{
-    function_driver::{EngineArguments, WorkQueue},
+    function_driver::{WorkQueue, WorkToDo},
     promise::{Debt, Promise},
 };
 use std::sync::{Arc, Condvar, Mutex};
 
 struct TestQueueInternal {
-    args: Option<(EngineArguments, Debt)>,
+    args: Option<(WorkToDo, Debt)>,
 }
 
 #[derive(Clone)]
@@ -19,7 +19,7 @@ impl TestQueue {
             internal: Arc::new((Mutex::new(TestQueueInternal { args: None }), Condvar::new())),
         };
     }
-    pub fn enqueu(&self, args: EngineArguments) -> Promise {
+    pub fn enqueu(&self, args: WorkToDo) -> Promise {
         let (lock, arg_var) = self.internal.as_ref();
         let mut lock_guard = lock.lock().expect("Test queue failed to lock on enqueuing");
         if lock_guard.args.is_some() {
@@ -37,7 +37,7 @@ impl TestQueue {
 }
 
 impl WorkQueue for TestQueue {
-    fn get_engine_args(&self) -> (EngineArguments, Debt) {
+    fn get_engine_args(&self) -> (WorkToDo, Debt) {
         let (lock, arg_var) = self.internal.as_ref();
         let mut lock_guard = lock
             .lock()

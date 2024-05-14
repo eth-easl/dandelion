@@ -1,26 +1,32 @@
-use dandelion_commons::{records::Recorder, DandelionResult};
+use crossbeam::channel::{TryRecvError, TrySendError};
+use dandelion_commons::{DandelionError, DandelionResult};
+use log::error;
 use machine_interface::{
-    function_driver::{EngineArguments, WorkQueue},
-    memory_domain::Context,
+    function_driver::{WorkDone, WorkQueue, WorkToDo},
     promise::{Debt, Promise},
 };
-use std::sync::Arc;
 
 /// Datastructure that implements priority queueing
 /// Highest priority queue holds promises if there are any
 #[derive(Clone)]
 pub struct EngineQueue {
-    queue_in: Arc<std::sync::mpsc::Sender<(EngineArguments, Debt)>>,
-    queue_out: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<(EngineArguments, Debt)>>>,
+    queue_in: crossbeam::channel::Sender<(WorkToDo, Debt)>,
+    queue_out: crossbeam::channel::Receiver<(WorkToDo, Debt)>,
 }
 
 /// This is run on the engine so it performs asyncornous access to the local state
 impl WorkQueue for EngineQueue {
-    fn get_engine_args(&self) -> (EngineArguments, Debt) {
+    fn get_engine_args(&self) -> (WorkToDo, Debt) {
         loop {
-            let (recieved_args, recieved_debt) = self.queue_out.lock().unwrap().recv().unwrap();
-            if recieved_debt.is_alive() {
-                return (recieved_args, recieved_debt);
+            match self.queue_out.try_recv() {
+                Err(TryRecvError::Disconnected) => panic!("Work queue disconnected"),
+                Err(TryRecvError::Empty) => continue,
+                Ok(recieved) => {
+                    let (recieved_args, recevied_dept) = recieved;
+                    if recevied_dept.is_alive() {
+                        return (recieved_args, recevied_dept);
+                    }
+                }
             }
         }
     }
@@ -28,16 +34,22 @@ impl WorkQueue for EngineQueue {
 
 impl EngineQueue {
     pub fn new() -> Self {
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = crossbeam::channel::bounded(4096);
         return EngineQueue {
-            queue_in: Arc::new(sender),
-            queue_out: Arc::new(std::sync::Mutex::new(receiver)),
+            queue_in: sender,
+            queue_out: receiver,
         };
     }
 
-    pub async fn enqueu_work(&self, args: EngineArguments) -> DandelionResult<(Context, Recorder)> {
+    pub async fn enqueu_work(&self, args: WorkToDo) -> DandelionResult<WorkDone> {
         let (promise, debt) = Promise::new();
-        self.queue_in.send((args, debt)).unwrap();
+        match self.queue_in.try_send((args, debt)) {
+            Ok(()) => (),
+            Err(TrySendError::Disconnected(_)) => {
+                error!("Failed to enqueu work, workqueue has been disconnected")
+            }
+            Err(TrySendError::Full(_)) => return Err(DandelionError::WorkQueueFull),
+        }
         return *promise.await;
     }
 }

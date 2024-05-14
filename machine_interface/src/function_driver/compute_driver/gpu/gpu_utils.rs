@@ -1,7 +1,7 @@
 use crate::{
     function_driver::{
-        thread_utils::EngineLoop, ComputeResource, EngineArguments, FunctionArguments,
-        FunctionConfig, GpuConfig, TransferArguments, WorkQueue,
+        thread_utils::EngineLoop, ComputeResource, FunctionArguments, FunctionConfig, GpuConfig,
+        ParsingArguments, TransferArguments, WorkDone, WorkQueue, WorkToDo,
     },
     interface::read_output_structs,
     memory_domain::{self, mmu::MmuContext, Context, ContextState, ContextTrait, ContextType},
@@ -119,6 +119,7 @@ pub fn get_size(
     }
 }
 
+// TODO unify this with thread_utils/run_thead as it's more or less a carbon copy
 pub fn start_gpu_thread(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue>) {
     // set core affinity
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
@@ -131,7 +132,7 @@ pub fn start_gpu_thread(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue>) {
         // TODO catch unwind so we can always return an error or shut down gracefully
         let (args, debt) = queue.get_engine_args();
         match args {
-            EngineArguments::FunctionArguments(func_args) => {
+            WorkToDo::FunctionArguments(func_args) => {
                 let FunctionArguments {
                     config,
                     context,
@@ -149,10 +150,10 @@ pub fn start_gpu_thread(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue>) {
                         continue;
                     }
                 }
-                let results = Box::new(result.map(|context| (context, recorder)));
+                let results = Box::new(result.and_then(|context| Ok(WorkDone::Context(context))));
                 debt.fulfill(results);
             }
-            EngineArguments::TransferArguments(transfer_args) => {
+            WorkToDo::TransferArguments(transfer_args) => {
                 let TransferArguments {
                     source,
                     mut destination,
@@ -162,8 +163,15 @@ pub fn start_gpu_thread(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue>) {
                     destination_set_name,
                     source_set_index,
                     source_item_index,
-                    recorder,
+                    mut recorder,
                 } = transfer_args;
+                match recorder.record(RecordPoint::TransferStart) {
+                    Ok(()) => (),
+                    Err(err) => {
+                        debt.fulfill(Box::new(Err(err)));
+                        continue;
+                    }
+                }
                 let transfer_result = memory_domain::transfer_data_item(
                     &mut destination,
                     &source,
@@ -173,13 +181,37 @@ pub fn start_gpu_thread(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue>) {
                     destination_set_name.as_str(),
                     source_set_index,
                     source_item_index,
-                )
-                .and(Ok((destination, recorder)));
-                debt.fulfill(Box::new(transfer_result));
+                );
+                match recorder.record(RecordPoint::TransferEnd) {
+                    Ok(()) => (),
+                    Err(err) => {
+                        debt.fulfill(Box::new(Err(err)));
+                        continue;
+                    }
+                }
+                let transfer_return = transfer_result.and(Ok(WorkDone::Context(destination)));
+                debt.fulfill(Box::new(transfer_return));
                 continue;
             }
-            EngineArguments::Shutdown(resource_returner) => {
-                resource_returner(vec![ComputeResource::CPU(core_id)]);
+            WorkToDo::ParsingArguments(ParsingArguments {
+                driver,
+                path,
+                static_domain,
+                mut recorder,
+            }) => {
+                recorder.record(RecordPoint::ParsingStart).unwrap();
+                let function_result = driver.parse_function(path, static_domain);
+                recorder.record(RecordPoint::ParsingEnd).unwrap();
+                match function_result {
+                    Ok(function) => debt.fulfill(Box::new(Ok(WorkDone::Function(function)))),
+                    Err(err) => debt.fulfill(Box::new(Err(err))),
+                }
+                continue;
+            }
+            WorkToDo::Shutdown() => {
+                debt.fulfill(Box::new(Ok(WorkDone::Resources(vec![
+                    ComputeResource::GPU(core_id, gpu_id),
+                ]))));
                 return;
             }
         }
@@ -253,7 +285,7 @@ async fn process_output(worker: Arc<Worker>) {
                 debt.fulfill(Box::new(Err(DandelionError::EngineError)));
             } else {
                 read_output_structs::<usize, usize>(&mut context, 0).unwrap();
-                let results = Box::new(Ok((context, recorder)));
+                let results = Box::new(Ok(WorkDone::Context(context)));
                 debt.fulfill(results);
             }
         } else {
@@ -338,7 +370,7 @@ async fn process_inputs(
             .expect("spawn_blocking thread crashed");
 
         match args {
-            EngineArguments::FunctionArguments(func_args) => {
+            WorkToDo::FunctionArguments(func_args) => {
                 let FunctionArguments {
                     config,
                     context,
@@ -431,7 +463,7 @@ async fn process_inputs(
                     }
                 }
             }
-            EngineArguments::TransferArguments(transfer_args) => {
+            WorkToDo::TransferArguments(transfer_args) => {
                 let TransferArguments {
                     source,
                     mut destination,
@@ -441,8 +473,15 @@ async fn process_inputs(
                     destination_set_name,
                     source_set_index,
                     source_item_index,
-                    recorder,
+                    mut recorder,
                 } = transfer_args;
+                match recorder.record(RecordPoint::TransferStart) {
+                    Ok(()) => (),
+                    Err(err) => {
+                        debt.fulfill(Box::new(Err(err)));
+                        continue;
+                    }
+                }
                 // wait for all pending functions to complete
                 if let Ok((_, _, _, _)) = tokio::try_join!(
                     worker1.available.acquire(),
@@ -460,16 +499,38 @@ async fn process_inputs(
                         destination_set_name.as_str(),
                         source_set_index,
                         source_item_index,
-                    )
-                    .and(Ok((destination, recorder)));
-                    debt.fulfill(Box::new(transfer_result));
+                    );
+                    match recorder.record(RecordPoint::TransferEnd) {
+                        Ok(()) => (),
+                        Err(err) => {
+                            debt.fulfill(Box::new(Err(err)));
+                            continue;
+                        }
+                    }
+                    let transfer_return = transfer_result.and(Ok(WorkDone::Context(destination)));
+                    debt.fulfill(Box::new(transfer_return));
                     continue;
                 } else {
                     // shouldn't really happen unless Workers processes die
                     debt.fulfill(Box::new(Err(DandelionError::EngineError)));
                 }
             }
-            EngineArguments::Shutdown(resource_returner) => {
+            WorkToDo::ParsingArguments(ParsingArguments {
+                driver,
+                path,
+                static_domain,
+                mut recorder,
+            }) => {
+                recorder.record(RecordPoint::ParsingStart).unwrap();
+                let function_result = driver.parse_function(path, static_domain);
+                recorder.record(RecordPoint::ParsingEnd).unwrap();
+                match function_result {
+                    Ok(function) => debt.fulfill(Box::new(Ok(WorkDone::Function(function)))),
+                    Err(err) => debt.fulfill(Box::new(Err(err))),
+                }
+                continue;
+            }
+            WorkToDo::Shutdown() => {
                 // wait for all pending functions to complete
                 if let Ok((_, _, _, _)) = tokio::try_join!(
                     worker1.available.acquire(),
@@ -477,7 +538,9 @@ async fn process_inputs(
                     worker3.available.acquire(),
                     worker4.available.acquire(),
                 ) {
-                    resource_returner(vec![ComputeResource::GPU(core_id, gpu_id)]);
+                    debt.fulfill(Box::new(Ok(WorkDone::Resources(vec![
+                        ComputeResource::GPU(gpu_id, core_id),
+                    ]))));
                     return;
                 } else {
                     // shouldn't really happen unless Workers processes die

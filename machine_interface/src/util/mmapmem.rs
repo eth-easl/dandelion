@@ -287,6 +287,13 @@ impl MmapMem {
 
         Ok(())
     }
+
+    pub fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
+        if offset + length > self.size() {
+            return Err(DandelionError::InvalidRead);
+        }
+        return Ok(unsafe { &self.as_slice()[offset..offset + length] });
+    }
 }
 
 unsafe impl Send for MmapMem {}

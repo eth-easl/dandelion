@@ -1,4 +1,6 @@
 // list of memory domain implementations
+#[cfg(feature = "bytes_context")]
+pub mod bytes_context;
 #[cfg(feature = "cheri")]
 pub mod cheri;
 pub mod malloc;
@@ -14,8 +16,17 @@ use dandelion_commons::{DandelionError, DandelionResult};
 use serde::{Deserialize, Serialize};
 
 pub trait ContextTrait: Send + Sync {
+    /// Write data at the given offset into the context
+    /// May fail if the range offset..offset+data lenght in bytes is not completely within the context size
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()>;
+    /// Read data from the context into the read buffer
+    /// May fail if the range offset..offset+buffer length in bytes is not completely within context size
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()>;
+    /// Get a &[u8] reference to a chunck of at reference with size up to length.
+    /// May return a slice smaller then the requwested length if there is internal fragementation that
+    /// prevents an efficient slice representation of the entire chunck
+    /// May fail if the range offset..offset+length is not completely within the context size
+    fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]>;
 }
 
 // https://docs.rs/enum_dispatch/latest/enum_dispatch/index.html
@@ -25,6 +36,8 @@ pub enum ContextType {
     Malloc(Box<malloc::MallocContext>),
     Mmap(Box<mmap::MmapContext>),
     ReadOnly(Box<read_only::ReadOnlyContext>),
+    #[cfg(feature = "bytes_context")]
+    Bytes(Box<bytes_context::BytesContext>),
     #[cfg(feature = "cheri")]
     Cheri(Box<cheri::CheriContext>),
     #[cfg(any(feature = "mmu", feature = "gpu"))]
@@ -45,6 +58,8 @@ impl ContextTrait for ContextType {
             ContextType::Mmu(context) => context.write(offset, data),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.write(offset, data),
+            #[cfg(feature = "bytes_context")]
+            ContextType::Bytes(context) => context.write(offset, data),
         }
     }
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
@@ -58,6 +73,23 @@ impl ContextTrait for ContextType {
             ContextType::Mmu(context) => context.read(offset, read_buffer),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.read(offset, read_buffer),
+            #[cfg(feature = "bytes_context")]
+            ContextType::Bytes(context) => context.read(offset, read_buffer),
+        }
+    }
+    fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
+        match self {
+            ContextType::Malloc(context) => context.get_chunk_ref(offset, length),
+            ContextType::Mmap(context) => context.get_chunk_ref(offset, length),
+            ContextType::ReadOnly(context) => context.get_chunk_ref(offset, length),
+            #[cfg(feature = "cheri")]
+            ContextType::Cheri(context) => context.get_chunk_ref(offset, length),
+            #[cfg(any(feature = "mmu", feature = "gpu"))]
+            ContextType::Mmu(context) => context.get_chunk_ref(offset, length),
+            #[cfg(feature = "wasm")]
+            ContextType::Wasm(context) => context.get_chunk_ref(offset, length),
+            #[cfg(feature = "bytes_context")]
+            ContextType::Bytes(context) => context.get_chunk_ref(offset, length),
         }
     }
 }
@@ -83,6 +115,9 @@ impl ContextTrait for Context {
     }
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         self.context.read(offset, read_buffer)
+    }
+    fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
+        self.context.get_chunk_ref(offset, length)
     }
 }
 
@@ -256,9 +291,29 @@ pub fn transfer_memory(
             source_offset,
             size,
         ),
+        #[cfg(all(feature = "mmu", feature = "bytes_context"))]
+        (ContextType::Mmu(destination_ctxt), ContextType::Bytes(source_ctxt)) => {
+            mmu::bytest_to_mmu_transfer(
+                destination_ctxt,
+                source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+            )
+        }
         #[cfg(feature = "wasm")]
         (ContextType::Wasm(destination_ctxt), ContextType::Wasm(source_ctxt)) => {
             wasm::wasm_transfer(
+                destination_ctxt,
+                source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+            )
+        }
+        #[cfg(all(feature = "wasm", feature = "bytes_context"))]
+        (ContextType::Wasm(destination_ctxt), ContextType::Bytes(source_ctxt)) => {
+            wasm::bytes_to_wasm_transfer(
                 destination_ctxt,
                 source_ctxt,
                 destination_offset,

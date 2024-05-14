@@ -13,9 +13,11 @@ futures = {version = "0.3.28", default-features = false}
 log = "0.4.21"
 itertools = {version = "0.11", default-features = false, features = ["use_alloc"]}
 dparser = {path = "../dparser"}
+crossbeam = "0.8.4"
 
 [features]
 cheri = ["machine_interface/cheri"]
 wasm = ["machine_interface/wasm"]
 mmu = ["machine_interface/mmu"]
-hyper_io = ["machine_interface/hyper_io"]
+reqwest_io = ["machine_interface/reqwest_io"]
+timestamp = ["dandelion_commons/timestamp"]

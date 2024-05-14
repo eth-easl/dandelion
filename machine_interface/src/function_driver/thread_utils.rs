@@ -1,7 +1,7 @@
 use crate::{
     function_driver::{
-        ComputeResource, EngineArguments, FunctionArguments, FunctionConfig, TransferArguments,
-        WorkQueue,
+        ComputeResource, FunctionArguments, FunctionConfig, ParsingArguments, TransferArguments,
+        WorkDone, WorkQueue, WorkToDo,
     },
     memory_domain::{self, Context},
 };
@@ -33,7 +33,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
         // TODO catch unwind so we can always return an error or shut down gracefully
         let (args, debt) = queue.get_engine_args();
         match args {
-            EngineArguments::FunctionArguments(func_args) => {
+            WorkToDo::FunctionArguments(func_args) => {
                 let FunctionArguments {
                     config,
                     context,
@@ -51,10 +51,10 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                         continue;
                     }
                 }
-                let results = Box::new(result.map(|context| (context, recorder)));
+                let results = Box::new(result.and_then(|context| Ok(WorkDone::Context(context))));
                 debt.fulfill(results);
             }
-            EngineArguments::TransferArguments(transfer_args) => {
+            WorkToDo::TransferArguments(transfer_args) => {
                 let TransferArguments {
                     source,
                     mut destination,
@@ -64,8 +64,15 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                     destination_set_name,
                     source_set_index,
                     source_item_index,
-                    recorder,
+                    mut recorder,
                 } = transfer_args;
+                match recorder.record(RecordPoint::TransferStart) {
+                    Ok(()) => (),
+                    Err(err) => {
+                        debt.fulfill(Box::new(Err(err)));
+                        continue;
+                    }
+                }
                 let transfer_result = memory_domain::transfer_data_item(
                     &mut destination,
                     &source,
@@ -75,13 +82,37 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                     destination_set_name.as_str(),
                     source_set_index,
                     source_item_index,
-                )
-                .and(Ok((destination, recorder)));
-                debt.fulfill(Box::new(transfer_result));
+                );
+                match recorder.record(RecordPoint::TransferEnd) {
+                    Ok(()) => (),
+                    Err(err) => {
+                        debt.fulfill(Box::new(Err(err)));
+                        continue;
+                    }
+                }
+                let transfer_return = transfer_result.and(Ok(WorkDone::Context(destination)));
+                debt.fulfill(Box::new(transfer_return));
                 continue;
             }
-            EngineArguments::Shutdown(resource_returner) => {
-                resource_returner(vec![ComputeResource::CPU(core_id)]);
+            WorkToDo::ParsingArguments(ParsingArguments {
+                driver,
+                path,
+                static_domain,
+                mut recorder,
+            }) => {
+                recorder.record(RecordPoint::ParsingStart).unwrap();
+                let function_result = driver.parse_function(path, static_domain);
+                recorder.record(RecordPoint::ParsingEnd).unwrap();
+                match function_result {
+                    Ok(function) => debt.fulfill(Box::new(Ok(WorkDone::Function(function)))),
+                    Err(err) => debt.fulfill(Box::new(Err(err))),
+                }
+                continue;
+            }
+            WorkToDo::Shutdown() => {
+                debt.fulfill(Box::new(Ok(WorkDone::Resources(vec![
+                    ComputeResource::CPU(core_id),
+                ]))));
                 return;
             }
         }

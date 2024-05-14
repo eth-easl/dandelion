@@ -1,15 +1,15 @@
-#[cfg(all(test, any(feature = "hyper_io")))]
+#[cfg(all(test, any(feature = "reqwest_io")))]
 mod system_driver_tests {
     use crate::{
         function_driver::{
             system_driver::get_system_function_output_sets, test_queue::TestQueue, ComputeResource,
-            Driver, EngineArguments, FunctionArguments, FunctionConfig, SystemFunction,
+            Driver, FunctionArguments, FunctionConfig, SystemFunction, WorkToDo,
         },
         memory_domain::{Context, ContextTrait, MemoryDomain, MemoryResource},
         DataItem, DataSet, Position,
     };
     use dandelion_commons::{
-        records::{Archive, RecordPoint, Recorder},
+        records::{Archive, ArchiveInit, RecordPoint},
         DandelionResult,
     };
     use std::sync::Arc;
@@ -55,6 +55,25 @@ mod system_driver_tests {
         return Ok(());
     }
 
+    fn write_body(context: &mut Context, body: &[u8]) -> DandelionResult<()> {
+        let body_offset = context
+            .get_free_space_and_write_slice(body)
+            .expect("Should have space for body") as usize;
+        let body_set = DataSet {
+            ident: String::from("body"),
+            buffers: vec![DataItem {
+                ident: String::from(""),
+                data: Position {
+                    offset: body_offset,
+                    size: body.len(),
+                },
+                key: 0,
+            }],
+        };
+        context.content.push(Some(body_set));
+        return Ok(());
+    }
+
     fn get_http<Dom: MemoryDomain>(
         dom_init: MemoryResource,
         driver: Box<dyn Driver>,
@@ -76,21 +95,25 @@ mod system_driver_tests {
 
         write_request_line(&mut context, request).expect("Should be able to prepare request line");
 
-        let archive = std::sync::Arc::new(std::sync::Mutex::new(Archive::new()));
-        let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
+        let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+            #[cfg(feature = "timestamp")]
+            timestamp_count: 1000,
+        })));
+        let mut recorder = archive.get_recorder().unwrap();
         let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
-        let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
+        let promise = queue.enqueu(WorkToDo::FunctionArguments(FunctionArguments {
             config,
             context,
             output_sets,
-            recorder,
+            recorder: recorder.get_sub_recorder().unwrap(),
         }));
-        let (result_context, mut result_recorder) = tokio::runtime::Builder::new_current_thread()
+        let result_context = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(promise)
-            .expect("Engine should return without error");
-        result_recorder
+            .expect("Engine should return without error")
+            .get_context();
+        recorder
             .record(RecordPoint::FutureReturn)
             .expect("Should have advanced record");
 
@@ -141,29 +164,27 @@ mod system_driver_tests {
         write_headers(&mut context, headers).expect("Should be able to write headers");
 
         let request_body = "Hello World\n".as_bytes();
-        let body_size = request_body.len();
-        let body_offset = context
-            .get_free_space(body_size, 8)
-            .expect("Should have space for body");
-        context
-            .write(body_offset, request_body)
-            .expect("Should be able to write body");
+        write_body(&mut context, request_body).expect("Should be able to write body");
 
-        let archive = std::sync::Arc::new(std::sync::Mutex::new(Archive::new()));
-        let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
+        let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+            #[cfg(feature = "timestamp")]
+            timestamp_count: 1000,
+        })));
+        let mut recorder = archive.get_recorder().unwrap();
         let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
-        let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
+        let promise = queue.enqueu(WorkToDo::FunctionArguments(FunctionArguments {
             config,
             context,
             output_sets,
-            recorder,
+            recorder: recorder.get_sub_recorder().unwrap(),
         }));
-        let (result_context, mut result_recorder) = tokio::runtime::Builder::new_current_thread()
+        let result_context = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(promise)
-            .expect("Engine should not fail");
-        result_recorder
+            .expect("Engine should not fail")
+            .get_context();
+        recorder
             .record(RecordPoint::FutureReturn)
             .expect("Should have advanced record");
 
@@ -208,11 +229,11 @@ mod system_driver_tests {
         };
     }
 
-    #[cfg(feature = "hyper_io")]
-    mod hyper_io {
-        use crate::function_driver::system_driver::hyper::HyperDriver;
+    #[cfg(feature = "reqwest_io")]
+    mod reqwest_io {
+        use crate::function_driver::system_driver::reqwest::ReqwestDriver;
         use crate::function_driver::ComputeResource;
         use crate::memory_domain::malloc::MallocMemoryDomain as domain;
-        driverTests!(hyper_io; domain; crate::memory_domain::MemoryResource::None; HyperDriver{}; ComputeResource::CPU(1));
+        driverTests!(reqwest_io; domain; crate::memory_domain::MemoryResource::None; ReqwestDriver{}; ComputeResource::CPU(1));
     }
 }

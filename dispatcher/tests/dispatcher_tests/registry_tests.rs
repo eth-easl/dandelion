@@ -1,4 +1,5 @@
 use crate::dispatcher_tests::{check_matrix, setup_dispatcher};
+use dandelion_commons::records::{Archive, ArchiveInit};
 use dispatcher::{
     composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
 };
@@ -41,6 +42,11 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
+    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+        #[cfg(feature = "timestamp")]
+        timestamp_count: 1000,
+    })));
+
     let matrix_a = Box::new([1u64, 2u64]);
     let matrix_b = Box::new([1u64, 3u64]);
     let matrix_c = Box::new([1u64, 5u64]);
@@ -103,14 +109,28 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         let mut overwrite_inputs = inputs.clone();
         overwrite_inputs.push((i, CompositionSet::from((0, vec![mat_fault.clone()]))));
         let outputs = vec![Some(0)];
+        let mut recorder = archive.get_recorder().unwrap();
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(function_id, inputs, outputs.clone(), false));
+            .block_on(dispatcher.queue_function(
+                function_id,
+                inputs,
+                outputs.clone(),
+                false,
+                recorder,
+            ));
+        recorder = archive.get_recorder().unwrap();
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(function_id, overwrite_inputs, outputs, false));
+            .block_on(dispatcher.queue_function(
+                function_id,
+                overwrite_inputs,
+                outputs,
+                false,
+                recorder,
+            ));
         let out_sets = match result {
             Ok(composition_sets) => composition_sets,
             Err(err) => panic!("Non overwrite failed with: {:?}", err),
@@ -138,6 +158,11 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
+    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+        #[cfg(feature = "timestamp")]
+        timestamp_count: 1000,
+    })));
+
     let matrix_a = Box::new([1u64, 2u64]);
     let matrix_b = Box::new([1u64, 3u64]);
     let matrix_c = Box::new([1u64, 5u64]);
@@ -199,14 +224,28 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
             CompositionSet::from((0, vec![mat_fault.clone()])),
         ));
         let outputs = vec![Some(0)];
+        let mut recorder = archive.get_recorder().unwrap();
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(function_id, inputs, outputs.clone(), false));
+            .block_on(dispatcher.queue_function(
+                function_id,
+                inputs,
+                outputs.clone(),
+                false,
+                recorder,
+            ));
+        recorder = archive.get_recorder().unwrap();
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(function_id, overwrite_inputs, outputs, false));
+            .block_on(dispatcher.queue_function(
+                function_id,
+                overwrite_inputs,
+                outputs,
+                false,
+                recorder,
+            ));
         let out_sets = match result {
             Ok(composition_sets) => composition_sets,
             Err(err) => panic!("Non overwrite failed with: {:?}", err),
@@ -229,7 +268,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
 }
 
 #[test]
-#[cfg(any(feature = "hyper_io"))]
+#[cfg(any(feature = "reqwest_io"))]
 fn test_insert_composition_with_http_func() {
     let dispatcher = Dispatcher::init(dispatcher::resource_pool::ResourcePool {
         engine_pool: Mutex::new(BTreeMap::new()),

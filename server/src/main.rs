@@ -1,403 +1,252 @@
-use bytes::Buf;
 use core_affinity::{self, CoreId};
+use dandelion_commons::records::{Archive, ArchiveInit, RecordPoint, Recorder};
+use dandelion_server::DandelionBody;
 use dispatcher::{
     composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
     resource_pool::ResourcePool,
 };
-use futures::lock::Mutex;
-use futures::stream::StreamExt;
-use http::StatusCode;
+use http_body_util::BodyExt;
 use hyper::{
-    service::{make_service_fn, service_fn},
-    Body, Request, Response, Server,
+    body::{Body, Incoming},
+    service::service_fn,
+    Request, Response,
 };
-
-use log::{error, info};
+use log::{error, info, warn};
 use machine_interface::{
     function_driver::ComputeResource,
     machine_config::EngineType,
-    memory_domain::{
-        mmap::MmapMemoryDomain, read_only::ReadOnlyContext, Context, ContextTrait, MemoryDomain,
-    },
-    DataItem, DataSet, Position,
+    memory_domain::{bytes_context::BytesContext, Context},
 };
-use signal_hook::consts::signal::*;
-use signal_hook_tokio::Signals;
-
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
     convert::Infallible,
-    io::{self, Write},
-    mem::size_of,
+    io::Write,
     net::SocketAddr,
     path::PathBuf,
     sync::{
         atomic::{AtomicU8, Ordering},
-        Arc, Once,
+        Arc, OnceLock,
     },
 };
-use tokio::runtime::Builder;
+use tokio::{net::TcpListener, runtime::Builder, signal::unix::SignalKind};
 
-static INIT_MATRIX: Once = Once::new();
-static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
 const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
-// Handles graceful shutdown
-async fn handle_signals(mut signals: Signals) -> io::Result<()> {
-    #[allow(clippy::never_loop)]
-    while let Some(signal) = signals.next().await {
-        match signal {
-            SIGTERM | SIGINT | SIGQUIT => {
-                return Ok(());
-            }
-            _ => unreachable!(),
-        }
-    }
-    Ok(())
-}
+// async fn run_chain(
+//     dispatcher: Arc<Dispatcher>,
+//     is_cold: bool,
+//     function_name: String,
+//     get_uri: String,
+//     post_uri: String,
+//     mut recorder: Recorder,
+// ) -> u64 {
+//     // TODO just have all the strings concatinated and create const context
+//     let domain = MmapMemoryDomain::init(machine_interface::memory_domain::MemoryResource::None)
+//         .expect("Should be able to get Mmap domain");
+//     let mut input_context = domain
+//         .acquire_context(128)
+//         .expect("Should be able to get malloc context");
+//     let get_request = format!("GET {} HTTP/1.1", get_uri);
+//     let post_request = format!("PUT {} HTTP/1.1", post_uri);
+//     let get_request_offset = input_context
+//         .get_free_space_and_write_slice(get_request.as_bytes())
+//         .expect("Should be able to write") as usize;
+//     let post_request_offset = input_context
+//         .get_free_space_and_write_slice(post_request.as_bytes())
+//         .expect("Should be able to write") as usize;
+//     input_context.content.push(Some(DataSet {
+//         ident: String::from("request"),
+//         buffers: vec![DataItem {
+//             ident: String::from("request"),
+//             data: Position {
+//                 offset: get_request_offset,
+//                 size: get_request.len(),
+//             },
+//             key: 0,
+//         }],
+//     }));
+//     input_context.content.push(Some(DataSet {
+//         ident: String::from("request"),
+//         buffers: vec![DataItem {
+//             ident: String::from("request"),
+//             data: Position {
+//                 offset: post_request_offset,
+//                 size: post_request.len(),
+//             },
+//             key: 0,
+//         }],
+//     }));
+//     let input_arc = Arc::new(input_context);
+//     let inputs = vec![
+//         (0, CompositionSet::from((0, vec![input_arc.clone()]))),
+//         (1, CompositionSet::from((1, vec![input_arc]))),
+//     ];
+//     let output_mapping = vec![Some(0), Some(1)];
 
-async fn run_chain(
-    dispatcher: Arc<Dispatcher>,
-    is_cold: bool,
-    function_name: String,
-    get_uri: String,
-    post_uri: String,
-) -> u64 {
-    // TODO just have all the strings concatinated and create const context
-    let domain = MmapMemoryDomain::init(machine_interface::memory_domain::MemoryResource::None)
-        .expect("Should be able to get Mmap domain");
-    let mut input_context = domain
-        .acquire_context(128)
-        .expect("Should be able to get malloc context");
-    let get_request = format!("GET {} HTTP/1.1", get_uri);
-    let post_request = format!("PUT {} HTTP/1.1", post_uri);
-    let get_request_offset = input_context
-        .get_free_space_and_write_slice(get_request.as_bytes())
-        .expect("Should be able to write") as usize;
-    let post_request_offset = input_context
-        .get_free_space_and_write_slice(post_request.as_bytes())
-        .expect("Should be able to write") as usize;
-    input_context.content.push(Some(DataSet {
-        ident: String::from("request"),
-        buffers: vec![DataItem {
-            ident: String::from("request"),
-            data: Position {
-                offset: get_request_offset,
-                size: get_request.len(),
-            },
-            key: 0,
-        }],
-    }));
-    input_context.content.push(Some(DataSet {
-        ident: String::from("request"),
-        buffers: vec![DataItem {
-            ident: String::from("request"),
-            data: Position {
-                offset: post_request_offset,
-                size: post_request.len(),
-            },
-            key: 0,
-        }],
-    }));
-    let input_arc = Arc::new(input_context);
-    let inputs = vec![
-        (0, CompositionSet::from((0, vec![input_arc.clone()]))),
-        (1, CompositionSet::from((1, vec![input_arc]))),
-    ];
-    let output_mapping = vec![Some(0), Some(1)];
+//     recorder
+//         .record(RecordPoint::QueueFunctionDispatcher)
+//         .unwrap();
+//     let result = dispatcher
+//         .queue_function_by_name(function_name, inputs, output_mapping, is_cold, recorder)
+//         .await
+//         .expect("Should get response from chain");
+//     assert_eq!(2, result.len());
+//     // check http post response
+//     let post_composition_set = result
+//         .get(&1)
+//         .expect("Should have composition set for post response");
+//     assert_eq!(1, post_composition_set.context_list.len());
+//     let post_context = &post_composition_set.context_list[0].0;
+//     assert_eq!(3, post_context.content.len());
+//     let post_set = post_context.content[0]
+//         .as_ref()
+//         .expect("Should have status set");
+//     assert_eq!(1, post_set.buffers.len());
+//     let post_status_position = post_set.buffers[0].data;
+//     let mut post_vec = Vec::<u8>::new();
+//     post_vec.resize(post_status_position.size, 0);
+//     post_context
+//         .read(post_status_position.offset, post_vec.as_mut_slice())
+//         .expect("Should be able to read post response");
+//     assert_eq!("HTTP/1.1 200 OK".as_bytes(), post_vec.as_slice());
 
-    let result = dispatcher
-        .queue_function_by_name(function_name, inputs, output_mapping, is_cold)
-        .await
-        .expect("Should get response from chain");
-    assert_eq!(2, result.len());
-    // check http post response
-    let post_composition_set = result
-        .get(&1)
-        .expect("Should have composition set for post response");
-    assert_eq!(1, post_composition_set.context_list.len());
-    let post_context = &post_composition_set.context_list[0].0;
-    assert_eq!(3, post_context.content.len());
-    let post_set = post_context.content[0]
-        .as_ref()
-        .expect("Should have status set");
-    assert_eq!(1, post_set.buffers.len());
-    let post_status_position = post_set.buffers[0].data;
-    let mut post_vec = Vec::<u8>::new();
-    post_vec.resize(post_status_position.size, 0);
-    post_context
-        .read(post_status_position.offset, post_vec.as_mut_slice())
-        .expect("Should be able to read post response");
-    assert_eq!("HTTP/1.1 200 OK".as_bytes(), post_vec.as_slice());
+//     // check iteration result
+//     let result_compositon_set = result.get(&0).expect("Should have set 0");
+//     assert_eq!(1, result_compositon_set.context_list.len());
+//     let result_context = &result_compositon_set.context_list[0].0;
+//     assert_eq!(1, result_context.content.len());
+//     let result_set = result_context.content[0]
+//         .as_ref()
+//         .expect("Should contain a return number");
+//     assert_eq!(1, result_set.buffers.len());
+//     let result_position = result_set.buffers[0].data;
 
-    // check iteration result
-    let result_compositon_set = result.get(&0).expect("Should have set 0");
-    assert_eq!(1, result_compositon_set.context_list.len());
-    let result_context = &result_compositon_set.context_list[0].0;
-    assert_eq!(1, result_context.content.len());
-    let result_set = result_context.content[0]
-        .as_ref()
-        .expect("Should contain a return number");
-    assert_eq!(1, result_set.buffers.len());
-    let result_position = result_set.buffers[0].data;
+//     let mut result_vec = vec![0u8; result_position.size];
+//     result_context
+//         .read(result_position.offset, result_vec.as_mut_slice())
+//         .expect("Should be able to read result");
+//     let checksum = u64::from_ne_bytes(result_vec[0..8].try_into().unwrap());
 
-    let mut result_vec = vec![0u8; result_position.size];
-    result_context
-        .read(result_position.offset, result_vec.as_mut_slice())
-        .expect("Should be able to read result");
-    let checksum = u64::from_ne_bytes(result_vec[0..8].try_into().unwrap());
+//     return checksum;
+// }
 
-    return checksum;
-}
-
+// TODO: integrate into serve request
 async fn run_mat_func(
     dispatcher: Arc<Dispatcher>,
     is_cold: bool,
-    rows: usize,
-    cols: usize,
     function_name: String,
-) -> i64 {
-    let mat_size: usize = rows * cols;
-
-    // Initialize matrix if necessary
-    unsafe {
-        INIT_MATRIX.call_once(|| {
-            // TODO: add cols
-            DUMMY_MATRIX.push(rows as i64);
-            for i in 0..mat_size {
-                DUMMY_MATRIX.push(i as i64 + 1)
-            }
-            // Add cfg input for GPU functions
-            #[cfg(feature = "gpu")]
-            DUMMY_MATRIX.push((rows as i64 + 31) / 32);
-        });
-    }
-
-    let input_context = unsafe { add_matmul_inputs(&mut DUMMY_MATRIX) };
-    let input_arc = Arc::new(input_context);
-
-    // Debug marker: this might be wrong!
-    let inputs = vec![
-        (0, CompositionSet::from((0, vec![input_arc.clone()]))),
-        (1, CompositionSet::from((1, vec![input_arc]))),
-    ];
+    request: Context,
+    mut recorder: Recorder,
+) -> DandelionBody {
+    // TODO match set names to assign sets to composition sets
+    let inputs = vec![(0, CompositionSet::from((0, vec![(Arc::new(request))])))];
     let outputs = vec![Some(0)];
-    let result: Result<BTreeMap<usize, CompositionSet>, dandelion_commons::DandelionError> =
-        dispatcher
-            .queue_function_by_name(function_name, inputs, outputs, is_cold)
-            .await;
+    recorder
+        .record(RecordPoint::QueueFunctionDispatcher)
+        .unwrap();
+    let result = dispatcher
+        .queue_function_by_name(function_name, inputs, outputs, is_cold, recorder)
+        .await
+        .expect("Should get result from function");
 
-    let result_context = result
-        .expect("should get result from function")
-        .remove(&0)
-        .expect("should have composition set 0");
-
-    return get_checksum(result_context);
-}
-
-// Add the matrix multiplication inputs to the given context
-fn add_matmul_inputs(matrix: &'static mut Vec<i64>) -> Context {
-    // Allocate a new set entry
-    let matrix_size = matrix.len() * size_of::<i64>();
-    // This is horrible
-    let mut offset = 0;
-    #[cfg(feature = "gpu")]
-    {
-        offset = 8;
-    }
-
-    let mut context = ReadOnlyContext::new_static(matrix);
-    context.content.resize_with(1, || None);
-    let _ = context.occupy_space(0, matrix_size);
-
-    if let Some(set) = &mut context.content[0] {
-        set.ident = "A".to_string();
-        set.buffers.push(DataItem {
-            ident: String::from(""),
-            data: Position {
-                offset: 0,
-                size: matrix_size - offset,
-            },
-            key: 0,
-        });
-    } else {
-        context.content[0] = Some(DataSet {
-            // TODO: verify this doesn't break non-GPU engines (I think it's fine)
-            ident: "A".to_string(),
-            buffers: vec![DataItem {
-                ident: "".to_string(),
-                data: Position {
-                    offset: 0,
-                    size: matrix_size - offset,
-                },
-                key: 0,
-            }],
-        });
-    }
-
-    #[cfg(feature = "gpu")]
-    {
-        context.content.resize_with(2, || None);
-        let _ = context.occupy_space(matrix_size, 8); // cfg is only one i64 here
-
-        if let Some(set) = &mut context.content[1] {
-            set.ident = "cfg".to_string();
-            set.buffers.push(DataItem {
-                ident: String::from(""),
-                data: Position {
-                    offset: matrix_size - offset,
-                    size: 8,
-                },
-                key: 0,
-            });
-        } else {
-            context.content[1] = Some(DataSet {
-                ident: "cfg".to_string(),
-                buffers: vec![DataItem {
-                    ident: "".to_string(),
-                    data: Position {
-                        offset: matrix_size - offset,
-                        size: 8,
-                    },
-                    key: 0,
-                }],
-            });
-        }
-    }
-    return context;
-}
-
-// Given a result context, return the last element of the resulting matrix
-fn get_checksum(composition_set: CompositionSet) -> i64 {
-    // Determine offset of last matrix element
-    assert_eq!(1, composition_set.context_list.len());
-    let context = &composition_set.context_list[0].0;
-    let output_dataset = context.content[0].as_ref().expect("Should contain matrix");
-    let output_item = output_dataset
-        .buffers
-        .iter()
-        .find(|buffer| buffer.key == 0)
-        .expect("should find a buffer with the correct key")
-        .data;
-    let checksum_offset = output_item.offset + output_item.size - 8;
-
-    // Read out the checksum
-    let mut read_buffer: Vec<i64> = vec![0; 1];
-    context
-        .read(checksum_offset, &mut read_buffer)
-        .expect("Context should contain matrix");
-
-    return read_buffer[0];
-}
-
-#[derive(Deserialize)]
-struct MatrixRequest {
-    name: String,
-    rows: u64,
-    cols: u64,
+    return dandelion_server::DandelionBody::new(result);
 }
 
 async fn serve_request(
     is_cold: bool,
-    req: Request<Body>,
+    req: Request<Incoming>,
     dispatcher: Arc<Dispatcher>,
-) -> Result<Response<Body>, Infallible> {
-    // Try to parse the request
-    let request_buf = hyper::body::to_bytes(req.into_body())
-        .await
-        .expect("Could not read request body");
-    let request_map: MatrixRequest =
-        bson::from_slice(&request_buf).expect("Should be able to deserialize matrix request");
+) -> Result<Response<DandelionBody>, Infallible> {
+    let mut recorder = TRACING_ARCHIVE.get().unwrap().get_recorder().unwrap();
+    let _ = recorder.record(RecordPoint::Arrival);
 
-    let response_vec: Vec<u8> = run_mat_func(
-        dispatcher,
-        is_cold,
-        request_map.rows as usize,
-        request_map.cols as usize,
-        request_map.name,
-    )
-    .await
-    .to_be_bytes()
-    .to_vec();
-    let response = Ok::<_, Infallible>(Response::new(response_vec.into()));
-    return response;
-}
-
-#[derive(Deserialize)]
-struct ChainRequest {
-    name: String,
-    get_uri: String,
-    post_uri: String,
-}
-
-async fn serve_chain(
-    is_cold: bool,
-    req: Request<Body>,
-    dispatcher: Arc<Dispatcher>,
-) -> Result<Response<Body>, Infallible> {
-    let request_buf = hyper::body::to_bytes(req.into_body())
-        .await
-        .expect("Should be able to parse body");
-    let request_map: ChainRequest =
-        bson::from_slice(&request_buf).expect("Should be able to deserialize matrix request");
-
-    let response_vec = run_chain(
-        dispatcher,
-        is_cold,
-        request_map.name,
-        request_map.get_uri,
-        request_map.post_uri,
-    )
-    .await
-    .to_be_bytes()
-    .to_vec();
-    let response = Ok::<_, Infallible>(Response::new(response_vec.into()));
-    return response;
-}
-
-async fn serve_native(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
-    // Try to parse the request
-    let mut request_buf = hyper::body::to_bytes(_req.into_body())
-        .await
-        .expect("Could not read request body");
-
-    if request_buf.len() != 16 {
-        let mut bad_request = Response::new(Body::empty());
-        *bad_request.status_mut() = StatusCode::BAD_REQUEST;
-        return Ok::<_, Infallible>(bad_request);
-    }
-
-    let rows = request_buf.get_i64() as usize;
-    let cols = request_buf.get_i64() as usize;
-
-    let mat_size: usize = rows * cols;
-
-    // Initialize matrix if necessary
-    unsafe {
-        INIT_MATRIX.call_once(|| {
-            for i in 0..mat_size {
-                DUMMY_MATRIX.push(i as i64 + 1)
-            }
-        });
-    }
-
-    let mut out_mat: Vec<i64> = vec![0; mat_size];
-    for i in 0..rows {
-        for j in 0..rows {
-            for k in 0..cols {
-                unsafe {
-                    out_mat[i * rows + j] +=
-                        DUMMY_MATRIX[i * cols + k] * DUMMY_MATRIX[j * cols + k];
-                }
+    // pull all frames from the network
+    let mut incomming = req.into_body();
+    let mut body_pin = std::pin::Pin::new(&mut incomming);
+    let mut frame_data = Vec::new();
+    let mut total_size = 0usize;
+    loop {
+        if let Some(frame_result) =
+            futures::future::poll_fn(|cx| body_pin.as_mut().poll_frame(cx)).await
+        {
+            let data_frame = frame_result.unwrap().into_data().unwrap();
+            total_size += data_frame.len();
+            frame_data.push(data_frame);
+        } else {
+            if body_pin.is_end_stream() {
+                break;
+            } else {
+                continue;
             }
         }
     }
 
-    let checksum = out_mat[rows * cols - 1];
+    // from context from frame bytes
+    let request_context_result = BytesContext::from_bytes_vec(frame_data, total_size).await;
+    if request_context_result.is_err() {
+        warn!("request parsing failed with: {:?}", request_context_result);
+    }
+    let (function_name, request_context) = request_context_result.unwrap();
+    let response_body = run_mat_func(
+        dispatcher,
+        is_cold,
+        function_name,
+        request_context,
+        recorder.get_sub_recorder().unwrap(),
+    )
+    .await;
 
-    Ok::<_, Infallible>(Response::new(checksum.to_be_bytes().to_vec().into()))
+    let response = Ok::<_, Infallible>(Response::new(response_body));
+
+    recorder.record(RecordPoint::EndService).unwrap();
+    TRACING_ARCHIVE.get().unwrap().return_recorder(recorder);
+
+    return response;
 }
+
+// #[derive(Deserialize)]
+// struct ChainRequest {
+//     name: String,
+//     get_uri: String,
+//     post_uri: String,
+// }
+
+// async fn serve_chain(
+//     is_cold: bool,
+//     req: Request<Incoming>,
+//     dispatcher: Arc<Dispatcher>,
+// ) -> Result<Response<Either<Full<Bytes>, DandelionBody>>, Infallible> {
+//     let mut recorder = TRACING_ARCHIVE.get().unwrap().get_recorder().unwrap();
+//     let _ = recorder.record(RecordPoint::Arrival);
+
+//     let request_buf = req
+//         .collect()
+//         .await
+//         .expect("Should be able to parse body")
+//         .to_bytes();
+//     let request_map: ChainRequest =
+//         bson::from_slice(&request_buf).expect("Should be able to deserialize matrix request");
+
+//     let response_vec = run_chain(
+//         dispatcher,
+//         is_cold,
+//         request_map.name,
+//         request_map.get_uri,
+//         request_map.post_uri,
+//         recorder.get_sub_recorder().unwrap(),
+//     )
+//     .await
+//     .to_be_bytes()
+//     .to_vec();
+
+//     let response = Ok::<_, Infallible>(Response::new(Either::Left(response_vec.into())));
+
+//     recorder.record(RecordPoint::EndService).unwrap();
+//     TRACING_ARCHIVE.get().unwrap().return_recorder(recorder);
+
+//     return response;
+// }
 
 #[derive(Debug, Deserialize)]
 struct RegisterFunction {
@@ -408,12 +257,14 @@ struct RegisterFunction {
 }
 
 async fn register_function(
-    req: Request<Body>,
+    req: Request<Incoming>,
     dispatcher: Arc<Dispatcher>,
-) -> Result<Response<Body>, Infallible> {
-    let bytes = hyper::body::to_bytes(req.into_body())
+) -> Result<Response<DandelionBody>, Infallible> {
+    let bytes = req
+        .collect()
         .await
-        .expect("Failed to extract body from function registration");
+        .expect("Failed to extract body from function registration")
+        .to_bytes();
     // find first line end character
     let request_map: RegisterFunction =
         bson::from_slice(&bytes).expect("Should be able to deserialize request");
@@ -469,7 +320,9 @@ async fn register_function(
         )
         .await
         .expect("Should be able to insert function");
-    return Ok::<_, Infallible>(Response::new("Function registered".into()));
+    return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
+        "Function registered".as_bytes().to_vec(),
+    )));
 }
 
 #[derive(Debug, Deserialize)]
@@ -478,12 +331,14 @@ struct RegisterChain {
 }
 
 async fn register_composition(
-    req: Request<Body>,
+    req: Request<Incoming>,
     dispatcher: Arc<Dispatcher>,
-) -> Result<Response<Body>, Infallible> {
-    let bytes = hyper::body::to_bytes(req.into_body())
+) -> Result<Response<DandelionBody>, Infallible> {
+    let bytes = req
+        .collect()
         .await
-        .expect("Failed to extract body from function registration");
+        .expect("Failed to extract body from function registration")
+        .to_bytes();
     // find first line end character
     let request_map: RegisterChain =
         bson::from_slice(&bytes).expect("Should be able to deserialize request");
@@ -492,53 +347,113 @@ async fn register_composition(
         .insert_compositions(request_map.composition)
         .await
         .expect("Should be able to insert function");
-    return Ok::<_, Infallible>(Response::new("Function registered".into()));
+    return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
+        "Function registered".as_bytes().to_vec(),
+    )));
 }
 
-async fn serve_stats(
-    _req: Request<Body>,
-    dispatcher: Arc<Dispatcher>,
-) -> Result<Response<Body>, Infallible> {
-    let archive_guard = match dispatcher.archive.lock() {
-        Ok(guard) => guard,
-        Err(_) => {
-            return Ok::<_, Infallible>(Response::new("Could not lock archive for stats".into()))
-        }
-    };
-    return Ok::<_, Infallible>(Response::new(archive_guard.get_summary().into()));
+async fn serve_stats(_req: Request<Incoming>) -> Result<Response<DandelionBody>, Infallible> {
+    let archive_ref = TRACING_ARCHIVE.get().unwrap();
+    let response = Response::new(DandelionBody::from_vec(
+        archive_ref.get_summary().into_bytes(),
+    ));
+    archive_ref.reset();
+    return Ok::<_, Infallible>(response);
 }
 
 async fn service(
-    req: Request<Body>,
+    req: Request<Incoming>,
     dispatcher: Arc<Dispatcher>,
-) -> Result<Response<Body>, Infallible> {
+) -> Result<Response<DandelionBody>, Infallible> {
     let uri = req.uri().path();
     match uri {
+        // TODO rename to cold func and hot func, remove matmul, compute, io
         "/register/function" => register_function(req, dispatcher).await,
         "/register/composition" => register_composition(req, dispatcher).await,
         "/cold/matmul" => serve_request(true, req, dispatcher).await,
         "/hot/matmul" => serve_request(false, req, dispatcher).await,
-        "/cold/compute" => serve_chain(true, req, dispatcher).await,
-        "/hot/compute" => serve_chain(false, req, dispatcher).await,
-        "/cold/io" => serve_chain(true, req, dispatcher).await,
-        "/hot/io" => serve_chain(false, req, dispatcher).await,
-        "/native" => serve_native(req).await,
-        "/stats" => serve_stats(req, dispatcher).await,
-        _ => Ok::<_, Infallible>(Response::new(
-            // format!("Hello, World! You asked for: {}\n", uri).into(),
-            format!("Hello, Wor\n").into(),
-        )),
+        // "/cold/compute" => serve_chain(true, req, dispatcher).await,
+        // "/hot/compute" => serve_chain(false, req, dispatcher).await,
+        // "/cold/io" => serve_chain(true, req, dispatcher).await,
+        // "/hot/io" => serve_chain(false, req, dispatcher).await,
+        "/stats" => serve_stats(req).await,
+        _ => Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
+            format!("Hello, Wor\n").into_bytes(),
+        ))),
+    }
+}
+
+/// Recording setup
+static TRACING_ARCHIVE: OnceLock<Archive> = OnceLock::new();
+
+async fn service_loop(dispacher: Arc<Dispatcher>) {
+    // socket to listen to
+    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+    let listener = TcpListener::bind(addr).await.unwrap();
+    // signal handlers for gracefull shutdown
+    let mut sigterm_stream = tokio::signal::unix::signal(SignalKind::terminate()).unwrap();
+    let mut sigint_stream = tokio::signal::unix::signal(SignalKind::interrupt()).unwrap();
+    let mut sigquit_stream = tokio::signal::unix::signal(SignalKind::quit()).unwrap();
+    loop {
+        tokio::select! {
+            connection_pair = listener.accept() => {
+                let (stream,_) = connection_pair.unwrap();
+                let loop_dispatcher = dispacher.clone();
+                let io = hyper_util::rt::TokioIo::new(stream);
+                tokio::task::spawn(async move {
+                    let service_dispatcher_ptr = loop_dispatcher.clone();
+                    if let Err(err) = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(
+                            io,
+                            service_fn(|req| service(req, service_dispatcher_ptr.clone())),
+                        )
+                        .await
+                    {
+                        error!("Request serving failed with error: {:?}", err);
+                    }
+                });
+            }
+            _ = sigterm_stream.recv() => return,
+            _ = sigint_stream.recv() => return,
+            _ = sigquit_stream.recv() => return,
+        }
     }
 }
 
 fn main() -> () {
-    env_logger::init();
+    // check if there is a configuration file
+    let config = dandelion_server::config::get_config();
+
+    let default_warn_level = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "warn"
+    };
+
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_warn_level))
+        .init();
+
+    // Initilize metric collection
+    match TRACING_ARCHIVE.set(Archive::init(ArchiveInit {
+        #[cfg(feature = "timestamp")]
+        timestamp_count: config.timestamp_count,
+    })) {
+        Ok(_) => (),
+        Err(_) => panic!("Failed to initialize tracing archive"),
+    }
 
     // find available resources
-    let num_cores = u8::try_from(core_affinity::get_core_ids().unwrap().len()).unwrap();
+    let num_cores = config.total_cores;
+    let num_phyiscal_cores = u8::try_from(num_cpus::get_physical()).unwrap();
+    let num_virt_cores = u8::try_from(num_cpus::get()).unwrap();
+    if num_phyiscal_cores != num_virt_cores {
+        warn!(
+            "Hyperthreading might be enabled detected {} logical and {} physical cores",
+            num_virt_cores, num_phyiscal_cores
+        );
+    }
     // TODO: This calculation makes sense only for running matmul-128x128 workload on MMU engines
-    let num_dispatcher_cores = std::env::var("NUM_DISP_CORES")
-        .map_or_else(|_e| (num_cores + 13) / 14, |n| n.parse::<u8>().unwrap());
+    let num_dispatcher_cores = config.dispatcher_cores;
     assert!(
         num_dispatcher_cores > 0 && num_dispatcher_cores < num_cores,
         "invalid dispatcher core number: {}",
@@ -557,6 +472,8 @@ fn main() -> () {
         }
         info!("Dispatcher running on core {}", core_id);
     });
+    runtime_builder.global_queue_interval(10);
+    runtime_builder.event_interval(10);
     let runtime = runtime_builder.build().unwrap();
 
     // set up dispatcher configuration basics
@@ -576,7 +493,7 @@ fn main() -> () {
     pool_map.insert(
         engine_type,
         (num_dispatcher_cores..num_cores)
-            .map(|code_id| ComputeResource::CPU(code_id))
+            .map(|code_id| ComputeResource::CPU(code_id as u8))
             .collect(),
     );
     #[cfg(feature = "gpu")]
@@ -590,15 +507,15 @@ fn main() -> () {
                 .collect(),
         );
     }
-    #[cfg(feature = "hyper_io")]
-    pool_map.insert(
-        EngineType::Hyper,
-        (0..num_dispatcher_cores)
-            .map(|core_id| ComputeResource::CPU(core_id))
-            .collect(),
-    );
+    // #[cfg(feature = "reqwest_io")]
+    // pool_map.insert(
+    //     EngineType::Hyper,
+    //     (0..num_dispatcher_cores)
+    //         .map(|core_id| ComputeResource::CPU(core_id as u8))
+    //         .collect(),
+    // );
     let resource_pool = ResourcePool {
-        engine_pool: Mutex::new(pool_map),
+        engine_pool: futures::lock::Mutex::new(pool_map),
     };
 
     // Create an ARC pointer to the dispatcher for thread-safe access
@@ -607,38 +524,42 @@ fn main() -> () {
 
     let _guard = runtime.enter();
 
-    // ready http endpoint
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
-    let make_svc = make_service_fn(move |_| {
-        let new_dispatcher_ptr = dispatcher_ptr.clone();
-        async move {
-            Ok::<_, Infallible>(service_fn(move |req| {
-                let service_dispatcher_ptr = new_dispatcher_ptr.clone();
-                service(req, service_dispatcher_ptr)
-            }))
-        }
-    });
-    let server = Server::bind(&addr).serve(make_svc);
-
-    let signals = Signals::new(&[SIGTERM, SIGINT, SIGQUIT]).unwrap();
-    let graceful =
-        server.with_graceful_shutdown(async move { handle_signals(signals).await.unwrap() });
-
+    // TODO would be nice to just print server ready with all enabled features if that would be possible
+    print!("Server start with features:");
     #[cfg(feature = "cheri")]
-    println!("Hello, World (cheri)");
+    print!(" cheri");
     #[cfg(feature = "mmu")]
-    println!("Hello, World (mmu)");
+    print!(" mmu");
     #[cfg(feature = "wasm")]
-    println!("Hello, World (wasm)");
+    print!(" wasm");
     #[cfg(feature = "gpu")]
-    println!("Hello, World (gpu)");
-    #[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm", feature = "gpu")))]
-    println!("Hello, World (native)");
+    print!(" gpu");
+    #[cfg(feature = "timestamp")]
+    print!(" timestamp");
+    print!("\n");
+
     // Run this server for... forever... unless I receive a signal!
-    if let Err(e) = runtime.block_on(graceful) {
-        error!("server error: {}", e);
-    }
+    runtime.block_on(service_loop(dispatcher_ptr));
 
     // clean up folder in tmp that is used for function storage
     std::fs::remove_dir_all(FUNCTION_FOLDER_PATH).unwrap();
+    // clean up folder with shared files in case the context backed by shared files left some behind
+    for shm_dir_entry in std::fs::read_dir("/dev/shm/").unwrap() {
+        if let Ok(shm_file) = shm_dir_entry {
+            if shm_file
+                .file_name()
+                .into_string()
+                .unwrap()
+                .starts_with("shm_")
+            {
+                warn!(
+                    "Found left over shared memory file: {:?}",
+                    shm_file.file_name()
+                );
+                if std::fs::remove_file(shm_file.path()).is_err() {
+                    warn!("Failed to remove shared memory file {:?}", shm_file.path());
+                }
+            }
+        }
+    }
 }

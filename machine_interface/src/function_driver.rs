@@ -82,7 +82,7 @@ pub struct Function {
 impl Function {
     pub fn load(
         &self,
-        domain: &Box<dyn MemoryDomain>,
+        domain: &'static dyn MemoryDomain,
         ctx_size: usize,
     ) -> DandelionResult<Context> {
         match &self.config {
@@ -126,10 +126,32 @@ pub enum ComputeResource {
     GPU(u8, u8), // TODO change back to GPU(u8) once Driver.start_engine() takes a vec of ComputeResources
 }
 
-pub enum EngineArguments {
+pub enum WorkToDo {
     FunctionArguments(FunctionArguments),
     TransferArguments(TransferArguments),
-    Shutdown(fn(Vec<ComputeResource>) -> ()),
+    ParsingArguments(ParsingArguments),
+    Shutdown(),
+}
+
+pub enum WorkDone {
+    Context(Context),
+    Function(Function),
+    Resources(Vec<ComputeResource>),
+}
+
+impl WorkDone {
+    pub fn get_context(self) -> Context {
+        return match self {
+            WorkDone::Context(context) => context,
+            _ => panic!("WorkDone is not context when context was expected"),
+        };
+    }
+    pub fn get_function(self) -> Function {
+        return match self {
+            WorkDone::Function(function) => function,
+            _ => panic!("WorkDone is not function when function was expected"),
+        };
+    }
 }
 
 pub struct FunctionArguments {
@@ -151,8 +173,15 @@ pub struct TransferArguments {
     pub recorder: Recorder,
 }
 
+pub struct ParsingArguments {
+    pub driver: &'static dyn Driver,
+    pub path: String,
+    pub static_domain: &'static dyn MemoryDomain,
+    pub recorder: Recorder,
+}
+
 pub trait WorkQueue {
-    fn get_engine_args(&self) -> (EngineArguments, crate::promise::Debt);
+    fn get_engine_args(&self) -> (WorkToDo, crate::promise::Debt);
 }
 
 pub trait Driver: Send + Sync {
@@ -170,6 +199,6 @@ pub trait Driver: Send + Sync {
     fn parse_function(
         &self,
         function_path: String,
-        static_domain: &Box<dyn MemoryDomain>,
+        static_domain: &'static dyn MemoryDomain,
     ) -> DandelionResult<Function>;
 }

@@ -1,7 +1,5 @@
 pub mod records;
 
-use records::RecordPoint;
-
 pub type FunctionId = u64;
 
 // TODO define error types, possibly better printing than debug
@@ -105,7 +103,7 @@ pub enum DandelionError {
     /// Mutex for metering was poisoned
     RecordLockFailure,
     /// Call to record time spans were not called in order
-    RecordSequencingFailure(RecordPoint, RecordPoint),
+    RecorderNotAvailable,
     // Gerneral util errors
     /// error while performing IO on a file
     FileError,
@@ -121,6 +119,32 @@ pub enum DandelionError {
     // errors from the functions
     /// Function indicated it failed
     FunctionError(i32),
+    /// Work queue from the dispatcher to the engines is full
+    WorkQueueFull,
+    // Frontend errors
+    /// Error in the frontend receiveing requests
+    RequestError(FrontendError),
+}
+
+// Implement display to be compliant with core::error::Error
+impl core::fmt::Display for DandelionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return f.write_fmt(format_args!("{:?}", self));
+    }
+}
+
+impl std::error::Error for DandelionError {}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FrontendError {
+    /// Failed to get more frames from the connection
+    FailledToGetFrames,
+    /// Attemped to read bytes form stream to desiarialize but stream ran out
+    StreamEnd,
+    /// The stream was not formated according to the expected specification
+    ViolatedSpec,
+    /// The structure descibed does not cofrom with the expected message
+    MalformedMessage,
 }
 
 pub type DandelionResult<T> = std::result::Result<T, DandelionError>;

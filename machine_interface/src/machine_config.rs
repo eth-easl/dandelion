@@ -10,8 +10,8 @@ use crate::{
 /// Enum for all engine types that allows use in lookup structures
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EngineType {
-    #[cfg(feature = "hyper_io")]
-    Hyper,
+    #[cfg(feature = "reqwest_io")]
+    Reqwest,
     #[cfg(feature = "cheri")]
     Cheri,
     #[cfg(feature = "wasm")]
@@ -37,8 +37,8 @@ pub enum DomainType {
 
 pub fn get_compatibilty_table() -> BTreeMap<EngineType, DomainType> {
     return BTreeMap::from([
-        #[cfg(feature = "hyper_io")]
-        (EngineType::Hyper, DomainType::Mmap),
+        #[cfg(feature = "reqwest_io")]
+        (EngineType::Reqwest, DomainType::Mmap),
         #[cfg(feature = "cheri")]
         (EngineType::Cheri, DomainType::Cheri),
         #[cfg(feature = "wasm")]
@@ -50,75 +50,93 @@ pub fn get_compatibilty_table() -> BTreeMap<EngineType, DomainType> {
     ]);
 }
 
-#[cfg(any(feature = "hyper_io"))]
+#[cfg(any(feature = "reqwest_io"))]
 const SYS_FUNC_DEFAULT_CONTEXT_SIZE: usize = 0x200_0000;
 
 pub fn get_system_functions(engine_type: EngineType) -> Vec<(SystemFunction, usize)> {
     return match engine_type {
-        #[cfg(feature = "hyper_io")]
-        EngineType::Hyper => vec![(SystemFunction::HTTP, SYS_FUNC_DEFAULT_CONTEXT_SIZE)],
+        #[cfg(feature = "reqwest_io")]
+        EngineType::Reqwest => vec![(SystemFunction::HTTP, SYS_FUNC_DEFAULT_CONTEXT_SIZE)],
+        #[allow(unreachable_patterns)]
         _ => Vec::new(),
     };
 }
 
-pub fn get_available_domains() -> BTreeMap<DomainType, Box<dyn MemoryDomain>> {
+pub fn get_available_domains() -> BTreeMap<DomainType, &'static dyn MemoryDomain> {
     return BTreeMap::from([
         (
             DomainType::Mmap,
-            crate::memory_domain::mmap::MmapMemoryDomain::init(MemoryResource::None).unwrap(),
+            Box::leak(
+                crate::memory_domain::mmap::MmapMemoryDomain::init(MemoryResource::None).unwrap(),
+            ) as &'static dyn MemoryDomain,
         ),
         #[cfg(feature = "cheri")]
         (
             DomainType::Cheri,
-            crate::memory_domain::cheri::CheriMemoryDomain::init(MemoryResource::None).unwrap(),
+            Box::leak(
+                crate::memory_domain::cheri::CheriMemoryDomain::init(MemoryResource::None).unwrap(),
+            ) as &'static dyn MemoryDomain,
         ),
         #[cfg(feature = "wasm")]
         (
             DomainType::RWasm,
-            crate::memory_domain::wasm::WasmMemoryDomain::init(MemoryResource::None).unwrap(),
+            Box::leak(
+                crate::memory_domain::wasm::WasmMemoryDomain::init(MemoryResource::None).unwrap(),
+            ) as &'static dyn MemoryDomain,
         ),
         #[cfg(feature = "mmu")]
         (
             DomainType::Process,
-            crate::memory_domain::mmu::MmuMemoryDomain::init(MemoryResource::None).unwrap(),
+            Box::leak(
+                crate::memory_domain::mmu::MmuMemoryDomain::init(MemoryResource::None).unwrap(),
+            ) as &'static dyn MemoryDomain,
         ),
         #[cfg(feature = "gpu")]
         (
             DomainType::Gpu,
-            crate::memory_domain::mmu::MmuMemoryDomain::init(MemoryResource::None).unwrap(),
+            Box::leak(
+                crate::memory_domain::mmu::MmuMemoryDomain::init(MemoryResource::None).unwrap(),
+            ) as &'static dyn MemoryDomain,
         ),
     ]);
 }
 
-pub fn get_available_drivers() -> BTreeMap<EngineType, Box<dyn Driver>> {
-    return BTreeMap::<EngineType, Box<dyn Driver>>::from([
-        #[cfg(feature = "hyper_io")]
+pub fn get_available_drivers() -> BTreeMap<EngineType, &'static dyn Driver> {
+    return BTreeMap::<EngineType, &'static dyn Driver>::from([
+        #[cfg(feature = "reqwest_io")]
         (
-            EngineType::Hyper,
-            Box::new(crate::function_driver::system_driver::hyper::HyperDriver {})
-                as Box<dyn Driver>,
+            EngineType::Reqwest,
+            Box::leak(Box::new(
+                crate::function_driver::system_driver::reqwest::ReqwestDriver {},
+            )) as &'static dyn Driver,
         ),
         #[cfg(feature = "cheri")]
         (
             EngineType::Cheri,
-            Box::new(crate::function_driver::compute_driver::cheri::CheriDriver {})
-                as Box<dyn Driver>,
+            Box::leak(Box::new(
+                crate::function_driver::compute_driver::cheri::CheriDriver {},
+            )) as &'static dyn Driver,
         ),
         #[cfg(feature = "wasm")]
         (
             EngineType::RWasm,
-            Box::new(crate::function_driver::compute_driver::wasm::WasmDriver {})
-                as Box<dyn Driver>,
+            Box::leak(Box::new(
+                crate::function_driver::compute_driver::wasm::WasmDriver {},
+            )) as &'static dyn Driver,
         ),
         #[cfg(feature = "mmu")]
         (
             EngineType::Process,
-            Box::new(crate::function_driver::compute_driver::mmu::MmuDriver {}) as Box<dyn Driver>,
+            Box::leak(Box::new(
+                crate::function_driver::compute_driver::mmu::MmuDriver {},
+            )) as &'static dyn Driver,
         ),
         #[cfg(feature = "gpu")]
         (
             EngineType::Gpu,
-            Box::new(crate::function_driver::compute_driver::gpu::GpuDriver {}) as Box<dyn Driver>,
+            Box::leak(Box::new(
+                crate::function_driver::compute_driver::gpu::GpuDriver {},
+            )) as &'static dyn Driver,
         ),
     ]);
 }

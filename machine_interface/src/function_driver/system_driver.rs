@@ -1,7 +1,7 @@
 use crate::function_driver::SystemFunction;
 
-#[cfg(feature = "hyper_io")]
-pub mod hyper;
+#[cfg(feature = "reqwest_io")]
+pub mod reqwest;
 
 /// HTTP function currently expects following sets:
 /// - request: expetcts to have a single item containing a http request formatted as

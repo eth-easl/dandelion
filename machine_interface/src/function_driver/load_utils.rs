@@ -20,7 +20,7 @@ pub fn load_u8_from_file(full_path: String) -> DandelionResult<Vec<u8>> {
 }
 
 pub fn load_static(
-    domain: &Box<dyn MemoryDomain>,
+    domain: &'static dyn MemoryDomain,
     static_context: &Context,
     requirement_list: &DataRequirementList,
     ctx_size: usize,

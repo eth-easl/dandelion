@@ -1,11 +1,12 @@
 #[cfg(all(
     any(feature = "wasm", feature = "mmu", feature = "cheri"),
-    feature = "hyper_io"
+    feature = "reqwest_io"
 ))]
 mod server_tests {
 
     use assert_cmd::prelude::*;
-    use byteorder::{BigEndian, ReadBytesExt};
+    use byteorder::{LittleEndian, ReadBytesExt};
+    use dandelion_server::{DandelionDeserializeResponse, DandelionRequest, InputItem, InputSet};
     use serde::Serialize;
     use std::{
         io::{BufRead, BufReader, Cursor, Read},
@@ -72,10 +73,19 @@ mod server_tests {
 
     fn send_matrix_request(endpoint: &str, function_name: String) {
         // call into function
-        let mat_request = MatrixRequest {
+        let mut data = Vec::new();
+        data.extend_from_slice(&i64::to_le_bytes(1));
+        data.extend_from_slice(&i64::to_le_bytes(1));
+        let mat_request = DandelionRequest {
             name: function_name,
-            cols: 1,
-            rows: 1,
+            sets: vec![InputSet {
+                identifier: String::from(""),
+                items: vec![InputItem {
+                    identifier: String::from(""),
+                    key: 0,
+                    data: &data,
+                }],
+            }],
         };
 
         let client = reqwest::blocking::Client::new();
@@ -87,10 +97,16 @@ mod server_tests {
         assert!(resp.status().is_success());
 
         let body = resp.bytes().unwrap();
-        assert_eq!(body.len(), 8);
-        let mut reader = Cursor::new(body);
-        let checksum = reader.read_u64::<BigEndian>().unwrap();
-        assert_eq!(checksum, 1);
+        let response: DandelionDeserializeResponse = bson::from_slice(&body).unwrap();
+        assert_eq!(1, response.sets.len());
+        assert_eq!(1, response.sets[0].items.len());
+        let response_data = response.sets[0].items[0].data;
+        assert_eq!(response_data.len(), 16);
+        let mut reader = Cursor::new(response_data);
+        let mat_size = reader.read_u64::<LittleEndian>().unwrap();
+        assert_eq!(1, mat_size);
+        let checksum = reader.read_u64::<LittleEndian>().unwrap();
+        assert_eq!(1, checksum);
     }
 
     #[test]
@@ -106,7 +122,7 @@ mod server_tests {
             let mut buf = String::new();
             let len = reader.read_line(&mut buf).unwrap();
             assert_ne!(len, 0, "Server exited unexpectedly");
-            if buf.contains("Hello, World") {
+            if buf.contains("Server start") {
                 break;
             }
         }
@@ -118,19 +134,23 @@ mod server_tests {
         let engine_type;
         #[cfg(feature = "wasm")]
         {
-            version = "sysld_wasm";
+            version = format!("sysld_wasm_{}", std::env::consts::ARCH);
             engine_type = String::from("RWasm");
         }
         #[cfg(feature = "mmu")]
         {
-            version = "elf_mmu";
+            version = format!("elf_mmu_{}", std::env::consts::ARCH);
             engine_type = String::from("Process");
         }
+        #[cfg(feature = "cheri")]
+        {
+            version = "elf_cheri";
+            engine_type = String::from("Cheri");
+        }
         let matmul_path = format!(
-            "{}/../machine_interface/tests/data/test_{}_{}_matmul",
+            "{}/../machine_interface/tests/data/test_{}_matmul",
             env!("CARGO_MANIFEST_DIR"),
             version,
-            std::env::consts::ARCH
         );
 
         let register_request = RegisterFunction {

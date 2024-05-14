@@ -10,15 +10,17 @@ fn test_loader_basic() {
         "{}/tests/data/test_elf_cheri_basic",
         env!("CARGO_MANIFEST_DIR")
     );
-    let mut malloc_domain = MallocMemoryDomain::init(crate::memory_domain::MemoryResource::None)
-        .expect("Should be able to get malloc domain");
+    let malloc_domain = Box::leak(
+        MallocMemoryDomain::init(crate::memory_domain::MemoryResource::None)
+            .expect("Should be able to get malloc domain"),
+    );
     let driver = CheriDriver {};
     let Function {
         requirements,
         context,
         config,
     } = driver
-        .parse_function(elf_path, &mut malloc_domain)
+        .parse_function(elf_path, malloc_domain)
         .expect("Parsing should work");
     // check requirement list to be list of programm header info for after load
     // meaning addresses and sizes in virtual address space

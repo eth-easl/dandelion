@@ -1,4 +1,4 @@
-use crate::memory_domain::Context;
+use crate::function_driver::WorkDone;
 
 use core::{
     pin::Pin,
@@ -6,7 +6,7 @@ use core::{
     sync::atomic::{AtomicPtr, AtomicU8, Ordering},
     task::Poll,
 };
-use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
+use dandelion_commons::{DandelionError, DandelionResult};
 
 pub struct Promise {
     data: *const PromiseData,
@@ -26,20 +26,20 @@ impl Promise {
         let debt = Debt { data: data_ptr };
         return (promise, debt);
     }
-    pub fn abort(mut self) -> () {
-        self.abort_internal();
+    pub fn abort(self) -> () {
+        core::mem::drop(self);
     }
     fn abort_internal(&mut self) {
         let data = unsafe { &*self.data };
-        let abort_hanlde = data.abort_handle.swap(ptr::null_mut(), Ordering::SeqCst);
-        if !abort_hanlde.is_null() {
-            unsafe { (*abort_hanlde)() }
+        let abort_handle = data.abort_handle.swap(ptr::null_mut(), Ordering::SeqCst);
+        if !abort_handle.is_null() {
+            unsafe { (*abort_handle)() }
         }
     }
 }
 
 impl futures::future::Future for Promise {
-    type Output = Box<DandelionResult<(Context, Recorder)>>;
+    type Output = Box<DandelionResult<WorkDone>>;
     // as per documentation calling after it has resolved once is undefined
     // handle this by returning pending again
     fn poll(self: Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
@@ -73,7 +73,7 @@ impl Debt {
         return data.references.load(Ordering::Acquire) > 1;
     }
 
-    pub fn fulfill(self, results: Box<DandelionResult<(Context, Recorder)>>) {
+    pub fn fulfill(self, results: Box<DandelionResult<WorkDone>>) {
         let data = unsafe { &*self.data };
         // make sure we are not aborted by this promise anymore
         data.abort_handle.store(ptr::null_mut(), Ordering::Release);
@@ -94,7 +94,7 @@ impl Debt {
 
 fn drop_promise_data(data_ptr: *const PromiseData) {
     let data = unsafe { &*data_ptr };
-    if data.references.fetch_sub(1, Ordering::SeqCst) == 0 {
+    if data.references.fetch_sub(1, Ordering::SeqCst) == 1 {
         let _ = unsafe { Box::from_raw(data_ptr as *mut PromiseData) };
     }
 }
@@ -132,7 +132,7 @@ struct PromiseData {
     ///non null that means the function has not been aborted or terminated on it's own
     abort_handle: AtomicPtr<fn() -> ()>,
     /// Points to raw box of the results the engine has put in there
-    results: AtomicPtr<DandelionResult<(Context, Recorder)>>,
+    results: AtomicPtr<DandelionResult<WorkDone>>,
     waker: AtomicPtr<core::task::Waker>,
     references: AtomicU8,
 }

@@ -21,6 +21,10 @@ impl ContextTrait for MmapContext {
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         self.storage.read(offset, read_buffer)
     }
+
+    fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
+        self.storage.get_chunk_ref(offset, length)
+    }
 }
 
 #[derive(Debug)]

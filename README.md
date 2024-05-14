@@ -3,11 +3,16 @@
 This project is aiming to build a workernode for serverless computing with
 minimal, secure isolation.
 
-## Dependencies:
+## Environment Variables
+
+- `RUST_LOG`: this is used to set the log level, it can be set to the standard log levels: [`error`, `warn`, `info`, `debug`, `trace`]
+- `DANDELION_TIMESTAMP_COUNT`: sets the number of timestamp containers to preallocate
+
+## Dependencies
 
 For testing we are using unity which is included directly in the project.
 
-## Cheri setup:
+## Cheri setup
 
 First clone the Cheribuild repository onto a local disk.
 It is important that it is on a local disk, as it needs to lock some files which
@@ -55,6 +60,7 @@ To manually set the ssh-port to another port that the one set by the config
 `--run-fvp/ssh-port=<portno>` before the run command.
 
 ## Build
+
 Before cross compilation can be used you need to fill in the respective paths
 in the toolchain file.
 
@@ -72,16 +78,20 @@ make
 For native builds the toolchain specification can be omitted.
 
 ## Kernel module build
+
 The kernel modules needed are in the kernelModule folder.
 They can be built with a normal make command, but have the following requirements:
+
 - the /usr/src folder contains the OS source
 
-### Known issues:
+### Known issues
+
 - make: "/usr/src/sys/conf/kmod.mk" line 549: is ZFSTOP set?
-    - solution `export ZFSTOP=/usr/src/sys/contrib/openzfs`
+  - solution `export ZFSTOP=/usr/src/sys/contrib/openzfs`
 - currently syscall seems not to work, but loading does, with cpuset -l <core> a specific core can be setup. repeat for each core on machine to set up entire machine.
 
 ## MMU worker build
+
 The `mmu_worker` binary required by the `MmuEngine` is assumed to be present in corresponding `target` directory:
 ```
 cargo build --bin mmu_worker --features mmu --target $(arch)-unknown-linux-gnu [--release]
@@ -99,4 +109,5 @@ sudo mount -o remount,exec /dev/shm
 ```
 
 ### MMU worker path
+
 To use a `mmu_worker` that is not at the original location it was built in, set the `PROCESS_WORKER_PATH` environment variable to point to the desired binary

@@ -305,7 +305,7 @@ impl Driver for GpuDriver {
     fn parse_function(
         &self,
         function_path: String,
-        static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
+        static_domain: &'static dyn crate::memory_domain::MemoryDomain,
     ) -> dandelion_commons::DandelionResult<crate::function_driver::Function> {
         let (mut gpu_config, module_path) = config_parsing::parse_config(&function_path)?;
 

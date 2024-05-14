@@ -3,5 +3,10 @@ name = "dandelion_commons"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+recorder = []
+timestamp = ["recorder"]
+
 [dependencies]
 hdrhist = "0.5.0"
+log = "0.4.14"
