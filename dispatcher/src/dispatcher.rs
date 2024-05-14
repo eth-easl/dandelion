@@ -108,7 +108,10 @@ impl Dispatcher {
             .function_registry
             .get_function_id(&function_name)
             .await
-            .ok_or(DandelionError::DispatcherUnavailableFunction)?;
+            .ok_or_else(|| {
+                log::debug!("function_dict lookup failure {}", &function_name);
+                DandelionError::DispatcherUnavailableFunction
+            })?;
         return self
             .queue_function(function_id, inputs, output_mapping, non_caching, recorder)
             .await;
