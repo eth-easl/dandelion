@@ -193,12 +193,23 @@ mod server_tests {
         assert!(registration_resp.status().is_success());
 
         let chain_request = RegisterChain {
+            #[cfg(not(feature = "gpu"))]
             composition: String::from(
                 r#"
                 (:function matmul (InMats) -> (OutMats))
                 (:composition chain (CompInMats) -> (CompOutMats) (
                     (matmul ((:all InMats <- CompInMats)) => ((InterMat := OutMats)))
                     (matmul ((:all InMats <- InterMat)) => ((CompOutMats := OutMats)))
+                ))
+            "#,
+            ),
+            #[cfg(feature = "gpu")]
+            composition: String::from(
+                r#"
+                (:function matmul (InMats Config) -> (OutMats))
+                (:composition chain (CompInMats CompConfig) -> (CompOutMats) (
+                    (matmul ((:all InMats <- CompInMats) (:all Config <- CompConfig)) => ((InterMat := OutMats)))
+                    (matmul ((:all InMats <- InterMat) (:all Config <- CompConfig)) => ((CompOutMats := OutMats)))
                 ))
             "#,
             ),
@@ -212,7 +223,7 @@ mod server_tests {
         assert!(chain_resp.status().is_success());
 
         send_matrix_request("http://localhost:8080/hot/matmul", String::from("matmul"));
-        // send_matrix_request("http://localhost:8080/hot/matmul", String::from("chain"));
+        send_matrix_request("http://localhost:8080/hot/matmul", String::from("chain"));
 
         let status_result = server_killer.server.try_wait();
         let status = status_result.unwrap();
