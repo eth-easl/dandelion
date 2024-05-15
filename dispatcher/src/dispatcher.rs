@@ -100,7 +100,7 @@ impl Dispatcher {
         &self,
         function_name: String,
         inputs: Vec<(usize, CompositionSet)>,
-        output_mapping: Vec<Option<usize>>,
+        output_mapping_option: Option<Vec<Option<usize>>>,
         non_caching: bool,
         recorder: Recorder,
     ) -> DandelionResult<BTreeMap<usize, CompositionSet>> {
@@ -109,6 +109,17 @@ impl Dispatcher {
             .get_function_id(&function_name)
             .await
             .ok_or(DandelionError::DispatcherUnavailableFunction)?;
+        let output_mapping = if let Some(mapping) = output_mapping_option {
+            mapping
+        } else {
+            let metadata = self.function_registry.get_metadata(function_id).await?;
+            let output_number = metadata.output_sets.len();
+            let mut mapping = Vec::with_capacity(output_number);
+            for index in 0..output_number {
+                mapping.push(Some(index));
+            }
+            mapping
+        };
         return self
             .queue_function(function_id, inputs, output_mapping, non_caching, recorder)
             .await;
@@ -343,7 +354,7 @@ impl Dispatcher {
                         return Ok(compositon_output
                             .into_iter()
                             .filter_map(|(function_id, composition)| {
-                                if output_mapping.len() < function_id {
+                                if output_mapping.len() <= function_id {
                                     return None;
                                 }
                                 return output_mapping[function_id].and_then(|composition_id| {

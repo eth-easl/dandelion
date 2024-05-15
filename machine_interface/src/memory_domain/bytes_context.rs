@@ -238,6 +238,14 @@ fn read_data_item(
     let offset = total_length - buf.remaining();
     let size = binary_lenght;
     buf.advance(size);
+    let doc_termination = buf.get_i8();
+    if doc_termination != 0 {
+        debug!(
+            "Terminating 0 of data item not 0, {} instead",
+            doc_termination
+        );
+        return Err(DandelionError::RequestError(FrontendError::ViolatedSpec));
+    }
     return Ok(Some(DataItem {
         ident,
         key,
@@ -279,6 +287,7 @@ fn read_data_set(
     let item_array_size = read_length(buf)?;
     let mut items = Vec::new();
     let array_end = buf.remaining() + 4 - item_array_size;
+    // reads all items, as well as the last terminating 0 of the array
     while buf.remaining() > array_end {
         if let Some(item) = read_data_item(buf, total_length)? {
             items.push(item);
@@ -286,7 +295,7 @@ fn read_data_set(
             break;
         }
     }
-    // read terminating 0 char
+    // read terminating 0 char of the document
     check_remaining::<i8>(buf)?;
     if buf.get_i8() != 0 {
         debug!("Terminating 0 not 0");
@@ -326,7 +335,7 @@ impl BytesContext {
         read_and_check_cstring(&mut frame_buf, "sets\0")?;
         let _ = read_length(&mut frame_buf);
         // parse elements one by one
-        let mut sets = Vec::new();
+        let mut sets: Vec<Option<DataSet>> = Vec::new();
         while frame_buf.remaining() > 0 {
             if let Some(set) = read_data_set(&mut frame_buf, bson_dict_length)? {
                 sets.push(Some(set));
@@ -336,8 +345,12 @@ impl BytesContext {
         }
         // read terminating 0
         check_remaining::<i8>(&frame_buf)?;
-        if frame_buf.get_i8() != 0 {
-            debug!("Context terminating 0 char not 0");
+        let last_byte = frame_buf.get_i8();
+        if last_byte != 0 || frame_buf.remaining > 0 {
+            debug!(
+                "Context terminating 0 char not 0, is {} and frame buffer has {} remaining",
+                last_byte, frame_buf.remaining
+            );
             return Err(DandelionError::RequestError(FrontendError::ViolatedSpec));
         }
         let mut context = Context::new(

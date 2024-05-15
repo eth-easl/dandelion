@@ -11,7 +11,7 @@ use hyper::{
     service::service_fn,
     Request, Response,
 };
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use machine_interface::{
     function_driver::ComputeResource,
     machine_config::EngineType,
@@ -33,129 +33,31 @@ use tokio::{net::TcpListener, runtime::Builder, signal::unix::SignalKind};
 
 const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
-// async fn run_chain(
+// TODO: integrate into serve request
+// async fn run_mat_func(
 //     dispatcher: Arc<Dispatcher>,
 //     is_cold: bool,
 //     function_name: String,
-//     get_uri: String,
-//     post_uri: String,
+//     request: Context,
 //     mut recorder: Recorder,
-// ) -> u64 {
-//     // TODO just have all the strings concatinated and create const context
-//     let domain = MmapMemoryDomain::init(machine_interface::memory_domain::MemoryResource::None)
-//         .expect("Should be able to get Mmap domain");
-//     let mut input_context = domain
-//         .acquire_context(128)
-//         .expect("Should be able to get malloc context");
-//     let get_request = format!("GET {} HTTP/1.1", get_uri);
-//     let post_request = format!("PUT {} HTTP/1.1", post_uri);
-//     let get_request_offset = input_context
-//         .get_free_space_and_write_slice(get_request.as_bytes())
-//         .expect("Should be able to write") as usize;
-//     let post_request_offset = input_context
-//         .get_free_space_and_write_slice(post_request.as_bytes())
-//         .expect("Should be able to write") as usize;
-//     input_context.content.push(Some(DataSet {
-//         ident: String::from("request"),
-//         buffers: vec![DataItem {
-//             ident: String::from("request"),
-//             data: Position {
-//                 offset: get_request_offset,
-//                 size: get_request.len(),
-//             },
-//             key: 0,
-//         }],
-//     }));
-//     input_context.content.push(Some(DataSet {
-//         ident: String::from("request"),
-//         buffers: vec![DataItem {
-//             ident: String::from("request"),
-//             data: Position {
-//                 offset: post_request_offset,
-//                 size: post_request.len(),
-//             },
-//             key: 0,
-//         }],
-//     }));
-//     let input_arc = Arc::new(input_context);
+// ) -> DandelionBody {
+//     // TODO match set names to assign sets to composition sets
+//     let request_arc = Arc::new(request);
 //     let inputs = vec![
-//         (0, CompositionSet::from((0, vec![input_arc.clone()]))),
-//         (1, CompositionSet::from((1, vec![input_arc]))),
+//         (0, CompositionSet::from((0, vec![request_arc.clone()]))),
+//         (1, CompositionSet::from((1, vec![request_arc.clone()]))),
 //     ];
-//     let output_mapping = vec![Some(0), Some(1)];
-
+//     let outputs = vec![Some(0)];
 //     recorder
 //         .record(RecordPoint::QueueFunctionDispatcher)
 //         .unwrap();
 //     let result = dispatcher
-//         .queue_function_by_name(function_name, inputs, output_mapping, is_cold, recorder)
+//         .queue_function_by_name(function_name, inputs, None, is_cold, recorder)
 //         .await
-//         .expect("Should get response from chain");
-//     assert_eq!(2, result.len());
-//     // check http post response
-//     let post_composition_set = result
-//         .get(&1)
-//         .expect("Should have composition set for post response");
-//     assert_eq!(1, post_composition_set.context_list.len());
-//     let post_context = &post_composition_set.context_list[0].0;
-//     assert_eq!(3, post_context.content.len());
-//     let post_set = post_context.content[0]
-//         .as_ref()
-//         .expect("Should have status set");
-//     assert_eq!(1, post_set.buffers.len());
-//     let post_status_position = post_set.buffers[0].data;
-//     let mut post_vec = Vec::<u8>::new();
-//     post_vec.resize(post_status_position.size, 0);
-//     post_context
-//         .read(post_status_position.offset, post_vec.as_mut_slice())
-//         .expect("Should be able to read post response");
-//     assert_eq!("HTTP/1.1 200 OK".as_bytes(), post_vec.as_slice());
+//         .expect("Should get result from function");
 
-//     // check iteration result
-//     let result_compositon_set = result.get(&0).expect("Should have set 0");
-//     assert_eq!(1, result_compositon_set.context_list.len());
-//     let result_context = &result_compositon_set.context_list[0].0;
-//     assert_eq!(1, result_context.content.len());
-//     let result_set = result_context.content[0]
-//         .as_ref()
-//         .expect("Should contain a return number");
-//     assert_eq!(1, result_set.buffers.len());
-//     let result_position = result_set.buffers[0].data;
-
-//     let mut result_vec = vec![0u8; result_position.size];
-//     result_context
-//         .read(result_position.offset, result_vec.as_mut_slice())
-//         .expect("Should be able to read result");
-//     let checksum = u64::from_ne_bytes(result_vec[0..8].try_into().unwrap());
-
-//     return checksum;
+//     return dandelion_server::DandelionBody::new(result);
 // }
-
-// TODO: integrate into serve request
-async fn run_mat_func(
-    dispatcher: Arc<Dispatcher>,
-    is_cold: bool,
-    function_name: String,
-    request: Context,
-    mut recorder: Recorder,
-) -> DandelionBody {
-    // TODO match set names to assign sets to composition sets
-    let request_arc = Arc::new(request);
-    let inputs = vec![
-        (0, CompositionSet::from((0, vec![request_arc.clone()]))),
-        (1, CompositionSet::from((1, vec![request_arc.clone()]))),
-    ];
-    let outputs = vec![Some(0)];
-    recorder
-        .record(RecordPoint::QueueFunctionDispatcher)
-        .unwrap();
-    let result = dispatcher
-        .queue_function_by_name(function_name, inputs, outputs, is_cold, recorder)
-        .await
-        .expect("Should get result from function");
-
-    return dandelion_server::DandelionBody::new(result);
-}
 
 async fn serve_request(
     is_cold: bool,
@@ -192,65 +94,42 @@ async fn serve_request(
         warn!("request parsing failed with: {:?}", request_context_result);
     }
     let (function_name, request_context) = request_context_result.unwrap();
-    let response_body = run_mat_func(
-        dispatcher,
-        is_cold,
-        function_name,
-        request_context,
-        recorder.get_sub_recorder().unwrap(),
-    )
-    .await;
-
+    debug!("finshed creating request context");
+    // TODO match set names to assign sets to composition sets
+    // map sets in the order they are in the request
+    let request_number = request_context.content.len();
+    let request_arc = Arc::new(request_context);
+    let mut inputs = vec![];
+    for request_set in 0..request_number {
+        inputs.push((
+            request_set,
+            CompositionSet::from((request_set, vec![request_arc.clone()])),
+        ));
+    }
+    // let inputs = vec![(0, CompositionSet::from((0, vec![(Arc::new(request))])))];
+    // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
+    recorder
+        .record(RecordPoint::QueueFunctionDispatcher)
+        .unwrap();
+    let function_output = dispatcher
+        .queue_function_by_name(
+            function_name,
+            inputs,
+            None,
+            is_cold,
+            recorder.get_sub_recorder().unwrap(),
+        )
+        .await
+        .expect("Should get result from function");
+    let response_body = dandelion_server::DandelionBody::new(function_output);
+    debug!("finshed creating response body");
     let response = Ok::<_, Infallible>(Response::new(response_body));
-
+    debug!("finshed creating response");
     recorder.record(RecordPoint::EndService).unwrap();
     TRACING_ARCHIVE.get().unwrap().return_recorder(recorder);
 
     return response;
 }
-
-// #[derive(Deserialize)]
-// struct ChainRequest {
-//     name: String,
-//     get_uri: String,
-//     post_uri: String,
-// }
-
-// async fn serve_chain(
-//     is_cold: bool,
-//     req: Request<Incoming>,
-//     dispatcher: Arc<Dispatcher>,
-// ) -> Result<Response<Either<Full<Bytes>, DandelionBody>>, Infallible> {
-//     let mut recorder = TRACING_ARCHIVE.get().unwrap().get_recorder().unwrap();
-//     let _ = recorder.record(RecordPoint::Arrival);
-
-//     let request_buf = req
-//         .collect()
-//         .await
-//         .expect("Should be able to parse body")
-//         .to_bytes();
-//     let request_map: ChainRequest =
-//         bson::from_slice(&request_buf).expect("Should be able to deserialize matrix request");
-
-//     let response_vec = run_chain(
-//         dispatcher,
-//         is_cold,
-//         request_map.name,
-//         request_map.get_uri,
-//         request_map.post_uri,
-//         recorder.get_sub_recorder().unwrap(),
-//     )
-//     .await
-//     .to_be_bytes()
-//     .to_vec();
-
-//     let response = Ok::<_, Infallible>(Response::new(Either::Left(response_vec.into())));
-
-//     recorder.record(RecordPoint::EndService).unwrap();
-//     TRACING_ARCHIVE.get().unwrap().return_recorder(recorder);
-
-//     return response;
-// }
 
 #[derive(Debug, Deserialize)]
 struct RegisterFunction {
@@ -300,7 +179,10 @@ async fn register_function(
             request_map.context_size as usize,
             path_buff.to_str().unwrap(),
             Metadata {
+                #[cfg(feature = "gpu")]
                 input_sets: Arc::new(vec![(String::from("A"), None), (String::from("cfg"), None)]),
+                #[cfg(not(feature = "gpu"))]
+                input_sets: Arc::new(vec![(String::from("A"), None)]),
                 output_sets: Arc::new(vec![String::from("B")]),
             },
         )
@@ -356,12 +238,8 @@ async fn service(
         // TODO rename to cold func and hot func, remove matmul, compute, io
         "/register/function" => register_function(req, dispatcher).await,
         "/register/composition" => register_composition(req, dispatcher).await,
-        "/cold/matmul" => serve_request(true, req, dispatcher).await,
-        "/hot/matmul" => serve_request(false, req, dispatcher).await,
-        // "/cold/compute" => serve_chain(true, req, dispatcher).await,
-        // "/hot/compute" => serve_chain(false, req, dispatcher).await,
-        // "/cold/io" => serve_chain(true, req, dispatcher).await,
-        // "/hot/io" => serve_chain(false, req, dispatcher).await,
+        "/cold/matmul" | "/cold/compute" | "/cold/io" => serve_request(true, req, dispatcher).await,
+        "/hot/matmul" | "/hot/compute" | "/hot/io" => serve_request(false, req, dispatcher).await,
         "/stats" => serve_stats(req).await,
         _ => Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
             format!("Hello, Wor\n").into_bytes(),
@@ -478,7 +356,7 @@ fn main() -> () {
     #[cfg(any(feature = "cheri", feature = "wasm", feature = "mmu"))]
     pool_map.insert(
         engine_type,
-        (num_dispatcher_cores..num_cores)
+        (num_dispatcher_cores + 1..num_cores)
             .map(|code_id| ComputeResource::CPU(code_id as u8))
             .collect(),
     );
@@ -493,13 +371,13 @@ fn main() -> () {
                 .collect(),
         );
     }
-    // #[cfg(feature = "reqwest_io")]
-    // pool_map.insert(
-    //     EngineType::Hyper,
-    //     (0..num_dispatcher_cores)
-    //         .map(|core_id| ComputeResource::CPU(core_id as u8))
-    //         .collect(),
-    // );
+    #[cfg(feature = "reqwest_io")]
+    pool_map.insert(
+        EngineType::Reqwest,
+        (num_dispatcher_cores..num_dispatcher_cores + 1)
+            .map(|core_id| ComputeResource::CPU(core_id as u8))
+            .collect(),
+    );
     let resource_pool = ResourcePool {
         engine_pool: futures::lock::Mutex::new(pool_map),
     };
@@ -520,6 +398,8 @@ fn main() -> () {
     print!(" wasm");
     #[cfg(feature = "gpu")]
     print!(" gpu");
+    #[cfg(feature = "reqwest_io")]
+    print!(" request_io");
     #[cfg(feature = "timestamp")]
     print!(" timestamp");
     print!("\n");

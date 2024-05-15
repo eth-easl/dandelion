@@ -16,6 +16,7 @@ pub struct MmuContext {
 
 impl ContextTrait for MmuContext {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
+        #[cfg(feature = "mmu")]
         if offset < MMAP_BASE_ADDR {
             warn!("write offset smaller than MMAP_BASE_ADDR")
             // TODO: could be an issue if the context will be used by mmu_worker (function context)
@@ -24,6 +25,7 @@ impl ContextTrait for MmuContext {
     }
 
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
+        #[cfg(feature = "mmu")]
         if offset < MMAP_BASE_ADDR {
             warn!("read offset smaller than MMAP_BASE_ADDR")
             // TODO: could be an issue if the context will be used by mmu_worker (function context)
@@ -32,6 +34,7 @@ impl ContextTrait for MmuContext {
     }
 
     fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
+        #[cfg(feature = "mmu")]
         if offset < MMAP_BASE_ADDR {
             warn!("read offset smaller than MMAP_BASE_ADDR")
             // TODO: could be an issue if the context will be used by mmu_worker (function context)

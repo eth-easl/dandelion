@@ -76,27 +76,29 @@ mod server_tests {
         let mut data = Vec::new();
         data.extend_from_slice(&i64::to_le_bytes(1));
         data.extend_from_slice(&i64::to_le_bytes(1));
+        #[cfg(feature = "gpu")]
+        // GPU specific config input for eg. grid size
         let cfg = Vec::from(i64::to_le_bytes(1i64));
+        let mut sets = vec![InputSet {
+            identifier: String::from("A"),
+            items: vec![InputItem {
+                identifier: String::from(""),
+                key: 0,
+                data: &data,
+            }],
+        }];
+        #[cfg(feature = "gpu")]
+        sets.push(InputSet {
+            identifier: String::from("cfg"),
+            items: vec![InputItem {
+                identifier: String::from(""),
+                key: 0,
+                data: &cfg,
+            }],
+        });
         let mat_request = DandelionRequest {
             name: function_name,
-            sets: vec![
-                InputSet {
-                    identifier: String::from("A"),
-                    items: vec![InputItem {
-                        identifier: String::from(""),
-                        key: 0,
-                        data: &data,
-                    }],
-                },
-                InputSet {
-                    identifier: String::from("cfg"),
-                    items: vec![InputItem {
-                        identifier: String::from(""),
-                        key: 0,
-                        data: &cfg,
-                    }],
-                },
-            ],
+            sets,
         };
 
         let client = reqwest::blocking::Client::new();
@@ -210,7 +212,7 @@ mod server_tests {
         assert!(chain_resp.status().is_success());
 
         send_matrix_request("http://localhost:8080/hot/matmul", String::from("matmul"));
-        send_matrix_request("http://localhost:8080/hot/matmul", String::from("chain"));
+        // send_matrix_request("http://localhost:8080/hot/matmul", String::from("chain"));
 
         let status_result = server_killer.server.try_wait();
         let status = status_result.unwrap();

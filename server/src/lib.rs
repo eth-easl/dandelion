@@ -282,7 +282,11 @@ impl DandelionBuf {
                         {
                             ReadMode::ToItemEnd(next_index, next_size)
                         } else {
-                            ReadMode::ToItem(next_index, next_size)
+                            ReadMode::ToItem(
+                                next_index,
+                                self.items[next_index].response_offset
+                                    - self.items[next_index - 1].response_offset,
+                            )
                         }
                     };
                     (to_end, next_read)
