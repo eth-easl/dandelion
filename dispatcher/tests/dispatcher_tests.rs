@@ -1,4 +1,12 @@
-#[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "wasm")))]
+#[cfg(all(
+    test,
+    any(
+        feature = "cheri",
+        feature = "mmu",
+        feature = "wasm",
+        feature = "noisol"
+    )
+))]
 mod dispatcher_tests {
     mod function_tests;
     mod registry_tests;
@@ -182,5 +190,18 @@ mod dispatcher_tests {
 
         #[cfg(target_arch = "aarch64")]
         dispatcherTests!(sysld_wasm_aarch64; WasmMemoryDomain; MemoryResource::None; EngineType::RWasm; vec![ComputeResource::CPU(1)]);
+    }
+
+    #[cfg(feature = "noisol")]
+    mod noisol {
+        use machine_interface::{
+            function_driver::ComputeResource,
+            machine_config::EngineType,
+            memory_domain::{mmap::MmapMemoryDomain, MemoryResource},
+        };
+        #[cfg(target_arch = "x86_64")]
+        dispatcherTests!(elf_noisol_x86_64; MmapMemoryDomain; MemoryResource::None; EngineType::NoIsol; vec![ComputeResource::CPU(1)]);
+        #[cfg(target_arch = "aarch64")]
+        dispatcherTests!(elf_noisol_aarch64; MmapMemoryDomain; MemoryResource::None; EngineType::NoIsol; vec![ComputeResource::CPU(1)]);
     }
 }

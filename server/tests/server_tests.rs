@@ -1,5 +1,10 @@
 #[cfg(all(
-    any(feature = "wasm", feature = "mmu", feature = "cheri"),
+    any(
+        feature = "wasm",
+        feature = "mmu",
+        feature = "cheri",
+        feature = "noisol"
+    ),
     feature = "reqwest_io"
 ))]
 mod server_tests {
@@ -146,6 +151,11 @@ mod server_tests {
         {
             version = "elf_cheri";
             engine_type = String::from("Cheri");
+        }
+        #[cfg(feature = "noisol")]
+        {
+            version = format!("elf_noisol_{}", std::env::consts::ARCH);
+            engine_type = String::from("NoIsol");
         }
         let matmul_path = format!(
             "{}/../machine_interface/tests/data/test_{}_matmul",

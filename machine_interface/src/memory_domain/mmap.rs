@@ -37,11 +37,14 @@ impl MemoryDomain for MmapMemoryDomain {
 
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
         // create and map a shared memory region
-        let mem_space =
-            match MmapMem::create(size, ProtFlags::PROT_READ | ProtFlags::PROT_WRITE, false) {
-                Ok(v) => v,
-                Err(_e) => return Err(DandelionError::MemoryAllocationError),
-            };
+        let mem_space = match MmapMem::create(
+            size,
+            ProtFlags::PROT_READ | ProtFlags::PROT_WRITE | ProtFlags::PROT_EXEC,
+            false,
+        ) {
+            Ok(v) => v,
+            Err(_e) => return Err(DandelionError::MemoryAllocationError),
+        };
 
         let new_context = Box::new(MmapContext { storage: mem_space });
         Ok(Context::new(ContextType::Mmap(new_context), size))

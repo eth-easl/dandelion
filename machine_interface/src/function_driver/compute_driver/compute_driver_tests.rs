@@ -1,4 +1,12 @@
-#[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "wasm")))]
+#[cfg(all(
+    test,
+    any(
+        feature = "cheri",
+        feature = "mmu",
+        feature = "wasm",
+        feature = "noisol"
+    )
+))]
 mod compute_driver_tests {
     use crate::{
         function_driver::{
@@ -567,7 +575,7 @@ mod compute_driver_tests {
             }
 
             #[test]
-            #[cfg(not(feature = "wasm"))]
+            #[cfg(not(any(feature = "wasm", feature = "noisol")))]
             fn test_engine_stdio() {
                 let name = format!(
                     "{}/tests/data/test_{}_stdio",
@@ -579,7 +587,7 @@ mod compute_driver_tests {
             }
 
             #[test]
-            #[cfg(not(feature = "wasm"))]
+            #[cfg(not(any(feature = "wasm", feature = "noisol")))]
             fn test_engine_fileio() {
                 let name = format!(
                     "{}/tests/data/test_{}_fileio",
@@ -663,6 +671,38 @@ mod compute_driver_tests {
 
         #[cfg(target_arch = "aarch64")]
         driverTests!(sysld_wasm_aarch64; WasmMemoryDomain; MemoryResource::None; WasmDriver {};
+        core_affinity::get_core_ids()
+            .and_then(
+                |core_vec|
+                Some(core_vec
+                    .into_iter()
+                    .map(|id| ComputeResource::CPU(id.id as u8))
+                    .collect())).expect("Should have at least one core");
+        vec![
+            ComputeResource::CPU(255),
+            ComputeResource::GPU(0),
+        ]);
+    }
+
+    #[cfg(feature = "noisol")]
+    mod noisol {
+        use crate::function_driver::{compute_driver::noisol::NoIsolDriver, ComputeResource};
+        use crate::memory_domain::{mmap::MmapMemoryDomain, MemoryResource};
+        #[cfg(target_arch = "x86_64")]
+        driverTests!(elf_noisol_x86_64; MmapMemoryDomain; MemoryResource::None; NoIsolDriver {};
+        core_affinity::get_core_ids()
+           .and_then(
+                |core_vec|
+                Some(core_vec
+                    .into_iter()
+                    .map(|id| ComputeResource::CPU(id.id as u8))
+                    .collect())).expect("Should have at least one core");
+        vec![
+            ComputeResource::CPU(255),
+            ComputeResource::GPU(0)
+        ]);
+        #[cfg(target_arch = "aarch64")]
+        driverTests!(elf_noisol_aarch64; MmapMemoryDomain; MemoryResource::None; NoIsolDriver {};
         core_affinity::get_core_ids()
             .and_then(
                 |core_vec|

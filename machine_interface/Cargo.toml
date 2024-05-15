@@ -11,6 +11,7 @@ mmu = ["std"]
 reqwest_io = ["std", "dep:reqwest", "dep:http", "dep:bytes"]
 bytes_context = ["std", "dep:bytes"]
 wasm = ["std"]
+noisol = ["std"]
 timestamp = ["dandelion_commons/timestamp"]
 
 [build-dependencies]

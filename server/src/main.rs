@@ -162,6 +162,8 @@ async fn register_function(
         "Process" => EngineType::Process,
         #[cfg(feature = "cheri")]
         "Cheri" => EngineType::Cheri,
+        #[cfg(feature = "noisol")]
+        "NoIsol" => EngineType::NoIsol,
         _ => panic!("Unkown engine type string"),
     };
     dispatcher
@@ -340,7 +342,14 @@ fn main() -> () {
     let engine_type = EngineType::Process;
     #[cfg(feature = "cheri")]
     let engine_type = EngineType::Cheri;
-    #[cfg(any(feature = "cheri", feature = "wasm", feature = "mmu"))]
+    #[cfg(feature = "noisol")]
+    let engine_type = EngineType::NoIsol;
+    #[cfg(any(
+        feature = "cheri",
+        feature = "wasm",
+        feature = "mmu",
+        feature = "noisol"
+    ))]
     pool_map.insert(
         engine_type,
         (num_dispatcher_cores + 1..num_cores)
@@ -372,6 +381,8 @@ fn main() -> () {
     print!(" mmu");
     #[cfg(feature = "wasm")]
     print!(" wasm");
+    #[cfg(feature = "noisol")]
+    print!(" noisol");
     #[cfg(feature = "reqwest_io")]
     print!(" request_io");
     #[cfg(feature = "timestamp")]
