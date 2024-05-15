@@ -76,16 +76,27 @@ mod server_tests {
         let mut data = Vec::new();
         data.extend_from_slice(&i64::to_le_bytes(1));
         data.extend_from_slice(&i64::to_le_bytes(1));
+        let cfg = Vec::from(i64::to_le_bytes(1i64));
         let mat_request = DandelionRequest {
             name: function_name,
-            sets: vec![InputSet {
-                identifier: String::from("A"),
-                items: vec![InputItem {
-                    identifier: String::from(""),
-                    key: 0,
-                    data: &data,
-                }],
-            }],
+            sets: vec![
+                InputSet {
+                    identifier: String::from("A"),
+                    items: vec![InputItem {
+                        identifier: String::from(""),
+                        key: 0,
+                        data: &data,
+                    }],
+                },
+                InputSet {
+                    identifier: String::from("cfg"),
+                    items: vec![InputItem {
+                        identifier: String::from(""),
+                        key: 0,
+                        data: &cfg,
+                    }],
+                },
+            ],
         };
 
         let client = reqwest::blocking::Client::new();

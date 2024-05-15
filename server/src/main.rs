@@ -140,7 +140,11 @@ async fn run_mat_func(
     mut recorder: Recorder,
 ) -> DandelionBody {
     // TODO match set names to assign sets to composition sets
-    let inputs = vec![(0, CompositionSet::from((0, vec![(Arc::new(request))])))];
+    let request_arc = Arc::new(request);
+    let inputs = vec![
+        (0, CompositionSet::from((0, vec![request_arc.clone()]))),
+        (1, CompositionSet::from((1, vec![request_arc.clone()]))),
+    ];
     let outputs = vec![Some(0)];
     recorder
         .record(RecordPoint::QueueFunctionDispatcher)
@@ -296,7 +300,7 @@ async fn register_function(
             request_map.context_size as usize,
             path_buff.to_str().unwrap(),
             Metadata {
-                input_sets: Arc::new(vec![(String::from("A"), None)]),
+                input_sets: Arc::new(vec![(String::from("A"), None), (String::from("cfg"), None)]),
                 output_sets: Arc::new(vec![String::from("B")]),
             },
         )
