@@ -5,7 +5,7 @@ After=multi-user.target
 Type=simple
 Restart=always
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/usr/local/go/bin:/usr/local/bin/firecracker"
-ExecStart=/bin/bash -c 'cd $HOME/dandelion && NUM_TOTAL_CORES=2 cargo run --bin dandelion_server -F wasm'
+ExecStart=/bin/bash -c 'cd $HOME/dandelion && cargo run --bin dandelion_server -F wasm'
 KillSignal=SIGKILL
 [Install]
 WantedBy=multi-user.target
