@@ -13,6 +13,8 @@ bytes_context = ["std", "dep:bytes"]
 wasm = ["std"]
 timestamp = ["dandelion_commons/timestamp"]
 gpu = ["std"]
+gpu_process = ["gpu"]
+gpu_thread = ["gpu"]
 
 [build-dependencies]
 cmake = "0.1"

@@ -482,38 +482,26 @@ async fn process_inputs(
                         continue;
                     }
                 }
-                // wait for all pending functions to complete
-                if let Ok((_, _, _, _)) = tokio::try_join!(
-                    worker1.available.acquire(),
-                    worker2.available.acquire(),
-                    worker3.available.acquire(),
-                    worker4.available.acquire(),
-                ) {
-                    // execute transfer
-                    let transfer_result = memory_domain::transfer_data_item(
-                        &mut destination,
-                        &source,
-                        destination_set_index,
-                        destination_allignment,
-                        destination_item_index,
-                        destination_set_name.as_str(),
-                        source_set_index,
-                        source_item_index,
-                    );
-                    match recorder.record(RecordPoint::TransferEnd) {
-                        Ok(()) => (),
-                        Err(err) => {
-                            debt.fulfill(Box::new(Err(err)));
-                            continue;
-                        }
+                let transfer_result = memory_domain::transfer_data_item(
+                    &mut destination,
+                    &source,
+                    destination_set_index,
+                    destination_allignment,
+                    destination_item_index,
+                    destination_set_name.as_str(),
+                    source_set_index,
+                    source_item_index,
+                );
+                match recorder.record(RecordPoint::TransferEnd) {
+                    Ok(()) => (),
+                    Err(err) => {
+                        debt.fulfill(Box::new(Err(err)));
+                        continue;
                     }
-                    let transfer_return = transfer_result.and(Ok(WorkDone::Context(destination)));
-                    debt.fulfill(Box::new(transfer_return));
-                    continue;
-                } else {
-                    // shouldn't really happen unless Workers processes die
-                    debt.fulfill(Box::new(Err(DandelionError::EngineError)));
                 }
+                let transfer_return = transfer_result.and(Ok(WorkDone::Context(destination)));
+                debt.fulfill(Box::new(transfer_return));
+                continue;
             }
             WorkToDo::ParsingArguments(ParsingArguments {
                 driver,

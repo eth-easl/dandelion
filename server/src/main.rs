@@ -167,8 +167,10 @@ async fn register_function(
         "Process" => EngineType::Process,
         #[cfg(feature = "cheri")]
         "Cheri" => EngineType::Cheri,
-        #[cfg(feature = "gpu")]
-        "Gpu" => EngineType::Gpu,
+        #[cfg(feature = "gpu_thread")]
+        "GpuThread" => EngineType::GpuThread,
+        #[cfg(feature = "gpu_process")]
+        "GpuProcess" => EngineType::GpuProcess,
         _ => panic!("Unkown engine type string"),
     };
 
@@ -351,8 +353,10 @@ fn main() -> () {
     let engine_type = EngineType::Process;
     #[cfg(feature = "cheri")]
     let engine_type = EngineType::Cheri;
-    #[cfg(feature = "gpu")]
-    let engine_type = EngineType::Gpu;
+    #[cfg(feature = "gpu_thread")]
+    let engine_type = EngineType::GpuThread;
+    #[cfg(feature = "gpu_process")]
+    let engine_type = EngineType::GpuProcess;
     #[cfg(any(feature = "cheri", feature = "wasm", feature = "mmu"))]
     pool_map.insert(
         engine_type,
@@ -360,7 +364,7 @@ fn main() -> () {
             .map(|code_id| ComputeResource::CPU(code_id as u8))
             .collect(),
     );
-    #[cfg(feature = "gpu")]
+    #[cfg(any(feature = "gpu_thread", feature = "gpu_process"))]
     {
         let gpu_count: u8 = 4; // TODO: don't hard code this
         pool_map.insert(
@@ -396,8 +400,10 @@ fn main() -> () {
     print!(" mmu");
     #[cfg(feature = "wasm")]
     print!(" wasm");
-    #[cfg(feature = "gpu")]
-    print!(" gpu");
+    #[cfg(feature = "gpu_thread")]
+    print!(" gpu_thread");
+    #[cfg(feature = "gpu_process")]
+    print!(" gpu_process");
     #[cfg(feature = "reqwest_io")]
     print!(" request_io");
     #[cfg(feature = "timestamp")]

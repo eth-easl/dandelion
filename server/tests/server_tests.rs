@@ -77,8 +77,8 @@ mod server_tests {
         data.extend_from_slice(&i64::to_le_bytes(1));
         data.extend_from_slice(&i64::to_le_bytes(1));
         #[cfg(feature = "gpu")]
-        // GPU specific config input for eg. grid size
-        let cfg = Vec::from(i64::to_le_bytes(1i64));
+        let cfg = Vec::from(i64::to_le_bytes(1i64)); // GPU specific config input for eg. grid size
+
         let mut sets = vec![InputSet {
             identifier: String::from("A"),
             items: vec![InputItem {
@@ -87,6 +87,7 @@ mod server_tests {
                 data: &data,
             }],
         }];
+
         #[cfg(feature = "gpu")]
         sets.push(InputSet {
             identifier: String::from("cfg"),
@@ -144,7 +145,7 @@ mod server_tests {
 
         // register function
         let version: String;
-        let engine_type;
+        let mut engine_type;
         #[cfg(feature = "wasm")]
         {
             version = format!("sysld_wasm_{}", std::env::consts::ARCH);
@@ -176,7 +177,14 @@ mod server_tests {
                 "{}/../machine_interface/hip_interface/matmul_para.json",
                 env!("CARGO_MANIFEST_DIR"),
             );
-            engine_type = String::from("Gpu");
+            #[cfg(feature = "gpu_thread")]
+            {
+                engine_type = String::from("GpuThread");
+            }
+            #[cfg(feature = "gpu_process")]
+            {
+                engine_type = String::from("GpuProcess");
+            }
         }
         let register_request = RegisterFunction {
             name: String::from("matmul"),

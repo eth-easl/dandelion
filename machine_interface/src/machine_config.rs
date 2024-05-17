@@ -18,8 +18,10 @@ pub enum EngineType {
     RWasm,
     #[cfg(feature = "mmu")]
     Process,
-    #[cfg(feature = "gpu")]
-    Gpu,
+    #[cfg(feature = "gpu_thread")]
+    GpuThread,
+    #[cfg(feature = "gpu_process")]
+    GpuProcess,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -45,8 +47,10 @@ pub fn get_compatibilty_table() -> BTreeMap<EngineType, DomainType> {
         (EngineType::RWasm, DomainType::RWasm),
         #[cfg(feature = "mmu")]
         (EngineType::Process, DomainType::Process),
-        #[cfg(feature = "gpu")]
-        (EngineType::Gpu, DomainType::Gpu),
+        #[cfg(feature = "gpu_thread")]
+        (EngineType::GpuThread, DomainType::Gpu),
+        #[cfg(feature = "gpu_process")]
+        (EngineType::GpuProcess, DomainType::Gpu),
     ]);
 }
 
@@ -131,11 +135,18 @@ pub fn get_available_drivers() -> BTreeMap<EngineType, &'static dyn Driver> {
                 crate::function_driver::compute_driver::mmu::MmuDriver {},
             )) as &'static dyn Driver,
         ),
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu_thread")]
         (
-            EngineType::Gpu,
+            EngineType::GpuThread,
             Box::leak(Box::new(
-                crate::function_driver::compute_driver::gpu::GpuDriver {},
+                crate::function_driver::compute_driver::gpu::GpuThreadDriver {},
+            )) as &'static dyn Driver,
+        ),
+        #[cfg(feature = "gpu_process")]
+        (
+            EngineType::GpuProcess,
+            Box::leak(Box::new(
+                crate::function_driver::compute_driver::gpu::GpuProcessDriver {},
             )) as &'static dyn Driver,
         ),
     ]);

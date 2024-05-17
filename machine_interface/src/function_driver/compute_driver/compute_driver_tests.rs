@@ -703,7 +703,7 @@ mod compute_driver_tests {
                     gpu::{
                         dummy_run,
                         hip::{self, DEFAULT_STREAM},
-                        GpuDriver, GpuLoop,
+                        GpuLoop, GpuProcessDriver, GpuThreadDriver,
                     },
                 },
                 load_utils::load_u8_from_file,
@@ -719,6 +719,20 @@ mod compute_driver_tests {
         // To force tests to run sequentially as we might otherwise run out of GPU memory
         lazy_static::lazy_static! {
             static ref GPU_LOCK: Mutex<()> = Mutex::new(());
+        }
+
+        fn get_driver() -> Box<dyn Driver> {
+            #[cfg(all(feature = "gpu_process", feature = "gpu_thread"))]
+            panic!("gpu_process and gpu_thread enabled simultaneously");
+
+            #[cfg(not(any(feature = "gpu_process", feature = "gpu_thread")))]
+            panic!("Neither gpu_process nor gpu_thread enabled");
+
+            #[cfg(feature = "gpu_process")]
+            return Box::new(GpuProcessDriver {});
+
+            #[cfg(feature = "gpu_thread")]
+            return Box::new(GpuThreadDriver {});
         }
 
         #[ignore = "pollutes stdout"]
@@ -765,7 +779,7 @@ mod compute_driver_tests {
         #[test]
         fn minimal() {
             let _lock = GPU_LOCK.lock().unwrap();
-            let driver: Box<dyn Driver> = Box::new(GpuDriver {});
+            let driver: Box<dyn Driver> = get_driver();
             engine_minimal::<MmuMemoryDomain>(
                 "/home/smithj/dandelion/machine_interface/hip_interface/minimal.json",
                 MemoryResource::None,
@@ -777,7 +791,7 @@ mod compute_driver_tests {
         #[test]
         fn basic_input_output() {
             let _lock = GPU_LOCK.lock().unwrap();
-            let driver: Box<dyn Driver> = Box::new(GpuDriver {});
+            let driver: Box<dyn Driver> = get_driver();
             let (mut function_context, config, queue) =
                 prepare_engine_and_function::<MmuMemoryDomain>(
                     "/home/smithj/dandelion/machine_interface/hip_interface/basic_io.json",
@@ -847,7 +861,7 @@ mod compute_driver_tests {
             let filename =
                 "/home/smithj/dandelion/machine_interface/hip_interface/matmul_loop.json";
             let dom_init = MemoryResource::None;
-            let driver: Box<dyn Driver> = Box::new(GpuDriver {});
+            let driver: Box<dyn Driver> = get_driver();
             let drv_init = vec![ComputeResource::GPU(7, 0)];
             let (mut function_context, config, queue) =
                 prepare_engine_and_function::<MmuMemoryDomain>(
@@ -934,7 +948,7 @@ mod compute_driver_tests {
             let filename =
                 "/home/smithj/dandelion/machine_interface/hip_interface/matmul_para.json";
             let dom_init = MemoryResource::None;
-            let driver: Box<dyn Driver> = Box::new(GpuDriver {});
+            let driver: Box<dyn Driver> = get_driver();
             let drv_init = vec![ComputeResource::GPU(7, 0)];
             const LOWER_SIZE_BOUND: usize = 2;
             const UPPER_SIZE_BOUND: usize = 16;
@@ -1127,7 +1141,7 @@ mod compute_driver_tests {
             let _lock = GPU_LOCK.lock().unwrap();
             let filename = "/home/smithj/dandelion/machine_interface/hip_interface/inference.json";
             let dom_init = MemoryResource::None;
-            let driver: Box<dyn Driver> = Box::new(GpuDriver {});
+            let driver: Box<dyn Driver> = get_driver();
             let drv_init = vec![ComputeResource::GPU(7, 0)];
             let (mut function_context, config, queue) =
                 prepare_engine_and_function::<MmuMemoryDomain>(

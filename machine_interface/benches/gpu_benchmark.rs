@@ -10,7 +10,7 @@ use machine_interface::function_driver::thread_utils::EngineLoop;
 use machine_interface::promise::Promise;
 use machine_interface::{
     function_driver::{
-        compute_driver::gpu::{GpuDriver, GpuLoop},
+        compute_driver::gpu::{GpuLoop, GpuThreadDriver},
         test_queue::TestQueue,
         ComputeResource, Driver, EngineArguments, FunctionArguments,
     },
@@ -30,7 +30,7 @@ fn context_allocation(c: &mut Criterion) {
 
     let filename = "/home/smithj/dandelion/machine_interface/hip_interface/matmul_para.json";
     let dom_init = MemoryResource::None;
-    let driver: Box<dyn Driver> = Box::new(GpuDriver {});
+    let driver: Box<dyn Driver> = Box::new(GpuThreadDriver {});
     let domain = MmuMemoryDomain::init(dom_init).expect("Should have initialized domain");
     let function = driver
         .parse_function(filename.to_string(), &domain)
@@ -66,7 +66,7 @@ fn engine_loop_run_matmul(c: &mut Criterion) {
     // mostly taken from compute_driver_tests
     let filename = "/home/smithj/dandelion/machine_interface/hip_interface/matmul_para.json";
     let dom_init = MemoryResource::None;
-    let driver: Box<dyn Driver> = Box::new(GpuDriver {});
+    let driver: Box<dyn Driver> = Box::new(GpuThreadDriver {});
     let domain = MmuMemoryDomain::init(dom_init).expect("Should have initialized domain");
     let function = driver
         .parse_function(filename.to_string(), &domain)
@@ -152,7 +152,7 @@ fn get_inference_inputs() -> (Vec<f32>, Vec<f32>) {
 fn inference_benchmark_latency(c: &mut Criterion) {
     let filename = "/home/smithj/dandelion/machine_interface/hip_interface/inference.json";
     let dom_init = MemoryResource::None;
-    let driver: Box<dyn Driver> = Box::new(GpuDriver {});
+    let driver: Box<dyn Driver> = Box::new(GpuThreadDriver {});
     let drv_init = ComputeResource::GPU(7, 0);
     let queue = Box::new(TestQueue::new());
     let domain = MmuMemoryDomain::init(dom_init).expect("Should have initialized domain");

@@ -267,34 +267,74 @@ impl EngineLoop for GpuLoop {
     }
 }
 
-pub struct GpuDriver {}
+fn common_parse(
+    function_path: String,
+    static_domain: &'static dyn crate::memory_domain::MemoryDomain,
+) -> DandelionResult<crate::function_driver::Function> {
+    let (mut gpu_config, module_path) = config_parsing::parse_config(&function_path)?;
 
-impl Driver for GpuDriver {
+    let code_object = load_u8_from_file(module_path)?;
+    let size = code_object.len() * size_of::<u8>();
+    let mut context = static_domain.acquire_context(size)?;
+    context.write(0, &code_object)?;
+    gpu_config.module_offset = std::mem::size_of::<DandelionSystemData<usize, usize>>();
+
+    let config = FunctionConfig::GpuConfig(gpu_config);
+    // Location of code object
+    context.content = vec![Some(DataSet {
+        ident: String::from("static"),
+        buffers: vec![DataItem {
+            ident: String::from(""),
+            data: Position { offset: 0, size },
+            key: 0,
+        }],
+    })];
+    let requirements = DataRequirementList {
+        static_requirements: vec![],
+        input_requirements: vec![],
+    };
+
+    Ok(Function {
+        requirements,
+        context,
+        config,
+    })
+}
+
+fn common_start(resource: ComputeResource) -> DandelionResult<(u8, u8)> {
+    // extract resources
+    let (cpu_slot, gpu_id) = match resource {
+        ComputeResource::GPU(cpu, gpu) => (cpu, gpu),
+        _ => return Err(DandelionError::EngineResourceError),
+    };
+    // check that core is available
+    let available_cores = match core_affinity::get_core_ids() {
+        None => return Err(DandelionError::EngineError),
+        Some(cores) => cores,
+    };
+    if !available_cores
+        .iter()
+        .any(|x| x.id == usize::from(cpu_slot))
+    {
+        return Err(DandelionError::EngineResourceError);
+    }
+    // check gpu is available
+    if usize::from(gpu_id) >= hip::get_device_count()? {
+        return Err(DandelionError::EngineResourceError);
+    }
+
+    Ok((cpu_slot, gpu_id))
+}
+
+pub struct GpuThreadDriver {}
+
+impl Driver for GpuThreadDriver {
     fn start_engine(
         &self,
         resource: ComputeResource,
         queue: Box<dyn WorkQueue + Send + Sync>,
     ) -> dandelion_commons::DandelionResult<()> {
-        // extract resources
-        let (cpu_slot, gpu_id) = match resource {
-            ComputeResource::GPU(cpu, gpu) => (cpu, gpu),
-            _ => return Err(DandelionError::EngineResourceError),
-        };
-        // check that core is available
-        let available_cores = match core_affinity::get_core_ids() {
-            None => return Err(DandelionError::EngineError),
-            Some(cores) => cores,
-        };
-        if !available_cores
-            .iter()
-            .any(|x| x.id == usize::from(cpu_slot))
-        {
-            return Err(DandelionError::EngineResourceError);
-        }
-        // check gpu is available
-        if usize::from(gpu_id) >= hip::get_device_count()? {
-            return Err(DandelionError::EngineResourceError);
-        }
+        let (cpu_slot, gpu_id) = common_start(resource)?;
 
         // To switch between single executor and process pool
         spawn(move || start_gpu_thread(cpu_slot, gpu_id, queue));
@@ -306,34 +346,32 @@ impl Driver for GpuDriver {
         &self,
         function_path: String,
         static_domain: &'static dyn crate::memory_domain::MemoryDomain,
-    ) -> dandelion_commons::DandelionResult<crate::function_driver::Function> {
-        let (mut gpu_config, module_path) = config_parsing::parse_config(&function_path)?;
+    ) -> DandelionResult<crate::function_driver::Function> {
+        common_parse(function_path, static_domain)
+    }
+}
 
-        let code_object = load_u8_from_file(module_path)?;
-        let size = code_object.len() * size_of::<u8>();
-        let mut context = static_domain.acquire_context(size)?;
-        context.write(0, &code_object)?;
-        gpu_config.module_offset = std::mem::size_of::<DandelionSystemData<usize, usize>>();
+pub struct GpuProcessDriver {}
 
-        let config = FunctionConfig::GpuConfig(gpu_config);
-        // Location of code object
-        context.content = vec![Some(DataSet {
-            ident: String::from("static"),
-            buffers: vec![DataItem {
-                ident: String::from(""),
-                data: Position { offset: 0, size },
-                key: 0,
-            }],
-        })];
-        let requirements = DataRequirementList {
-            static_requirements: vec![],
-            input_requirements: vec![],
-        };
+impl Driver for GpuProcessDriver {
+    fn start_engine(
+        &self,
+        resource: ComputeResource,
+        queue: Box<dyn WorkQueue + Send + Sync>,
+    ) -> dandelion_commons::DandelionResult<()> {
+        let (cpu_slot, gpu_id) = common_start(resource)?;
 
-        Ok(Function {
-            requirements,
-            context,
-            config,
-        })
+        // To switch between single executor and process pool
+        // spawn(move || start_gpu_thread(cpu_slot, gpu_id, queue));
+        spawn(move || start_gpu_process_pool(cpu_slot, gpu_id, queue));
+        Ok(())
+    }
+
+    fn parse_function(
+        &self,
+        function_path: String,
+        static_domain: &'static dyn crate::memory_domain::MemoryDomain,
+    ) -> DandelionResult<crate::function_driver::Function> {
+        common_parse(function_path, static_domain)
     }
 }
