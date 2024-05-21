@@ -80,7 +80,7 @@ impl Dispatcher {
         function_name: String,
         engine_type: EngineType,
         ctx_size: usize,
-        path: &str,
+        path: String,
         metadata: Metadata,
     ) -> DandelionResult<FunctionId> {
         return self

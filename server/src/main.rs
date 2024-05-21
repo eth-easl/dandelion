@@ -1,5 +1,8 @@
 use core_affinity::{self, CoreId};
-use dandelion_commons::records::{Archive, ArchiveInit, RecordPoint, Recorder};
+use dandelion_commons::{
+    records::{Archive, ArchiveInit, RecordPoint, Recorder},
+    DandelionResult,
+};
 use dandelion_server::DandelionBody;
 use dispatcher::{
     composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
@@ -13,9 +16,8 @@ use hyper::{
 };
 use log::{debug, error, info, warn};
 use machine_interface::{
-    function_driver::ComputeResource,
-    machine_config::EngineType,
-    memory_domain::{bytes_context::BytesContext, Context},
+    function_driver::ComputeResource, machine_config::EngineType,
+    memory_domain::bytes_context::BytesContext,
 };
 use serde::Deserialize;
 use std::{
@@ -25,39 +27,47 @@ use std::{
     net::SocketAddr,
     path::PathBuf,
     sync::{
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicUsize, Ordering},
         Arc, OnceLock,
     },
 };
-use tokio::{net::TcpListener, runtime::Builder, signal::unix::SignalKind};
+use tokio::{
+    net::TcpListener,
+    runtime::Builder,
+    select,
+    signal::unix::SignalKind,
+    spawn,
+    sync::{mpsc, oneshot},
+};
 
 const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
-// TODO: integrate into serve request
-async fn run_mat_func(
-    dispatcher: Arc<Dispatcher>,
-    is_cold: bool,
-    function_name: String,
-    request: Context,
-    mut recorder: Recorder,
-) -> DandelionBody {
-    // TODO match set names to assign sets to composition sets
-    let inputs = vec![(0, CompositionSet::from((0, vec![(Arc::new(request))])))];
-    recorder
-        .record(RecordPoint::QueueFunctionDispatcher)
-        .unwrap();
-    let result = dispatcher
-        .queue_function_by_name(function_name, inputs, None, is_cold, recorder)
-        .await
-        .expect("Should get result from function");
-
-    return dandelion_server::DandelionBody::new(result);
+enum DispatcherCommand {
+    FunctionRequest {
+        name: String,
+        inputs: Vec<(usize, CompositionSet)>,
+        is_cold: bool,
+        recorder: Recorder,
+        callback: oneshot::Sender<DandelionResult<BTreeMap<usize, CompositionSet>>>,
+    },
+    FunctionRegistration {
+        name: String,
+        engine_type: EngineType,
+        context_size: usize,
+        path: String,
+        metadata: Metadata,
+        callback: oneshot::Sender<DandelionResult<u64>>,
+    },
+    CompositionRegistration {
+        composition: String,
+        callback: oneshot::Sender<DandelionResult<()>>,
+    },
 }
 
 async fn serve_request(
     is_cold: bool,
     req: Request<Incoming>,
-    dispatcher: Arc<Dispatcher>,
+    dispatcher: mpsc::Sender<DispatcherCommand>,
 ) -> Result<Response<DandelionBody>, Infallible> {
     let mut recorder = TRACING_ARCHIVE.get().unwrap().get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
@@ -101,20 +111,24 @@ async fn serve_request(
             CompositionSet::from((request_set, vec![request_arc.clone()])),
         ));
     }
-    // let inputs = vec![(0, CompositionSet::from((0, vec![(Arc::new(request))])))];
     // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
     recorder
         .record(RecordPoint::QueueFunctionDispatcher)
         .unwrap();
-    let function_output = dispatcher
-        .queue_function_by_name(
-            function_name,
+    let (callback, output_recevier) = tokio::sync::oneshot::channel();
+    dispatcher
+        .send(DispatcherCommand::FunctionRequest {
+            name: function_name,
             inputs,
-            None,
             is_cold,
-            recorder.get_sub_recorder().unwrap(),
-        )
+            recorder: recorder.get_sub_recorder().unwrap(),
+            callback,
+        })
         .await
+        .unwrap();
+    let function_output = output_recevier
+        .await
+        .unwrap()
         .expect("Should get result from function");
     let response_body = dandelion_server::DandelionBody::new(function_output);
     debug!("finshed creating response body");
@@ -136,7 +150,7 @@ struct RegisterFunction {
 
 async fn register_function(
     req: Request<Incoming>,
-    dispatcher: Arc<Dispatcher>,
+    dispatcher: mpsc::Sender<DispatcherCommand>,
 ) -> Result<Response<DandelionBody>, Infallible> {
     let bytes = req
         .collect()
@@ -164,18 +178,24 @@ async fn register_function(
         "Cheri" => EngineType::Cheri,
         _ => panic!("Unkown engine type string"),
     };
+    let (callback, confirmation) = oneshot::channel();
     dispatcher
-        .insert_func(
-            request_map.name,
+        .send(DispatcherCommand::FunctionRegistration {
+            name: request_map.name,
             engine_type,
-            request_map.context_size as usize,
-            path_buff.to_str().unwrap(),
-            Metadata {
+            context_size: request_map.context_size as usize,
+            path: path_buff.to_str().unwrap().to_string(),
+            metadata: Metadata {
                 input_sets: Arc::new(vec![(String::from(""), None)]),
                 output_sets: Arc::new(vec![String::from("")]),
             },
-        )
+            callback,
+        })
         .await
+        .unwrap();
+    confirmation
+        .await
+        .unwrap()
         .expect("Should be able to insert function");
     return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
         "Function registered".as_bytes().to_vec(),
@@ -189,7 +209,7 @@ struct RegisterChain {
 
 async fn register_composition(
     req: Request<Incoming>,
-    dispatcher: Arc<Dispatcher>,
+    dispatcher: mpsc::Sender<DispatcherCommand>,
 ) -> Result<Response<DandelionBody>, Infallible> {
     let bytes = req
         .collect()
@@ -199,11 +219,18 @@ async fn register_composition(
     // find first line end character
     let request_map: RegisterChain =
         bson::from_slice(&bytes).expect("Should be able to deserialize request");
-    // write function to file
+    let (callback, confirmation) = oneshot::channel();
     dispatcher
-        .insert_compositions(request_map.composition)
+        .send(DispatcherCommand::CompositionRegistration {
+            composition: request_map.composition,
+            callback,
+        })
         .await
-        .expect("Should be able to insert function");
+        .unwrap();
+    confirmation
+        .await
+        .unwrap()
+        .expect("Should be able to insert composition");
     return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
         "Function registered".as_bytes().to_vec(),
     )));
@@ -220,7 +247,7 @@ async fn serve_stats(_req: Request<Incoming>) -> Result<Response<DandelionBody>,
 
 async fn service(
     req: Request<Incoming>,
-    dispatcher: Arc<Dispatcher>,
+    dispatcher: mpsc::Sender<DispatcherCommand>,
 ) -> Result<Response<DandelionBody>, Infallible> {
     let uri = req.uri().path();
     match uri {
@@ -239,7 +266,68 @@ async fn service(
 /// Recording setup
 static TRACING_ARCHIVE: OnceLock<Archive> = OnceLock::new();
 
-async fn service_loop(dispacher: Arc<Dispatcher>) {
+async fn dispatcher_loop(
+    mut request_receiver: mpsc::Receiver<DispatcherCommand>,
+    dispatcher: &'static Dispatcher,
+) {
+    while let Some(dispatcher_args) = request_receiver.recv().await {
+        match dispatcher_args {
+            DispatcherCommand::FunctionRequest {
+                name,
+                inputs,
+                is_cold,
+                recorder,
+                mut callback,
+            } => {
+                let function_future =
+                    dispatcher.queue_function_by_name(name, inputs, None, is_cold, recorder);
+                spawn(async {
+                    select! {
+                        function_output = function_future => {
+                            callback.send(function_output).unwrap();
+                        }
+                        _ = callback.closed() => ()
+                    }
+                });
+            }
+            DispatcherCommand::FunctionRegistration {
+                name,
+                engine_type,
+                context_size,
+                metadata,
+                mut callback,
+                path,
+            } => {
+                let insertion_future =
+                    dispatcher.insert_func(name, engine_type, context_size, path, metadata);
+                spawn(async {
+                    select! {
+                        result = insertion_future => {
+                            callback.send(result).unwrap();
+                        }
+                        _ = callback.closed() => ()
+                    }
+                });
+            }
+            DispatcherCommand::CompositionRegistration {
+                composition,
+                mut callback,
+            } => {
+                let insertion_future = dispatcher.insert_compositions(composition);
+                spawn(async {
+                    select! {
+                        result = insertion_future => {
+                            callback.send(result).unwrap();
+                        }
+                        _ = callback.closed() => ()
+                    }
+                });
+            }
+        };
+    }
+}
+
+async fn service_loop(request_sender: mpsc::Sender<DispatcherCommand>) {
     // socket to listen to
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     let listener = TcpListener::bind(addr).await.unwrap();
@@ -251,7 +339,7 @@ async fn service_loop(dispacher: Arc<Dispatcher>) {
         tokio::select! {
             connection_pair = listener.accept() => {
                 let (stream,_) = connection_pair.unwrap();
-                let loop_dispatcher = dispacher.clone();
+                let loop_dispatcher = request_sender.clone();
                 let io = hyper_util::rt::TokioIo::new(stream);
                 tokio::task::spawn(async move {
                     let service_dispatcher_ptr = loop_dispatcher.clone();
@@ -296,7 +384,6 @@ fn main() -> () {
     }
 
     // find available resources
-    let num_cores = config.total_cores;
     let num_phyiscal_cores = u8::try_from(num_cpus::get_physical()).unwrap();
     let num_virt_cores = u8::try_from(num_cpus::get()).unwrap();
     if num_phyiscal_cores != num_virt_cores {
@@ -305,29 +392,82 @@ fn main() -> () {
             num_virt_cores, num_phyiscal_cores
         );
     }
-    // TODO: This calculation makes sense only for running matmul-128x128 workload on MMU engines
-    let num_dispatcher_cores = config.dispatcher_cores;
-    assert!(
-        num_dispatcher_cores > 0 && num_dispatcher_cores < num_cores,
-        "invalid dispatcher core number: {}",
-        num_dispatcher_cores
-    );
-    // make multithreaded front end that only uses core 0
+
+    let resource_conversion = |core_index| ComputeResource::CPU(core_index as u8);
+
+    // create core allocations
+    let (first_engine_core, frontend_cores, dispatcher_cores) =
+        match (config.frontend_cores, config.dispatcher_cores) {
+            // Per default use one core for both
+            (None, None) => (1, vec![0], vec![0]),
+            // If only dispatcher cores or only frontend cores are specified use one for dispatcher, rest for frontend
+            (None, Some(cores)) | (Some(cores), None) => (
+                cores,
+                (0..cores - 1).collect(),
+                (cores - 1..cores).collect(),
+            ),
+            // If both are specified give them the according resources
+            (Some(f_cores), Some(d_cores)) => (
+                f_cores + d_cores,
+                (0..f_cores).collect(),
+                (f_cores..f_cores + d_cores).collect(),
+            ),
+        };
+    assert!(frontend_cores.len() > 0);
+    assert!(dispatcher_cores.len() > 0);
+
+    let num_io_cores = config.io_cores.unwrap_or(0);
+    assert!(first_engine_core < config.total_cores);
+    assert!(first_engine_core + num_io_cores <= config.total_cores);
+    let io_cores = (first_engine_core..first_engine_core + num_io_cores)
+        .map(resource_conversion)
+        .collect();
+    let first_compute_core = first_engine_core + num_io_cores;
+    assert!(first_compute_core < config.total_cores);
+    let compute_cores = (first_compute_core..config.total_cores)
+        .map(resource_conversion)
+        .collect();
+
+    // make multithreaded front end runtime
     // set up tokio runtime, need io in any case
     let mut runtime_builder = Builder::new_multi_thread();
     runtime_builder.enable_io();
-    runtime_builder.worker_threads(num_dispatcher_cores.into());
-    runtime_builder.on_thread_start(|| {
-        static ATOMIC_ID: AtomicU8 = AtomicU8::new(0);
-        let core_id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
-        if !core_affinity::set_for_current(CoreId { id: core_id.into() }) {
+    runtime_builder.worker_threads(frontend_cores.len());
+    runtime_builder.on_thread_start(move || {
+        static ATOMIC_INDEX: AtomicUsize = AtomicUsize::new(0);
+        let core_index = ATOMIC_INDEX.fetch_add(1, Ordering::SeqCst);
+        if !core_affinity::set_for_current(CoreId {
+            id: frontend_cores[core_index].into(),
+        }) {
             return;
         }
-        info!("Dispatcher running on core {}", core_id);
+        info!(
+            "Frontend thread running on core {}",
+            frontend_cores[core_index]
+        );
     });
     runtime_builder.global_queue_interval(10);
     runtime_builder.event_interval(10);
     let runtime = runtime_builder.build().unwrap();
+
+    let dispatcher_runtime = Builder::new_multi_thread()
+        .worker_threads(dispatcher_cores.len())
+        .on_thread_start(move || {
+            static ATOMIC_INDEX: AtomicUsize = AtomicUsize::new(0);
+            let core_index = ATOMIC_INDEX.fetch_add(1, Ordering::SeqCst);
+            if !core_affinity::set_for_current(CoreId {
+                id: dispatcher_cores[core_index].into(),
+            }) {
+                return;
+            }
+            info!(
+                "Dispatcher thread running on core {}",
+                dispatcher_cores[core_index]
+            );
+        })
+        .build()
+        .unwrap();
+    let (dispatcher_sender, dispatcher_recevier) = mpsc::channel(1000);
 
     // set up dispatcher configuration basics
     let mut pool_map = BTreeMap::new();
@@ -341,26 +481,19 @@ fn main() -> () {
     #[cfg(feature = "cheri")]
     let engine_type = EngineType::Cheri;
     #[cfg(any(feature = "cheri", feature = "wasm", feature = "mmu"))]
-    pool_map.insert(
-        engine_type,
-        (num_dispatcher_cores + 1..num_cores)
-            .map(|code_id| ComputeResource::CPU(code_id as u8))
-            .collect(),
-    );
+    pool_map.insert(engine_type, compute_cores);
     #[cfg(feature = "reqwest_io")]
-    pool_map.insert(
-        EngineType::Reqwest,
-        (num_dispatcher_cores..num_dispatcher_cores + 1)
-            .map(|core_id| ComputeResource::CPU(core_id as u8))
-            .collect(),
-    );
+    pool_map.insert(EngineType::Reqwest, io_cores);
     let resource_pool = ResourcePool {
         engine_pool: futures::lock::Mutex::new(pool_map),
     };
 
     // Create an ARC pointer to the dispatcher for thread-safe access
-    let dispatcher_ptr =
-        Arc::new(Dispatcher::init(resource_pool).expect("Should be able to start dispatcher"));
+    let dispatcher = Box::leak(Box::new(
+        Dispatcher::init(resource_pool).expect("Should be able to start dispatcher"),
+    ));
+    // start dispatcher
+    dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
 
     let _guard = runtime.enter();
 
@@ -379,7 +512,7 @@ fn main() -> () {
     print!("\n");
 
     // Run this server for... forever... unless I receive a signal!
-    runtime.block_on(service_loop(dispatcher_ptr));
+    runtime.block_on(service_loop(dispatcher_sender));
 
     // clean up folder in tmp that is used for function storage
     std::fs::remove_dir_all(FUNCTION_FOLDER_PATH).unwrap();
