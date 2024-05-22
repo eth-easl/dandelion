@@ -107,6 +107,7 @@ pub fn get_size(
                 return Err(DandelionError::ConfigMissmatch);
             }
 
+            // TODO: make this more portable (not usize)
             let mut buf: [usize; 1] = [0];
             context.read(data_item.data.offset + relative_offset, &mut buf)?;
 

@@ -181,11 +181,19 @@ async fn register_function(
             request_map.context_size as usize,
             path_buff.to_str().unwrap(),
             Metadata {
-                #[cfg(feature = "gpu")]
-                input_sets: Arc::new(vec![(String::from("A"), None), (String::from("cfg"), None)]),
-                #[cfg(not(feature = "gpu"))]
-                input_sets: Arc::new(vec![(String::from("A"), None)]),
-                output_sets: Arc::new(vec![String::from("B")]),
+                // Comment to switch between matmul and inference workloads. TODO: stop hard coding
+                input_sets: Arc::new(vec![
+                    (String::from("A"), None),
+                    (String::from("B"), None),
+                    (String::from("cfg"), None),
+                ]),
+                // #[cfg(feature = "gpu")]
+                // input_sets: Arc::new(vec![(String::from("A"), None), (String::from("cfg"), None)]),
+                // #[cfg(not(feature = "gpu"))]
+                // input_sets: Arc::new(vec![(String::from("A"), None)]),
+
+                // output_sets: Arc::new(vec![String::from("B")]),
+                output_sets: Arc::new(vec![String::from("D")]),
             },
         )
         .await
@@ -240,8 +248,12 @@ async fn service(
         // TODO rename to cold func and hot func, remove matmul, compute, io
         "/register/function" => register_function(req, dispatcher).await,
         "/register/composition" => register_composition(req, dispatcher).await,
-        "/cold/matmul" | "/cold/compute" | "/cold/io" => serve_request(true, req, dispatcher).await,
-        "/hot/matmul" | "/hot/compute" | "/hot/io" => serve_request(false, req, dispatcher).await,
+        "/cold/matmul" | "/cold/compute" | "/cold/io" | "/cold/inference" => {
+            serve_request(true, req, dispatcher).await
+        }
+        "/hot/matmul" | "/hot/compute" | "/hot/io" | "/hot/inference" => {
+            serve_request(false, req, dispatcher).await
+        }
         "/stats" => serve_stats(req).await,
         _ => Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
             format!("Hello, Wor\n").into_bytes(),
