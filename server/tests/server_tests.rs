@@ -237,4 +237,153 @@ mod server_tests {
         let status = status_result.unwrap();
         assert_eq!(status, None, "Server exited unexpectedly");
     }
+
+    fn send_inference_request(endpoint: &str, function_name: String) {
+        // call into function
+        let mut matrix_data = Vec::new();
+        matrix_data.extend_from_slice(&f32::to_le_bytes(224f32));
+        matrix_data.extend_from_slice(&f32::to_le_bytes(224f32));
+        for i in 0..(224 * 224) {
+            matrix_data.extend_from_slice(&f32::to_le_bytes(i as f32));
+        }
+
+        let mut kernel_data = Vec::new();
+        kernel_data.extend_from_slice(&f32::to_le_bytes(5f32));
+        kernel_data.extend_from_slice(&f32::to_le_bytes(5f32));
+        for i in 0..(5 * 5) {
+            kernel_data.extend_from_slice(&f32::to_le_bytes(i as f32));
+        }
+
+        let mut cfg = Vec::new();
+        cfg.extend_from_slice(&i64::to_le_bytes((112 * 112 + 2) * 4));
+        cfg.extend_from_slice(&i64::to_le_bytes((224 + 31) / 32));
+        cfg.extend_from_slice(&i64::to_le_bytes((112 + 31) / 32));
+
+        let sets = vec![
+            InputSet {
+                identifier: String::from("A"),
+                items: vec![InputItem {
+                    identifier: String::from(""),
+                    key: 0,
+                    data: &matrix_data,
+                }],
+            },
+            InputSet {
+                identifier: String::from("B"),
+                items: vec![InputItem {
+                    identifier: String::from(""),
+                    key: 0,
+                    data: &kernel_data,
+                }],
+            },
+            InputSet {
+                identifier: String::from("cfg"),
+                items: vec![InputItem {
+                    identifier: String::from(""),
+                    key: 0,
+                    data: &cfg,
+                }],
+            },
+        ];
+
+        let mat_request = DandelionRequest {
+            name: function_name,
+            sets,
+        };
+
+        let client = reqwest::blocking::Client::new();
+        let resp = client
+            .post(endpoint)
+            .body(bson::to_vec(&mat_request).unwrap())
+            .send()
+            .unwrap();
+        assert!(resp.status().is_success());
+
+        let body = resp.bytes().unwrap();
+        let response: DandelionDeserializeResponse = bson::from_slice(&body).unwrap();
+        assert_eq!(1, response.sets.len());
+        assert_eq!(1, response.sets[0].items.len());
+        let response_data = response.sets[0].items[0].data;
+        assert_eq!(response_data.len(), (112 * 112 + 2) * 4);
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn serve_inference() {
+        let mut cmd = Command::cargo_bin("dandelion_server").unwrap();
+        let mut server = cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut reader = BufReader::new(server.stdout.take().unwrap());
+        loop {
+            let mut buf = String::new();
+            let len = reader.read_line(&mut buf).unwrap();
+            assert_ne!(len, 0, "Server exited unexpectedly");
+            if buf.contains("Server start") {
+                break;
+            }
+        }
+        let _ = server.stdout.insert(reader.into_inner());
+        let mut server_killer = ServerKiller { server };
+
+        // register function
+        let engine_type;
+        #[cfg(feature = "gpu")]
+        let inference_path = format!(
+            "{}/../machine_interface/hip_interface/inference.json",
+            env!("CARGO_MANIFEST_DIR"),
+        );
+        #[cfg(feature = "gpu_thread")]
+        {
+            engine_type = String::from("GpuThread");
+        }
+        #[cfg(feature = "gpu_process")]
+        {
+            engine_type = String::from("GpuProcess");
+        }
+
+        let register_request = RegisterFunction {
+            name: String::from("inference"),
+            context_size: 0x802_0000,
+            binary: std::fs::read(inference_path).unwrap(),
+            engine_type,
+        };
+        let registration_client = reqwest::blocking::Client::new();
+        let registration_resp = registration_client
+            .post("http://localhost:8080/register/function")
+            .body(bson::to_vec(&register_request).unwrap())
+            .send()
+            .unwrap();
+        assert!(registration_resp.status().is_success());
+
+        let chain_request = RegisterChain {
+            composition: String::from(
+                r#"
+                (:function inference (A B cfg) -> (out))
+                (:composition chain (img kern func_cfg) -> (img_out) (
+                    (inference ((:all A <- img) (:all B <- kern) (:all cfg <- func_cfg)) => ((img_out := out)))
+                ))
+            "#,
+            ),
+        };
+        let chain_client = reqwest::blocking::Client::new();
+        let chain_resp = chain_client
+            .post("http://localhost:8080/register/composition")
+            .body(bson::to_vec(&chain_request).unwrap())
+            .send()
+            .unwrap();
+        assert!(chain_resp.status().is_success());
+
+        send_inference_request(
+            "http://localhost:8080/hot/inference",
+            String::from("inference"),
+        );
+        send_inference_request("http://localhost:8080/hot/inference", String::from("chain"));
+
+        let status_result = server_killer.server.try_wait();
+        let status = status_result.unwrap();
+        assert_eq!(status, None, "Server exited unexpectedly");
+    }
 }

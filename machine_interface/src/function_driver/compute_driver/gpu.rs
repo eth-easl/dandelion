@@ -175,7 +175,6 @@ pub fn gpu_run(
     let mut buffers: HashMap<String, (usize, usize)> = HashMap::new();
     for name in &config.blueprint.inputs {
         let size = get_data_length(name, &context)?;
-        debug!("Trying to allocate {} for {}", size, name);
         let idx = buffer_pool.alloc_buffer(size)?;
         unsafe {
             copy_data_to_device(name, &context, base, &buffer_pool.get(idx)?)?;
@@ -184,7 +183,6 @@ pub fn gpu_run(
     }
     for (name, sizing) in &config.blueprint.buffers {
         let size = get_size(sizing, &buffers, &context)?;
-        debug!("Trying to allocate {} for {}", size, name);
         let idx = buffer_pool.alloc_buffer(size)?;
         buffers.insert(name.clone(), (idx, size));
     }
