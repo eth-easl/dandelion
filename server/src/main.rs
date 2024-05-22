@@ -428,6 +428,12 @@ fn main() -> () {
         .map(resource_conversion)
         .collect();
 
+    println!("core allocation:");
+    println!("frontend cores {:?}", frontend_cores);
+    println!("dispatcher cores: {:?}", dispatcher_cores);
+    println!("communication cores: {:?}", io_cores);
+    println!("compute cores: {:?}", compute_cores);
+
     // make multithreaded front end runtime
     // set up tokio runtime, need io in any case
     let mut runtime_builder = Builder::new_multi_thread();
