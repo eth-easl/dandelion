@@ -31,7 +31,7 @@ fn timestamp_count_default() -> usize {
 }
 
 fn loglevel_default() -> LevelFilter {
-    return std::env::var("RUST_LOG").map_or(LevelFilter::Warn, |env_string| {
+    return std::env::var("RUST_LOG").map_or(LevelFilter::Debug, |env_string| {
         LevelFilter::from_str(&env_string).unwrap()
     });
 }
