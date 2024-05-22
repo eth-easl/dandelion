@@ -1,4 +1,5 @@
 use dandelion_commons::{DandelionError, DandelionResult};
+use log::debug;
 
 use super::hip::{self, DeviceAllocation, DevicePointer};
 
@@ -59,6 +60,10 @@ impl BufferPool {
         let offset = round_to_eight!(last.offset + last.length);
 
         if offset + length > self.allocation.size {
+            debug!(
+                "Going to throw OutOfMemory, offset: {}, length: {}, self_alloc_size: {}",
+                offset, length, self.allocation.size
+            );
             return Err(DandelionError::OutOfMemory);
         }
 
