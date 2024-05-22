@@ -10,7 +10,6 @@ use crate::{
 use core_affinity::CoreId;
 use dandelion_commons::{DandelionError, DandelionResult};
 use libc::c_void;
-use log::debug;
 use std::{
     collections::HashMap,
     mem::size_of,
@@ -205,7 +204,7 @@ pub fn gpu_run(
     )?;
 
     // Mark buffers as useable again
-    buffer_pool.dealloc_all();
+    buffer_pool.dealloc_all()?;
 
     Ok(context)
 }

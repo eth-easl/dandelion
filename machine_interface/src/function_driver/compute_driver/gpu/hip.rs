@@ -214,6 +214,11 @@ impl DeviceAllocation {
         checked_call!(hipMemset(self.ptr, 0, self.size));
         Ok(())
     }
+
+    pub fn zero_size(&mut self, size: usize) -> DandelionResult<()> {
+        checked_call!(hipMemset(self.ptr, 0, size));
+        Ok(())
+    }
 }
 
 impl Drop for DeviceAllocation {

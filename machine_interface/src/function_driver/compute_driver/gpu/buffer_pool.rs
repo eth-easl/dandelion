@@ -79,8 +79,12 @@ impl BufferPool {
         })
     }
 
-    pub fn dealloc_all(&mut self) {
+    pub fn dealloc_all(&mut self) -> DandelionResult<()> {
+        // Unwrap okay because buffers will always have at least sentinel
+        let last = self.buffers.last().unwrap();
+        self.allocation.zero_size(last.offset + last.length)?;
         self.buffers.clear();
         self.buffers.push(Buffer::sentinel());
+        Ok(())
     }
 }
