@@ -81,16 +81,21 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         let function_id = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.insert_func(
-                format!("local_name_{}", i),
-                engine_type,
-                DEFAULT_CONTEXT_SIZE,
-                absolute_path.to_str().expect("Path should be valid string"),
-                Metadata {
-                    input_sets: Arc::new(local_names),
-                    output_sets: Arc::new(out_set_names.clone()),
-                },
-            ))
+            .block_on(
+                dispatcher.insert_func(
+                    format!("local_name_{}", i),
+                    engine_type,
+                    DEFAULT_CONTEXT_SIZE,
+                    absolute_path
+                        .to_str()
+                        .expect("Path should be valid string")
+                        .to_string(),
+                    Metadata {
+                        input_sets: Arc::new(local_names),
+                        output_sets: Arc::new(out_set_names.clone()),
+                    },
+                ),
+            )
             .expect("should be able to update function");
         let input_sets = (0..=2)
             .into_iter()
@@ -202,16 +207,21 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         let function_id = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.insert_func(
-                format!("insert_function_{}", i),
-                engine_type,
-                DEFAULT_CONTEXT_SIZE,
-                absolute_path.to_str().expect("Path should be valid string"),
-                Metadata {
-                    input_sets: Arc::new(local_names),
-                    output_sets: Arc::new(out_set_names.clone()),
-                },
-            ))
+            .block_on(
+                dispatcher.insert_func(
+                    format!("insert_function_{}", i),
+                    engine_type,
+                    DEFAULT_CONTEXT_SIZE,
+                    absolute_path
+                        .to_str()
+                        .expect("Path should be valid string")
+                        .to_string(),
+                    Metadata {
+                        input_sets: Arc::new(local_names),
+                        output_sets: Arc::new(out_set_names.clone()),
+                    },
+                ),
+            )
             .expect("should be able to update function");
         let inputs = vec![(i, CompositionSet::from((0, vec![mat_con_a.clone()])))];
         let mut overwrite_inputs = inputs.clone();

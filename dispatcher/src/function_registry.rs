@@ -198,7 +198,7 @@ impl FunctionRegistry {
         function_name: String,
         engine_id: EngineType,
         ctx_size: usize,
-        path: &str,
+        path: String,
         metadata: Metadata,
     ) -> DandelionResult<FunctionId> {
         // check if function is already present, get ID if not
@@ -269,7 +269,7 @@ impl FunctionRegistry {
         function_id: FunctionId,
         engine_id: EngineType,
         ctx_size: usize,
-        path: &str,
+        path: String,
     ) -> DandelionResult<()> {
         if !self.metadata.lock().await.contains_key(&function_id) {
             return Err(DandelionError::DispatcherMetaDataUnavailable);
@@ -277,7 +277,7 @@ impl FunctionRegistry {
         self.on_disk
             .lock()
             .await
-            .insert((function_id, engine_id), path.to_string());
+            .insert((function_id, engine_id), path);
         self.engine_map
             .lock()
             .await

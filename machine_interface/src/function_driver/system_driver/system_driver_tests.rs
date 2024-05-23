@@ -141,7 +141,7 @@ mod system_driver_tests {
         assert_eq!("HTTP/1.1 200 OK", status);
     }
 
-    fn put_http<Dom: MemoryDomain>(
+    fn post_http<Dom: MemoryDomain>(
         dom_init: MemoryResource,
         driver: Box<dyn Driver>,
         drv_init: ComputeResource,
@@ -156,7 +156,7 @@ mod system_driver_tests {
             .expect("Should be able to get engine");
         let config = FunctionConfig::SysConfig(SystemFunction::HTTP);
 
-        let request = "PUT http://httpbin.org/put HTTP/1.1".as_bytes().to_vec();
+        let request = "POST http://httpbin.org/post HTTP/1.1".as_bytes().to_vec();
 
         write_request_line(&mut context, request).expect("Should be able to prepare request line");
 
@@ -222,9 +222,9 @@ mod system_driver_tests {
             }
 
             #[test]
-            fn test_http_put() {
+            fn test_http_post() {
                 let driver = Box::new($driver);
-                super::put_http::<$domain>($dom_init, driver, $drv_init);
+                super::post_http::<$domain>($dom_init, driver, $drv_init);
             }
         };
     }

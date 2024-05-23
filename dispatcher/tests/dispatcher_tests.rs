@@ -37,7 +37,7 @@ mod dispatcher_tests {
         path.pop();
         path.push("machine_interface/tests/data");
         path.push(name);
-        let path_string = path.to_str().expect("Path should be string");
+        let path_string = path.to_str().expect("Path should be string").to_string();
         let metadata = Metadata {
             input_sets: Arc::new(in_set_names),
             output_sets: Arc::new(out_set_names),
