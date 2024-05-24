@@ -69,6 +69,7 @@ async fn serve_request(
     req: Request<Incoming>,
     dispatcher: mpsc::Sender<DispatcherCommand>,
 ) -> Result<Response<DandelionBody>, Infallible> {
+    debug!("Starting to serve request");
     let mut recorder = TRACING_ARCHIVE.get().unwrap().get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
 
@@ -254,8 +255,12 @@ async fn service(
         // TODO rename to cold func and hot func, remove matmul, compute, io
         "/register/function" => register_function(req, dispatcher).await,
         "/register/composition" => register_composition(req, dispatcher).await,
-        "/cold/matmul" | "/cold/compute" | "/cold/io" => serve_request(true, req, dispatcher).await,
-        "/hot/matmul" | "/hot/compute" | "/hot/io" => serve_request(false, req, dispatcher).await,
+        "/cold/matmul" | "/cold/matmulstore" | "/cold/compute" | "/cold/io" => {
+            serve_request(true, req, dispatcher).await
+        }
+        "/hot/matmul" | "/hot/matmulstore" | "/hot/compute" | "/hot/io" => {
+            serve_request(false, req, dispatcher).await
+        }
         "/stats" => serve_stats(req).await,
         _ => Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
             format!("Hello, Wor\n").into_bytes(),
