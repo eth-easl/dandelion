@@ -7,7 +7,11 @@ pub struct DandelionConfig {
     #[serde(default = "total_cores_default")]
     pub total_cores: usize,
     #[serde(default = "dispatcher_cores_default")]
-    pub dispatcher_cores: usize,
+    pub dispatcher_cores: Option<usize>,
+    #[serde(default = "frontend_cores_default")]
+    pub frontend_cores: Option<usize>,
+    #[serde(default = "io_cores_default")]
+    pub io_cores: Option<usize>,
     #[serde(default = "timestamp_count_default")]
     pub timestamp_count: usize,
     #[serde(default = "loglevel_default")]
@@ -21,8 +25,24 @@ fn total_cores_default() -> usize {
     );
 }
 
-fn dispatcher_cores_default() -> usize {
-    return std::env::var("NUM_DISP_CORES").map_or(1, |n| n.parse::<usize>().unwrap());
+macro_rules! env_default {
+    ($env_var: expr) => {
+        return std::env::var($env_var)
+            .ok()
+            .and_then(|n| Some(n.parse::<usize>().unwrap()));
+    };
+}
+
+fn dispatcher_cores_default() -> Option<usize> {
+    env_default!("DISPATCHER_CORES");
+}
+
+fn frontend_cores_default() -> Option<usize> {
+    env_default!("FRONTEND_CORES");
+}
+
+fn io_cores_default() -> Option<usize> {
+    env_default!("IO_CORES");
 }
 
 fn timestamp_count_default() -> usize {
