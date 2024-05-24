@@ -444,7 +444,7 @@ fn main() -> () {
         .collect();
     let first_compute_core = first_engine_core + num_io_cores;
     assert!(first_compute_core < config.total_cores);
-    let compute_cores = (first_compute_core..config.total_cores)
+    let compute_cores: Vec<ComputeResource> = (first_compute_core..config.total_cores)
         .map(resource_conversion)
         .collect();
 
@@ -517,7 +517,7 @@ fn main() -> () {
         let gpu_count: u8 = 4; // TODO: don't hard code this
         pool_map.insert(
             engine_type,
-            (num_dispatcher_cores..num_cores)
+            (first_compute_core..config.total_cores)
                 .zip(0..gpu_count)
                 .map(|(cpu_id, gpu_id)| ComputeResource::GPU(cpu_id as u8, gpu_id))
                 .collect(),
