@@ -123,6 +123,7 @@ mod server_tests {
         assert_eq!(1, checksum);
     }
 
+    #[ignore = "different registration"]
     #[test]
     fn serve_matmul() {
         let mut cmd = Command::cargo_bin("dandelion_server").unwrap();

@@ -563,6 +563,11 @@ async fn run_pool(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue + Send + Syn
 }
 
 pub fn start_gpu_process_pool(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue + Send + Sync>) {
+    // set core affinity
+    if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
+        log::error!("core received core id that could not be set");
+        return;
+    }
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

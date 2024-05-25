@@ -93,7 +93,7 @@ pub fn dummy_run(gpu_loop: &mut GpuLoop) -> DandelionResult<()> {
 fn execute(
     actions: &Vec<Action>,
     buffers: &HashMap<String, (usize, usize)>,
-    buffer_pool: &MutexGuard<BufferPool>,
+    buffer_pool: &BufferPool,
     context: &Context,
     config: &RuntimeGpuConfig,
 ) -> DandelionResult<()> {
@@ -149,16 +149,13 @@ fn execute(
 }
 
 pub fn gpu_run(
-    cpu_slot: usize,
+    cpu_slot: usize, // TODO: potentially remove this
     gpu_id: u8,
     config: GpuConfig,
-    buffer_pool: Arc<Mutex<BufferPool>>,
-    mut context: Context,
+    buffer_pool: &mut BufferPool,
+    context: &mut Context,
     output_names: Arc<Vec<String>>,
-) -> DandelionResult<Context> {
-    if !core_affinity::set_for_current(CoreId { id: cpu_slot }) {
-        return Err(DandelionError::EngineResourceError);
-    }
+) -> DandelionResult<()> {
     // TODO: disable device-side malloc
     hip::set_device(gpu_id)?;
 
@@ -168,20 +165,18 @@ pub fn gpu_run(
     let base = mmu_context.storage.as_ptr();
     let config = config.load(base)?;
 
-    let mut buffer_pool = buffer_pool.lock().unwrap();
-
     // bufname -> (index in buffer pool, local size)
     let mut buffers: HashMap<String, (usize, usize)> = HashMap::new();
     for name in &config.blueprint.inputs {
-        let size = get_data_length(name, &context)?;
+        let size = get_data_length(name, context)?;
         let idx = buffer_pool.alloc_buffer(size)?;
         unsafe {
-            copy_data_to_device(name, &context, base, &buffer_pool.get(idx)?)?;
+            copy_data_to_device(name, context, base, &buffer_pool.get(idx)?)?;
         }
         buffers.insert(name.clone(), (idx, size));
     }
     for (name, sizing) in &config.blueprint.buffers {
-        let size = get_size(sizing, &buffers, &context)?;
+        let size = get_size(sizing, &buffers, context)?;
         let idx = buffer_pool.alloc_buffer(size)?;
         buffers.insert(name.clone(), (idx, size));
     }
@@ -189,30 +184,30 @@ pub fn gpu_run(
     execute(
         &config.blueprint.control_flow,
         &buffers,
-        &buffer_pool,
-        &context,
+        buffer_pool,
+        context,
         &config,
     )?;
 
     write_gpu_outputs::<usize, usize>(
-        &mut context,
+        context,
         config.system_data_struct_offset,
         base,
         &output_names,
         &buffers,
-        &buffer_pool,
+        buffer_pool,
     )?;
 
     // Mark buffers as useable again
     buffer_pool.dealloc_all()?;
 
-    Ok(context)
+    Ok(())
 }
 
 pub struct GpuLoop {
-    cpu_slot: u8, // needed to set processes to run on that core
+    cpu_slot: usize,
     gpu_id: u8,
-    buffers: Arc<Mutex<BufferPool>>,
+    buffers: BufferPool,
 }
 
 impl EngineLoop for GpuLoop {
@@ -222,9 +217,9 @@ impl EngineLoop for GpuLoop {
         };
 
         Ok(Box::new(Self {
-            cpu_slot,
+            cpu_slot: cpu_slot as usize,
             gpu_id,
-            buffers: Arc::new(Mutex::new(BufferPool::try_new(gpu_id)?)),
+            buffers: BufferPool::try_new(gpu_id)?,
         }))
     }
 
@@ -240,26 +235,14 @@ impl EngineLoop for GpuLoop {
         let sysdata_offset = config.system_data_struct_offset;
         setup_input_structs::<usize, usize>(&mut context, sysdata_offset, &output_sets)?;
 
-        // in thread in case the kernel crashes
-        let cpu_slot_clone = self.cpu_slot as usize;
-        let gpu_id_clone = self.gpu_id;
-        let config_clone = config.clone();
-        let outputs = output_sets.clone();
-        let buffer_pool = self.buffers.clone();
-        let handle = thread::spawn(move || {
-            gpu_run(
-                cpu_slot_clone,
-                gpu_id_clone,
-                config_clone,
-                buffer_pool,
-                context,
-                outputs,
-            )
-        });
-        let mut context = match handle.join() {
-            Ok(res) => res?,
-            Err(_) => return Err(DandelionError::EngineError),
-        };
+        gpu_run(
+            self.cpu_slot,
+            self.gpu_id,
+            config,
+            &mut self.buffers,
+            &mut context,
+            output_sets,
+        )?;
 
         read_output_structs::<usize, usize>(&mut context, sysdata_offset)?;
 

@@ -23,7 +23,7 @@ fn main() {
         id: core_id as usize
     }));
 
-    // setup worker struct TODO: add GPU ID
+    // setup worker struct
     let mut worker = GpuLoop::init(ComputeResource::GPU(core_id, gpu_id))
         .expect("Should be able to create worker");
 
