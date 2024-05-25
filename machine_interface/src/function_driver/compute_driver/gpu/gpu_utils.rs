@@ -541,10 +541,10 @@ async fn process_inputs(
 }
 
 async fn run_pool(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue + Send + Sync>) {
-    let worker1 = Arc::new(Worker::new(core_id, gpu_id));
-    let worker2 = Arc::new(Worker::new(core_id, gpu_id));
-    let worker3 = Arc::new(Worker::new(core_id, gpu_id));
-    let worker4 = Arc::new(Worker::new(core_id, gpu_id));
+    let worker1 = Arc::new(Worker::new(core_id + 1, gpu_id));
+    let worker2 = Arc::new(Worker::new(core_id + 2, gpu_id));
+    let worker3 = Arc::new(Worker::new(core_id + 3, gpu_id));
+    let worker4 = Arc::new(Worker::new(core_id + 4, gpu_id));
 
     tokio::spawn(process_output(worker1.clone()));
     tokio::spawn(process_output(worker2.clone()));
