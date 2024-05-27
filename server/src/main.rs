@@ -518,7 +518,7 @@ fn main() -> () {
         pool_map.insert(
             engine_type,
             (first_compute_core..config.total_cores)
-                .step_by(6) // TODO: don't hard code this - related to number of workers
+                .step_by(5) // TODO: don't hard code this - related to number of workers
                 .zip(0..gpu_count)
                 .map(|(cpu_id, gpu_id)| ComputeResource::GPU(cpu_id as u8, gpu_id))
                 .collect(),
