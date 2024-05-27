@@ -1,18 +1,23 @@
 use crate::{
     function_driver::{
-        thread_utils::{start_thread, EngineLoop},
-        ComputeResource, Driver, Function, FunctionConfig, SystemFunction, WorkQueue,
+        ComputeResource, Driver, Function, FunctionConfig, SystemFunction, WorkDone, WorkQueue,
+        WorkToDo,
     },
-    memory_domain::{Context, ContextTrait},
+    memory_domain::{self, Context, ContextTrait},
+    promise::Debt,
     DataItem, DataSet, Position,
 };
 use core_affinity::set_for_current;
-use dandelion_commons::{DandelionError, DandelionResult};
+use dandelion_commons::{
+    records::{RecordPoint, Recorder},
+    DandelionError, DandelionResult,
+};
+use futures::StreamExt;
 use http::{version::Version, HeaderName, HeaderValue, Method};
 use log::error;
 use reqwest::{header::HeaderMap, Client};
 use std::sync::Arc;
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::Builder;
 
 struct RequestInformation {
     method: Method,
@@ -314,61 +319,173 @@ fn http_context_write(
     return Ok(());
 }
 
-fn http_run(
+async fn http_run(
     mut context: Context,
-    runtime: &Runtime,
-    client: &Client,
-    output_set_names: Arc<Vec<String>>,
-) -> DandelionResult<Context> {
-    let response = {
-        let _guard = runtime.enter();
-        let request = http_setup(&context)?;
-        runtime.block_on(http_request(client.clone(), request))?
-    };
-
-    http_context_write(&mut context, output_set_names, response)?;
-    return Ok(context);
-}
-
-struct ReqwestLoop {
-    runtime: Runtime,
     client: Client,
+    output_set_names: Arc<Vec<String>>,
+    debt: Debt,
+    mut recorder: Recorder,
+) -> () {
+    let request = match http_setup(&context) {
+        Ok(request) => request,
+        Err(err) => {
+            debt.fulfill(Box::new(Err(err)));
+            return;
+        }
+    };
+    let response = match http_request(client.clone(), request).await {
+        Ok(response) => response,
+        Err(err) => {
+            debt.fulfill(Box::new(Err(err)));
+            return;
+        }
+    };
+    if let Err(err) = http_context_write(&mut context, output_set_names, response) {
+        debt.fulfill(Box::new(Err(err)));
+        return;
+    }
+    if let Err(err) = recorder.record(RecordPoint::EngineEnd) {
+        debt.fulfill(Box::new(Err(err)));
+        return;
+    }
+    let results = Box::new(Ok(WorkDone::Context(context)));
+    debt.fulfill(results);
+    return;
 }
 
-impl EngineLoop for ReqwestLoop {
-    fn init(core_id: u8) -> DandelionResult<Box<Self>> {
-        log::debug!("Reqwest engine Init");
-        let runtime = Builder::new_multi_thread()
-            .on_thread_start(move || {
-                if !set_for_current(core_affinity::CoreId { id: core_id.into() }) {
-                    return;
+async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
+    log::debug!("Reqwest engine Init");
+    let client = Client::new();
+    // TODO FIX! This should not be necessary!
+    let mut queue_ref = Box::leak(queue);
+    let mut tuple;
+    loop {
+        (tuple, queue_ref) = queue_ref.into_future().await;
+        let (args, debt) = if let Some((tuple_args, tuple_debt)) = tuple {
+            (tuple_args, tuple_debt)
+        } else {
+            panic!("Workqueue poll next returned none")
+        };
+        match args {
+            WorkToDo::FunctionArguments {
+                config,
+                context,
+                output_sets,
+                mut recorder,
+            } => {
+                if let Err(err) = recorder.record(RecordPoint::EngineStart) {
+                    debt.fulfill(Box::new(Err(err)));
+                    continue;
                 }
-            })
-            .worker_threads(1)
-            .enable_all()
-            .build()
-            .or(Err(DandelionError::EngineError))?;
-        let client = Client::new();
-        return Ok(Box::new(ReqwestLoop { runtime, client }));
+                // let result = engine_state.run(config, context, output_sets);
+                log::debug!("Reqwest engine running function");
+                let function = match config {
+                    FunctionConfig::SysConfig(sys_func) => sys_func,
+                    _ => {
+                        debt.fulfill(Box::new(Err(DandelionError::ConfigMissmatch)));
+                        continue;
+                    }
+                };
+                match function {
+                    SystemFunction::HTTP => {
+                        tokio::spawn(http_run(
+                            context,
+                            client.clone(),
+                            output_sets,
+                            debt,
+                            recorder,
+                        ));
+                    }
+                    #[allow(unreachable_patterns)]
+                    _ => {
+                        debt.fulfill(Box::new(Err(DandelionError::MalformedConfig)));
+                    }
+                };
+                continue;
+            }
+            WorkToDo::TransferArguments {
+                source,
+                mut destination,
+                destination_set_index,
+                destination_allignment,
+                destination_item_index,
+                destination_set_name,
+                source_set_index,
+                source_item_index,
+                mut recorder,
+            } => {
+                match recorder.record(RecordPoint::TransferStart) {
+                    Ok(()) => (),
+                    Err(err) => {
+                        debt.fulfill(Box::new(Err(err)));
+                        continue;
+                    }
+                }
+                let transfer_result = memory_domain::transfer_data_item(
+                    &mut destination,
+                    &source,
+                    destination_set_index,
+                    destination_allignment,
+                    destination_item_index,
+                    destination_set_name.as_str(),
+                    source_set_index,
+                    source_item_index,
+                );
+                match recorder.record(RecordPoint::TransferEnd) {
+                    Ok(()) => (),
+                    Err(err) => {
+                        debt.fulfill(Box::new(Err(err)));
+                        continue;
+                    }
+                }
+                let transfer_return = transfer_result.and(Ok(WorkDone::Context(destination)));
+                debt.fulfill(Box::new(transfer_return));
+                continue;
+            }
+            WorkToDo::ParsingArguments {
+                driver,
+                path,
+                static_domain,
+                mut recorder,
+            } => {
+                recorder.record(RecordPoint::ParsingStart).unwrap();
+                let function_result = driver.parse_function(path, static_domain);
+                recorder.record(RecordPoint::ParsingEnd).unwrap();
+                match function_result {
+                    Ok(function) => debt.fulfill(Box::new(Ok(WorkDone::Function(function)))),
+                    Err(err) => debt.fulfill(Box::new(Err(err))),
+                }
+                continue;
+            }
+            WorkToDo::Shutdown() => {
+                return debt;
+            }
+        }
     }
-    fn run(
-        &mut self,
-        config: FunctionConfig,
-        context: Context,
-        output_sets: Arc<Vec<String>>,
-    ) -> DandelionResult<Context> {
-        log::debug!("Reqwest engine running function");
-        let function = match config {
-            FunctionConfig::SysConfig(sys_func) => sys_func,
-            _ => return Err(DandelionError::ConfigMissmatch),
-        };
+}
 
-        return match function {
-            SystemFunction::HTTP => http_run(context, &self.runtime, &self.client, output_sets),
-            #[allow(unreachable_patterns)]
-            _ => Err(DandelionError::MalformedConfig),
-        };
+fn outer_engine(core_id: u8, queue: Box<dyn WorkQueue + Send>) {
+    // set core affinity
+    if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
+        log::error!("core received core id that could not be set");
+        return;
     }
+    let runtime = Builder::new_multi_thread()
+        .on_thread_start(move || {
+            if !set_for_current(core_affinity::CoreId { id: core_id.into() }) {
+                return;
+            }
+        })
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .or(Err(DandelionError::EngineError))
+        .unwrap();
+    let debt = runtime.block_on(engine_loop(queue));
+    drop(runtime);
+    debt.fulfill(Box::new(Ok(WorkDone::Resources(vec![
+        ComputeResource::CPU(core_id),
+    ]))));
 }
 
 pub struct ReqwestDriver {}
@@ -396,7 +513,7 @@ impl Driver for ReqwestDriver {
         {
             return Err(DandelionError::EngineResourceError);
         }
-        start_thread::<ReqwestLoop>(core_id, queue);
+        std::thread::spawn(move || outer_engine(core_id, queue));
         return Ok(());
     }
 

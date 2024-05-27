@@ -3,7 +3,7 @@ mod system_driver_tests {
     use crate::{
         function_driver::{
             system_driver::get_system_function_output_sets, test_queue::TestQueue, ComputeResource,
-            Driver, FunctionArguments, FunctionConfig, SystemFunction, WorkToDo,
+            Driver, FunctionConfig, SystemFunction, WorkToDo,
         },
         memory_domain::{Context, ContextTrait, MemoryDomain, MemoryResource},
         DataItem, DataSet, Position,
@@ -101,12 +101,12 @@ mod system_driver_tests {
         })));
         let mut recorder = archive.get_recorder().unwrap();
         let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
-        let promise = queue.enqueu(WorkToDo::FunctionArguments(FunctionArguments {
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config,
             context,
             output_sets,
             recorder: recorder.get_sub_recorder().unwrap(),
-        }));
+        });
         let result_context = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -172,12 +172,12 @@ mod system_driver_tests {
         })));
         let mut recorder = archive.get_recorder().unwrap();
         let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
-        let promise = queue.enqueu(WorkToDo::FunctionArguments(FunctionArguments {
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config,
             context,
             output_sets,
             recorder: recorder.get_sub_recorder().unwrap(),
-        }));
+        });
         let result_context = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()

@@ -2,8 +2,7 @@
 mod compute_driver_tests {
     use crate::{
         function_driver::{
-            test_queue::TestQueue, ComputeResource, Driver, FunctionArguments, FunctionConfig,
-            WorkToDo,
+            test_queue::TestQueue, ComputeResource, Driver, FunctionConfig, WorkToDo,
         },
         memory_domain::{Context, ContextState, ContextTrait, MemoryDomain, MemoryResource},
         DataItem, DataSet, Position,
@@ -78,12 +77,12 @@ mod compute_driver_tests {
             timestamp_count: 1000,
         })));
         let recorder = archive.get_recorder().unwrap();
-        let promise = queue.enqueu(WorkToDo::FunctionArguments(FunctionArguments {
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config: config,
             context: function_context,
             output_sets: Arc::new(Vec::new()),
             recorder,
-        }));
+        });
         let _ = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -123,12 +122,12 @@ mod compute_driver_tests {
         recorder
             .record(RecordPoint::TransferEnd)
             .expect("Should have properly initialized recorder state");
-        let promise = queue.enqueu(WorkToDo::FunctionArguments(FunctionArguments {
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config,
             context: function_context,
             output_sets: Arc::new(vec![String::from("")]),
             recorder: recorder.get_sub_recorder().unwrap(),
-        }));
+        });
         let result_context = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -215,12 +214,12 @@ mod compute_driver_tests {
             recorder
                 .record(RecordPoint::TransferEnd)
                 .expect("Should have properly initialized recorder state");
-            let promise = queue.enqueu(WorkToDo::FunctionArguments(FunctionArguments {
+            let promise = queue.enqueu(WorkToDo::FunctionArguments {
                 config,
                 context: function_context,
                 output_sets: Arc::new(vec![String::from("")]),
                 recorder: recorder.get_sub_recorder().unwrap(),
-            }));
+            });
             let result_context = tokio::runtime::Builder::new_current_thread()
                 .build()
                 .unwrap()
@@ -312,12 +311,12 @@ mod compute_driver_tests {
         recorder
             .record(RecordPoint::TransferEnd)
             .expect("Should have properly initialized recorder state");
-        let promise = queue.enqueu(WorkToDo::FunctionArguments(FunctionArguments {
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config,
             context: function_context,
             output_sets: Arc::new(vec![String::from("stdio")]),
             recorder: recorder.get_sub_recorder().unwrap(),
-        }));
+        });
         let result_context = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -461,7 +460,7 @@ mod compute_driver_tests {
         recorder
             .record(RecordPoint::TransferEnd)
             .expect("Should have properly initialized recorder state");
-        let promise = queue.enqueu(WorkToDo::FunctionArguments(FunctionArguments {
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config: config,
             context: function_context,
             output_sets: Arc::new(vec![
@@ -470,7 +469,7 @@ mod compute_driver_tests {
                 "out_nested".to_string(),
             ]),
             recorder: recorder.get_sub_recorder().unwrap(),
-        }));
+        });
         let result_context = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()

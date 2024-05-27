@@ -16,7 +16,7 @@ use futures::{
 };
 use itertools::Itertools;
 use machine_interface::{
-    function_driver::{Driver, FunctionArguments, FunctionConfig, TransferArguments, WorkToDo},
+    function_driver::{Driver, FunctionConfig, WorkToDo},
     machine_config::{
         get_available_domains, get_available_drivers, get_compatibilty_table, DomainType,
         EngineType,
@@ -418,7 +418,7 @@ impl Dispatcher {
                 static_sets.insert(function_set_index);
                 let mut function_buffer = 0usize;
                 for (subset, item, source_context) in composition_set {
-                    let args = WorkToDo::TransferArguments(TransferArguments {
+                    let args = WorkToDo::TransferArguments {
                         destination: function_context,
                         source: source_context,
                         destination_set_index: function_set_index,
@@ -428,7 +428,7 @@ impl Dispatcher {
                         source_set_index: subset,
                         source_item_index: item,
                         recorder: recorder.get_sub_recorder().unwrap(),
-                    });
+                    };
                     recorder.record(RecordPoint::TransferQueue)?;
                     function_context = transfer_queue.enqueu_work(args).await?.get_context();
                     recorder.record(RecordPoint::TransferDequeue)?;
@@ -444,7 +444,7 @@ impl Dispatcher {
             for (subset, item, source_context) in context_set {
                 // TODO get allignment information
                 let set_name = &metadata.input_sets[function_set].0;
-                let args = WorkToDo::TransferArguments(TransferArguments {
+                let args = WorkToDo::TransferArguments {
                     destination: function_context,
                     source: source_context,
                     destination_set_index: function_set,
@@ -454,7 +454,7 @@ impl Dispatcher {
                     source_set_index: subset,
                     source_item_index: item,
                     recorder: recorder.get_sub_recorder().unwrap(),
-                });
+                };
                 recorder.record(RecordPoint::TransferQueue).unwrap();
                 function_context = transfer_queue.enqueu_work(args).await?.get_context();
                 recorder.record(RecordPoint::TransferDequeue).unwrap();
@@ -478,12 +478,12 @@ impl Dispatcher {
             None => return Err(DandelionError::DispatcherConfigError),
         };
         let subrecoder = recorder.get_sub_recorder()?;
-        let args = WorkToDo::FunctionArguments(FunctionArguments {
+        let args = WorkToDo::FunctionArguments {
             config: function_config,
             context: function_context,
             output_sets,
             recorder: subrecoder,
-        });
+        };
         recorder.record(RecordPoint::ExecutionQueue)?;
         let result = engine_queue.enqueu_work(args).await?.get_context();
         recorder.record(RecordPoint::FutureReturn)?;
