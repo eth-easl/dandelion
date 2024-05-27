@@ -16,7 +16,14 @@ use dandelion_commons::{
 use libc::c_void;
 use nix::sys::mman::ProtFlags;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, process::Stdio, sync::Arc};
+use std::{
+    collections::HashMap,
+    process::Stdio,
+    sync::{
+        atomic::{AtomicU8, AtomicUsize},
+        Arc,
+    },
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout, Command},
@@ -366,6 +373,7 @@ async fn process_inputs(
     loop {
         // A bit clumsy but necessary to use spawn_blocking
         let queue = queue.clone();
+        // Needed, as we are running a single-threaded runtime and new queue work might only arrive as a result of debt being fulfilled
         let (args, debt) = task::spawn_blocking(move || queue.get_engine_args())
             .await
             .expect("spawn_blocking thread crashed");
@@ -541,10 +549,10 @@ async fn process_inputs(
 }
 
 async fn run_pool(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue + Send + Sync>) {
-    let worker1 = Arc::new(Worker::new(core_id + 1, gpu_id));
-    let worker2 = Arc::new(Worker::new(core_id + 2, gpu_id));
-    let worker3 = Arc::new(Worker::new(core_id + 3, gpu_id));
-    let worker4 = Arc::new(Worker::new(core_id + 4, gpu_id));
+    let worker1 = Arc::new(Worker::new(core_id + 2, gpu_id));
+    let worker2 = Arc::new(Worker::new(core_id + 3, gpu_id));
+    let worker3 = Arc::new(Worker::new(core_id + 4, gpu_id));
+    let worker4 = Arc::new(Worker::new(core_id + 5, gpu_id));
 
     tokio::spawn(process_output(worker1.clone()));
     tokio::spawn(process_output(worker2.clone()));
@@ -568,7 +576,15 @@ pub fn start_gpu_process_pool(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue 
         log::error!("core received core id that could not be set");
         return;
     }
-    let rt = tokio::runtime::Builder::new_current_thread()
+    let count = AtomicU8::new(0);
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .on_thread_start(move || {
+            let core = core_id + count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert!(core_affinity::set_for_current(core_affinity::CoreId {
+                id: core.into()
+            }));
+        })
         .enable_all()
         .build()
         .expect("Runtime building failed");
