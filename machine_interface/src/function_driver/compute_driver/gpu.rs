@@ -7,6 +7,7 @@ use crate::{
     memory_domain::{Context, ContextTrait, ContextType},
     DataItem, DataRequirementList, DataSet, Position,
 };
+use config_parsing::SYSDATA_OFFSET;
 use core_affinity::CoreId;
 use dandelion_commons::{DandelionError, DandelionResult};
 use libc::c_void;
@@ -163,7 +164,7 @@ pub fn gpu_run(
         return Err(DandelionError::ConfigMissmatch);
     };
     let base = mmu_context.storage.as_ptr();
-    let config = config.load(base)?;
+    let config = config.load(base, context)?;
 
     // bufname -> (index in buffer pool, local size)
     let mut buffers: HashMap<String, (usize, usize)> = HashMap::new();
@@ -250,20 +251,28 @@ impl EngineLoop for GpuLoop {
     }
 }
 
+// TODO: if deserialisation slows things noticeably, split thread/process parsing
 fn common_parse(
     function_path: String,
     static_domain: &'static dyn crate::memory_domain::MemoryDomain,
 ) -> DandelionResult<crate::function_driver::Function> {
-    let (mut gpu_config, module_path) = config_parsing::parse_config(&function_path)?;
+    let gpu_config_ir = config_parsing::parse_config(&function_path)?;
 
-    let code_object = load_u8_from_file(module_path)?;
-    let size = code_object.len() * size_of::<u8>();
+    let code_object = load_u8_from_file(gpu_config_ir.module_path)?;
+    // Guaranteed to be, else parse_config will fail, so can unwrap
+    let blueprint = serde_json::to_vec(&gpu_config_ir.blueprint).unwrap();
+    let co_size = code_object.len() * size_of::<u8>();
+    let blueprint_size = blueprint.len() * size_of::<u8>();
+    let size = co_size + blueprint_size;
+    let code_object_offset =
+        SYSDATA_OFFSET + std::mem::size_of::<DandelionSystemData<usize, usize>>();
+    let blueprint_offset = code_object_offset + co_size;
+
     let mut context = static_domain.acquire_context(size)?;
-    context.write(0, &code_object)?;
-    gpu_config.module_offset = std::mem::size_of::<DandelionSystemData<usize, usize>>();
-
-    let config = FunctionConfig::GpuConfig(gpu_config);
-    // Location of code object
+    // Not including the size of DandelionSystemData here it's not in the static context
+    context.write(SYSDATA_OFFSET, &code_object)?;
+    context.write(SYSDATA_OFFSET + co_size, &blueprint)?;
+    // Location of code object and blueprint
     context.content = vec![Some(DataSet {
         ident: String::from("static"),
         buffers: vec![DataItem {
@@ -272,6 +281,16 @@ fn common_parse(
             key: 0,
         }],
     })];
+
+    let gpu_config = GpuConfig {
+        system_data_struct_offset: SYSDATA_OFFSET,
+        code_object_offset,
+        blueprint_offset,
+        blueprint_size,
+        kernels: Arc::new(gpu_config_ir.kernels),
+    };
+    let config = FunctionConfig::GpuConfig(gpu_config);
+
     let requirements = DataRequirementList {
         static_requirements: vec![],
         input_requirements: vec![],

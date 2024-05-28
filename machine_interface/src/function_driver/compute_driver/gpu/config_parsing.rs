@@ -3,11 +3,14 @@ use std::{collections::HashMap, fs::File, io::BufReader, os::raw::c_void, sync::
 use dandelion_commons::{DandelionError, DandelionResult};
 use serde::{Deserialize, Serialize};
 
-use crate::function_driver::GpuConfig;
+use crate::{
+    function_driver::GpuConfig,
+    memory_domain::{Context, ContextTrait},
+};
 
 use super::hip::{self, FunctionT, ModuleT};
 
-const SYSDATA_OFFSET: usize = 0usize;
+pub const SYSDATA_OFFSET: usize = 0usize;
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct LaunchConfig {
@@ -50,22 +53,22 @@ pub struct ExecutionBlueprint {
 }
 
 #[derive(Deserialize, Serialize, Debug)]
-struct GpuConfigIR {
-    module_path: String,
-    kernels: Vec<String>,
-    blueprint: ExecutionBlueprint,
+pub struct GpuConfigIR {
+    pub module_path: String,
+    pub kernels: Vec<String>,
+    pub blueprint: ExecutionBlueprint,
 }
 
-impl From<GpuConfigIR> for GpuConfig {
-    fn from(value: GpuConfigIR) -> Self {
-        Self {
-            system_data_struct_offset: SYSDATA_OFFSET,
-            module_offset: 0,
-            kernels: Arc::new(value.kernels),
-            blueprint: Arc::new(value.blueprint),
-        }
-    }
-}
+// impl From<GpuConfigIR> for GpuConfig {
+//     fn from(value: GpuConfigIR) -> Self {
+//         Self {
+//             system_data_struct_offset: SYSDATA_OFFSET,
+//             module_offset: 0,
+//             kernels: Arc::new(value.kernels),
+//             blueprint: Arc::new(value.blueprint),
+//         }
+//     }
+// }
 
 #[derive(Clone)]
 pub struct RuntimeGpuConfig {
@@ -76,8 +79,9 @@ pub struct RuntimeGpuConfig {
 }
 
 impl GpuConfig {
-    pub fn load(self, base: *const u8) -> DandelionResult<RuntimeGpuConfig> {
-        let module = hip::module_load_data(base.wrapping_add(self.module_offset) as *const c_void)?;
+    pub fn load(self, base: *const u8, context: &mut Context) -> DandelionResult<RuntimeGpuConfig> {
+        let module =
+            hip::module_load_data(base.wrapping_add(self.code_object_offset) as *const c_void)?;
         let kernels = self
             .kernels
             .iter()
@@ -85,16 +89,22 @@ impl GpuConfig {
                 hip::module_get_function(&module, kname).map(|module| (kname.clone(), module))
             })
             .collect::<Result<HashMap<_, _>, _>>()?; // this is kinda ugly but also pretty cool
+
+        // Deserialise blueprint
+        let mut blueprint_buffer = vec![0u8; self.blueprint_size];
+        context.read(self.blueprint_offset, &mut blueprint_buffer)?;
+        let blueprint: ExecutionBlueprint = serde_json::from_slice(&blueprint_buffer).unwrap();
+
         Ok(RuntimeGpuConfig {
             system_data_struct_offset: SYSDATA_OFFSET,
             module: Arc::new(module),
             kernels: Arc::new(kernels),
-            blueprint: self.blueprint,
+            blueprint: Arc::new(blueprint),
         })
     }
 }
 
-pub fn parse_config(path: &str) -> DandelionResult<(GpuConfig, String)> {
+pub fn parse_config(path: &str) -> DandelionResult<GpuConfigIR> {
     // TODO: better erros
     let file = File::open(path).map_err(|_| DandelionError::ConfigMissmatch)?;
     let reader = BufReader::new(file);
@@ -102,6 +112,5 @@ pub fn parse_config(path: &str) -> DandelionResult<(GpuConfig, String)> {
         eprintln!("Parsing error: {e}");
         DandelionError::ConfigMissmatch
     })?;
-    let module_path: String = ir.module_path.drain(..).collect();
-    Ok((ir.into(), module_path))
+    Ok(ir)
 }
