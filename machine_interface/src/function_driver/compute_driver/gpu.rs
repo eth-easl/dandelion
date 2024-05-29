@@ -12,10 +12,14 @@ use core_affinity::CoreId;
 use dandelion_commons::{DandelionError, DandelionResult};
 use libc::c_void;
 use std::{
+    borrow::Borrow,
     collections::HashMap,
     mem::size_of,
     ptr::null,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        Arc, Mutex, MutexGuard,
+    },
     thread::{self, spawn},
 };
 
@@ -101,7 +105,9 @@ fn execute(
     for action in actions {
         match action {
             Action::ExecKernel(name, args, launch_config) => {
+                // HIP expects arguments as an array of void pointers (pointers to the arguments)
                 let mut params: Vec<*const c_void> = Vec::with_capacity(args.len());
+                // Initialise them outside of the loop so they live long enough to have valid pointers
                 let mut ptrs = vec![];
                 let mut constants = vec![];
                 for arg in args {
@@ -117,7 +123,6 @@ fn execute(
                             params.push(&buffers.get(id).unwrap().1 as *const _ as *const c_void);
                         }
                         Argument::Constant(constant) => {
-                            // TODO: test this!
                             constants.push(*constant);
                             let addr = constants.last().unwrap();
                             params.push(addr as *const _ as *const c_void);
@@ -150,13 +155,18 @@ fn execute(
 }
 
 pub fn gpu_run(
-    cpu_slot: usize, // TODO: potentially remove this
+    cpu_slot: usize,
     gpu_id: u8,
     config: GpuConfig,
-    buffer_pool: &mut BufferPool,
-    context: &mut Context,
-    output_names: Arc<Vec<String>>,
-) -> DandelionResult<()> {
+    buffer_pool: Arc<Mutex<BufferPool>>,
+    mut context: Context,
+    output_sets: Arc<Vec<String>>,
+) -> DandelionResult<Context> {
+    // Set affinity of worker thread
+    if !core_affinity::set_for_current(CoreId { id: cpu_slot }) {
+        return Err(DandelionError::EngineResourceError);
+    }
+
     // TODO: disable device-side malloc
     hip::set_device(gpu_id)?;
 
@@ -166,18 +176,20 @@ pub fn gpu_run(
     let base = mmu_context.storage.as_ptr();
     let config = config.load(base)?;
 
-    // bufname -> (index in buffer pool, local size)
+    let mut buffer_pool = buffer_pool.lock().unwrap();
+
+    // Maps from bufname -> (index in buffer pool, size of buffer)
     let mut buffers: HashMap<String, (usize, usize)> = HashMap::new();
     for name in &config.blueprint.inputs {
-        let size = get_data_length(name, context)?;
+        let size = get_data_length(name, &context)?;
         let idx = buffer_pool.alloc_buffer(size)?;
         unsafe {
-            copy_data_to_device(name, context, base, &buffer_pool.get(idx)?)?;
+            copy_data_to_device(name, &context, base, &buffer_pool.get(idx)?)?;
         }
         buffers.insert(name.clone(), (idx, size));
     }
     for (name, sizing) in &config.blueprint.buffers {
-        let size = get_size(sizing, &buffers, context)?;
+        let size = get_size(sizing, &buffers, &context)?;
         let idx = buffer_pool.alloc_buffer(size)?;
         buffers.insert(name.clone(), (idx, size));
     }
@@ -185,30 +197,32 @@ pub fn gpu_run(
     execute(
         &config.blueprint.control_flow,
         &buffers,
-        buffer_pool,
-        context,
+        buffer_pool.borrow(),
+        &context,
         &config,
     )?;
 
     write_gpu_outputs::<usize, usize>(
-        context,
+        &mut context,
         config.system_data_struct_offset,
         base,
-        &output_names,
+        &output_sets,
         &buffers,
-        buffer_pool,
+        buffer_pool.borrow(),
     )?;
 
-    // Mark buffers as useable again
+    // Zero out buffers used by current function
     buffer_pool.dealloc_all()?;
 
-    Ok(())
+    Ok(context)
 }
 
 pub struct GpuLoop {
     cpu_slot: usize,
     gpu_id: u8,
-    buffers: BufferPool,
+    buffers: Arc<Mutex<BufferPool>>,
+    sender: Sender<DandelionResult<Context>>,
+    receiver: Receiver<DandelionResult<Context>>,
 }
 
 impl EngineLoop for GpuLoop {
@@ -217,10 +231,14 @@ impl EngineLoop for GpuLoop {
             return Err(DandelionError::ConfigMissmatch);
         };
 
+        let (sender, receiver) = mpsc::channel();
+
         Ok(Box::new(Self {
             cpu_slot: cpu_slot as usize,
             gpu_id,
-            buffers: BufferPool::try_new(gpu_id)?,
+            buffers: Arc::new(Mutex::new(BufferPool::try_new(gpu_id)?)),
+            sender,
+            receiver,
         }))
     }
 
@@ -236,14 +254,23 @@ impl EngineLoop for GpuLoop {
         let sysdata_offset = config.system_data_struct_offset;
         setup_input_structs::<usize, usize>(&mut context, sysdata_offset, &output_sets)?;
 
-        gpu_run(
-            self.cpu_slot,
-            self.gpu_id,
-            config,
-            &mut self.buffers,
-            &mut context,
-            output_sets,
-        )?;
+        // Clone for thread
+        let buffer_pool = self.buffers.clone();
+        let sender = self.sender.clone();
+        let cpu_slot = self.cpu_slot;
+        let gpu_id = self.gpu_id;
+        thread::spawn(move || {
+            let result = gpu_run(cpu_slot, gpu_id, config, buffer_pool, context, output_sets);
+            sender.send(result).unwrap();
+        });
+
+        // Use an mpsc to receive results. If a fault occured, the handler could be registered to put an error on the channel,
+        // while the work thread wouldn't return. This means it would have to be shot down
+        let mut context = self
+            .receiver
+            .recv()
+            .map_err(|_| DandelionError::EngineError)
+            .and_then(|inner| inner)?;
 
         read_output_structs::<usize, usize>(&mut context, sysdata_offset)?;
 
@@ -324,9 +351,7 @@ impl Driver for GpuThreadDriver {
     ) -> dandelion_commons::DandelionResult<()> {
         let (cpu_slot, gpu_id) = common_start(resource)?;
 
-        // To switch between single executor and process pool
         spawn(move || start_gpu_thread(cpu_slot, gpu_id, queue));
-        // spawn(move || start_gpu_process_pool(cpu_slot, gpu_id, queue));
         Ok(())
     }
 
@@ -349,8 +374,6 @@ impl Driver for GpuProcessDriver {
     ) -> dandelion_commons::DandelionResult<()> {
         let (cpu_slot, gpu_id) = common_start(resource)?;
 
-        // To switch between single executor and process pool
-        // spawn(move || start_gpu_thread(cpu_slot, gpu_id, queue));
         spawn(move || start_gpu_process_pool(cpu_slot, gpu_id, queue));
         Ok(())
     }

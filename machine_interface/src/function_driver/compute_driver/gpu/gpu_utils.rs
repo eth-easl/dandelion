@@ -20,7 +20,7 @@ use std::{collections::HashMap, process::Stdio, sync::Arc};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout, Command},
-    sync::{Mutex, Semaphore},
+    sync::{Mutex, Notify},
     task,
 };
 
@@ -223,7 +223,7 @@ struct Worker {
     _process: Child,
     pub stdin: Mutex<ChildStdin>,
     pub stdout: Mutex<BufReader<ChildStdout>>,
-    pub available: Semaphore,
+    pub available: Notify,
     pub debt: Mutex<Option<(Debt, Recorder, Context)>>,
 }
 
@@ -255,12 +255,16 @@ impl Worker {
         let stdin = Mutex::new(child.stdin.take().unwrap());
         let stdout = Mutex::new(BufReader::new(child.stdout.take().unwrap()));
 
+        // We use a Notify (basically a semaphore) to signal availability to work
+        let available = Notify::new();
+        // Adds a ticket to the semaphore, as the Worker initially is free
+        available.notify_one();
+
         Self {
             _process: child,
             stdin,
             stdout,
-            // TODO write explanation since this is not trivial
-            available: Semaphore::new(1),
+            available,
             debt: Mutex::new(None),
         }
     }
@@ -293,7 +297,7 @@ async fn process_output(worker: Arc<Worker>) {
             panic!("Got output from GPUWorker but had no debt to fulfill");
         }
 
-        worker.available.add_permits(1);
+        worker.available.notify_one();
         line.clear();
     }
 }
@@ -366,6 +370,8 @@ async fn process_inputs(
     loop {
         // A bit clumsy but necessary to use spawn_blocking
         let queue = queue.clone();
+        // Need to use spawn_blocking, else waiting on the queue can deadlock,
+        // eg. if new work being added to the queue relies on old work being submitted
         let (args, debt) = task::spawn_blocking(move || queue.get_engine_args())
             .await
             .expect("spawn_blocking thread crashed");
@@ -401,7 +407,7 @@ async fn process_inputs(
 
                 // Unfortunate code duplication because of how select works
                 tokio::select! {
-                    Ok(permit) = worker1.available.acquire() => {
+                    _ = worker1.available.notified() => {
                         if let Err(e) = recorder.record(RecordPoint::EngineStart) {
                             debt.fulfill(Box::new(Err(e)));
                             continue;
@@ -412,12 +418,8 @@ async fn process_inputs(
 
                         // Write task description to worker process stdin
                         worker1.stdin.lock().await.write_all(task.as_bytes()).await.expect("Writing failed");
-
-                        // unfortunate way to bring ticket count to 0; have to drop first else the forget_permits does nothing
-                        drop(permit);
-                        worker1.available.forget_permits(1);
                     },
-                    Ok(permit) = worker2.available.acquire() => {
+                    _ = worker2.available.notified() => {
                         if let Err(e) = recorder.record(RecordPoint::EngineStart) {
                             debt.fulfill(Box::new(Err(e)));
                             continue;
@@ -428,11 +430,8 @@ async fn process_inputs(
 
                         // Write task description to worker process stdin
                         worker2.stdin.lock().await.write_all(task.as_bytes()).await.expect("Writing failed");
-
-                        drop(permit);
-                        worker2.available.forget_permits(1);
                     },
-                    Ok(permit) = worker3.available.acquire() => {
+                    _ = worker3.available.notified() => {
                         if let Err(e) = recorder.record(RecordPoint::EngineStart) {
                             debt.fulfill(Box::new(Err(e)));
                             continue;
@@ -443,11 +442,8 @@ async fn process_inputs(
 
                         // Write task description to worker process stdin
                         worker3.stdin.lock().await.write_all(task.as_bytes()).await.expect("Writing failed");
-
-                        drop(permit);
-                        worker3.available.forget_permits(1);
                     },
-                    Ok(permit) = worker4.available.acquire() => {
+                    _ = worker4.available.notified() => {
                         if let Err(e) = recorder.record(RecordPoint::EngineStart) {
                             debt.fulfill(Box::new(Err(e)));
                             continue;
@@ -458,9 +454,6 @@ async fn process_inputs(
 
                         // Write task description to worker process stdin
                         worker4.stdin.lock().await.write_all(task.as_bytes()).await.expect("Writing failed");
-
-                        drop(permit);
-                        worker4.available.forget_permits(1);
                     }
                 }
             }
@@ -521,20 +514,16 @@ async fn process_inputs(
             }
             WorkToDo::Shutdown() => {
                 // wait for all pending functions to complete
-                if let Ok((_, _, _, _)) = tokio::try_join!(
-                    worker1.available.acquire(),
-                    worker2.available.acquire(),
-                    worker3.available.acquire(),
-                    worker4.available.acquire(),
-                ) {
-                    debt.fulfill(Box::new(Ok(WorkDone::Resources(vec![
-                        ComputeResource::GPU(gpu_id, core_id),
-                    ]))));
-                    return;
-                } else {
-                    // shouldn't really happen unless Workers processes die
-                    debt.fulfill(Box::new(Err(DandelionError::EngineError)));
-                }
+                tokio::join!(
+                    worker1.available.notified(),
+                    worker2.available.notified(),
+                    worker3.available.notified(),
+                    worker4.available.notified(),
+                );
+                debt.fulfill(Box::new(Ok(WorkDone::Resources(vec![
+                    ComputeResource::GPU(gpu_id, core_id),
+                ]))));
+                return;
             }
         }
     }
