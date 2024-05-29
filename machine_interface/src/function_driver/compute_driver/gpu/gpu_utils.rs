@@ -476,26 +476,41 @@ async fn process_inputs(
                         continue;
                     }
                 }
-                let transfer_result = memory_domain::transfer_data_item(
-                    &mut destination,
-                    &source,
-                    destination_set_index,
-                    destination_allignment,
-                    destination_item_index,
-                    destination_set_name.as_str(),
-                    source_set_index,
-                    source_item_index,
-                );
-                match recorder.record(RecordPoint::TransferEnd) {
-                    Ok(()) => (),
-                    Err(err) => {
-                        debt.fulfill(Box::new(Err(err)));
+                let transfer_result = task::spawn_blocking(move || {
+                    memory_domain::transfer_data_item(
+                        &mut destination,
+                        &source,
+                        destination_set_index,
+                        destination_allignment,
+                        destination_item_index,
+                        destination_set_name.as_str(),
+                        source_set_index,
+                        source_item_index,
+                    )?;
+                    Ok(destination)
+                })
+                .await
+                .map_err(|_| DandelionError::TransferThreadError)
+                .and_then(|inner| inner);
+
+                match transfer_result {
+                    Ok(destination) => {
+                        match recorder.record(RecordPoint::TransferEnd) {
+                            Ok(()) => (),
+                            Err(err) => {
+                                debt.fulfill(Box::new(Err(err)));
+                                continue;
+                            }
+                        }
+                        let transfer_return = Ok(WorkDone::Context(destination));
+                        debt.fulfill(Box::new(transfer_return));
+                        continue;
+                    }
+                    Err(e) => {
+                        debt.fulfill(Box::new(Err(e)));
                         continue;
                     }
                 }
-                let transfer_return = transfer_result.and(Ok(WorkDone::Context(destination)));
-                debt.fulfill(Box::new(transfer_return));
-                continue;
             }
             WorkToDo::ParsingArguments(ParsingArguments {
                 driver,
