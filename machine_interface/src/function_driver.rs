@@ -60,11 +60,9 @@ pub struct WasmConfig {
 pub struct GpuConfig {
     pub system_data_struct_offset: usize,
     pub code_object_offset: usize,
-    pub blueprint_offset: usize,
-    pub blueprint_size: usize,
     pub kernels: Arc<Vec<String>>,
-    // #[cfg(feature = "gpu")]
-    // pub blueprint: Arc<ExecutionBlueprint>,
+    #[cfg(feature = "gpu")]
+    pub blueprint: Arc<ExecutionBlueprint>,
 }
 
 #[derive(Clone)]
@@ -108,7 +106,7 @@ impl Function {
                     cfg.system_data_struct_offset,
                     std::mem::size_of::<DandelionSystemData<usize, usize>>(),
                 )?;
-                // Transfer code object and blueprint
+                // Transfer code object
                 transfer_memory(
                     &mut ctxt,
                     &self.context,
@@ -116,7 +114,7 @@ impl Function {
                     0,
                     self.context.size,
                 )?;
-                // Mark this area as occupied
+                // Mark code object storage as occupied
                 ctxt.occupy_space(cfg.code_object_offset, self.context.size)?;
                 Ok(ctxt)
             }

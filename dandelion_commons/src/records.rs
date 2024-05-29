@@ -36,10 +36,6 @@ pub enum RecordPoint {
     GetEngineQueue,
     /// Queue to get the function executed on the engine
     ExecutionQueue,
-    /// Start serialisation before function dispatch to Worker process
-    SerialisationStart,
-    /// End serialisation before function dispatch to Worker process
-    SerialisationEnd,
     /// Start execution of the function on the engine (sync)
     EngineStart,
     /// End execution of the function on the engine (sync)

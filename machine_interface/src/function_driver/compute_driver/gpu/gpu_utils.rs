@@ -389,20 +389,12 @@ async fn process_inputs(
                     continue;
                 };
 
-                if let Err(e) = recorder.record(RecordPoint::SerialisationStart) {
-                    debt.fulfill(Box::new(Err(e)));
-                    continue;
-                }
                 let mut task = serde_json::to_string(&SendFunctionArgs {
                     config,
                     context: send_context,
                     output_sets,
                 })
                 .unwrap();
-                if let Err(e) = recorder.record(RecordPoint::SerialisationEnd) {
-                    debt.fulfill(Box::new(Err(e)));
-                    continue;
-                }
 
                 // Very important to add this newline, as the worker reads line by line
                 task += "\n";
