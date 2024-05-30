@@ -16,7 +16,14 @@ use dandelion_commons::{
 use libc::c_void;
 use nix::sys::mman::ProtFlags;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, process::Stdio, sync::Arc};
+use std::{
+    collections::HashMap,
+    process::Stdio,
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc,
+    },
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout, Command},
@@ -378,6 +385,12 @@ async fn process_inputs(
 
         match args {
             WorkToDo::FunctionArguments(func_args) => {
+                // let worker1 = worker1.clone();
+                // let worker2 = worker2.clone();
+                // let worker3 = worker3.clone();
+                // let worker4 = worker4.clone();
+                // Spawn in new task to enable more concurrency
+                // tokio::spawn(async move {
                 let FunctionArguments {
                     config,
                     context,
@@ -388,11 +401,11 @@ async fn process_inputs(
                 // transform relevant data into serialisable counterparts
                 let FunctionConfig::GpuConfig(config) = config else {
                     debt.fulfill(Box::new(Err(DandelionError::ConfigMissmatch)));
-                    continue;
+                    return;
                 };
                 let Ok(send_context) = (&context).try_into() else {
                     debt.fulfill(Box::new(Err(DandelionError::ConfigMissmatch)));
-                    continue;
+                    return;
                 };
 
                 let mut task = serde_json::to_string(&SendFunctionArgs {
@@ -410,7 +423,7 @@ async fn process_inputs(
                     _ = worker1.available.notified() => {
                         if let Err(e) = recorder.record(RecordPoint::EngineStart) {
                             debt.fulfill(Box::new(Err(e)));
-                            continue;
+                            return;
                         }
 
                         // Give debt and recorder to worker
@@ -422,7 +435,7 @@ async fn process_inputs(
                     _ = worker2.available.notified() => {
                         if let Err(e) = recorder.record(RecordPoint::EngineStart) {
                             debt.fulfill(Box::new(Err(e)));
-                            continue;
+                            return;
                         }
 
                         // Give debt and recorder to worker
@@ -434,7 +447,7 @@ async fn process_inputs(
                     _ = worker3.available.notified() => {
                         if let Err(e) = recorder.record(RecordPoint::EngineStart) {
                             debt.fulfill(Box::new(Err(e)));
-                            continue;
+                            return;
                         }
 
                         // Give debt and recorder to worker
@@ -446,7 +459,7 @@ async fn process_inputs(
                     _ = worker4.available.notified() => {
                         if let Err(e) = recorder.record(RecordPoint::EngineStart) {
                             debt.fulfill(Box::new(Err(e)));
-                            continue;
+                            return;
                         }
 
                         // Give debt and recorder to worker
@@ -456,6 +469,7 @@ async fn process_inputs(
                         worker4.stdin.lock().await.write_all(task.as_bytes()).await.expect("Writing failed");
                     }
                 }
+                // });
             }
             WorkToDo::TransferArguments(transfer_args) => {
                 let TransferArguments {
@@ -469,33 +483,35 @@ async fn process_inputs(
                     source_item_index,
                     mut recorder,
                 } = transfer_args;
-                match recorder.record(RecordPoint::TransferStart) {
-                    Ok(()) => (),
-                    Err(err) => {
-                        debt.fulfill(Box::new(Err(err)));
-                        continue;
+                // Spawn in new task to enable more concurrency
+                tokio::spawn(async move {
+                    match recorder.record(RecordPoint::TransferStart) {
+                        Ok(()) => (),
+                        Err(err) => {
+                            debt.fulfill(Box::new(Err(err)));
+                            return;
+                        }
                     }
-                }
-                let transfer_result = memory_domain::transfer_data_item(
-                    &mut destination,
-                    &source,
-                    destination_set_index,
-                    destination_allignment,
-                    destination_item_index,
-                    destination_set_name.as_str(),
-                    source_set_index,
-                    source_item_index,
-                );
-                match recorder.record(RecordPoint::TransferEnd) {
-                    Ok(()) => (),
-                    Err(err) => {
-                        debt.fulfill(Box::new(Err(err)));
-                        continue;
+                    let transfer_result = memory_domain::transfer_data_item(
+                        &mut destination,
+                        &source,
+                        destination_set_index,
+                        destination_allignment,
+                        destination_item_index,
+                        destination_set_name.as_str(),
+                        source_set_index,
+                        source_item_index,
+                    );
+                    match recorder.record(RecordPoint::TransferEnd) {
+                        Ok(()) => (),
+                        Err(err) => {
+                            debt.fulfill(Box::new(Err(err)));
+                            return;
+                        }
                     }
-                }
-                let transfer_return = transfer_result.and(Ok(WorkDone::Context(destination)));
-                debt.fulfill(Box::new(transfer_return));
-                continue;
+                    let transfer_return = transfer_result.and(Ok(WorkDone::Context(destination)));
+                    debt.fulfill(Box::new(transfer_return));
+                });
             }
             WorkToDo::ParsingArguments(ParsingArguments {
                 driver,
@@ -503,14 +519,16 @@ async fn process_inputs(
                 static_domain,
                 mut recorder,
             }) => {
-                recorder.record(RecordPoint::ParsingStart).unwrap();
-                let function_result = driver.parse_function(path, static_domain);
-                recorder.record(RecordPoint::ParsingEnd).unwrap();
-                match function_result {
-                    Ok(function) => debt.fulfill(Box::new(Ok(WorkDone::Function(function)))),
-                    Err(err) => debt.fulfill(Box::new(Err(err))),
-                }
-                continue;
+                // Spawn in new task to enable more concurrency
+                tokio::spawn(async move {
+                    recorder.record(RecordPoint::ParsingStart).unwrap();
+                    let function_result = driver.parse_function(path, static_domain);
+                    recorder.record(RecordPoint::ParsingEnd).unwrap();
+                    match function_result {
+                        Ok(function) => debt.fulfill(Box::new(Ok(WorkDone::Function(function)))),
+                        Err(err) => debt.fulfill(Box::new(Err(err))),
+                    }
+                });
             }
             WorkToDo::Shutdown() => {
                 // wait for all pending functions to complete
@@ -530,10 +548,10 @@ async fn process_inputs(
 }
 
 async fn run_pool(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue + Send + Sync>) {
-    let worker1 = Arc::new(Worker::new(core_id + 1, gpu_id));
-    let worker2 = Arc::new(Worker::new(core_id + 2, gpu_id));
-    let worker3 = Arc::new(Worker::new(core_id + 3, gpu_id));
-    let worker4 = Arc::new(Worker::new(core_id + 4, gpu_id));
+    let worker1 = Arc::new(Worker::new(core_id + 2, gpu_id));
+    let worker2 = Arc::new(Worker::new(core_id + 3, gpu_id));
+    let worker3 = Arc::new(Worker::new(core_id + 4, gpu_id));
+    let worker4 = Arc::new(Worker::new(core_id + 5, gpu_id));
 
     tokio::spawn(process_output(worker1.clone()));
     tokio::spawn(process_output(worker2.clone()));
@@ -552,12 +570,18 @@ async fn run_pool(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue + Send + Syn
 }
 
 pub fn start_gpu_process_pool(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue + Send + Sync>) {
-    // set core affinity
-    if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
-        log::error!("core received core id that could not be set");
-        return;
-    }
-    let rt = tokio::runtime::Builder::new_current_thread()
+    let counter = AtomicU8::new(0);
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .on_thread_start(move || {
+            let inc = counter.fetch_add(1, Ordering::SeqCst);
+            // set core affinity
+            if !core_affinity::set_for_current(core_affinity::CoreId {
+                id: (core_id + inc).into(),
+            }) {
+                panic!("core received core id that could not be set");
+            }
+        })
         .enable_all()
         .build()
         .expect("Runtime building failed");
