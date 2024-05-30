@@ -48,8 +48,6 @@ pub enum DandelionError {
     TransferInputNoSetAvailable,
     /// tried to transfer to a data item that was already present
     TransferItemAlreadyPresent,
-    /// transfer thread crashed (gpu_process only)
-    TransferThreadError,
     /// error converting pointers or integers
     UsizeTypeConversionError,
     /// context synchronization failed
