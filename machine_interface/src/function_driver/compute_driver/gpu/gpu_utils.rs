@@ -487,7 +487,7 @@ async fn process_inputs(
                     mut recorder,
                 } = transfer_args;
                 // Spawn in new task to enable more concurrency
-                let handle = tokio::spawn(async move {
+                let handle = task::spawn_blocking(move || {
                     match recorder.record(RecordPoint::TransferStart) {
                         Ok(()) => (),
                         Err(err) => {
@@ -536,7 +536,7 @@ async fn process_inputs(
                 handles.push(handle);
             }
             WorkToDo::Shutdown() => {
-                // Wait for all dispatches in flight to occur
+                // Wait for all dispatches/transfers in flight to occur
                 for handle in handles {
                     if let Err(e) = handle.await {
                         error!("Pending task returned {}", e);
