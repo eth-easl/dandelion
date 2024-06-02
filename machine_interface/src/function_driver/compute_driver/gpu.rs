@@ -374,7 +374,7 @@ impl Driver for GpuProcessDriver {
     ) -> dandelion_commons::DandelionResult<()> {
         let (cpu_slot, gpu_id) = common_start(resource)?;
 
-        spawn(move || start_gpu_process_pool(cpu_slot, gpu_id, queue));
+        start_gpu_process_pool(cpu_slot, gpu_id, queue);
         Ok(())
     }
 
