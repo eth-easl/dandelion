@@ -14,6 +14,7 @@ use dandelion_commons::{
     DandelionError, DandelionResult,
 };
 use libc::c_void;
+use log::error;
 use nix::sys::mman::ProtFlags;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -374,6 +375,7 @@ async fn process_inputs(
     worker4: Arc<Worker>,
 ) {
     let queue = Arc::new(queue);
+    let mut handles = vec![];
     loop {
         // A bit clumsy but necessary to use spawn_blocking
         let queue = queue.clone();
@@ -385,91 +387,92 @@ async fn process_inputs(
 
         match args {
             WorkToDo::FunctionArguments(func_args) => {
-                // let worker1 = worker1.clone();
-                // let worker2 = worker2.clone();
-                // let worker3 = worker3.clone();
-                // let worker4 = worker4.clone();
+                let worker1 = worker1.clone();
+                let worker2 = worker2.clone();
+                let worker3 = worker3.clone();
+                let worker4 = worker4.clone();
                 // Spawn in new task to enable more concurrency
-                // tokio::spawn(async move {
-                let FunctionArguments {
-                    config,
-                    context,
-                    output_sets,
-                    mut recorder,
-                } = func_args;
+                let handle = tokio::spawn(async move {
+                    let FunctionArguments {
+                        config,
+                        context,
+                        output_sets,
+                        mut recorder,
+                    } = func_args;
 
-                // transform relevant data into serialisable counterparts
-                let FunctionConfig::GpuConfig(config) = config else {
-                    debt.fulfill(Box::new(Err(DandelionError::ConfigMissmatch)));
-                    return;
-                };
-                let Ok(send_context) = (&context).try_into() else {
-                    debt.fulfill(Box::new(Err(DandelionError::ConfigMissmatch)));
-                    return;
-                };
+                    // transform relevant data into serialisable counterparts
+                    let FunctionConfig::GpuConfig(config) = config else {
+                        debt.fulfill(Box::new(Err(DandelionError::ConfigMissmatch)));
+                        return;
+                    };
+                    let Ok(send_context) = (&context).try_into() else {
+                        debt.fulfill(Box::new(Err(DandelionError::ConfigMissmatch)));
+                        return;
+                    };
 
-                let mut task = serde_json::to_string(&SendFunctionArgs {
-                    config,
-                    context: send_context,
-                    output_sets,
-                })
-                .unwrap();
+                    let mut task = serde_json::to_string(&SendFunctionArgs {
+                        config,
+                        context: send_context,
+                        output_sets,
+                    })
+                    .unwrap();
 
-                // Very important to add this newline, as the worker reads line by line
-                task += "\n";
+                    // Very important to add this newline, as the worker reads line by line
+                    task += "\n";
 
-                // Unfortunate code duplication because of how select works
-                tokio::select! {
-                    _ = worker1.available.notified() => {
-                        if let Err(e) = recorder.record(RecordPoint::EngineStart) {
-                            debt.fulfill(Box::new(Err(e)));
-                            return;
+                    // Unfortunate code duplication because of how select works
+                    tokio::select! {
+                        _ = worker1.available.notified() => {
+                            if let Err(e) = recorder.record(RecordPoint::EngineStart) {
+                                debt.fulfill(Box::new(Err(e)));
+                                return;
+                            }
+
+                            // Give debt and recorder to worker
+                            *worker1.debt.lock().await = Some((debt, recorder, context));
+
+                            // Write task description to worker process stdin
+                            worker1.stdin.lock().await.write_all(task.as_bytes()).await.expect("Writing failed");
+                        },
+                        _ = worker2.available.notified() => {
+                            if let Err(e) = recorder.record(RecordPoint::EngineStart) {
+                                debt.fulfill(Box::new(Err(e)));
+                                return;
+                            }
+
+                            // Give debt and recorder to worker
+                            *worker2.debt.lock().await = Some((debt, recorder, context));
+
+                            // Write task description to worker process stdin
+                            worker2.stdin.lock().await.write_all(task.as_bytes()).await.expect("Writing failed");
+                        },
+                        _ = worker3.available.notified() => {
+                            if let Err(e) = recorder.record(RecordPoint::EngineStart) {
+                                debt.fulfill(Box::new(Err(e)));
+                                return;
+                            }
+
+                            // Give debt and recorder to worker
+                            *worker3.debt.lock().await = Some((debt, recorder, context));
+
+                            // Write task description to worker process stdin
+                            worker3.stdin.lock().await.write_all(task.as_bytes()).await.expect("Writing failed");
+                        },
+                        _ = worker4.available.notified() => {
+                            if let Err(e) = recorder.record(RecordPoint::EngineStart) {
+                                debt.fulfill(Box::new(Err(e)));
+                                return;
+                            }
+
+                            // Give debt and recorder to worker
+                            *worker4.debt.lock().await = Some((debt, recorder, context));
+
+                            // Write task description to worker process stdin
+                            worker4.stdin.lock().await.write_all(task.as_bytes()).await.expect("Writing failed");
                         }
-
-                        // Give debt and recorder to worker
-                        *worker1.debt.lock().await = Some((debt, recorder, context));
-
-                        // Write task description to worker process stdin
-                        worker1.stdin.lock().await.write_all(task.as_bytes()).await.expect("Writing failed");
-                    },
-                    _ = worker2.available.notified() => {
-                        if let Err(e) = recorder.record(RecordPoint::EngineStart) {
-                            debt.fulfill(Box::new(Err(e)));
-                            return;
-                        }
-
-                        // Give debt and recorder to worker
-                        *worker2.debt.lock().await = Some((debt, recorder, context));
-
-                        // Write task description to worker process stdin
-                        worker2.stdin.lock().await.write_all(task.as_bytes()).await.expect("Writing failed");
-                    },
-                    _ = worker3.available.notified() => {
-                        if let Err(e) = recorder.record(RecordPoint::EngineStart) {
-                            debt.fulfill(Box::new(Err(e)));
-                            return;
-                        }
-
-                        // Give debt and recorder to worker
-                        *worker3.debt.lock().await = Some((debt, recorder, context));
-
-                        // Write task description to worker process stdin
-                        worker3.stdin.lock().await.write_all(task.as_bytes()).await.expect("Writing failed");
-                    },
-                    _ = worker4.available.notified() => {
-                        if let Err(e) = recorder.record(RecordPoint::EngineStart) {
-                            debt.fulfill(Box::new(Err(e)));
-                            return;
-                        }
-
-                        // Give debt and recorder to worker
-                        *worker4.debt.lock().await = Some((debt, recorder, context));
-
-                        // Write task description to worker process stdin
-                        worker4.stdin.lock().await.write_all(task.as_bytes()).await.expect("Writing failed");
                     }
-                }
-                // });
+                });
+                handles.push(handle);
             }
             WorkToDo::TransferArguments(transfer_args) => {
                 let TransferArguments {
@@ -484,7 +487,7 @@ async fn process_inputs(
                     mut recorder,
                 } = transfer_args;
                 // Spawn in new task to enable more concurrency
-                tokio::spawn(async move {
+                let handle = tokio::spawn(async move {
                     match recorder.record(RecordPoint::TransferStart) {
                         Ok(()) => (),
                         Err(err) => {
@@ -512,7 +515,7 @@ async fn process_inputs(
                     let transfer_return = transfer_result.and(Ok(WorkDone::Context(destination)));
                     debt.fulfill(Box::new(transfer_return));
                 });
-                tokio::task::yield_now().await;
+                handles.push(handle);
             }
             WorkToDo::ParsingArguments(ParsingArguments {
                 driver,
@@ -521,7 +524,7 @@ async fn process_inputs(
                 mut recorder,
             }) => {
                 // Spawn in new task to enable more concurrency
-                tokio::spawn(async move {
+                let handle = tokio::spawn(async move {
                     recorder.record(RecordPoint::ParsingStart).unwrap();
                     let function_result = driver.parse_function(path, static_domain);
                     recorder.record(RecordPoint::ParsingEnd).unwrap();
@@ -530,9 +533,16 @@ async fn process_inputs(
                         Err(err) => debt.fulfill(Box::new(Err(err))),
                     }
                 });
+                handles.push(handle);
             }
             WorkToDo::Shutdown() => {
-                // wait for all pending functions to complete
+                // Wait for all dispatches in flight to occur
+                for handle in handles {
+                    if let Err(e) = handle.await {
+                        error!("Pending task returned {}", e);
+                    }
+                }
+                // Wait for pending taks to complete
                 tokio::join!(
                     worker1.available.notified(),
                     worker2.available.notified(),
@@ -549,10 +559,10 @@ async fn process_inputs(
 }
 
 async fn run_pool(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue + Send + Sync>) {
-    let worker1 = Arc::new(Worker::new(core_id + 2, gpu_id));
-    let worker2 = Arc::new(Worker::new(core_id + 3, gpu_id));
-    let worker3 = Arc::new(Worker::new(core_id + 4, gpu_id));
-    let worker4 = Arc::new(Worker::new(core_id + 5, gpu_id));
+    let worker1 = Arc::new(Worker::new(core_id + 6, gpu_id));
+    let worker2 = Arc::new(Worker::new(core_id + 7, gpu_id));
+    let worker3 = Arc::new(Worker::new(core_id + 8, gpu_id));
+    let worker4 = Arc::new(Worker::new(core_id + 9, gpu_id));
 
     tokio::spawn(process_output(worker1.clone()));
     tokio::spawn(process_output(worker2.clone()));
@@ -573,7 +583,7 @@ async fn run_pool(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue + Send + Syn
 pub fn start_gpu_process_pool(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue + Send + Sync>) {
     let counter = AtomicU8::new(0);
     let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
+        .worker_threads(6)
         .on_thread_start(move || {
             let inc = counter.fetch_add(1, Ordering::SeqCst);
             // set core affinity
