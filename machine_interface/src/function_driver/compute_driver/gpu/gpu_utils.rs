@@ -378,12 +378,12 @@ async fn process_inputs(
     let mut handles = vec![];
     loop {
         // A bit clumsy but necessary to use spawn_blocking
-        let queue = queue.clone();
+        // let queue = queue.clone();
         // Need to use spawn_blocking, else waiting on the queue can deadlock,
         // eg. if new work being added to the queue relies on old work being submitted
-        let (args, debt) = task::spawn_blocking(move || queue.get_engine_args())
-            .await
-            .expect("spawn_blocking thread crashed");
+        let (args, debt) = task::block_in_place(|| queue.get_engine_args());
+        // .await
+        // .expect("spawn_blocking thread crashed");
 
         match args {
             WorkToDo::FunctionArguments(func_args) => {
@@ -487,7 +487,7 @@ async fn process_inputs(
                     mut recorder,
                 } = transfer_args;
                 // Spawn in new task to enable more concurrency
-                let handle = task::spawn_blocking(move || {
+                task::block_in_place(move || {
                     match recorder.record(RecordPoint::TransferStart) {
                         Ok(()) => (),
                         Err(err) => {
@@ -515,7 +515,6 @@ async fn process_inputs(
                     let transfer_return = transfer_result.and(Ok(WorkDone::Context(destination)));
                     debt.fulfill(Box::new(transfer_return));
                 });
-                handles.push(handle);
             }
             WorkToDo::ParsingArguments(ParsingArguments {
                 driver,
@@ -536,7 +535,7 @@ async fn process_inputs(
                 handles.push(handle);
             }
             WorkToDo::Shutdown() => {
-                // Wait for all dispatches/transfers in flight to occur
+                // Wait for all dispatches in flight to occur
                 for handle in handles {
                     if let Err(e) = handle.await {
                         error!("Pending task returned {}", e);
@@ -559,10 +558,10 @@ async fn process_inputs(
 }
 
 async fn run_pool(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue + Send + Sync>) {
-    let worker1 = Arc::new(Worker::new(core_id + 6, gpu_id));
-    let worker2 = Arc::new(Worker::new(core_id + 7, gpu_id));
-    let worker3 = Arc::new(Worker::new(core_id + 8, gpu_id));
-    let worker4 = Arc::new(Worker::new(core_id + 9, gpu_id));
+    let worker1 = Arc::new(Worker::new(core_id + 4, gpu_id));
+    let worker2 = Arc::new(Worker::new(core_id + 5, gpu_id));
+    let worker3 = Arc::new(Worker::new(core_id + 6, gpu_id));
+    let worker4 = Arc::new(Worker::new(core_id + 7, gpu_id));
 
     tokio::spawn(process_output(worker1.clone()));
     tokio::spawn(process_output(worker2.clone()));
@@ -583,7 +582,7 @@ async fn run_pool(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue + Send + Syn
 pub fn start_gpu_process_pool(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue + Send + Sync>) {
     let counter = AtomicU8::new(0);
     let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(6)
+        .worker_threads(4)
         .on_thread_start(move || {
             let inc = counter.fetch_add(1, Ordering::SeqCst);
             // set core affinity
