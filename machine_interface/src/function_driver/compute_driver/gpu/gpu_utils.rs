@@ -512,6 +512,7 @@ async fn process_inputs(
                     let transfer_return = transfer_result.and(Ok(WorkDone::Context(destination)));
                     debt.fulfill(Box::new(transfer_return));
                 });
+                tokio::task::yield_now().await;
             }
             WorkToDo::ParsingArguments(ParsingArguments {
                 driver,
