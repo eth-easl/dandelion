@@ -308,7 +308,7 @@ mod server_tests {
         assert_eq!(response_data.len(), (112 * 112 + 2) * 4);
     }
 
-    #[cfg(feature = "gpu")]
+    #[cfg(any(feature = "gpu", feature = "mmu"))]
     #[test]
     fn serve_inference() {
         let mut cmd = Command::cargo_bin("dandelion_server").unwrap();
@@ -336,6 +336,11 @@ mod server_tests {
             "{}/../machine_interface/hip_interface/inference.json",
             env!("CARGO_MANIFEST_DIR"),
         );
+        #[cfg(feature = "mmu")]
+        let inference_path = format!(
+            "{}/../machine_interface/tests/data/test_elf_mmu_x86_64_inference",
+            env!("CARGO_MANIFEST_DIR"),
+        );
         #[cfg(feature = "gpu_thread")]
         {
             engine_type = String::from("GpuThread");
@@ -343,6 +348,10 @@ mod server_tests {
         #[cfg(feature = "gpu_process")]
         {
             engine_type = String::from("GpuProcess");
+        }
+        #[cfg(feature = "mmu")]
+        {
+            engine_type = String::from("Process");
         }
 
         let register_request = RegisterFunction {
