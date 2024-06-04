@@ -15,6 +15,7 @@ use futures::{
     Future,
 };
 use itertools::Itertools;
+use log::trace;
 use machine_interface::{
     function_driver::{Driver, FunctionConfig, WorkToDo},
     machine_config::{
@@ -133,6 +134,7 @@ impl Dispatcher {
         recorder: Recorder,
     ) -> DandelionResult<BTreeMap<usize, CompositionSet>> {
         // build up ready sets
+        trace!("queue composition");
         let (mut ready_functions, mut non_ready_functions): (Vec<_>, Vec<_>) =
             composition.dependencies.into_iter().partition(
                 |FunctionDependencies {
@@ -173,7 +175,11 @@ impl Dispatcher {
                 );
             })
             .collect();
-
+        trace!(
+            "functions ready: {}, functions not ready: {}",
+            running_functions.len(),
+            non_ready_functions.len()
+        );
         while let Some(new_compositions_result) = running_functions.next().await {
             let new_compositions = new_compositions_result?;
             for (composition_set_index, composition_set) in new_compositions {
@@ -217,6 +223,11 @@ impl Dispatcher {
                     recorder.get_sub_recorder().unwrap(),
                 ));
             }
+            trace!(
+                "functions ready: {}, functions not ready: {}",
+                running_functions.len(),
+                non_ready_functions.len()
+            );
         }
         return Ok(inputs
             .into_iter()
@@ -238,23 +249,41 @@ impl Dispatcher {
         non_caching: bool,
         recorder: Recorder,
     ) -> DandelionResult<BTreeMap<usize, CompositionSet>> {
-        let results: Vec<_> = input_sets
-            .into_iter()
-            .map(|(index, mode, composition_set)| composition_set.shard(mode, index))
-            .multi_cartesian_product()
-            .map(|input_sets_local| {
-                Box::pin(self.queue_function(
-                    function_id,
-                    input_sets_local,
-                    output_mapping.clone(),
-                    non_caching,
-                    recorder.get_sub_recorder().unwrap(),
-                ))
-            })
-            .collect();
-        let composition_results: DandelionResult<Vec<_>> =
-            join_all(results).await.into_iter().collect();
+        trace!(
+            "queue function {} shareded and input sets: {:?}",
+            function_id,
+            input_sets
+        );
+        // TODO this is added to support functions with all functions defined as static sets
+        // might want to differentiate between those that have static sets and those that did not get input from predecessors
+        let composition_results: DandelionResult<Vec<_>> = if input_sets.len() != 0 {
+            let results: Vec<_> = input_sets
+                .into_iter()
+                .map(|(index, mode, composition_set)| composition_set.shard(mode, index))
+                .multi_cartesian_product()
+                .map(|input_sets_local| {
+                    Box::pin(self.queue_function(
+                        function_id,
+                        input_sets_local,
+                        output_mapping.clone(),
+                        non_caching,
+                        recorder.get_sub_recorder().unwrap(),
+                    ))
+                })
+                .collect();
+            join_all(results).await.into_iter().collect()
+        } else {
+            self.queue_function(function_id, vec![], output_mapping, non_caching, recorder)
+                .await
+                .and_then(|result| Ok(vec![result]))
+        };
+        // let : DandelionResult<Vec<_>> =
         let mut composition_set_maps = composition_results?.into_iter();
+        trace!(
+            "sharded function {} finished with {} composition results",
+            function_id,
+            composition_set_maps.len()
+        );
         if let Some(mut result_set_map) = composition_set_maps.next() {
             for additional_set_map in composition_set_maps {
                 for (key, mut additional_set) in additional_set_map.into_iter() {
@@ -290,6 +319,7 @@ impl Dispatcher {
                 + Send,
         >,
     > {
+        trace!("queueing function with id: {}", function_id);
         Box::pin(async move {
             // find an engine capable of running the function
             // TODO actual scheduling decisions
@@ -309,6 +339,11 @@ impl Dispatcher {
                             )
                             .await?;
                         recorder.record(RecordPoint::GetEngineQueue)?;
+                        trace!("running function {} on {:?} type engine with input sets {:?} and output sets {:?}",
+                            function_id,
+                            *engine_id,
+                            metadata.input_sets.iter().map(|(name, _)| name).collect_vec(),
+                            metadata.output_sets);
                         let context = self
                             .run_on_engine(
                                 *engine_id,
@@ -405,7 +440,7 @@ impl Dispatcher {
         recorder.record(RecordPoint::LoadDequeue)?;
         // make sure all input sets are there at the correct index
         let mut static_sets = BTreeSet::new();
-        for (function_set_index, (in_set_name, in_composition_set)) in
+        for (function_set_index, (in_set_name, metadata_set)) in
             metadata.input_sets.iter().enumerate()
         {
             function_context
@@ -414,7 +449,12 @@ impl Dispatcher {
                     ident: in_set_name.clone(),
                     buffers: vec![],
                 }));
-            if let Some(composition_set) = in_composition_set {
+            if let Some(composition_set) = metadata_set {
+                trace!(
+                    "preparing function {}: copying metadata set to function set {}",
+                    function_id,
+                    function_set_index
+                );
                 static_sets.insert(function_set_index);
                 let mut function_buffer = 0usize;
                 for (subset, item, source_context) in composition_set {
@@ -438,19 +478,34 @@ impl Dispatcher {
         }
         for (function_set, context_set) in inputs {
             if static_sets.contains(&function_set) {
+                trace!(
+                    "for function {} skipping input set {} from inputs because it was already in metadata",
+                    function_id,
+                    function_set,
+                );
                 continue;
             }
+            trace!(
+                "preparing function {}: copying composition set {} to function set {}",
+                function_id,
+                context_set.set_index,
+                function_set
+            );
             let mut function_item = 0usize;
             for (subset, item, source_context) in context_set {
                 // TODO get allignment information
-                let set_name = &metadata.input_sets[function_set].0;
+                let set_name = source_context.content[subset]
+                    .as_ref()
+                    .unwrap()
+                    .ident
+                    .clone();
                 let args = WorkToDo::TransferArguments {
                     destination: function_context,
                     source: source_context,
                     destination_set_index: function_set,
                     destination_allignment: 128,
                     destination_item_index: function_item,
-                    destination_set_name: set_name.clone(),
+                    destination_set_name: set_name,
                     source_set_index: subset,
                     source_item_index: item,
                     recorder: recorder.get_sub_recorder().unwrap(),

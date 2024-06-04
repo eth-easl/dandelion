@@ -14,10 +14,12 @@ use hyper::{
     service::service_fn,
     Request, Response,
 };
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use machine_interface::{
-    function_driver::ComputeResource, machine_config::EngineType,
-    memory_domain::bytes_context::BytesContext,
+    function_driver::ComputeResource,
+    machine_config::EngineType,
+    memory_domain::{bytes_context::BytesContext, read_only::ReadOnlyContext},
+    DataItem, DataSet, Position,
 };
 use serde::Deserialize;
 use std::{
@@ -107,6 +109,10 @@ async fn serve_request(
     let request_arc = Arc::new(request_context);
     let mut inputs = vec![];
     for request_set in 0..request_number {
+        trace!(
+            "adding input set {} from request",
+            request_arc.content[request_set].as_ref().unwrap().ident
+        );
         inputs.push((
             request_set,
             CompositionSet::from((request_set, vec![request_arc.clone()])),
@@ -147,6 +153,8 @@ struct RegisterFunction {
     context_size: u64,
     engine_type: String,
     binary: Vec<u8>,
+    input_sets: Vec<(String, Option<Vec<(String, Vec<u8>)>>)>,
+    output_sets: Vec<String>,
 }
 
 async fn register_function(
@@ -179,17 +187,53 @@ async fn register_function(
         "Cheri" => EngineType::Cheri,
         _ => panic!("Unkown engine type string"),
     };
+    let input_sets = request_map
+        .input_sets
+        .into_iter()
+        .map(|(name, data)| {
+            if let Some(static_data) = data {
+                let data_contexts = static_data
+                    .into_iter()
+                    .map(|(item_name, data_vec)| {
+                        let item_size = data_vec.len();
+                        let mut new_context =
+                            ReadOnlyContext::new(data_vec.into_boxed_slice()).unwrap();
+                        new_context.content.push(Some(DataSet {
+                            ident: name.clone(),
+                            buffers: vec![DataItem {
+                                ident: item_name,
+                                data: Position {
+                                    offset: 0,
+                                    size: item_size,
+                                },
+                                key: 0,
+                            }],
+                        }));
+                        (Arc::new(new_context), 0usize..1usize)
+                    })
+                    .collect();
+                let composition_set = CompositionSet {
+                    set_index: 0,
+                    context_list: data_contexts,
+                };
+                (name, Some(composition_set))
+            } else {
+                (name, None)
+            }
+        })
+        .collect();
     let (callback, confirmation) = oneshot::channel();
+    let metadata = Metadata {
+        input_sets: Arc::new(input_sets),
+        output_sets: Arc::new(request_map.output_sets),
+    };
     dispatcher
         .send(DispatcherCommand::FunctionRegistration {
             name: request_map.name,
             engine_type,
             context_size: request_map.context_size as usize,
             path: path_buff.to_str().unwrap().to_string(),
-            metadata: Metadata {
-                input_sets: Arc::new(vec![(String::from(""), None)]),
-                output_sets: Arc::new(vec![String::from("")]),
-            },
+            metadata,
             callback,
         })
         .await
@@ -255,10 +299,9 @@ async fn service(
         // TODO rename to cold func and hot func, remove matmul, compute, io
         "/register/function" => register_function(req, dispatcher).await,
         "/register/composition" => register_composition(req, dispatcher).await,
-        "/cold/matmul" | "/cold/matmulstore" | "/cold/compute" | "/cold/io" => {
-            serve_request(true, req, dispatcher).await
-        }
-        "/hot/matmul" | "/hot/matmulstore" | "/hot/compute" | "/hot/io" => {
+        "/cold/matmul" | "/cold/matmulstore" | "/cold/compute" | "/cold/io"
+        | "/cold/python_app" => serve_request(true, req, dispatcher).await,
+        "/hot/matmul" | "/hot/matmulstore" | "/hot/compute" | "/hot/io" | "/hot/python_app" => {
             serve_request(false, req, dispatcher).await
         }
         "/stats" => serve_stats(req).await,

@@ -23,6 +23,8 @@ mod server_tests {
         context_size: u64,
         engine_type: String,
         binary: Vec<u8>,
+        input_sets: Vec<(String, Option<Vec<(String, Vec<u8>)>>)>,
+        output_sets: Vec<String>,
     }
 
     #[derive(Serialize)]
@@ -158,6 +160,8 @@ mod server_tests {
             context_size: 0x802_0000,
             binary: std::fs::read(matmul_path).unwrap(),
             engine_type,
+            input_sets: vec![(String::from(""), None)],
+            output_sets: vec![String::from("")],
         };
         let registration_client = reqwest::blocking::Client::new();
         let registration_resp = registration_client
