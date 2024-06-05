@@ -1,6 +1,9 @@
 use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource};
 use dandelion_commons::{DandelionError, DandelionResult};
-use std::alloc::{alloc_zeroed, Layout};
+use std::{
+    alloc::{alloc_zeroed, Layout},
+    ops::Add,
+};
 
 #[derive(Debug)]
 pub struct MallocContext {
@@ -59,7 +62,8 @@ impl ContextTrait for MallocContext {
             return Err(DandelionError::InvalidRead);
         }
         return Ok(unsafe {
-            core::slice::from_raw_parts(self.storage.as_ref(), self.layout.size())
+            &core::slice::from_raw_parts(self.storage.as_ref(), self.layout.size())
+                [offset..offset + length]
         });
     }
 }

@@ -185,7 +185,7 @@ async fn register_function(
         "Process" => EngineType::Process,
         #[cfg(feature = "cheri")]
         "Cheri" => EngineType::Cheri,
-        _ => panic!("Unkown engine type string"),
+        unkown => panic!("Unkown engine type string {}", unkown),
     };
     let input_sets = request_map
         .input_sets
