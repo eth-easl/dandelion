@@ -6,7 +6,7 @@
         "buffers": {"C": {"Sizeof": "A"}, "D": {"FromInput": {"bufname": "cfg", "idx": 0}}},
         "outputs": ["D"],
         "control_flow": [
-            {"Repeat": [500, [
+            {"Repeat": [{"FromInput": {"bufname": "cfg", "idx": 3}}, [
                 {"ExecKernel": ["convolution_f", [{"Ptr": "C"}, {"Ptr": "A"}, {"Ptr": "B"}], {
                     "grid_dim_x": {"FromInput": {"bufname": "cfg", "idx": 1}}, 
                     "grid_dim_y": {"FromInput": {"bufname": "cfg", "idx": 1}}, 

@@ -145,7 +145,8 @@ fn execute(
                 )?;
             }
             Action::Repeat(times, actions) => {
-                for _ in 0..*times {
+                let repetitions = get_size(times, buffers, context)?;
+                for _ in 0..repetitions {
                     execute(actions, buffers, buffer_pool, context, config)?;
                 }
             }

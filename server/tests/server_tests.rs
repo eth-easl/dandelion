@@ -259,6 +259,7 @@ mod server_tests {
         cfg.extend_from_slice(&i64::to_le_bytes((112 * 112 + 2) * 4));
         cfg.extend_from_slice(&i64::to_le_bytes((224 + 31) / 32));
         cfg.extend_from_slice(&i64::to_le_bytes((112 + 31) / 32));
+        cfg.extend_from_slice(&i64::to_le_bytes(500));
 
         let sets = vec![
             InputSet {

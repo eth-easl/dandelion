@@ -1152,7 +1152,7 @@ mod compute_driver_tests {
             let d_grid_dim: usize = (112 + 31) / 32;
             let (a_matrix, b_matrix) = get_inference_inputs();
             let cfg_offset = function_context
-                .get_free_space_and_write_slice(&[d_size, a_grid_dim, d_grid_dim])
+                .get_free_space_and_write_slice(&[d_size, a_grid_dim, d_grid_dim, 500])
                 .expect("Should have space for cfg");
             let a_offset = function_context
                 .get_free_space_and_write_slice(&a_matrix)
