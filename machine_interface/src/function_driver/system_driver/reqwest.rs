@@ -143,11 +143,12 @@ fn convert_to_request(
         }
     }
     let body = if header_index < raw_request.len() {
-        raw_request.drain(..=header_index);
+        raw_request.drain(..header_index);
         raw_request
     } else {
         vec![]
     };
+    log::trace!("Reqwest body: {:?}", body);
 
     return Ok(RequestInformation {
         item_name,
