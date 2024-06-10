@@ -451,7 +451,7 @@ impl EngineLoop for FpgaLoop {
         &mut self,
         config: FunctionConfig,
         mut context: Context,
-        _output_sets: Arc<Vec<String>>, //_ so compiler doesn't complain for now TODO: vFIX
+        _output_sets: Arc<Vec<String>>, //_ We ignore this because the output context should only contain one set and one item, located at offset 0.
     ) -> DandelionResult<Context> {
         println!("Fpga engine entered run!");
 
@@ -508,6 +508,22 @@ impl EngineLoop for FpgaLoop {
 
                             //"wipe" context for output
                             context.clear_metadata();
+                            let output_offset = context
+                                .get_free_space_and_write_slice(&[2i64, 50i64, 50i64, 50i64, 50i64])
+                                .expect("should be able to write to context");
+                            println!("output offset should be 0, got: {:?}", output_offset);
+                            context.content.push(Some(DataSet {
+                                ident: "functionOutputSet".to_string(),
+                                buffers: vec![DataItem {
+                                    ident: "functionOutputItem".to_string(),
+                                    data: Position {
+                                        offset: output_offset as usize,
+                                        size: 40,
+                                    },
+                                    key: 0,
+                                }],
+                            }));
+                            
                         }
                     }
                 }

@@ -728,11 +728,29 @@ mod compute_driver_tests {
                 output_sets: Arc::new(Vec::new()),
                 recorder,
             }));
-            let _ = tokio::runtime::Builder::new_current_thread()
-                .build()
-                .unwrap()
-                .block_on(promise)
-                .expect("Engine should run ok with basic function");
+
+            let (result_context, mut result_recorder) =
+                tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap()
+                    .block_on(promise)
+                    .expect("Engine should run ok with basic function");
+            result_recorder
+                .record(RecordPoint::FutureReturn)
+                .expect("Should have properly advanced recorder state");
+
+            let output_item = result_context.content[0]
+                .as_ref()
+                .expect("Set should be present");
+
+            let position = output_item.buffers[0].data;
+            println!("got dummy context result back. position: {:?}", position);
+            let mut read_buffer = vec![0i64; position.size / 8];
+            result_context
+                .context
+                .read(position.offset, &mut read_buffer)
+                .expect("Should succeed in reading");
+            println!("result is: {:?}", read_buffer);
         }
     }
 }
