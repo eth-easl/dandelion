@@ -112,11 +112,11 @@ impl Engine for CheriEngine {
         }
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
-            _ => return Box::pin(ready((Err(DandelionError::ConfigMissmatch), context))),
+            _ => return Box::pin(ready((Err(DandelionError::ConfigMismatch), context))),
         };
         let cheri_context = match &context.context {
             ContextType::Cheri(ref cheri_context) => cheri_context,
-            _ => return Box::pin(ready((Err(DandelionError::ContextMissmatch), context))),
+            _ => return Box::pin(ready((Err(DandelionError::ContextMismatch), context))),
         };
         let command = ThreadCommand::Run(
             recorder,

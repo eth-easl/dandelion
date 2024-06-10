@@ -7,13 +7,14 @@ use crate::{
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
     DataItem, DataSet, Position,
 };
+use core::cmp::min;
 use core_affinity::set_for_current;
 use dandelion_commons::{DandelionError, DandelionResult};
 use hyper::header;
 use libc::uint32_t;
 use libloading::{Library, Symbol};
 use log;
-use serde::Deserialize;
+use serde::{de::IntoDeserializer, Deserialize};
 use std::{
     collections::VecDeque,
     fmt::format,
@@ -101,7 +102,7 @@ fn deserialize_response_message(buf: &[u8; PACKET_SIZE]) -> Result<ResponseMessa
     if is_err {
         Ok(ResponseMessage::Error(ResponseError { flag_byte, tile_id }))
     } else if is_response_footer {
-        let mut data: [u8; PACKET_SIZE - 4] = [0; PACKET_SIZE - 4];
+        let mut data: [u8; RESPONSE_FOOTER_BUF_SIZE] = [0; RESPONSE_FOOTER_BUF_SIZE];
         let data_size = u16::from_be_bytes([buf[2], buf[3]]);
         data.copy_from_slice(&buf[4..PACKET_SIZE]);
         Ok(ResponseMessage::Footer(ResponseFooter {
@@ -111,7 +112,7 @@ fn deserialize_response_message(buf: &[u8; PACKET_SIZE]) -> Result<ResponseMessa
             data,
         }))
     } else if is_response {
-        let mut data: [u8; PACKET_SIZE - 2] = [0; PACKET_SIZE - 2];
+        let mut data: [u8; RESPONSE_DATA_BUF_SIZE] = [0; RESPONSE_DATA_BUF_SIZE];
         data.copy_from_slice(&buf[2..PACKET_SIZE]);
         Ok(ResponseMessage::Data(ResponseData {
             flag_byte,
@@ -164,6 +165,54 @@ fn serialize_send_message(msg: RequestMessage) -> [u8; PACKET_SIZE] {
     result
 }
 
+fn get_messages_from_slice(
+    input: &[u8],
+    tile_id: u8,
+    bitstream_id: u16,
+) -> Result<Vec<RequestMessage>, String> {
+    let mut result: Vec<RequestMessage> = Vec::new();
+
+    let input_size = input.len();
+    let mut data_written = 0;
+    //first, let's write it into a header
+    let mut headerbuf: [u8; REQUEST_HEADER_BUF_SIZE] = [0; REQUEST_HEADER_BUF_SIZE];
+    let header_buflen = min(input_size, REQUEST_HEADER_BUF_SIZE);
+    headerbuf.copy_from_slice(&input[data_written..data_written + header_buflen]);
+    data_written += header_buflen;
+    let header = RequestHeader {
+        flag_byte: HEADER_BYTE,
+        tile_id,
+        bitstream_id,
+        data_size: input_size as u32,
+        data: headerbuf,
+    };
+    result.push(RequestMessage::Header(header)); //append to the "back"
+    if (data_written == input_size) {
+        //we are done after the header
+        return Ok(result);
+    }
+    //else
+
+    while data_written < input_size {
+        let mut databuf: [u8; REQUEST_DATA_BUF_SIZE] = [0; REQUEST_DATA_BUF_SIZE]; //don't forget to reset it to 0s every time!
+        let data_buflen = min(input_size - data_written, REQUEST_DATA_BUF_SIZE);
+        databuf.copy_from_slice(&input[data_written..data_written + data_buflen]);
+        data_written += data_buflen;
+        let data = RequestData {
+            flag_byte: DATA_BYTE,
+            tile_id,
+            data: databuf,
+        };
+        result.push(RequestMessage::Data(data));
+    }
+    if (data_written != input_size) {
+        eprintln!("ERROR: failed creating request messages somehow!");
+        return Err("ERROR: failed creating request messages somehow!".to_string());
+    }
+
+    return Ok(result);
+}
+
 type InvocationId = u32;
 type MessageCount = u32;
 
@@ -195,6 +244,11 @@ struct Invocation {
     data: Vec<u8>, //only the data parts of the messages, concatinated
 }
 
+enum HandleResponseBufferResult {
+    State(InvocationState),
+    Invocation(Invocation),
+}
+
 #[derive(Debug, Clone)]
 struct Tile {
     unsent_invocations: Arc<Mutex<VecDeque<Invocation>>>,
@@ -215,37 +269,65 @@ async fn send_msg(stream: &mut TcpStream, message: RequestMessage) -> io::Result
     return Ok(());
 }
 
-async fn dummy_send(conn: SocketAddrV4) {
-    println!("Connecting to {:?}", conn);
-    match TcpStream::connect(conn).await {
+async fn dummy_send(fpgaloop: &FpgaLoop, config: &FpgaConfig) {
+    println!("Connecting to {:?}", fpgaloop.std_connection);
+    match TcpStream::connect(fpgaloop.std_connection).await {
         Ok(mut stream) => {
             //matrix multiply of [3,3,3,3]
             let dummy_mat: [i64; 5] = [2, 3, 3, 3, 3];
 
             let mut buf_representation: [u8; 40] = [0; 40];
             BigEndian::write_i64_into(&dummy_mat, &mut buf_representation);
-            let mut databuf: [u8; PACKET_SIZE - 8] = [0; PACKET_SIZE - 8];
+            let mut databuf: [u8; REQUEST_HEADER_BUF_SIZE] = [0; REQUEST_HEADER_BUF_SIZE];
             databuf[0..40].copy_from_slice(&buf_representation);
             assert!(buf_representation.len() == 8 * 5);
-            let mut header = RequestHeader {
+            let header = RequestHeader {
                 flag_byte: HEADER_BYTE,
                 tile_id: 0,
-                bitstream_id: 1,
+                bitstream_id: config.bitstream_id,
                 data_size: 8 * 5,
                 data: databuf,
             };
 
-            if let Err(e) = send_msg(&mut stream, RequestMessage::Header(header)).await {
+            if let Err(_e) = send_msg(&mut stream, RequestMessage::Header(header)).await {
                 eprintln!("failed to send!");
             } else {
                 println!("Sent: {:?}", header);
 
                 let dur = Duration::from_secs(3);
                 let mut buffer: [u8; PACKET_SIZE] = [0; PACKET_SIZE];
+                //we need to create and add our invocation:
+                let inv = Invocation {
+                    id: 1,
+                    state: InvocationState::Running(0),
+                    send_messages: vec![RequestMessage::Header(header)],
+                    receive_messages: Vec::new(),
+                    data: Vec::new(),
+                };
+                //separate scope so we dont hold lock across await.. clippy is complaining a lot man
+                {
+                    let mut sent_queue = fpgaloop.tiles[0].sent_invocations.lock().unwrap(); //TODO:clean up
+                    sent_queue.push_back(inv);
+                }
+
                 match timeout(dur, stream.read(&mut buffer)).await {
                     Ok(_) => {
-                        let received_message = deserialize_response_message(&buffer).unwrap();
-                        println!("Responsed: {:?}", received_message);
+                        //let received_message = deserialize_response_message(&buffer).unwrap();
+                        match handle_response_buffer(fpgaloop, 0, &buffer) {
+                            Ok(HandleResponseBufferResult::Invocation(invocation)) => {
+                                //this means we are done
+                                println!("we are done, yay!");
+                                println!("result: {:?}", invocation.data);
+                            }
+                            Ok(HandleResponseBufferResult::State(_state)) => {
+                                //TODO: have a problem if the number is too high
+                            }
+                            Err(text) => {
+                                eprintln!("got an error handling the response buffer: {:?}", text);
+                            }
+                        }
+
+                        //println!("Responsed: {:?}", received_message);
                     }
                     Err(e) => eprintln!("Failed to read message: {}", e),
                 }
@@ -276,14 +358,14 @@ fn handle_response_buffer(
     fpgaloop: &FpgaLoop,
     tile_id: u8,
     buf: &[u8; 1024],
-) -> Result<InvocationState, String> {
+) -> Result<HandleResponseBufferResult, String> {
     if let Ok(response) = deserialize_response_message(buf) {
         let tile = &fpgaloop.tiles[usize::from(tile_id)];
         let mut lock = tile.sent_invocations.try_lock();
         if let Ok(ref mut invocations) = lock {
             //find correct invocation
             assert!(invocations.len() > 0);
-            let first_invocation = &mut invocations[0];
+            let first_invocation = invocations.front_mut().unwrap(); //TODO: clean up
             match first_invocation.state {
                 InvocationState::Running(num) => match response {
                     ResponseMessage::Data(data) => {
@@ -291,7 +373,7 @@ fn handle_response_buffer(
                         first_invocation.state = InvocationState::Running(num + 1);
                         first_invocation.receive_messages.push(response);
                         first_invocation.data.extend_from_slice(&data.data);
-                        return Ok(InvocationState::Running(num + 1));
+                        return Ok(HandleResponseBufferResult::State(first_invocation.state));
                     }
                     ResponseMessage::Footer(footer) => {
                         assert!(footer.tile_id == tile_id);
@@ -302,6 +384,10 @@ fn handle_response_buffer(
                         first_invocation
                             .data
                             .extend_from_slice(&footer.data[0..usize::from(footer.data_size)]);
+                        //we need to pop the invocation from the queue here.
+                        let popped_invocation = invocations.pop_front().unwrap();
+                        //TODO: clean up
+                        return Ok(HandleResponseBufferResult::Invocation(popped_invocation));
                     }
                     ResponseMessage::Error(err) => {
                         return Err(format!("RESPONSE ERROR: {:?}", err));
@@ -364,7 +450,7 @@ impl EngineLoop for FpgaLoop {
     fn run(
         &mut self,
         config: FunctionConfig,
-        context: Context,
+        mut context: Context,
         _output_sets: Arc<Vec<String>>, //_ so compiler doesn't complain for now TODO: vFIX
     ) -> DandelionResult<Context> {
         println!("Fpga engine entered run!");
@@ -386,15 +472,56 @@ impl EngineLoop for FpgaLoop {
         let function_conf = match config {
             //_ so compiler doesn't complain for now TODO: vFIX
             FunctionConfig::FpgaConfig(fpga_func) => fpga_func,
-            _ => return Err(DandelionError::ConfigMissmatch),
+            _ => return Err(DandelionError::ConfigMismatch),
         };
         */
         //TODO: here should go the running of stuff
         //outsource to different functions
         //first, parse the context to find out function id, input
-        self.runtime.block_on(dummy_send(self.std_connection));
+        if let FunctionConfig::FpgaConfig(fpgaconfig) = config {
+            match fpgaconfig.dummy_func_num {
+                0 => {
+                    eprintln!("real runner not implemented yet!");
+                    return DandelionResult::Err(DandelionError::NotImplemented);
+                }
+                1 => {
+                    self.runtime.block_on(dummy_send(self, &fpgaconfig));
+                }
+                2 => {
+                    println!("testing input through context");
+                    match &context.content[0] {
+                        None => {
+                            eprintln!("ERROR: no content in context received.");
+                            return DandelionResult::Err(DandelionError::ContextMismatch);
+                        }
+                        Some(set) => {
+                            println!("found set: {:?}", set);
+                            let input_item = &set.buffers[0];
+                            let input_size = input_item.data.size / 8;
+                            let mut input_vec: Vec<i64> = vec![0; input_size];
 
-        println!("returned bs from run");
+                            if let Err(e) = context.read(input_item.data.offset, &mut input_vec) {
+                                eprintln!("couldn't read from context");
+                                return DandelionResult::Err(e);
+                            }
+                            println!("something worked :D input: {:?}", input_vec);
+
+                            //"wipe" context for output
+                            context.clear_metadata();
+                        }
+                    }
+                }
+                _ => {
+                    eprintln!("other dummies not yet implemented");
+                    return DandelionResult::Err(DandelionError::NotImplemented);
+                }
+            }
+        } else {
+            eprintln!("received wrong config!");
+            return DandelionResult::Err(DandelionError::ConfigMismatch);
+        }
+
+        println!("returned from run");
         //TODO: read_output_structs
         return DandelionResult::Ok(context);
     }
@@ -433,15 +560,27 @@ impl Driver for FpgaDriver {
         function_path: String,
         static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
     ) -> DandelionResult<Function> {
-        let config = if function_path == "dummy" {
-            let dummyconfig = FpgaConfig { bitstream_id: 1 };
-            FunctionConfig::FpgaConfig(dummyconfig)
-        } else {
-            //TODO: implement actual config/function parsing
-            println!("Warning, trying to load a real config, NYI!!!!");
-            let dummyconfig = FpgaConfig { bitstream_id: 1 };
-            FunctionConfig::FpgaConfig(dummyconfig)
+        let config = match function_path.as_str() {
+            "dummy" => {
+                let dummyconfig = FpgaConfig {
+                    dummy_func_num: 1,
+                    bitstream_id: 1,
+                };
+                FunctionConfig::FpgaConfig(dummyconfig)
+            }
+            "dummy_input" => {
+                let dummy_input_config = FpgaConfig {
+                    dummy_func_num: 2,
+                    bitstream_id: 1,
+                };
+                FunctionConfig::FpgaConfig(dummy_input_config)
+            }
+            _ => {
+                eprintln!("WARNING, loading real configs NYI!");
+                return Err(DandelionError::NotImplemented);
+            }
         };
+
         return Ok(Function {
             requirements: crate::DataRequirementList {
                 input_requirements: vec![],

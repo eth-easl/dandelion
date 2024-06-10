@@ -664,6 +664,7 @@ mod compute_driver_tests {
     #[cfg(feature = "fpga")]
     mod fpga {
         use super::engine_minimal;
+        use super::prepare_engine_and_function;
         use crate::{
             function_driver::{
                 compute_driver::fpga, compute_driver::fpga::FpgaDriver, thread_utils::EngineLoop,
@@ -672,6 +673,13 @@ mod compute_driver_tests {
             memory_domain::{mmap::MmapMemoryDomain, ContextTrait, MemoryResource},
             DataItem, DataSet, Position,
         };
+        use dandelion_commons::{
+            records::{Archive, RecordPoint, Recorder},
+            DandelionError,
+        };
+
+        use std::sync::{Arc, Mutex};
+
         #[test]
         fn run_dummy_test() {
             let driver: Box<dyn Driver> = Box::new(FpgaDriver {});
@@ -681,6 +689,50 @@ mod compute_driver_tests {
                 driver,
                 vec![ComputeResource::CPU(1)],
             );
+        }
+        #[test]
+        fn run_dummy_input_test() {
+            let driver: Box<dyn Driver> = Box::new(FpgaDriver {});
+            let filename = "dummy_input";
+            let dom_init = MemoryResource::None;
+            let drv_init = vec![ComputeResource::CPU(1)];
+
+            let input_example: [i64; 5] = [2, 5, 5, 5, 5];
+
+            let (mut function_context, config, queue) =
+                prepare_engine_and_function::<MmapMemoryDomain>(
+                    filename, dom_init, &driver, drv_init,
+                );
+            let in_size_offset = function_context
+                .get_free_space_and_write_slice(&input_example)
+                .expect("Should have space for a little data");
+            println!("got offset {:?}", in_size_offset);
+
+            function_context.content.push(Some(DataSet {
+                ident: "inputset".to_string(),
+                buffers: vec![DataItem {
+                    ident: "inputitem".to_string(),
+                    data: Position {
+                        offset: in_size_offset as usize,
+                        size: 8 * input_example.len(), //without enabling some weird stuff i dont have sizeof..8 should be just fine though
+                    },
+                    key: 0,
+                }],
+            }));
+
+            let archive = Arc::new(Mutex::new(Archive::new()));
+            let mut recorder = Recorder::new(archive);
+            let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
+                config: config,
+                context: function_context,
+                output_sets: Arc::new(Vec::new()),
+                recorder,
+            }));
+            let _ = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap()
+                .block_on(promise)
+                .expect("Engine should run ok with basic function");
         }
     }
 }

@@ -28,14 +28,14 @@ pub fn load_static(
     let mut function_context = domain.acquire_context(ctx_size)?;
 
     if static_context.content.len() != 1 {
-        return Err(DandelionError::ConfigMissmatch);
+        return Err(DandelionError::ConfigMismatch);
     }
     // copy sections to the new context
     let static_set = static_context.content[0]
         .as_ref()
-        .ok_or(DandelionError::ConfigMissmatch)?;
+        .ok_or(DandelionError::ConfigMismatch)?;
     if static_set.buffers.len() != requirement_list.static_requirements.len() {
-        return Err(DandelionError::ConfigMissmatch);
+        return Err(DandelionError::ConfigMismatch);
     }
     let layout = &static_set.buffers;
     let static_pairs = layout
@@ -45,7 +45,7 @@ pub fn load_static(
     for (item, requirement) in static_pairs {
         let position = item.data;
         if requirement.size < position.size {
-            return Err(DandelionError::ConfigMissmatch);
+            return Err(DandelionError::ConfigMismatch);
         }
         transfer_memory(
             &mut function_context,

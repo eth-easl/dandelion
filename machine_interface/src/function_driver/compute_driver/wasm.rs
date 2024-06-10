@@ -28,7 +28,7 @@ impl EngineLoop for WasmLoop {
     ) -> DandelionResult<Context> {
         let wasm_config = match config {
             FunctionConfig::WasmConfig(wasm_config) => wasm_config,
-            _ => return Err(DandelionError::ConfigMissmatch),
+            _ => return Err(DandelionError::ConfigMismatch),
         };
         // setup input structs
         setup_input_structs::<u32, u32>(

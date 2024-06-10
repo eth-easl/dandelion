@@ -350,7 +350,7 @@ impl EngineLoop for HyperLoop {
         log::debug!("Hyper engine running function");
         let function = match config {
             FunctionConfig::SysConfig(sys_func) => sys_func,
-            _ => return Err(DandelionError::ConfigMissmatch),
+            _ => return Err(DandelionError::ConfigMismatch),
         };
 
         return match function {

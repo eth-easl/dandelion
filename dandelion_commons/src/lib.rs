@@ -27,7 +27,7 @@ pub enum DandelionError {
     /// error creating layout for read only context
     ContextReadOnlyLayout,
     /// context handed to context specific function was wrong type
-    ContextMissmatch,
+    ContextMismatch,
     /// domain could not be allocated because there is no space available
     OutOfMemory,
     /// the value specified for the context size does not match the WASM memory size
@@ -56,7 +56,7 @@ pub enum DandelionError {
     ContextSyncError,
     // engine errors
     /// missmatch between the function config the engine expects and the one given
-    ConfigMissmatch,
+    ConfigMismatch,
     /// missmatch between the resource an engine was given and what it expects to run on or
     /// the resource doesn't exist
     EngineResourceError,
