@@ -192,18 +192,18 @@ async fn register_function(
             path: path_buff.to_str().unwrap().to_string(),
             metadata: Metadata {
                 // Comment to switch between matmul and inference workloads. TODO: stop hard coding
-                input_sets: Arc::new(vec![
-                    (String::from("A"), None),
-                    (String::from("B"), None),
-                    (String::from("cfg"), None),
-                ]),
-                // #[cfg(feature = "gpu")]
-                // input_sets: Arc::new(vec![(String::from("A"), None), (String::from("cfg"), None)]),
-                // #[cfg(not(feature = "gpu"))]
-                // input_sets: Arc::new(vec![(String::from("A"), None)]),
+                // input_sets: Arc::new(vec![
+                //     (String::from("A"), None),
+                //     (String::from("B"), None),
+                //     (String::from("cfg"), None),
+                // ]),
+                #[cfg(feature = "gpu")]
+                input_sets: Arc::new(vec![(String::from("A"), None), (String::from("cfg"), None)]),
+                #[cfg(not(feature = "gpu"))]
+                input_sets: Arc::new(vec![(String::from("A"), None)]),
 
-                // output_sets: Arc::new(vec![String::from("B")]),
-                output_sets: Arc::new(vec![String::from("D")]),
+                output_sets: Arc::new(vec![String::from("B")]),
+                // output_sets: Arc::new(vec![String::from("D")]),
             },
             callback,
         })
