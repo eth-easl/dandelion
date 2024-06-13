@@ -299,11 +299,18 @@ async fn service(
         // TODO rename to cold func and hot func, remove matmul, compute, io
         "/register/function" => register_function(req, dispatcher).await,
         "/register/composition" => register_composition(req, dispatcher).await,
-        "/cold/matmul" | "/cold/matmulstore" | "/cold/compute" | "/cold/io"
+        "/cold/matmul"
+        | "/cold/matmulstore"
+        | "/cold/compute"
+        | "/cold/io"
+        | "/cold/middleware_app"
         | "/cold/python_app" => serve_request(true, req, dispatcher).await,
-        "/hot/matmul" | "/hot/matmulstore" | "/hot/compute" | "/hot/io" | "/hot/python_app" => {
-            serve_request(false, req, dispatcher).await
-        }
+        "/hot/matmul"
+        | "/hot/matmulstore"
+        | "/hot/compute"
+        | "/hot/io"
+        | "/hot/middleware_app"
+        | "/hot/python_app" => serve_request(false, req, dispatcher).await,
         "/stats" => serve_stats(req).await,
         _ => Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
             format!("Hello, Wor\n").into_bytes(),
@@ -377,7 +384,7 @@ async fn dispatcher_loop(
 
 async fn service_loop(request_sender: mpsc::Sender<DispatcherCommand>) {
     // socket to listen to
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+    let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], 8080));
     let listener = TcpListener::bind(addr).await.unwrap();
     // signal handlers for gracefull shutdown
     let mut sigterm_stream = tokio::signal::unix::signal(SignalKind::terminate()).unwrap();

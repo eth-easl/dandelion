@@ -178,7 +178,7 @@ fn encode_response(sets: BTreeMap<usize, CompositionSet>) -> (usize, Vec<u8>, Ve
 
     // encode sets
     let all_items = encode_sets(sets, &mut response, &mut data_items);
-
+    log::trace!("Response contains items with total size of {}", all_items);
     // end array and set length
     response.push(0);
     let set_array_length = (response.len() - set_length_offset + all_items) as i32;

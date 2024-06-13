@@ -93,7 +93,8 @@ fn convert_to_request(
         Some(version_string) if version_string == "HTTP/2.0" => Version::HTTP_2,
         Some(version_string) if version_string == "HTTP/3.0" => Version::HTTP_3,
         Some(version_string) => {
-            return Err(DandelionError::InvalidSystemFuncArg(String::from(
+            return Err(DandelionError::InvalidSystemFuncArg(format!(
+                "unkown http version: {}",
                 version_string,
             )))
         }

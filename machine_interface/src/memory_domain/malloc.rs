@@ -1,9 +1,6 @@
 use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource};
 use dandelion_commons::{DandelionError, DandelionResult};
-use std::{
-    alloc::{alloc_zeroed, Layout},
-    ops::Add,
-};
+use std::alloc::{alloc_zeroed, Layout};
 
 #[derive(Debug)]
 pub struct MallocContext {
