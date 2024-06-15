@@ -303,18 +303,23 @@ async fn service(
         | "/cold/matmulstore"
         | "/cold/compute"
         | "/cold/io"
+        | "/cold/chain_scaling"
         | "/cold/middleware_app"
         | "/cold/python_app" => serve_request(true, req, dispatcher).await,
         "/hot/matmul"
         | "/hot/matmulstore"
         | "/hot/compute"
         | "/hot/io"
+        | "/hot/chain_scaling"
         | "/hot/middleware_app"
         | "/hot/python_app" => serve_request(false, req, dispatcher).await,
         "/stats" => serve_stats(req).await,
-        _ => Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
-            format!("Hello, Wor\n").into_bytes(),
-        ))),
+        other_uri => {
+            trace!("Received request on {}", other_uri);
+            Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
+                format!("Hello, Wor\n").into_bytes(),
+            )))
+        }
     }
 }
 
