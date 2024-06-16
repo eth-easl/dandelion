@@ -92,9 +92,29 @@ pub enum ComputeResource {
 }
 
 pub enum WorkToDo {
-    FunctionArguments(FunctionArguments),
-    TransferArguments(TransferArguments),
-    ParsingArguments(ParsingArguments),
+    FunctionArguments {
+        config: FunctionConfig,
+        context: Context,
+        output_sets: Arc<Vec<String>>,
+        recorder: Recorder,
+    },
+    TransferArguments {
+        destination: Context,
+        source: Arc<Context>,
+        destination_set_index: usize,
+        destination_allignment: usize,
+        destination_item_index: usize,
+        destination_set_name: String,
+        source_set_index: usize,
+        source_item_index: usize,
+        recorder: Recorder,
+    },
+    ParsingArguments {
+        driver: &'static dyn Driver,
+        path: String,
+        static_domain: &'static dyn MemoryDomain,
+        recorder: Recorder,
+    },
     Shutdown(),
 }
 
@@ -119,34 +139,28 @@ impl WorkDone {
     }
 }
 
-pub struct FunctionArguments {
-    pub config: FunctionConfig,
-    pub context: Context,
-    pub output_sets: Arc<Vec<String>>,
-    pub recorder: Recorder,
-}
-
-pub struct TransferArguments {
-    pub destination: Context,
-    pub source: Arc<Context>,
-    pub destination_set_index: usize,
-    pub destination_allignment: usize,
-    pub destination_item_index: usize,
-    pub destination_set_name: String,
-    pub source_set_index: usize,
-    pub source_item_index: usize,
-    pub recorder: Recorder,
-}
-
-pub struct ParsingArguments {
-    pub driver: &'static dyn Driver,
-    pub path: String,
-    pub static_domain: &'static dyn MemoryDomain,
-    pub recorder: Recorder,
-}
-
 pub trait WorkQueue {
     fn get_engine_args(&self) -> (WorkToDo, crate::promise::Debt);
+    fn try_get_engine_args(&self) -> Option<(WorkToDo, crate::promise::Debt)>;
+}
+
+impl futures::stream::Stream for &mut (dyn WorkQueue + Send) {
+    type Item = (WorkToDo, crate::promise::Debt);
+    /// By default the behaviour of the work queue on polling is to call try_get_engine_args()
+    /// If the call returns Some(tuple), the poll will returns Ready(tuple)
+    /// Otherwise the poll function will call the waker and return pending.
+    /// The waker is called, because the queue does not know when it becomes ready, it signals to be polled again.
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> core::task::Poll<Option<Self::Item>> {
+        if let Some(tuple) = self.try_get_engine_args() {
+            return core::task::Poll::Ready(Some(tuple));
+        } else {
+            cx.waker().wake_by_ref();
+            return core::task::Poll::Pending;
+        }
+    }
 }
 
 pub trait Driver: Send + Sync {

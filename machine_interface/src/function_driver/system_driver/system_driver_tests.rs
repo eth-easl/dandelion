@@ -3,7 +3,7 @@ mod system_driver_tests {
     use crate::{
         function_driver::{
             system_driver::get_system_function_output_sets, test_queue::TestQueue, ComputeResource,
-            Driver, FunctionArguments, FunctionConfig, SystemFunction, WorkToDo,
+            Driver, FunctionConfig, SystemFunction, WorkToDo,
         },
         memory_domain::{Context, ContextTrait, MemoryDomain, MemoryResource},
         DataItem, DataSet, Position,
@@ -16,7 +16,32 @@ mod system_driver_tests {
 
     const _CONTEXT_SIZE: usize = 2048 * 1024;
 
-    fn write_request_line(context: &mut Context, request: Vec<u8>) -> DandelionResult<()> {
+    fn read_status(response_buffer: &Vec<u8>) -> String {
+        // find first '\n'
+        let status_end = response_buffer
+            .iter()
+            .position(|character| *character == b'\n')
+            .unwrap_or(response_buffer.len());
+        return std::str::from_utf8(&response_buffer[0..status_end])
+            .expect("request has not valid string status line")
+            .to_string();
+    }
+
+    fn get_body_size(response_buffer: &Vec<u8>) -> usize {
+        // find two consecutive '\n' that implied headers are finished
+        let first_endl = response_buffer
+            .windows(2)
+            .position(|window| window == b"\n\n")
+            .unwrap_or(response_buffer.len());
+        let body_start = first_endl + 2;
+        return if body_start < response_buffer.len() {
+            response_buffer.len() - body_start
+        } else {
+            0
+        };
+    }
+
+    fn write_request(context: &mut Context, request: Vec<u8>) -> DandelionResult<()> {
         let request_length = request.len();
         let request_offset = context.get_free_space_and_write_slice(&request)? as usize;
 
@@ -31,46 +56,6 @@ mod system_driver_tests {
                 key: 0,
             }],
         }));
-        return Ok(());
-    }
-
-    fn write_headers(context: &mut Context, headers: Vec<(&str, &str)>) -> DandelionResult<()> {
-        let mut header_set = DataSet {
-            ident: String::from("headers"),
-            buffers: vec![],
-        };
-        for (key, value) in headers {
-            let value_length = value.len();
-            let value_offset = context.get_free_space_and_write_slice(value.as_bytes())? as usize;
-            header_set.buffers.push(DataItem {
-                ident: key.to_string(),
-                data: Position {
-                    offset: value_offset,
-                    size: value_length,
-                },
-                key: 0,
-            });
-        }
-        context.content.push(Some(header_set));
-        return Ok(());
-    }
-
-    fn write_body(context: &mut Context, body: &[u8]) -> DandelionResult<()> {
-        let body_offset = context
-            .get_free_space_and_write_slice(body)
-            .expect("Should have space for body") as usize;
-        let body_set = DataSet {
-            ident: String::from("body"),
-            buffers: vec![DataItem {
-                ident: String::from(""),
-                data: Position {
-                    offset: body_offset,
-                    size: body.len(),
-                },
-                key: 0,
-            }],
-        };
-        context.content.push(Some(body_set));
         return Ok(());
     }
 
@@ -89,11 +74,9 @@ mod system_driver_tests {
             .expect("Should be able to get engine");
         let config = FunctionConfig::SysConfig(SystemFunction::HTTP);
 
-        let request = "GET http://httpbin.org/get HTTP/1.1\n\r"
-            .as_bytes()
-            .to_vec();
+        let request = "GET http://httpbin.org/get HTTP/1.1".as_bytes().to_vec();
 
-        write_request_line(&mut context, request).expect("Should be able to prepare request line");
+        write_request(&mut context, request).expect("Should be able to prepare request line");
 
         let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
             #[cfg(feature = "timestamp")]
@@ -101,12 +84,12 @@ mod system_driver_tests {
         })));
         let mut recorder = archive.get_recorder().unwrap();
         let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
-        let promise = queue.enqueu(WorkToDo::FunctionArguments(FunctionArguments {
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config,
             context,
             output_sets,
             recorder: recorder.get_sub_recorder().unwrap(),
-        }));
+        });
         let result_context = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -117,31 +100,49 @@ mod system_driver_tests {
             .record(RecordPoint::FutureReturn)
             .expect("Should have advanced record");
 
-        let response_line = result_context
+        let response_set = result_context
             .content
             .iter()
             .find(|set_opt| {
                 if let Some(set) = set_opt {
-                    return set.ident == "status";
+                    return set.ident == "response";
                 } else {
                     return false;
                 }
             })
-            .expect("Should have status set")
+            .expect("Should have response set")
             .as_ref()
-            .expect("Should have status set");
-        assert_eq!(1, response_line.buffers.len());
-        let status_item = &response_line.buffers[0];
-        let mut status_buffer = Vec::<u8>::new();
-        status_buffer.resize(status_item.data.size, 0);
+            .expect("Should have response set");
+        assert_eq!(1, response_set.buffers.len());
+        let status_item = &response_set.buffers[0];
+        let mut response_buffer = Vec::<u8>::new();
+        response_buffer.resize(status_item.data.size, 0);
         result_context
-            .read(status_item.data.offset, &mut status_buffer)
+            .read(status_item.data.offset, &mut response_buffer)
             .expect("Should be able to read status");
-        let status = String::from_utf8(status_buffer).expect("Should have status string");
+        let status = read_status(&response_buffer);
         assert_eq!("HTTP/1.1 200 OK", status);
+
+        // check body
+        let body_set = result_context
+            .content
+            .iter()
+            .find(|set_opt| {
+                if let Some(set) = set_opt {
+                    return set.ident == "body";
+                } else {
+                    return false;
+                }
+            })
+            .expect("Should have body set")
+            .as_ref()
+            .expect("Should have body set");
+        assert_eq!(1, body_set.buffers.len());
+        let expected_body_len = get_body_size(&response_buffer);
+        assert_eq!(expected_body_len, body_set.buffers[0].data.size);
     }
 
-    fn put_http<Dom: MemoryDomain>(
+    fn post_http<Dom: MemoryDomain>(
         dom_init: MemoryResource,
         driver: Box<dyn Driver>,
         drv_init: ComputeResource,
@@ -156,15 +157,21 @@ mod system_driver_tests {
             .expect("Should be able to get engine");
         let config = FunctionConfig::SysConfig(SystemFunction::HTTP);
 
-        let request = "PUT http://httpbin.org/put HTTP/1.1".as_bytes().to_vec();
+        let request = r#"POST http://httpbin.org/post HTTP/1.1
+Content-Type: text/plain
 
-        write_request_line(&mut context, request).expect("Should be able to prepare request line");
+Lorem ipsum dolor sit amet, consetetur sadipscing elitr,
+sed diam nonumy eirmod tempor invidunt ut labore et dolore
+magna aliquyam erat, sed diam voluptua. At vero eos et
+accusam et justo duo dolores et ea rebum. Stet clita kasd
+gubergren, no sea takimata sanctus est Lorem ipsum dolor
+sit amet. Lorem ipsum dolor sit amet, consetetur sadipscing
+elitr, sed diam nonumy eirmod tempor invidunt ut labore et
+dolore magna aliquyam erat, sed diam voluptua."#
+            .as_bytes()
+            .to_vec();
 
-        let headers = vec![("Content-Type", "text/plain")];
-        write_headers(&mut context, headers).expect("Should be able to write headers");
-
-        let request_body = "Hello World\n".as_bytes();
-        write_body(&mut context, request_body).expect("Should be able to write body");
+        write_request(&mut context, request).unwrap();
 
         let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
             #[cfg(feature = "timestamp")]
@@ -172,12 +179,12 @@ mod system_driver_tests {
         })));
         let mut recorder = archive.get_recorder().unwrap();
         let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
-        let promise = queue.enqueu(WorkToDo::FunctionArguments(FunctionArguments {
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config,
             context,
             output_sets,
             recorder: recorder.get_sub_recorder().unwrap(),
-        }));
+        });
         let result_context = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -188,27 +195,27 @@ mod system_driver_tests {
             .record(RecordPoint::FutureReturn)
             .expect("Should have advanced record");
 
-        let status_set = result_context
+        let response = result_context
             .content
             .iter()
             .find(|set_opt| {
                 if let Some(set) = set_opt {
-                    return set.ident == "status";
+                    return set.ident == "response";
                 } else {
                     return false;
                 }
             })
-            .expect("Should have status set")
+            .expect("Should have response set")
             .as_ref()
-            .expect("Should have status set");
-        assert_eq!(1, status_set.buffers.len());
-        let status_item = &status_set.buffers[0];
-        let mut status_buffer = Vec::<u8>::new();
-        status_buffer.resize(status_item.data.size, 0);
+            .expect("Should have response set");
+        assert_eq!(1, response.buffers.len());
+        let response_item = &response.buffers[0];
+        let mut response_buffer = Vec::<u8>::new();
+        response_buffer.resize(response_item.data.size, 0);
         result_context
-            .read(status_item.data.offset, &mut status_buffer)
+            .read(response_item.data.offset, &mut response_buffer)
             .expect("Should be able to read status");
-        let status = String::from_utf8(status_buffer).expect("Should have status string");
+        let status = read_status(&response_buffer);
         assert_eq!("HTTP/1.1 200 OK", status);
     }
 
@@ -222,9 +229,9 @@ mod system_driver_tests {
             }
 
             #[test]
-            fn test_http_put() {
+            fn test_http_post() {
                 let driver = Box::new($driver);
-                super::put_http::<$domain>($dom_init, driver, $drv_init);
+                super::post_http::<$domain>($dom_init, driver, $drv_init);
             }
         };
     }

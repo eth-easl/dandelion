@@ -425,6 +425,13 @@ pub fn transfer_data_item(
         destination_set.buffers[destination_item_index].ident = source_item.ident.clone();
     }
 
+    log::trace!(
+        "transfering item {} from set {} to set {}",
+        source_item.ident,
+        source_set.ident,
+        destination_set_name
+    );
+
     transfer_memory(
         destination,
         source,

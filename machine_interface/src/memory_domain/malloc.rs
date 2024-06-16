@@ -59,7 +59,8 @@ impl ContextTrait for MallocContext {
             return Err(DandelionError::InvalidRead);
         }
         return Ok(unsafe {
-            core::slice::from_raw_parts(self.storage.as_ref(), self.layout.size())
+            &core::slice::from_raw_parts(self.storage.as_ref(), self.layout.size())
+                [offset..offset + length]
         });
     }
 }

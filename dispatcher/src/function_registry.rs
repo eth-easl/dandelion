@@ -7,7 +7,7 @@ use futures::lock::Mutex;
 use machine_interface::{
     function_driver::{
         system_driver::{get_system_function_input_sets, get_system_function_output_sets},
-        Driver, Function, FunctionConfig, ParsingArguments,
+        Driver, Function, FunctionConfig,
     },
     machine_config::{get_system_functions, DomainType, EngineType},
     memory_domain::{Context, MemoryDomain},
@@ -198,7 +198,7 @@ impl FunctionRegistry {
         function_name: String,
         engine_id: EngineType,
         ctx_size: usize,
-        path: &str,
+        path: String,
         metadata: Metadata,
     ) -> DandelionResult<FunctionId> {
         // check if function is already present, get ID if not
@@ -269,7 +269,7 @@ impl FunctionRegistry {
         function_id: FunctionId,
         engine_id: EngineType,
         ctx_size: usize,
-        path: &str,
+        path: String,
     ) -> DandelionResult<()> {
         if !self.metadata.lock().await.contains_key(&function_id) {
             return Err(DandelionError::DispatcherMetaDataUnavailable);
@@ -277,7 +277,7 @@ impl FunctionRegistry {
         self.on_disk
             .lock()
             .await
-            .insert((function_id, engine_id), path.to_string());
+            .insert((function_id, engine_id), path);
         self.engine_map
             .lock()
             .await
@@ -336,12 +336,12 @@ impl FunctionRegistry {
         recorder.record(RecordPoint::ParsingQueueu).unwrap();
         let tripple = parse_queue
             .enqueu_work(
-                machine_interface::function_driver::WorkToDo::ParsingArguments(ParsingArguments {
+                machine_interface::function_driver::WorkToDo::ParsingArguments {
                     driver: *driver,
                     path,
                     static_domain: domain,
                     recorder: recorder.get_sub_recorder().unwrap(),
-                }),
+                },
             )
             .await?
             .get_function();

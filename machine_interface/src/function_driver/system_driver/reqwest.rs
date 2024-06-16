@@ -1,20 +1,30 @@
 use crate::{
     function_driver::{
-        thread_utils::{start_thread, EngineLoop},
-        ComputeResource, Driver, Function, FunctionConfig, SystemFunction, WorkQueue,
+        ComputeResource, Driver, Function, FunctionConfig, SystemFunction, WorkDone, WorkQueue,
+        WorkToDo,
     },
-    memory_domain::{Context, ContextTrait},
+    memory_domain::{self, Context, ContextTrait},
+    promise::Debt,
     DataItem, DataSet, Position,
 };
+use bytes::Buf;
 use core_affinity::set_for_current;
-use dandelion_commons::{DandelionError, DandelionResult};
+use dandelion_commons::{
+    records::{RecordPoint, Recorder},
+    DandelionError, DandelionResult,
+};
+use futures::StreamExt;
 use http::{version::Version, HeaderName, HeaderValue, Method};
 use log::error;
 use reqwest::{header::HeaderMap, Client};
 use std::sync::Arc;
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::Builder;
 
 struct RequestInformation {
+    /// name of the request item
+    item_name: String,
+    /// key of the request item
+    item_key: u32,
     method: Method,
     uri: String,
     version: Version,
@@ -22,36 +32,26 @@ struct RequestInformation {
     body: Vec<u8>,
 }
 struct ResponseInformation {
-    status: String,
-    headermap: HeaderMap,
+    /// name of the original request data item
+    item_name: String,
+    // key of the original request data item
+    item_key: u32,
+    /// contains both the status line as well as all headers
+    preamble: String,
     body: bytes::Bytes,
 }
 
-fn http_setup(context: &Context) -> DandelionResult<RequestInformation> {
-    let request_set = match context.content.iter().find(|set_option| {
-        if let Some(set) = set_option {
-            return set.ident == "request";
-        } else {
-            return false;
-        }
-    }) {
-        Some(Some(set)) => set,
-        _ => {
-            return Err(DandelionError::MalformedSystemFuncArg(String::from(
-                "No request set",
-            )))
-        }
-    };
-    if request_set.buffers.len() != 1 {
-        return Err(DandelionError::MalformedSystemFuncArg(String::from(
-            "More than one request item in set",
-        )));
-    }
-    let request_item = &request_set.buffers[0];
-    let mut request_buffer = Vec::<u8>::with_capacity(request_item.data.size);
-    request_buffer.resize(request_item.data.size, 0);
-    context.read(request_item.data.offset, &mut request_buffer)?;
-    let request_line = match String::from_utf8(request_buffer) {
+fn convert_to_request(
+    mut raw_request: Vec<u8>,
+    item_name: String,
+    item_key: u32,
+) -> DandelionResult<RequestInformation> {
+    // read first line to get request line
+    let request_index = raw_request
+        .iter()
+        .position(|character| *character == b'\n')
+        .unwrap_or(raw_request.len());
+    let request_line = match std::str::from_utf8(&raw_request[0..request_index]) {
         Ok(line) => line,
         Err(_) => {
             return Err(DandelionError::InvalidSystemFuncArg(String::from(
@@ -64,10 +64,11 @@ fn http_setup(context: &Context) -> DandelionResult<RequestInformation> {
     let method_item = request_iter.next();
     let method = match method_item {
         Some(method_string) if method_string == "GET" => Method::GET,
-        Some(method_string) if method_string == "PUT" => Method::PUT,
+        Some(method_string) if method_string == "POST" => Method::POST,
         Some(method_string) => {
-            return Err(DandelionError::InvalidSystemFuncArg(String::from(
-                method_string,
+            return Err(DandelionError::InvalidSystemFuncArg(format!(
+                "Unsupported Method: {}",
+                method_string
             )))
         }
         _ => {
@@ -92,7 +93,8 @@ fn http_setup(context: &Context) -> DandelionResult<RequestInformation> {
         Some(version_string) if version_string == "HTTP/2.0" => Version::HTTP_2,
         Some(version_string) if version_string == "HTTP/3.0" => Version::HTTP_3,
         Some(version_string) => {
-            return Err(DandelionError::InvalidSystemFuncArg(String::from(
+            return Err(DandelionError::InvalidSystemFuncArg(format!(
+                "unkown http version: {}",
                 version_string,
             )))
         }
@@ -103,53 +105,55 @@ fn http_setup(context: &Context) -> DandelionResult<RequestInformation> {
         }
     };
 
-    let headermap = if let Some(Some(header_set)) = context.content.iter().find(|&set_option| {
-        set_option
-            .as_ref()
-            .and_then(|set| Some(set.ident == "headers"))
-            .unwrap_or(false)
-    }) {
-        let mut headermap = HeaderMap::with_capacity(header_set.buffers.len());
-        for header_item in &header_set.buffers {
-            let mut header_value = Vec::<u8>::with_capacity(header_item.data.size);
-            context.read(header_item.data.offset, &mut header_value)?;
-            let value = HeaderValue::from_bytes(&header_value).or(Err(
-                DandelionError::MalformedSystemFuncArg(String::from(
-                    "header value not utf8 conformant",
-                )),
-            ))?;
-            let header_name = HeaderName::from_bytes(header_item.ident.as_bytes()).unwrap();
-            if !headermap.append(header_name.clone(), value.clone()) {
-                let _ = headermap.insert(header_name, value);
+    // read new lines until end of header map
+    let mut header_index = request_index + 1;
+    let mut headermap = HeaderMap::new();
+    while header_index < raw_request.len() {
+        let header_line = raw_request[header_index..]
+            .iter()
+            .position(|character| *character == b'\n')
+            .and_then(|header_end| Some(&raw_request[header_index..header_index + header_end]))
+            .unwrap_or(&raw_request[header_index..]);
+        // skip the \n at the index itself
+        header_index += header_line.len() + 1;
+        // if the header line is empty there are two consequtive new lines which means the headers are finished
+        // or the request is at the end which also means there are not more lines to read
+        if header_line.len() == 0 {
+            break;
+        }
+        let split_index = header_line
+            .iter()
+            .position(|character| *character == b':')
+            .ok_or(DandelionError::MalformedSystemFuncArg(String::from(
+                "Header line does not contain \':\'",
+            )))?;
+        let (key, value) = header_line.split_at(split_index);
+        let header_key = HeaderName::from_bytes(key).or(Err(
+            DandelionError::MalformedSystemFuncArg(String::from("Header key not utf-8")),
+        ))?;
+        let header_value = HeaderValue::from_bytes(&value[1..]).or(Err(
+            DandelionError::MalformedSystemFuncArg(String::from(
+                "Header value not utf-8 conformant",
+            )),
+        ))?;
+        match headermap.entry(header_key) {
+            http::header::Entry::Occupied(mut occupied) => occupied.append(header_value),
+            http::header::Entry::Vacant(vacant) => {
+                vacant.insert(header_value);
             }
         }
-        headermap
+    }
+    let body = if header_index < raw_request.len() {
+        raw_request.drain(..header_index);
+        raw_request
     } else {
-        HeaderMap::with_capacity(0)
+        vec![]
     };
-
-    let body = if let Some(Some(body_set)) = context.content.iter().find(|&set_option| {
-        set_option
-            .as_ref()
-            .and_then(|set| Some(set.ident == "body"))
-            .unwrap_or(false)
-    }) {
-        if body_set.buffers.len() < 1 {
-            Vec::new()
-        } else {
-            let body_item = &body_set.buffers[0];
-            let mut body_buffer = Vec::<u8>::with_capacity(body_item.data.size);
-            body_buffer.resize(body_item.data.size, 0);
-            context.read(body_item.data.offset, &mut body_buffer)?;
-            body_buffer
-            // Body::from(body_buffer)
-        }
-    } else {
-        // Body::empty()
-        Vec::new()
-    };
+    log::trace!("Reqwest body: {:?}", body);
 
     return Ok(RequestInformation {
+        item_name,
+        item_key,
         method,
         uri,
         version,
@@ -158,11 +162,41 @@ fn http_setup(context: &Context) -> DandelionResult<RequestInformation> {
     });
 }
 
+fn http_setup(context: &Context) -> DandelionResult<Vec<RequestInformation>> {
+    let request_set = match context.content.iter().find(|set_option| {
+        if let Some(set) = set_option {
+            return set.ident == "request";
+        } else {
+            return false;
+        }
+    }) {
+        Some(Some(set)) => set,
+        _ => {
+            return Err(DandelionError::MalformedSystemFuncArg(String::from(
+                "No request set",
+            )))
+        }
+    };
+    let request_info: DandelionResult<Vec<RequestInformation>> = request_set
+        .buffers
+        .iter()
+        .map(|set_item| {
+            let mut request_buffer = Vec::with_capacity(set_item.data.size);
+            request_buffer.resize(set_item.data.size, 0);
+            context.read(set_item.data.offset, &mut request_buffer)?;
+            convert_to_request(request_buffer, set_item.ident.clone(), set_item.key)
+        })
+        .collect();
+    return request_info;
+}
+
 async fn http_request(
     client: Client,
     request_info: RequestInformation,
 ) -> DandelionResult<ResponseInformation> {
     let RequestInformation {
+        item_name,
+        item_key,
         method,
         uri,
         version,
@@ -172,6 +206,7 @@ async fn http_request(
 
     let request_builder = match method {
         Method::PUT => client.put(uri.clone()),
+        Method::POST => client.post(uri.clone()),
         Method::GET => client.get(uri.clone()),
         _ => {
             return Err(DandelionError::MalformedSystemFuncArg(String::from(
@@ -201,8 +236,8 @@ async fn http_request(
     };
 
     // write the status line
-    let status = format!(
-        "{:?} {} {}",
+    let mut preamble = format!(
+        "{:?} {} {}\n",
         response.version(),
         response.status().as_str(),
         response.status().canonical_reason().unwrap_or("")
@@ -217,7 +252,11 @@ async fn http_request(
         .and_then(|len_str| len_str.parse::<usize>().ok())
         .ok_or(DandelionError::SystemFuncResponseError)?;
 
-    let headers = response.headers().to_owned();
+    for (key, value) in response.headers() {
+        preamble.push_str(&format!("{}:{}\n", key, value.to_str().unwrap()));
+    }
+
+    preamble.push('\n');
 
     let body = match response.bytes().await {
         Ok(bytes) => bytes,
@@ -226,8 +265,9 @@ async fn http_request(
 
     if content_length == body.len() {
         let response_info = ResponseInformation {
-            status,
-            headermap: headers,
+            item_name,
+            item_key,
+            preamble,
             body,
         };
         return Ok(response_info);
@@ -236,144 +276,252 @@ async fn http_request(
     }
 }
 
-fn http_context_write(
-    context: &mut Context,
-    output_set_names: Arc<Vec<String>>,
-    response: ResponseInformation,
-) -> DandelionResult<()> {
-    context.clear_metadata();
-    let mut content = Vec::<Option<DataSet>>::new();
-    if content.try_reserve(output_set_names.len()).is_err() {
-        return Err(DandelionError::OutOfMemory);
-    }
+fn http_context_write(context: &mut Context, response: ResponseInformation) -> DandelionResult<()> {
     let ResponseInformation {
-        status,
-        headermap,
-        body,
+        item_name,
+        item_key,
+        preamble,
+        mut body,
     } = response;
-    if output_set_names.iter().any(|elem| elem == "status") {
-        let status_offset = context.get_free_space_and_write_slice(status.as_bytes())? as usize;
-        content.push(Some(DataSet {
-            ident: String::from("status"),
-            buffers: vec![DataItem {
-                ident: String::from("status"),
-                data: Position {
-                    offset: status_offset,
-                    size: status.len(),
-                },
-                key: 0,
-            }],
-        }));
+
+    // allocate space in the context for the entire response
+    let preable_len = preamble.len();
+    let body_len = body.len();
+    let response_len = preable_len + body_len;
+    let response_start = context.get_free_space(response_len, 128)?;
+    context.write(response_start, preamble.as_bytes())?;
+    let mut bytes_read = 0;
+    while bytes_read < body_len {
+        let chunk = body.chunk();
+        let reading = chunk.len();
+        context.write(response_start + preable_len + bytes_read, chunk)?;
+        body.advance(reading);
+        bytes_read += reading;
+    }
+    assert_eq!(
+        0,
+        body.remaining(),
+        "Body should have non remaining as we have read the amount given as len in the beginning"
+    );
+    if let Some(response_set) = &mut context.content[0] {
+        response_set.buffers.push(DataItem {
+            ident: item_name.clone(),
+            key: item_key,
+            data: Position {
+                offset: response_start,
+                size: response_len,
+            },
+        })
+    }
+    if let Some(body_set) = &mut context.content[1] {
+        body_set.buffers.push(DataItem {
+            ident: item_name,
+            key: item_key,
+            data: Position {
+                offset: response_start + preable_len,
+                size: response_len - preable_len,
+            },
+        })
     }
 
-    if output_set_names.iter().any(|elem| elem == "headers") {
-        let mut header_dataset = DataSet {
-            ident: String::from("headers"),
-            buffers: vec![],
-        };
-        if header_dataset.buffers.try_reserve(headermap.len()).is_err() {
-            return Err(DandelionError::OutOfMemory);
-        }
-        for (key_opt, header_value) in headermap.into_iter() {
-            if let Some(key) = key_opt {
-                let value = header_value.as_bytes();
-                let value_offset = context.get_free_space_and_write_slice(value)? as usize;
-                let item = DataItem {
-                    ident: key.to_string(),
-                    data: Position {
-                        offset: value_offset,
-                        size: value.len(),
-                    },
-                    key: 0,
-                };
-                header_dataset.buffers.push(item);
-            }
-        }
-        content.push(Some(header_dataset));
-    }
-
-    if output_set_names.iter().any(|elem| elem == "body") {
-        let body_length = body.len();
-        let body_offset = context.get_free_space_and_write_slice(&body)? as usize;
-        let body_set = DataSet {
-            ident: String::from("body"),
-            buffers: vec![DataItem {
-                ident: String::from("body"),
-                data: Position {
-                    offset: body_offset,
-                    size: body_length,
-                },
-                key: 0,
-            }],
-        };
-        content.push(Some(body_set));
-    }
-    context.content = content;
     return Ok(());
 }
 
-fn http_run(
+async fn http_run(
     mut context: Context,
-    runtime: &Runtime,
-    client: &Client,
+    client: Client,
     output_set_names: Arc<Vec<String>>,
-) -> DandelionResult<Context> {
-    let response_result = {
-        let _guard = runtime.enter();
-        let request = http_setup(&context)?;
-        runtime
-            .block_on(http_request(client.clone(), request))
-            .or(Err(DandelionError::EngineError))
-    };
-    let response = match response_result {
-        Ok(resp) => resp,
+    debt: Debt,
+    mut recorder: Recorder,
+) -> () {
+    let request_vec = match http_setup(&context) {
+        Ok(request) => request,
         Err(err) => {
-            return Err(err);
+            debt.fulfill(Box::new(Err(err)));
+            return;
         }
     };
-    http_context_write(&mut context, output_set_names, response)?;
-    return Ok(context);
-}
+    let response_vec = match futures::future::try_join_all(
+        request_vec
+            .into_iter()
+            .map(|request| http_request(client.clone(), request)),
+    )
+    .await
+    {
+        Ok(resp) => resp,
+        Err(err) => {
+            debt.fulfill(Box::new(Err(err)));
+            return;
+        }
+    };
 
-struct ReqwestLoop {
-    runtime: Runtime,
-    client: Client,
-}
-
-impl EngineLoop for ReqwestLoop {
-    fn init(core_id: u8) -> DandelionResult<Box<Self>> {
-        log::debug!("Hyper engine Init");
-        let runtime = Builder::new_multi_thread()
-            .on_thread_start(move || {
-                if !set_for_current(core_affinity::CoreId { id: core_id.into() }) {
-                    return;
-                }
+    // only clear once for all requests
+    context.clear_metadata();
+    if !output_set_names.is_empty() {
+        context.content = vec![None, None];
+        if output_set_names.iter().any(|elem| elem == "response") {
+            context.content[0] = Some(DataSet {
+                ident: String::from("response"),
+                buffers: vec![],
             })
-            .worker_threads(1)
-            .enable_all()
-            .build()
-            .or(Err(DandelionError::EngineError))?;
-        let client = Client::new();
-        return Ok(Box::new(ReqwestLoop { runtime, client }));
+        }
+        if output_set_names.iter().any(|elem| elem == "body") {
+            context.content[1] = Some(DataSet {
+                ident: String::from("body"),
+                buffers: vec![],
+            })
+        }
+        let write_results: DandelionResult<Vec<_>> = response_vec
+            .into_iter()
+            .map(|response| http_context_write(&mut context, response))
+            .collect();
+        if let Err(err) = write_results {
+            debt.fulfill(Box::new(Err(err)));
+            return;
+        }
     }
-    fn run(
-        &mut self,
-        config: FunctionConfig,
-        context: Context,
-        output_sets: Arc<Vec<String>>,
-    ) -> DandelionResult<Context> {
-        log::debug!("Hyper engine running function");
-        let function = match config {
-            FunctionConfig::SysConfig(sys_func) => sys_func,
-            _ => return Err(DandelionError::ConfigMissmatch),
-        };
+    if let Err(err) = recorder.record(RecordPoint::EngineEnd) {
+        debt.fulfill(Box::new(Err(err)));
+        return;
+    }
+    let results = Box::new(Ok(WorkDone::Context(context)));
+    debt.fulfill(results);
+    return;
+}
 
-        return match function {
-            SystemFunction::HTTP => http_run(context, &self.runtime, &self.client, output_sets),
-            #[allow(unreachable_patterns)]
-            _ => Err(DandelionError::MalformedConfig),
+async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
+    log::debug!("Reqwest engine Init");
+    let client = Client::new();
+    // TODO FIX! This should not be necessary!
+    let mut queue_ref = Box::leak(queue);
+    let mut tuple;
+    loop {
+        (tuple, queue_ref) = queue_ref.into_future().await;
+        let (args, debt) = if let Some((tuple_args, tuple_debt)) = tuple {
+            (tuple_args, tuple_debt)
+        } else {
+            panic!("Workqueue poll next returned none")
         };
+        match args {
+            WorkToDo::FunctionArguments {
+                config,
+                context,
+                output_sets,
+                mut recorder,
+            } => {
+                if let Err(err) = recorder.record(RecordPoint::EngineStart) {
+                    debt.fulfill(Box::new(Err(err)));
+                    continue;
+                }
+                // let result = engine_state.run(config, context, output_sets);
+                log::debug!("Reqwest engine running function");
+                let function = match config {
+                    FunctionConfig::SysConfig(sys_func) => sys_func,
+                    _ => {
+                        debt.fulfill(Box::new(Err(DandelionError::ConfigMissmatch)));
+                        continue;
+                    }
+                };
+                match function {
+                    SystemFunction::HTTP => {
+                        tokio::spawn(http_run(
+                            context,
+                            client.clone(),
+                            output_sets,
+                            debt,
+                            recorder,
+                        ));
+                    }
+                    #[allow(unreachable_patterns)]
+                    _ => {
+                        debt.fulfill(Box::new(Err(DandelionError::MalformedConfig)));
+                    }
+                };
+                continue;
+            }
+            WorkToDo::TransferArguments {
+                source,
+                mut destination,
+                destination_set_index,
+                destination_allignment,
+                destination_item_index,
+                destination_set_name,
+                source_set_index,
+                source_item_index,
+                mut recorder,
+            } => {
+                match recorder.record(RecordPoint::TransferStart) {
+                    Ok(()) => (),
+                    Err(err) => {
+                        debt.fulfill(Box::new(Err(err)));
+                        continue;
+                    }
+                }
+                let transfer_result = memory_domain::transfer_data_item(
+                    &mut destination,
+                    &source,
+                    destination_set_index,
+                    destination_allignment,
+                    destination_item_index,
+                    destination_set_name.as_str(),
+                    source_set_index,
+                    source_item_index,
+                );
+                match recorder.record(RecordPoint::TransferEnd) {
+                    Ok(()) => (),
+                    Err(err) => {
+                        debt.fulfill(Box::new(Err(err)));
+                        continue;
+                    }
+                }
+                let transfer_return = transfer_result.and(Ok(WorkDone::Context(destination)));
+                debt.fulfill(Box::new(transfer_return));
+                continue;
+            }
+            WorkToDo::ParsingArguments {
+                driver,
+                path,
+                static_domain,
+                mut recorder,
+            } => {
+                recorder.record(RecordPoint::ParsingStart).unwrap();
+                let function_result = driver.parse_function(path, static_domain);
+                recorder.record(RecordPoint::ParsingEnd).unwrap();
+                match function_result {
+                    Ok(function) => debt.fulfill(Box::new(Ok(WorkDone::Function(function)))),
+                    Err(err) => debt.fulfill(Box::new(Err(err))),
+                }
+                continue;
+            }
+            WorkToDo::Shutdown() => {
+                return debt;
+            }
+        }
     }
+}
+
+fn outer_engine(core_id: u8, queue: Box<dyn WorkQueue + Send>) {
+    // set core affinity
+    if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
+        log::error!("core received core id that could not be set");
+        return;
+    }
+    let runtime = Builder::new_multi_thread()
+        .on_thread_start(move || {
+            if !set_for_current(core_affinity::CoreId { id: core_id.into() }) {
+                return;
+            }
+        })
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .or(Err(DandelionError::EngineError))
+        .unwrap();
+    let debt = runtime.block_on(engine_loop(queue));
+    drop(runtime);
+    debt.fulfill(Box::new(Ok(WorkDone::Resources(vec![
+        ComputeResource::CPU(core_id),
+    ]))));
 }
 
 pub struct ReqwestDriver {}
@@ -401,7 +549,7 @@ impl Driver for ReqwestDriver {
         {
             return Err(DandelionError::EngineResourceError);
         }
-        start_thread::<ReqwestLoop>(core_id, queue);
+        std::thread::spawn(move || outer_engine(core_id, queue));
         return Ok(());
     }
 

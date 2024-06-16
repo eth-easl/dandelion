@@ -30,6 +30,21 @@ impl WorkQueue for EngineQueue {
             }
         }
     }
+
+    fn try_get_engine_args(&self) -> Option<(WorkToDo, Debt)> {
+        return match self.queue_out.try_recv() {
+            Err(TryRecvError::Disconnected) => panic!("Work queue disconnected"),
+            Err(TryRecvError::Empty) => None,
+            Ok(received) => {
+                let (args, dept) = received;
+                if dept.is_alive() {
+                    Some((args, dept))
+                } else {
+                    None
+                }
+            }
+        };
+    }
 }
 
 impl EngineQueue {
