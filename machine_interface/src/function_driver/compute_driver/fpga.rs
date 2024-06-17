@@ -10,8 +10,7 @@ use crate::{
 use core::cmp::min;
 use core_affinity::set_for_current;
 use dandelion_commons::{DandelionError, DandelionResult};
-use hyper::header;
-use libc::uint32_t;
+use futures::SinkExt;
 use libloading::{Library, Symbol};
 use log;
 use serde::{de::IntoDeserializer, Deserialize};
@@ -238,6 +237,7 @@ enum InvocationState {
 #[derive(Debug, Clone)]
 struct Invocation {
     id: InvocationId,
+    bitstream_id: u16,
     state: InvocationState,
     send_messages: Vec<RequestMessage>, //for debugging purposes
     receive_messages: Vec<ResponseMessage>,
@@ -286,6 +286,62 @@ async fn schedule(
     config: &FpgaConfig,
     invocation: &mut Invocation,
 ) -> Result<u8, String> {
+    //get all tile unsent invocation queues quickly
+    //get the info we need and dont release the locks so we stay accurate
+    let bitstream_id = invocation.bitstream_id;
+    let tiles = &fpgaloop.tiles;
+    let mut unsent_queues: Vec<std::sync::MutexGuard<VecDeque<Invocation>>> =
+        Vec::with_capacity(tiles.len());
+    let mut infovec: Vec<(usize, bool)> = Vec::with_capacity(tiles.len()); //tuples hold length and wether the bitstream_id in the last tile is equal
+
+    for i in 0..tiles.len() {
+        //lock everybody and store the queue in unsent_queues
+        unsent_queues[i] = tiles[i]
+            .unsent_invocations
+            .lock()
+            .expect("locking failed badly");
+    }
+    //this part has to run very quick
+    let mut chosen_tile: usize = 0;
+    let mut found = false;
+    //build infovec
+    for i in 0..unsent_queues.len() {
+        let temp_queue = &mut unsent_queues[i];
+        let temp_len = temp_queue.len();
+        let temp_bitstream_id = temp_queue[temp_len - 1].bitstream_id;
+        infovec[i] = (temp_len, temp_bitstream_id == bitstream_id);
+    }
+    //now decide, look only at the ones below threshold
+    for i in 0..infovec.len() {
+        if (infovec[i].0 < config.soft_max_tile_queue_length) && (infovec[i].1) {
+            found = true;
+            chosen_tile = i;
+        }
+    }
+    if (!found) {
+        //now pick first smallest queue
+        let mut smallest = usize::MAX;
+        let mut smallest_index = usize::MAX;
+        for i in 0..infovec.len() {
+            if (infovec[i].0 < config.soft_max_tile_queue_length && infovec[i].0 < smallest) {
+                smallest = infovec[i].0;
+                smallest_index = i;
+            }
+        }
+        if (smallest == usize::MAX) {
+            //we didnt find anything:
+            return Err("couldn't find something to fit soft requirements, rest nyi".to_string());
+        } else {
+            found = true;
+            chosen_tile = smallest_index;
+        }
+    }
+    unsent_queues[chosen_tile].push_back(invocation);
+    for queue in unsent_queues.iter() {
+        drop(queue);
+    }
+
+    return Ok(chosen_tile as u8);
 }
 
 async fn dummy_send(
@@ -323,6 +379,7 @@ async fn dummy_send(
                 //we need to create and add our invocation:
                 let inv = Invocation {
                     id: invocation_id,
+                    bitstream_id,
                     state: InvocationState::Running(0),
                     send_messages: vec![RequestMessage::Header(header)],
                     receive_messages: Vec::new(),
@@ -679,13 +736,20 @@ impl Driver for FpgaDriver {
         function_path: String,
         static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
     ) -> DandelionResult<Function> {
+        let soft_max_tile_queue_length = 3;
         let config = match function_path.as_str() {
             "dummy_local_matrix" => {
-                let dummyconfig: FpgaConfig = FpgaConfig { dummy_func_num: 2 };
+                let dummyconfig: FpgaConfig = FpgaConfig {
+                    dummy_func_num: 1,
+                    soft_max_tile_queue_length,
+                };
                 FunctionConfig::FpgaConfig(dummyconfig)
             }
             "dummy_input" => {
-                let dummy_input_config = FpgaConfig { dummy_func_num: 2 };
+                let dummy_input_config = FpgaConfig {
+                    dummy_func_num: 2,
+                    soft_max_tile_queue_length,
+                };
                 FunctionConfig::FpgaConfig(dummy_input_config)
             }
             _ => {
