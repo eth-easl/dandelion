@@ -268,8 +268,32 @@ async fn send_msg(stream: &mut TcpStream, message: RequestMessage) -> io::Result
     stream.flush().await.expect("DIDNT FLUSH");
     return Ok(());
 }
+/**
+ * This scheduler takes a new invocation with yet empty header.
+ * If successful, it schedules it onto a tile queue and returns the corresponding tile_id.
+ * If unsuccessful, it cleans up after itself and returns an error.
+ *
+ * The current mode of operation is:
+ *  - no knowledge of predicted execution time
+ *  - no reordering: a new invocation can only be added to the end of a queue
+ *  - if the soft length limit is achieved, exclude tile queue unless all tiles are at that limit
+ *  - FOR NOW: only do the soft limit case, error out if all tile queues are full. TODO: VICTOR add this at some point
+ *  - if another tile has the same bitstream at the end of the queue, choose that
+ *  - else choose the shortest queue, if multiple queues are the shortest queue, choose the first.
+ */
+async fn schedule(
+    fpgaloop: &FpgaLoop,
+    config: &FpgaConfig,
+    invocation: &mut Invocation,
+) -> Result<u8, String> {
+}
 
-async fn dummy_send(fpgaloop: &FpgaLoop, config: &FpgaConfig) {
+async fn dummy_send(
+    fpgaloop: &FpgaLoop,
+    config: &FpgaConfig,
+    invocation_id: u32,
+    bitstream_id: u16,
+) -> Result<Invocation, String> {
     println!("Connecting to {:?}", fpgaloop.std_connection);
     match TcpStream::connect(fpgaloop.std_connection).await {
         Ok(mut stream) => {
@@ -284,13 +308,13 @@ async fn dummy_send(fpgaloop: &FpgaLoop, config: &FpgaConfig) {
             let header = RequestHeader {
                 flag_byte: HEADER_BYTE,
                 tile_id: 0,
-                bitstream_id: config.bitstream_id,
+                bitstream_id: bitstream_id,
                 data_size: 8 * 5,
                 data: databuf,
             };
 
             if let Err(_e) = send_msg(&mut stream, RequestMessage::Header(header)).await {
-                eprintln!("failed to send!");
+                return Err("failed to send!".to_string());
             } else {
                 println!("Sent: {:?}", header);
 
@@ -298,7 +322,7 @@ async fn dummy_send(fpgaloop: &FpgaLoop, config: &FpgaConfig) {
                 let mut buffer: [u8; PACKET_SIZE] = [0; PACKET_SIZE];
                 //we need to create and add our invocation:
                 let inv = Invocation {
-                    id: 1,
+                    id: invocation_id,
                     state: InvocationState::Running(0),
                     send_messages: vec![RequestMessage::Header(header)],
                     receive_messages: Vec::new(),
@@ -318,22 +342,24 @@ async fn dummy_send(fpgaloop: &FpgaLoop, config: &FpgaConfig) {
                                 //this means we are done
                                 println!("we are done, yay!");
                                 println!("result: {:?}", invocation.data);
+                                return Ok(invocation);
                             }
                             Ok(HandleResponseBufferResult::State(_state)) => {
                                 //TODO: have a problem if the number is too high
+                                return Err("multireceiving NYI!".to_string());
                             }
                             Err(text) => {
-                                eprintln!("got an error handling the response buffer: {:?}", text);
+                                return Err(text);
                             }
                         }
 
                         //println!("Responsed: {:?}", received_message);
                     }
-                    Err(e) => eprintln!("Failed to read message: {}", e),
+                    Err(e) => Err(e.to_string()),
                 }
             }
         }
-        Err(e) => eprintln!("Failed to connect: {}", e),
+        Err(e) => Err(format!("Failed to connect: {e:?}").to_string()),
     }
 }
 /*
@@ -453,7 +479,20 @@ impl EngineLoop for FpgaLoop {
         mut context: Context,
         _output_sets: Arc<Vec<String>>, //_ We ignore this because the output context should only contain one set and one item, located at offset 0.
     ) -> DandelionResult<Context> {
-        println!("Fpga engine entered run!");
+        //get id:
+        let mut a = self
+            .invocation_counter
+            .lock()
+            .expect("somehting really wrong must have happend with the invocation counter");
+        *a += 1;
+
+        let invocation_id: u32 = *a;
+        drop(a); // Release the lock on the mutex for other threads
+
+        println!(
+            "Fpga engine entered run! invocation_id: {:?}",
+            invocation_id
+        );
 
         //setup_input_structs TODO:
 
@@ -484,11 +523,9 @@ impl EngineLoop for FpgaLoop {
                     eprintln!("real runner not implemented yet!");
                     return DandelionResult::Err(DandelionError::NotImplemented);
                 }
+
                 1 => {
-                    self.runtime.block_on(dummy_send(self, &fpgaconfig));
-                }
-                2 => {
-                    println!("testing input through context");
+                    println!("testing input through context, matrix locally");
                     match &context.content[0] {
                         None => {
                             eprintln!("ERROR: no content in context received.");
@@ -496,7 +533,25 @@ impl EngineLoop for FpgaLoop {
                         }
                         Some(set) => {
                             println!("found set: {:?}", set);
-                            let input_item = &set.buffers[0];
+                            let bitstream_item = &set.buffers[0];
+                            let mut bitstream_id_buf: [u16; 1] = [0];
+                            if let Err(e) =
+                                context.read(bitstream_item.data.offset, &mut bitstream_id_buf)
+                            {
+                                eprintln!("couldn't read from context");
+                                return DandelionResult::Err(e);
+                            }
+                            let bitstream_id = bitstream_id_buf[0];
+
+                            if (bitstream_id != 1) {
+                                eprintln!(
+                                    "this is local, bistream id should be 1! got : {:?}",
+                                    bitstream_id
+                                );
+                                return DandelionResult::Err(DandelionError::ContextMismatch);
+                            }
+
+                            let input_item = &set.buffers[1];
                             let input_size = input_item.data.size / 8;
                             let mut input_vec: Vec<i64> = vec![0; input_size];
 
@@ -523,7 +578,55 @@ impl EngineLoop for FpgaLoop {
                                     key: 0,
                                 }],
                             }));
-                            
+                        }
+                    }
+                }
+                2 => {
+                    println!("testing input through context, matrix locally");
+                    match &context.content[0] {
+                        None => {
+                            eprintln!("ERROR: no content in context received.");
+                            return DandelionResult::Err(DandelionError::ContextMismatch);
+                        }
+                        Some(set) => {
+                            println!("found set: {:?}", set);
+                            let bitstream_item = &set.buffers[0];
+                            let mut bitstream_id_buf: [u16; 1] = [0];
+                            if let Err(e) =
+                                context.read(bitstream_item.data.offset, &mut bitstream_id_buf)
+                            {
+                                eprintln!("couldn't read from context");
+                                return DandelionResult::Err(e);
+                            }
+                            let bitstream_id = bitstream_id_buf[0];
+
+                            let output_invocation = self
+                                .runtime
+                                .block_on(dummy_send(
+                                    self,
+                                    &fpgaconfig,
+                                    invocation_id,
+                                    bitstream_id,
+                                ))
+                                .expect("somthing went wrong.");
+
+                            //"wipe" context for output
+                            context.clear_metadata();
+                            let output_offset = context
+                                .get_free_space_and_write_slice(&output_invocation.data)
+                                .expect("should be able to write to context");
+                            println!("output offset should be 0, got: {:?}", output_offset);
+                            context.content.push(Some(DataSet {
+                                ident: "functionOutputSet".to_string(),
+                                buffers: vec![DataItem {
+                                    ident: "functionOutputItem".to_string(),
+                                    data: Position {
+                                        offset: output_offset as usize,
+                                        size: 40,
+                                    },
+                                    key: 0,
+                                }],
+                            }));
                         }
                     }
                 }
@@ -577,18 +680,12 @@ impl Driver for FpgaDriver {
         static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
     ) -> DandelionResult<Function> {
         let config = match function_path.as_str() {
-            "dummy" => {
-                let dummyconfig = FpgaConfig {
-                    dummy_func_num: 1,
-                    bitstream_id: 1,
-                };
+            "dummy_local_matrix" => {
+                let dummyconfig: FpgaConfig = FpgaConfig { dummy_func_num: 2 };
                 FunctionConfig::FpgaConfig(dummyconfig)
             }
             "dummy_input" => {
-                let dummy_input_config = FpgaConfig {
-                    dummy_func_num: 2,
-                    bitstream_id: 1,
-                };
+                let dummy_input_config = FpgaConfig { dummy_func_num: 2 };
                 FunctionConfig::FpgaConfig(dummy_input_config)
             }
             _ => {

@@ -681,14 +681,80 @@ mod compute_driver_tests {
         use std::sync::{Arc, Mutex};
 
         #[test]
-        fn run_dummy_test() {
+        fn run_dummy_input_local_matrix() {
             let driver: Box<dyn Driver> = Box::new(FpgaDriver {});
-            engine_minimal::<MmapMemoryDomain>(
-                "dummy",
-                MemoryResource::None,
-                driver,
-                vec![ComputeResource::CPU(1)],
-            );
+            let filename = "dummy_local_matrix";
+            let dom_init = MemoryResource::None;
+            let drv_init = vec![ComputeResource::CPU(1)];
+
+            let input_example: [i64; 5] = [2, 5, 5, 5, 5];
+
+            let (mut function_context, config, queue) =
+                prepare_engine_and_function::<MmapMemoryDomain>(
+                    filename, dom_init, &driver, drv_init,
+                );
+            let bitstream_id: [u16; 1] = [1];
+            let bitstream_id_offset = function_context
+                .get_free_space_and_write_slice(&bitstream_id)
+                .expect("should have space for bitstream id");
+            let data_offset = function_context
+                .get_free_space_and_write_slice(&input_example)
+                .expect("Should have space for a little data");
+            println!("got data offset {:?}", data_offset);
+
+            function_context.content.push(Some(DataSet {
+                ident: "inputset".to_string(),
+                buffers: vec![
+                    DataItem {
+                        ident: "bitstream_id".to_string(),
+                        data: Position {
+                            offset: bitstream_id_offset as usize,
+                            size: 4,
+                        },
+                        key: 0,
+                    },
+                    DataItem {
+                        ident: "inputitem".to_string(),
+                        data: Position {
+                            offset: data_offset as usize,
+                            size: 8 * input_example.len(), //without enabling some weird stuff i dont have sizeof..8 should be just fine though
+                        },
+                        key: 1,
+                    },
+                ],
+            }));
+
+            let archive = Arc::new(Mutex::new(Archive::new()));
+            let mut recorder = Recorder::new(archive);
+            let promise = queue.enqueu(EngineArguments::FunctionArguments(FunctionArguments {
+                config: config,
+                context: function_context,
+                output_sets: Arc::new(Vec::new()),
+                recorder,
+            }));
+
+            let (result_context, mut result_recorder) =
+                tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap()
+                    .block_on(promise)
+                    .expect("Engine should run ok with basic function");
+            result_recorder
+                .record(RecordPoint::FutureReturn)
+                .expect("Should have properly advanced recorder state");
+
+            let output_item = result_context.content[0]
+                .as_ref()
+                .expect("Set should be present");
+
+            let position = output_item.buffers[0].data;
+            println!("got dummy context result back. position: {:?}", position);
+            let mut read_buffer = vec![0i64; position.size / 8];
+            result_context
+                .context
+                .read(position.offset, &mut read_buffer)
+                .expect("Should succeed in reading");
+            println!("result is: {:?}", read_buffer);
         }
         #[test]
         fn run_dummy_input_test() {
@@ -703,21 +769,35 @@ mod compute_driver_tests {
                 prepare_engine_and_function::<MmapMemoryDomain>(
                     filename, dom_init, &driver, drv_init,
                 );
-            let in_size_offset = function_context
+            let bitstream_id: [u16; 1] = [1];
+            let bitstream_id_offset = function_context
+                .get_free_space_and_write_slice(&bitstream_id)
+                .expect("should have space for bitstream id");
+            let data_offset = function_context
                 .get_free_space_and_write_slice(&input_example)
                 .expect("Should have space for a little data");
-            println!("got offset {:?}", in_size_offset);
+            println!("got data offset {:?}", data_offset);
 
             function_context.content.push(Some(DataSet {
                 ident: "inputset".to_string(),
-                buffers: vec![DataItem {
-                    ident: "inputitem".to_string(),
-                    data: Position {
-                        offset: in_size_offset as usize,
-                        size: 8 * input_example.len(), //without enabling some weird stuff i dont have sizeof..8 should be just fine though
+                buffers: vec![
+                    DataItem {
+                        ident: "bitstream_id".to_string(),
+                        data: Position {
+                            offset: bitstream_id_offset as usize,
+                            size: 4,
+                        },
+                        key: 0,
                     },
-                    key: 0,
-                }],
+                    DataItem {
+                        ident: "inputitem".to_string(),
+                        data: Position {
+                            offset: data_offset as usize,
+                            size: 8 * input_example.len(), //without enabling some weird stuff i dont have sizeof..8 should be just fine though
+                        },
+                        key: 1,
+                    },
+                ],
             }));
 
             let archive = Arc::new(Mutex::new(Archive::new()));
