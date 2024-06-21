@@ -783,7 +783,7 @@ fn manage_worker(
     }
 }
 
-const NUM_WORKERS: u8 = 2;
+const NUM_WORKERS: u8 = 4;
 
 pub fn start_gpu_process_pool(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue + Send + Sync>) {
     // let counter = AtomicU8::new(0);
