@@ -769,10 +769,7 @@ mod compute_driver_tests {
                 prepare_engine_and_function::<MmapMemoryDomain>(
                     filename, dom_init, &driver, drv_init,
                 );
-            let bitstream_id: [u16; 1] = [1];
-            let bitstream_id_offset = function_context
-                .get_free_space_and_write_slice(&bitstream_id)
-                .expect("should have space for bitstream id");
+
             let data_offset = function_context
                 .get_free_space_and_write_slice(&input_example)
                 .expect("Should have space for a little data");
@@ -780,24 +777,14 @@ mod compute_driver_tests {
 
             function_context.content.push(Some(DataSet {
                 ident: "inputset".to_string(),
-                buffers: vec![
-                    DataItem {
-                        ident: "bitstream_id".to_string(),
-                        data: Position {
-                            offset: bitstream_id_offset as usize,
-                            size: 4,
-                        },
-                        key: 0,
+                buffers: vec![DataItem {
+                    ident: "inputitem".to_string(),
+                    data: Position {
+                        offset: data_offset as usize,
+                        size: 8 * input_example.len(), //without enabling some weird stuff i dont have sizeof..8 should be just fine though
                     },
-                    DataItem {
-                        ident: "inputitem".to_string(),
-                        data: Position {
-                            offset: data_offset as usize,
-                            size: 8 * input_example.len(), //without enabling some weird stuff i dont have sizeof..8 should be just fine though
-                        },
-                        key: 1,
-                    },
-                ],
+                    key: 0,
+                }],
             }));
 
             let archive = Arc::new(Mutex::new(Archive::new()));
