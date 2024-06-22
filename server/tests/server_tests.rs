@@ -158,11 +158,15 @@ mod server_tests {
         let register_request = RegisterFunction {
             name: String::from("matmul"),
             context_size: 0x802_0000,
-            binary: std::fs::read(matmul_path).unwrap(),
+            binary: vec![1], 
             engine_type,
             input_sets: vec![(String::from(""), None)],
             output_sets: vec![String::from("")],
         };
+        println!("printing register request:");
+        for b in bson::to_vec(&register_request).unwrap() {
+            print!("{},", b);
+        }
         let registration_client = reqwest::blocking::Client::new();
         let registration_resp = registration_client
             .post("http://localhost:8082/register/function")

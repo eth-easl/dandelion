@@ -479,7 +479,7 @@ fn main() -> () {
     let num_io_cores = config.io_cores.unwrap_or(0);
     assert!(first_engine_core < config.total_cores);
     assert!(first_engine_core + num_io_cores <= config.total_cores);
-    let io_cores = (first_engine_core..first_engine_core + num_io_cores)
+    let io_cores: Vec<_> = (first_engine_core..first_engine_core + num_io_cores)
         .map(resource_conversion)
         .collect();
     let first_compute_core = first_engine_core + num_io_cores;
