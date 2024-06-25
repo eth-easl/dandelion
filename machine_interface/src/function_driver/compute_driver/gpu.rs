@@ -131,6 +131,7 @@ fn execute(
                 }
 
                 hip::module_launch_kernel(
+                    // TODO: throw error here!
                     config.kernels.get(name).unwrap(),
                     get_size(&launch_config.grid_dim_x, buffers, context)? as u32,
                     get_size(&launch_config.grid_dim_y, buffers, context)? as u32,

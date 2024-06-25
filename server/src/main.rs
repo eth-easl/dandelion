@@ -270,12 +270,18 @@ async fn service(
         // TODO rename to cold func and hot func, remove matmul, compute, io
         "/register/function" => register_function(req, dispatcher).await,
         "/register/composition" => register_composition(req, dispatcher).await,
-        "/cold/matmul" | "/cold/matmulstore" | "/cold/compute" | "/cold/io" | "/cold/inference" => {
-            serve_request(true, req, dispatcher).await
-        }
-        "/hot/matmul" | "/hot/matmulstore" | "/hot/compute" | "/hot/io" | "/hot/inference" => {
-            serve_request(false, req, dispatcher).await
-        }
+        "/cold/matmul"
+        | "/cold/matmulstore"
+        | "/cold/compute"
+        | "/cold/io"
+        | "/cold/inference"
+        | "/cold/inference-batched" => serve_request(true, req, dispatcher).await,
+        "/hot/matmul"
+        | "/hot/matmulstore"
+        | "/hot/compute"
+        | "/hot/io"
+        | "/hot/inference"
+        | "/hot/inference-batched" => serve_request(false, req, dispatcher).await,
         "/stats" => serve_stats(req).await,
         _ => Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
             format!("Hello, Wor\n").into_bytes(),

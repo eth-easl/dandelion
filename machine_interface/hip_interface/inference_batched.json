@@ -1,34 +1,34 @@
 {
     "module_path": "/home/smithj/dandelion/machine_interface/hip_interface/mlops.hsaco",
-    "kernels": ["matmul_f", "convolution_f", "relu_2d_f", "maxpool_f"],
+    "kernels": ["convolution_f_batched", "relu_2d_f_batched", "maxpool_f_batched"],
     "blueprint": {
         "inputs": ["cfg", "A", "B"],
         "buffers": {"C": {"Sizeof": "A"}, "D": {"FromInput": {"bufname": "cfg", "idx": 0}}},
         "outputs": ["D"],
         "control_flow": [
             {"Repeat": [{"FromInput": {"bufname": "cfg", "idx": 3}}, [
-                {"ExecKernel": ["convolution_f", [{"Ptr": "C"}, {"Ptr": "A"}, {"Ptr": "B"}], {
+                {"ExecKernel": ["convolution_f_batched", [{"Ptr": "C"}, {"Ptr": "A"}, {"Ptr": "B"}, {"Constant": 10}], {
                     "grid_dim_x": {"FromInput": {"bufname": "cfg", "idx": 1}}, 
                     "grid_dim_y": {"FromInput": {"bufname": "cfg", "idx": 1}}, 
-                    "grid_dim_z": {"Absolute": 1},
+                    "grid_dim_z": {"Absolute": 10},
                     "block_dim_x": {"Absolute": 32},
                     "block_dim_y": {"Absolute": 32},
                     "block_dim_z": {"Absolute": 1},
                     "shared_mem_bytes": {"Absolute": 0}
                 }]},
-                {"ExecKernel": ["relu_2d_f", [{"Ptr": "C"}], {
+                {"ExecKernel": ["relu_2d_f_batched", [{"Ptr": "C"}, {"Constant": 10}], {
                     "grid_dim_x": {"FromInput": {"bufname": "cfg", "idx": 1}}, 
                     "grid_dim_y": {"FromInput": {"bufname": "cfg", "idx": 1}}, 
-                    "grid_dim_z": {"Absolute": 1},
+                    "grid_dim_z": {"Absolute": 10},
                     "block_dim_x": {"Absolute": 32},
                     "block_dim_y": {"Absolute": 32},
                     "block_dim_z": {"Absolute": 1},
                     "shared_mem_bytes": {"Absolute": 0}
                 }]},
-                {"ExecKernel": ["maxpool_f", [{"Ptr": "D"}, {"Ptr": "C"}, {"Constant": 2}], {
+                {"ExecKernel": ["maxpool_f_batched", [{"Ptr": "D"}, {"Ptr": "C"}, {"Constant": 2}, {"Constant": 10}], {
                     "grid_dim_x": {"FromInput": {"bufname": "cfg", "idx": 2}}, 
                     "grid_dim_y": {"FromInput": {"bufname": "cfg", "idx": 2}}, 
-                    "grid_dim_z": {"Absolute": 1},
+                    "grid_dim_z": {"Absolute": 10},
                     "block_dim_x": {"Absolute": 32},
                     "block_dim_y": {"Absolute": 32},
                     "block_dim_z": {"Absolute": 1},
