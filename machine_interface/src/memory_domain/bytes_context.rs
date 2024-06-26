@@ -7,9 +7,19 @@ use core::mem::size_of;
 use dandelion_commons::{DandelionError, DandelionResult, FrontendError};
 use log::{debug, error};
 
-#[derive(Debug)]
 pub struct BytesContext {
     frames: Vec<Bytes>,
+}
+
+impl core::fmt::Debug for BytesContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("BytesContext {{frames: ["))?;
+        for frame in self.frames.iter() {
+            f.write_fmt(format_args!("Bytes with len: {}, ", frame.len()))?;
+        }
+        f.write_fmt(format_args!("]}}"))?;
+        return Ok(());
+    }
 }
 
 impl ContextTrait for BytesContext {

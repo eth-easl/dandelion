@@ -370,6 +370,7 @@ impl FunctionRegistry {
         };
         if let Some(function) = function_opt {
             let function_context = function.load(domain, ctx_size)?;
+            recorder.record(RecordPoint::LoadEnd)?;
             return Ok((function_context, function.config.clone()));
         }
         // TODO add check to see if local loading has already been kicked off, to avoid double parsing
