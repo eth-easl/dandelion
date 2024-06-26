@@ -48,16 +48,17 @@ mod server_tests {
                 .unwrap();
             kill.wait().unwrap();
 
-            let mut child_stdout = self.server.stdout.take().expect("Should have stdout");
-            let mut outbuf = Vec::new();
-            let _ = child_stdout
-                .read_to_end(&mut outbuf)
-                .expect("should be able to read child output after killing it");
-            print!(
-                "server output:\n{}",
-                String::from_utf8(outbuf)
-                    .expect("Should be able to convert child stdout to string")
-            );
+            if let Some(mut child_stdout) = self.server.stdout.take(){
+                let mut outbuf = Vec::new();
+                let _ = child_stdout
+                    .read_to_end(&mut outbuf)
+                    .expect("should be able to read child output after killing it");
+                print!(
+                    "server output:\n{}",
+                    String::from_utf8(outbuf)
+                        .expect("Should be able to convert child stdout to string")
+                );
+            }
             let mut errbuf = Vec::new();
             let _ = self
                 .server
