@@ -114,12 +114,13 @@ mod server_tests {
     #[test]
     fn serve_matmul() {
         let mut cmd = Command::cargo_bin("dandelion_server").unwrap();
-        let mut server = cmd
+        let server = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        let mut reader = BufReader::new(server.stdout.take().unwrap());
+        let mut server_killer = ServerKiller { server };
+        let mut reader = BufReader::new(server_killer.server.stdout.take().unwrap());
         loop {
             let mut buf = String::new();
             let len = reader.read_line(&mut buf).unwrap();
@@ -128,8 +129,7 @@ mod server_tests {
                 break;
             }
         }
-        let _ = server.stdout.insert(reader.into_inner());
-        let mut server_killer = ServerKiller { server };
+        let _ = server_killer.server.stdout.insert(reader.into_inner());
 
         // register function
         let version;
