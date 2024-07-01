@@ -48,7 +48,7 @@ mod server_tests {
                 .unwrap();
             kill.wait().unwrap();
 
-            if let Some(mut child_stdout) = self.server.stdout.take(){
+            if let Some(mut child_stdout) = self.server.stdout.take() {
                 let mut outbuf = Vec::new();
                 let _ = child_stdout
                     .read_to_end(&mut outbuf)
@@ -128,6 +128,8 @@ mod server_tests {
             assert_ne!(len, 0, "Server exited unexpectedly");
             if buf.contains("Server start") {
                 break;
+            } else {
+                print!("{}", buf);
             }
         }
         let _ = server_killer.server.stdout.insert(reader.into_inner());
@@ -195,6 +197,7 @@ mod server_tests {
         send_matrix_request("http://localhost:8080/hot/matmul", String::from("chain"));
 
         let status_result = server_killer.server.try_wait();
+        drop(server_killer);
         let status = status_result.unwrap();
         assert_eq!(status, None, "Server exited unexpectedly");
     }

@@ -423,7 +423,9 @@ async fn service_loop(request_sender: mpsc::Sender<DispatcherCommand>) {
 
 fn main() -> () {
     // check if there is a configuration file
-    let config = dandelion_server::config::get_config();
+    let config = dandelion_server::config::DandelionConfig::get_config();
+
+    println!("config: {:?}", config);
 
     let default_warn_level = if cfg!(debug_assertions) {
         "debug"
@@ -453,45 +455,25 @@ fn main() -> () {
         );
     }
 
-    let resource_conversion = |core_index| ComputeResource::CPU(core_index as u8);
+    let resource_conversion = |core_index| ComputeResource::CPU(core_index);
 
-    // create core allocations
-    let (first_engine_core, frontend_cores, dispatcher_cores) =
-        match (config.frontend_cores, config.dispatcher_cores) {
-            // Per default use one core for both
-            (None, None) => (1, vec![0], vec![0]),
-            // If only dispatcher cores or only frontend cores are specified use one for dispatcher, rest for frontend
-            (None, Some(cores)) | (Some(cores), None) => (
-                cores,
-                (0..cores - 1).collect(),
-                (cores - 1..cores).collect(),
-            ),
-            // If both are specified give them the according resources
-            (Some(f_cores), Some(d_cores)) => (
-                f_cores + d_cores,
-                (0..f_cores).collect(),
-                (f_cores..f_cores + d_cores).collect(),
-            ),
-        };
-    assert!(frontend_cores.len() > 0);
-    assert!(dispatcher_cores.len() > 0);
-
-    let num_io_cores = config.io_cores.unwrap_or(0);
-    assert!(first_engine_core < config.total_cores);
-    assert!(first_engine_core + num_io_cores <= config.total_cores);
-    let io_cores = (first_engine_core..first_engine_core + num_io_cores)
-        .map(resource_conversion)
+    let dispatcher_cores = config.get_dispatcher_cores();
+    let frontend_cores = config.get_frontend_cores();
+    let communication_cores = config
+        .get_communication_cores()
+        .into_iter()
+        .map(|core| resource_conversion(core))
         .collect();
-    let first_compute_core = first_engine_core + num_io_cores;
-    assert!(first_compute_core < config.total_cores);
-    let compute_cores = (first_compute_core..config.total_cores)
-        .map(resource_conversion)
+    let compute_cores = config
+        .get_computation_cores()
+        .into_iter()
+        .map(|core| resource_conversion(core))
         .collect();
 
     println!("core allocation:");
     println!("frontend cores {:?}", frontend_cores);
     println!("dispatcher cores: {:?}", dispatcher_cores);
-    println!("communication cores: {:?}", io_cores);
+    println!("communication cores: {:?}", communication_cores);
     println!("compute cores: {:?}", compute_cores);
 
     // make multithreaded front end runtime
@@ -549,7 +531,7 @@ fn main() -> () {
     #[cfg(any(feature = "cheri", feature = "wasm", feature = "mmu"))]
     pool_map.insert(engine_type, compute_cores);
     #[cfg(feature = "reqwest_io")]
-    pool_map.insert(EngineType::Reqwest, io_cores);
+    pool_map.insert(EngineType::Reqwest, communication_cores);
     let resource_pool = ResourcePool {
         engine_pool: futures::lock::Mutex::new(pool_map),
     };
