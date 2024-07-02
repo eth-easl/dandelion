@@ -403,8 +403,8 @@ async fn service_loop(request_sender: mpsc::Sender<DispatcherCommand>) {
                 let io = hyper_util::rt::TokioIo::new(stream);
                 tokio::task::spawn(async move {
                     let service_dispatcher_ptr = loop_dispatcher.clone();
-                    if let Err(err) = hyper::server::conn::http1::Builder::new()
-                        .serve_connection(
+                    if let Err(err) = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+                        .serve_connection_with_upgrades(
                             io,
                             service_fn(|req| service(req, service_dispatcher_ptr.clone())),
                         )
