@@ -1,4 +1,4 @@
-use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
+use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource};
 use dandelion_commons::{DandelionError, DandelionResult};
 use std::alloc::{alloc_zeroed, Layout};
 
@@ -54,13 +54,22 @@ impl ContextTrait for MallocContext {
         }
         return Ok(());
     }
+    fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
+        if offset + length > self.layout.size() {
+            return Err(DandelionError::InvalidRead);
+        }
+        return Ok(unsafe {
+            &core::slice::from_raw_parts(self.storage.as_ref(), self.layout.size())
+                [offset..offset + length]
+        });
+    }
 }
 
 #[derive(Debug)]
 pub struct MallocMemoryDomain {}
 
 impl MemoryDomain for MallocMemoryDomain {
-    fn init(_config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>> {
+    fn init(_config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
         Ok(Box::new(MallocMemoryDomain {}))
     }
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {

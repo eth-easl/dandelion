@@ -1,6 +1,12 @@
+use crate::function_registry::{FunctionDict, Metadata};
 use dandelion_commons::{DandelionError, DandelionResult, FunctionId};
+use dparser;
+use itertools::Itertools;
 use machine_interface::memory_domain::Context;
-use std::{collections::BTreeMap, sync::Arc, vec};
+use std::{
+    collections::{btree_map::Entry, BTreeMap},
+    sync::Arc,
+};
 
 /// A composition has a composition wide id space that maps ids of
 /// the input and output sets to sets of individual functions to a unified
@@ -9,6 +15,7 @@ use std::{collections::BTreeMap, sync::Arc, vec};
 #[derive(Clone, Debug)]
 pub struct Composition {
     pub dependencies: Vec<FunctionDependencies>,
+    pub output_map: BTreeMap<usize, usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -23,8 +30,220 @@ pub struct FunctionDependencies {
     pub output_set_ids: Vec<Option<usize>>,
 }
 
+impl ShardingMode {
+    pub fn from_parser_sharding(sharding: &dparser::Sharding) -> Self {
+        return match sharding {
+            dparser::Sharding::All => Self::All,
+            dparser::Sharding::Keyed => Self::Key,
+            dparser::Sharding::Each => Self::Each,
+        };
+    }
+}
+
+impl Composition {
+    /// For each composition the composition set indexes start enumerating the input sets from 0.
+    /// The output sets are enumerated starting with the number directly after the highest input set index.
+    /// For internal numbering there are no guarnatees.
+    /// TODO: add validation for the function input / output set names against the locally registered meta data (or at least the number)
+    pub fn from_module(
+        module: &dparser::Module,
+        function_ids: &mut FunctionDict,
+    ) -> DandelionResult<Vec<(FunctionId, Self, Metadata)>> {
+        // TODO: do we need module somewhere else outside? Otherwise take ownership to safe a lot of clones
+        let mut known_functions = BTreeMap::new();
+        let mut compositions = Vec::new();
+        for item in module.0.iter() {
+            match item {
+                dparser::Item::FunctionDecl(fdecl) => {
+                    known_functions.insert(
+                        fdecl.v.name.clone(),
+                        (
+                            function_ids
+                                .lookup(&fdecl.v.name)
+                                .ok_or(DandelionError::CompositionContainsInvalidFunction)?,
+                            fdecl,
+                        ),
+                    );
+                }
+                dparser::Item::Composition(comp) => {
+                    let composition_id = function_ids.insert_or_lookup(comp.v.name.clone());
+                    let mut set_counter = 0usize;
+                    let mut set_numbers = BTreeMap::new();
+                    // add composition input sets
+                    for input_set_name in comp.v.params.iter() {
+                        match set_numbers.entry(input_set_name.clone()) {
+                            Entry::Vacant(v) => v.insert(set_counter),
+                            Entry::Occupied(_) => {
+                                return Err(DandelionError::CompositionDuplicateSetName)
+                            }
+                        };
+                        set_counter += 1;
+                    }
+                    let mut output_map = BTreeMap::new();
+                    let output_sets_start = set_counter;
+                    // add composition output sets
+                    for (output_index, output_set_name) in comp.v.returns.iter().enumerate() {
+                        match set_numbers.entry(output_set_name.clone()) {
+                            Entry::Vacant(v) => {
+                                v.insert(set_counter);
+                                output_map.insert(set_counter, output_index);
+                            }
+                            Entry::Occupied(_) => {
+                                return Err(DandelionError::CompositionDuplicateSetName);
+                            }
+                        };
+                        set_counter += 1;
+                    }
+                    let output_sets_end = set_counter;
+                    // add all return sets from functions
+                    let composition_set_identifiers = comp
+                        .v
+                        .statements
+                        .iter()
+                        .flat_map(|statement| match statement {
+                            dparser::Statement::FunctionApplication(function_application) => {
+                                function_application.v.rets.iter().map(|ret| ret.v.ident.clone())
+                            }
+                            dparser::Statement::Loop(_) =>
+                                todo!("loop semantics need to be fleshed out and compositions extended to acoomodate them"),
+                        });
+                    for set_identifier in composition_set_identifiers {
+                        match set_numbers.entry(set_identifier.clone()) {
+                            Entry::Vacant(v) => {
+                                v.insert(set_counter);
+                                set_counter += 1;
+                            }
+                            Entry::Occupied(o) => {
+                                if output_sets_start <= *o.get() && *o.get() < output_sets_end {
+                                    continue;
+                                } else {
+                                    return Err(DandelionError::CompositionDuplicateSetName);
+                                }
+                            }
+                        }
+                    }
+                    // have enumerated all set that are available so can start putting the composition together
+                    let dependencies = comp
+                        .v
+                        .statements
+                        .iter()
+                        .map(|statement| match statement {
+                            dparser::Statement::FunctionApplication(function_application) => {
+                                let (function_id, function_decl) = known_functions
+                                    .get(&function_application.v.name)
+                                    .ok_or(DandelionError::CompositionContainsInvalidFunction)?;
+                                if function_decl.v.params.len() < function_application.v.args.len()
+                                    || function_decl.v.returns.len()
+                                        < function_application.v.rets.len()
+                                {
+                                    return Err(DandelionError::CompositionContainsInvalidFunction);
+                                }
+                                // find the indeces of the sets in the function application by looking though the definition
+                                let mut input_set_ids = Vec::new();
+                                input_set_ids
+                                    .try_reserve(function_decl.v.params.len())
+                                    .or(Err(DandelionError::OutOfMemory))?;
+                                input_set_ids.resize(function_decl.v.params.len(), None);
+                                for argument in function_application.v.args.iter() {
+                                    if let Some((index, _)) =
+                                        function_decl.v.params.iter().enumerate().find(
+                                            |(_, &ref param_name)| argument.v.name == *param_name,
+                                        )
+                                    {
+                                        let set_id = set_numbers.get(&argument.v.ident).ok_or(
+                                            DandelionError::CompositionFunctionInvalidIdentifier(
+                                                format!("Could not find compositon set for argument {} of function {}",
+                                                argument.v.ident, function_application.v.name)
+                                            ),
+                                        )?;
+                                        input_set_ids[index] = Some((
+                                            *set_id,
+                                            ShardingMode::from_parser_sharding(
+                                                &argument.v.sharding,
+                                            ),
+                                        ));
+                                    } else {
+                                        return Err(
+                                            DandelionError::CompositionFunctionInvalidIdentifier(
+                                                format!("could not find index for input set {} for function {}",
+                                                argument.v.name, function_application.v.name)
+                                            ),
+                                        );
+                                    }
+                                }
+                                // find the index set index in the original definition for each return set in the application
+                                let mut output_set_ids = Vec::new();
+                                output_set_ids
+                                    .try_reserve(function_decl.v.returns.len())
+                                    .or(Err(DandelionError::OutOfMemory))?;
+                                output_set_ids.resize(function_decl.v.returns.len(), None);
+                                for return_set in function_application.v.rets.iter() {
+                                    if let Some((index, _)) =
+                                        function_decl.v.returns.iter().enumerate().find(
+                                            |(_, &ref return_name)| {
+                                                return_set.v.name == *return_name
+                                            },
+                                        )
+                                    {
+                                        let set_id = set_numbers.get(&return_set.v.ident).ok_or(
+                                            DandelionError::CompositionFunctionInvalidIdentifier(
+                                                return_set.v.ident.clone(),
+                                            ),
+                                        )?;
+                                        output_set_ids[index] = Some(*set_id);
+                                    } else {
+                                        return Err(
+                                            DandelionError::CompositionFunctionInvalidIdentifier(
+                                                return_set.v.ident.clone(),
+                                            ),
+                                        );
+                                    }
+                                }
+                                Ok(FunctionDependencies {
+                                    function: *function_id,
+                                    input_set_ids,
+                                    output_set_ids,
+                                })
+                            }
+                            dparser::Statement::Loop(_) => {
+                                todo!("Need to implement loop support in compositions")
+                            }
+                        })
+                        .collect::<DandelionResult<Vec<_>>>()?;
+                    let metadata = Metadata {
+                        input_sets: comp
+                            .v
+                            .params
+                            .iter()
+                            .map(|name| (name.clone(), None))
+                            .collect_vec()
+                            .into(),
+                        output_sets: comp
+                            .v
+                            .returns
+                            .iter()
+                            .map(|name| name.clone())
+                            .collect_vec()
+                            .into(),
+                    };
+                    compositions.push((
+                        composition_id,
+                        Composition {
+                            dependencies,
+                            output_map,
+                        },
+                        metadata,
+                    ));
+                }
+            }
+        }
+
+        Ok(compositions)
+    }
+}
+
 /// Modes for the composition set iteratior to return sharding
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ShardingMode {
     All,
     Key,
@@ -124,9 +343,13 @@ impl From<(usize, Vec<Arc<Context>>)> for CompositionSet {
             .into_iter()
             .filter_map(|context| {
                 if context.content.len() > set_index {
-                    context.content[set_index]
-                        .as_ref()
-                        .and_then(|set| Some((context.clone(), 0..set.buffers.len())))
+                    context.content[set_index].as_ref().and_then(|set| {
+                        if set.buffers.len() > 0 {
+                            Some((context.clone(), 0..set.buffers.len()))
+                        } else {
+                            None
+                        }
+                    })
                 } else {
                     None
                 }
@@ -148,18 +371,18 @@ impl Iterator for CompositionSetTransferIterator {
     type Item = (usize, usize, Arc<Context>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some((context, buffer_range)) = self.set.context_list.last_mut() {
-            let buffer_index = buffer_range.start;
-            let ret_context = context.clone();
-            if buffer_range.start + 1 == buffer_range.end {
-                self.set.context_list.pop();
+        // if we can guarnatee that there is always an item, we could simplify this to just taking the last one
+        // would requeire ensuring that property for composition sets
+        // TOOD: make composition set ranges private so the constructor can guarantee this
+        while let Some((context, buffer_range)) = self.set.context_list.last_mut() {
+            if buffer_range.end >= buffer_range.start + 1 {
+                buffer_range.end = buffer_range.end - 1;
+                return Some((self.set.set_index, buffer_range.end, context.clone()));
             } else {
-                buffer_range.start = buffer_range.start + 1;
+                self.set.context_list.pop();
             }
-            return Some((self.set.set_index, buffer_index, ret_context));
-        } else {
-            return None;
         }
+        return None;
     }
 }
 

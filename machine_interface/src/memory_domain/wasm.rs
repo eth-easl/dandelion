@@ -1,4 +1,4 @@
-use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
+use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource};
 use crate::util::mmapmem::MmapMem;
 use dandelion_commons::{DandelionError, DandelionResult};
 use nix::sys::mman::ProtFlags;
@@ -21,13 +21,16 @@ impl ContextTrait for WasmContext {
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         self.mem.read(offset, read_buffer)
     }
+    fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
+        self.mem.get_chunk_ref(offset, length)
+    }
 }
 
 #[derive(Debug)]
 pub struct WasmMemoryDomain {}
 
 impl MemoryDomain for WasmMemoryDomain {
-    fn init(_config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>> {
+    fn init(_config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
         Ok(Box::new(WasmMemoryDomain {}))
     }
 
@@ -57,5 +60,21 @@ pub fn wasm_transfer(
     }
     destination.mem[destination_offset..destination_offset + size]
         .copy_from_slice(&source.mem[source_offset..source_offset + size]);
-    Ok(())
+    return Ok(());
+}
+
+#[cfg(feature = "bytes_context")]
+pub fn bytes_to_wasm_transfer(
+    destination: &mut WasmContext,
+    source: &crate::memory_domain::bytes_context::BytesContext,
+    destination_offset: usize,
+    source_offset: usize,
+    size: usize,
+) -> DandelionResult<()> {
+    if destination_offset + size > destination.mem.size() {
+        return Err(DandelionError::InvalidWrite);
+    }
+    let wasm_slice = &mut destination.mem[destination_offset..destination_offset + size];
+    source.read(source_offset, wasm_slice)?;
+    return Ok(());
 }

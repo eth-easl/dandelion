@@ -34,6 +34,13 @@ impl ContextTrait for ReadOnlyContext {
         byte_buffer.copy_from_slice(&self.storage[offset..offset + read_size]);
         return Ok(());
     }
+
+    fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
+        if offset + length > self.storage.len() {
+            return Err(DandelionError::InvalidRead);
+        }
+        return Ok(&self.storage[offset..offset + length]);
+    }
 }
 
 impl ReadOnlyContext {

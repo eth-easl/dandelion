@@ -2,15 +2,18 @@ use crate::{
     memory_domain::{Context, MemoryDomain},
     DataRequirementList, Position,
 };
-use core::pin::Pin;
+extern crate alloc;
+use alloc::sync::Arc;
 use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
-use std::{future::Future, sync::Arc};
 
+#[cfg(feature = "wasm")]
 use libloading::Library;
 
 pub mod compute_driver;
 mod load_utils;
 pub mod system_driver;
+#[cfg(test)]
+mod test_queue;
 mod thread_utils;
 
 #[derive(Clone)]
@@ -28,8 +31,17 @@ pub enum SystemFunction {
     HTTP,
 }
 
+impl core::fmt::Display for SystemFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> core::fmt::Result {
+        return match self {
+            SystemFunction::HTTP => write!(f, "HTTP"),
+        };
+    }
+}
+
 #[derive(Clone)]
 pub struct WasmConfig {
+    #[cfg(feature = "wasm")]
     lib: Arc<Library>,
     wasm_mem_size: usize,
     sdk_heap_base: usize,
@@ -53,7 +65,7 @@ pub struct Function {
 impl Function {
     pub fn load(
         &self,
-        domain: &Box<dyn MemoryDomain>,
+        domain: &'static dyn MemoryDomain,
         ctx_size: usize,
     ) -> DandelionResult<Context> {
         return match &self.config {
@@ -79,24 +91,86 @@ pub enum ComputeResource {
     GPU(u8),
 }
 
-pub trait Engine: Send {
-    fn run(
-        &mut self,
-        config: &FunctionConfig,
+pub enum WorkToDo {
+    FunctionArguments {
+        config: FunctionConfig,
         context: Context,
-        output_set_names: &Vec<String>,
+        output_sets: Arc<Vec<String>>,
         recorder: Recorder,
-    ) -> Pin<Box<dyn Future<Output = (DandelionResult<()>, Context)> + '_ + Send>>;
-    // TODO make more sensible, as a both functions require self mut, so abort can never be called on a running function
-    fn abort(&mut self) -> DandelionResult<()>;
+    },
+    TransferArguments {
+        destination: Context,
+        source: Arc<Context>,
+        destination_set_index: usize,
+        destination_allignment: usize,
+        destination_item_index: usize,
+        destination_set_name: String,
+        source_set_index: usize,
+        source_item_index: usize,
+        recorder: Recorder,
+    },
+    ParsingArguments {
+        driver: &'static dyn Driver,
+        path: String,
+        static_domain: &'static dyn MemoryDomain,
+        recorder: Recorder,
+    },
+    Shutdown(),
 }
-// TODO figure out if we could / should enforce proper drop behaviour
-// we could add a uncallable function with a private token that is not visible outside,
-// but not sure if that is necessary
+
+pub enum WorkDone {
+    Context(Context),
+    Function(Function),
+    Resources(Vec<ComputeResource>),
+}
+
+impl WorkDone {
+    pub fn get_context(self) -> Context {
+        return match self {
+            WorkDone::Context(context) => context,
+            _ => panic!("WorkDone is not context when context was expected"),
+        };
+    }
+    pub fn get_function(self) -> Function {
+        return match self {
+            WorkDone::Function(function) => function,
+            _ => panic!("WorkDone is not function when function was expected"),
+        };
+    }
+}
+
+pub trait WorkQueue {
+    fn get_engine_args(&self) -> (WorkToDo, crate::promise::Debt);
+    fn try_get_engine_args(&self) -> Option<(WorkToDo, crate::promise::Debt)>;
+}
+
+impl futures::stream::Stream for &mut (dyn WorkQueue + Send) {
+    type Item = (WorkToDo, crate::promise::Debt);
+    /// By default the behaviour of the work queue on polling is to call try_get_engine_args()
+    /// If the call returns Some(tuple), the poll will returns Ready(tuple)
+    /// Otherwise the poll function will call the waker and return pending.
+    /// The waker is called, because the queue does not know when it becomes ready, it signals to be polled again.
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> core::task::Poll<Option<Self::Item>> {
+        if let Some(tuple) = self.try_get_engine_args() {
+            return core::task::Poll::Ready(Some(tuple));
+        } else {
+            cx.waker().wake_by_ref();
+            return core::task::Poll::Pending;
+        }
+    }
+}
 
 pub trait Driver: Send + Sync {
     // the resource descirbed by config and make it into an engine of the type
-    fn start_engine(&self, resource: ComputeResource) -> DandelionResult<Box<dyn Engine>>;
+    fn start_engine(
+        &self,
+        resource: ComputeResource,
+        // TODO check out why this can't be impl instead of Box<dyn
+        queue: Box<dyn WorkQueue + Send>,
+    ) -> DandelionResult<()>;
 
     // parses an executable,
     // returns the layout requirements and a context containing static data,
@@ -104,6 +178,6 @@ pub trait Driver: Send + Sync {
     fn parse_function(
         &self,
         function_path: String,
-        static_domain: &Box<dyn MemoryDomain>,
+        static_domain: &'static dyn MemoryDomain,
     ) -> DandelionResult<Function>;
 }

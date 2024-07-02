@@ -101,6 +101,11 @@ void cheri_read_context(cheri_context *context,
   memcpy(destination_pointer, src, size);
 }
 
+unsigned char* cheri_get_chunk_ref(cheri_context* context,
+                        size_t context_offset){
+  return ((unsigned char*)(__cheri_fromcap void*)context->cap) + context_offset;
+}
+
 void cheri_transfer_context(cheri_context *destination, cheri_context *source,
                             size_t destination_offset, size_t source_offset,
                             size_t size) {

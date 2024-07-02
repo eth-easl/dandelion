@@ -6,6 +6,8 @@ use dandelion_commons::{DandelionError, DandelionResult};
 use log::debug;
 use nix::sys::mman::ProtFlags;
 
+use super::MemoryResource;
+
 #[derive(Debug)]
 pub struct MmapContext {
     pub storage: MmapMem,
@@ -19,13 +21,17 @@ impl ContextTrait for MmapContext {
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         self.storage.read(offset, read_buffer)
     }
+
+    fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
+        self.storage.get_chunk_ref(offset, length)
+    }
 }
 
 #[derive(Debug)]
 pub struct MmapMemoryDomain {}
 
 impl MemoryDomain for MmapMemoryDomain {
-    fn init(_config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>> {
+    fn init(_config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
         Ok(Box::new(MmapMemoryDomain {}))
     }
 

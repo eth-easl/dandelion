@@ -1,4 +1,6 @@
 // list of memory domain implementations
+#[cfg(feature = "bytes_context")]
+pub mod bytes_context;
 #[cfg(feature = "cheri")]
 pub mod cheri;
 pub mod malloc;
@@ -13,8 +15,17 @@ use crate::{DataItem, DataSet, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
 
 pub trait ContextTrait: Send + Sync {
+    /// Write data at the given offset into the context
+    /// May fail if the range offset..offset+data lenght in bytes is not completely within the context size
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()>;
+    /// Read data from the context into the read buffer
+    /// May fail if the range offset..offset+buffer length in bytes is not completely within context size
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()>;
+    /// Get a &[u8] reference to a chunck of at reference with size up to length.
+    /// May return a slice smaller then the requwested length if there is internal fragementation that
+    /// prevents an efficient slice representation of the entire chunck
+    /// May fail if the range offset..offset+length is not completely within the context size
+    fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]>;
 }
 
 // https://docs.rs/enum_dispatch/latest/enum_dispatch/index.html
@@ -24,6 +35,8 @@ pub enum ContextType {
     Malloc(Box<malloc::MallocContext>),
     Mmap(Box<mmap::MmapContext>),
     ReadOnly(Box<read_only::ReadOnlyContext>),
+    #[cfg(feature = "bytes_context")]
+    Bytes(Box<bytes_context::BytesContext>),
     #[cfg(feature = "cheri")]
     Cheri(Box<cheri::CheriContext>),
     #[cfg(feature = "mmu")]
@@ -44,6 +57,8 @@ impl ContextTrait for ContextType {
             ContextType::Mmu(context) => context.write(offset, data),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.write(offset, data),
+            #[cfg(feature = "bytes_context")]
+            ContextType::Bytes(context) => context.write(offset, data),
         }
     }
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
@@ -57,6 +72,23 @@ impl ContextTrait for ContextType {
             ContextType::Mmu(context) => context.read(offset, read_buffer),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.read(offset, read_buffer),
+            #[cfg(feature = "bytes_context")]
+            ContextType::Bytes(context) => context.read(offset, read_buffer),
+        }
+    }
+    fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
+        match self {
+            ContextType::Malloc(context) => context.get_chunk_ref(offset, length),
+            ContextType::Mmap(context) => context.get_chunk_ref(offset, length),
+            ContextType::ReadOnly(context) => context.get_chunk_ref(offset, length),
+            #[cfg(feature = "cheri")]
+            ContextType::Cheri(context) => context.get_chunk_ref(offset, length),
+            #[cfg(feature = "mmu")]
+            ContextType::Mmu(context) => context.get_chunk_ref(offset, length),
+            #[cfg(feature = "wasm")]
+            ContextType::Wasm(context) => context.get_chunk_ref(offset, length),
+            #[cfg(feature = "bytes_context")]
+            ContextType::Bytes(context) => context.get_chunk_ref(offset, length),
         }
     }
 }
@@ -82,6 +114,9 @@ impl ContextTrait for Context {
     }
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         self.context.read(offset, read_buffer)
+    }
+    fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
+        self.context.get_chunk_ref(offset, length)
     }
 }
 
@@ -197,16 +232,22 @@ impl Context {
     }
 }
 
+/// TODO remove clone / copy once we have an implementation that needs an input
+#[derive(Clone, Copy)]
+pub enum MemoryResource {
+    None,
+}
+
 pub trait MemoryDomain: Sync + Send {
     // allocation and distruction
-    fn init(config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>>
+    fn init(resource: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>>
     where
         Self: Sized;
     fn acquire_context(&self, size: usize) -> DandelionResult<Context>;
 }
 
 // Code to specialize transfers between different domains
-pub fn transefer_memory(
+pub fn transfer_memory(
     destination: &mut Context,
     source: &Context,
     destination_offset: usize,
@@ -248,9 +289,29 @@ pub fn transefer_memory(
             source_offset,
             size,
         ),
+        #[cfg(all(feature = "mmu", feature = "bytes_context"))]
+        (ContextType::Mmu(destination_ctxt), ContextType::Bytes(source_ctxt)) => {
+            mmu::bytest_to_mmu_transfer(
+                destination_ctxt,
+                source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+            )
+        }
         #[cfg(feature = "wasm")]
         (ContextType::Wasm(destination_ctxt), ContextType::Wasm(source_ctxt)) => {
             wasm::wasm_transfer(
+                destination_ctxt,
+                source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+            )
+        }
+        #[cfg(all(feature = "wasm", feature = "bytes_context"))]
+        (ContextType::Wasm(destination_ctxt), ContextType::Bytes(source_ctxt)) => {
+            wasm::bytes_to_wasm_transfer(
                 destination_ctxt,
                 source_ctxt,
                 destination_offset,
@@ -296,7 +357,7 @@ pub fn transfer_data_set(
         .and_then(|set| Some(set.buffers.len()))
         .unwrap_or(0);
     for index in 0..source_set.buffers.len() {
-        transer_data_item(
+        transfer_data_item(
             destination,
             source,
             destionation_set_index,
@@ -313,10 +374,10 @@ pub fn transfer_data_set(
 /// Transfer a data item from one context to another.
 /// If the destination does not yet have a set at the index,
 /// a new one is created using the set name given.
-pub fn transer_data_item(
+pub fn transfer_data_item(
     destination: &mut Context,
     source: &Context,
-    destionation_set_index: usize,
+    destination_set_index: usize,
     destination_allignment: usize,
     destination_item_index: usize,
     destination_set_name: &str,
@@ -325,7 +386,7 @@ pub fn transer_data_item(
 ) -> DandelionResult<()> {
     // check if source has item
     if source.content.len() <= source_set_index {
-        return Err(DandelionError::InvalidRead);
+        return Err(DandelionError::TransferInputNoSetAvailable);
     }
     let source_set = source.content[source_set_index]
         .as_ref()
@@ -334,17 +395,17 @@ pub fn transer_data_item(
         return Err(DandelionError::TransferInputNoSetAvailable);
     }
 
-    if destination.content.len() <= destionation_set_index {
+    if destination.content.len() <= destination_set_index {
         destination
             .content
-            .resize_with(destionation_set_index + 1, || None)
+            .resize_with(destination_set_index + 1, || None)
     }
     let source_item = &source_set.buffers[source_item_index];
     let destination_offset =
         destination.get_free_space(source_item.data.size, destination_allignment)?;
     {
         let destination_set =
-            &mut destination.content[destionation_set_index].get_or_insert(DataSet {
+            &mut destination.content[destination_set_index].get_or_insert(DataSet {
                 ident: destination_set_name.to_string(),
                 buffers: vec![],
             });
@@ -364,7 +425,14 @@ pub fn transer_data_item(
         destination_set.buffers[destination_item_index].ident = source_item.ident.clone();
     }
 
-    transefer_memory(
+    log::trace!(
+        "transfering item {} from set {} to set {}",
+        source_item.ident,
+        source_set.ident,
+        destination_set_name
+    );
+
+    transfer_memory(
         destination,
         source,
         destination_offset,

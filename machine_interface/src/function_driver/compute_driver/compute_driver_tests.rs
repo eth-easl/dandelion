@@ -1,23 +1,25 @@
 #[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "wasm")))]
 mod compute_driver_tests {
     use crate::{
-        function_driver::{ComputeResource, Driver, Engine, FunctionConfig},
-        memory_domain::{Context, ContextState, ContextTrait, MemoryDomain},
+        function_driver::{
+            test_queue::TestQueue, ComputeResource, Driver, FunctionConfig, WorkToDo,
+        },
+        memory_domain::{Context, ContextState, ContextTrait, MemoryDomain, MemoryResource},
         DataItem, DataSet, Position,
     };
     use core::panic;
     use dandelion_commons::{
-        records::{Archive, RecordPoint, Recorder},
+        records::{Archive, ArchiveInit, RecordPoint},
         DandelionError,
     };
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
-    fn loader_empty<Dom: MemoryDomain>(dom_init: Vec<u8>, driver: Box<dyn Driver>) {
+    fn loader_empty<Dom: MemoryDomain>(dom_init: MemoryResource, driver: Box<dyn Driver>) {
         // load elf file
         let elf_path = String::new();
-        let mut domain = Dom::init(dom_init).expect("Should be able to get domain");
+        let domain = Box::leak(Dom::init(dom_init).expect("Should be able to get domain"));
         driver
-            .parse_function(elf_path, &mut domain)
+            .parse_function(elf_path, domain)
             .expect("Empty string should return error");
     }
 
@@ -27,7 +29,8 @@ mod compute_driver_tests {
         wrong_init: Vec<ComputeResource>,
     ) {
         for wronge_resource in wrong_init {
-            let wrong_resource_engine = driver.start_engine(wronge_resource);
+            let queue_box = Box::new(TestQueue::new());
+            let wrong_resource_engine = driver.start_engine(wronge_resource, queue_box);
             match wrong_resource_engine {
                 Ok(_) => panic!("Should not be able to get engine"),
                 Err(err) => assert_eq!(DandelionError::EngineResourceError, err),
@@ -35,54 +38,65 @@ mod compute_driver_tests {
         }
 
         for resource in init {
-            let engine = driver.start_engine(resource);
+            let queue_box = Box::new(TestQueue::new());
+            let engine = driver.start_engine(resource, queue_box);
             engine.expect("Should be able to get engine");
         }
     }
 
     fn prepare_engine_and_function<Dom: MemoryDomain>(
         filename: &str,
-        dom_init: Vec<u8>,
+        dom_init: MemoryResource,
         driver: &Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
-    ) -> (Box<dyn Engine>, Context, FunctionConfig) {
-        let mut domain = Dom::init(dom_init).expect("Should have initialized domain");
+    ) -> (Context, FunctionConfig, Box<TestQueue>) {
+        let queue = Box::new(TestQueue::new());
+        let domain = Box::leak(Dom::init(dom_init).expect("Should have initialized domain"));
         let function = driver
-            .parse_function(filename.to_string(), &mut domain)
+            .parse_function(filename.to_string(), domain)
             .expect("Should be able to parse function");
-        let engine = driver
-            .start_engine(drv_init[0])
+        driver
+            .start_engine(drv_init[0], queue.clone())
             .expect("Should be able to start engine");
         let function_context = function
-            .load(&mut domain, 0x802_0000)
+            .load(domain, 0x802_0000)
             .expect("Should be able to load function");
-        return (engine, function_context, function.config);
+        return (function_context, function.config, queue);
     }
 
     fn engine_minimal<Dom: MemoryDomain>(
         filename: &str,
-        dom_init: Vec<u8>,
+        dom_init: MemoryResource,
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (mut engine, function_context, config) =
+        let (function_context, config, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
-        let archive = Arc::new(Mutex::new(Archive::new()));
-        let recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-        let (result, _function_context) = tokio::runtime::Builder::new_current_thread()
+        let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+            #[cfg(feature = "timestamp")]
+            timestamp_count: 1000,
+        })));
+        let recorder = archive.get_recorder().unwrap();
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            config: config,
+            context: function_context,
+            output_sets: Arc::new(Vec::new()),
+            recorder,
+        });
+        let _ = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(engine.run(&config, function_context, &vec![], recorder.clone()));
-        result.expect("Engine should run ok with basic function");
+            .block_on(promise)
+            .expect("Engine should run ok with basic function");
     }
 
     fn engine_matmul_single<Dom: MemoryDomain>(
         filename: &str,
-        dom_init: Vec<u8>,
+        dom_init: MemoryResource,
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (mut engine, mut function_context, config) =
+        let (mut function_context, config, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         // add inputs
         let in_size_offset = function_context
@@ -99,18 +113,27 @@ mod compute_driver_tests {
                 key: 0,
             }],
         }));
-        let archive = Arc::new(Mutex::new(Archive::new()));
-        let mut recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-        let (result, result_context) = tokio::runtime::Builder::new_current_thread()
+        let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+            #[cfg(feature = "timestamp")]
+            timestamp_count: 1000,
+        })));
+
+        let mut recorder = archive.get_recorder().unwrap();
+        recorder
+            .record(RecordPoint::TransferEnd)
+            .expect("Should have properly initialized recorder state");
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            config,
+            context: function_context,
+            output_sets: Arc::new(vec![String::from("")]),
+            recorder: recorder.get_sub_recorder().unwrap(),
+        });
+        let result_context = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(engine.run(
-                &config,
-                function_context,
-                &vec!["".to_string()],
-                recorder.clone(),
-            ));
-        result.expect("Engine should run ok with basic function");
+            .block_on(promise)
+            .expect("Engine should run ok with basic function")
+            .get_context();
         recorder
             .record(RecordPoint::FutureReturn)
             .expect("Should have properly advanced recorder state");
@@ -150,14 +173,14 @@ mod compute_driver_tests {
 
     fn engine_matmul_size_sweep<Dom: MemoryDomain>(
         filename: &str,
-        dom_init: Vec<u8>,
+        dom_init: MemoryResource,
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
         const LOWER_SIZE_BOUND: usize = 2;
         const UPPER_SIZE_BOUND: usize = 16;
         for mat_size in LOWER_SIZE_BOUND..UPPER_SIZE_BOUND {
-            let (mut engine, mut function_context, config) = prepare_engine_and_function::<Dom>(
+            let (mut function_context, config, queue) = prepare_engine_and_function::<Dom>(
                 filename,
                 dom_init.clone(),
                 &driver,
@@ -183,18 +206,26 @@ mod compute_driver_tests {
                     key: 0,
                 }],
             }));
-            let archive = Arc::new(Mutex::new(Archive::new()));
-            let mut recorder = Recorder::new(archive.clone(), RecordPoint::TransferEnd);
-            let (result, result_context) = tokio::runtime::Builder::new_current_thread()
+            let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+                #[cfg(feature = "timestamp")]
+                timestamp_count: 1000,
+            })));
+            let mut recorder = archive.get_recorder().unwrap();
+            recorder
+                .record(RecordPoint::TransferEnd)
+                .expect("Should have properly initialized recorder state");
+            let promise = queue.enqueu(WorkToDo::FunctionArguments {
+                config,
+                context: function_context,
+                output_sets: Arc::new(vec![String::from("")]),
+                recorder: recorder.get_sub_recorder().unwrap(),
+            });
+            let result_context = tokio::runtime::Builder::new_current_thread()
                 .build()
                 .unwrap()
-                .block_on(engine.run(
-                    &config,
-                    function_context,
-                    &vec!["".to_string()],
-                    recorder.clone(),
-                ));
-            result.expect("Engine should run ok with basic function");
+                .block_on(promise)
+                .expect("Engine should run ok with basic function")
+                .get_context();
             recorder
                 .record(RecordPoint::FutureReturn)
                 .expect("Should have properly advanced recorder state");
@@ -224,11 +255,11 @@ mod compute_driver_tests {
 
     fn engine_stdio<Dom: MemoryDomain>(
         filename: &str,
-        dom_init: Vec<u8>,
+        dom_init: MemoryResource,
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (mut engine, mut function_context, config) =
+        let (mut function_context, config, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         let stdin_content = "Test line \n line 2\n";
         let stdin_offset = function_context
@@ -272,18 +303,26 @@ mod compute_driver_tests {
                 },
             ],
         }));
-        let archive = Arc::new(Mutex::new(Archive::new()));
-        let mut recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-        let (result, result_context) = tokio::runtime::Builder::new_current_thread()
+        let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+            #[cfg(feature = "timestamp")]
+            timestamp_count: 1000,
+        })));
+        let mut recorder = archive.get_recorder().unwrap();
+        recorder
+            .record(RecordPoint::TransferEnd)
+            .expect("Should have properly initialized recorder state");
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            config,
+            context: function_context,
+            output_sets: Arc::new(vec![String::from("stdio")]),
+            recorder: recorder.get_sub_recorder().unwrap(),
+        });
+        let result_context = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(engine.run(
-                &config,
-                function_context,
-                &vec!["stdio".to_string()],
-                recorder.clone(),
-            ));
-        result.expect("Engine should run ok with basic function");
+            .block_on(promise)
+            .expect("Engine should run ok with basic function")
+            .get_context();
         recorder
             .record(RecordPoint::FutureReturn)
             .expect("Should have properly advanced recorder state");
@@ -339,11 +378,11 @@ mod compute_driver_tests {
 
     fn engine_fileio<Dom: MemoryDomain>(
         filename: &str,
-        dom_init: Vec<u8>,
+        dom_init: MemoryResource,
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (mut engine, mut function_context, config) =
+        let (mut function_context, config, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         let in_file_content = "Test file 0\n line 2\n";
         let in_file_offset = function_context
@@ -413,22 +452,30 @@ mod compute_driver_tests {
                 },
             ],
         }));
-        let archive = Arc::new(Mutex::new(Archive::new()));
-        let mut recorder = Recorder::new(archive, RecordPoint::TransferEnd);
-        let (result, result_context) = tokio::runtime::Builder::new_current_thread()
+        let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+            #[cfg(feature = "timestamp")]
+            timestamp_count: 1000,
+        })));
+        let mut recorder = archive.get_recorder().unwrap();
+        recorder
+            .record(RecordPoint::TransferEnd)
+            .expect("Should have properly initialized recorder state");
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            config: config,
+            context: function_context,
+            output_sets: Arc::new(vec![
+                "stdio".to_string(),
+                "out".to_string(),
+                "out_nested".to_string(),
+            ]),
+            recorder: recorder.get_sub_recorder().unwrap(),
+        });
+        let result_context = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(engine.run(
-                &config,
-                function_context,
-                &vec![
-                    "stdio".to_string(),
-                    "out".to_string(),
-                    "out_nested".to_string(),
-                ],
-                recorder.clone(),
-            ));
-        result.expect("Engine should run ok with basic function");
+            .block_on(promise)
+            .expect("Engine should run ok with basic function")
+            .get_context();
         recorder
             .record(RecordPoint::FutureReturn)
             .expect("Should have properly advanced recorder state");
@@ -546,10 +593,9 @@ mod compute_driver_tests {
 
     #[cfg(feature = "cheri")]
     mod cheri {
-        use crate::function_driver::compute_driver::cheri::CheriDriver;
-        use crate::function_driver::ComputeResource;
-        use crate::memory_domain::cheri::CheriMemoryDomain;
-        driverTests!(elf_cheri; CheriMemoryDomain; Vec::new(); CheriDriver {};
+        use crate::function_driver::{compute_driver::cheri::CheriDriver, ComputeResource};
+        use crate::memory_domain::{cheri::CheriMemoryDomain, MemoryResource};
+        driverTests!(elf_cheri; CheriMemoryDomain; MemoryResource::None; CheriDriver {};
         core_affinity::get_core_ids()
            .and_then(
                 |core_vec|
@@ -565,11 +611,10 @@ mod compute_driver_tests {
 
     #[cfg(feature = "mmu")]
     mod mmu {
-        use crate::function_driver::compute_driver::mmu::MmuDriver;
-        use crate::function_driver::ComputeResource;
-        use crate::memory_domain::mmu::MmuMemoryDomain;
+        use crate::function_driver::{compute_driver::mmu::MmuDriver, ComputeResource};
+        use crate::memory_domain::{mmu::MmuMemoryDomain, MemoryResource};
         #[cfg(target_arch = "x86_64")]
-        driverTests!(elf_mmu_x86_64; MmuMemoryDomain; Vec::new(); MmuDriver {};
+        driverTests!(elf_mmu_x86_64; MmuMemoryDomain; MemoryResource::None; MmuDriver {};
         core_affinity::get_core_ids()
            .and_then(
                 |core_vec|
@@ -582,7 +627,7 @@ mod compute_driver_tests {
             ComputeResource::GPU(0)
         ]);
         #[cfg(target_arch = "aarch64")]
-        driverTests!(elf_mmu_aarch64; MmuMemoryDomain; Vec::new(); MmuDriver {};
+        driverTests!(elf_mmu_aarch64; MmuMemoryDomain; MemoryResource::None; MmuDriver {};
         core_affinity::get_core_ids()
             .and_then(
                 |core_vec|
@@ -598,12 +643,11 @@ mod compute_driver_tests {
 
     #[cfg(feature = "wasm")]
     mod wasm {
-        use crate::function_driver::compute_driver::wasm::WasmDriver;
-        use crate::function_driver::ComputeResource;
-        use crate::memory_domain::wasm::WasmMemoryDomain;
+        use crate::function_driver::{compute_driver::wasm::WasmDriver, ComputeResource};
+        use crate::memory_domain::{wasm::WasmMemoryDomain, MemoryResource};
 
         #[cfg(target_arch = "x86_64")]
-        driverTests!(sysld_wasm_x86_64; WasmMemoryDomain; Vec::new(); WasmDriver {};
+        driverTests!(sysld_wasm_x86_64; WasmMemoryDomain; MemoryResource::None; WasmDriver {};
         core_affinity::get_core_ids()
             .and_then(
                 |core_vec|
@@ -617,7 +661,7 @@ mod compute_driver_tests {
         ]);
 
         #[cfg(target_arch = "aarch64")]
-        driverTests!(sysld_wasm_aarch64; WasmMemoryDomain; Vec::new(); WasmDriver {};
+        driverTests!(sysld_wasm_aarch64; WasmMemoryDomain; MemoryResource::None; WasmDriver {};
         core_affinity::get_core_ids()
             .and_then(
                 |core_vec|

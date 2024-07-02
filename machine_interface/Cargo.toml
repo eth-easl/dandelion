@@ -4,11 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
+default = ["bytes_context"]
 std = []
 cheri = ["std"]
 mmu = ["std"]
-hyper_io = ["std", "dep:hyper"]
+reqwest_io = ["std", "dep:reqwest", "dep:http", "dep:bytes"]
+bytes_context = ["std", "dep:bytes"]
 wasm = ["std"]
+timestamp = ["dandelion_commons/timestamp"]
 
 [build-dependencies]
 cmake = "0.1"
@@ -29,7 +32,9 @@ serde_json = "1.0"
 core_affinity = { version = "0.8"}
 futures = { version = "0.3.28" }
 tokio = { version = "1", features = ["full"] }
-hyper = { version = "0.14", optional = true, features = ["http1", "http2", "client", "runtime"]}
+reqwest = { version = "0.12", optional = true }
+http = { version = "1.1", optional = true }
+bytes = { version = "1.6", optional = true}
 libloading = { version = "0.8.1" }
 log = "0.4.20"
 

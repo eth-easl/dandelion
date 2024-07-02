@@ -1,9 +1,11 @@
 use super::{check_matrix, setup_dispatcher};
 use core::mem::size_of;
+use dandelion_commons::records::{Archive, ArchiveInit, RecordPoint};
 use dispatcher::composition::{Composition, CompositionSet, FunctionDependencies, ShardingMode};
 use machine_interface::{
-    function_driver::{ComputeResource, Driver},
-    memory_domain::{Context, MemoryDomain},
+    function_driver::ComputeResource,
+    machine_config::EngineType,
+    memory_domain::{Context, MemoryDomain, MemoryResource},
     DataItem, DataSet, Position,
 };
 use std::collections::BTreeMap;
@@ -87,23 +89,24 @@ fn add_matmac_matrix(
 }
 
 pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
-    domain_arg: Vec<u8>,
     relative_path: &str,
-    driver: Box<dyn Driver>,
+    engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let dispatcher = setup_dispatcher::<Domain>(
-        domain_arg,
-        relative_path,
-        vec![],
-        vec![],
-        driver,
-        engine_resource,
-    );
+    let (dispatcher, function_id) =
+        setup_dispatcher::<Domain>(relative_path, vec![], vec![], engine_type, engine_resource);
+
+    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+        #[cfg(feature = "timestamp")]
+        timestamp_count: 1000,
+    })));
+    let mut recorder = archive.get_recorder().unwrap();
+    let _ = recorder.record(RecordPoint::Arrival);
+
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_function(0, Vec::new(), Vec::new(), false));
+        .block_on(dispatcher.queue_function(function_id, Vec::new(), Vec::new(), false, recorder));
     match result {
         Ok(_) => (),
         Err(err) => panic!("Failed with: {:?}", err),
@@ -111,17 +114,16 @@ pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
 }
 
 pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
-    domain_arg: Vec<u8>,
+    domain_arg: MemoryResource,
     relative_path: &str,
-    driver: Box<dyn Driver>,
+    engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let dispatcher = setup_dispatcher::<Domain>(
-        Vec::new(),
+    let (dispatcher, function_id) = setup_dispatcher::<Domain>(
         relative_path,
         vec![(String::from(""), None)],
         vec![String::from("")],
-        driver,
+        engine_type,
         engine_resource,
     );
     const CONTEXT_SIZE: usize = 5 * 8;
@@ -133,10 +135,18 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
 
     let inputs = vec![(0, CompositionSet::from((0, vec![(Arc::new(in_context))])))];
     let outputs = vec![Some(0)];
+
+    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+        #[cfg(feature = "timestamp")]
+        timestamp_count: 1000,
+    })));
+    let mut recorder = archive.get_recorder().unwrap();
+    let _ = recorder.record(RecordPoint::Arrival);
+
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_function(0, inputs, outputs, false));
+        .block_on(dispatcher.queue_function(function_id, inputs, outputs, false, recorder));
     let out_sets = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -150,17 +160,16 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
 }
 
 pub fn composition_single_matmul<Domain: MemoryDomain>(
-    domain_arg: Vec<u8>,
+    domain_arg: MemoryResource,
     relative_path: &str,
-    driver: Box<dyn Driver>,
+    engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let dispatcher = setup_dispatcher::<Domain>(
-        Vec::new(),
+    let (dispatcher, function_id) = setup_dispatcher::<Domain>(
         relative_path,
         vec![(String::from(""), None)],
         vec![String::from("")],
-        driver,
+        engine_type,
         engine_resource,
     );
     const CONTEXT_SIZE: usize = 9 * 8;
@@ -172,17 +181,25 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
 
     let composition = Composition {
         dependencies: vec![FunctionDependencies {
-            function: 0,
+            function: function_id,
             input_set_ids: vec![Some((0, ShardingMode::All))],
             output_set_ids: vec![Some(1)],
         }],
+        output_map: BTreeMap::from([(1, 0)]),
     };
     let inputs = BTreeMap::from([(0, CompositionSet::from((0, vec![Arc::new(in_context)])))]);
-    let outputs = BTreeMap::from([(1, 0)]);
+
+    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+        #[cfg(feature = "timestamp")]
+        timestamp_count: 1000,
+    })));
+    let mut recorder = archive.get_recorder().unwrap();
+    let _ = recorder.record(RecordPoint::Arrival);
+
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, inputs, outputs, false));
+        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
     let mut out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -199,17 +216,16 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
 }
 
 pub fn composition_parallel_matmul<Domain: MemoryDomain>(
-    domain_arg: Vec<u8>,
+    domain_arg: MemoryResource,
     relative_path: &str,
-    driver: Box<dyn Driver>,
+    engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let dispatcher = setup_dispatcher::<Domain>(
-        Vec::new(),
+    let (dispatcher, function_id) = setup_dispatcher::<Domain>(
         relative_path,
         vec![(String::from(""), None)],
         vec![String::from("")],
-        driver,
+        engine_type,
         engine_resource,
     );
     // need space for the input matrix of 2x2 uint64_t as well as a output matrix of the same size
@@ -224,17 +240,25 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
 
     let composition = Composition {
         dependencies: vec![FunctionDependencies {
-            function: 0,
+            function: function_id,
             input_set_ids: vec![Some((0, ShardingMode::Each))],
             output_set_ids: vec![Some(1)],
         }],
+        output_map: BTreeMap::from([(1, 0)]),
     };
     let inputs = BTreeMap::from([(0, CompositionSet::from((0, vec![Arc::new(in_context)])))]);
-    let outputs = BTreeMap::from([(1, 0)]);
+
+    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+        #[cfg(feature = "timestamp")]
+        timestamp_count: 1000,
+    })));
+    let mut recorder = archive.get_recorder().unwrap();
+    let _ = recorder.record(RecordPoint::Arrival);
+
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, inputs, outputs, false));
+        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
     let mut out_vec = match result {
         Ok(v) => v,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -260,17 +284,16 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
 }
 
 pub fn composition_chain_matmul<Domain: MemoryDomain>(
-    domain_arg: Vec<u8>,
+    domain_arg: MemoryResource,
     relative_path: &str,
-    driver: Box<dyn Driver>,
+    engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let dispatcher = setup_dispatcher::<Domain>(
-        Vec::new(),
+    let (dispatcher, function_id) = setup_dispatcher::<Domain>(
         relative_path,
         vec![(String::from(""), None)],
         vec![String::from("")],
-        driver,
+        engine_type,
         engine_resource,
     );
     const CONTEXT_SIZE: usize = 9 * 8;
@@ -283,23 +306,31 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
     let composition = Composition {
         dependencies: vec![
             FunctionDependencies {
-                function: 0,
+                function: function_id,
                 input_set_ids: vec![Some((0, ShardingMode::All))],
                 output_set_ids: vec![Some(1)],
             },
             FunctionDependencies {
-                function: 0,
+                function: function_id,
                 input_set_ids: vec![Some((1, ShardingMode::All))],
                 output_set_ids: vec![Some(2)],
             },
         ],
+        output_map: BTreeMap::from([(2, 0)]),
     };
+
+    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+        #[cfg(feature = "timestamp")]
+        timestamp_count: 1000,
+    })));
+    let mut recorder = archive.get_recorder().unwrap();
+    let _ = recorder.record(RecordPoint::Arrival);
+
     let inputs = BTreeMap::from([(0, CompositionSet::from((0, vec![Arc::new(in_context)])))]);
-    let output_contexts = BTreeMap::from([(2, 0)]);
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, inputs, output_contexts, false));
+        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
     let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -313,13 +344,12 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
 }
 
 pub fn composition_diamond_matmac<Domain: MemoryDomain>(
-    domain_arg: Vec<u8>,
+    domain_arg: MemoryResource,
     relative_path: &str,
-    driver: Box<dyn Driver>,
+    engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let dispatcher = self::setup_dispatcher::<Domain>(
-        Vec::new(),
+    let (dispatcher, function_id) = self::setup_dispatcher::<Domain>(
         relative_path,
         vec![
             (String::from(""), None),
@@ -327,7 +357,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             (String::from(""), None),
         ],
         vec![String::from("")],
-        driver,
+        engine_type,
         engine_resource,
     );
     const CONTEXT_SIZE: usize = 12 * 8;
@@ -346,7 +376,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
         dependencies: vec![
             // C = A*B
             FunctionDependencies {
-                function: 0,
+                function: function_id,
                 input_set_ids: vec![
                     Some((0, ShardingMode::All)),
                     Some((1, ShardingMode::All)),
@@ -356,7 +386,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             },
             // D = B^T*A
             FunctionDependencies {
-                function: 0,
+                function: function_id,
                 input_set_ids: vec![
                     Some((2, ShardingMode::All)),
                     Some((0, ShardingMode::All)),
@@ -366,7 +396,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             },
             // E = B + C
             FunctionDependencies {
-                function: 0,
+                function: function_id,
                 input_set_ids: vec![
                     None,
                     Some((1, ShardingMode::All)),
@@ -376,7 +406,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             },
             // G = D * C
             FunctionDependencies {
-                function: 0,
+                function: function_id,
                 input_set_ids: vec![
                     Some((4, ShardingMode::All)),
                     Some((3, ShardingMode::All)),
@@ -386,7 +416,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             },
             // Result = D*E + G
             FunctionDependencies {
-                function: 0,
+                function: function_id,
                 input_set_ids: vec![
                     Some((4, ShardingMode::All)),
                     Some((5, ShardingMode::All)),
@@ -395,18 +425,26 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
                 output_set_ids: vec![Some(7)],
             },
         ],
+        output_map: BTreeMap::from([(7, 0)]),
     };
+
+    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+        #[cfg(feature = "timestamp")]
+        timestamp_count: 1000,
+    })));
+    let mut recorder = archive.get_recorder().unwrap();
+    let _ = recorder.record(RecordPoint::Arrival);
+
     let context_arc = Arc::new(in_context);
     let inputs = BTreeMap::from([
         (0, CompositionSet::from((0, vec![context_arc.clone()]))),
         (1, CompositionSet::from((1, vec![context_arc.clone()]))),
         (2, CompositionSet::from((2, vec![context_arc.clone()]))),
     ]);
-    let output_contexts = BTreeMap::from([(7, 0)]);
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, inputs, output_contexts, false));
+        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
     let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),

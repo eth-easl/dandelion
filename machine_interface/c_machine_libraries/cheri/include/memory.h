@@ -29,6 +29,8 @@ void cheri_write_context(cheri_context* context, unsigned char* source_pointer,
 void cheri_read_context(cheri_context* context,
                         unsigned char* destination_pointer,
                         size_t context_offset, size_t size);
+unsigned char* cheri_get_chunk_ref(cheri_context* context,
+                        size_t context_offset);
 void cheri_transfer_context(cheri_context* destination, cheri_context* source,
                             size_t destination_offset, size_t source_offset,
                             size_t size);

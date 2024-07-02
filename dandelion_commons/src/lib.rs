@@ -1,9 +1,5 @@
 pub mod records;
 
-use records::RecordPoint;
-
-pub type EngineTypeId = u8;
-pub type ContextTypeId = u8;
 pub type FunctionId = u64;
 
 // TODO define error types, possibly better printing than debug
@@ -14,8 +10,17 @@ pub enum DandelionError {
     // errors in configurations
     /// configuration vector was malformed
     MalformedConfig,
+    // errors in parsing or creating compositions
+    /// failed to parse function
+    CompositionParsingError,
     /// parser did not find symbol that it was searching for
     UnknownSymbol,
+    /// Composition contains function that does not exist
+    CompositionContainsInvalidFunction,
+    /// Function in parsing has identifier that is not defined in composition
+    CompositionFunctionInvalidIdentifier(String),
+    /// Set indentifier is produced by multiple functions in a composition
+    CompositionDuplicateSetName,
     // domain and context errors
     /// error creating layout for read only context
     ContextReadOnlyLayout,
@@ -63,6 +68,8 @@ pub enum DandelionError {
     EngineError,
     /// asked driver for engine, but there are no more available
     NoEngineAvailable,
+    /// debt was dropped without fulfilling it
+    PromiseDroppedDebt,
     /// there was a non recoverable issue when spawning or running the MMU worker
     MmuWorkerError,
     // system engine errors
@@ -77,11 +84,13 @@ pub enum DandelionError {
     CalledSystemFuncParser,
     // dispatcher errors
     /// dispatcher does not find a loader for this engine type
-    DispatcherMissingLoader(EngineTypeId),
+    DispatcherMissingLoader(String),
     /// error from resulting from assumptions based on config passed to dispatcher
     DispatcherConfigError,
     /// dispatcher was asked to queue function it can't find
     DispatcherUnavailableFunction,
+    /// dispatcher was asked to add function to registry that is already present
+    DispatcherDuplicateFunction,
     /// function to register did not have metadata available
     DispatcherMetaDataUnavailable,
     /// dispatcher encountered an issue when trasmitting data between tasks
@@ -96,7 +105,7 @@ pub enum DandelionError {
     /// Mutex for metering was poisoned
     RecordLockFailure,
     /// Call to record time spans were not called in order
-    RecordSequencingFailure(RecordPoint, RecordPoint),
+    RecorderNotAvailable,
     // Gerneral util errors
     /// error while performing IO on a file
     FileError,
@@ -110,6 +119,32 @@ pub enum DandelionError {
     // errors from the functions
     /// Function indicated it failed
     FunctionError(i32),
+    /// Work queue from the dispatcher to the engines is full
+    WorkQueueFull,
+    // Frontend errors
+    /// Error in the frontend receiveing requests
+    RequestError(FrontendError),
+}
+
+// Implement display to be compliant with core::error::Error
+impl core::fmt::Display for DandelionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return f.write_fmt(format_args!("{:?}", self));
+    }
+}
+
+impl std::error::Error for DandelionError {}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FrontendError {
+    /// Failed to get more frames from the connection
+    FailledToGetFrames,
+    /// Attemped to read bytes form stream to desiarialize but stream ran out
+    StreamEnd,
+    /// The stream was not formated according to the expected specification
+    ViolatedSpec,
+    /// The structure descibed does not cofrom with the expected message
+    MalformedMessage,
 }
 
 pub type DandelionResult<T> = std::result::Result<T, DandelionError>;

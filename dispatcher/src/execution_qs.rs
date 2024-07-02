@@ -1,72 +1,70 @@
-use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
-use futures::{channel::oneshot, lock::Mutex};
+use crossbeam::channel::{TryRecvError, TrySendError};
+use dandelion_commons::{DandelionError, DandelionResult};
+use log::error;
 use machine_interface::{
-    function_driver::{Engine, FunctionConfig},
-    memory_domain::Context,
+    function_driver::{WorkDone, WorkQueue, WorkToDo},
+    promise::{Debt, Promise},
 };
-use std::collections::VecDeque;
 
+/// Datastructure that implements priority queueing
+/// Highest priority queue holds promises if there are any
+#[derive(Clone)]
 pub struct EngineQueue {
-    pub internals: Mutex<(
-        Vec<Box<dyn Engine>>,
-        VecDeque<oneshot::Sender<Box<dyn Engine>>>,
-    )>,
+    queue_in: crossbeam::channel::Sender<(WorkToDo, Debt)>,
+    queue_out: crossbeam::channel::Receiver<(WorkToDo, Debt)>,
 }
 
-// TODO:fix it for cases where single run can be cancelled:
-// - when yielding make sure the one notified is stil uncacnelled
-// - make sure engine is yielded when task is cancelled
-// one option is to use look further into sinks for the engines https://docs.rs/futures/latest/futures/sink/index.html
-impl EngineQueue {
-    pub async fn perform_single_run(
-        &self,
-        config: &FunctionConfig,
-        context: Context,
-        output_sets: &Vec<String>,
-        recorder: Recorder,
-    ) -> (DandelionResult<()>, Context) {
-        let engine_rec = match self.get_engine().await {
-            Ok(rec) => rec,
-            Err(err) => return (Err(err), context),
-        };
-        let mut engine = match engine_rec.await {
-            Ok(eng) => eng,
-            Err(_) => return (Err(DandelionError::DispatcherChannelError), context),
-        };
-        let (engine_result, out_context) = engine.run(config, context, output_sets, recorder).await;
-        let yield_result = self.yield_engine(engine).await;
-        let end_result = match (engine_result, yield_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(err), _) | (Ok(()), Err(err)) => Err(err),
-        };
-        return (end_result, out_context);
+/// This is run on the engine so it performs asyncornous access to the local state
+impl WorkQueue for EngineQueue {
+    fn get_engine_args(&self) -> (WorkToDo, Debt) {
+        loop {
+            match self.queue_out.try_recv() {
+                Err(TryRecvError::Disconnected) => panic!("Work queue disconnected"),
+                Err(TryRecvError::Empty) => continue,
+                Ok(recieved) => {
+                    let (recieved_args, recevied_dept) = recieved;
+                    if recevied_dept.is_alive() {
+                        return (recieved_args, recevied_dept);
+                    }
+                }
+            }
+        }
     }
 
-    async fn get_engine(&self) -> DandelionResult<oneshot::Receiver<Box<dyn Engine>>> {
-        let mut mux_guard = self.internals.lock().await;
-        // create new lock
-        let (sender, receiver) = oneshot::channel();
-        if let Some(engine) = mux_guard.0.pop() {
-            let sender_result: Result<(), Box<dyn Engine>> = sender.send(engine);
-            if let Err(engine) = sender_result {
-                mux_guard.0.push(engine);
-                return Err(DandelionError::DispatcherChannelError);
+    fn try_get_engine_args(&self) -> Option<(WorkToDo, Debt)> {
+        return match self.queue_out.try_recv() {
+            Err(TryRecvError::Disconnected) => panic!("Work queue disconnected"),
+            Err(TryRecvError::Empty) => None,
+            Ok(received) => {
+                let (args, dept) = received;
+                if dept.is_alive() {
+                    Some((args, dept))
+                } else {
+                    None
+                }
             }
-        } else {
-            mux_guard.1.push_back(sender);
-        }
-        return Ok(receiver);
+        };
     }
-    async fn yield_engine(&self, engine: Box<dyn Engine>) -> DandelionResult<()> {
-        let mut mux_guard = self.internals.lock().await;
-        if let Some(sender) = mux_guard.1.pop_front() {
-            match sender.send(engine) {
-                Ok(()) => (),
-                Err(_) => return Err(DandelionError::DispatcherChannelError),
+}
+
+impl EngineQueue {
+    pub fn new() -> Self {
+        let (sender, receiver) = crossbeam::channel::bounded(4096);
+        return EngineQueue {
+            queue_in: sender,
+            queue_out: receiver,
+        };
+    }
+
+    pub async fn enqueu_work(&self, args: WorkToDo) -> DandelionResult<WorkDone> {
+        let (promise, debt) = Promise::new();
+        match self.queue_in.try_send((args, debt)) {
+            Ok(()) => (),
+            Err(TrySendError::Disconnected(_)) => {
+                error!("Failed to enqueu work, workqueue has been disconnected")
             }
-        } else {
-            mux_guard.0.push(engine);
+            Err(TrySendError::Full(_)) => return Err(DandelionError::WorkQueueFull),
         }
-        Ok(())
+        return *promise.await;
     }
 }

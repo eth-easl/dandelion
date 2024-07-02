@@ -1,822 +1,586 @@
-use bytes::Buf;
 use core_affinity::{self, CoreId};
-use dandelion_commons::{ContextTypeId, EngineTypeId};
+use dandelion_commons::{
+    records::{Archive, ArchiveInit, RecordPoint, Recorder},
+    DandelionResult,
+};
+use dandelion_server::DandelionBody;
 use dispatcher::{
-    composition::{Composition, CompositionSet, FunctionDependencies, ShardingMode},
-    dispatcher::Dispatcher,
-    function_registry::{FunctionRegistry, Metadata},
+    composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
     resource_pool::ResourcePool,
 };
-use futures::lock::Mutex;
-use futures::stream::StreamExt;
-use http::StatusCode;
+use http_body_util::BodyExt;
 use hyper::{
-    service::{make_service_fn, service_fn},
-    Body, Request, Response, Server,
+    body::{Body, Incoming},
+    service::service_fn,
+    Request, Response,
 };
-use log::{error, info};
+use log::{debug, error, info, trace, warn};
 use machine_interface::{
-    function_driver::{
-        system_driver::{get_system_function_input_sets, get_system_function_output_sets},
-        ComputeResource, SystemFunction,
-    },
-    memory_domain::{mmap::MmapMemoryDomain, read_only::ReadOnlyContext},
-};
-use signal_hook::consts::signal::*;
-use signal_hook_tokio::Signals;
-
-#[cfg(feature = "hyper_io")]
-use machine_interface::function_driver::system_driver::hyper::HyperDriver;
-
-#[cfg(any(feature = "cheri", feature = "mmu", feature = "wasm"))]
-use machine_interface::{
-    function_driver::Driver,
-    memory_domain::{Context, ContextTrait, MemoryDomain},
+    function_driver::ComputeResource,
+    machine_config::EngineType,
+    memory_domain::{bytes_context::BytesContext, read_only::ReadOnlyContext},
     DataItem, DataSet, Position,
 };
-
-#[cfg(feature = "cheri")]
-use machine_interface::{
-    function_driver::compute_driver::cheri::CheriDriver, memory_domain::cheri::CheriMemoryDomain,
-};
-
-#[cfg(feature = "mmu")]
-use machine_interface::{
-    function_driver::compute_driver::mmu::MmuDriver, memory_domain::mmu::MmuMemoryDomain,
-};
-
-#[cfg(feature = "wasm")]
-use machine_interface::{
-    function_driver::compute_driver::wasm::WasmDriver, memory_domain::wasm::WasmMemoryDomain,
-};
-
-#[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm")))]
-use machine_interface::{
-    memory_domain::{Context, ContextTrait, MemoryDomain},
-    DataItem, DataSet, Position,
-};
-
+use serde::Deserialize;
 use std::{
     collections::BTreeMap,
     convert::Infallible,
-    io,
-    mem::size_of,
+    io::Write,
     net::SocketAddr,
     path::PathBuf,
-    process::Command,
     sync::{
-        atomic::{AtomicU64, AtomicU8, Ordering},
-        Arc, Once,
+        atomic::{AtomicUsize, Ordering},
+        Arc, OnceLock,
     },
-    time::Duration,
 };
-use tokio::runtime::Builder;
+use tokio::{
+    net::TcpListener,
+    runtime::Builder,
+    select,
+    signal::unix::SignalKind,
+    spawn,
+    sync::{mpsc, oneshot},
+};
 
-const MMM_ID: u64 = 0;
-const HTTP_ID: u64 = 2;
-const BUSY_ID: u64 = 3;
-const COMPOSITION_ID: u64 = 4;
+const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
-// can support 10000 RPS for 2 mins
-const MMM_COLD_ID_BASE: u64 = 0x1000000;
-const BUSY_COLD_ID_BASE: u64 = 0x2000000;
-const COMPOSITION_COLD_ID_BASE: u64 = 0x3000000;
-
-// context size for functions
-const DEFAULT_CONTEXT_SIZE: usize = 0x802_0000; // 128MiB
-const SYSTEM_CONTEXT_SIZE: usize = 0x200_0000; // 32MiB
-
-static INIT_MATRIX: Once = Once::new();
-static mut DUMMY_MATRIX: Vec<i64> = Vec::new();
-static COLD_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-// Handles graceful shutdown
-async fn handle_signals(mut signals: Signals) -> io::Result<()> {
-    while let Some(signal) = signals.next().await {
-        match signal {
-            SIGTERM | SIGINT | SIGQUIT => {
-                return Ok(());
-            }
-            _ => unreachable!(),
-        }
-    }
-    Ok(())
-}
-
-async fn run_chain(
-    dispatcher: Arc<Dispatcher>,
-    is_cold: bool,
-    get_uri: String,
-    post_uri: String,
-    max_cold: u64,
-) -> u64 {
-    let domain = MmapMemoryDomain::init(vec![]).expect("Should be able to get Mmap domain");
-    let mut input_context = domain
-        .acquire_context(128)
-        .expect("Should be able to get malloc context");
-    let get_request = format!("GET {} HTTP/1.1", get_uri);
-    let post_request = format!("PUT {} HTTP/1.1", post_uri);
-    let get_request_offset = input_context
-        .get_free_space_and_write_slice(get_request.as_bytes())
-        .expect("Should be able to write") as usize;
-    let post_request_offset = input_context
-        .get_free_space_and_write_slice(post_request.as_bytes())
-        .expect("Should be able to write") as usize;
-    input_context.content.push(Some(DataSet {
-        ident: String::from("request"),
-        buffers: vec![DataItem {
-            ident: String::from("request"),
-            data: Position {
-                offset: get_request_offset,
-                size: get_request.len(),
-            },
-            key: 0,
-        }],
-    }));
-    input_context.content.push(Some(DataSet {
-        ident: String::from("request"),
-        buffers: vec![DataItem {
-            ident: String::from("request"),
-            data: Position {
-                offset: post_request_offset,
-                size: post_request.len(),
-            },
-            key: 0,
-        }],
-    }));
-    let input_arc = Arc::new(input_context);
-    let inputs = vec![
-        (0, CompositionSet::from((0, vec![input_arc.clone()]))),
-        (5, CompositionSet::from((1, vec![input_arc]))),
-    ];
-    let output_mapping = vec![Some(0), Some(1)];
-
-    let counter = COLD_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let function_id = if !is_cold {
-        COMPOSITION_ID
-    } else {
-        COMPOSITION_COLD_ID_BASE + counter % max_cold
-    };
-    let result = dispatcher
-        .queue_function(function_id, inputs, output_mapping, false)
-        .await
-        .expect("Should get response from chain");
-    assert_eq!(2, result.len());
-    // check http post response
-    let post_composition_set = result
-        .get(&1)
-        .expect("Should have composition set for post response");
-    assert_eq!(1, post_composition_set.context_list.len());
-    let post_context = &post_composition_set.context_list[0].0;
-    assert_eq!(3, post_context.content.len());
-    let post_set = post_context.content[0]
-        .as_ref()
-        .expect("Should have status set");
-    assert_eq!(1, post_set.buffers.len());
-    let post_status_position = post_set.buffers[0].data;
-    let mut post_vec = Vec::<u8>::new();
-    post_vec.resize(post_status_position.size, 0);
-    post_context
-        .read(post_status_position.offset, post_vec.as_mut_slice())
-        .expect("Should be able to read post response");
-    assert_eq!("HTTP/1.1 200 OK".as_bytes(), post_vec.as_slice());
-
-    // check iteration result
-    let result_compositon_set = result.get(&0).expect("Should have set 0");
-    assert_eq!(1, result_compositon_set.context_list.len());
-    let result_context = &result_compositon_set.context_list[0].0;
-    assert_eq!(1, result_context.content.len());
-    let result_set = result_context.content[0]
-        .as_ref()
-        .expect("Should contain a return number");
-    assert_eq!(1, result_set.buffers.len());
-    let result_position = result_set.buffers[0].data;
-
-    let mut result_vec = vec![0u8; result_position.size];
-    result_context
-        .read(result_position.offset, result_vec.as_mut_slice())
-        .expect("Should be able to read result");
-    let checksum = u64::from_ne_bytes(result_vec[0..8].try_into().unwrap());
-
-    return checksum;
-}
-
-async fn run_mat_func(
-    dispatcher: Arc<Dispatcher>,
-    is_cold: bool,
-    rows: usize,
-    cols: usize,
-    max_cold: u64,
-) -> i64 {
-    let mat_size: usize = rows * cols;
-
-    // Initialize matrix if necessary
-    unsafe {
-        INIT_MATRIX.call_once(|| {
-            // TODO: add cols
-            DUMMY_MATRIX.push(rows as i64);
-            for i in 0..mat_size {
-                DUMMY_MATRIX.push(i as i64 + 1)
-            }
-        });
-    }
-
-    let input_context = unsafe { add_matmul_inputs(&mut DUMMY_MATRIX) };
-
-    let inputs = vec![(
-        0,
-        CompositionSet::from((0, vec![(Arc::new(input_context))])),
-    )];
-    let outputs = vec![Some(0)];
-    let counter = COLD_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let function_id = if !is_cold {
-        MMM_ID
-    } else {
-        MMM_COLD_ID_BASE + counter % max_cold
-    };
-    let result = dispatcher
-        .queue_function(function_id, inputs, outputs, is_cold)
-        .await;
-
-    let result_context = result
-        .expect("should get result from function")
-        .remove(&0)
-        .expect("should have composition set 0");
-
-    return get_checksum(result_context);
-}
-
-// Add the matrix multiplication inputs to the given context
-fn add_matmul_inputs(matrix: &'static mut Vec<i64>) -> Context {
-    // Allocate a new set entry
-    let matrix_size = matrix.len() * size_of::<i64>();
-    let mut context = ReadOnlyContext::new_static(matrix);
-    context.content.resize_with(1, || None);
-    let _ = context.occupy_space(0, matrix_size);
-
-    if let Some(set) = &mut context.content[0] {
-        set.buffers.push(DataItem {
-            ident: String::from(""),
-            data: Position {
-                offset: 0,
-                size: matrix_size,
-            },
-            key: 0,
-        });
-    } else {
-        context.content[0] = Some(DataSet {
-            ident: "".to_string(),
-            buffers: vec![DataItem {
-                ident: "".to_string(),
-                data: Position {
-                    offset: 0,
-                    size: matrix_size,
-                },
-                key: 0,
-            }],
-        });
-    }
-    return context;
-}
-
-// Given a result context, return the last element of the resulting matrix
-fn get_checksum(composition_set: CompositionSet) -> i64 {
-    // Determine offset of last matrix element
-    assert_eq!(1, composition_set.context_list.len());
-    let context = &composition_set.context_list[0].0;
-    let output_dataset = context.content[0].as_ref().expect("Should contain matrix");
-    let output_item = output_dataset
-        .buffers
-        .iter()
-        .find(|buffer| buffer.key == 0)
-        .expect("should find a buffer with the correct key")
-        .data;
-    let checksum_offset = output_item.offset + output_item.size - 8;
-
-    // Read out the checksum
-    let mut read_buffer: Vec<i64> = vec![0; 1];
-    context
-        .read(checksum_offset, &mut read_buffer)
-        .expect("Context should contain matrix");
-
-    return read_buffer[0];
+enum DispatcherCommand {
+    FunctionRequest {
+        name: String,
+        inputs: Vec<(usize, CompositionSet)>,
+        is_cold: bool,
+        recorder: Recorder,
+        callback: oneshot::Sender<DandelionResult<BTreeMap<usize, CompositionSet>>>,
+    },
+    FunctionRegistration {
+        name: String,
+        engine_type: EngineType,
+        context_size: usize,
+        path: String,
+        metadata: Metadata,
+        callback: oneshot::Sender<DandelionResult<u64>>,
+    },
+    CompositionRegistration {
+        composition: String,
+        callback: oneshot::Sender<DandelionResult<()>>,
+    },
 }
 
 async fn serve_request(
     is_cold: bool,
-    req: Request<Body>,
-    dispatcher: Arc<Dispatcher>,
-    max_cold: u64,
-) -> Result<Response<Body>, Infallible> {
-    // Try to parse the request
-    let mut request_buf = hyper::body::to_bytes(req.into_body())
-        .await
-        .expect("Could not read request body");
+    req: Request<Incoming>,
+    dispatcher: mpsc::Sender<DispatcherCommand>,
+) -> Result<Response<DandelionBody>, Infallible> {
+    debug!("Starting to serve request");
+    let mut recorder = TRACING_ARCHIVE.get().unwrap().get_recorder().unwrap();
+    let _ = recorder.record(RecordPoint::Arrival);
 
-    if request_buf.len() != 16 {
-        let mut bad_request = Response::new(Body::empty());
-        *bad_request.status_mut() = StatusCode::BAD_REQUEST;
-        return Ok::<_, Infallible>(bad_request);
-    }
-
-    let rows = request_buf.get_i64() as usize;
-    let cols = request_buf.get_i64() as usize;
-
-    let response_vec: Vec<u8> = run_mat_func(dispatcher, is_cold, rows, cols, max_cold)
-        .await
-        .to_be_bytes()
-        .to_vec();
-    let response = Ok::<_, Infallible>(Response::new(response_vec.into()));
-    return response;
-}
-
-async fn serve_chain(
-    is_cold: bool,
-    req: Request<Body>,
-    dispatcher: Arc<Dispatcher>,
-    max_cold: u64,
-) -> Result<Response<Body>, Infallible> {
-    let request_buf = hyper::body::to_bytes(req.into_body())
-        .await
-        .expect("Should be able to parse body");
-
-    let request_str = std::str::from_utf8(&request_buf).unwrap();
-    let uris: Vec<&str> = request_str.split("::").collect();
-    let get_uri = uris[0].to_string();
-    let post_uri = uris[1].to_string();
-
-    let response_vec = run_chain(dispatcher, is_cold, get_uri, post_uri, max_cold)
-        .await
-        .to_be_bytes()
-        .to_vec();
-    let response = Ok::<_, Infallible>(Response::new(response_vec.into()));
-    return response;
-}
-
-async fn serve_native(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
-    // Try to parse the request
-    let mut request_buf = hyper::body::to_bytes(_req.into_body())
-        .await
-        .expect("Could not read request body");
-
-    if request_buf.len() != 16 {
-        let mut bad_request = Response::new(Body::empty());
-        *bad_request.status_mut() = StatusCode::BAD_REQUEST;
-        return Ok::<_, Infallible>(bad_request);
-    }
-
-    let rows = request_buf.get_i64() as usize;
-    let cols = request_buf.get_i64() as usize;
-
-    let mat_size: usize = rows * cols;
-
-    // Initialize matrix if necessary
-    unsafe {
-        INIT_MATRIX.call_once(|| {
-            for i in 0..mat_size {
-                DUMMY_MATRIX.push(i as i64 + 1)
-            }
-        });
-    }
-
-    let mut out_mat: Vec<i64> = vec![0; mat_size];
-    for i in 0..rows {
-        for j in 0..rows {
-            for k in 0..cols {
-                unsafe {
-                    out_mat[i * rows + j] +=
-                        DUMMY_MATRIX[i * cols + k] * DUMMY_MATRIX[j * cols + k];
-                }
+    // pull all frames from the network
+    let mut incomming = req.into_body();
+    let mut body_pin = std::pin::Pin::new(&mut incomming);
+    let mut frame_data = Vec::new();
+    let mut total_size = 0usize;
+    loop {
+        if let Some(frame_result) =
+            futures::future::poll_fn(|cx| body_pin.as_mut().poll_frame(cx)).await
+        {
+            let data_frame = frame_result.unwrap().into_data().unwrap();
+            total_size += data_frame.len();
+            frame_data.push(data_frame);
+        } else {
+            if body_pin.is_end_stream() {
+                break;
+            } else {
+                continue;
             }
         }
     }
 
-    let checksum = out_mat[rows * cols - 1];
+    // from context from frame bytes
+    let request_context_result = BytesContext::from_bytes_vec(frame_data, total_size).await;
+    if request_context_result.is_err() {
+        warn!("request parsing failed with: {:?}", request_context_result);
+    }
+    let (function_name, request_context) = request_context_result.unwrap();
+    debug!("finshed creating request context");
+    // TODO match set names to assign sets to composition sets
+    // map sets in the order they are in the request
+    let request_number = request_context.content.len();
+    let request_arc = Arc::new(request_context);
+    let mut inputs = vec![];
+    for request_set in 0..request_number {
+        trace!(
+            "adding input set {} from request",
+            request_arc.content[request_set].as_ref().unwrap().ident
+        );
+        inputs.push((
+            request_set,
+            CompositionSet::from((request_set, vec![request_arc.clone()])),
+        ));
+    }
+    // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
+    recorder
+        .record(RecordPoint::QueueFunctionDispatcher)
+        .unwrap();
+    let (callback, output_recevier) = tokio::sync::oneshot::channel();
+    dispatcher
+        .send(DispatcherCommand::FunctionRequest {
+            name: function_name,
+            inputs,
+            is_cold,
+            recorder: recorder.get_sub_recorder().unwrap(),
+            callback,
+        })
+        .await
+        .unwrap();
+    let function_output = output_recevier
+        .await
+        .unwrap()
+        .expect("Should get result from function");
+    let response_body = dandelion_server::DandelionBody::new(function_output);
+    debug!("finshed creating response body");
+    let response = Ok::<_, Infallible>(Response::new(response_body));
+    debug!("finshed creating response");
+    recorder.record(RecordPoint::EndService).unwrap();
+    TRACING_ARCHIVE.get().unwrap().return_recorder(recorder);
 
-    Ok::<_, Infallible>(Response::new(checksum.to_be_bytes().to_vec().into()))
+    return response;
 }
 
-async fn serve_stats(
-    _req: Request<Body>,
-    dispatcher: Arc<Dispatcher>,
-) -> Result<Response<Body>, Infallible> {
-    let archive_guard = match dispatcher.archive.lock() {
-        Ok(guard) => guard,
-        Err(_) => {
-            return Ok::<_, Infallible>(Response::new("Could not lock archive for stats".into()))
-        }
+#[derive(Debug, Deserialize)]
+struct RegisterFunction {
+    name: String,
+    context_size: u64,
+    engine_type: String,
+    binary: Vec<u8>,
+    input_sets: Vec<(String, Option<Vec<(String, Vec<u8>)>>)>,
+    output_sets: Vec<String>,
+}
+
+async fn register_function(
+    req: Request<Incoming>,
+    dispatcher: mpsc::Sender<DispatcherCommand>,
+) -> Result<Response<DandelionBody>, Infallible> {
+    let bytes = req
+        .collect()
+        .await
+        .expect("Failed to extract body from function registration")
+        .to_bytes();
+    // find first line end character
+    let request_map: RegisterFunction =
+        bson::from_slice(&bytes).expect("Should be able to deserialize request");
+    // write function to file
+    std::fs::create_dir_all(FUNCTION_FOLDER_PATH).unwrap();
+    let mut path_buff = PathBuf::from(FUNCTION_FOLDER_PATH);
+    path_buff.push(request_map.name.clone());
+    let mut function_file = std::fs::File::create(path_buff.clone())
+        .expect("Failed to create file for registering function");
+    function_file
+        .write_all(&request_map.binary)
+        .expect("Failed to write file with content for registering");
+    let engine_type = match request_map.engine_type.as_str() {
+        #[cfg(feature = "wasm")]
+        "RWasm" => EngineType::RWasm,
+        #[cfg(feature = "mmu")]
+        "Process" => EngineType::Process,
+        #[cfg(feature = "cheri")]
+        "Cheri" => EngineType::Cheri,
+        unkown => panic!("Unkown engine type string {}", unkown),
     };
-    return Ok::<_, Infallible>(Response::new(archive_guard.get_summary().into()));
+    let input_sets = request_map
+        .input_sets
+        .into_iter()
+        .map(|(name, data)| {
+            if let Some(static_data) = data {
+                let data_contexts = static_data
+                    .into_iter()
+                    .map(|(item_name, data_vec)| {
+                        let item_size = data_vec.len();
+                        let mut new_context =
+                            ReadOnlyContext::new(data_vec.into_boxed_slice()).unwrap();
+                        new_context.content.push(Some(DataSet {
+                            ident: name.clone(),
+                            buffers: vec![DataItem {
+                                ident: item_name,
+                                data: Position {
+                                    offset: 0,
+                                    size: item_size,
+                                },
+                                key: 0,
+                            }],
+                        }));
+                        (Arc::new(new_context), 0usize..1usize)
+                    })
+                    .collect();
+                let composition_set = CompositionSet {
+                    set_index: 0,
+                    context_list: data_contexts,
+                };
+                (name, Some(composition_set))
+            } else {
+                (name, None)
+            }
+        })
+        .collect();
+    let (callback, confirmation) = oneshot::channel();
+    let metadata = Metadata {
+        input_sets: Arc::new(input_sets),
+        output_sets: Arc::new(request_map.output_sets),
+    };
+    dispatcher
+        .send(DispatcherCommand::FunctionRegistration {
+            name: request_map.name,
+            engine_type,
+            context_size: request_map.context_size as usize,
+            path: path_buff.to_str().unwrap().to_string(),
+            metadata,
+            callback,
+        })
+        .await
+        .unwrap();
+    confirmation
+        .await
+        .unwrap()
+        .expect("Should be able to insert function");
+    return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
+        "Function registered".as_bytes().to_vec(),
+    )));
+}
+
+#[derive(Debug, Deserialize)]
+struct RegisterChain {
+    composition: String,
+}
+
+async fn register_composition(
+    req: Request<Incoming>,
+    dispatcher: mpsc::Sender<DispatcherCommand>,
+) -> Result<Response<DandelionBody>, Infallible> {
+    let bytes = req
+        .collect()
+        .await
+        .expect("Failed to extract body from function registration")
+        .to_bytes();
+    // find first line end character
+    let request_map: RegisterChain =
+        bson::from_slice(&bytes).expect("Should be able to deserialize request");
+    let (callback, confirmation) = oneshot::channel();
+    dispatcher
+        .send(DispatcherCommand::CompositionRegistration {
+            composition: request_map.composition,
+            callback,
+        })
+        .await
+        .unwrap();
+    confirmation
+        .await
+        .unwrap()
+        .expect("Should be able to insert composition");
+    return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
+        "Function registered".as_bytes().to_vec(),
+    )));
+}
+
+async fn serve_stats(_req: Request<Incoming>) -> Result<Response<DandelionBody>, Infallible> {
+    let archive_ref = TRACING_ARCHIVE.get().unwrap();
+    let response = Response::new(DandelionBody::from_vec(
+        archive_ref.get_summary().into_bytes(),
+    ));
+    archive_ref.reset();
+    return Ok::<_, Infallible>(response);
 }
 
 async fn service(
-    req: Request<Body>,
-    dispatcher: Arc<Dispatcher>,
-    max_cold: u64,
-) -> Result<Response<Body>, Infallible> {
+    req: Request<Incoming>,
+    dispatcher: mpsc::Sender<DispatcherCommand>,
+) -> Result<Response<DandelionBody>, Infallible> {
     let uri = req.uri().path();
-    // println!("Got request for {}", uri);
     match uri {
-        "/cold/matmul" => serve_request(true, req, dispatcher, max_cold).await,
-        "/hot/matmul" => serve_request(false, req, dispatcher, max_cold).await,
-        "/cold/compute" => serve_chain(true, req, dispatcher, max_cold).await,
-        "/hot/compute" => serve_chain(false, req, dispatcher, max_cold).await,
-        "/cold/io" => serve_chain(true, req, dispatcher, max_cold).await,
-        "/hot/io" => serve_chain(false, req, dispatcher, max_cold).await,
-        "/native" => serve_native(req).await,
-        "/stats" => serve_stats(req, dispatcher).await,
-        _ => Ok::<_, Infallible>(Response::new(
-            // format!("Hello, World! You asked for: {}\n", uri).into(),
-            format!("Hello, Wor\n").into(),
-        )),
-    }
-}
-
-fn drop_page_caches() {
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg("echo 1 | sudo tee /proc/sys/vm/drop_caches")
-        .output()
-        .expect("Should be able to drop page caches");
-    assert!(output.status.success());
-}
-
-fn no_page_cache_for(path: PathBuf) -> bool {
-    let output = Command::new("fincore")
-        .args(["-n", "-r", "-o", "pages", path.to_str().unwrap()])
-        .output()
-        .expect("Should be able to get page numbers");
-    assert!(output.status.success());
-    return output.stdout[0] == '0' as u8;
-}
-
-async fn add_cold_functions(
-    registry: &FunctionRegistry,
-    engine_id: EngineTypeId,
-    ctx_size: usize,
-    path: &PathBuf,
-    cold_id_base: u64,
-    max_cold: u64,
-) -> PathBuf {
-    let tmp_dir = std::path::Path::new("/tmp").join(path.file_name().unwrap());
-    std::fs::create_dir_all(&tmp_dir).unwrap();
-    for i in 0..max_cold {
-        let metadata = Metadata {
-            input_sets: vec![(String::from(""), None)],
-            output_sets: vec![String::from("")],
-        };
-        let tmp_path = tmp_dir.join(i.to_string());
-        if !tmp_path.exists() {
-            std::fs::copy(path, &tmp_path).unwrap();
+        // TODO rename to cold func and hot func, remove matmul, compute, io
+        "/register/function" => register_function(req, dispatcher).await,
+        "/register/composition" => register_composition(req, dispatcher).await,
+        "/cold/matmul"
+        | "/cold/matmulstore"
+        | "/cold/compute"
+        | "/cold/io"
+        | "/cold/chain_scaling"
+        | "/cold/middleware_app"
+        | "/cold/python_app" => serve_request(true, req, dispatcher).await,
+        "/hot/matmul"
+        | "/hot/matmulstore"
+        | "/hot/compute"
+        | "/hot/io"
+        | "/hot/chain_scaling"
+        | "/hot/middleware_app"
+        | "/hot/python_app" => serve_request(false, req, dispatcher).await,
+        "/stats" => serve_stats(req).await,
+        other_uri => {
+            trace!("Received request on {}", other_uri);
+            Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
+                format!("Hello, Wor\n").into_bytes(),
+            )))
         }
-        registry.insert_metadata(cold_id_base + i, metadata).await;
-        registry
-            .add_local(
-                cold_id_base + i,
-                engine_id,
-                ctx_size,
-                tmp_path.to_str().unwrap(),
-            )
-            .await
-            .expect("Failed to add_local cold functions");
     }
-    return tmp_dir;
+}
+
+/// Recording setup
+static TRACING_ARCHIVE: OnceLock<Archive> = OnceLock::new();
+
+async fn dispatcher_loop(
+    mut request_receiver: mpsc::Receiver<DispatcherCommand>,
+    dispatcher: &'static Dispatcher,
+) {
+    while let Some(dispatcher_args) = request_receiver.recv().await {
+        match dispatcher_args {
+            DispatcherCommand::FunctionRequest {
+                name,
+                inputs,
+                is_cold,
+                recorder,
+                mut callback,
+            } => {
+                let function_future =
+                    dispatcher.queue_function_by_name(name, inputs, None, is_cold, recorder);
+                spawn(async {
+                    select! {
+                        function_output = function_future => {
+                            callback.send(function_output).unwrap();
+                        }
+                        _ = callback.closed() => ()
+                    }
+                });
+            }
+            DispatcherCommand::FunctionRegistration {
+                name,
+                engine_type,
+                context_size,
+                metadata,
+                mut callback,
+                path,
+            } => {
+                let insertion_future =
+                    dispatcher.insert_func(name, engine_type, context_size, path, metadata);
+                spawn(async {
+                    select! {
+                        result = insertion_future => {
+                            callback.send(result).unwrap();
+                        }
+                        _ = callback.closed() => ()
+                    }
+                });
+            }
+            DispatcherCommand::CompositionRegistration {
+                composition,
+                mut callback,
+            } => {
+                let insertion_future = dispatcher.insert_compositions(composition);
+                spawn(async {
+                    select! {
+                        result = insertion_future => {
+                            callback.send(result).unwrap();
+                        }
+                        _ = callback.closed() => ()
+                    }
+                });
+            }
+        };
+    }
+}
+
+async fn service_loop(request_sender: mpsc::Sender<DispatcherCommand>) {
+    // socket to listen to
+    let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], 8080));
+    let listener = TcpListener::bind(addr).await.unwrap();
+    // signal handlers for gracefull shutdown
+    let mut sigterm_stream = tokio::signal::unix::signal(SignalKind::terminate()).unwrap();
+    let mut sigint_stream = tokio::signal::unix::signal(SignalKind::interrupt()).unwrap();
+    let mut sigquit_stream = tokio::signal::unix::signal(SignalKind::quit()).unwrap();
+    loop {
+        tokio::select! {
+            connection_pair = listener.accept() => {
+                let (stream,_) = connection_pair.unwrap();
+                let loop_dispatcher = request_sender.clone();
+                let io = hyper_util::rt::TokioIo::new(stream);
+                tokio::task::spawn(async move {
+                    let service_dispatcher_ptr = loop_dispatcher.clone();
+                    if let Err(err) = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(
+                            io,
+                            service_fn(|req| service(req, service_dispatcher_ptr.clone())),
+                        )
+                        .await
+                    {
+                        error!("Request serving failed with error: {:?}", err);
+                    }
+                });
+            }
+            _ = sigterm_stream.recv() => return,
+            _ = sigint_stream.recv() => return,
+            _ = sigquit_stream.recv() => return,
+        }
+    }
 }
 
 fn main() -> () {
-    env_logger::init();
+    // check if there is a configuration file
+    let config = dandelion_server::config::DandelionConfig::get_config();
 
-    // read argumets from environment
-    let cold_num: u64 = if let Ok(string_val) = std::env::var("NUM_COLD") {
-        string_val
-            .parse()
-            .expect("NUM_COLD was set but not a parsable number")
+    println!("config: {:?}", config);
+
+    let default_warn_level = if cfg!(debug_assertions) {
+        "debug"
     } else {
-        0x100000
+        "warn"
     };
 
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_warn_level))
+        .init();
+
+    // Initilize metric collection
+    match TRACING_ARCHIVE.set(Archive::init(ArchiveInit {
+        #[cfg(feature = "timestamp")]
+        timestamp_count: config.timestamp_count,
+    })) {
+        Ok(_) => (),
+        Err(_) => panic!("Failed to initialize tracing archive"),
+    }
+
     // find available resources
-    let num_cores = u8::try_from(core_affinity::get_core_ids().unwrap().len()).unwrap();
-    // TODO: This calculation makes sense only for running matmul-128x128 workload on MMU engines
-    let num_dispatcher_cores = std::env::var("NUM_DISP_CORES")
-        .map_or_else(|_e| (num_cores + 13) / 14, |n| n.parse::<u8>().unwrap());
-    assert!(
-        num_dispatcher_cores > 0 && num_dispatcher_cores < num_cores,
-        "invalid dispatcher core number: {}",
-        num_dispatcher_cores
-    );
-    // make multithreaded front end that only uses core 0
+    let num_phyiscal_cores = u8::try_from(num_cpus::get_physical()).unwrap();
+    let num_virt_cores = u8::try_from(num_cpus::get()).unwrap();
+    if num_phyiscal_cores != num_virt_cores {
+        warn!(
+            "Hyperthreading might be enabled detected {} logical and {} physical cores",
+            num_virt_cores, num_phyiscal_cores
+        );
+    }
+
+    let resource_conversion = |core_index| ComputeResource::CPU(core_index);
+
+    let dispatcher_cores = config.get_dispatcher_cores();
+    let frontend_cores = config.get_frontend_cores();
+    let communication_cores = config
+        .get_communication_cores()
+        .into_iter()
+        .map(|core| resource_conversion(core))
+        .collect();
+    let compute_cores = config
+        .get_computation_cores()
+        .into_iter()
+        .map(|core| resource_conversion(core))
+        .collect();
+
+    println!("core allocation:");
+    println!("frontend cores {:?}", frontend_cores);
+    println!("dispatcher cores: {:?}", dispatcher_cores);
+    println!("communication cores: {:?}", communication_cores);
+    println!("compute cores: {:?}", compute_cores);
+
+    // make multithreaded front end runtime
     // set up tokio runtime, need io in any case
     let mut runtime_builder = Builder::new_multi_thread();
     runtime_builder.enable_io();
-    runtime_builder.worker_threads(num_dispatcher_cores.into());
-    runtime_builder.on_thread_start(|| {
-        static ATOMIC_ID: AtomicU8 = AtomicU8::new(0);
-        let core_id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
-        if !core_affinity::set_for_current(CoreId { id: core_id.into() }) {
+    runtime_builder.worker_threads(frontend_cores.len());
+    runtime_builder.on_thread_start(move || {
+        static ATOMIC_INDEX: AtomicUsize = AtomicUsize::new(0);
+        let core_index = ATOMIC_INDEX.fetch_add(1, Ordering::SeqCst);
+        if !core_affinity::set_for_current(CoreId {
+            id: frontend_cores[core_index].into(),
+        }) {
             return;
         }
-        info!("Dispatcher running on core {}", core_id);
+        info!(
+            "Frontend thread running on core {}",
+            frontend_cores[core_index]
+        );
     });
+    runtime_builder.global_queue_interval(10);
+    runtime_builder.event_interval(10);
     let runtime = runtime_builder.build().unwrap();
 
+    let dispatcher_runtime = Builder::new_multi_thread()
+        .worker_threads(dispatcher_cores.len())
+        .on_thread_start(move || {
+            static ATOMIC_INDEX: AtomicUsize = AtomicUsize::new(0);
+            let core_index = ATOMIC_INDEX.fetch_add(1, Ordering::SeqCst);
+            if !core_affinity::set_for_current(CoreId {
+                id: dispatcher_cores[core_index].into(),
+            }) {
+                return;
+            }
+            info!(
+                "Dispatcher thread running on core {}",
+                dispatcher_cores[core_index]
+            );
+        })
+        .build()
+        .unwrap();
+    let (dispatcher_sender, dispatcher_recevier) = mpsc::channel(1000);
+
     // set up dispatcher configuration basics
-    let mut domains = BTreeMap::new();
-    const COMPUTE_DOMAIN: ContextTypeId = 0;
-    const COMPUTE_ENGINE: EngineTypeId = 0;
-    const SYS_CONTEXT: ContextTypeId = 1;
-    const SYS_ENGINE: EngineTypeId = 1;
-    let mut type_map = BTreeMap::new();
-    type_map.insert(COMPUTE_ENGINE, COMPUTE_DOMAIN);
-    type_map.insert(SYS_ENGINE, SYS_CONTEXT);
     let mut pool_map = BTreeMap::new();
 
-    pool_map.insert(
-        COMPUTE_ENGINE,
-        (num_dispatcher_cores..num_cores)
-            .map(|code_id| ComputeResource::CPU(code_id))
-            .collect(),
-    );
-    pool_map.insert(
-        SYS_ENGINE,
-        (0..num_dispatcher_cores)
-            .map(|core_id| ComputeResource::CPU(core_id))
-            .collect(),
-    );
+    // insert engines for the currentyl selected compute engine type
+    // todo add function to machine config to detect resources and auto generate this
+    #[cfg(feature = "wasm")]
+    let engine_type = EngineType::RWasm;
+    #[cfg(feature = "mmu")]
+    let engine_type = EngineType::Process;
+    #[cfg(feature = "cheri")]
+    let engine_type = EngineType::Cheri;
+    #[cfg(any(feature = "cheri", feature = "wasm", feature = "mmu"))]
+    pool_map.insert(engine_type, compute_cores);
+    #[cfg(feature = "reqwest_io")]
+    pool_map.insert(EngineType::Reqwest, communication_cores);
     let resource_pool = ResourcePool {
-        engine_pool: Mutex::new(pool_map),
+        engine_pool: futures::lock::Mutex::new(pool_map),
     };
-    domains.insert(
-        SYS_CONTEXT,
-        MmapMemoryDomain::init(Vec::new())
-            .expect("Should be able to initialize Mmap memory domain"),
-    );
-    let mut registry;
-    // insert specific configuration
-    #[cfg(all(feature = "cheri", feature = "mmu", feature = "wasm"))]
-    std::compile_error!("Should only have one feature out of mmu or cheri or wasm");
-    #[cfg(all(
-        any(feature = "cheri", feature = "mmu", feature = "wasm"),
-        feature = "hyper_io"
-    ))]
-    {
-        let mut drivers = BTreeMap::new();
-        let mut mmm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let mut busy_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let driver;
-        #[cfg(feature = "cheri")]
-        {
-            domains.insert(
-                COMPUTE_DOMAIN,
-                CheriMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain"),
-            );
-            driver = Box::new(CheriDriver {}) as Box<dyn Driver>;
-            mmm_path.push("../machine_interface/tests/data/test_elf_cheri_matmul");
-            busy_path.push("../machine_interface/tests/data/test_elf_cheri_busy");
-        }
-        #[cfg(feature = "mmu")]
-        {
-            domains.insert(
-                COMPUTE_DOMAIN,
-                MmuMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain"),
-            );
-            driver = Box::new(MmuDriver {}) as Box<dyn Driver>;
-            mmm_path.push(format!(
-                "../machine_interface/tests/data/test_elf_mmu_{}_matmul",
-                std::env::consts::ARCH
-            ));
-            busy_path.push(format!(
-                "../machine_interface/tests/data/test_elf_mmu_{}_busy",
-                std::env::consts::ARCH
-            ));
-        }
-        #[cfg(feature = "wasm")]
-        {
-            domains.insert(
-                COMPUTE_DOMAIN,
-                WasmMemoryDomain::init(Vec::new()).expect("Should be able to initialize domain"),
-            );
-            driver = Box::new(WasmDriver {}) as Box<dyn Driver>;
-            mmm_path.push(format!(
-                "../machine_interface/tests/data/test_sysld_wasm_{}_matmul",
-                std::env::consts::ARCH
-            ));
-            busy_path.push(format!(
-                "../machine_interface/tests/data/test_sysld_wasm_{}_busy",
-                std::env::consts::ARCH
-            ));
-        }
-        let system_driver = Box::new(HyperDriver {});
-        drivers.insert(COMPUTE_ENGINE, driver);
-        drivers.insert(SYS_ENGINE, system_driver);
-        registry = FunctionRegistry::new(drivers);
-        let mmm_metadata = Metadata {
-            input_sets: vec![(String::from(""), None)],
-            output_sets: vec![String::from("")],
-        };
-        runtime.block_on(registry.insert_metadata(MMM_ID, mmm_metadata));
-        // add for mmm hot function
-        runtime
-            .block_on(registry.add_local(
-                MMM_ID,
-                COMPUTE_ENGINE,
-                DEFAULT_CONTEXT_SIZE,
-                mmm_path.to_str().unwrap(),
-            ))
-            .expect("Failed to add_local for mmm hot function");
-        // add for mmm cold functions
-        let mmm_cold_dir = runtime.block_on(add_cold_functions(
-            &registry,
-            COMPUTE_ENGINE,
-            DEFAULT_CONTEXT_SIZE,
-            &mmm_path,
-            MMM_COLD_ID_BASE,
-            cold_num,
-        ));
-        // add for busy hot functions
-        let busy_metadata = Metadata {
-            input_sets: vec![(String::from(""), None)],
-            output_sets: vec![String::from("")],
-        };
-        runtime.block_on(registry.insert_metadata(BUSY_ID, busy_metadata));
-        runtime
-            .block_on(registry.add_local(
-                BUSY_ID,
-                COMPUTE_ENGINE,
-                DEFAULT_CONTEXT_SIZE,
-                busy_path.to_str().unwrap(),
-            ))
-            .expect("Failed to add_local busy function");
-        // add for busy cold functions
-        let busy_cold_dir = runtime.block_on(add_cold_functions(
-            &registry,
-            COMPUTE_ENGINE,
-            DEFAULT_CONTEXT_SIZE,
-            &busy_path,
-            BUSY_COLD_ID_BASE,
-            cold_num,
-        ));
-        // add http system function
-        // first try only download and spin, TODO: add upload
-        runtime.block_on(
-            registry.insert_metadata(
-                HTTP_ID,
-                Metadata {
-                    input_sets: get_system_function_input_sets(SystemFunction::HTTP)
-                        .into_iter()
-                        .map(|name| (name, None))
-                        .collect(),
-                    output_sets: get_system_function_output_sets(SystemFunction::HTTP),
-                },
-            ),
-        );
-        registry
-            .add_system(HTTP_ID, SYS_ENGINE, SYSTEM_CONTEXT_SIZE)
-            .expect("Should be able to add system function");
-        // add composition using hot busy function
-        let composition = Composition {
-            dependencies: vec![
-                FunctionDependencies {
-                    function: HTTP_ID,
-                    input_set_ids: vec![Some((0, ShardingMode::All)), None, None],
-                    output_set_ids: vec![Some(1), Some(2), Some(3)],
-                },
-                FunctionDependencies {
-                    function: BUSY_ID,
-                    input_set_ids: vec![Some((3, ShardingMode::All))],
-                    output_set_ids: vec![Some(4)],
-                },
-                FunctionDependencies {
-                    function: HTTP_ID,
-                    input_set_ids: vec![
-                        Some((5, ShardingMode::All)),
-                        None,
-                        Some((4, ShardingMode::All)),
-                    ],
-                    output_set_ids: vec![Some(6)],
-                },
-            ],
-        };
-        let output_set_map = BTreeMap::from([(4, 0), (6, 1)]);
-        let input_sets = get_system_function_input_sets(SystemFunction::HTTP)
-            .into_iter()
-            .map(|name| (name, None))
-            .collect();
-        let output_sets = get_system_function_output_sets(SystemFunction::HTTP);
-        let composition_metadata = Metadata {
-            input_sets,
-            output_sets,
-        };
-        runtime.block_on(registry.insert_metadata(COMPOSITION_ID, composition_metadata));
-        registry
-            .add_composition(COMPOSITION_ID, composition, output_set_map)
-            .expect("Failed to add composition");
-        // add compositions using cold busy functions
-        for i in 0..cold_num {
-            let composition = Composition {
-                dependencies: vec![
-                    FunctionDependencies {
-                        function: HTTP_ID,
-                        input_set_ids: vec![Some((0, ShardingMode::All)), None, None],
-                        output_set_ids: vec![Some(1), Some(2), Some(3)],
-                    },
-                    FunctionDependencies {
-                        function: BUSY_COLD_ID_BASE + i,
-                        input_set_ids: vec![Some((3, ShardingMode::All))],
-                        output_set_ids: vec![Some(4)],
-                    },
-                    FunctionDependencies {
-                        function: HTTP_ID,
-                        input_set_ids: vec![
-                            Some((5, ShardingMode::All)),
-                            None,
-                            Some((4, ShardingMode::All)),
-                        ],
-                        output_set_ids: vec![Some(6)],
-                    },
-                ],
-            };
-            let output_set_map = BTreeMap::from([(4, 0), (6, 1)]);
-            let input_sets = get_system_function_input_sets(SystemFunction::HTTP)
-                .into_iter()
-                .map(|name| (name, None))
-                .collect();
-            let output_sets = get_system_function_output_sets(SystemFunction::HTTP);
-            let cold_comp_metadata = Metadata {
-                input_sets,
-                output_sets,
-            };
-            runtime.block_on(
-                registry.insert_metadata(COMPOSITION_COLD_ID_BASE + i, cold_comp_metadata),
-            );
-            registry
-                .add_composition(COMPOSITION_COLD_ID_BASE + i, composition, output_set_map)
-                .expect("Failed to add cold composition");
-        }
-        // drop page caches to ensure cold functions are loaded from disk
-        loop {
-            info!("Waiting for page cache to be clean");
-            drop_page_caches();
-            std::thread::sleep(Duration::from_secs(10));
-            // check if page caches are actually dropped
-            let mut no_page_cache_for_all = true;
-            for i in (0..cold_num).step_by(1000) {
-                let mmm_cold_path = mmm_cold_dir.join(i.to_string());
-                let busy_cold_path = busy_cold_dir.join(i.to_string());
-                if !no_page_cache_for(mmm_cold_path) || !no_page_cache_for(busy_cold_path) {
-                    no_page_cache_for_all = false;
-                    break;
-                }
-            }
-            if no_page_cache_for_all {
-                break;
-            }
-        }
-    }
-    #[cfg(not(all(
-        any(feature = "cheri", feature = "mmu", feature = "wasm"),
-        feature = "hyper_io"
-    )))]
-    {
-        let loader_map = BTreeMap::new();
-        registry = FunctionRegistry::new(loader_map);
-    }
 
     // Create an ARC pointer to the dispatcher for thread-safe access
-    let dispatcher_ptr = Arc::new(
-        Dispatcher::init(domains, type_map, registry, resource_pool)
-            .expect("Should be able to start dispatcher"),
-    );
+    let dispatcher = Box::leak(Box::new(
+        Dispatcher::init(resource_pool).expect("Should be able to start dispatcher"),
+    ));
+    // start dispatcher
+    dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
 
     let _guard = runtime.enter();
 
-    // ready http endpoint
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
-    let make_svc = make_service_fn(move |_| {
-        let new_dispatcher_ptr = dispatcher_ptr.clone();
-        async move {
-            Ok::<_, Infallible>(service_fn(move |req| {
-                let service_dispatcher_ptr = new_dispatcher_ptr.clone();
-                service(req, service_dispatcher_ptr, cold_num)
-            }))
-        }
-    });
-    let server = Server::bind(&addr).serve(make_svc);
-
-    let signals = Signals::new(&[SIGTERM, SIGINT, SIGQUIT]).unwrap();
-    let graceful =
-        server.with_graceful_shutdown(async move { handle_signals(signals).await.unwrap() });
-
+    // TODO would be nice to just print server ready with all enabled features if that would be possible
+    print!("Server start with features:");
     #[cfg(feature = "cheri")]
-    println!("Hello, World (cheri)");
+    print!(" cheri");
     #[cfg(feature = "mmu")]
-    println!("Hello, World (mmu)");
+    print!(" mmu");
     #[cfg(feature = "wasm")]
-    println!("Hello, World (wasm)");
-    #[cfg(not(any(feature = "cheri", feature = "mmu", feature = "wasm")))]
-    println!("Hello, World (native)");
+    print!(" wasm");
+    #[cfg(feature = "reqwest_io")]
+    print!(" request_io");
+    #[cfg(feature = "timestamp")]
+    print!(" timestamp");
+    print!("\n");
+
     // Run this server for... forever... unless I receive a signal!
-    if let Err(e) = runtime.block_on(graceful) {
-        error!("server error: {}", e);
+    runtime.block_on(service_loop(dispatcher_sender));
+
+    // clean up folder in tmp that is used for function storage
+    std::fs::remove_dir_all(FUNCTION_FOLDER_PATH).unwrap();
+    // clean up folder with shared files in case the context backed by shared files left some behind
+    for shm_dir_entry in std::fs::read_dir("/dev/shm/").unwrap() {
+        if let Ok(shm_file) = shm_dir_entry {
+            if shm_file
+                .file_name()
+                .into_string()
+                .unwrap()
+                .starts_with("shm_")
+            {
+                warn!(
+                    "Found left over shared memory file: {:?}",
+                    shm_file.file_name()
+                );
+                if std::fs::remove_file(shm_file.path()).is_err() {
+                    warn!("Failed to remove shared memory file {:?}", shm_file.path());
+                }
+            }
+        }
     }
 }

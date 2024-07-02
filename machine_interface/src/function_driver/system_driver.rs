@@ -1,25 +1,24 @@
 use crate::function_driver::SystemFunction;
 
-#[cfg(feature = "hyper_io")]
-pub mod hyper;
+#[cfg(feature = "reqwest_io")]
+pub mod reqwest;
 
-/// HTTP function currently expects following sets:
-/// - request: expetcts to have a single item containing a http request formatted as
-/// reqest method, a space, request url, another space and the protocol version
-/// ex. "PUT /images/logo.png HTTP/1.1"
-/// - headers: a set with specific header key value pairs, the item names are the keys and the item content will be the value
-/// - body: a set expected to have one item to send as request body, if there are more than one they will be concatinated
-const HTTP_INPUT_SETS: [&str; 3] = ["request", "headers", "body"];
+/// HTTP function currently expects one set with requests formated by HTTP standard (in text).
+/// This means one line with the reqest method, a space, request url, another space and the protocol version
+/// ex.: "PUT /images/logo.png HTTP/1.1"
+/// After a line break the headers are one line each with the formatting of key ':' value
+/// ex.: "host: www.google.com"
+/// After all headers and an empty line the body which can be arbitrary binary data
+const HTTP_INPUT_SETS: [&str; 1] = ["request"];
 
-/// HTTP outputs 3 sets "status line", "headers" and "body"
-/// - "status line" contains an item with the response line consisting of:
-///     - "version" the HTTP version used
-///     - "status" the status code of the request
-/// - "headers" set contains one item for each header item with
-/// the header key as item identifier and the value as the item.
-/// - "body" set contains an item with the body of the response
-/// of the request as item
-const HTTP_OUTPUT_SETS: [&str; 3] = ["status", "headers", "body"];
+/// HTTP outputs one set with response for each request that was in the input set
+/// The reponses start with a status line containing the protocol used, the response code and possible the reason
+/// ex.: "HTTP/1.1 200 OK"
+/// On the following lines there are the headers in key value formatted with ':' as separator
+/// ex.: "Content-Type: text/html; charset=utf-8"
+/// After all headers and one empty line is the body, which is arbitrary data
+/// Additionally there is a set that only contains the bodies with the same item names as the requests.
+const HTTP_OUTPUT_SETS: [&str; 2] = ["response", "body"];
 
 /// Provides the input set names for a given system function
 pub fn get_system_function_input_sets(function: SystemFunction) -> Vec<String> {

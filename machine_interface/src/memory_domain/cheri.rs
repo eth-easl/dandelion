@@ -23,6 +23,7 @@ extern "C" {
         context_offset: size_t,
         size: size_t,
     ) -> ();
+    fn cheri_get_chunk_ref(context: *const cheri_c_context, context_offset: size_t) -> *const u8;
     fn cheri_transfer_context(
         destination: *const cheri_c_context,
         source: *const cheri_c_context,
@@ -32,7 +33,7 @@ extern "C" {
     ) -> ();
 }
 
-use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
+use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource};
 use dandelion_commons::{DandelionError, DandelionResult};
 
 #[derive(Debug)]
@@ -82,6 +83,14 @@ impl ContextTrait for CheriContext {
         }
         Ok(())
     }
+    fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
+        if offset + length > self.size {
+            return Err(DandelionError::InvalidRead);
+        }
+        Ok(unsafe {
+            core::slice::from_raw_parts(cheri_get_chunk_ref(self.context, offset), length)
+        })
+    }
 }
 
 impl Drop for CheriContext {
@@ -95,7 +104,7 @@ impl Drop for CheriContext {
 pub struct CheriMemoryDomain {}
 
 impl MemoryDomain for CheriMemoryDomain {
-    fn init(_config: Vec<u8>) -> DandelionResult<Box<dyn MemoryDomain>> {
+    fn init(_config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
         Ok(Box::new(CheriMemoryDomain {}))
     }
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {

@@ -1,5 +1,5 @@
 use crate::{
-    memory_domain::{transefer_memory, Context, MemoryDomain},
+    memory_domain::{transfer_memory, Context, MemoryDomain},
     DataRequirementList,
 };
 use dandelion_commons::{DandelionError, DandelionResult};
@@ -20,7 +20,7 @@ pub fn load_u8_from_file(full_path: String) -> DandelionResult<Vec<u8>> {
 }
 
 pub fn load_static(
-    domain: &Box<dyn MemoryDomain>,
+    domain: &'static dyn MemoryDomain,
     static_context: &Context,
     requirement_list: &DataRequirementList,
     ctx_size: usize,
@@ -47,7 +47,7 @@ pub fn load_static(
         if requirement.size < position.size {
             return Err(DandelionError::ConfigMissmatch);
         }
-        transefer_memory(
+        transfer_memory(
             &mut function_context,
             static_context,
             requirement.offset,

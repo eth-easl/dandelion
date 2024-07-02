@@ -1,19 +1,19 @@
-use std::vec;
-
-use dispatcher::{composition::CompositionSet, function_registry::Metadata};
+use crate::dispatcher_tests::{check_matrix, setup_dispatcher};
+use dandelion_commons::records::{Archive, ArchiveInit};
+use dispatcher::{
+    composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
+};
+use futures::lock::Mutex;
 use machine_interface::{
-    function_driver::{ComputeResource, Driver},
-    memory_domain::Context,
-    memory_domain::{read_only::ReadOnlyContext, MemoryDomain},
+    function_driver::ComputeResource,
+    machine_config::EngineType,
+    memory_domain::{read_only::ReadOnlyContext, Context, MemoryDomain},
     DataItem, DataSet, Position,
 };
-use std::sync::Arc;
-
-use crate::dispatcher_tests::check_matrix;
-
-use super::setup_dispatcher;
+use std::{collections::BTreeMap, sync::Arc};
 
 // using 0x802_0000 as that is what the WASM test binaries expect
+// TODO fix once the update has been merged allowing for 800_0000
 const DEFAULT_CONTEXT_SIZE: usize = 0x802_0000; // 128MiB
 
 fn create_context(matrix: Box<[u64]>) -> Context {
@@ -38,11 +38,15 @@ fn create_context(matrix: Box<[u64]>) -> Context {
 /// check once for the ouput being correct in absence of an input set for the fixed one,
 /// and once for correct behavior if there is a set provided for the fixed one
 pub fn single_input_fixed<Domain: MemoryDomain>(
-    domain_arg: Vec<u8>,
     relative_path: &str,
-    driver: Box<dyn Driver>,
+    engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
+    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+        #[cfg(feature = "timestamp")]
+        timestamp_count: 1000,
+    })));
+
     let matrix_a = Box::new([1u64, 2u64]);
     let matrix_b = Box::new([1u64, 3u64]);
     let matrix_c = Box::new([1u64, 5u64]);
@@ -59,12 +63,11 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         (String::from(""), None),
     ];
     let out_set_names = vec![String::from("")];
-    let dispatcher = setup_dispatcher::<Domain>(
-        domain_arg,
+    let (dispatcher, _) = setup_dispatcher::<Domain>(
         relative_path,
         in_set_names.clone(),
         out_set_names.clone(),
-        driver,
+        engine_type,
         engine_resource,
     );
     let mut absolute_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -75,19 +78,24 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         let mut local_names = in_set_names.clone();
         local_names[i].1 = Some(CompositionSet::from((0, vec![mat_con_a.clone()])));
         // alter metadata for the functions
-        tokio::runtime::Builder::new_current_thread()
+        let function_id = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.update_func(
-                0,
-                0,
-                DEFAULT_CONTEXT_SIZE,
-                absolute_path.to_str().expect("Path should be valid string"),
-                Metadata {
-                    input_sets: local_names,
-                    output_sets: out_set_names.clone(),
-                },
-            ))
+            .block_on(
+                dispatcher.insert_func(
+                    format!("local_name_{}", i),
+                    engine_type,
+                    DEFAULT_CONTEXT_SIZE,
+                    absolute_path
+                        .to_str()
+                        .expect("Path should be valid string")
+                        .to_string(),
+                    Metadata {
+                        input_sets: Arc::new(local_names),
+                        output_sets: Arc::new(out_set_names.clone()),
+                    },
+                ),
+            )
             .expect("should be able to update function");
         let input_sets = (0..=2)
             .into_iter()
@@ -106,14 +114,28 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         let mut overwrite_inputs = inputs.clone();
         overwrite_inputs.push((i, CompositionSet::from((0, vec![mat_fault.clone()]))));
         let outputs = vec![Some(0)];
+        let mut recorder = archive.get_recorder().unwrap();
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(0, inputs, outputs.clone(), false));
+            .block_on(dispatcher.queue_function(
+                function_id,
+                inputs,
+                outputs.clone(),
+                false,
+                recorder,
+            ));
+        recorder = archive.get_recorder().unwrap();
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(0, overwrite_inputs, outputs, false));
+            .block_on(dispatcher.queue_function(
+                function_id,
+                overwrite_inputs,
+                outputs,
+                false,
+                recorder,
+            ));
         let out_sets = match result {
             Ok(composition_sets) => composition_sets,
             Err(err) => panic!("Non overwrite failed with: {:?}", err),
@@ -137,11 +159,15 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
 
 /// check functionallity with multiple fixed inputs with and without input provided for the fixed sets
 pub fn multiple_input_fixed<Domain: MemoryDomain>(
-    domain_arg: Vec<u8>,
     relative_path: &str,
-    driver: Box<dyn Driver>,
+    engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
+    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+        #[cfg(feature = "timestamp")]
+        timestamp_count: 1000,
+    })));
+
     let matrix_a = Box::new([1u64, 2u64]);
     let matrix_b = Box::new([1u64, 3u64]);
     let matrix_c = Box::new([1u64, 5u64]);
@@ -158,12 +184,11 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         (String::from(""), None),
     ];
     let out_set_names = vec![String::from("")];
-    let dispatcher = setup_dispatcher::<Domain>(
-        domain_arg,
+    let (dispatcher, _) = setup_dispatcher::<Domain>(
         relative_path,
         in_set_names.clone(),
         out_set_names.clone(),
-        driver,
+        engine_type,
         engine_resource,
     );
     let mut absolute_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -179,19 +204,24 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         local_names[fixed_sets[0]].1 = Some(CompositionSet::from((0, vec![mat_con_b.clone()])));
         local_names[fixed_sets[1]].1 = Some(CompositionSet::from((0, vec![mat_con_c.clone()])));
         // alter metadata for the functions
-        tokio::runtime::Builder::new_current_thread()
+        let function_id = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.update_func(
-                0,
-                0,
-                DEFAULT_CONTEXT_SIZE,
-                absolute_path.to_str().expect("Path should be valid string"),
-                Metadata {
-                    input_sets: local_names,
-                    output_sets: out_set_names.clone(),
-                },
-            ))
+            .block_on(
+                dispatcher.insert_func(
+                    format!("insert_function_{}", i),
+                    engine_type,
+                    DEFAULT_CONTEXT_SIZE,
+                    absolute_path
+                        .to_str()
+                        .expect("Path should be valid string")
+                        .to_string(),
+                    Metadata {
+                        input_sets: Arc::new(local_names),
+                        output_sets: Arc::new(out_set_names.clone()),
+                    },
+                ),
+            )
             .expect("should be able to update function");
         let inputs = vec![(i, CompositionSet::from((0, vec![mat_con_a.clone()])))];
         let mut overwrite_inputs = inputs.clone();
@@ -204,14 +234,28 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
             CompositionSet::from((0, vec![mat_fault.clone()])),
         ));
         let outputs = vec![Some(0)];
+        let mut recorder = archive.get_recorder().unwrap();
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(0, inputs, outputs.clone(), false));
+            .block_on(dispatcher.queue_function(
+                function_id,
+                inputs,
+                outputs.clone(),
+                false,
+                recorder,
+            ));
+        recorder = archive.get_recorder().unwrap();
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(0, overwrite_inputs, outputs, false));
+            .block_on(dispatcher.queue_function(
+                function_id,
+                overwrite_inputs,
+                outputs,
+                false,
+                recorder,
+            ));
         let out_sets = match result {
             Ok(composition_sets) => composition_sets,
             Err(err) => panic!("Non overwrite failed with: {:?}", err),
@@ -231,4 +275,24 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         check_matrix(&result_context, 0, 0, 1, vec![expected[i]]);
         check_matrix(&overwrite_context, 0, 0, 1, vec![expected[i]]);
     }
+}
+
+#[test]
+#[cfg(any(feature = "reqwest_io"))]
+fn test_insert_composition_with_http_func() {
+    let dispatcher = Dispatcher::init(dispatcher::resource_pool::ResourcePool {
+        engine_pool: Mutex::new(BTreeMap::new()),
+    })
+    .unwrap();
+    let composition_string = r#"
+        (:function HTTP (request headers body) -> (status headers body))
+        (:composition Composition (comp_request req_body) -> (comp_status resp_body) (
+            (HTTP ((:all request <- comp_request) (:all body <- req_body)) => ((resp_body := body) (comp_status := status)))
+        ))
+    "#;
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(dispatcher.insert_compositions(String::from(composition_string)))
+        .unwrap();
 }
