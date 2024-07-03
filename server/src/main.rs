@@ -387,9 +387,9 @@ async fn dispatcher_loop(
     }
 }
 
-async fn service_loop(request_sender: mpsc::Sender<DispatcherCommand>) {
+async fn service_loop(request_sender: mpsc::Sender<DispatcherCommand>, port: u16) {
     // socket to listen to
-    let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], 8080));
+    let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await.unwrap();
     // signal handlers for gracefull shutdown
     let mut sigterm_stream = tokio::signal::unix::signal(SignalKind::terminate()).unwrap();
@@ -560,7 +560,7 @@ fn main() -> () {
     print!("\n");
 
     // Run this server for... forever... unless I receive a signal!
-    runtime.block_on(service_loop(dispatcher_sender));
+    runtime.block_on(service_loop(dispatcher_sender, config.port));
 
     // clean up folder in tmp that is used for function storage
     std::fs::remove_dir_all(FUNCTION_FOLDER_PATH).unwrap();
