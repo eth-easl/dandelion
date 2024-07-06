@@ -1,5 +1,5 @@
 {
-    "module_path": "/home/smithj/dandelion/machine_interface/hip_interface/mlops.hsaco",
+    "module_path": "mlops.hsaco",
     "kernels": ["matmul_f", "convolution_f", "relu_2d_f", "maxpool_f"],
     "blueprint": {
         "inputs": ["cfg", "A", "B"],

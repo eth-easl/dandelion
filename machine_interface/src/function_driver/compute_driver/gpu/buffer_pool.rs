@@ -44,20 +44,20 @@ impl BufferPool {
     }
 
     pub fn alloc_buffer(&mut self, size: usize) -> DandelionResult<usize> {
-        macro_rules! round_to_eight {
+        macro_rules! align {
             ($e: expr) => {
-                ($e + 7) / 8 * 8
+                ($e + 255) / 256 * 256
             };
         }
-        // round size to 8 byte alignment; TODO: verfiy if different should be used
-        let length = round_to_eight!(size);
+        // Round size to 256 bytes, which is the minimum that GPU allocators typically use. This might need to be changed
+        let length = align!(size);
 
         let last = self
             .buffers
             .last()
             .expect("buffers should always hold sentinel");
 
-        let offset = round_to_eight!(last.offset + last.length);
+        let offset = align!(last.offset + last.length);
 
         if offset + length > self.allocation.size {
             debug!(

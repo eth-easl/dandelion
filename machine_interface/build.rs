@@ -18,12 +18,7 @@ fn cmake_libraries() -> () {
 }
 
 fn libraries_gpu() {
-    // TODO: cleanup/remove the CMake files/C++ code
-    // let install = Config::new("hip_interface").build();
-    // println!("cargo:rustc-link-search=native={}/build", install.display());
-    // println!("cargo:rustc-link-lib=static=hip_interface_lib");
-    // link with hip runtime
-    // TODO: make less hard coded to current version -> there is some environment variable
+    // Link with HIP Runtime 5.7.1
     println!("cargo:rustc-link-search=/opt/rocm-5.7.1/lib");
     println!("cargo:rustc-link-lib=amdhip64");
 }

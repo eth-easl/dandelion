@@ -127,7 +127,9 @@ struct IoBufferDescriptor<PtrT: SizedIntTrait, SizeT: SizedIntTrait> {
 
 #[cfg(feature = "gpu")]
 /// Only really used for GPU, but defined here so we can access private fields of DandelionSystemData
-pub fn write_gpu_outputs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
+/// # Safety
+/// Requires *base* to point to the stat of *context*
+pub unsafe fn write_gpu_outputs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     context: &mut Context,
     system_data_offset: usize,
     base: *mut u8,

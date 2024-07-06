@@ -36,7 +36,7 @@ pub enum Action {
 #[derive(Deserialize, Serialize, Debug)]
 pub enum Sizing {
     Sizeof(String),
-    Absolute(usize),
+    Absolute(u64),
     FromInput { bufname: String, idx: usize },
 }
 
@@ -77,8 +77,9 @@ pub struct RuntimeGpuConfig {
 
 impl GpuConfig {
     pub fn load(self, base: *const u8) -> DandelionResult<RuntimeGpuConfig> {
-        let module =
-            hip::module_load_data(base.wrapping_add(self.code_object_offset) as *const c_void)?;
+        let module = unsafe {
+            hip::module_load_data(base.wrapping_add(self.code_object_offset) as *const c_void)?
+        };
         let kernels = self
             .kernels
             .iter()
@@ -96,7 +97,6 @@ impl GpuConfig {
 }
 
 pub fn parse_config(path: &str) -> DandelionResult<(GpuConfig, String)> {
-    // TODO: better errors
     let file = File::open(path).map_err(|_| DandelionError::ConfigMissmatch)?;
     let reader = BufReader::new(file);
     let ir: GpuConfigIR = serde_json::from_reader(reader).map_err(|e| {

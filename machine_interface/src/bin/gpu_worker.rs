@@ -48,7 +48,7 @@ fn execute(worker: &mut GpuLoop, inp: String) -> DandelionResult<()> {
     } = serde_json::from_str(&inp).expect("Parsing function args failed");
 
     let config = FunctionConfig::GpuConfig(config);
-    let context: Context = context.into();
+    let context: Context = context.try_into()?;
 
     worker.run(config, context, output_sets).map(|_| ())
 }

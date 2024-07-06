@@ -37,7 +37,8 @@ pub struct DeviceAllocation {
 unsafe impl Send for DeviceAllocation {}
 unsafe impl Sync for DeviceAllocation {}
 
-// Should be associated with a DeviceAllocation; maybe use lifetimes but they are annoying
+// Should be associated with a DeviceAllocation; maybe use lifetimes for this in the future
+#[repr(C)] // We take a raw pointers, so make sure the layout is as expected
 pub struct DevicePointer {
     pub ptr: *const c_void,
 }
@@ -48,6 +49,7 @@ extern "C" {
     fn hipSetDevice(gpu_id: i32) -> ErrorT;
     fn hipGetDevice(deviceId: *const i32) -> ErrorT;
     fn hipDeviceSynchronize() -> ErrorT;
+    fn hipDeviceSetLimit(limit: u32, value: size_t) -> ErrorT;
     fn hipModuleLoad(module: *mut _ModuleT, fname: *const i8) -> ErrorT;
     fn hipModuleLoadData(module: *mut _ModuleT, image: *const c_void) -> ErrorT;
     fn hipModuleUnload(module: _ModuleT) -> ErrorT;
@@ -75,6 +77,15 @@ extern "C" {
     fn hipMemcpyHtoD(dst: *const c_void, src: *const c_void, sizeBytes: size_t) -> ErrorT;
     fn hipMemcpyDtoH(dst: *const c_void, src: *const c_void, sizeBytes: size_t) -> ErrorT;
     fn hipMemset(dst: *const c_void, value: i32, sizeBytes: size_t) -> ErrorT;
+}
+
+fn get_error_string(hip_error: ErrorT) -> String {
+    unsafe {
+        CStr::from_ptr(hipGetErrorString(hip_error) as *mut i8)
+            .to_str()
+            .expect("Invalid ROCm error string (shouldn't happen)")
+            .to_string()
+    }
 }
 
 macro_rules! checked_call {
@@ -114,26 +125,23 @@ pub fn device_synchronize() -> DandelionResult<()> {
     Ok(())
 }
 
-fn get_error_string(hip_error: ErrorT) -> String {
-    unsafe {
-        CStr::from_ptr(hipGetErrorString(hip_error) as *mut i8)
-            .to_str()
-            .expect("Invalid ROCm error string (shouldn't happen)")
-            .to_string()
-    }
+pub fn limit_heap_size(size: usize) -> DandelionResult<()> {
+    // hipLimitMallocHeapSize = 2
+    checked_call!(hipDeviceSetLimit(2, size));
+    Ok(())
 }
 
 pub fn module_load(path: &str) -> DandelionResult<ModuleT> {
     let mut ret: _ModuleT = null();
-    // TODO: ask Tom about errors here
-    let fname = CString::new(path).or(Err(DandelionError::HipError("Invalid Path".into())))?;
+    let fname =
+        CString::new(path).or(Err(DandelionError::HipError("Invalid Module Path".into())))?;
     checked_call!(hipModuleLoad(&mut ret as *mut _ModuleT, fname.as_ptr()));
     Ok(ModuleT(ret))
 }
 
-// TODO: mark these functions as unsafe
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub fn module_load_data(image: *const c_void) -> DandelionResult<ModuleT> {
+/// # Safety
+/// Requires *image* to point to a valid hsaco code object
+pub unsafe fn module_load_data(image: *const c_void) -> DandelionResult<ModuleT> {
     let mut ret: _ModuleT = null();
 
     checked_call!(hipModuleLoadData(&mut ret as *mut _ModuleT, image));
@@ -151,8 +159,10 @@ pub fn module_get_function(module: &ModuleT, name: &str) -> DandelionResult<Func
     Ok(FunctionT(ret))
 }
 
-#[allow(clippy::too_many_arguments, clippy::not_unsafe_ptr_arg_deref)]
-pub fn module_launch_kernel(
+/// # Safety
+/// Requires *kernel_params* to point to an array of valid pointers to kernel arguments
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn module_launch_kernel(
     function: &FunctionT,
     grid_dim_x: u32,
     grid_dim_y: u32,
@@ -160,7 +170,7 @@ pub fn module_launch_kernel(
     block_dim_x: u32,
     block_dim_y: u32,
     block_dim_z: u32,
-    shared_mem_bytes: usize,
+    shared_mem_bytes: u64,
     stream: StreamT,
     kernel_params: *const *const c_void,
     extra: *const *const c_void,
@@ -173,7 +183,7 @@ pub fn module_launch_kernel(
         block_dim_x,
         block_dim_y,
         block_dim_z,
-        shared_mem_bytes,
+        shared_mem_bytes as usize,
         stream,
         kernel_params,
         extra,
@@ -235,8 +245,9 @@ impl Drop for DeviceAllocation {
     }
 }
 
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub fn memcpy_h_to_d(
+/// # Safety
+/// Requires *src* to point to valid memory
+pub unsafe fn memcpy_h_to_d(
     dst: &DevicePointer,
     dev_offset: isize,
     src: *const c_void,
@@ -250,8 +261,9 @@ pub fn memcpy_h_to_d(
     Ok(())
 }
 
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub fn memcpy_d_to_h(
+/// # Safety
+/// Requires *dst* to point to valid memory
+pub unsafe fn memcpy_d_to_h(
     dst: *const c_void,
     src: &DevicePointer,
     size_bytes: usize,

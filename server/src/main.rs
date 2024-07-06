@@ -142,6 +142,37 @@ async fn serve_request(
 }
 
 #[derive(Debug, Deserialize)]
+struct RegisterLibrary {
+    name: String,
+    library: Vec<u8>,
+}
+
+async fn register_library(req: Request<Incoming>) -> Result<Response<DandelionBody>, Infallible> {
+    let bytes = req
+        .collect()
+        .await
+        .expect("Failed to extract bytes from library registration")
+        .to_bytes();
+
+    let request_map: RegisterLibrary =
+        bson::from_slice(&bytes).expect("Should be able to deserialise request");
+
+    // write library to file
+    std::fs::create_dir_all(FUNCTION_FOLDER_PATH.to_owned() + "/libs").unwrap();
+    let mut path_buff = PathBuf::from(FUNCTION_FOLDER_PATH);
+    path_buff.push(request_map.name.clone());
+    let mut function_file = std::fs::File::create(path_buff.clone())
+        .expect("Failed to create file for registering library");
+    function_file
+        .write_all(&request_map.library)
+        .expect("Failed to write file with content for registering");
+
+    return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
+        "Library registered".as_bytes().to_vec(),
+    )));
+}
+
+#[derive(Debug, Deserialize)]
 struct RegisterFunction {
     name: String,
     context_size: u64,
@@ -270,6 +301,7 @@ async fn service(
         // TODO rename to cold func and hot func, remove matmul, compute, io
         "/register/function" => register_function(req, dispatcher).await,
         "/register/composition" => register_composition(req, dispatcher).await,
+        "/register/library" => register_library(req).await,
         "/cold/matmul"
         | "/cold/matmulstore"
         | "/cold/compute"

@@ -18,7 +18,7 @@ use std::{
     ptr::null,
     sync::{
         mpsc::{self, Receiver, Sender},
-        Arc, Mutex, MutexGuard,
+        Arc, Mutex,
     },
     thread::{self, spawn},
 };
@@ -37,63 +37,8 @@ pub(crate) mod config_parsing;
 pub mod gpu_utils;
 pub mod hip;
 
-pub fn dummy_run(gpu_loop: &mut GpuLoop) -> DandelionResult<()> {
-    // set gpu
-    hip::set_device(gpu_loop.gpu_id)?;
-
-    // load module
-    let module =
-        hip::module_load("/home/smithj/dandelion/machine_interface/hip_interface/module.hsaco")?;
-
-    // load kernels
-    let kernel_set = hip::module_get_function(&module, "set_mem")?;
-    let kernel_check = hip::module_get_function(&module, "check_mem")?;
-
-    // allocate device memory, prepare args
-    let arr_elem: usize = 256;
-    let elem_size: usize = std::mem::size_of::<f64>();
-    let arr_size: usize = arr_elem * elem_size;
-    let array = hip::DeviceAllocation::try_new(arr_size)?;
-
-    let args: [*const c_void; 2] = [
-        &array.ptr as *const _ as *const c_void,
-        &arr_elem as *const _ as *const c_void,
-    ];
-
-    // launch them
-    let block_width: usize = 1024;
-    hip::module_launch_kernel(
-        &kernel_set,
-        ((arr_elem + block_width - 1) / block_width) as u32,
-        1,
-        1,
-        block_width as u32,
-        1,
-        1,
-        0,
-        DEFAULT_STREAM,
-        args.as_ptr(),
-        null(),
-    )?;
-
-    hip::module_launch_kernel(
-        &kernel_check,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        0,
-        DEFAULT_STREAM,
-        args.as_ptr(),
-        null(),
-    )?;
-
-    hip::device_synchronize()?;
-
-    Ok(())
-}
+#[cfg(test)]
+mod gpu_tests;
 
 fn execute(
     actions: &Vec<Action>,
@@ -105,45 +50,59 @@ fn execute(
     for action in actions {
         match action {
             Action::ExecKernel(name, args, launch_config) => {
-                // HIP expects arguments as an array of void pointers (pointers to the arguments)
+                // Explanation:
+                // HIP expects arguments as an array of void pointers (pointers to the arguments).
+                // BufferPool.get() returns a stack allocated struct, so we need to allocate it outside of the loop,
+                // otherwise the pointer becomes invalid. In our case we allocate it on the heap using Box. If we
+                // just used a Vec<DevicePointer> instead, pointers to its element would become invalid when the Vec
+                // resizes. Additionally, Box provides the convenient into_raw function to make sure the data lives
+                // long enough, although this means we must manually deallocate at the end.
+
                 let mut params: Vec<*const c_void> = Vec::with_capacity(args.len());
-                // Initialise them outside of the loop so they live long enough to have valid pointers
-                let mut ptrs = vec![];
-                let mut constants = vec![];
+                let mut dev_ptrs = Vec::with_capacity(args.len());
                 for arg in args {
                     match arg {
                         Argument::Ptr(id) => {
                             let idx = buffers.get(id).unwrap().0;
                             let dev_ptr = buffer_pool.get(idx)?;
-                            ptrs.push(dev_ptr);
-                            let addr = &ptrs.last().unwrap().ptr;
-                            params.push(addr as *const _ as *const c_void);
+                            dev_ptrs.push(Box::into_raw(Box::new(dev_ptr)));
+                            params.push(*dev_ptrs.last().unwrap() as *const c_void);
                         }
                         Argument::Sizeof(id) => {
                             params.push(&buffers.get(id).unwrap().1 as *const _ as *const c_void);
                         }
                         Argument::Constant(constant) => {
-                            constants.push(*constant);
-                            let addr = constants.last().unwrap();
-                            params.push(addr as *const _ as *const c_void);
+                            params.push(constant as *const _ as *const c_void);
                         }
                     };
                 }
 
-                hip::module_launch_kernel(
-                    // TODO: throw error here!
-                    config.kernels.get(name).unwrap(),
-                    get_size(&launch_config.grid_dim_x, buffers, context)? as u32,
-                    get_size(&launch_config.grid_dim_y, buffers, context)? as u32,
-                    get_size(&launch_config.grid_dim_z, buffers, context)? as u32,
-                    get_size(&launch_config.block_dim_x, buffers, context)? as u32,
-                    get_size(&launch_config.block_dim_y, buffers, context)? as u32,
-                    get_size(&launch_config.block_dim_z, buffers, context)? as u32,
-                    get_size(&launch_config.shared_mem_bytes, buffers, context)?,
-                    DEFAULT_STREAM,
-                    params.as_ptr(),
-                    null(),
-                )?;
+                unsafe {
+                    hip::module_launch_kernel(
+                        config
+                            .kernels
+                            .get(name)
+                            .ok_or(DandelionError::ConfigMissmatch)?,
+                        get_size(&launch_config.grid_dim_x, buffers, context)? as u32,
+                        get_size(&launch_config.grid_dim_y, buffers, context)? as u32,
+                        get_size(&launch_config.grid_dim_z, buffers, context)? as u32,
+                        get_size(&launch_config.block_dim_x, buffers, context)? as u32,
+                        get_size(&launch_config.block_dim_y, buffers, context)? as u32,
+                        get_size(&launch_config.block_dim_z, buffers, context)? as u32,
+                        get_size(&launch_config.shared_mem_bytes, buffers, context)?,
+                        DEFAULT_STREAM,
+                        params.as_ptr(),
+                        null(),
+                    )?
+                };
+
+                // Manually deallocate heap memory we performed into_raw on
+                for ptr in dev_ptrs {
+                    unsafe {
+                        let allocation = Box::from_raw(ptr);
+                        drop(allocation); // Not necessary, just do it's very explicit we're dropping the data here
+                    }
+                }
             }
             Action::Repeat(times, actions) => {
                 let repetitions = get_size(times, buffers, context)?;
@@ -169,8 +128,8 @@ pub fn gpu_run(
         return Err(DandelionError::EngineResourceError);
     }
 
-    // TODO: disable device-side malloc
     hip::set_device(gpu_id)?;
+    hip::limit_heap_size(0)?;
 
     let ContextType::Mmu(ref mmu_context) = context.context else {
         return Err(DandelionError::ConfigMissmatch);
@@ -191,7 +150,7 @@ pub fn gpu_run(
         buffers.insert(name.clone(), (idx, size));
     }
     for (name, sizing) in &config.blueprint.buffers {
-        let size = get_size(sizing, &buffers, &context)?;
+        let size = get_size(sizing, &buffers, &context)? as usize;
         let idx = buffer_pool.alloc_buffer(size)?;
         buffers.insert(name.clone(), (idx, size));
     }
@@ -204,14 +163,16 @@ pub fn gpu_run(
         &config,
     )?;
 
-    write_gpu_outputs::<usize, usize>(
-        &mut context,
-        config.system_data_struct_offset,
-        base,
-        &output_sets,
-        &buffers,
-        buffer_pool.borrow(),
-    )?;
+    unsafe {
+        write_gpu_outputs::<usize, usize>(
+            &mut context,
+            config.system_data_struct_offset,
+            base,
+            &output_sets,
+            &buffers,
+            buffer_pool.borrow(),
+        )?
+    };
 
     // Zero out buffers used by current function
     buffer_pool.dealloc_all()?;
@@ -284,9 +245,17 @@ fn common_parse(
     function_path: String,
     static_domain: &'static dyn crate::memory_domain::MemoryDomain,
 ) -> DandelionResult<crate::function_driver::Function> {
-    let (mut gpu_config, module_path) = config_parsing::parse_config(&function_path)?;
+    eprintln!("{function_path}");
+    let (mut gpu_config, module_suffix) = config_parsing::parse_config(&function_path)?;
 
-    let code_object = load_u8_from_file(module_path)?;
+    let mut path = std::env::var("DANDELION_LIBRARY_PATH")
+        .unwrap_or(format!("{}/tests/libs/", env!("CARGO_MANIFEST_DIR")));
+
+    path += &module_suffix;
+
+    eprintln!("{path}");
+
+    let code_object = load_u8_from_file(path)?;
     let size = code_object.len() * size_of::<u8>();
     gpu_config.code_object_offset =
         SYSDATA_OFFSET + std::mem::size_of::<DandelionSystemData<usize, usize>>();

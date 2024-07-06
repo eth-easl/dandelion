@@ -5,14 +5,10 @@ use crate::{
     },
     interface::read_output_structs,
     memory_domain::{self, mmu::MmuContext, Context, ContextState, ContextTrait, ContextType},
-    promise::Debt,
     util::mmapmem::MmapMem,
     DataSet, Position,
 };
-use dandelion_commons::{
-    records::{RecordPoint, Recorder},
-    DandelionError, DandelionResult,
-};
+use dandelion_commons::{records::RecordPoint, DandelionError, DandelionResult};
 use libc::c_void;
 use log::{debug, error};
 use nix::sys::mman::ProtFlags;
@@ -22,7 +18,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc,
     },
     thread::spawn,
@@ -81,7 +77,7 @@ pub unsafe fn copy_data_to_device(
     for item in &dataset.buffers {
         let length = item.data.size;
         let offset = item.data.offset;
-        let src = unsafe { base.byte_offset((offset) as isize) } as *const c_void;
+        let src = base.byte_offset((offset) as isize) as *const c_void;
         hip::memcpy_h_to_d(dev_ptr, total, src, length)?;
         total += length as isize;
     }
@@ -92,7 +88,7 @@ pub fn get_size(
     sizing: &Sizing,
     buffers: &HashMap<String, (usize, usize)>,
     context: &Context,
-) -> DandelionResult<usize> {
+) -> DandelionResult<u64> {
     match sizing {
         Sizing::Absolute(size) => Ok(*size),
         Sizing::FromInput { bufname, idx } => {
@@ -117,8 +113,7 @@ pub fn get_size(
                 return Err(DandelionError::ConfigMissmatch);
             }
 
-            // TODO: make this more portable (not usize)
-            let mut buf: [usize; 1] = [0];
+            let mut buf: [u64; 1] = [0];
             context.read(data_item.data.offset + relative_offset, &mut buf)?;
 
             Ok(buf[0])
@@ -126,7 +121,7 @@ pub fn get_size(
         Sizing::Sizeof(bufname) => Ok(buffers
             .get(bufname)
             .ok_or(DandelionError::ConfigMissmatch)?
-            .1),
+            .1 as u64),
     }
 }
 
@@ -161,7 +156,7 @@ pub fn start_gpu_thread(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue>) {
                         continue;
                     }
                 }
-                let results = Box::new(result.and_then(|context| Ok(WorkDone::Context(context))));
+                let results = Box::new(result.map(WorkDone::Context));
                 debt.fulfill(results);
             }
             WorkToDo::TransferArguments(transfer_args) => {
@@ -264,17 +259,10 @@ impl Worker {
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
 
-        // We use a Notify (basically a semaphore) to signal availability to work
-        // let available = Notify::new();
-        // // Adds a ticket to the semaphore, as the Worker initially is free
-        // available.notify_one();
-
         Self {
             process: child,
             stdin,
             stdout,
-            // available,
-            // debt: Mutex::new(None),
         }
     }
 }
@@ -287,38 +275,6 @@ impl Drop for Worker {
     }
 }
 
-// async fn process_output(worker: Arc<Worker>) {
-//     let mut reader = worker.stdout.lock().await;
-//     let mut line = String::new();
-
-//     while reader.read_line(&mut line).await.unwrap() != 0 {
-//         let mut handle = worker.debt.lock().await;
-//         if let Some((debt, mut recorder, mut context)) = handle.take() {
-//             if line.trim() != "__ERROR__" && line.trim() != "__OK__" {
-//                 // The line is some other output from the GPU, log it
-//                 eprintln!("GPU output: {}", line);
-//                 *handle = Some((debt, recorder, context));
-//                 continue;
-//             }
-//             if let Err(e) = recorder.record(RecordPoint::EngineEnd) {
-//                 debt.fulfill(Box::new(Err(e)));
-//             } else if line.trim().starts_with("__ERROR__") {
-//                 eprintln!("GPU error: {}", line);
-//                 debt.fulfill(Box::new(Err(DandelionError::EngineError)));
-//             } else {
-//                 read_output_structs::<usize, usize>(&mut context, 0).unwrap();
-//                 let results = Box::new(Ok(WorkDone::Context(context)));
-//                 debt.fulfill(results);
-//             }
-//         } else {
-//             panic!("Got output from GPUWorker but had no debt to fulfill");
-//         }
-
-//         worker.available.notify_one();
-//         line.clear();
-//     }
-// }
-
 // slightly modified Context that can be exchanged between processes
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SendContext {
@@ -329,22 +285,22 @@ pub struct SendContext {
     pub occupation: Vec<Position>,
 }
 
-impl From<SendContext> for Context {
-    fn from(value: SendContext) -> Self {
-        Self {
+impl TryFrom<SendContext> for Context {
+    type Error = DandelionError;
+
+    fn try_from(value: SendContext) -> Result<Self, Self::Error> {
+        Ok(Self {
             context: ContextType::Mmu(Box::new(MmuContext {
                 storage: MmapMem::alt_open(
                     &value.context_filename,
                     ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
-                )
-                // TODO: actually handle error
-                .unwrap(),
+                )?,
             })),
             content: value.content,
             size: value.size,
             state: value.state,
             occupation: value.occupation,
-        }
+        })
     }
 }
 
@@ -355,7 +311,7 @@ impl TryFrom<&Context> for SendContext {
             return Err(DandelionError::ConfigMissmatch);
         };
 
-        // TODO: this is kinda inefficient
+        // Cloning so much on the hot path is not optimal; a custom serialisation function would be quicker
         Ok(SendContext {
             // unwrap okay, as Mmu memory is always created as shared so a filename exists
             context_filename: ctxt.storage.filename().unwrap().to_string(),
@@ -374,247 +330,8 @@ pub struct SendFunctionArgs {
     pub output_sets: Arc<Vec<String>>,
 }
 
-// async fn handle_function_args(
-//     func_args: FunctionArguments,
-//     debt: Debt,
-//     worker1: Arc<Worker>,
-//     worker2: Arc<Worker>,
-//     worker3: Arc<Worker>,
-//     worker4: Arc<Worker>,
-// ) {
-//     let FunctionArguments {
-//         config,
-//         context,
-//         output_sets,
-//         mut recorder,
-//     } = func_args;
-
-//     // transform relevant data into serialisable counterparts
-//     let FunctionConfig::GpuConfig(config) = config else {
-//         debt.fulfill(Box::new(Err(DandelionError::ConfigMissmatch)));
-//         return;
-//     };
-//     let Ok(send_context) = (&context).try_into() else {
-//         debt.fulfill(Box::new(Err(DandelionError::ConfigMissmatch)));
-//         return;
-//     };
-
-//     let mut task = serde_json::to_string(&SendFunctionArgs {
-//         config,
-//         context: send_context,
-//         output_sets,
-//     })
-//     .unwrap();
-
-//     // Very important to add this newline, as the worker reads line by line
-//     task += "\n";
-
-//     // Unfortunate code duplication because of how select works
-//     tokio::select! {
-//         _ = worker1.available.notified() => {
-//             if let Err(e) = recorder.record(RecordPoint::EngineStart) {
-//                 debt.fulfill(Box::new(Err(e)));
-//                 return;
-//             }
-
-//             // Give debt and recorder to worker
-//             *worker1.debt.lock().await = Some((debt, recorder, context));
-
-//             // Write task description to worker process stdin
-//             worker1.stdin.lock().await.write_all(task.as_bytes()).await.expect("Writing failed");
-//         },
-//         _ = worker2.available.notified() => {
-//             if let Err(e) = recorder.record(RecordPoint::EngineStart) {
-//                 debt.fulfill(Box::new(Err(e)));
-//                 return;
-//             }
-
-//             // Give debt and recorder to worker
-//             *worker2.debt.lock().await = Some((debt, recorder, context));
-
-//             // Write task description to worker process stdin
-//             worker2.stdin.lock().await.write_all(task.as_bytes()).await.expect("Writing failed");
-//         },
-//         _ = worker3.available.notified() => {
-//             if let Err(e) = recorder.record(RecordPoint::EngineStart) {
-//                 debt.fulfill(Box::new(Err(e)));
-//                 return;
-//             }
-
-//             // Give debt and recorder to worker
-//             *worker3.debt.lock().await = Some((debt, recorder, context));
-
-//             // Write task description to worker process stdin
-//             worker3.stdin.lock().await.write_all(task.as_bytes()).await.expect("Writing failed");
-//         },
-//         _ = worker4.available.notified() => {
-//             if let Err(e) = recorder.record(RecordPoint::EngineStart) {
-//                 debt.fulfill(Box::new(Err(e)));
-//                 return;
-//             }
-
-//             // Give debt and recorder to worker
-//             *worker4.debt.lock().await = Some((debt, recorder, context));
-
-//             // Write task description to worker process stdin
-//             worker4.stdin.lock().await.write_all(task.as_bytes()).await.expect("Writing failed");
-//         }
-//     }
-// }
-
-// async fn handle_transfer_args(transfer_args: TransferArguments, debt: Debt) {
-//     let TransferArguments {
-//         source,
-//         mut destination,
-//         destination_set_index,
-//         destination_allignment,
-//         destination_item_index,
-//         destination_set_name,
-//         source_set_index,
-//         source_item_index,
-//         mut recorder,
-//     } = transfer_args;
-
-//     match recorder.record(RecordPoint::TransferStart) {
-//         Ok(()) => (),
-//         Err(err) => {
-//             debt.fulfill(Box::new(Err(err)));
-//             return;
-//         }
-//     }
-//     let transfer_result = memory_domain::transfer_data_item(
-//         &mut destination,
-//         &source,
-//         destination_set_index,
-//         destination_allignment,
-//         destination_item_index,
-//         destination_set_name.as_str(),
-//         source_set_index,
-//         source_item_index,
-//     );
-//     match recorder.record(RecordPoint::TransferEnd) {
-//         Ok(()) => (),
-//         Err(err) => {
-//             debt.fulfill(Box::new(Err(err)));
-//             return;
-//         }
-//     }
-//     let transfer_return = transfer_result.and(Ok(WorkDone::Context(destination)));
-//     debt.fulfill(Box::new(transfer_return));
-// }
-
-// async fn process_inputs(
-//     core_id: u8,
-//     gpu_id: u8,
-//     queue: Box<dyn WorkQueue + Send + Sync>,
-//     worker1: Arc<Worker>,
-//     worker2: Arc<Worker>,
-//     worker3: Arc<Worker>,
-//     worker4: Arc<Worker>,
-// ) {
-//     let queue = Arc::new(queue);
-//     let mut handles = vec![];
-//     // Limit unfulfilled tasks to prevent task starvation
-//     let semaphore = Arc::new(Semaphore::new(8));
-//     loop {
-//         let ticket = semaphore
-//             .clone()
-//             .acquire_owned()
-//             .await
-//             .expect("Semaphore shouldn't be closed");
-//         // A bit clumsy but necessary to use spawn_blocking
-//         // let queue = queue.clone();
-//         // Need to use spawn_blocking, else waiting on the queue can deadlock,
-//         // eg. if new work being added to the queue relies on old work being submitted
-//         let (args, debt) = task::block_in_place(|| queue.get_engine_args());
-//         // .await
-//         // .expect("spawn_blocking thread crashed");
-
-//         match args {
-//             WorkToDo::FunctionArguments(func_args) => {
-//                 let worker1 = worker1.clone();
-//                 let worker2 = worker2.clone();
-//                 let worker3 = worker3.clone();
-//                 let worker4 = worker4.clone();
-//                 // Spawn in new task to enable more concurrency
-//                 let handle = tokio::spawn(async move {
-//                     handle_function_args(func_args, debt, worker1, worker2, worker3, worker4).await;
-//                     drop(ticket);
-//                 });
-//                 handles.push(handle);
-//             }
-//             WorkToDo::TransferArguments(transfer_args) => {
-//                 // Spawn in new task to enable more concurrency
-//                 let handle = task::spawn(async move {
-//                     handle_transfer_args(transfer_args, debt).await;
-//                     drop(ticket);
-//                 });
-//                 handles.push(handle);
-//             }
-//             WorkToDo::ParsingArguments(ParsingArguments {
-//                 driver,
-//                 path,
-//                 static_domain,
-//                 mut recorder,
-//             }) => {
-//                 // Spawn in new task to enable more concurrency
-//                 let handle = tokio::spawn(async move {
-//                     recorder.record(RecordPoint::ParsingStart).unwrap();
-//                     let function_result = driver.parse_function(path, static_domain);
-//                     recorder.record(RecordPoint::ParsingEnd).unwrap();
-//                     match function_result {
-//                         Ok(function) => debt.fulfill(Box::new(Ok(WorkDone::Function(function)))),
-//                         Err(err) => debt.fulfill(Box::new(Err(err))),
-//                     }
-//                 });
-//                 handles.push(handle);
-//             }
-//             WorkToDo::Shutdown() => {
-//                 // Wait for all dispatches in flight to occur
-//                 for handle in handles {
-//                     if let Err(e) = handle.await {
-//                         error!("Pending task returned {}", e);
-//                     }
-//                 }
-//                 // Wait for pending taks to complete
-//                 tokio::join!(
-//                     worker1.available.notified(),
-//                     worker2.available.notified(),
-//                     worker3.available.notified(),
-//                     worker4.available.notified(),
-//                 );
-//                 debt.fulfill(Box::new(Ok(WorkDone::Resources(vec![
-//                     ComputeResource::GPU(gpu_id, core_id),
-//                 ]))));
-//                 return;
-//             }
-//         }
-//     }
-// }
-
-// async fn run_pool(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue + Send + Sync>) {
-//     let worker1 = Arc::new(Worker::new(core_id + 4, gpu_id));
-//     let worker2 = Arc::new(Worker::new(core_id + 5, gpu_id));
-//     let worker3 = Arc::new(Worker::new(core_id + 6, gpu_id));
-//     let worker4 = Arc::new(Worker::new(core_id + 7, gpu_id));
-
-//     tokio::spawn(process_output(worker1.clone()));
-//     tokio::spawn(process_output(worker2.clone()));
-//     tokio::spawn(process_output(worker3.clone()));
-//     tokio::spawn(process_output(worker4.clone()));
-
-//     tokio::join!(process_inputs(
-//         core_id,
-//         gpu_id,
-//         queue,
-//         worker1.clone(),
-//         worker2.clone(),
-//         worker3.clone(),
-//         worker4.clone()
-//     ));
-// }
-
 fn manage_worker(
+    resources: (u8, u8),
     core_id: u8,
     gpu_id: u8,
     queue: Arc<dyn WorkQueue + Send + Sync>,
@@ -704,15 +421,6 @@ fn manage_worker(
                         break;
                     }
                 }
-
-                // if result.is_ok() {
-                //     if let Err(err) = recorder.record(RecordPoint::EngineEnd) {
-                //         debt.fulfill(Box::new(Err(err)));
-                //         continue;
-                //     }
-                // }
-                // let results = Box::new(result.and_then(|context| Ok(WorkDone::Context(context))));
-                // debt.fulfill(results);
             }
             WorkToDo::TransferArguments(transfer_args) => {
                 let TransferArguments {
@@ -770,9 +478,9 @@ fn manage_worker(
                 continue;
             }
             WorkToDo::Shutdown() => {
-                // TODO: return "true" resources
+                // Return original resources that were given to Engine
                 debt.fulfill(Box::new(Ok(WorkDone::Resources(vec![
-                    ComputeResource::GPU(core_id, gpu_id),
+                    ComputeResource::GPU(resources.0, resources.1),
                 ]))));
 
                 // Inform other threads to shutdown as well when they are done
@@ -786,29 +494,11 @@ fn manage_worker(
 const NUM_WORKERS: u8 = 2;
 
 pub fn start_gpu_process_pool(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue + Send + Sync>) {
-    // let counter = AtomicU8::new(0);
-    // let rt = tokio::runtime::Builder::new_multi_thread()
-    //     .worker_threads(4)
-    //     .on_thread_start(move || {
-    //         let inc = counter.fetch_add(1, Ordering::SeqCst);
-    //         // set core affinity
-    //         if !core_affinity::set_for_current(core_affinity::CoreId {
-    //             id: (core_id + inc).into(),
-    //         }) {
-    //             panic!("core received core id that could not be set");
-    //         }
-    //     })
-    //     .enable_all()
-    //     .build()
-    //     .expect("Runtime building failed");
-
-    // rt.block_on(run_pool(core_id, gpu_id, queue));
-
     let done = Arc::new(AtomicBool::new(false));
     let queue: Arc<dyn WorkQueue + Send + Sync> = queue.into();
     for offset in 0..NUM_WORKERS {
         let queue = queue.clone();
         let done = done.clone();
-        spawn(move || manage_worker(core_id + 2 * offset, gpu_id, queue, done));
+        spawn(move || manage_worker((core_id, gpu_id), core_id + 2 * offset, gpu_id, queue, done));
     }
 }
