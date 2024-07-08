@@ -1,5 +1,11 @@
 #[cfg(all(
-    any(feature = "wasm", feature = "mmu", feature = "cheri", feature = "gpu"),
+    any(
+        feature = "wasm",
+        feature = "mmu",
+        feature = "cheri",
+        feature = "gpu_thread",
+        feature = "gpu_process"
+    ),
     feature = "reqwest_io"
 ))]
 mod server_tests {
@@ -21,6 +27,12 @@ mod server_tests {
 
     struct ServerKiller {
         server: Child,
+    }
+
+    #[derive(Serialize)]
+    struct RegisterLibrary {
+        name: String,
+        library: Vec<u8>,
     }
 
     #[derive(Serialize)]
@@ -139,6 +151,7 @@ mod server_tests {
         let server = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .env("DANDELION_LIBRARY_PATH", "/tmp/dandelion_server/libs/")
             .spawn()
             .unwrap();
         let mut server_killer = ServerKiller { server };
@@ -186,7 +199,7 @@ mod server_tests {
         #[cfg(feature = "gpu")]
         {
             matmul_path = format!(
-                "{}/../machine_interface/tests/data/matmul_para.json",
+                "{}/../machine_interface/tests/data/test_gpu_matmul_para.json",
                 env!("CARGO_MANIFEST_DIR"),
             );
             #[cfg(feature = "gpu_thread")]
@@ -197,6 +210,27 @@ mod server_tests {
             {
                 engine_type = String::from("GpuProcess");
             }
+        }
+
+        // Register GPU kernel library
+        #[cfg(feature = "gpu")]
+        {
+            let register_library = RegisterLibrary {
+                name: String::from("mlops.hsaco"),
+                library: std::fs::read(format!(
+                    "{}/../machine_interface/tests/libs/mlops.hsaco",
+                    env!("CARGO_MANIFEST_DIR")
+                ))
+                .unwrap(),
+            };
+
+            let library_client = reqwest::blocking::Client::new();
+            let library_resp = library_client
+                .post("http://localhost:8080/register/library")
+                .body(bson::to_vec(&register_library).unwrap())
+                .send()
+                .unwrap();
+            assert!(library_resp.status().is_success());
         }
 
         let register_request = RegisterFunction {
@@ -333,6 +367,7 @@ mod server_tests {
         let mut server = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .env("DANDELION_LIBRARY_PATH", "/tmp/dandelion_server/libs/")
             .spawn()
             .unwrap();
         let mut reader = BufReader::new(server.stdout.take().unwrap());
@@ -352,7 +387,7 @@ mod server_tests {
         let engine_type;
         #[cfg(feature = "gpu")]
         let inference_path = format!(
-            "{}/../machine_interface/tests/data/inference.json",
+            "{}/../machine_interface/tests/data/test_gpu_inference.json",
             env!("CARGO_MANIFEST_DIR"),
         );
         #[cfg(feature = "mmu")]
@@ -371,6 +406,27 @@ mod server_tests {
         #[cfg(feature = "mmu")]
         {
             engine_type = String::from("Process");
+        }
+
+        // Register GPU kernel library
+        #[cfg(feature = "gpu")]
+        {
+            let register_library = RegisterLibrary {
+                name: String::from("mlops.hsaco"),
+                library: std::fs::read(format!(
+                    "{}/../machine_interface/tests/libs/mlops.hsaco",
+                    env!("CARGO_MANIFEST_DIR")
+                ))
+                .unwrap(),
+            };
+
+            let library_client = reqwest::blocking::Client::new();
+            let library_resp = library_client
+                .post("http://localhost:8080/register/library")
+                .body(bson::to_vec(&register_library).unwrap())
+                .send()
+                .unwrap();
+            assert!(library_resp.status().is_success());
         }
 
         let register_request = RegisterFunction {

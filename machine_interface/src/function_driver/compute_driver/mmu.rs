@@ -174,7 +174,7 @@ struct MmuLoop {
 impl EngineLoop for MmuLoop {
     fn init(resource: ComputeResource) -> DandelionResult<Box<Self>> {
         let ComputeResource::CPU(core_id) = resource else {
-            return Err(DandelionError::ConfigMissmatch);
+            return Err(DandelionError::EngineResourceError);
         };
         return Ok(Box::new(MmuLoop { cpu_slot: core_id }));
     }

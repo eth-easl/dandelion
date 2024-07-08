@@ -97,12 +97,10 @@ impl GpuConfig {
 }
 
 pub fn parse_config(path: &str) -> DandelionResult<(GpuConfig, String)> {
-    let file = File::open(path).map_err(|_| DandelionError::ConfigMissmatch)?;
+    let file = File::open(path).map_err(|_| DandelionError::FileError)?;
     let reader = BufReader::new(file);
-    let ir: GpuConfigIR = serde_json::from_reader(reader).map_err(|e| {
-        eprintln!("Parsing error: {e}");
-        DandelionError::ConfigMissmatch
-    })?;
+    let ir: GpuConfigIR = serde_json::from_reader(reader)
+        .map_err(|e| DandelionError::ParsingJSONError(format!("{e}")))?;
     // Copy kind of unnecessary as ir.into() doesn't need the string, but less bug prone than .drain(..).collect()
     let module_path = ir.module_path.clone();
     Ok((ir.into(), module_path))

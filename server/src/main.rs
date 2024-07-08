@@ -164,8 +164,9 @@ async fn register_library(req: Request<Incoming>) -> Result<Response<DandelionBo
         bson::from_slice(&bytes).expect("Should be able to deserialise request");
 
     // write library to file
-    std::fs::create_dir_all(FUNCTION_FOLDER_PATH.to_owned() + "/libs").unwrap();
-    let mut path_buff = PathBuf::from(FUNCTION_FOLDER_PATH);
+    let lib_path = FUNCTION_FOLDER_PATH.to_owned() + "/libs/";
+    std::fs::create_dir_all(&lib_path).unwrap();
+    let mut path_buff = PathBuf::from(&lib_path);
     path_buff.push(request_map.name.clone());
     let mut function_file = std::fs::File::create(path_buff.clone())
         .expect("Failed to create file for registering library");

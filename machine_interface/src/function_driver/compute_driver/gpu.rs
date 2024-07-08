@@ -63,13 +63,21 @@ fn execute(
                 for arg in args {
                     match arg {
                         Argument::Ptr(id) => {
-                            let idx = buffers.get(id).unwrap().0;
+                            let idx = buffers
+                                .get(id)
+                                .ok_or(DandelionError::UndeclaredIdentifier(id.to_owned()))?
+                                .0;
                             let dev_ptr = buffer_pool.get(idx)?;
                             dev_ptrs.push(Box::into_raw(Box::new(dev_ptr)));
                             params.push(*dev_ptrs.last().unwrap() as *const c_void);
                         }
                         Argument::Sizeof(id) => {
-                            params.push(&buffers.get(id).unwrap().1 as *const _ as *const c_void);
+                            params.push(
+                                &buffers
+                                    .get(id)
+                                    .ok_or(DandelionError::UndeclaredIdentifier(id.to_owned()))?
+                                    .1 as *const _ as *const c_void,
+                            );
                         }
                         Argument::Constant(constant) => {
                             params.push(constant as *const _ as *const c_void);
@@ -82,7 +90,7 @@ fn execute(
                         config
                             .kernels
                             .get(name)
-                            .ok_or(DandelionError::ConfigMissmatch)?,
+                            .ok_or(DandelionError::UndeclaredIdentifier(name.to_owned()))?,
                         get_size(&launch_config.grid_dim_x, buffers, context)? as u32,
                         get_size(&launch_config.grid_dim_y, buffers, context)? as u32,
                         get_size(&launch_config.grid_dim_z, buffers, context)? as u32,
@@ -163,6 +171,7 @@ pub fn gpu_run(
         &config,
     )?;
 
+    // Copy results back into host memory from device memory
     unsafe {
         write_gpu_outputs::<usize, usize>(
             &mut context,
@@ -191,7 +200,7 @@ pub struct GpuLoop {
 impl EngineLoop for GpuLoop {
     fn init(resource: ComputeResource) -> DandelionResult<Box<Self>> {
         let ComputeResource::GPU(cpu_slot, gpu_id) = resource else {
-            return Err(DandelionError::ConfigMissmatch);
+            return Err(DandelionError::EngineResourceError);
         };
 
         let (sender, receiver) = mpsc::channel();
@@ -245,15 +254,13 @@ fn common_parse(
     function_path: String,
     static_domain: &'static dyn crate::memory_domain::MemoryDomain,
 ) -> DandelionResult<crate::function_driver::Function> {
-    eprintln!("{function_path}");
+    // Deserialise user provided config JSON, extract module suffix
     let (mut gpu_config, module_suffix) = config_parsing::parse_config(&function_path)?;
 
     let mut path = std::env::var("DANDELION_LIBRARY_PATH")
         .unwrap_or(format!("{}/tests/libs/", env!("CARGO_MANIFEST_DIR")));
 
     path += &module_suffix;
-
-    eprintln!("{path}");
 
     let code_object = load_u8_from_file(path)?;
     let size = code_object.len() * size_of::<u8>();

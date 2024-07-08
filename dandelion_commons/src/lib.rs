@@ -109,8 +109,6 @@ pub enum DandelionError {
     // Gerneral util errors
     /// error while performing IO on a file
     FileError,
-    /// error from HIP Runtime
-    HipError(String),
     // protection errors
     /// the function issued a system call outside the authorized list
     UnauthorizedSyscall,
@@ -126,6 +124,15 @@ pub enum DandelionError {
     // Frontend errors
     /// Error in the frontend receiveing requests
     RequestError(FrontendError),
+    // GPU engine specfific errors
+    /// error from HIP Runtime
+    HipError(String),
+    /// identifier used in config file was not declared before
+    UndeclaredIdentifier(String),
+    /// argument given to the FromInput sizing was out of bounds
+    FromInputOutOfBounds,
+    /// could not deserialise JSON for config
+    ParsingJSONError(String),
 }
 
 // Implement display to be compliant with core::error::Error

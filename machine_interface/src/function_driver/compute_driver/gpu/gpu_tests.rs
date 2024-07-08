@@ -40,7 +40,10 @@ fn minimal() {
     let lock = GPU_LOCK.lock().unwrap();
     let driver: Box<dyn Driver> = get_driver();
     engine_minimal::<MmuMemoryDomain>(
-        &format!("{}/tests/data/minimal.json", env!("CARGO_MANIFEST_DIR")),
+        &format!(
+            "{}/tests/data/test_gpu_minimal.json",
+            env!("CARGO_MANIFEST_DIR")
+        ),
         MemoryResource::None,
         driver,
         vec![ComputeResource::GPU(7, 1)],
@@ -53,7 +56,10 @@ fn basic_input_output() {
     let lock = GPU_LOCK.lock().unwrap();
     let driver: Box<dyn Driver> = get_driver();
     let (mut function_context, config, queue) = prepare_engine_and_function::<MmuMemoryDomain>(
-        &format!("{}/tests/data/basic_io.json", env!("CARGO_MANIFEST_DIR")),
+        &format!(
+            "{}/tests/data/test_gpu_basic_io.json",
+            env!("CARGO_MANIFEST_DIR")
+        ),
         MemoryResource::None,
         &driver,
         vec![ComputeResource::GPU(7, 0)],
@@ -118,7 +124,10 @@ fn basic_input_output() {
 #[test]
 fn engine_matmul_3x3_loop() {
     let lock = GPU_LOCK.lock().unwrap();
-    let filename = &format!("{}/tests/data/matmul_loop.json", env!("CARGO_MANIFEST_DIR"));
+    let filename = &format!(
+        "{}/tests/data/test_gpu_matmul_loop.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
     let dom_init = MemoryResource::None;
     let driver: Box<dyn Driver> = get_driver();
     let drv_init = vec![ComputeResource::GPU(7, 0)];
@@ -201,7 +210,10 @@ fn engine_matmul_3x3_loop() {
 #[test]
 fn engine_matmul_size_sweep_parallel() {
     let lock = GPU_LOCK.lock().unwrap();
-    let filename = &format!("{}/tests/data/matmul_para.json", env!("CARGO_MANIFEST_DIR"));
+    let filename = &format!(
+        "{}/tests/data/test_gpu_matmul_para.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
     let dom_init = MemoryResource::None;
     let driver: Box<dyn Driver> = get_driver();
     let drv_init = vec![ComputeResource::GPU(7, 0)];
@@ -393,7 +405,10 @@ fn get_expected_inference_output() -> Vec<f32> {
 #[test]
 fn inference_benchmark_function() {
     let lock = GPU_LOCK.lock().unwrap();
-    let filename = &format!("{}/tests/data/inference.json", env!("CARGO_MANIFEST_DIR"));
+    let filename = &format!(
+        "{}/tests/data/test_gpu_inference.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
     let dom_init = MemoryResource::None;
     let driver: Box<dyn Driver> = get_driver();
     let drv_init = vec![ComputeResource::GPU(7, 0)];

@@ -111,3 +111,22 @@ sudo mount -o remount,exec /dev/shm
 ### MMU worker path
 
 To use a `mmu_worker` that is not at the original location it was built in, set the `PROCESS_WORKER_PATH` environment variable to point to the desired binary
+
+## GPU worker build
+
+The `gpu_worker` binary required by the `gpu_process` is assumed to be present in corresponding `target` directory:
+```
+cargo build --bin gpu_worker --features gpu_process --target $(arch)-unknown-linux-gnu [--release]
+```
+
+Also make sure that shared memory objects are executable:
+```
+sudo mount -o remount,exec /dev/shm
+```
+
+### GPU worker path
+
+To use a `gpu_worker` that is not at the original location it was built in, set the `GPU_WORKER_PATH` environment variable to point to the desired binary
+
+## GPU engine library path
+`DANDELION_LIBRARY_PATH` overwrites the directory where the GPU engines will look for kernel libraries. If the variable is unset the engines will look in `machine_interface/tests/libs/`.

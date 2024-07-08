@@ -42,7 +42,7 @@ pub fn get_data_length(ident: &str, context: &Context) -> DandelionResult<usize>
             Some(set) => set.ident == ident,
             _ => false,
         })
-        .ok_or(DandelionError::ConfigMissmatch)?
+        .ok_or(DandelionError::UndeclaredIdentifier(ident.to_owned()))?
         .as_ref()
         .unwrap(); // okay, as we matched successfully
 
@@ -69,7 +69,7 @@ pub unsafe fn copy_data_to_device(
             Some(set) => set.ident == ident,
             _ => false,
         })
-        .ok_or(DandelionError::ConfigMissmatch)?
+        .ok_or(DandelionError::UndeclaredIdentifier(ident.to_owned()))?
         .as_ref()
         .unwrap(); // okay, as we matched successfully
 
@@ -99,18 +99,18 @@ pub fn get_size(
                     Some(set) => &set.ident == bufname,
                     _ => false,
                 })
-                .ok_or(DandelionError::ConfigMissmatch)?
+                .ok_or(DandelionError::UndeclaredIdentifier(bufname.to_owned()))?
                 .as_ref()
                 .unwrap(); // okay, as we matched successfully
 
             let data_item = dataset
                 .buffers
                 .first()
-                .ok_or(DandelionError::ConfigMissmatch)?;
+                .ok_or(DandelionError::FromInputOutOfBounds)?;
 
             let relative_offset = *idx * std::mem::size_of::<i64>();
             if relative_offset > data_item.data.size {
-                return Err(DandelionError::ConfigMissmatch);
+                return Err(DandelionError::FromInputOutOfBounds);
             }
 
             let mut buf: [u64; 1] = [0];
@@ -120,7 +120,7 @@ pub fn get_size(
         }
         Sizing::Sizeof(bufname) => Ok(buffers
             .get(bufname)
-            .ok_or(DandelionError::ConfigMissmatch)?
+            .ok_or(DandelionError::UndeclaredIdentifier(bufname.to_owned()))?
             .1 as u64),
     }
 }
