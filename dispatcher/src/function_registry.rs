@@ -7,7 +7,7 @@ use futures::lock::Mutex;
 use machine_interface::{
     function_driver::{
         system_driver::{get_system_function_input_sets, get_system_function_output_sets},
-        Driver, Function, FunctionConfig, ParsingArguments,
+        Driver, Function, FunctionConfig,
     },
     machine_config::{get_system_functions, DomainType, EngineType},
     memory_domain::{Context, MemoryDomain},
@@ -336,12 +336,12 @@ impl FunctionRegistry {
         recorder.record(RecordPoint::ParsingQueueu).unwrap();
         let tripple = parse_queue
             .enqueu_work(
-                machine_interface::function_driver::WorkToDo::ParsingArguments(ParsingArguments {
+                machine_interface::function_driver::WorkToDo::ParsingArguments {
                     driver: *driver,
                     path,
                     static_domain: domain,
                     recorder: recorder.get_sub_recorder().unwrap(),
-                }),
+                },
             )
             .await?
             .get_function();
@@ -370,6 +370,7 @@ impl FunctionRegistry {
         };
         if let Some(function) = function_opt {
             let function_context = function.load(domain, ctx_size)?;
+            recorder.record(RecordPoint::LoadEnd)?;
             return Ok((function_context, function.config.clone()));
         }
         // TODO add check to see if local loading has already been kicked off, to avoid double parsing

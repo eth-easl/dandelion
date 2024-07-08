@@ -14,10 +14,12 @@ use hyper::{
     service::service_fn,
     Request, Response,
 };
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use machine_interface::{
-    function_driver::ComputeResource, machine_config::EngineType,
-    memory_domain::bytes_context::BytesContext,
+    function_driver::ComputeResource,
+    machine_config::EngineType,
+    memory_domain::{bytes_context::BytesContext, read_only::ReadOnlyContext},
+    DataItem, DataSet, Position,
 };
 use serde::Deserialize;
 use std::{
@@ -107,6 +109,10 @@ async fn serve_request(
     let request_arc = Arc::new(request_context);
     let mut inputs = vec![];
     for request_set in 0..request_number {
+        trace!(
+            "adding input set {} from request",
+            request_arc.content[request_set].as_ref().unwrap().ident
+        );
         inputs.push((
             request_set,
             CompositionSet::from((request_set, vec![request_arc.clone()])),
@@ -178,6 +184,8 @@ struct RegisterFunction {
     context_size: u64,
     engine_type: String,
     binary: Vec<u8>,
+    input_sets: Vec<(String, Option<Vec<(String, Vec<u8>)>>)>,
+    output_sets: Vec<String>,
 }
 
 async fn register_function(
@@ -212,30 +220,55 @@ async fn register_function(
         "GpuThread" => EngineType::GpuThread,
         #[cfg(feature = "gpu_process")]
         "GpuProcess" => EngineType::GpuProcess,
-        _ => panic!("Unkown engine type string"),
+        unkown => panic!("Unkown engine type string {}", unkown),
     };
+    let input_sets = request_map
+        .input_sets
+        .into_iter()
+        .map(|(name, data)| {
+            if let Some(static_data) = data {
+                let data_contexts = static_data
+                    .into_iter()
+                    .map(|(item_name, data_vec)| {
+                        let item_size = data_vec.len();
+                        let mut new_context =
+                            ReadOnlyContext::new(data_vec.into_boxed_slice()).unwrap();
+                        new_context.content.push(Some(DataSet {
+                            ident: name.clone(),
+                            buffers: vec![DataItem {
+                                ident: item_name,
+                                data: Position {
+                                    offset: 0,
+                                    size: item_size,
+                                },
+                                key: 0,
+                            }],
+                        }));
+                        (Arc::new(new_context), 0usize..1usize)
+                    })
+                    .collect();
+                let composition_set = CompositionSet {
+                    set_index: 0,
+                    context_list: data_contexts,
+                };
+                (name, Some(composition_set))
+            } else {
+                (name, None)
+            }
+        })
+        .collect();
     let (callback, confirmation) = oneshot::channel();
+    let metadata = Metadata {
+        input_sets: Arc::new(input_sets),
+        output_sets: Arc::new(request_map.output_sets),
+    };
     dispatcher
         .send(DispatcherCommand::FunctionRegistration {
             name: request_map.name,
             engine_type,
             context_size: request_map.context_size as usize,
             path: path_buff.to_str().unwrap().to_string(),
-            metadata: Metadata {
-                // Comment to switch between matmul and inference workloads. TODO: stop hard coding
-                input_sets: Arc::new(vec![
-                    (String::from("A"), None),
-                    (String::from("B"), None),
-                    (String::from("cfg"), None),
-                ]),
-                // #[cfg(feature = "gpu")]
-                // input_sets: Arc::new(vec![(String::from("A"), None), (String::from("cfg"), None)]),
-                // #[cfg(not(feature = "gpu"))]
-                // input_sets: Arc::new(vec![(String::from("A"), None)]),
-
-                // output_sets: Arc::new(vec![String::from("B")]),
-                output_sets: Arc::new(vec![String::from("D")]),
-            },
+            metadata,
             callback,
         })
         .await
@@ -308,6 +341,9 @@ async fn service(
         | "/cold/io"
         | "/cold/inference"
         | "/cold/inference-batched" => serve_request(true, req, dispatcher).await,
+        "/cold/chain_scaling" | "/cold/middleware_app" | "/cold/python_app" => {
+            serve_request(true, req, dispatcher).await
+        }
         "/hot/matmul"
         | "/hot/matmulstore"
         | "/hot/compute"
@@ -318,6 +354,16 @@ async fn service(
         _ => Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
             format!("Hello, Wor\n").into_bytes(),
         ))),
+        "/hot/chain_scaling" | "/hot/middleware_app" | "/hot/python_app" => {
+            serve_request(false, req, dispatcher).await
+        }
+        "/stats" => serve_stats(req).await,
+        other_uri => {
+            trace!("Received request on {}", other_uri);
+            Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
+                format!("Hello, Wor\n").into_bytes(),
+            )))
+        }
     }
 }
 
@@ -387,7 +433,7 @@ async fn dispatcher_loop(
 
 async fn service_loop(request_sender: mpsc::Sender<DispatcherCommand>) {
     // socket to listen to
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+    let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], 8080));
     let listener = TcpListener::bind(addr).await.unwrap();
     // signal handlers for gracefull shutdown
     let mut sigterm_stream = tokio::signal::unix::signal(SignalKind::terminate()).unwrap();
@@ -421,7 +467,9 @@ async fn service_loop(request_sender: mpsc::Sender<DispatcherCommand>) {
 
 fn main() -> () {
     // check if there is a configuration file
-    let config = dandelion_server::config::get_config();
+    let config = dandelion_server::config::DandelionConfig::get_config();
+
+    println!("config: {:?}", config);
 
     let default_warn_level = if cfg!(debug_assertions) {
         "debug"
@@ -453,43 +501,23 @@ fn main() -> () {
 
     let resource_conversion = |core_index| ComputeResource::CPU(core_index as u8);
 
-    // create core allocations
-    let (first_engine_core, frontend_cores, dispatcher_cores) =
-        match (config.frontend_cores, config.dispatcher_cores) {
-            // Per default use one core for both
-            (None, None) => (1, vec![0], vec![0]),
-            // If only dispatcher cores or only frontend cores are specified use one for dispatcher, rest for frontend
-            (None, Some(cores)) | (Some(cores), None) => (
-                cores,
-                (0..cores - 1).collect(),
-                (cores - 1..cores).collect(),
-            ),
-            // If both are specified give them the according resources
-            (Some(f_cores), Some(d_cores)) => (
-                f_cores + d_cores,
-                (0..f_cores).collect(),
-                (f_cores..f_cores + d_cores).collect(),
-            ),
-        };
-    assert!(frontend_cores.len() > 0);
-    assert!(dispatcher_cores.len() > 0);
-
-    let num_io_cores = config.io_cores.unwrap_or(0);
-    assert!(first_engine_core < config.total_cores);
-    assert!(first_engine_core + num_io_cores <= config.total_cores);
-    let io_cores: Vec<ComputeResource> = (first_engine_core..first_engine_core + num_io_cores)
-        .map(resource_conversion)
+    let dispatcher_cores = config.get_dispatcher_cores();
+    let frontend_cores = config.get_frontend_cores();
+    let communication_cores: Vec<ComputeResource> = config
+        .get_communication_cores()
+        .into_iter()
+        .map(|core| resource_conversion(core))
         .collect();
-    let first_compute_core = first_engine_core + num_io_cores;
-    assert!(first_compute_core < config.total_cores);
-    let compute_cores: Vec<ComputeResource> = (first_compute_core..config.total_cores)
-        .map(resource_conversion)
+    let compute_cores: Vec<ComputeResource> = config
+        .get_computation_cores()
+        .into_iter()
+        .map(|core| resource_conversion(core))
         .collect();
 
     println!("core allocation:");
     println!("frontend cores {:?}", frontend_cores);
     println!("dispatcher cores: {:?}", dispatcher_cores);
-    println!("communication cores: {:?}", io_cores);
+    println!("communication cores: {:?}", communication_cores);
     println!("compute cores: {:?}", compute_cores);
 
     // make multithreaded front end runtime
@@ -555,15 +583,17 @@ fn main() -> () {
         let gpu_count: u8 = 4; // TODO: don't hard code this
         pool_map.insert(
             engine_type,
-            (first_compute_core..config.total_cores)
+            config
+                .get_computation_cores()
+                .iter()
                 .step_by(4) // TODO: don't hard code this - related to number of workers
                 .zip(0..gpu_count)
-                .map(|(cpu_id, gpu_id)| ComputeResource::GPU(cpu_id as u8, gpu_id))
+                .map(|(cpu_id, gpu_id)| ComputeResource::GPU(*cpu_id, gpu_id))
                 .collect(),
         );
     }
     #[cfg(feature = "reqwest_io")]
-    pool_map.insert(EngineType::Reqwest, io_cores);
+    pool_map.insert(EngineType::Reqwest, communication_cores);
     let resource_pool = ResourcePool {
         engine_pool: futures::lock::Mutex::new(pool_map),
     };

@@ -1,7 +1,7 @@
 use crate::{
     function_driver::{
-        thread_utils::EngineLoop, ComputeResource, FunctionArguments, FunctionConfig, GpuConfig,
-        ParsingArguments, TransferArguments, WorkDone, WorkQueue, WorkToDo,
+        thread_utils::EngineLoop, ComputeResource, FunctionConfig, GpuConfig, WorkDone, WorkQueue,
+        WorkToDo,
     },
     interface::read_output_structs,
     memory_domain::{self, mmu::MmuContext, Context, ContextState, ContextTrait, ContextType},
@@ -138,13 +138,12 @@ pub fn start_gpu_thread(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue>) {
         // TODO catch unwind so we can always return an error or shut down gracefully
         let (args, debt) = queue.get_engine_args();
         match args {
-            WorkToDo::FunctionArguments(func_args) => {
-                let FunctionArguments {
-                    config,
-                    context,
-                    output_sets,
-                    mut recorder,
-                } = func_args;
+            WorkToDo::FunctionArguments {
+                config,
+                context,
+                output_sets,
+                mut recorder,
+            } => {
                 if let Err(err) = recorder.record(RecordPoint::EngineStart) {
                     debt.fulfill(Box::new(Err(err)));
                     continue;
@@ -159,18 +158,17 @@ pub fn start_gpu_thread(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue>) {
                 let results = Box::new(result.map(WorkDone::Context));
                 debt.fulfill(results);
             }
-            WorkToDo::TransferArguments(transfer_args) => {
-                let TransferArguments {
-                    source,
-                    mut destination,
-                    destination_set_index,
-                    destination_allignment,
-                    destination_item_index,
-                    destination_set_name,
-                    source_set_index,
-                    source_item_index,
-                    mut recorder,
-                } = transfer_args;
+            WorkToDo::TransferArguments {
+                source,
+                mut destination,
+                destination_set_index,
+                destination_allignment,
+                destination_item_index,
+                destination_set_name,
+                source_set_index,
+                source_item_index,
+                mut recorder,
+            } => {
                 match recorder.record(RecordPoint::TransferStart) {
                     Ok(()) => (),
                     Err(err) => {
@@ -199,12 +197,12 @@ pub fn start_gpu_thread(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue>) {
                 debt.fulfill(Box::new(transfer_return));
                 continue;
             }
-            WorkToDo::ParsingArguments(ParsingArguments {
+            WorkToDo::ParsingArguments {
                 driver,
                 path,
                 static_domain,
                 mut recorder,
-            }) => {
+            } => {
                 recorder.record(RecordPoint::ParsingStart).unwrap();
                 let function_result = driver.parse_function(path, static_domain);
                 recorder.record(RecordPoint::ParsingEnd).unwrap();
@@ -353,13 +351,12 @@ fn manage_worker(
 
         let (args, debt) = queue.get_engine_args();
         match args {
-            WorkToDo::FunctionArguments(func_args) => {
-                let FunctionArguments {
-                    config,
-                    mut context,
-                    output_sets,
-                    mut recorder,
-                } = func_args;
+            WorkToDo::FunctionArguments {
+                config,
+                mut context,
+                output_sets,
+                mut recorder,
+            } => {
                 if let Err(err) = recorder.record(RecordPoint::EngineStart) {
                     debt.fulfill(Box::new(Err(err)));
                     continue;
@@ -422,18 +419,17 @@ fn manage_worker(
                     }
                 }
             }
-            WorkToDo::TransferArguments(transfer_args) => {
-                let TransferArguments {
-                    source,
-                    mut destination,
-                    destination_set_index,
-                    destination_allignment,
-                    destination_item_index,
-                    destination_set_name,
-                    source_set_index,
-                    source_item_index,
-                    mut recorder,
-                } = transfer_args;
+            WorkToDo::TransferArguments {
+                source,
+                mut destination,
+                destination_set_index,
+                destination_allignment,
+                destination_item_index,
+                destination_set_name,
+                source_set_index,
+                source_item_index,
+                mut recorder,
+            } => {
                 match recorder.record(RecordPoint::TransferStart) {
                     Ok(()) => (),
                     Err(err) => {
@@ -462,12 +458,12 @@ fn manage_worker(
                 debt.fulfill(Box::new(transfer_return));
                 continue;
             }
-            WorkToDo::ParsingArguments(ParsingArguments {
+            WorkToDo::ParsingArguments {
                 driver,
                 path,
                 static_domain,
                 mut recorder,
-            }) => {
+            } => {
                 recorder.record(RecordPoint::ParsingStart).unwrap();
                 let function_result = driver.parse_function(path, static_domain);
                 recorder.record(RecordPoint::ParsingEnd).unwrap();

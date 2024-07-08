@@ -12,7 +12,7 @@ use libloading::{Library, Symbol};
 use log::error;
 use std::sync::Arc;
 
-type WasmEntryPoint = fn(&mut [u8]) -> Option<i32>;
+type WasmEntryPoint = fn(&mut [u8], usize) -> Option<i32>;
 
 struct WasmLoop {}
 
@@ -49,7 +49,8 @@ impl EngineLoop for WasmLoop {
 
                     // call entry point
                     let _ =
-                        entry_point(&mut wasm_context.mem).ok_or(DandelionError::EngineError)?;
+                        entry_point(&mut wasm_context.mem, wasm_config.system_data_struct_offset)
+                            .ok_or(DandelionError::EngineError)?;
                 }
                 // put context back
 

@@ -106,8 +106,12 @@ fn encode_sets(
     data_items: &mut Vec<ItemData>,
 ) -> usize {
     let mut all_items = 0;
+    // filter out empty sets
+    let non_empty_set = sets
+        .into_values()
+        .filter(|set| !set.context_list.is_empty());
     // if list is empty need to push empty string
-    for (index, set) in sets.into_values().enumerate() {
+    for (index, set) in non_empty_set.enumerate() {
         // add item to array with doc type and name equal to index into the array
         response.push(3);
         response.extend_from_slice(format!("{}", index).as_bytes());
@@ -174,7 +178,7 @@ fn encode_response(sets: BTreeMap<usize, CompositionSet>) -> (usize, Vec<u8>, Ve
 
     // encode sets
     let all_items = encode_sets(sets, &mut response, &mut data_items);
-
+    log::trace!("Response contains items with total size of {}", all_items);
     // end array and set length
     response.push(0);
     let set_array_length = (response.len() - set_length_offset + all_items) as i32;

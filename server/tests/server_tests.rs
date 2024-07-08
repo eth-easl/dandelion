@@ -11,7 +11,13 @@ mod server_tests {
     use std::{
         io::{BufRead, BufReader, Cursor, Read},
         process::{Child, Command, Stdio},
+        sync::Mutex,
     };
+
+    // Prevent tests running in parallel to avoid address already in use errors
+    lazy_static::lazy_static! {
+        static ref TEST_LOCK: Mutex<()> = Mutex::new(());
+    }
 
     struct ServerKiller {
         server: Child,
@@ -23,6 +29,8 @@ mod server_tests {
         context_size: u64,
         engine_type: String,
         binary: Vec<u8>,
+        input_sets: Vec<(String, Option<Vec<(String, Vec<u8>)>>)>,
+        output_sets: Vec<String>,
     }
 
     #[derive(Serialize)]
@@ -46,16 +54,17 @@ mod server_tests {
                 .unwrap();
             kill.wait().unwrap();
 
-            let mut child_stdout = self.server.stdout.take().expect("Should have stdout");
-            let mut outbuf = Vec::new();
-            let _ = child_stdout
-                .read_to_end(&mut outbuf)
-                .expect("should be able to read child output after killing it");
-            print!(
-                "server output:\n{}",
-                String::from_utf8(outbuf)
-                    .expect("Should be able to convert child stdout to string")
-            );
+            if let Some(mut child_stdout) = self.server.stdout.take() {
+                let mut outbuf = Vec::new();
+                let _ = child_stdout
+                    .read_to_end(&mut outbuf)
+                    .expect("should be able to read child output after killing it");
+                print!(
+                    "server output:\n{}",
+                    String::from_utf8(outbuf)
+                        .expect("Should be able to convert child stdout to string")
+                );
+            }
             let mut errbuf = Vec::new();
             let _ = self
                 .server
@@ -123,26 +132,28 @@ mod server_tests {
         assert_eq!(1, checksum);
     }
 
-    #[ignore = "different registration"]
     #[test]
     fn serve_matmul() {
+        let lock = TEST_LOCK.lock().unwrap();
         let mut cmd = Command::cargo_bin("dandelion_server").unwrap();
-        let mut server = cmd
+        let server = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        let mut reader = BufReader::new(server.stdout.take().unwrap());
+        let mut server_killer = ServerKiller { server };
+        let mut reader = BufReader::new(server_killer.server.stdout.take().unwrap());
         loop {
             let mut buf = String::new();
             let len = reader.read_line(&mut buf).unwrap();
             assert_ne!(len, 0, "Server exited unexpectedly");
             if buf.contains("Server start") {
                 break;
+            } else {
+                print!("{}", buf);
             }
         }
-        let _ = server.stdout.insert(reader.into_inner());
-        let mut server_killer = ServerKiller { server };
+        let _ = server_killer.server.stdout.insert(reader.into_inner());
 
         // register function
         let version: String;
@@ -175,7 +186,7 @@ mod server_tests {
         #[cfg(feature = "gpu")]
         {
             matmul_path = format!(
-                "{}/../machine_interface/hip_interface/matmul_para.json",
+                "{}/../machine_interface/tests/data/matmul_para.json",
                 env!("CARGO_MANIFEST_DIR"),
             );
             #[cfg(feature = "gpu_thread")]
@@ -187,11 +198,14 @@ mod server_tests {
                 engine_type = String::from("GpuProcess");
             }
         }
+
         let register_request = RegisterFunction {
             name: String::from("matmul"),
             context_size: 0x802_0000,
             binary: std::fs::read(matmul_path).unwrap(),
             engine_type,
+            input_sets: vec![(String::from("A"), None)],
+            output_sets: vec![String::from("B")],
         };
         let registration_client = reqwest::blocking::Client::new();
         let registration_resp = registration_client
@@ -235,8 +249,10 @@ mod server_tests {
         send_matrix_request("http://localhost:8080/hot/matmul", String::from("chain"));
 
         let status_result = server_killer.server.try_wait();
+        drop(server_killer);
         let status = status_result.unwrap();
         assert_eq!(status, None, "Server exited unexpectedly");
+        drop(lock);
     }
 
     fn send_inference_request(endpoint: &str, function_name: String) {
@@ -312,6 +328,7 @@ mod server_tests {
     #[cfg(any(feature = "gpu", feature = "mmu"))]
     #[test]
     fn serve_inference() {
+        let lock = TEST_LOCK.lock().unwrap();
         let mut cmd = Command::cargo_bin("dandelion_server").unwrap();
         let mut server = cmd
             .stdout(Stdio::piped())
@@ -330,11 +347,12 @@ mod server_tests {
         let _ = server.stdout.insert(reader.into_inner());
         let mut server_killer = ServerKiller { server };
 
+        // TODO: register library for GPU
         // register function
         let engine_type;
         #[cfg(feature = "gpu")]
         let inference_path = format!(
-            "{}/../machine_interface/hip_interface/inference.json",
+            "{}/../machine_interface/tests/data/inference.json",
             env!("CARGO_MANIFEST_DIR"),
         );
         #[cfg(feature = "mmu")]
@@ -360,6 +378,12 @@ mod server_tests {
             context_size: 0x802_0000,
             binary: std::fs::read(inference_path).unwrap(),
             engine_type,
+            input_sets: vec![
+                (String::from("A"), None),
+                (String::from("B"), None),
+                (String::from("cfg"), None),
+            ],
+            output_sets: vec![String::from("D")],
         };
         let registration_client = reqwest::blocking::Client::new();
         let registration_resp = registration_client
@@ -394,7 +418,9 @@ mod server_tests {
         send_inference_request("http://localhost:8080/hot/inference", String::from("chain"));
 
         let status_result = server_killer.server.try_wait();
+        drop(server_killer);
         let status = status_result.unwrap();
         assert_eq!(status, None, "Server exited unexpectedly");
+        drop(lock);
     }
 }

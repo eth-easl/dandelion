@@ -152,7 +152,8 @@ impl Composition {
                                     {
                                         let set_id = set_numbers.get(&argument.v.ident).ok_or(
                                             DandelionError::CompositionFunctionInvalidIdentifier(
-                                                argument.v.ident.clone(),
+                                                format!("Could not find compositon set for argument {} of function {}",
+                                                argument.v.ident, function_application.v.name)
                                             ),
                                         )?;
                                         input_set_ids[index] = Some((
@@ -164,7 +165,8 @@ impl Composition {
                                     } else {
                                         return Err(
                                             DandelionError::CompositionFunctionInvalidIdentifier(
-                                                argument.v.ident.clone(),
+                                                format!("could not find index for input set {} for function {}",
+                                                argument.v.name, function_application.v.name)
                                             ),
                                         );
                                     }

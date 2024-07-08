@@ -54,4 +54,8 @@ impl WorkQueue for TestQueue {
         arg_var.notify_all();
         return args;
     }
+
+    fn try_get_engine_args(&self) -> Option<(WorkToDo, crate::promise::Debt)> {
+        return Some(self.get_engine_args());
+    }
 }

@@ -14,7 +14,7 @@ use std::fmt::Debug;
 
 pub trait SizedIntTrait
 where
-    Self: Sized + Copy + Default + Debug,
+    Self: Sized + Copy + Default,
 {
     fn from_native(ptr: usize) -> DandelionResult<Self>;
     fn to_native(self) -> DandelionResult<usize>;
@@ -353,10 +353,12 @@ pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
 
     // get exit value
     let exit_value = system_struct.exit_code;
+    log::trace!("function exited with code: {}", exit_value);
     context.state = ContextState::Run(exit_value);
 
     // get output set number +1 for sentinel set
     let output_set_number = usize!(system_struct.output_sets_len);
+    log::trace!("output set number: {}", output_set_number);
     if output_set_number == 0 {
         return Ok(());
     }

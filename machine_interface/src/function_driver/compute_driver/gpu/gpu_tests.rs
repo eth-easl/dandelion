@@ -10,7 +10,7 @@ use crate::{
             },
             gpu::{GpuProcessDriver, GpuThreadDriver},
         },
-        ComputeResource, Driver, FunctionArguments, WorkToDo,
+        ComputeResource, Driver, WorkToDo,
     },
     memory_domain::{mmu::MmuMemoryDomain, ContextTrait, MemoryResource},
     DataItem, DataSet, Position,
@@ -37,7 +37,7 @@ fn get_driver() -> Box<dyn Driver> {
 
 #[test]
 fn minimal() {
-    let _lock = GPU_LOCK.lock().unwrap();
+    let lock = GPU_LOCK.lock().unwrap();
     let driver: Box<dyn Driver> = get_driver();
     engine_minimal::<MmuMemoryDomain>(
         &format!("{}/tests/data/minimal.json", env!("CARGO_MANIFEST_DIR")),
@@ -45,11 +45,12 @@ fn minimal() {
         driver,
         vec![ComputeResource::GPU(7, 1)],
     );
+    drop(lock);
 }
 
 #[test]
 fn basic_input_output() {
-    let _lock = GPU_LOCK.lock().unwrap();
+    let lock = GPU_LOCK.lock().unwrap();
     let driver: Box<dyn Driver> = get_driver();
     let (mut function_context, config, queue) = prepare_engine_and_function::<MmuMemoryDomain>(
         &format!("{}/tests/data/basic_io.json", env!("CARGO_MANIFEST_DIR")),
@@ -81,12 +82,12 @@ fn basic_input_output() {
     recorder
         .record(RecordPoint::TransferEnd)
         .expect("Should have properly initialized recorder state");
-    let promise = queue.enqueu(WorkToDo::FunctionArguments(FunctionArguments {
+    let promise = queue.enqueu(WorkToDo::FunctionArguments {
         config,
         context: function_context,
         output_sets: Arc::new(vec!["A".into()]),
         recorder: recorder.get_sub_recorder().unwrap(),
-    }));
+    });
     queue.enqueu(WorkToDo::Shutdown());
     let result_context = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -111,11 +112,12 @@ fn basic_input_output() {
         .read(position.offset, &mut read_buffer)
         .expect("Should succeed in reading");
     assert_eq!(98765, read_buffer[0]);
+    drop(lock);
 }
 
 #[test]
 fn engine_matmul_3x3_loop() {
-    let _lock = GPU_LOCK.lock().unwrap();
+    let lock = GPU_LOCK.lock().unwrap();
     let filename = &format!("{}/tests/data/matmul_loop.json", env!("CARGO_MANIFEST_DIR"));
     let dom_init = MemoryResource::None;
     let driver: Box<dyn Driver> = get_driver();
@@ -159,12 +161,12 @@ fn engine_matmul_3x3_loop() {
     recorder
         .record(RecordPoint::TransferEnd)
         .expect("Should have properly initialized recorder state");
-    let promise = queue.enqueu(WorkToDo::FunctionArguments(FunctionArguments {
+    let promise = queue.enqueu(WorkToDo::FunctionArguments {
         config,
         context: function_context,
         output_sets: Arc::new(vec![String::from("B")]),
         recorder: recorder.get_sub_recorder().unwrap(),
-    }));
+    });
     queue.enqueu(WorkToDo::Shutdown());
     let result_context = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -193,11 +195,12 @@ fn engine_matmul_3x3_loop() {
     for (should, is) in expected.iter().zip(read_buffer[1..].iter()) {
         assert_eq!(should, is);
     }
+    drop(lock);
 }
 
 #[test]
 fn engine_matmul_size_sweep_parallel() {
-    let _lock = GPU_LOCK.lock().unwrap();
+    let lock = GPU_LOCK.lock().unwrap();
     let filename = &format!("{}/tests/data/matmul_para.json", env!("CARGO_MANIFEST_DIR"));
     let dom_init = MemoryResource::None;
     let driver: Box<dyn Driver> = get_driver();
@@ -268,12 +271,12 @@ fn engine_matmul_size_sweep_parallel() {
         recorder
             .record(RecordPoint::TransferEnd)
             .expect("Should have properly initialized recorder state");
-        let promise = queue.enqueu(WorkToDo::FunctionArguments(FunctionArguments {
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config,
             context: function_context,
             output_sets: Arc::new(vec![String::from("B")]),
             recorder: recorder.get_sub_recorder().unwrap(),
-        }));
+        });
         queue.enqueu(WorkToDo::Shutdown());
         let result_context = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -306,6 +309,7 @@ fn engine_matmul_size_sweep_parallel() {
             assert_eq!(should, is);
         }
     }
+    drop(lock);
 }
 
 fn get_inference_inputs() -> (Vec<f32>, Vec<f32>) {
@@ -388,7 +392,7 @@ fn get_expected_inference_output() -> Vec<f32> {
 
 #[test]
 fn inference_benchmark_function() {
-    let _lock = GPU_LOCK.lock().unwrap();
+    let lock = GPU_LOCK.lock().unwrap();
     let filename = &format!("{}/tests/data/inference.json", env!("CARGO_MANIFEST_DIR"));
     let dom_init = MemoryResource::None;
     let driver: Box<dyn Driver> = get_driver();
@@ -453,12 +457,12 @@ fn inference_benchmark_function() {
     recorder
         .record(RecordPoint::TransferEnd)
         .expect("Should have properly initialized recorder state");
-    let promise = queue.enqueu(WorkToDo::FunctionArguments(FunctionArguments {
+    let promise = queue.enqueu(WorkToDo::FunctionArguments {
         config,
         context: function_context,
         output_sets: Arc::new(vec![String::from("D")]),
         recorder: recorder.get_sub_recorder().unwrap(),
-    }));
+    });
     queue.enqueu(WorkToDo::Shutdown());
     let result_context = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -489,4 +493,5 @@ fn inference_benchmark_function() {
     for (idx, (should, is)) in expected.iter().zip(read_buffer[..].iter()).enumerate() {
         assert_eq!(should, is, "Comparing args at {}", idx);
     }
+    drop(lock);
 }

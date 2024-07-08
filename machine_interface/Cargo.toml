@@ -62,7 +62,3 @@ harness = false
 [[bench]]
 name = "mmu_benchmark"
 harness = false
-
-[[bench]]
-name = "gpu_benchmark"
-harness = false
