@@ -1,5 +1,5 @@
 #[cfg(all(
-    any(feature = "wasm", feature = "mmu", feature = "cheri"),
+    any(feature = "wasm", feature = "mmu", feature = "kvm", feature = "cheri"),
     feature = "reqwest_io"
 ))]
 mod server_tests {
@@ -146,6 +146,11 @@ mod server_tests {
         {
             version = format!("elf_mmu_{}", std::env::consts::ARCH);
             engine_type = String::from("Process");
+        }
+        #[cfg(feature = "kvm")]
+        {
+            version = format!("elf_kvm_{}", std::env::consts::ARCH);
+            engine_type = String::from("Kvm");
         }
         #[cfg(feature = "cheri")]
         {

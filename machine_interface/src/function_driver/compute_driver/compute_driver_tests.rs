@@ -1,4 +1,7 @@
-#[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "wasm")))]
+#[cfg(all(
+    test,
+    any(feature = "cheri", feature = "mmu", feature = "kvm", feature = "wasm")
+))]
 mod compute_driver_tests {
     use crate::{
         function_driver::{
@@ -628,6 +631,38 @@ mod compute_driver_tests {
         ]);
         #[cfg(target_arch = "aarch64")]
         driverTests!(elf_mmu_aarch64; MmuMemoryDomain; MemoryResource::None; MmuDriver {};
+        core_affinity::get_core_ids()
+            .and_then(
+                |core_vec|
+                Some(core_vec
+                    .into_iter()
+                    .map(|id| ComputeResource::CPU(id.id as u8))
+                    .collect())).expect("Should have at least one core");
+        vec![
+            ComputeResource::CPU(255),
+            ComputeResource::GPU(0),
+        ]);
+    }
+
+    #[cfg(feature = "kvm")]
+    mod kvm {
+        use crate::function_driver::{compute_driver::kvm::KvmDriver, ComputeResource};
+        use crate::memory_domain::{mmap::MmapMemoryDomain, MemoryResource};
+        #[cfg(target_arch = "x86_64")]
+        driverTests!(elf_kvm_x86_64; MmapMemoryDomain; MemoryResource::None; KvmDriver {};
+        core_affinity::get_core_ids()
+           .and_then(
+                |core_vec|
+                Some(core_vec
+                    .into_iter()
+                    .map(|id| ComputeResource::CPU(id.id as u8))
+                    .collect())).expect("Should have at least one core");
+        vec![
+            ComputeResource::CPU(255),
+            ComputeResource::GPU(0)
+        ]);
+        #[cfg(target_arch = "aarch64")]
+        driverTests!(elf_kvm_aarch64; MmapMemoryDomain; MemoryResource::None; KvmDriver {};
         core_affinity::get_core_ids()
             .and_then(
                 |core_vec|

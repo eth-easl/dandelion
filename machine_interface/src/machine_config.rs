@@ -18,6 +18,8 @@ pub enum EngineType {
     RWasm,
     #[cfg(feature = "mmu")]
     Process,
+    #[cfg(feature = "kvm")]
+    Kvm,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -41,6 +43,8 @@ pub fn get_compatibilty_table() -> BTreeMap<EngineType, DomainType> {
         (EngineType::RWasm, DomainType::RWasm),
         #[cfg(feature = "mmu")]
         (EngineType::Process, DomainType::Process),
+        #[cfg(feature = "kvm")]
+        (EngineType::Kvm, DomainType::Mmap),
     ]);
 }
 
@@ -116,6 +120,13 @@ pub fn get_available_drivers() -> BTreeMap<EngineType, &'static dyn Driver> {
             EngineType::Process,
             Box::leak(Box::new(
                 crate::function_driver::compute_driver::mmu::MmuDriver {},
+            )) as &'static dyn Driver,
+        ),
+        #[cfg(feature = "kvm")]
+        (
+            EngineType::Kvm,
+            Box::leak(Box::new(
+                crate::function_driver::compute_driver::kvm::KvmDriver {},
             )) as &'static dyn Driver,
         ),
     ]);
