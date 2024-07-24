@@ -115,6 +115,12 @@ pub enum WorkToDo {
         static_domain: &'static dyn MemoryDomain,
         recorder: Recorder,
     },
+    LoadingArguments {
+        function: Arc<Function>,
+        domain: &'static dyn MemoryDomain,
+        ctx_size: usize,
+        recorder: Recorder,
+    },
     Shutdown(),
 }
 

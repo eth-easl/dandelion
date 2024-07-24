@@ -3,7 +3,7 @@ use dandelion_commons::{
     DandelionError, DandelionResult, FunctionId,
 };
 use dparser::print_errors;
-use futures::lock::Mutex;
+use futures::{lock::Mutex, Future, FutureExt};
 use machine_interface::{
     function_driver::{
         system_driver::{get_system_function_input_sets, get_system_function_output_sets},
@@ -14,6 +14,7 @@ use machine_interface::{
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
+    pin::Pin,
     sync::Arc,
 };
 
@@ -81,6 +82,30 @@ impl FunctionDict {
     }
 }
 
+/// Function to create a future that returns the loaded function
+async fn load_local(
+    static_domain: &'static dyn MemoryDomain,
+    driver: &'static dyn Driver,
+    mut recorder: Recorder,
+    work_queue: Box<EngineQueue>,
+    path: String,
+) -> DandelionResult<Arc<Function>> {
+    recorder.record(RecordPoint::ParsingQueueu).unwrap();
+    let function = work_queue
+        .enqueu_work(
+            machine_interface::function_driver::WorkToDo::ParsingArguments {
+                driver,
+                path,
+                static_domain,
+                recorder: recorder.get_sub_recorder().unwrap(),
+            },
+        )
+        .await?
+        .get_function();
+    recorder.record(RecordPoint::ParsingDequeu).unwrap();
+    return Ok(Arc::new(function));
+}
+
 pub struct FunctionRegistry {
     /// List of engines available for each function
     engine_map: Mutex<BTreeMap<FunctionId, BTreeSet<EngineType>>>,
@@ -89,11 +114,21 @@ pub struct FunctionRegistry {
     /// map with list of all options for each function
     /// TODO: change structure to avoid copy on get_options
     options: Mutex<BTreeMap<FunctionId, Vec<Alternative>>>,
-    /// map with function information for functions that are available in memory
-    /// TOOD: bake into alternative type
-    in_memory: Mutex<BTreeMap<(FunctionId, EngineType), Arc<Function>>>,
-    /// map with file paths for functions for on disk available functons
-    on_disk: Mutex<BTreeMap<(FunctionId, EngineType), String>>,
+    /// Map with path to disk where function is located and an option to a in memory loaded version
+    /// TOOD: decide if want to bake into alternative type
+    loadable: Mutex<
+        BTreeMap<
+            (FunctionId, EngineType),
+            (
+                String,
+                Option<
+                    futures::future::Shared<
+                        Pin<Box<dyn Future<Output = DandelionResult<Arc<Function>>> + Send>>,
+                    >,
+                >,
+            ),
+        >,
+    >,
     /// map with input and output set names for functions
     metadata: Mutex<BTreeMap<FunctionId, Metadata>>,
     /// map name to function id
@@ -110,7 +145,7 @@ impl FunctionRegistry {
         // insert all system functons
         let mut engine_map = BTreeMap::new();
         let mut options = BTreeMap::new();
-        let mut in_memory = BTreeMap::new();
+        let mut loadable = BTreeMap::new();
         let mut metadata = BTreeMap::new();
         let mut function_dict = FunctionDict::new();
         for (engine_type, (driver, _)) in drivers.iter() {
@@ -147,7 +182,17 @@ impl FunctionRegistry {
                     FunctionConfig::SysConfig(_) => (),
                     _ => panic!("parsing system function did not return system config"),
                 };
-                in_memory.insert((function_id, *engine_type), Arc::new(function_config));
+                loadable.insert(
+                    (function_id, *engine_type),
+                    (
+                        String::new(),
+                        Some(
+                            (Box::pin(futures::future::ready(Ok(Arc::new(function_config))))
+                                as Pin<Box<dyn Future<Output = DandelionResult<_>> + Send>>)
+                                .shared(),
+                        ),
+                    ),
+                );
                 let function_metadata = Metadata {
                     input_sets: Arc::new(
                         get_system_function_input_sets(system_function)
@@ -165,8 +210,7 @@ impl FunctionRegistry {
             engine_map: Mutex::new(engine_map),
             drivers,
             options: Mutex::new(options),
-            in_memory: Mutex::new(in_memory),
-            on_disk: Mutex::new(BTreeMap::new()),
+            loadable: Mutex::new(loadable),
             metadata: Mutex::new(metadata),
             function_dict: Mutex::new(function_dict),
         };
@@ -274,10 +318,10 @@ impl FunctionRegistry {
         if !self.metadata.lock().await.contains_key(&function_id) {
             return Err(DandelionError::DispatcherMetaDataUnavailable);
         }
-        self.on_disk
+        self.loadable
             .lock()
             .await
-            .insert((function_id, engine_id), path);
+            .insert((function_id, engine_id), (path, None));
         self.engine_map
             .lock()
             .await
@@ -307,48 +351,6 @@ impl FunctionRegistry {
         return Ok(());
     }
 
-    async fn load_local(
-        &self,
-        function_id: FunctionId,
-        engine_id: EngineType,
-        domain: &'static dyn MemoryDomain,
-        recorder: &mut Recorder,
-    ) -> DandelionResult<Function> {
-        // get loader
-        let (driver, parse_queue) = match self.drivers.get(&engine_id) {
-            Some(l) => l,
-            None => {
-                return Err(DandelionError::DispatcherMissingLoader(format!(
-                    "{:?}",
-                    engine_id
-                )))
-            }
-        };
-        // TODO replace by queueing of pre added composition to fetch code by id
-        // get function code
-        let path = {
-            let disk_lock = self.on_disk.lock().await;
-            match disk_lock.get(&(function_id, engine_id)) {
-                Some(s) => s.clone(),
-                None => return Err(DandelionError::DispatcherUnavailableFunction),
-            }
-        };
-        recorder.record(RecordPoint::ParsingQueueu).unwrap();
-        let tripple = parse_queue
-            .enqueu_work(
-                machine_interface::function_driver::WorkToDo::ParsingArguments {
-                    driver: *driver,
-                    path,
-                    static_domain: domain,
-                    recorder: recorder.get_sub_recorder().unwrap(),
-                },
-            )
-            .await?
-            .get_function();
-        recorder.record(RecordPoint::ParsingDequeu).unwrap();
-        return Ok(tripple);
-    }
-
     pub async fn load(
         &self,
         function_id: FunctionId,
@@ -358,38 +360,59 @@ impl FunctionRegistry {
         non_caching: bool,
         mut recorder: Recorder,
     ) -> DandelionResult<(Context, FunctionConfig)> {
-        recorder.record(RecordPoint::LoadStart).unwrap();
+        // get loader
+        let (driver, load_queue) = match self.drivers.get(&engine_id) {
+            Some(l) => l,
+            None => {
+                return Err(DandelionError::DispatcherMissingLoader(format!(
+                    "{:?}",
+                    engine_id
+                )))
+            }
+        };
 
         // check if function for the engine is in registry already
-        let function_opt;
-        {
-            let lock_guard = self.in_memory.lock().await;
-            function_opt = lock_guard
-                .get(&(function_id, engine_id))
-                .and_then(|val| Some(val.clone()))
-        };
-        if let Some(function) = function_opt {
-            let function_context = function.load(domain, ctx_size)?;
-            recorder.record(RecordPoint::LoadEnd)?;
-            return Ok((function_context, function.config.clone()));
-        }
-        // TODO add check to see if local loading has already been kicked off, to avoid double parsing
-        // if it is not in memory or disk we return the error from loading as it is not available
-        let function = self
-            .load_local(function_id, engine_id, domain, &mut recorder)
-            .await?;
-        let function_context = function.load(domain, ctx_size)?;
+        // if it is not there enqueue the parsing
+        // if it is cached insert a shared future
+        let mut lock_guard = self.loadable.lock().await;
+        let function_future =
+            if let Some((path, future_option)) = lock_guard.get_mut(&(function_id, engine_id)) {
+                if let Some(func_future) = future_option {
+                    func_future.clone()
+                } else {
+                    let func_future = (Box::pin(load_local(
+                        domain,
+                        *driver,
+                        recorder.get_sub_recorder()?,
+                        load_queue.clone(),
+                        path.clone(),
+                    ))
+                        as Pin<Box<dyn Future<Output = DandelionResult<_>> + Send>>)
+                        .shared();
+                    if !non_caching {
+                        let _ = future_option.insert(func_future.clone());
+                    }
+                    func_future
+                }
+            } else {
+                return Err(DandelionError::DispatcherUnavailableFunction);
+            };
+        drop(lock_guard);
+        let function = function_future.await?;
         let function_config = function.config.clone();
-        if !non_caching {
-            self.in_memory
-                .lock()
-                .await
-                .insert((function_id, engine_id), Arc::new(function));
-            // TODO: insert can return something, so there was something loaded
-            // this happens when the same binary is loaded independently multiple times,
-            // need to figure out how to avoid this
-        }
-        recorder.record(RecordPoint::LoadEnd)?;
+        recorder.record(RecordPoint::LoadQueue)?;
+        let context_work_done = load_queue
+            .enqueu_work(
+                machine_interface::function_driver::WorkToDo::LoadingArguments {
+                    function,
+                    domain,
+                    recorder: recorder.get_sub_recorder()?,
+                    ctx_size: ctx_size,
+                },
+            )
+            .await;
+        recorder.record(RecordPoint::LoadDequeue)?;
+        let function_context = context_work_done?.get_context();
         return Ok((function_context, function_config));
     }
 }

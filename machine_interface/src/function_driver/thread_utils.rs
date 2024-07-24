@@ -103,6 +103,21 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                 }
                 continue;
             }
+            WorkToDo::LoadingArguments {
+                function,
+                domain,
+                ctx_size,
+                mut recorder,
+            } => {
+                recorder.record(RecordPoint::LoadStart).unwrap();
+                let load_result = function.load(domain, ctx_size);
+                recorder.record(RecordPoint::LoadEnd).unwrap();
+                match load_result {
+                    Ok(context) => debt.fulfill(Box::new(Ok(WorkDone::Context(context)))),
+                    Err(err) => debt.fulfill(Box::new(Err(err))),
+                }
+                continue;
+            }
             WorkToDo::Shutdown() => {
                 debt.fulfill(Box::new(Ok(WorkDone::Resources(vec![
                     ComputeResource::CPU(core_id),
