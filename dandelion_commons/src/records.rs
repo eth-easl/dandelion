@@ -42,6 +42,14 @@ pub enum RecordPoint {
     EngineEnd,
     /// Return from execution engine
     FutureReturn,
+    /// queue to post data
+    PostDataQueue,
+    /// start post data
+    PostDataStart,
+    /// end post data
+    PostDataEnd,
+    /// return post data
+    PostDataReturn,
     /// Send response back to the client
     EndService,
 }

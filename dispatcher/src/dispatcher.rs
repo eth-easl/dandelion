@@ -17,12 +17,12 @@ use futures::{
 use itertools::Itertools;
 use log::trace;
 use machine_interface::{
-    function_driver::{Driver, FunctionConfig, WorkToDo},
+    function_driver::{Driver, FunctionConfig, ReqwestWorkToDo, WorkToDo, WorkDone},
     machine_config::{
         get_available_domains, get_available_drivers, get_compatibilty_table, DomainType,
         EngineType,
     },
-    memory_domain::{Context, MemoryDomain},
+    memory_domain::{Context, MemoryDomain}, DataSet,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -95,6 +95,35 @@ impl Dispatcher {
             .function_registry
             .insert_compositions(&compositions)
             .await;
+    }
+
+    pub async fn post_data(
+        &self, 
+        id: String,
+        content: DataSet,
+        binary: Vec<u8>,
+        mut recorder: Recorder,
+    ) -> DandelionResult<()> {
+        let engine_queue = match self.engine_queues.get(&EngineType::Reqwest) {
+            Some(q) => q,
+            None => return Err(DandelionError::DispatcherConfigError),
+        };
+        let subrecoder = recorder.get_sub_recorder()?;
+        let args = WorkToDo::Reqwest {
+            work: ReqwestWorkToDo::PostData { id, content, binary },
+            recorder: subrecoder,
+        };
+        recorder.record(RecordPoint::PostDataQueue)?;
+        let result = engine_queue.enqueu_work(args).await?;
+        recorder.record(RecordPoint::PostDataReturn)?;
+        match result {
+            WorkDone::PostData => {
+                return Ok(())
+            }
+            _ => {
+                return Err(DandelionError::PostDataError(String::from("should have WorkDone::PostData")))
+            }
+        }
     }
 
     pub async fn queue_function_by_name(

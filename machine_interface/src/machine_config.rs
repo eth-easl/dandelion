@@ -50,7 +50,11 @@ const SYS_FUNC_DEFAULT_CONTEXT_SIZE: usize = 0x200_0000;
 pub fn get_system_functions(engine_type: EngineType) -> Vec<(SystemFunction, usize)> {
     return match engine_type {
         #[cfg(feature = "reqwest_io")]
-        EngineType::Reqwest => vec![(SystemFunction::HTTP, SYS_FUNC_DEFAULT_CONTEXT_SIZE)],
+        EngineType::Reqwest => vec![
+            (SystemFunction::HTTP, SYS_FUNC_DEFAULT_CONTEXT_SIZE),
+            (SystemFunction::SEND, SYS_FUNC_DEFAULT_CONTEXT_SIZE),
+            (SystemFunction::RECV, SYS_FUNC_DEFAULT_CONTEXT_SIZE)
+        ],
         #[allow(unreachable_patterns)]
         _ => Vec::new(),
     };
@@ -94,7 +98,7 @@ pub fn get_available_drivers() -> BTreeMap<EngineType, &'static dyn Driver> {
         (
             EngineType::Reqwest,
             Box::leak(Box::new(
-                crate::function_driver::system_driver::reqwest::ReqwestDriver {},
+                crate::function_driver::system_driver::reqwest::ReqwestDriver::new(),
             )) as &'static dyn Driver,
         ),
         #[cfg(feature = "cheri")]

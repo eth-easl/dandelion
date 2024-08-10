@@ -139,7 +139,7 @@ impl FunctionRegistry {
                 // get the config from the parser
                 let function_config = driver
                     .parse_function(
-                        String::from(""),
+                        String::from(system_function.to_string()),
                         *domains.get(type_map.get(engine_type).unwrap()).unwrap(),
                     )
                     .unwrap();

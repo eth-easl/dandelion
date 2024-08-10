@@ -1,6 +1,5 @@
 use crate::{
-    memory_domain::{Context, MemoryDomain},
-    DataRequirementList, Position,
+    memory_domain::{Context, MemoryDomain}, DataRequirementList, DataSet, Position
 };
 extern crate alloc;
 use alloc::sync::Arc;
@@ -29,13 +28,31 @@ pub struct ElfConfig {
 #[derive(Clone, Copy)]
 pub enum SystemFunction {
     HTTP,
+    SEND,
+    RECV
 }
 
 impl core::fmt::Display for SystemFunction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> core::fmt::Result {
         return match self {
             SystemFunction::HTTP => write!(f, "HTTP"),
+            SystemFunction::SEND => write!(f, "SEND"),
+            SystemFunction::RECV => write!(f, "RECV")
         };
+    }
+}
+
+impl core::str::FromStr for SystemFunction {
+
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "HTTP" => Ok(SystemFunction::HTTP),
+            "SEND" => Ok(SystemFunction::SEND),
+            "RECV" => Ok(SystemFunction::RECV),
+            _ => Err(format!("'{}' is not a valid SystemFunction", s)),
+        }
     }
 }
 
@@ -91,6 +108,14 @@ pub enum ComputeResource {
     GPU(u8),
 }
 
+pub enum ReqwestWorkToDo {
+    PostData{
+        id: String,
+        content: DataSet,
+        binary: Vec<u8>
+    }
+}
+
 pub enum WorkToDo {
     FunctionArguments {
         config: FunctionConfig,
@@ -115,6 +140,10 @@ pub enum WorkToDo {
         static_domain: &'static dyn MemoryDomain,
         recorder: Recorder,
     },
+    Reqwest {
+        work: ReqwestWorkToDo,
+        recorder: Recorder,
+    },
     Shutdown(),
 }
 
@@ -122,6 +151,7 @@ pub enum WorkDone {
     Context(Context),
     Function(Function),
     Resources(Vec<ComputeResource>),
+    PostData,
 }
 
 impl WorkDone {

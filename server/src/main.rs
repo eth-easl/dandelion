@@ -16,7 +16,7 @@ use hyper::{
 };
 use log::{debug, error, info, trace, warn};
 use machine_interface::{
-    function_driver::ComputeResource,
+    function_driver::{system_driver::distributed::DandelionSendInformation, ComputeResource},
     machine_config::EngineType,
     memory_domain::{bytes_context::BytesContext, read_only::ReadOnlyContext},
     DataItem, DataSet, Position,
@@ -64,6 +64,13 @@ enum DispatcherCommand {
         composition: String,
         callback: oneshot::Sender<DandelionResult<()>>,
     },
+    PostData {
+        id: String,
+        content: DataSet,
+        binary: Vec<u8>,
+        recorder: Recorder,
+        callback: oneshot::Sender<DandelionResult<()>>,
+    }
 }
 
 async fn serve_request(
@@ -281,6 +288,38 @@ async fn register_composition(
     )));
 }
 
+async fn post_data(
+    req: Request<Incoming>,
+    dispatcher: mpsc::Sender<DispatcherCommand>,
+) -> Result<Response<DandelionBody>, Infallible> {
+    let recorder = TRACING_ARCHIVE.get().unwrap().get_recorder().unwrap();
+    let bytes = req
+        .collect()
+        .await
+        .expect("failed to extract body from post data")
+        .to_bytes();
+    let send_info: DandelionSendInformation = 
+        bson::from_slice(&bytes).expect("should be able to deserialize send info");
+    let (callback, confirmation) = oneshot::channel();
+    dispatcher
+        .send(DispatcherCommand::PostData {
+            id: send_info.id,
+            content: send_info.content,
+            binary: send_info.binary,
+            recorder,
+            callback
+        })
+        .await
+        .unwrap();
+    confirmation
+        .await
+        .unwrap()
+        .expect("shoud be able to post data");
+    return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
+        "post data success".as_bytes().to_vec(),
+    )));
+}
+
 async fn serve_stats(_req: Request<Incoming>) -> Result<Response<DandelionBody>, Infallible> {
     let archive_ref = TRACING_ARCHIVE.get().unwrap();
     let response = Response::new(DandelionBody::from_vec(
@@ -313,6 +352,7 @@ async fn service(
         | "/hot/chain_scaling"
         | "/hot/middleware_app"
         | "/hot/python_app" => serve_request(false, req, dispatcher).await,
+        "/post_data" => post_data(req, dispatcher).await,
         "/stats" => serve_stats(req).await,
         other_uri => {
             trace!("Received request on {}", other_uri);
@@ -377,6 +417,23 @@ async fn dispatcher_loop(
                 spawn(async {
                     select! {
                         result = insertion_future => {
+                            callback.send(result).unwrap();
+                        }
+                        _ = callback.closed() => ()
+                    }
+                });
+            }
+            DispatcherCommand::PostData { 
+                id, 
+                content, 
+                binary ,
+                recorder,
+                mut callback,
+            } => {
+                let post_data_future = dispatcher.post_data(id, content, binary, recorder);
+                spawn(async {
+                    select! {
+                        result = post_data_future => {
                             callback.send(result).unwrap();
                         }
                         _ = callback.closed() => ()

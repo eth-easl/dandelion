@@ -72,6 +72,8 @@ pub enum DandelionError {
     PromiseDroppedDebt,
     /// there was a non recoverable issue when spawning or running the MMU worker
     MmuWorkerError,
+    /// invalid WorkToDos
+    InvalidWorkToDo,
     // system engine errors
     /// The arguments in the context handed to the system function are malformed or otherwise insufissient
     /// the string identifies the argument that was malformed or gives other information about the issue
@@ -82,6 +84,8 @@ pub enum DandelionError {
     SystemFuncResponseError,
     /// Tried to call parser for system function
     CalledSystemFuncParser,
+    /// Can't post or subscribe data from other Dandelion server
+    PostDataError(String),
     // dispatcher errors
     /// dispatcher does not find a loader for this engine type
     DispatcherMissingLoader(String),

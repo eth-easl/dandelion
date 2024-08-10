@@ -3,6 +3,15 @@ use crate::function_driver::SystemFunction;
 #[cfg(feature = "reqwest_io")]
 pub mod reqwest;
 
+#[cfg(feature = "reqwest_io")]
+pub mod http;
+
+#[cfg(feature = "reqwest_io")]
+pub mod distributed;
+
+#[cfg(feature = "reqwest_io")]
+pub mod context_util;
+
 /// HTTP function currently expects one set with requests formated by HTTP standard (in text).
 /// This means one line with the reqest method, a space, request url, another space and the protocol version
 /// ex.: "PUT /images/logo.png HTTP/1.1"
@@ -20,22 +29,30 @@ const HTTP_INPUT_SETS: [&str; 1] = ["request"];
 /// Additionally there is a set that only contains the bodies with the same item names as the requests.
 const HTTP_OUTPUT_SETS: [&str; 2] = ["response", "body"];
 
+const SEND_INPUT_SETS: [&str; 2] = ["send_meta", "send_data"];
+
+const SEND_OUTPUT_SETS: [&str; 0] = [];
+
+const RECV_INPUT_SETS: [&str; 1] = ["recv_meta"];
+
+const RECV_OUTPUT_SETS: [&str; 1] = ["recv_data"];
+
 /// Provides the input set names for a given system function
 pub fn get_system_function_input_sets(function: SystemFunction) -> Vec<String> {
     return match function {
-        SystemFunction::HTTP => HTTP_INPUT_SETS,
+        SystemFunction::HTTP => HTTP_INPUT_SETS.iter().map(|&name| name.to_string()).collect(),
+        SystemFunction::SEND => SEND_INPUT_SETS.iter().map(|&name| name.to_string()).collect(),
+        SystemFunction::RECV => RECV_INPUT_SETS.iter().map(|&name| name.to_string()).collect()
     }
-    .map(|name| name.to_string())
-    .to_vec();
 }
 
 /// Provies the output set names for a given system function
 pub fn get_system_function_output_sets(function: SystemFunction) -> Vec<String> {
     return match function {
-        SystemFunction::HTTP => &HTTP_OUTPUT_SETS,
+        SystemFunction::HTTP => HTTP_OUTPUT_SETS.iter().map(|&name| name.to_string()).collect(),
+        SystemFunction::SEND => SEND_OUTPUT_SETS.iter().map(|&name| name.to_string()).collect(),
+        SystemFunction::RECV => RECV_OUTPUT_SETS.iter().map(|&name| name.to_string()).collect()
     }
-    .map(|name| name.to_string())
-    .to_vec();
 }
 
 #[cfg(test)]

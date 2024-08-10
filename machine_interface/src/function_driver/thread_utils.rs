@@ -3,7 +3,7 @@ use crate::{
     memory_domain::{self, Context},
 };
 use core::marker::Send;
-use dandelion_commons::{records::RecordPoint, DandelionResult};
+use dandelion_commons::{records::RecordPoint, DandelionError, DandelionResult};
 use std::thread::spawn;
 
 extern crate alloc;
@@ -108,6 +108,9 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                     ComputeResource::CPU(core_id),
                 ]))));
                 return;
+            }
+            _ => {
+                debt.fulfill(Box::new(Err(DandelionError::InvalidWorkToDo)));
             }
         }
     }
