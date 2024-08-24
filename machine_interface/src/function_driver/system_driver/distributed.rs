@@ -8,6 +8,7 @@ use reqwest::Client;
 use super::context_util::{get_dataset_by_ident, get_dataitem_by_ident, read_dataitem_content};
 use std::{collections::{btree_map::Entry::{Occupied, Vacant}, BTreeMap}, sync::Arc};
 use tokio::sync::{mpsc::{self, Sender}, Mutex};
+use log::debug;
 
 pub enum IntermediateData {
     Ready(Arc<(DataSet, Vec<u8>)>),
@@ -18,7 +19,6 @@ pub struct IntermediateDataPool {
     pool: Mutex<BTreeMap<String, IntermediateData>>,
 }
 
-// TODO: consider this carefully
 impl IntermediateDataPool {
     pub fn new() -> Self {
         Self {
@@ -98,6 +98,7 @@ pub struct DandelionSendInformation {
     addr: String,
     pub id: String,
     pub content: DataSet,
+    #[serde(skip)]
     pub binary: Vec<u8>
 }
 
@@ -113,8 +114,10 @@ fn dandelion_send_setup(context: &Context) -> DandelionResult<DandelionSendInfor
         Ok(addr) => Ok(addr),
         Err(_) => Err(DandelionError::MalformedSystemFuncArg(String::from("send: dandelion id not valid"))),
     }?;
+    // TODO: the following code should use dandelion_server::DandelionBody::new to construct response
+    // consider put id in http header
     let send_data_set = get_dataset_by_ident(context, String::from("send_data"))?;
-    let mut content = send_data_set.clone(); // TODO: check if it's deep clone
+    let mut content = send_data_set.clone();
     let mut binary: Vec<u8> = vec![];
     let mut offset = 0;
     content.buffers.iter_mut().try_for_each(|item| {
@@ -134,12 +137,17 @@ fn dandelion_send_setup(context: &Context) -> DandelionResult<DandelionSendInfor
 
 async fn dandelion_send_request(
     client: Client, 
-    send_info: DandelionSendInformation
+    mut send_info: DandelionSendInformation
 ) -> DandelionResult<()> {
+    debug!("send data, length: {}", send_info.binary.len());
+    let mut meta_binary = bson::to_vec(&send_info).unwrap();
+    let mut data = bincode::serialize(&meta_binary.len()).unwrap();
+    data.append(&mut meta_binary);
+    data.append(&mut send_info.binary);
     let addr = &send_info.addr;
     if !client
         .post(format!("{addr}/post_data"))
-        .body(bson::to_vec(&send_info).unwrap())
+        .body(data)
         .send()
         .await
         .unwrap()
@@ -225,6 +233,7 @@ pub async fn dandelion_recv(
             return;
         }
     };
+    debug!("recv data, length: {}", binary.len());
     context.clear_metadata();
     if !output_set_names.is_empty() {
         context.content = vec![None];

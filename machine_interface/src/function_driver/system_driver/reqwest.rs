@@ -1,6 +1,6 @@
 use crate::{
     function_driver::{
-        ComputeResource, Driver, Function, FunctionConfig, ReqwestWorkToDo, SystemFunction, WorkDone, WorkQueue, WorkToDo
+        ComputeResource, Driver, Function, FunctionConfig, ReqwestWork, SystemFunction, WorkDone, WorkQueue, WorkToDo
     },
     promise::Debt,
 };
@@ -232,7 +232,7 @@ impl Driver for ReqwestDriver {
         function_path: String,
         static_domain: &'static dyn crate::memory_domain::MemoryDomain,
     ) -> DandelionResult<Function> {
-        if function_path.len() != 0 {
+        if function_path.len() == 0 {
             return Err(DandelionError::CalledSystemFuncParser);
         }
         let system_function = SystemFunction::from_str(&function_path).unwrap();

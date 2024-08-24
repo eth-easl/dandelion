@@ -298,8 +298,11 @@ async fn post_data(
         .await
         .expect("failed to extract body from post data")
         .to_bytes();
-    let send_info: DandelionSendInformation = 
-        bson::from_slice(&bytes).expect("should be able to deserialize send info");
+    // TODO: the following code should use BytesContext::from_bytes_vec to construct context, but should extract id first
+    let meta_binary_len: usize = bincode::deserialize(&bytes[..8]).unwrap();
+    let mut send_info: DandelionSendInformation = 
+        bson::from_slice(&bytes[8..8+meta_binary_len]).expect("should be able to deserialize send info");
+    send_info.binary = bytes[8+meta_binary_len..].to_vec();
     let (callback, confirmation) = oneshot::channel();
     dispatcher
         .send(DispatcherCommand::PostData {

@@ -26,6 +26,7 @@ signal-hook = "0.3.17"
 signal-hook-tokio = {version = "0.3.1", features = [ "futures-v0_3"]}
 # input parsing
 clap = {version = "4.5", features = ["env","derive"]}
+bincode = "1.3.3"
 
 [dev-dependencies]
 assert_cmd = "2.0"
