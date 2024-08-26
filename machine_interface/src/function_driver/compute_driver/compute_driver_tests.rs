@@ -609,7 +609,7 @@ pub(crate) mod compute_driver_tests {
                     .collect())).expect("Should have at least one core");
         vec![
             ComputeResource::CPU(255),
-            ComputeResource::GPU(0)
+            ComputeResource::GPU(0, 0, 0)
         ]);
     }
 
@@ -641,7 +641,7 @@ pub(crate) mod compute_driver_tests {
                     .collect())).expect("Should have at least one core");
         vec![
             ComputeResource::CPU(255),
-            ComputeResource::GPU(0),
+            ComputeResource::GPU(0, 0, 0),
         ]);
     }
 
@@ -661,7 +661,7 @@ pub(crate) mod compute_driver_tests {
                     .collect())).expect("Should have at least one core");
         vec![
             ComputeResource::CPU(255),
-            ComputeResource::GPU(0, 0),
+            ComputeResource::GPU(0, 0, 0),
         ]);
 
         #[cfg(target_arch = "aarch64")]
@@ -675,7 +675,7 @@ pub(crate) mod compute_driver_tests {
                     .collect())).expect("Should have at least one core");
         vec![
             ComputeResource::CPU(255),
-            ComputeResource::GPU(0),
+            ComputeResource::GPU(0, 0, 0),
         ]);
     }
 }
