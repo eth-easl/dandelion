@@ -1,14 +1,9 @@
-use std::collections::HashMap;
-
-#[cfg(feature = "gpu")]
-use crate::function_driver::compute_driver::gpu::{buffer_pool::BufferPool, hip};
-
 use crate::{
     memory_domain::{Context, ContextState, ContextTrait},
     DataItem, DataSet, Position,
 };
 use dandelion_commons::{DandelionError, DandelionResult};
-use libc::{c_int, c_void, size_t, uintptr_t};
+use libc::{c_int, size_t, uintptr_t};
 extern crate alloc;
 use std::fmt::Debug;
 
@@ -20,24 +15,28 @@ where
     fn to_native(self) -> DandelionResult<usize>;
 }
 
+#[macro_export]
 /// macro to convert usize to SizeT
 macro_rules! size_t {
     ($val:expr) => {
         SizeT::from_native($val)?
     };
 }
+#[macro_export]
 /// macro to convert SizeT to usize
 macro_rules! usize {
     ($val:expr) => {
         SizeT::to_native($val)?
     };
 }
+#[macro_export]
 /// macro to convert usize to PtrT
 macro_rules! ptr_t {
     ($val:expr) => {
         PtrT::from_native($val)?
     };
 }
+#[macro_export]
 /// macro to convert PtrT to usize
 macro_rules! usize_ptr {
     ($val:expr) => {
@@ -96,105 +95,33 @@ pub mod _native {
 #[derive(Debug, Clone, Default)]
 #[repr(C)]
 pub struct DandelionSystemData<PtrT: SizedIntTrait, SizeT: SizedIntTrait> {
-    exit_code: c_int,
-    heap_begin: PtrT,       // uintptr_t,
-    heap_end: PtrT,         // uintptr_t,
-    input_sets_len: SizeT,  // size_t,
-    input_sets: PtrT,       // *const IoSetInfo,
-    output_sets_len: SizeT, // size_t,
-    output_sets: PtrT,      // *const IoSetInfo,
-    input_bufs: PtrT,       // *const IoBufferDescriptor,
-    output_bufs: PtrT,      // *const IoBufferDescriptor,
+    pub exit_code: c_int,
+    pub heap_begin: PtrT,       // uintptr_t,
+    pub heap_end: PtrT,         // uintptr_t,
+    pub input_sets_len: SizeT,  // size_t,
+    pub input_sets: PtrT,       // *const IoSetInfo,
+    pub output_sets_len: SizeT, // size_t,
+    pub output_sets: PtrT,      // *const IoSetInfo,
+    pub input_bufs: PtrT,       // *const IoBufferDescriptor,
+    pub output_bufs: PtrT,      // *const IoBufferDescriptor,
 }
 
 #[derive(Clone, Debug)]
 #[repr(C)]
-struct IoSetInfo<PtrT: SizedIntTrait, SizeT: SizedIntTrait> {
-    ident: PtrT,      // uintptr_t,
-    ident_len: SizeT, // size_t,
-    offset: SizeT,    // size_t,
+pub struct IoSetInfo<PtrT: SizedIntTrait, SizeT: SizedIntTrait> {
+    pub ident: PtrT,      // uintptr_t,
+    pub ident_len: SizeT, // size_t,
+    pub offset: SizeT,    // size_t,
 }
 
 #[derive(Clone)]
 #[repr(C)]
-struct IoBufferDescriptor<PtrT: SizedIntTrait, SizeT: SizedIntTrait> {
-    ident: PtrT,      // uintptr_t,
-    ident_len: SizeT, // size_t,
-    data: PtrT,       // uintptr_t,
-    data_len: SizeT,  // size_t,
-    key: SizeT,       // size_t,
-}
-
-#[cfg(feature = "gpu")]
-/// Only really used for GPU, but defined here so we can access private fields of DandelionSystemData
-/// # Safety
-/// Requires *base* to point to the stat of *context*
-pub unsafe fn write_gpu_outputs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
-    context: &mut Context,
-    system_data_offset: usize,
-    base: *mut u8,
-    output_set_names: &[String],
-    device_buffers: &HashMap<String, (usize, usize)>,
-    buffer_pool: &BufferPool,
-) -> DandelionResult<()> {
-    // read the system buffer
-    let mut system_struct = DandelionSystemData::<PtrT, SizeT>::default();
-    context.read(
-        system_data_offset,
-        core::slice::from_mut(&mut system_struct),
-    )?;
-
-    let output_set_number = usize!(system_struct.output_sets_len);
-    let mut output_set_info = vec![];
-    if output_set_info.try_reserve(output_set_number + 1).is_err() {
-        return Err(DandelionError::OutOfMemory);
-    }
-    let empty_output_set = IoSetInfo::<PtrT, SizeT> {
-        ident: ptr_t!(0),
-        ident_len: size_t!(0),
-        offset: size_t!(0),
-    };
-    output_set_info.resize_with(output_set_number + 1, || empty_output_set.clone());
-    context.read(usize_ptr!(system_struct.output_sets), &mut output_set_info)?;
-
-    let mut output_buffers: Vec<IoBufferDescriptor<PtrT, SizeT>> = Vec::new();
-    if output_buffers
-        .try_reserve_exact(output_set_names.len())
-        .is_err()
-    {
-        return Err(DandelionError::OutOfMemory);
-    }
-    for (i, output_name) in output_set_names.iter().enumerate() {
-        // alignment shouldn't really make a huge difference
-        let (dev_ptr_idx, size) = device_buffers
-            .get(output_name)
-            .ok_or(DandelionError::ConfigMissmatch)?;
-        let buf_offset = context.get_free_space(*size, 8)?;
-
-        let dst = unsafe { base.byte_offset(buf_offset as isize) } as *const c_void;
-        let dev_ptr = buffer_pool.get(*dev_ptr_idx)?;
-        hip::memcpy_d_to_h(dst, &dev_ptr, *size)?;
-
-        output_buffers.push(IoBufferDescriptor {
-            ident: ptr_t!(0),
-            ident_len: size_t!(0),
-            data: ptr_t!(buf_offset),
-            data_len: size_t!(*size),
-            key: size_t!(0),
-        });
-        output_set_info[i].offset = size_t!(i);
-    }
-    output_set_info[output_set_number].offset = size_t!(output_set_number);
-
-    context.write(usize_ptr!(system_struct.output_sets), &output_set_info)?;
-
-    let output_buffers_offset: PtrT =
-        ptr_t!(context.get_free_space_and_write_slice(&output_buffers[..])? as usize);
-
-    system_struct.output_bufs = output_buffers_offset;
-
-    context.write(system_data_offset, core::slice::from_ref(&system_struct))?;
-    Ok(())
+pub struct IoBufferDescriptor<PtrT: SizedIntTrait, SizeT: SizedIntTrait> {
+    pub ident: PtrT,      // uintptr_t,
+    pub ident_len: SizeT, // size_t,
+    pub data: PtrT,       // uintptr_t,
+    pub data_len: SizeT,  // size_t,
+    pub key: SizeT,       // size_t,
 }
 
 pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(

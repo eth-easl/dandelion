@@ -4,7 +4,7 @@ use crate::{
         thread_utils::{run_thread, EngineLoop},
         ComputeResource, Driver, Function, FunctionConfig, GpuConfig, WorkQueue,
     },
-    interface::{read_output_structs, setup_input_structs, write_gpu_outputs, DandelionSystemData},
+    interface::{read_output_structs, setup_input_structs, DandelionSystemData},
     memory_domain::{Context, ContextTrait, ContextType},
     DataItem, DataRequirementList, DataSet, Position,
 };
@@ -27,7 +27,9 @@ use std::{
 use self::{
     buffer_pool::BufferPool,
     config_parsing::{Action, Argument, RuntimeGpuConfig},
-    gpu_utils::{copy_data_to_device, get_data_length, get_size, start_gpu_process_pool},
+    gpu_utils::{
+        copy_data_to_device, get_data_length, get_size, start_gpu_process_pool, write_gpu_outputs,
+    },
     hip::DEFAULT_STREAM,
 };
 
