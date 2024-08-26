@@ -124,7 +124,7 @@ impl Function {
 #[derive(Debug, Clone, Copy)]
 pub enum ComputeResource {
     CPU(u8),
-    GPU(u8, u8), // TODO change back to GPU(u8) once Driver.start_engine() takes a vec of ComputeResources
+    GPU(u8, u8, u8), // CPU core, GPU id, number of workers per GPU (only relevant for gpu_process). Eventually the CPU and GPU parts should be split
 }
 
 pub enum WorkToDo {

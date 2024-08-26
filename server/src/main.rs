@@ -581,15 +581,20 @@ fn main() -> () {
     pool_map.insert(engine_type, compute_cores);
     #[cfg(any(feature = "gpu_thread", feature = "gpu_process"))]
     {
-        let gpu_count: u8 = 4; // TODO: don't hard code this
+        let gpu_count: u8 = config.gpu_count as u8;
         pool_map.insert(
             engine_type,
             config
                 .get_computation_cores()
                 .iter()
-                .step_by(4) // TODO: don't hard code this - related to number of workers
+                // The gpu_process engine relies on having such a contiguous region of CPU cores available -- one core
+                // goes to the Dandelion process thread of each worker and then another to the actual worker process.
+                // Once the system moves to giving Vecs of ComputeResources this needs to be changed
+                .step_by(config.gpu_worker_count * 2)
                 .zip(0..gpu_count)
-                .map(|(cpu_id, gpu_id)| ComputeResource::GPU(*cpu_id, gpu_id))
+                .map(|(cpu_id, gpu_id)| {
+                    ComputeResource::GPU(*cpu_id, gpu_id, config.gpu_worker_count as u8)
+                })
                 .collect(),
         );
     }

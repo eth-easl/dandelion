@@ -25,7 +25,7 @@ pub fn run_thread<E: EngineLoop>(
     // get CPU from resource
     let core_id = match initialisation_resource {
         ComputeResource::CPU(id) => id,
-        ComputeResource::GPU(id, _) => id,
+        ComputeResource::GPU(id, _, _) => id,
     };
     // set core affinity
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
@@ -129,7 +129,7 @@ pub fn run_thread<E: EngineLoop>(
             }
             WorkToDo::Shutdown() => {
                 debt.fulfill(Box::new(Ok(WorkDone::Resources(vec![
-                    ComputeResource::CPU(core_id),
+                    initialisation_resource,
                 ]))));
                 return;
             }

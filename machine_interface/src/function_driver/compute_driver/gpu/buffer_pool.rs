@@ -3,12 +3,6 @@ use log::debug;
 
 use super::hip::{self, DeviceAllocation, DevicePointer};
 
-#[allow(non_upper_case_globals)]
-const Gi: usize = 1 << 30;
-
-// REGION_SIZE * #engines_on_device should never exceed total VRAM capacity (64GiB for MI210)
-const REGION_SIZE: usize = 15 * Gi;
-
 #[derive(Debug)]
 struct Buffer {
     offset: usize,
@@ -30,10 +24,10 @@ pub struct BufferPool {
 }
 
 impl BufferPool {
-    pub fn try_new(gpu_id: u8) -> DandelionResult<Self> {
+    pub fn try_new(gpu_id: u8, region_size: usize) -> DandelionResult<Self> {
         hip::set_device(gpu_id)?;
 
-        let mut allocation = hip::DeviceAllocation::try_new(REGION_SIZE)?;
+        let mut allocation = hip::DeviceAllocation::try_new(region_size)?;
         allocation.zero_out()?;
         // sentinel buffer to simplify logic
         let buffers = vec![Buffer::sentinel()];

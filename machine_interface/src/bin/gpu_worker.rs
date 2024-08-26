@@ -14,9 +14,10 @@ use machine_interface::{
 fn main() {
     // parse args
     let args: Vec<String> = std::env::args().collect();
-    assert_eq!(args.len(), 3);
+    assert_eq!(args.len(), 4);
     let core_id: u8 = args[1].parse().expect("Invalid core ID");
     let gpu_id: u8 = args[2].parse().expect("Invalid GPU ID");
+    let worker_count: u8 = args[3].parse().expect("Invalid worker count");
 
     // set cpu affinity
     assert!(core_affinity::set_for_current(CoreId {
@@ -24,7 +25,7 @@ fn main() {
     }));
 
     // setup worker struct
-    let mut worker = GpuLoop::init(ComputeResource::GPU(core_id, gpu_id))
+    let mut worker = GpuLoop::init(ComputeResource::GPU(core_id, gpu_id, worker_count))
         .expect("Should be able to create worker");
 
     // unwrap okay, as all lines are valid Strings

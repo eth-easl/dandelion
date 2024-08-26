@@ -203,7 +203,7 @@ struct Worker {
 }
 
 impl Worker {
-    fn new(core_id: u8, gpu_id: u8) -> Self {
+    fn new(core_id: u8, gpu_id: u8, worker_count: u8) -> Self {
         // this trick gives the desired path of mmu_worker for packages within the workspace
         let path = std::env::var("PROCESS_WORKER_PATH").unwrap_or(format!(
             "{}/../target/{}-unknown-linux-gnu/{}/gpu_worker",
@@ -219,6 +219,7 @@ impl Worker {
         let mut child = Command::new(path)
             .arg(core_id.to_string())
             .arg(gpu_id.to_string())
+            .arg(worker_count.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -301,7 +302,7 @@ pub struct SendFunctionArgs {
 }
 
 fn manage_worker(
-    resources: (u8, u8),
+    resources: (u8, u8, u8),
     core_id: u8,
     gpu_id: u8,
     queue: Arc<dyn WorkQueue + Send + Sync>,
@@ -312,7 +313,7 @@ fn manage_worker(
         log::error!("core received core id that could not be set");
         return;
     }
-    let mut worker = Worker::new(core_id + 1, gpu_id);
+    let mut worker = Worker::new(core_id + 1, gpu_id, resources.2);
     let mut line = String::new();
 
     loop {
@@ -463,7 +464,7 @@ fn manage_worker(
             WorkToDo::Shutdown() => {
                 // Return original resources that were given to Engine
                 debt.fulfill(Box::new(Ok(WorkDone::Resources(vec![
-                    ComputeResource::GPU(resources.0, resources.1),
+                    ComputeResource::GPU(resources.0, resources.1, resources.2),
                 ]))));
 
                 // Inform other threads to shutdown as well when they are done
@@ -474,14 +475,25 @@ fn manage_worker(
     }
 }
 
-const NUM_WORKERS: u8 = 2;
-
-pub fn start_gpu_process_pool(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue + Send + Sync>) {
+pub fn start_gpu_process_pool(
+    core_id: u8,
+    gpu_id: u8,
+    worker_count: u8,
+    queue: Box<dyn WorkQueue + Send + Sync>,
+) {
     let done = Arc::new(AtomicBool::new(false));
     let queue: Arc<dyn WorkQueue + Send + Sync> = queue.into();
-    for offset in 0..NUM_WORKERS {
+    for offset in 0..worker_count {
         let queue = queue.clone();
         let done = done.clone();
-        spawn(move || manage_worker((core_id, gpu_id), core_id + 2 * offset, gpu_id, queue, done));
+        spawn(move || {
+            manage_worker(
+                (core_id, gpu_id, worker_count),
+                core_id + 2 * offset,
+                gpu_id,
+                queue,
+                done,
+            )
+        });
     }
 }

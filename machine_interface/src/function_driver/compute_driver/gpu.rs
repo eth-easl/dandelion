@@ -198,9 +198,15 @@ pub struct GpuLoop {
     receiver: Receiver<DandelionResult<Context>>,
 }
 
+#[allow(non_upper_case_globals)]
+const Gi: usize = 1 << 30;
+
+// TODO: add adaptive amount of other GPUs are used, MI210 has 64GiB
+const VRAM_SIZE: usize = 60 * Gi;
+
 impl EngineLoop for GpuLoop {
     fn init(resource: ComputeResource) -> DandelionResult<Box<Self>> {
-        let ComputeResource::GPU(cpu_slot, gpu_id) = resource else {
+        let ComputeResource::GPU(cpu_slot, gpu_id, worker_count) = resource else {
             return Err(DandelionError::EngineResourceError);
         };
 
@@ -209,7 +215,10 @@ impl EngineLoop for GpuLoop {
         Ok(Box::new(Self {
             cpu_slot: cpu_slot as usize,
             gpu_id,
-            buffers: Arc::new(Mutex::new(BufferPool::try_new(gpu_id)?)),
+            buffers: Arc::new(Mutex::new(BufferPool::try_new(
+                gpu_id,
+                VRAM_SIZE / worker_count as usize,
+            )?)),
             sender,
             receiver,
         }))
@@ -298,10 +307,10 @@ fn common_parse(
 }
 
 // Engine start-up logic that can be shared between gpu_thread and gpu_process variants
-fn common_start(resource: ComputeResource) -> DandelionResult<(u8, u8)> {
+fn common_start(resource: ComputeResource) -> DandelionResult<(u8, u8, u8)> {
     // extract resources
-    let (cpu_slot, gpu_id) = match resource {
-        ComputeResource::GPU(cpu, gpu) => (cpu, gpu),
+    let (cpu_slot, gpu_id, worker_count) = match resource {
+        ComputeResource::GPU(cpu, gpu, worker_count) => (cpu, gpu, worker_count),
         _ => return Err(DandelionError::EngineResourceError),
     };
     // check that core is available
@@ -320,7 +329,7 @@ fn common_start(resource: ComputeResource) -> DandelionResult<(u8, u8)> {
         return Err(DandelionError::EngineResourceError);
     }
 
-    Ok((cpu_slot, gpu_id))
+    Ok((cpu_slot, gpu_id, worker_count))
 }
 
 pub struct GpuThreadDriver {}
@@ -331,9 +340,10 @@ impl Driver for GpuThreadDriver {
         resource: ComputeResource,
         queue: Box<dyn WorkQueue + Send + Sync>,
     ) -> dandelion_commons::DandelionResult<()> {
-        let (cpu_slot, gpu_id) = common_start(resource)?;
+        let (cpu_slot, gpu_id, _) = common_start(resource)?;
 
-        spawn(move || run_thread::<GpuLoop>(ComputeResource::GPU(cpu_slot, gpu_id), queue));
+        // Pass worker_count as 1 to make sure gpu_thread takes full memory region
+        spawn(move || run_thread::<GpuLoop>(ComputeResource::GPU(cpu_slot, gpu_id, 1), queue));
         Ok(())
     }
 
@@ -354,9 +364,9 @@ impl Driver for GpuProcessDriver {
         resource: ComputeResource,
         queue: Box<dyn WorkQueue + Send + Sync>,
     ) -> dandelion_commons::DandelionResult<()> {
-        let (cpu_slot, gpu_id) = common_start(resource)?;
+        let (cpu_slot, gpu_id, worker_count) = common_start(resource)?;
 
-        start_gpu_process_pool(cpu_slot, gpu_id, queue);
+        start_gpu_process_pool(cpu_slot, gpu_id, worker_count, queue);
         Ok(())
     }
 

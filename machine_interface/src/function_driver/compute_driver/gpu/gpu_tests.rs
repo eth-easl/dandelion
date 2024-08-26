@@ -46,7 +46,7 @@ fn minimal() {
         ),
         MemoryResource::None,
         driver,
-        vec![ComputeResource::GPU(7, 1)],
+        vec![ComputeResource::GPU(7, 1, 2)],
     );
     drop(lock);
 }
@@ -62,7 +62,7 @@ fn basic_input_output() {
         ),
         MemoryResource::None,
         &driver,
-        vec![ComputeResource::GPU(7, 0)],
+        vec![ComputeResource::GPU(7, 0, 2)],
     );
     // add inputs
     let in_size_offset = function_context
@@ -130,7 +130,7 @@ fn engine_matmul_3x3_loop() {
     );
     let dom_init = MemoryResource::None;
     let driver: Box<dyn Driver> = get_driver();
-    let drv_init = vec![ComputeResource::GPU(7, 0)];
+    let drv_init = vec![ComputeResource::GPU(7, 0, 2)];
     let (mut function_context, config, queue) =
         prepare_engine_and_function::<GpuMemoryDomain>(filename, dom_init, &driver, drv_init);
     // add inputs, split over two buffers to test concatenating them in GPU memory
@@ -216,7 +216,7 @@ fn engine_matmul_size_sweep_parallel() {
     );
     let dom_init = MemoryResource::None;
     let driver: Box<dyn Driver> = get_driver();
-    let drv_init = vec![ComputeResource::GPU(7, 0)];
+    let drv_init = vec![ComputeResource::GPU(7, 0, 2)];
     const LOWER_SIZE_BOUND: usize = 2;
     const UPPER_SIZE_BOUND: usize = 16;
     for mat_size in LOWER_SIZE_BOUND..UPPER_SIZE_BOUND {
@@ -411,7 +411,7 @@ fn inference_benchmark_function() {
     );
     let dom_init = MemoryResource::None;
     let driver: Box<dyn Driver> = get_driver();
-    let drv_init = vec![ComputeResource::GPU(7, 0)];
+    let drv_init = vec![ComputeResource::GPU(7, 0, 2)];
     let (mut function_context, config, queue) =
         prepare_engine_and_function::<GpuMemoryDomain>(filename, dom_init, &driver, drv_init);
     let d_size: usize = 112 * 112 * 4 + 8; //side_len * side_len * sizeof(float) + [[size convention at start]]
