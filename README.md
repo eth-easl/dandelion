@@ -130,3 +130,6 @@ To use a `gpu_worker` that is not at the original location it was built in, set 
 
 ## GPU engine library path
 `DANDELION_LIBRARY_PATH` overwrites the directory where the GPU engines will look for kernel libraries. If the variable is unset the engines will look in `machine_interface/tests/libs/`.
+
+## GPU Allocations
+To prevent memory leakage, GPU kernels are disallowed from calling `malloc()`. All the memory a kernel requires should be specified in the respective config file.

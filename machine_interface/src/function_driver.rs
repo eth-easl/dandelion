@@ -1,5 +1,3 @@
-use std::{collections::HashMap, sync::Mutex};
-
 use crate::{
     interface::DandelionSystemData,
     memory_domain::{transfer_memory, Context, MemoryDomain},
@@ -11,10 +9,12 @@ use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
 
 #[cfg(feature = "wasm")]
 use libloading::Library;
-use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "gpu")]
-use self::compute_driver::gpu::{config_parsing::ExecutionBlueprint, hip::FunctionT};
+use {
+    self::compute_driver::gpu::config_parsing::ExecutionBlueprint,
+    serde::{Deserialize, Serialize},
+};
 
 pub mod compute_driver;
 mod load_utils;

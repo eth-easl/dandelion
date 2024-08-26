@@ -235,6 +235,7 @@ impl EngineLoop for GpuLoop {
             sender.send(result).unwrap();
         });
 
+        // TODO: add proper error handling mechanisms
         // Use an mpsc to receive results. If a fault occured, the handler could be registered to put an error on the channel,
         // while the work thread wouldn't return. This means it would have to be shot down
         let mut context = self
@@ -249,6 +250,7 @@ impl EngineLoop for GpuLoop {
     }
 }
 
+// Function parsing logic that can be shared between gpu_thread and gpu_process variants
 fn common_parse(
     function_path: String,
     static_domain: &'static dyn crate::memory_domain::MemoryDomain,
@@ -293,6 +295,7 @@ fn common_parse(
     })
 }
 
+// Engine start-up logic that can be shared between gpu_thread and gpu_process variants
 fn common_start(resource: ComputeResource) -> DandelionResult<(u8, u8)> {
     // extract resources
     let (cpu_slot, gpu_id) = match resource {

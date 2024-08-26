@@ -161,7 +161,6 @@ impl MmapMem {
     }
 
     // Memory-maps a file and protection flags, at the given address.
-    // TODO good name; replace eprintln with error again
     pub fn alt_open(filename: &str, prot: ProtFlags) -> Result<MmapMem, DandelionError> {
         let shmem_fd = match shm_open(filename, OFlag::O_RDWR, Mode::S_IRUSR) {
             Err(err) => {
