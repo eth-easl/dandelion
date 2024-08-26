@@ -151,34 +151,7 @@ mod server_tests {
         assert_eq!(1, checksum);
     }
 
-    // <<<<<<< HEAD
-    //     #[test]
-    //     fn serve_matmul() {
-    //         let lock = TEST_LOCK.lock().unwrap();
-    //         let mut cmd = Command::cargo_bin("dandelion_server").unwrap();
-    //         let server = cmd
-    //             .stdout(Stdio::piped())
-    //             .stderr(Stdio::piped())
-    //             .env("DANDELION_LIBRARY_PATH", "/tmp/dandelion_server/libs/")
-    //             .spawn()
-    //             .unwrap();
-    //         let mut server_killer = ServerKiller { server };
-    //         let mut reader = BufReader::new(server_killer.server.stdout.take().unwrap());
-    //         loop {
-    //             let mut buf = String::new();
-    //             let len = reader.read_line(&mut buf).unwrap();
-    //             assert_ne!(len, 0, "Server exited unexpectedly");
-    //             if buf.contains("Server start") {
-    //                 break;
-    //             } else {
-    //                 print!("{}", buf);
-    //             }
-    //         }
-    //         let _ = server_killer.server.stdout.insert(reader.into_inner());
-
-    // =======
     fn register_and_request(http_version: reqwest::Version, client: Client) {
-        // register function
         let version: String;
         let mut engine_type;
         #[cfg(feature = "wasm")]

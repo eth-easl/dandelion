@@ -53,7 +53,7 @@ required-features = ["mmu"]
 
 [[bin]]
 name = "gpu_worker"
-required-features = ["gpu"]
+required-features = ["gpu_process"]
 
 [[bench]]
 name = "cheri_benchmark"
