@@ -12,7 +12,7 @@ use crate::{
         },
         ComputeResource, Driver, WorkToDo,
     },
-    memory_domain::{mmu::MmuMemoryDomain, ContextTrait, MemoryResource},
+    memory_domain::{gpu::GpuMemoryDomain, ContextTrait, MemoryResource},
     DataItem, DataSet, Position,
 };
 
@@ -39,7 +39,7 @@ fn get_driver() -> Box<dyn Driver> {
 fn minimal() {
     let lock = GPU_LOCK.lock().unwrap();
     let driver: Box<dyn Driver> = get_driver();
-    engine_minimal::<MmuMemoryDomain>(
+    engine_minimal::<GpuMemoryDomain>(
         &format!(
             "{}/tests/data/test_gpu_minimal.json",
             env!("CARGO_MANIFEST_DIR")
@@ -55,7 +55,7 @@ fn minimal() {
 fn basic_input_output() {
     let lock = GPU_LOCK.lock().unwrap();
     let driver: Box<dyn Driver> = get_driver();
-    let (mut function_context, config, queue) = prepare_engine_and_function::<MmuMemoryDomain>(
+    let (mut function_context, config, queue) = prepare_engine_and_function::<GpuMemoryDomain>(
         &format!(
             "{}/tests/data/test_gpu_basic_io.json",
             env!("CARGO_MANIFEST_DIR")
@@ -132,7 +132,7 @@ fn engine_matmul_3x3_loop() {
     let driver: Box<dyn Driver> = get_driver();
     let drv_init = vec![ComputeResource::GPU(7, 0)];
     let (mut function_context, config, queue) =
-        prepare_engine_and_function::<MmuMemoryDomain>(filename, dom_init, &driver, drv_init);
+        prepare_engine_and_function::<GpuMemoryDomain>(filename, dom_init, &driver, drv_init);
     // add inputs, split over two buffers to test concatenating them in GPU memory
     let in_size_offset = function_context
         .get_free_space_and_write_slice(&[3i64])
@@ -220,7 +220,7 @@ fn engine_matmul_size_sweep_parallel() {
     const LOWER_SIZE_BOUND: usize = 2;
     const UPPER_SIZE_BOUND: usize = 16;
     for mat_size in LOWER_SIZE_BOUND..UPPER_SIZE_BOUND {
-        let (mut function_context, config, queue) = prepare_engine_and_function::<MmuMemoryDomain>(
+        let (mut function_context, config, queue) = prepare_engine_and_function::<GpuMemoryDomain>(
             filename,
             dom_init,
             &driver,
@@ -413,7 +413,7 @@ fn inference_benchmark_function() {
     let driver: Box<dyn Driver> = get_driver();
     let drv_init = vec![ComputeResource::GPU(7, 0)];
     let (mut function_context, config, queue) =
-        prepare_engine_and_function::<MmuMemoryDomain>(filename, dom_init, &driver, drv_init);
+        prepare_engine_and_function::<GpuMemoryDomain>(filename, dom_init, &driver, drv_init);
     let d_size: usize = 112 * 112 * 4 + 8; //side_len * side_len * sizeof(float) + [[size convention at start]]
     let a_grid_dim: usize = (224 + 31) / 32;
     let d_grid_dim: usize = (112 + 31) / 32;

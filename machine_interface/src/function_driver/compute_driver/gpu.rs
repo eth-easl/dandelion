@@ -140,7 +140,7 @@ pub fn gpu_run(
     hip::set_device(gpu_id)?;
     hip::limit_heap_size(0)?;
 
-    let ContextType::Mmu(ref mmu_context) = context.context else {
+    let ContextType::Gpu(ref mmu_context) = context.context else {
         return Err(DandelionError::ConfigMissmatch);
     };
     let base = mmu_context.storage.as_ptr();

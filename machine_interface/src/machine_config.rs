@@ -99,7 +99,7 @@ pub fn get_available_domains() -> BTreeMap<DomainType, &'static dyn MemoryDomain
         (
             DomainType::Gpu,
             Box::leak(
-                crate::memory_domain::mmu::MmuMemoryDomain::init(MemoryResource::None).unwrap(),
+                crate::memory_domain::gpu::GpuMemoryDomain::init(MemoryResource::None).unwrap(),
             ) as &'static dyn MemoryDomain,
         ),
     ]);

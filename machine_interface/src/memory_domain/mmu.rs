@@ -3,7 +3,7 @@ use crate::{
     util::mmapmem::MmapMem,
 };
 use dandelion_commons::{DandelionError, DandelionResult};
-use log::warn;
+use log::{error, warn};
 use nix::sys::mman::ProtFlags;
 
 // TODO: decide this value in a system dependent way
@@ -16,7 +16,6 @@ pub struct MmuContext {
 
 impl ContextTrait for MmuContext {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
-        #[cfg(feature = "mmu")]
         if offset < MMAP_BASE_ADDR {
             warn!("write offset smaller than MMAP_BASE_ADDR")
             // TODO: could be an issue if the context will be used by mmu_worker (function context)
@@ -25,7 +24,6 @@ impl ContextTrait for MmuContext {
     }
 
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
-        #[cfg(feature = "mmu")]
         if offset < MMAP_BASE_ADDR {
             warn!("read offset smaller than MMAP_BASE_ADDR")
             // TODO: could be an issue if the context will be used by mmu_worker (function context)
@@ -34,7 +32,6 @@ impl ContextTrait for MmuContext {
     }
 
     fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
-        #[cfg(feature = "mmu")]
         if offset < MMAP_BASE_ADDR {
             warn!("read offset smaller than MMAP_BASE_ADDR")
             // TODO: could be an issue if the context will be used by mmu_worker (function context)
@@ -73,7 +70,7 @@ pub fn mmu_transfer(
 ) -> DandelionResult<()> {
     // check if there is space in both contexts
     if source.storage.size() < source_offset + size {
-        eprintln!(
+        error!(
             "Out of bounds: storage_size {}, source_offset {}, size {}",
             source.storage.size(),
             source_offset,

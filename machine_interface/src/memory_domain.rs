@@ -3,9 +3,11 @@
 pub mod bytes_context;
 #[cfg(feature = "cheri")]
 pub mod cheri;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod malloc;
 pub mod mmap;
-#[cfg(any(feature = "mmu", feature = "gpu"))]
+#[cfg(feature = "mmu")]
 pub mod mmu;
 pub mod read_only;
 #[cfg(feature = "wasm")]
@@ -40,10 +42,12 @@ pub enum ContextType {
     Bytes(Box<bytes_context::BytesContext>),
     #[cfg(feature = "cheri")]
     Cheri(Box<cheri::CheriContext>),
-    #[cfg(any(feature = "mmu", feature = "gpu"))]
+    #[cfg(feature = "mmu")]
     Mmu(Box<mmu::MmuContext>),
     #[cfg(feature = "wasm")]
     Wasm(Box<wasm::WasmContext>),
+    #[cfg(feature = "gpu")]
+    Gpu(Box<gpu::GpuContext>),
 }
 
 impl ContextTrait for ContextType {
@@ -54,10 +58,12 @@ impl ContextTrait for ContextType {
             ContextType::ReadOnly(context) => context.write(offset, data),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.write(offset, data),
-            #[cfg(any(feature = "mmu", feature = "gpu"))]
+            #[cfg(feature = "mmu")]
             ContextType::Mmu(context) => context.write(offset, data),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.write(offset, data),
+            #[cfg(feature = "gpu")]
+            ContextType::Gpu(context) => context.write(offset, data),
             #[cfg(feature = "bytes_context")]
             ContextType::Bytes(context) => context.write(offset, data),
         }
@@ -69,10 +75,12 @@ impl ContextTrait for ContextType {
             ContextType::ReadOnly(context) => context.read(offset, read_buffer),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.read(offset, read_buffer),
-            #[cfg(any(feature = "mmu", feature = "gpu"))]
+            #[cfg(feature = "mmu")]
             ContextType::Mmu(context) => context.read(offset, read_buffer),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.read(offset, read_buffer),
+            #[cfg(feature = "gpu")]
+            ContextType::Gpu(context) => context.read(offset, read_buffer),
             #[cfg(feature = "bytes_context")]
             ContextType::Bytes(context) => context.read(offset, read_buffer),
         }
@@ -84,10 +92,12 @@ impl ContextTrait for ContextType {
             ContextType::ReadOnly(context) => context.get_chunk_ref(offset, length),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.get_chunk_ref(offset, length),
-            #[cfg(any(feature = "mmu", feature = "gpu"))]
+            #[cfg(feature = "mmu")]
             ContextType::Mmu(context) => context.get_chunk_ref(offset, length),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.get_chunk_ref(offset, length),
+            #[cfg(feature = "gpu")]
+            ContextType::Gpu(context) => context.get_chunk_ref(offset, length),
             #[cfg(feature = "bytes_context")]
             ContextType::Bytes(context) => context.get_chunk_ref(offset, length),
         }
@@ -283,7 +293,7 @@ pub fn transfer_memory(
                 size,
             )
         }
-        #[cfg(any(feature = "mmu", feature = "gpu"))]
+        #[cfg(feature = "mmu")]
         (ContextType::Mmu(destination_ctxt), ContextType::Mmu(source_ctxt)) => mmu::mmu_transfer(
             destination_ctxt,
             source_ctxt,
@@ -314,6 +324,24 @@ pub fn transfer_memory(
         #[cfg(all(feature = "wasm", feature = "bytes_context"))]
         (ContextType::Wasm(destination_ctxt), ContextType::Bytes(source_ctxt)) => {
             wasm::bytes_to_wasm_transfer(
+                destination_ctxt,
+                source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+            )
+        }
+        #[cfg(feature = "gpu")]
+        (ContextType::Gpu(destination_ctxt), ContextType::Gpu(source_ctxt)) => gpu::gpu_transfer(
+            destination_ctxt,
+            source_ctxt,
+            destination_offset,
+            source_offset,
+            size,
+        ),
+        #[cfg(all(feature = "gpu", feature = "bytes_context"))]
+        (ContextType::Gpu(destination_ctxt), ContextType::Bytes(source_ctxt)) => {
+            gpu::bytest_to_gpu_transfer(
                 destination_ctxt,
                 source_ctxt,
                 destination_offset,

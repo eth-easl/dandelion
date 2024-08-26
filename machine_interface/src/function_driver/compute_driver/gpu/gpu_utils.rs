@@ -2,7 +2,7 @@ use crate::interface::{DandelionSystemData, SizedIntTrait};
 use crate::{
     function_driver::{ComputeResource, FunctionConfig, GpuConfig, WorkDone, WorkQueue, WorkToDo},
     interface::read_output_structs,
-    memory_domain::{self, mmu::MmuContext, Context, ContextState, ContextTrait, ContextType},
+    memory_domain::{self, gpu::GpuContext, Context, ContextState, ContextTrait, ContextType},
     util::mmapmem::MmapMem,
     DataSet, Position,
 };
@@ -260,7 +260,7 @@ impl TryFrom<SendContext> for Context {
 
     fn try_from(value: SendContext) -> Result<Self, Self::Error> {
         Ok(Self {
-            context: ContextType::Mmu(Box::new(MmuContext {
+            context: ContextType::Gpu(Box::new(GpuContext {
                 storage: MmapMem::alt_open(
                     &value.context_filename,
                     ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
@@ -277,7 +277,7 @@ impl TryFrom<SendContext> for Context {
 impl TryFrom<&Context> for SendContext {
     type Error = DandelionError;
     fn try_from(value: &Context) -> DandelionResult<Self> {
-        let ContextType::Mmu(ref ctxt) = value.context else {
+        let ContextType::Gpu(ref ctxt) = value.context else {
             return Err(DandelionError::ConfigMissmatch);
         };
 
