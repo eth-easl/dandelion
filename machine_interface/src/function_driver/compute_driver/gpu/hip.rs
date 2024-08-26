@@ -1,4 +1,4 @@
-//! Rust bindings for a subset of the HIP runtime API as of ROCm 5.7.1
+//! Rust bindings for a subset of the HIP runtime API as of ROCm 6.1.2
 
 use dandelion_commons::{DandelionError, DandelionResult};
 use libc::{c_void, size_t};

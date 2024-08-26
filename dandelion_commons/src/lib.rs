@@ -101,6 +101,8 @@ pub enum DandelionError {
     DispatcherCompositionCombine,
     /// dispatcher found mistake when trying to find waiting functions
     DispatcherDependencyError,
+    /// registry errors
+    RegistryError(RegistryError),
     // metering errors
     /// Mutex for metering was poisoned
     RecordLockFailure,
@@ -144,6 +146,8 @@ impl core::fmt::Display for DandelionError {
 
 impl std::error::Error for DandelionError {}
 
+pub type DandelionResult<T> = std::result::Result<T, DandelionError>;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FrontendError {
     /// Failed to get more frames from the connection
@@ -156,4 +160,9 @@ pub enum FrontendError {
     MalformedMessage,
 }
 
-pub type DandelionResult<T> = std::result::Result<T, DandelionError>;
+/// Error caused in the function registry
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RegistryError {
+    /// Failed to receive local loading result that was triggered by another function
+    LocalLoadingReceive,
+}

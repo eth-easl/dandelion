@@ -9,8 +9,8 @@ dandelion_commons = { path = "../dandelion_commons" }
 dispatcher = { path = "../dispatcher" }
 futures = { version = "0.3.28", default-features=false}
 tokio = { version = "1", features = ["full"] }
-hyper = { version = "1.2", features = ["server", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
+hyper = { version = "1.2", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
 http-body-util = "0.1"
 core_affinity = "0.8"
 num_cpus = "1.16.0"
@@ -31,7 +31,8 @@ lazy_static = "1.4.0"
 [dev-dependencies]
 assert_cmd = "2.0"
 byteorder = "1.5"
-reqwest = { version = "0.11", default-features = false, features = ["blocking"] }
+serial_test = "3.1.1"
+reqwest = { version = "0.12", features = ["blocking"] }
 
 [features]
 cheri = ["machine_interface/cheri"]

@@ -18,14 +18,22 @@ pub trait EngineLoop {
     ) -> DandelionResult<Context>;
 }
 
-fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
+pub fn run_thread<E: EngineLoop>(
+    initialisation_resource: ComputeResource,
+    queue: Box<dyn WorkQueue>,
+) {
+    // get CPU from resource
+    let core_id = match initialisation_resource {
+        ComputeResource::CPU(id) => id,
+        ComputeResource::GPU(id, _) => id,
+    };
     // set core affinity
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
         log::error!("core received core id that could not be set");
         return;
     }
     let mut engine_state =
-        E::init(ComputeResource::CPU(core_id)).expect("Failed to initialize thread state");
+        E::init(initialisation_resource).expect("Failed to initialize thread state");
     loop {
         // TODO catch unwind so we can always return an error or shut down gracefully
         let (args, debt) = queue.get_engine_args();
@@ -47,7 +55,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                         continue;
                     }
                 }
-                let results = Box::new(result.and_then(|context| Ok(WorkDone::Context(context))));
+                let results = Box::new(result.map(WorkDone::Context));
                 debt.fulfill(results);
             }
             WorkToDo::TransferArguments {
@@ -104,6 +112,21 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                 }
                 continue;
             }
+            WorkToDo::LoadingArguments {
+                function,
+                domain,
+                ctx_size,
+                mut recorder,
+            } => {
+                recorder.record(RecordPoint::LoadStart).unwrap();
+                let load_result = function.load(domain, ctx_size);
+                recorder.record(RecordPoint::LoadEnd).unwrap();
+                match load_result {
+                    Ok(context) => debt.fulfill(Box::new(Ok(WorkDone::Context(context)))),
+                    Err(err) => debt.fulfill(Box::new(Err(err))),
+                }
+                continue;
+            }
             WorkToDo::Shutdown() => {
                 debt.fulfill(Box::new(Ok(WorkDone::Resources(vec![
                     ComputeResource::CPU(core_id),
@@ -115,5 +138,5 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
 }
 
 pub fn start_thread<E: EngineLoop>(cpu_slot: u8, queue: Box<dyn WorkQueue + Send>) -> () {
-    spawn(move || run_thread::<E>(cpu_slot, queue));
+    spawn(move || run_thread::<E>(ComputeResource::CPU(cpu_slot), queue));
 }

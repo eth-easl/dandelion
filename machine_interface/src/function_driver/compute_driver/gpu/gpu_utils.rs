@@ -125,103 +125,6 @@ pub fn get_size(
     }
 }
 
-// TODO unify this with thread_utils/run_thead as it's more or less a carbon copy
-pub fn start_gpu_thread(core_id: u8, gpu_id: u8, queue: Box<dyn WorkQueue>) {
-    // set core affinity
-    if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
-        log::error!("core received core id that could not be set");
-        return;
-    }
-    let mut engine_state = GpuLoop::init(ComputeResource::GPU(core_id, gpu_id))
-        .expect("Failed to initialize thread state");
-    loop {
-        // TODO catch unwind so we can always return an error or shut down gracefully
-        let (args, debt) = queue.get_engine_args();
-        match args {
-            WorkToDo::FunctionArguments {
-                config,
-                context,
-                output_sets,
-                mut recorder,
-            } => {
-                if let Err(err) = recorder.record(RecordPoint::EngineStart) {
-                    debt.fulfill(Box::new(Err(err)));
-                    continue;
-                }
-                let result = engine_state.run(config, context, output_sets);
-                if result.is_ok() {
-                    if let Err(err) = recorder.record(RecordPoint::EngineEnd) {
-                        debt.fulfill(Box::new(Err(err)));
-                        continue;
-                    }
-                }
-                let results = Box::new(result.map(WorkDone::Context));
-                debt.fulfill(results);
-            }
-            WorkToDo::TransferArguments {
-                source,
-                mut destination,
-                destination_set_index,
-                destination_allignment,
-                destination_item_index,
-                destination_set_name,
-                source_set_index,
-                source_item_index,
-                mut recorder,
-            } => {
-                match recorder.record(RecordPoint::TransferStart) {
-                    Ok(()) => (),
-                    Err(err) => {
-                        debt.fulfill(Box::new(Err(err)));
-                        continue;
-                    }
-                }
-                let transfer_result = memory_domain::transfer_data_item(
-                    &mut destination,
-                    &source,
-                    destination_set_index,
-                    destination_allignment,
-                    destination_item_index,
-                    destination_set_name.as_str(),
-                    source_set_index,
-                    source_item_index,
-                );
-                match recorder.record(RecordPoint::TransferEnd) {
-                    Ok(()) => (),
-                    Err(err) => {
-                        debt.fulfill(Box::new(Err(err)));
-                        continue;
-                    }
-                }
-                let transfer_return = transfer_result.and(Ok(WorkDone::Context(destination)));
-                debt.fulfill(Box::new(transfer_return));
-                continue;
-            }
-            WorkToDo::ParsingArguments {
-                driver,
-                path,
-                static_domain,
-                mut recorder,
-            } => {
-                recorder.record(RecordPoint::ParsingStart).unwrap();
-                let function_result = driver.parse_function(path, static_domain);
-                recorder.record(RecordPoint::ParsingEnd).unwrap();
-                match function_result {
-                    Ok(function) => debt.fulfill(Box::new(Ok(WorkDone::Function(function)))),
-                    Err(err) => debt.fulfill(Box::new(Err(err))),
-                }
-                continue;
-            }
-            WorkToDo::Shutdown() => {
-                debt.fulfill(Box::new(Ok(WorkDone::Resources(vec![
-                    ComputeResource::GPU(core_id, gpu_id),
-                ]))));
-                return;
-            }
-        }
-    }
-}
-
 struct Worker {
     process: Child,
     pub stdin: ChildStdin,
@@ -469,6 +372,21 @@ fn manage_worker(
                 recorder.record(RecordPoint::ParsingEnd).unwrap();
                 match function_result {
                     Ok(function) => debt.fulfill(Box::new(Ok(WorkDone::Function(function)))),
+                    Err(err) => debt.fulfill(Box::new(Err(err))),
+                }
+                continue;
+            }
+            WorkToDo::LoadingArguments {
+                function,
+                domain,
+                ctx_size,
+                mut recorder,
+            } => {
+                recorder.record(RecordPoint::LoadStart).unwrap();
+                let load_result = function.load(domain, ctx_size);
+                recorder.record(RecordPoint::LoadEnd).unwrap();
+                match load_result {
+                    Ok(context) => debt.fulfill(Box::new(Ok(WorkDone::Context(context)))),
                     Err(err) => debt.fulfill(Box::new(Err(err))),
                 }
                 continue;

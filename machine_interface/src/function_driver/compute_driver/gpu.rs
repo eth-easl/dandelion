@@ -1,7 +1,8 @@
 use crate::{
     function_driver::{
-        load_utils::load_u8_from_file, thread_utils::EngineLoop, ComputeResource, Driver, Function,
-        FunctionConfig, GpuConfig, WorkQueue,
+        load_utils::load_u8_from_file,
+        thread_utils::{run_thread, EngineLoop},
+        ComputeResource, Driver, Function, FunctionConfig, GpuConfig, WorkQueue,
     },
     interface::{read_output_structs, setup_input_structs, write_gpu_outputs, DandelionSystemData},
     memory_domain::{Context, ContextTrait, ContextType},
@@ -26,9 +27,7 @@ use std::{
 use self::{
     buffer_pool::BufferPool,
     config_parsing::{Action, Argument, RuntimeGpuConfig},
-    gpu_utils::{
-        copy_data_to_device, get_data_length, get_size, start_gpu_process_pool, start_gpu_thread,
-    },
+    gpu_utils::{copy_data_to_device, get_data_length, get_size, start_gpu_process_pool},
     hip::DEFAULT_STREAM,
 };
 
@@ -329,7 +328,7 @@ impl Driver for GpuThreadDriver {
     ) -> dandelion_commons::DandelionResult<()> {
         let (cpu_slot, gpu_id) = common_start(resource)?;
 
-        spawn(move || start_gpu_thread(cpu_slot, gpu_id, queue));
+        spawn(move || run_thread::<GpuLoop>(ComputeResource::GPU(cpu_slot, gpu_id), queue));
         Ok(())
     }
 

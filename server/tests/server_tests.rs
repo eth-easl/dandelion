@@ -13,7 +13,9 @@ mod server_tests {
     use assert_cmd::prelude::*;
     use byteorder::{LittleEndian, ReadBytesExt};
     use dandelion_server::{DandelionDeserializeResponse, DandelionRequest, InputItem, InputSet};
+    use reqwest::blocking::Client;
     use serde::Serialize;
+    use serial_test::serial;
     use std::{
         io::{BufRead, BufReader, Cursor, Read},
         process::{Child, Command, Stdio},
@@ -92,7 +94,12 @@ mod server_tests {
         }
     }
 
-    fn send_matrix_request(endpoint: &str, function_name: String) {
+    fn send_matrix_request(
+        endpoint: &str,
+        function_name: String,
+        http_version: reqwest::Version,
+        client: Client,
+    ) {
         // call into function
         let mut data = Vec::new();
         data.extend_from_slice(&i64::to_le_bytes(1));
@@ -123,9 +130,9 @@ mod server_tests {
             sets,
         };
 
-        let client = reqwest::blocking::Client::new();
         let resp = client
             .post(endpoint)
+            .version(http_version)
             .body(bson::to_vec(&mat_request).unwrap())
             .send()
             .unwrap();
@@ -144,30 +151,33 @@ mod server_tests {
         assert_eq!(1, checksum);
     }
 
-    #[test]
-    fn serve_matmul() {
-        let lock = TEST_LOCK.lock().unwrap();
-        let mut cmd = Command::cargo_bin("dandelion_server").unwrap();
-        let server = cmd
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .env("DANDELION_LIBRARY_PATH", "/tmp/dandelion_server/libs/")
-            .spawn()
-            .unwrap();
-        let mut server_killer = ServerKiller { server };
-        let mut reader = BufReader::new(server_killer.server.stdout.take().unwrap());
-        loop {
-            let mut buf = String::new();
-            let len = reader.read_line(&mut buf).unwrap();
-            assert_ne!(len, 0, "Server exited unexpectedly");
-            if buf.contains("Server start") {
-                break;
-            } else {
-                print!("{}", buf);
-            }
-        }
-        let _ = server_killer.server.stdout.insert(reader.into_inner());
+    // <<<<<<< HEAD
+    //     #[test]
+    //     fn serve_matmul() {
+    //         let lock = TEST_LOCK.lock().unwrap();
+    //         let mut cmd = Command::cargo_bin("dandelion_server").unwrap();
+    //         let server = cmd
+    //             .stdout(Stdio::piped())
+    //             .stderr(Stdio::piped())
+    //             .env("DANDELION_LIBRARY_PATH", "/tmp/dandelion_server/libs/")
+    //             .spawn()
+    //             .unwrap();
+    //         let mut server_killer = ServerKiller { server };
+    //         let mut reader = BufReader::new(server_killer.server.stdout.take().unwrap());
+    //         loop {
+    //             let mut buf = String::new();
+    //             let len = reader.read_line(&mut buf).unwrap();
+    //             assert_ne!(len, 0, "Server exited unexpectedly");
+    //             if buf.contains("Server start") {
+    //                 break;
+    //             } else {
+    //                 print!("{}", buf);
+    //             }
+    //         }
+    //         let _ = server_killer.server.stdout.insert(reader.into_inner());
 
+    // =======
+    fn register_and_request(http_version: reqwest::Version, client: Client) {
         // register function
         let version: String;
         let mut engine_type;
@@ -233,60 +243,149 @@ mod server_tests {
             assert!(library_resp.status().is_success());
         }
 
+        let version_string = match http_version {
+            reqwest::Version::HTTP_09 => "0_9",
+            reqwest::Version::HTTP_10 => "1_0",
+            reqwest::Version::HTTP_11 => "1_1",
+            reqwest::Version::HTTP_2 => "2_0",
+            reqwest::Version::HTTP_3 => "3_0",
+            _ => panic!("Unkown http version: {:?}", http_version),
+        };
+
+        let function_name = format!("matmul_{}", version_string);
         let register_request = RegisterFunction {
-            name: String::from("matmul"),
+            name: function_name.clone(),
             context_size: 0x802_0000,
             binary: std::fs::read(matmul_path).unwrap(),
             engine_type,
             input_sets: vec![(String::from("A"), None)],
             output_sets: vec![String::from("B")],
         };
-        let registration_client = reqwest::blocking::Client::new();
-        let registration_resp = registration_client
+        let registration_resp = client
             .post("http://localhost:8080/register/function")
+            .version(http_version)
             .body(bson::to_vec(&register_request).unwrap())
             .send()
             .unwrap();
         assert!(registration_resp.status().is_success());
 
+        let chain_name = format!("chain_{}", version_string);
         let chain_request = RegisterChain {
             #[cfg(not(feature = "gpu"))]
-            composition: String::from(
+            composition: format!(
                 r#"
-                (:function matmul (InMats) -> (OutMats))
-                (:composition chain (CompInMats) -> (CompOutMats) (
-                    (matmul ((:all InMats <- CompInMats)) => ((InterMat := OutMats)))
-                    (matmul ((:all InMats <- InterMat)) => ((CompOutMats := OutMats)))
+                (:function {function} (InMats) -> (OutMats))
+                (:composition {chain} (CompInMats) -> (CompOutMats) (
+                    ({function} ((:all InMats <- CompInMats)) => ((InterMat := OutMats)))
+                    ({function} ((:all InMats <- InterMat)) => ((CompOutMats := OutMats)))
                 ))
             "#,
+                function = function_name,
+                chain = chain_name,
             ),
             #[cfg(feature = "gpu")]
-            composition: String::from(
+            composition: format!(
                 r#"
-                (:function matmul (InMats Config) -> (OutMats))
-                (:composition chain (CompInMats CompConfig) -> (CompOutMats) (
-                    (matmul ((:all InMats <- CompInMats) (:all Config <- CompConfig)) => ((InterMat := OutMats)))
-                    (matmul ((:all InMats <- InterMat) (:all Config <- CompConfig)) => ((CompOutMats := OutMats)))
+                (:function {function} (InMats Config) -> (OutMats))
+                (:composition {chain} (CompInMats CompConfig) -> (CompOutMats) (
+                    ({function} ((:all InMats <- CompInMats) (:all Config <- CompConfig)) => ((InterMat := OutMats)))
+                    ({function} ((:all InMats <- InterMat) (:all Config <- CompConfig)) => ((CompOutMats := OutMats)))
                 ))
             "#,
+                function = function_name,
+                chain = chain_name,
             ),
         };
-        let chain_client = reqwest::blocking::Client::new();
-        let chain_resp = chain_client
+
+        let chain_resp = client
             .post("http://localhost:8080/register/composition")
+            .version(http_version)
             .body(bson::to_vec(&chain_request).unwrap())
             .send()
             .unwrap();
         assert!(chain_resp.status().is_success());
 
-        send_matrix_request("http://localhost:8080/hot/matmul", String::from("matmul"));
-        send_matrix_request("http://localhost:8080/hot/matmul", String::from("chain"));
+        send_matrix_request(
+            "http://localhost:8080/hot/matmul",
+            function_name,
+            http_version,
+            client.clone(),
+        );
+        send_matrix_request(
+            "http://localhost:8080/hot/matmul",
+            chain_name,
+            http_version,
+            client,
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn serve_matmul_http_2() {
+        let mut cmd = Command::cargo_bin("dandelion_server").unwrap();
+        let server = cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env("DANDELION_LIBRARY_PATH", "/tmp/dandelion_server/libs/")
+            .spawn()
+            .unwrap();
+        let mut server_killer = ServerKiller { server };
+        let mut reader = BufReader::new(server_killer.server.stdout.take().unwrap());
+        loop {
+            let mut buf = String::new();
+            let len = reader.read_line(&mut buf).unwrap();
+            assert_ne!(len, 0, "Server exited unexpectedly");
+            if buf.contains("Server start") {
+                break;
+            } else {
+                print!("{}", buf);
+            }
+        }
+        let _ = server_killer.server.stdout.insert(reader.into_inner());
+
+        let client = reqwest::blocking::Client::builder()
+            .http2_prior_knowledge()
+            .build()
+            .unwrap();
+        register_and_request(reqwest::Version::HTTP_2, client);
 
         let status_result = server_killer.server.try_wait();
         drop(server_killer);
         let status = status_result.unwrap();
         assert_eq!(status, None, "Server exited unexpectedly");
-        drop(lock);
+    }
+
+    #[test]
+    #[serial]
+    fn serve_matmul_http_1_1() {
+        let mut cmd = Command::cargo_bin("dandelion_server").unwrap();
+        let server = cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env("DANDELION_LIBRARY_PATH", "/tmp/dandelion_server/libs/")
+            .spawn()
+            .unwrap();
+        let mut server_killer = ServerKiller { server };
+        let mut reader = BufReader::new(server_killer.server.stdout.take().unwrap());
+        loop {
+            let mut buf = String::new();
+            let len = reader.read_line(&mut buf).unwrap();
+            assert_ne!(len, 0, "Server exited unexpectedly");
+            if buf.contains("Server start") {
+                break;
+            } else {
+                print!("{}", buf);
+            }
+        }
+        let _ = server_killer.server.stdout.insert(reader.into_inner());
+
+        let client = reqwest::blocking::Client::new();
+        register_and_request(reqwest::Version::HTTP_11, client);
+
+        let status_result = server_killer.server.try_wait();
+        drop(server_killer);
+        let status = status_result.unwrap();
+        assert_eq!(status, None, "Server exited unexpectedly");
     }
 
     fn send_inference_request(endpoint: &str, function_name: String) {
@@ -361,8 +460,8 @@ mod server_tests {
 
     #[cfg(any(feature = "gpu", feature = "mmu"))]
     #[test]
+    #[serial]
     fn serve_inference() {
-        let lock = TEST_LOCK.lock().unwrap();
         let mut cmd = Command::cargo_bin("dandelion_server").unwrap();
         let mut server = cmd
             .stdout(Stdio::piped())
@@ -382,7 +481,6 @@ mod server_tests {
         let _ = server.stdout.insert(reader.into_inner());
         let mut server_killer = ServerKiller { server };
 
-        // TODO: register library for GPU
         // register function
         let engine_type;
         #[cfg(feature = "gpu")]
@@ -477,6 +575,5 @@ mod server_tests {
         drop(server_killer);
         let status = status_result.unwrap();
         assert_eq!(status, None, "Server exited unexpectedly");
-        drop(lock);
     }
 }
