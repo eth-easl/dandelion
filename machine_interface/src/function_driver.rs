@@ -6,15 +6,13 @@ use crate::{
 extern crate alloc;
 use alloc::sync::Arc;
 use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
+use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "wasm")]
 use libloading::Library;
 
 #[cfg(feature = "gpu")]
-use {
-    self::compute_driver::gpu::config_parsing::ExecutionBlueprint,
-    serde::{Deserialize, Serialize},
-};
+use self::compute_driver::gpu::config_parsing::ExecutionBlueprint;
 
 pub mod compute_driver;
 mod load_utils;
