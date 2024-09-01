@@ -339,6 +339,10 @@ async fn dispatcher_loop(
                 recorder,
                 mut callback,
             } => {
+                 // Log the queue lengths before dispatching
+                 for (engine_type, length) in dispatcher.get_queue_lengths() {
+                    println!("Queue length for {:?}: {}", engine_type, length);
+                }
                 let function_future =
                     dispatcher.queue_function_by_name(name, inputs, None, is_cold, recorder);
                 spawn(async {

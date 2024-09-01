@@ -67,4 +67,8 @@ impl EngineQueue {
         }
         return *promise.await;
     }
+
+    pub fn queue_length(&self) -> usize {
+        self.queue_out.len()
+    }
 }

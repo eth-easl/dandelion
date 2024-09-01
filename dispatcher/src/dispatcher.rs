@@ -544,4 +544,11 @@ impl Dispatcher {
         recorder.record(RecordPoint::FutureReturn)?;
         return Ok(result);
     }
+
+    pub fn get_queue_lengths(&self) -> Vec<(EngineType, usize)> {
+        self.engine_queues
+            .iter()
+            .map(|(engine_type, queue)| (*engine_type, queue.queue_length()))
+            .collect()
+    }
 }
