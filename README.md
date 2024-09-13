@@ -3,14 +3,100 @@
 This project is aiming to build a workernode for serverless computing with
 minimal, secure isolation.
 
-## Environment Variables
+# Structure
 
-- `RUST_LOG`: this is used to set the log level, it can be set to the standard log levels: [`error`, `warn`, `info`, `debug`, `trace`]
-- `DANDELION_TIMESTAMP_COUNT`: sets the number of timestamp containers to preallocate
+The main code for dandelion is organized in the following rust modules:
+- **dandelion_commons** contains type definitions used throughout all of dandelion, such as error types and timestamps
+- **machine_interface** has the isolation backend specific code, also has the code to detect and set machine specific options
+  - **memory_domain** the code for interacting with the memory structures for setting up functions
+  - **function_driver** the code for the engine, i.e. for running a function using a specific isolation technique
+- **dparser** code for parsing compositions
+- **dispatcher** registry and scheduler for the compositions, uses the domain and engine interferaces as well as the parser 
+- **server** wrapper code arround the dispatcher for the http frontend
 
-## Dependencies
+# Cargo 
 
-For testing we are using unity which is included directly in the project.
+The documentation can for all modules can be built by executing `cargo doc` in the top level directory.
+To build only for a specific module, execue the command in the corresponding folder.
+
+The tests can be run using `cargo test`, which if executed in the top level directory will run tests for all the modules.
+As a large number of tests need at least some engine enabled via a feature flag, only running test without any feature flags will not run a lot.
+To get most test coverage all viable features should be enabled.
+For more details on features see bellow.
+
+To build the main server, the binary has to be specified using the `--bin dandelion_server` flag, giving the full command:
+`cargo build --bin dandelion_server`, can also be run directly, by replacing build with run.
+
+# Features
+
+To make it easy to enable / disable different backends we hide them behind feature flags.
+All features are disabled by default and should be able to be enabled independently.
+The server module currently assumes only computation and one communication engine feature to be enabled, but should be fixed in the future.
+
+Feature flags for computation engines:
+- `cheri` for enabling cheri backed isolation 
+- `mmu` for enabling process based isolation
+- `wasm` for enabling rwasm based isolation
+
+Feature flags for communcation engines:
+- `reqwest_io` for enabling the reqwest based communication
+
+Other features:
+
+`timestamp` enables timestamping, this also enables http requests to `/stat` on the running server to get timestamps information. The timestamps are preallocated at the start and thus have a limited number. Currently running out of preallocated timestamps causes errors on requests. When the stat interface is accessed the used timestamps are cleared and put back into the pool of available ones.
+
+# Config
+
+For the dandelion server we support configuration either via environ variables, command line arguments or a json config file.
+To set the option <option> use `--<option>=<value>` as command line argument, `<OPTION>=<value>` (all uppercase) as enviromental variable or set `<option>:<value>` in the json.
+
+The default search path for the config file is `./dandelion.config`, but can be set from environment or argument using `config_path`.
+
+- `port` a u16 to define the port the dandelion server listens on, default: 8080
+- `single_core_mode` allows all engines, frontend and dispatcher to run on the same core, intended only for testing, default: false
+- `total_cores` max numbers of cores the server is allowed to use, default: number of physical cores
+- `dispatcher cores` number of cores to use for the dispatcher, default: 1
+- `frontend_cores` number of cores to use for the frontend
+- `io_cores` number of cores to use for the communication engines, default: 0
+- `timestamp_count` how many timestamps to preallocate, default: 1000
+
+The number of compute engine cores is inferred from the total number of cores by deducting the number of other cores.
+
+**WARNING** if no cores are allocated for the communication engines, the communication functions currently will hang indefinetly.
+
+Additional configuration:
+
+Dandelion respects `RUST_LOG` which can be used to set the log level, it can be set to the standard log levels: [`error`, `warn`, `info`, `debug`, `trace`]
+For additional information consult the rust log and env_log modules. 
+
+# MMU worker build
+
+The `mmu_worker` binary required by the `MmuEngine` is assumed to be present in corresponding `target` directory:
+```
+cargo build --bin mmu_worker --features mmu --target $(arch)-unknown-linux-gnu [--release]
+```
+It is also recommended to statically link `mmu_worker` for a faster loading:
+```
+# x86_64
+RUSTFLAGS='-C target-feature=+crt-static'
+# aarch64
+RUSTFLAGS='-C target-feature=+crt-static -C link-arg=-Wl,-fuse-ld=lld,--image-base=0xaaaaaaaa0000'
+```
+Also make sure that shared memory objects are executable:
+```
+sudo mount -o remount,exec /dev/shm
+```
+
+## MMU worker path
+
+To use a `mmu_worker` that is not at the original location it was built in, set the `PROCESS_WORKER_PATH` environment variable to point to the desired binary
+
+# C Dependencies
+
+For testing the C code to interact with Cheri we are using unity which is included directly in the project.
+
+# Cheri / BSD setup
+This is mostly legacy information, but is kept for reproduction without cheri hardware running linux
 
 ## Cheri setup
 
@@ -84,30 +170,8 @@ They can be built with a normal make command, but have the following requirement
 
 - the /usr/src folder contains the OS source
 
-### Known issues
+## Known issues
 
 - make: "/usr/src/sys/conf/kmod.mk" line 549: is ZFSTOP set?
   - solution `export ZFSTOP=/usr/src/sys/contrib/openzfs`
 - currently syscall seems not to work, but loading does, with cpuset -l <core> a specific core can be setup. repeat for each core on machine to set up entire machine.
-
-## MMU worker build
-
-The `mmu_worker` binary required by the `MmuEngine` is assumed to be present in corresponding `target` directory:
-```
-cargo build --bin mmu_worker --features mmu --target $(arch)-unknown-linux-gnu [--release]
-```
-It is also recommended to statically link `mmu_worker` for a faster loading:
-```
-# x86_64
-RUSTFLAGS='-C target-feature=+crt-static'
-# aarch64
-RUSTFLAGS='-C target-feature=+crt-static -C link-arg=-Wl,-fuse-ld=lld,--image-base=0xaaaaaaaa0000'
-```
-Also make sure that shared memory objects are executable:
-```
-sudo mount -o remount,exec /dev/shm
-```
-
-### MMU worker path
-
-To use a `mmu_worker` that is not at the original location it was built in, set the `PROCESS_WORKER_PATH` environment variable to point to the desired binary
