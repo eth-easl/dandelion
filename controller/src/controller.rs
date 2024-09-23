@@ -9,7 +9,7 @@ use machine_interface::{
     function_driver::{WorkToDo, WorkDone, ComputeResource},
 };
 
-use tokio::{time::sleep, Duration};
+use tokio::time::{sleep, Duration};
 
 use std::collections::BTreeMap;
 
