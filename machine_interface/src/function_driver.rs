@@ -155,7 +155,7 @@ impl futures::stream::Stream for &mut (dyn WorkQueue + Send) {
     /// By default the behaviour of the work queue on polling is to call try_get_engine_args()
     /// If the call returns Some(tuple), the poll will returns Ready(tuple)
     /// Otherwise the poll function will call the waker and return pending.
-    /// The waker is called, because the queue does not know when it becomes ready, it signals to be polled again.
+    /// The waker is called, because the queue does not know when it becomes rgit eady, it signals to be polled again.
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,

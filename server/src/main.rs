@@ -8,6 +8,7 @@ use dispatcher::{
     composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
     resource_pool::ResourcePool,
 };
+use controller::controller::Controller;
 use http_body_util::BodyExt;
 use hyper::{
     body::{Body, Incoming},
@@ -35,7 +36,7 @@ use std::{
 };
 use tokio::{
     net::TcpListener,
-    runtime::Builder,
+    runtime::{Builder, Runtime},
     select,
     signal::unix::SignalKind,
     spawn,
@@ -330,7 +331,7 @@ async fn dispatcher_loop(
     mut request_receiver: mpsc::Receiver<DispatcherCommand>,
     dispatcher: &'static Dispatcher,
 ) {
-    while let Some(dispatcher_args) = request_receiver.recv().await {
+    while let Some(dispatcher_args) = request_receiver.recv().await {     
         match dispatcher_args {
             DispatcherCommand::FunctionRequest {
                 name,
@@ -339,8 +340,8 @@ async fn dispatcher_loop(
                 recorder,
                 mut callback,
             } => {
-                 // Log the queue lengths before dispatching
-                 for (engine_type, length) in dispatcher.get_queue_lengths() {
+                // Log the queue lengths before dispatching
+                for (engine_type, length) in dispatcher.get_queue_lengths() {
                     println!("Queue length for {:?}: {}", engine_type, length);
                 }
                 let function_future =
@@ -536,18 +537,34 @@ fn main() -> () {
     pool_map.insert(engine_type, compute_cores);
     #[cfg(feature = "reqwest_io")]
     pool_map.insert(EngineType::Reqwest, communication_cores);
+    // println!("pool map: {:?}", pool_map);
     let resource_pool = ResourcePool {
         engine_pool: futures::lock::Mutex::new(pool_map),
     };
 
+    let cpu_core_map = BTreeMap::new();
+
     // Create an ARC pointer to the dispatcher for thread-safe access
-    let dispatcher = Box::leak(Box::new(
-        Dispatcher::init(resource_pool).expect("Should be able to start dispatcher"),
+    let (dispatcher, resource_pool, cpu_core_map) = Box::leak(Box::new(
+        Dispatcher::init(resource_pool, cpu_core_map).expect("Should be able to start dispatcher"),
     ));
     // start dispatcher
     dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
 
     let _guard = runtime.enter();
+
+
+    let mut controller = Controller {
+        resource_pool,
+        dispatcher,
+        cpu_core_map,
+    };
+
+    let controller_runtime = Runtime::new().unwrap();
+    controller_runtime.spawn(async move {
+        controller.monitor_and_allocate().await;
+    });
+
 
     // TODO would be nice to just print server ready with all enabled features if that would be possible
     print!("Server start with features:");

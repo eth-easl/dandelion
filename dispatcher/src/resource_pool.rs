@@ -41,4 +41,14 @@ impl ResourcePool {
             None => Err(DandelionError::DispatcherConfigError),
         }
     }
+
+    pub async fn print_engine_pool(&self) {
+        let pool_guard = self.engine_pool.lock().await;
+        for (engine_type, resources) in pool_guard.iter() {
+            println!("Engine Type: {:?}", engine_type);
+            for (index, resource) in resources.iter().enumerate() {
+                println!("  Resource {}: {:?}", index, resource);
+            }
+        }
+    }
 }

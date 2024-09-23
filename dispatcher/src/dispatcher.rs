@@ -17,7 +17,7 @@ use futures::{
 use itertools::Itertools;
 use log::trace;
 use machine_interface::{
-    function_driver::{Driver, FunctionConfig, WorkToDo},
+    function_driver::{Driver, FunctionConfig, WorkToDo, ComputeResource},
     machine_config::{
         get_available_domains, get_available_drivers, get_compatibilty_table, DomainType,
         EngineType,
@@ -35,13 +35,13 @@ use std::{
 // the entire execution time anyway
 pub struct Dispatcher {
     domains: BTreeMap<DomainType, (&'static dyn MemoryDomain, Box<EngineQueue>)>,
-    engine_queues: BTreeMap<EngineType, Box<EngineQueue>>,
+    pub engine_queues: BTreeMap<EngineType, Box<EngineQueue>>,
     type_map: BTreeMap<EngineType, DomainType>,
     function_registry: FunctionRegistry,
 }
 
 impl Dispatcher {
-    pub fn init(mut resource_pool: ResourcePool) -> DandelionResult<Dispatcher> {
+    pub fn init(mut resource_pool: ResourcePool, mut cpu_core_map: BTreeMap<EngineType, Vec<u8>>) -> DandelionResult<(Dispatcher, ResourcePool, BTreeMap<EngineType, Vec<u8>>)> {
         // get machine specific configurations
         let type_map = get_compatibilty_table();
         let domains = get_available_domains();
@@ -52,10 +52,16 @@ impl Dispatcher {
         let mut engine_queues = BTreeMap::new();
         let mut registry_drivers: BTreeMap<EngineType, (&'static dyn Driver, Box<EngineQueue>)> =
             BTreeMap::new();
+        // let mut cpu_core_map: BTreeMap<EngineType, Vec<u8>> = BTreeMap::new();
+        
         for (engine_type, driver) in drivers.into_iter() {
             let work_queue = Box::new(EngineQueue::new());
+            cpu_core_map.insert(engine_type, Vec::new()); // Initialize the CPU core map
             while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(engine_type) {
-                driver.start_engine(resource, work_queue.clone())?;
+                if let ComputeResource::CPU(core_id) = resource {
+                    cpu_core_map.get_mut(&engine_type).unwrap().push(core_id);
+                    driver.start_engine(resource, work_queue.clone())?;
+                }
             }
             let domain_type = type_map.get(&engine_type).unwrap();
             let domain = *domains.get(domain_type).unwrap();
@@ -68,12 +74,16 @@ impl Dispatcher {
         }
         let function_registry = FunctionRegistry::new(registry_drivers, &type_map, &domains);
 
-        return Ok(Dispatcher {
+        return Ok((
+            Dispatcher {
             domains: domain_map,
             engine_queues,
             type_map,
             function_registry,
-        });
+        }, 
+        resource_pool,
+        cpu_core_map,
+        ))
     }
 
     pub async fn insert_func(

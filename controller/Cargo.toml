@@ -1,0 +1,9 @@
+[package]
+name = "controller"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dispatcher = {path = "../dispatcher"}
+machine_interface = {path = "../machine_interface"}
+tokio = { version = "1", features = ["full"] }
