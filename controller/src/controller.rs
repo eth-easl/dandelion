@@ -16,6 +16,9 @@ pub struct Controller {
     pub resource_pool: &'static mut ResourcePool,
     pub dispatcher: &'static Dispatcher,
     pub cpu_core_map: &'static mut BTreeMap<EngineType, Vec<u8>>,
+    pub high_threshold: usize,
+    pub low_threshold: usize,
+    pub loop_duration: u64, 
 }
 
 impl Controller {
@@ -23,11 +26,17 @@ impl Controller {
         resource_pool: &'static mut ResourcePool,
         dispatcher: &'static Dispatcher,
         cpu_core_map: &'static mut BTreeMap<EngineType, Vec<u8>>,
+        high_threshold: usize,
+        low_threshold: usize,
+        loop_duration: u64,
     ) -> Self {
         Controller {
             resource_pool,
             dispatcher,
             cpu_core_map,
+            high_threshold,
+            low_threshold,
+            loop_duration,
         }
     }
 
@@ -41,7 +50,7 @@ impl Controller {
             // println!("CPU core map: {:?}", self.cpu_core_map);
 
             for (engine_type, length) in &queue_lengths {
-                if *length > 1000 {
+                if *length > self.high_threshold {
                     need_more_cores = Some(*engine_type);
                     break;
                 }
@@ -58,7 +67,7 @@ impl Controller {
             // let pool_guard = self.resource_pool.engine_pool.lock().await;
             // println!("Engine pool: {:?}", pool_guard);
             
-            sleep(Duration::from_millis(200)).await;
+            sleep(Duration::from_millis(self.loop_duration)).await;
         }
     }
 
@@ -89,7 +98,7 @@ impl Controller {
     ) -> bool {
         // Iterate over the engine types to find one to deallocate
         for (engine_type, length) in queue_lengths{
-            if *engine_type != target_engine && *length < 10 {
+            if *engine_type != target_engine && *length < self.low_threshold {
                 // println!("Deallocating core from {:?} to allocate to {:?}", engine_type, target_engine);
                 
                 // Get the cores allocated to this engine type

@@ -555,12 +555,22 @@ fn main() -> () {
 
     let _guard = runtime.enter();
 
+    let high_threshold = config.control_high_thre;
+    let low_threshold = config.control_low_thre;
+    let loop_duration = config.control_interval;
+    println!(
+        "high threshold: {}, low threshold: {}, loop duration: {}",
+        high_threshold, low_threshold, loop_duration
+    );
 
     #[cfg(feature = "controller")]
     let mut controller = Controller {
         resource_pool,
         dispatcher,
         cpu_core_map,
+        high_threshold,
+        low_threshold,
+        loop_duration,
     };
     #[cfg(feature = "controller")]
     let controller_runtime = Runtime::new().unwrap();

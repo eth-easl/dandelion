@@ -29,6 +29,15 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = DEFAULT_TIMESTAMP_COUNT)]
     #[serde(default)]
     pub timestamp_count: usize,
+    #[arg(long, env, default_value_t = 1000)]
+    #[serde(default)]
+    pub control_high_thre: usize,
+    #[arg(long, env, default_value_t = 10)]
+    #[serde(default)]
+    pub control_low_thre: usize,
+    #[arg(long, env, default_value_t = 200)]
+    #[serde(default)]
+    pub control_interval: u64, // in milliseconds
 }
 
 impl DandelionConfig {
