@@ -5,8 +5,7 @@ use dispatcher::{
 
 use machine_interface::{
     machine_config::{get_available_drivers, EngineType},
-    promise::{Debt, Promise},
-    function_driver::{WorkToDo, WorkDone, ComputeResource},
+    function_driver::{WorkToDo, ComputeResource},
 };
 
 use tokio::time::{sleep, Duration};
@@ -77,11 +76,10 @@ impl Controller {
                 let drivers = get_available_drivers();
                 if let Some(driver) = drivers.get(&engine_type){
                     let work_queue = self.dispatcher.engine_queues.get(&engine_type).unwrap().clone();
-                    driver.start_engine(resource, work_queue);
+                    let _ = driver.start_engine(resource, work_queue);
                 }
             }
         }
-
     }
 
     async fn deallocate_cores_from_other_engines(
@@ -89,7 +87,6 @@ impl Controller {
         target_engine: EngineType,
         queue_lengths: &[(EngineType, usize)],
     ) -> bool {
-        let drivers = get_available_drivers();
         // Iterate over the engine types to find one to deallocate
         for (engine_type, length) in queue_lengths{
             if *engine_type != target_engine && *length < 10 {
@@ -103,26 +100,23 @@ impl Controller {
                     if let Some(&core_id) = cores_in_use.first() {
                         // Stop the thread running on this core
                         // println!("Stopping engine on core {}", core_id);
-                        if let Some(driver) = drivers.get(engine_type) {
-                            let shutdown_task = WorkToDo::Shutdown();
+                        let shutdown_task = WorkToDo::Shutdown();
+                        let engine_queue = self.dispatcher.engine_queues.get(engine_type).unwrap().clone();
+                        let _ = engine_queue.enqueu_work(shutdown_task).await;
 
-                            let engine_queue = self.dispatcher.engine_queues.get(engine_type).unwrap().clone();
-                            let _ = engine_queue.enqueu_work(shutdown_task).await;
-
-                            // Remove the core from the cpu_core_map
-                            if let Some(core_list) = self.cpu_core_map.get_mut(engine_type) {
-                                core_list.retain(|&core| core != core_id);
-                            }
-
-                            println!("CPU core map after dellocation: {:?}", self.cpu_core_map);
-
-                            // Return the core to the resource pool
-                            if let Err(e) = self.resource_pool.release_engine_resource(target_engine, ComputeResource::CPU(core_id)).await {
-                                println!("Error releasing core {} back to the resource pool: {:?}", core_id, e);
-                                continue;
-                            }
-                            return true; // Core deallocation successful
+                        // Remove the core from the cpu_core_map
+                        if let Some(core_list) = self.cpu_core_map.get_mut(engine_type) {
+                            core_list.retain(|&core| core != core_id);
                         }
+
+                        println!("CPU core map after dellocation: {:?}", self.cpu_core_map);
+
+                        // Return the core to the resource pool
+                        if let Err(e) = self.resource_pool.release_engine_resource(target_engine, ComputeResource::CPU(core_id)).await {
+                            println!("Error releasing core {} back to the resource pool: {:?}", core_id, e);
+                            continue;
+                        }
+                        return true; // Core deallocation successful
                     }
                 }
             }
