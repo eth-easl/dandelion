@@ -8,7 +8,9 @@ use dispatcher::{
     composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
     resource_pool::ResourcePool,
 };
+#[cfg(feature = "controller")]
 use controller::controller::Controller;
+
 use http_body_util::BodyExt;
 use hyper::{
     body::{Body, Incoming},
@@ -554,17 +556,20 @@ fn main() -> () {
     let _guard = runtime.enter();
 
 
+    #[cfg(feature = "controller")]
     let mut controller = Controller {
         resource_pool,
         dispatcher,
         cpu_core_map,
     };
-
+    #[cfg(feature = "controller")]
     let controller_runtime = Runtime::new().unwrap();
+    #[cfg(feature = "controller")]
     controller_runtime.spawn(async move {
         controller.monitor_and_allocate().await;
     });
 
+    
 
     // TODO would be nice to just print server ready with all enabled features if that would be possible
     print!("Server start with features:");
@@ -578,6 +583,8 @@ fn main() -> () {
     print!(" request_io");
     #[cfg(feature = "timestamp")]
     print!(" timestamp");
+    #[cfg(feature = "controller")]
+    print!(" controller");
     print!("\n");
 
     // Run this server for... forever... unless I receive a signal!
