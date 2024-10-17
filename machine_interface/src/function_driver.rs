@@ -58,7 +58,7 @@ pub enum FunctionConfig {
 
 pub struct Function {
     pub requirements: DataRequirementList,
-    pub context: Context,
+    pub context: Arc<Context>,
     pub config: FunctionConfig,
 }
 
@@ -70,7 +70,7 @@ impl Function {
     ) -> DandelionResult<Context> {
         return match &self.config {
             FunctionConfig::ElfConfig(_) => {
-                load_utils::load_static(domain, &self.context, &self.requirements, ctx_size)
+                load_utils::load_static(domain, self.context.clone(), &self.requirements, ctx_size)
             }
             FunctionConfig::SysConfig(_) => domain.acquire_context(ctx_size),
             FunctionConfig::WasmConfig(c) => {

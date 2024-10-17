@@ -3,6 +3,7 @@ use crate::{
     DataRequirementList,
 };
 use dandelion_commons::{DandelionError, DandelionResult};
+use std::sync::Arc;
 
 pub fn load_u8_from_file(full_path: String) -> DandelionResult<Vec<u8>> {
     let mut file = match std::fs::File::open(full_path) {
@@ -21,7 +22,7 @@ pub fn load_u8_from_file(full_path: String) -> DandelionResult<Vec<u8>> {
 
 pub fn load_static(
     domain: &'static dyn MemoryDomain,
-    static_context: &Context,
+    static_context: Arc<Context>,
     requirement_list: &DataRequirementList,
     ctx_size: usize,
 ) -> DandelionResult<Context> {
@@ -49,7 +50,7 @@ pub fn load_static(
         }
         transfer_memory(
             &mut function_context,
-            static_context,
+            static_context.clone(),
             requirement.offset,
             position.offset,
             position.size,

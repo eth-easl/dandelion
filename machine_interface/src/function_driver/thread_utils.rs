@@ -69,7 +69,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                 }
                 let transfer_result = memory_domain::transfer_data_item(
                     &mut destination,
-                    &source,
+                    source,
                     destination_set_index,
                     destination_allignment,
                     destination_item_index,

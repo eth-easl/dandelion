@@ -142,7 +142,7 @@ impl Driver for WasmDriver {
                 static_requirements: vec![],
                 input_requirements: vec![],
             },
-            context,
+            context: Arc::new(context),
         })
     }
 }

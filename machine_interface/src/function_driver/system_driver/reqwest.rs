@@ -459,7 +459,7 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 }
                 let transfer_result = memory_domain::transfer_data_item(
                     &mut destination,
-                    &source,
+                    source,
                     destination_set_index,
                     destination_allignment,
                     destination_item_index,
@@ -581,7 +581,7 @@ impl Driver for ReqwestDriver {
                 input_requirements: vec![],
                 static_requirements: vec![],
             },
-            context: static_domain.acquire_context(0)?,
+            context: Arc::new(static_domain.acquire_context(0)?),
             config: FunctionConfig::SysConfig(SystemFunction::HTTP),
         });
     }

@@ -61,7 +61,7 @@ pub fn get_available_domains() -> BTreeMap<DomainType, &'static dyn MemoryDomain
         (
             DomainType::Mmap,
             Box::leak(
-                crate::memory_domain::mmap::MmapMemoryDomain::init(MemoryResource::None).unwrap(),
+                crate::memory_domain::system_domain::SystemMemoryDomain::init(MemoryResource::None).unwrap(),
             ) as &'static dyn MemoryDomain,
         ),
         #[cfg(feature = "cheri")]

@@ -1,4 +1,5 @@
 use std::vec;
+use std::sync::Arc;
 
 use crate::memory_domain::{
     transfer_data_set, transfer_memory, Context, ContextTrait, MemoryDomain, MemoryResource,
@@ -93,36 +94,41 @@ fn get_chunks(ctx: &mut Context, offset: usize, size: usize, expect_success: boo
     }
 }
 
-fn transefer(source: &mut Context, destination: &mut Context) {
+fn transefer(source: Box<Context>, destination: Box<Context>) {
     assert!(source.size == destination.size);
     let size = source.size;
-    source
+    let mut source_mut = *source;
+    let mut destination_mut = *destination;
+    source_mut
         .write(0, &vec![BYTEPATTERN; size])
         .expect("Writing should succeed");
-    transfer_memory(destination, source, 0, 0, size).expect("Should successfully transfer");
+    let source_ctxt = Arc::new(source_mut);
+    transfer_memory(&mut destination_mut, source_ctxt, 0, 0, size).expect("Should successfully transfer");
     let mut read_buffer = vec![0; size];
-    destination
+    destination_mut
         .read(0, &mut read_buffer)
         .expect("Context should return single value vector in range");
     assert_eq!(vec![BYTEPATTERN; size], read_buffer);
 }
 
 fn transfer_item(
-    source: &mut Context,
-    destination: &mut Context,
+    source: Box<Context>,
+    destination: Box<Context>,
     offset: usize,
     item_size: usize,
     source_index: usize,
     destination_index: usize,
     expect_result: DandelionResult<()>,
 ) {
-    source
+    let mut source_mut = *source;
+    let mut destination_mut = *destination;
+    source_mut
         .write(offset, &vec![BYTEPATTERN; item_size])
         .expect("Writing should succeed");
-    if source.content.len() <= source_index {
-        source.content.resize_with(source_index + 1, || None);
+    if source_mut.content.len() <= source_index {
+        source_mut.content.resize_with(source_index + 1, || None);
     }
-    source.content[source_index] = Some(crate::DataSet {
+    source_mut.content[source_index] = Some(crate::DataSet {
         ident: String::from(""),
         buffers: vec![crate::DataItem {
             ident: String::from(""),
@@ -135,8 +141,8 @@ fn transfer_item(
     });
     let set_name = "";
     let transfer_error = transfer_data_set(
-        destination,
-        &source,
+        &mut destination_mut,
+        Arc::new(source_mut),
         destination_index,
         8,
         &set_name,
@@ -147,8 +153,8 @@ fn transfer_item(
         return;
     }
     // check transfer success
-    assert!(destination_index < destination.content.len());
-    let destination_item = destination.content[destination_index]
+    assert!(destination_index < destination_mut.content.len());
+    let destination_item = destination_mut.content[destination_index]
         .as_ref()
         .expect("Set should be present");
     assert_eq!("", destination_item.ident);
@@ -157,7 +163,7 @@ fn transfer_item(
     assert_eq!(item_size, destination_item.buffers[0].data.size);
     let read_offset = destination_item.buffers[0].data.offset;
     let mut read_buffer = vec![0; item_size];
-    destination
+    destination_mut
         .read(read_offset, &mut read_buffer)
         .expect("Context should be readable at item position");
     assert_eq!(vec![BYTEPATTERN; item_size], read_buffer);
@@ -236,21 +242,24 @@ macro_rules! domainTests {
             }
             #[test]
             fn test_transfer_single() {
-                let mut source = acquire::<$domain>($init, 1);
-                let mut destination = acquire::<$domain>($init, 1);
-                transefer(&mut source, &mut destination);
+                let source = Box::new(acquire::<$domain>($init, 1));
+                let destination = Box::new(acquire::<$domain>($init, 1));
+                transefer(source, destination);
             }
             #[test]
             fn test_transfer_page() {
-                let mut source = acquire::<$domain>($init, 4096);
-                let mut destination = acquire::<$domain>($init, 4096);
-                transefer(&mut source, &mut destination);
+                let source = Box::new(acquire::<$domain>($init, 4096));
+                let destination = Box::new(acquire::<$domain>($init, 4096));
+                transefer(source, destination);
             }
             #[test]
             fn test_transfer_dataitem_item() {
-                let mut source = acquire::<$domain>($init, 4096);
-                let mut destination = acquire::<$domain>($init, 4096);
-                transfer_item(&mut source, &mut destination, 0, 128, 1, 2, Ok(()));
+                let source = Box::new(acquire::<$domain>($init, 4096));
+                let destination = Box::new(acquire::<$domain>($init, 4096));
+                transfer_item(source, destination, 0, 128, 1, 2, Ok(()));
+                // let mut source = acquire::<$domain>($init, 4096);
+                // let mut destination = acquire::<$domain>($init, 4096);
+                // transfer_item(&mut source, &mut destination, 0, 128, 1, 2, Ok(()));
             }
             // TODO
             // #[test]
