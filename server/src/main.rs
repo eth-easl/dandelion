@@ -305,6 +305,7 @@ async fn service(
         | "/cold/io"
         | "/cold/chain_scaling"
         | "/cold/middleware_app"
+        | "/cold/middleware_app_hybrid"
         | "/cold/python_app" => serve_request(true, req, dispatcher).await,
         "/hot/matmul"
         | "/hot/matmulstore"
@@ -312,6 +313,7 @@ async fn service(
         | "/hot/io"
         | "/hot/chain_scaling"
         | "/hot/middleware_app"
+        | "/hot/middleware_app_hybrid"
         | "/hot/python_app" => serve_request(false, req, dispatcher).await,
         "/stats" => serve_stats(req).await,
         other_uri => {

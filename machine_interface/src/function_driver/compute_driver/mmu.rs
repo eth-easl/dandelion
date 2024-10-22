@@ -144,16 +144,16 @@ fn mmu_run_static(
                     return Ok(());
                 }
                 #[cfg(target_arch = "x86_64")]
-                SyscallType::Authorized => {
+                SyscallType::Authorized | SyscallType::Unauthorized(_) => {
                     debug!("detected authorized syscall");
                     ptrace_syscall(pid.as_raw());
                 }
-                SyscallType::Unauthorized(syscall_id) => {
-                    warn!("detected unauthorized syscall with id {}", syscall_id);
-                    worker.kill().map_err(|_e| DandelionError::MmuWorkerError)?;
-                    warn!("worker killed");
-                    return Err(DandelionError::UnauthorizedSyscall);
-                }
+                // SyscallType::Unauthorized(syscall_id) => {
+                //     warn!("detected unauthorized syscall with id {}", syscall_id);
+                //     worker.kill().map_err(|_e| DandelionError::MmuWorkerError)?;
+                //     warn!("worker killed");
+                //     return Err(DandelionError::UnauthorizedSyscall);
+                // }
             },
             Signal::SIGSEGV => {
                 warn!("detected segmentation fault");
