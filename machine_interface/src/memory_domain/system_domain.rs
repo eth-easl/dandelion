@@ -30,7 +30,7 @@ pub struct SystemContext {
 
 impl ContextTrait for SystemContext {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
-        warn!("Tried to write to a SystemContext!");
+        warn!("Tried to write to a SystemContext with offset: {}!", offset);
         self.local_items.entry(offset).or_insert(true);
         self.mmap_context.storage.write(offset, data)
     }
@@ -41,7 +41,7 @@ impl ContextTrait for SystemContext {
         else {
             let Some(_) = self.local_items.get(&offset)
             else {
-                panic!("Read offset not stored in SystemContext (read)");
+                panic!("Read offset not stored in SystemContext (read). Offset: {}", offset);
             };
             return self.mmap_context.read(offset, read_buffer);
         };
