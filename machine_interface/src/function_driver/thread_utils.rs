@@ -22,17 +22,17 @@ pub trait EngineLoop {
 
 fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
     // set core affinity
-    // if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
-    //     log::error!("core received core id that could not be set");
-    //     return;
-    // }
+    if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
+        log::error!("core received core id that could not be set");
+        return;
+    }
 
     // set core affinity with cpu range
-    let mut cpuset = CpuSet::new();
-    cpuset.set(core_id as usize).expect("Failed to set CPU in CpuSet");
+    // let mut cpuset = CpuSet::new();
+    // cpuset.set(core_id as usize).expect("Failed to set CPU in CpuSet");
 
-    sched_setaffinity(Pid::from_raw(0), &cpuset)
-        .expect("Failed to set CPU affinity for thread");
+    // sched_setaffinity(Pid::from_raw(0), &cpuset)
+    //     .expect("Failed to set CPU affinity for thread");
 
     // no cpu pinning with cpu range
     // let mut cpuset = CpuSet::new();
@@ -150,12 +150,12 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
 
 pub fn start_thread<E: EngineLoop>(cpu_slot: u8, queue: Box<dyn WorkQueue + Send>) -> () {
 
-    let core_range_start = 5;
-    let core_range_end = 10;
-    let core_count = core_range_end - core_range_start + 1;
+    // let core_range_start = 5;
+    // let core_range_end = 10;
+    // let core_count = core_range_end - core_range_start + 1;
     
-    let core_id = core_range_start + (cpu_slot % core_count) as u8;
-    spawn(move || run_thread::<E>(core_id, queue));
+    // let core_id = core_range_start + (cpu_slot % core_count) as u8;
+    // spawn(move || run_thread::<E>(core_id, queue));
 
-    // spawn(move || run_thread::<E>(cpu_slot, queue));
+    spawn(move || run_thread::<E>(cpu_slot, queue));
 }
