@@ -1,12 +1,13 @@
-use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource};
+use crate::{memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource}, util::mmapmem::MmapMem};
 use dandelion_commons::{DandelionError, DandelionResult};
+use nix::sys::mman::ProtFlags;
 use std::{
     collections::BTreeMap,
     sync::Arc,
 };
 use log::warn;
 
-use super::transfer_memory;
+use super::{bytes_context::BytesContext, mmap::MmapContext, transfer_memory};
 
 // This context does not have any real data in it. It only holds arcs to other contexts, where
 // the data is. Everything else (including the metadata, where every item is) is as any other context. 
@@ -17,26 +18,39 @@ use super::transfer_memory;
 
 #[derive(Debug)]
 pub struct SystemContext {
-
-    // Links virtial offset to corresponding arc context and its offset
+    // Links virtual offset to corresponding arc context and its offset
     local_offset_to_actual_offset: BTreeMap<usize, (Arc<Context>, usize)>,
+
+    // This is a context only acces through this system context. It is used if data is directly writen to the context.
+    // This should not be neccessary if only the transfer_memory interface is used. Currently we use an mmuContext for that
+    mmap_context: Box<MmapContext>,
+    // Stores if item is stored locally
+    local_items: BTreeMap<usize, bool>,
 }
 
 impl ContextTrait for SystemContext {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
-        panic!("Tried to write to a SystemContext!");
+        warn!("Tried to write to a SystemContext!");
+        self.local_items.entry(offset).or_insert(true);
+        self.mmap_context.storage.write(offset, data)
     }
 
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
-        warn!("Tried to read from a SystemContext!");
+        // warn!("Tried to read from a SystemContext!");
         let Some((arc_context, actual_offset)) = self.local_offset_to_actual_offset.get(&offset)
-        else {panic!("Read offset not stored in SystemContext (read)");};
+        else {
+            let Some(_) = self.local_items.get(&offset)
+            else {
+                panic!("Read offset not stored in SystemContext (read)");
+            };
+            return self.mmap_context.read(offset, read_buffer);
+        };
         arc_context.read(*actual_offset, read_buffer)
 
     }
 
     fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
-        warn!("Tried to get chunk ref from a SystemContext!");
+        // warn!("Tried to get chunk ref from a SystemContext!");
 
         let Some((arc_context, actual_offset)) = self.local_offset_to_actual_offset.get(&offset)
         else {panic!("Read offset not stored in SystemContext (get_chunk_ref)");};
@@ -53,7 +67,16 @@ impl MemoryDomain for SystemMemoryDomain {
     }
 
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
-        let new_context = Box::new(SystemContext{local_offset_to_actual_offset: BTreeMap::new()});
+
+        let mem_space =
+            match MmapMem::create(size, ProtFlags::PROT_READ | ProtFlags::PROT_WRITE, false) {
+                Ok(v) => v,
+                Err(_e) => return Err(DandelionError::MemoryAllocationError),
+            };
+
+        let sub_context = Box::new(MmapContext { storage: mem_space });
+
+        let new_context = Box::new(SystemContext{local_offset_to_actual_offset: BTreeMap::new(), mmap_context: sub_context, local_items: BTreeMap::new()});
         Ok(Context::new(ContextType::System(new_context), size))
     }
 }
