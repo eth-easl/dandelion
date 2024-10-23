@@ -23,7 +23,7 @@ pub struct SystemContext {
 
     // This is a context only acces through this system context. It is used if data is directly writen to the context.
     // This should not be neccessary if only the transfer_memory interface is used. Currently we use an mmuContext for that
-    mmap_context: Box<MmapContext>,
+    mmap_context: MmapContext,
     // Stores if item is stored locally
     local_items: BTreeMap<usize, bool>,
 }
@@ -41,7 +41,9 @@ impl ContextTrait for SystemContext {
         else {
             let Some(_) = self.local_items.get(&offset)
             else {
-                panic!("Read offset not stored in SystemContext (read). Offset: {}", offset);
+                warn!("Read offset not stored in SystemContext (read). Offset: {}", offset);
+                return Err(DandelionError::InvalidRead);
+                // panic!("Read offset not stored in SystemContext (read). Offset: {}", offset);
             };
             return self.mmap_context.read(offset, read_buffer);
         };
@@ -53,7 +55,15 @@ impl ContextTrait for SystemContext {
         // warn!("Tried to get chunk ref from a SystemContext!");
 
         let Some((arc_context, actual_offset)) = self.local_offset_to_actual_offset.get(&offset)
-        else {panic!("Read offset not stored in SystemContext (get_chunk_ref)");};
+        else {
+            let Some(_) = self.local_items.get(&offset)
+            else {
+                warn!("Read offset not stored in SystemContext (get_chunk_ref). Offset: {}", offset);
+                return Err(DandelionError::InvalidRead);
+                // panic!("Read offset not stored in SystemContext (read). Offset: {}", offset);
+            };
+            return self.mmap_context.get_chunk_ref(offset, length);
+        };
         arc_context.get_chunk_ref(*actual_offset, length)
     }
 }
@@ -74,7 +84,7 @@ impl MemoryDomain for SystemMemoryDomain {
                 Err(_e) => return Err(DandelionError::MemoryAllocationError),
             };
 
-        let sub_context = Box::new(MmapContext { storage: mem_space });
+        let sub_context = MmapContext { storage: mem_space };
 
         let new_context = Box::new(SystemContext{local_offset_to_actual_offset: BTreeMap::new(), mmap_context: sub_context, local_items: BTreeMap::new()});
         Ok(Context::new(ContextType::System(new_context), size))
@@ -93,7 +103,16 @@ pub fn system_context_transfer(
     match &source.context{
         ContextType::System(source_ctxt) => {
             let Some((data_arc_context, actual_offset)) = source_ctxt.local_offset_to_actual_offset.get(&source_offset)
-            else {panic!("Read offset not stored in SystemContext (system_context_transfer)");};
+            else {
+                let Some(_) = source_ctxt.local_items.get(&source_offset)
+                else {
+                    warn!("Read offset not stored in SystemContext (system_context_transfer). Offset: {}", source_offset);
+                    return Err(DandelionError::InvalidRead);
+                    // panic!("Read offset not stored in SystemContext (system_context_transfer). Offset: {}", source_offset);
+                };
+                destination.local_offset_to_actual_offset.entry(destination_offset).or_insert((source.clone(), source_offset));
+                return Ok(())
+            };
             destination.local_offset_to_actual_offset.entry(destination_offset).or_insert((data_arc_context.clone(), *actual_offset));
             Ok(())
         }
@@ -140,7 +159,17 @@ pub fn out_of_system_context_transfer(
             return match &source.context{
                 ContextType::System(source_ctxt) => {
                     let Some((data_arc_context, actual_offset)) = source_ctxt.local_offset_to_actual_offset.get(&source_offset)
-                    else {panic!("Read offset not stored in SystemContext (system_context_transfer)");};
+                    else {
+                        let Some(_) = source_ctxt.local_items.get(&source_offset)
+                        else {
+                            warn!("Read offset not stored in SystemContext (out_of_system_context_transfer). Offset: {}", source_offset);
+                            return Err(DandelionError::InvalidRead);
+                            // panic!("Read offset not stored in SystemContext (out_of_system_context_transfer). Offset: {}", source_offset);
+                        };
+                        let mut read_buffer: Vec<u8> = vec![0; size];
+                        source_ctxt.mmap_context.read(source_offset, &mut read_buffer)?;
+                        return destination.write(destination_offset, &read_buffer);
+                    };
 
                     transfer_memory(destination, data_arc_context.clone(), destination_offset, *actual_offset, size)
                 }
