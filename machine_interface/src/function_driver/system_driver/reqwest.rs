@@ -289,11 +289,13 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
     let body_len = body.len();
     let response_len = preable_len + body_len;
     let response_start = context.get_free_space(response_len, 128)?;
+    warn!("Writing into context directly with response_len {} and body_len {} at offset {}", response_len, body_len, response_start);
     context.write(response_start, preamble.as_bytes())?;
     let mut bytes_read = 0;
     while bytes_read < body_len {
         let chunk = body.chunk();
         let reading = chunk.len();
+        warn!("Writing part of body at offset {}", response_start + preable_len + bytes_read);
         context.write(response_start + preable_len + bytes_read, chunk)?;
         body.advance(reading);
         bytes_read += reading;
@@ -354,6 +356,7 @@ async fn http_run(
             return;
         }
     };
+    warn!("http_run with response_vec of length {}", response_vec.len());
 
     // only clear once for all requests
     context.clear_metadata();
