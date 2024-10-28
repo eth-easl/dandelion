@@ -464,7 +464,9 @@ fn main() -> () {
 
     let resource_conversion = |core_index| ComputeResource::CPU(core_index);
 
-    let dispatcher_cores = config.get_dispatcher_cores();
+    let dispatcher_cores = Arc::new(config.get_dispatcher_cores());
+    let dispatcher_cores_clone = dispatcher_cores.clone();
+
     let frontend_cores = config.get_frontend_cores();
     let communication_cores = config
         .get_communication_cores()
@@ -511,13 +513,13 @@ fn main() -> () {
             static ATOMIC_INDEX: AtomicUsize = AtomicUsize::new(0);
             let core_index = ATOMIC_INDEX.fetch_add(1, Ordering::SeqCst);
             if !core_affinity::set_for_current(CoreId {
-                id: dispatcher_cores[core_index].into(),
+                id: dispatcher_cores_clone[core_index].into(),
             }) {
                 return;
             }
             info!(
                 "Dispatcher thread running on core {}",
-                dispatcher_cores[core_index]
+                dispatcher_cores_clone[core_index]
             );
         })
         .build()
@@ -574,11 +576,19 @@ fn main() -> () {
     };
     #[cfg(feature = "controller")]
     let controller_runtime = Runtime::new().unwrap();
-    #[cfg(feature = "controller")]
-    controller_runtime.spawn(async move {
-        controller.monitor_and_allocate().await;
-    });
 
+    #[cfg(feature = "controller")]
+    let handle = std::thread::spawn(move || {
+        // Set the core affinity for this thread to `dispatcher_core`.
+        if core_affinity::set_for_current(core_affinity::CoreId { id: dispatcher_cores[0].into() }) {
+            println!("Controller runtime successfully bound to core {}", dispatcher_cores[0]);
+        } else {
+            eprintln!("Failed to bind controller runtime to core {}",  dispatcher_cores[0]);
+        }
+        controller_runtime.block_on(async {
+            controller.monitor_and_allocate().await;
+        });
+    });
     
 
     // TODO would be nice to just print server ready with all enabled features if that would be possible

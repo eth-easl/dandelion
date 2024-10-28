@@ -66,8 +66,7 @@ impl Controller {
             //print resource pool status
             // let pool_guard = self.resource_pool.engine_pool.lock().await;
             // println!("Engine pool: {:?}", pool_guard);
-            
-            sleep(Duration::from_millis(self.loop_duration)).await;
+            sleep(Duration::from_millis(self.loop_duration)).await
         }
     }
 
