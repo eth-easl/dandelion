@@ -23,10 +23,10 @@ pub trait EngineLoop {
 
 fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
     // set core affinity
-    if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
-        log::error!("core received core id that could not be set");
-        return;
-    }
+    // if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
+    //     log::error!("core received core id that could not be set");
+    //     return;
+    // }
 
     // set core affinity with cpu range
     // let mut cpuset = CpuSet::new();
