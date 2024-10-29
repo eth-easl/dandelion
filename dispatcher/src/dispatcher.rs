@@ -5,6 +5,7 @@ use crate::{
     resource_pool::ResourcePool,
 };
 use core::pin::Pin;
+use crossbeam::thread;
 use dandelion_commons::{
     records::{RecordPoint, Recorder},
     DandelionError, DandelionResult, FunctionId,
@@ -41,7 +42,7 @@ pub struct Dispatcher {
 }
 
 impl Dispatcher {
-    pub fn init(mut resource_pool: ResourcePool) -> DandelionResult<Dispatcher> {
+    pub fn init(mut resource_pool: ResourcePool, threads_per_core: usize) -> DandelionResult<Dispatcher> {
         // get machine specific configurations
         let type_map = get_compatibilty_table();
         let domains = get_available_domains();
@@ -55,7 +56,7 @@ impl Dispatcher {
         for (engine_type, driver) in drivers.into_iter() {
             let work_queue = Box::new(EngineQueue::new());
             while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(engine_type) {
-                driver.start_engine(resource, work_queue.clone())?;
+                driver.start_engine(resource, work_queue.clone(), threads_per_core)?;
             }
             let domain_type = type_map.get(&engine_type).unwrap();
             let domain = *domains.get(domain_type).unwrap();

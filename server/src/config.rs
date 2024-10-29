@@ -6,6 +6,7 @@ const DEFAULT_CONFIG_PATH: &str = "./dandelion.config";
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_SINGLE_CORE: bool = false;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
+const DEFAULT_THREAD_PER_CORE: usize = 1;
 
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
@@ -29,6 +30,10 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = DEFAULT_TIMESTAMP_COUNT)]
     #[serde(default)]
     pub timestamp_count: usize,
+    #[arg(long, env, default_value_t = DEFAULT_THREAD_PER_CORE)]
+    #[serde(default)]
+    pub threads_per_core: usize,
+
 }
 
 impl DandelionConfig {

@@ -7,6 +7,7 @@ use dandelion_commons::{records::RecordPoint, DandelionResult};
 use std::thread::spawn;
 use nix::sched::{sched_setaffinity, CpuSet}; // Add nix for CPU affinity
 use nix::unistd::Pid;
+use std::sync::Arc;
 
 extern crate alloc;
 
@@ -148,7 +149,8 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
     }
 }
 
-pub fn start_thread<E: EngineLoop>(cpu_slot: u8, queue: Box<dyn WorkQueue + Send>) -> () {
+// pub fn start_thread<E: EngineLoop>(cpu_slot: u8, queue: Box<dyn WorkQueue + Send>) -> () {
+pub fn start_thread<E: EngineLoop>(cpu_slot: u8, queue: Box<dyn WorkQueue + Send>, threads_per_core: usize) -> () {
 
     // let core_range_start = 5;
     // let core_range_end = 10;
@@ -157,5 +159,14 @@ pub fn start_thread<E: EngineLoop>(cpu_slot: u8, queue: Box<dyn WorkQueue + Send
     // let core_id = core_range_start + (cpu_slot % core_count) as u8;
     // spawn(move || run_thread::<E>(core_id, queue));
 
-    spawn(move || run_thread::<E>(cpu_slot, queue));
+
+    // spawn(move || run_thread::<E>(cpu_slot, queue));
+
+
+    // let test_queue: Arc<Box<dyn WorkQueue + Send>> = Arc::new(queue);
+
+    for _ in 0..threads_per_core {
+        let queue_clone = queue.clone_box();
+        spawn(move || run_thread::<E>(cpu_slot, queue_clone));
+    }
 }

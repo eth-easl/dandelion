@@ -539,8 +539,9 @@ fn main() -> () {
     };
 
     // Create an ARC pointer to the dispatcher for thread-safe access
+    let threads_per_core = config.threads_per_core;
     let dispatcher = Box::leak(Box::new(
-        Dispatcher::init(resource_pool).expect("Should be able to start dispatcher"),
+        Dispatcher::init(resource_pool, threads_per_core).expect("Should be able to start dispatcher"),
     ));
     // start dispatcher
     dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
