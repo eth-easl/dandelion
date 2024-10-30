@@ -169,6 +169,28 @@ fn transfer_item(
     assert_eq!(vec![BYTEPATTERN; item_size], read_buffer);
 }
 
+macro_rules! systemsDomainTests {
+    ($name : ident ; $domain : ty ; $init : expr) => {
+        #[test]
+        fn testing_transfer_system_context(){
+            let source = Box::new(acquire::<$domain>($init, 4096));
+            let destination = Box::new(acquire::<super::system_domain::SystemMemoryDomain>($init, 4096));
+            transfer_item(source, destination, 0, 128, 1, 2, Ok(()));
+        }
+    }
+}
+
+// #[cfg(feature = "wasm")]
+// use super::wasm::WasmMemoryDomain as wasmType;
+// #[cfg(feature = "wasm")]
+// #[test]
+// fn testing_transfer_system_context(){
+//     let source = Box::new(acquire::<wasmType>(MemoryResource::None, 4096));
+//     let destination = Box::new(acquire::<super::system_domain::SystemMemoryDomain>(MemoryResource::None, 4096));
+//     transfer_item(source, destination, 0, 128, 1, 2, Ok(()));
+// }
+
+
 // TODO make tests sweep ranges
 macro_rules! domainTests {
     ($name : ident ; $domain : ty ; $init : expr) => {
@@ -280,13 +302,22 @@ domainTests!(mmap; mmapType; MemoryResource::None);
 use super::cheri::CheriMemoryDomain as cheriType;
 #[cfg(feature = "cheri")]
 domainTests!(cheri; cheriType; MemoryResource::None);
+#[cfg(feature = "cheri")]
+systemsDomainTests!(cheri; cheriType; MemoryResource::None);
 
 #[cfg(feature = "mmu")]
 use super::mmu::MmuMemoryDomain as mmuType;
 #[cfg(feature = "mmu")]
 domainTests!(mmu; mmuType; MemoryResource::None);
+#[cfg(feature = "mmu")]
+systemsDomainTests!(mmu; mmuType; MemoryResource::None);
 
 #[cfg(feature = "wasm")]
 use super::wasm::WasmMemoryDomain as wasmType;
 #[cfg(feature = "wasm")]
 domainTests!(wasm; wasmType; MemoryResource::None);
+#[cfg(feature = "wasm")]
+systemsDomainTests!(wasm; wasmType; MemoryResource::None);
+
+use super::system_domain::SystemMemoryDomain as systemType;
+domainTests!(system_domain; systemType; MemoryResource::None);

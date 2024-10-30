@@ -20,6 +20,7 @@ use log::warn;
 use reqwest::{header::HeaderMap, Client};
 use std::sync::Arc;
 use tokio::runtime::Builder;
+use crate::memory_domain::{system_domain::system_context_write_response_information, ContextType};
 
 struct RequestInformation {
     /// name of the request item
@@ -285,27 +286,43 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
         mut body,
     } = response;
 
-    // allocate space in the context for the entire response
+    // We eliminate this write by using 
+
+    // // allocate space in the context for the entire response
+    // let preable_len = preamble.len();
+    // let body_len = body.len();
+    // let response_len = preable_len + body_len;
+    // let response_start = context.get_free_space(response_len, 128)?;
+    // // warn!("Writing into context directly with response_len {} and body_len {} at offset {}", response_len, body_len, response_start);
+    // context.write(response_start, preamble.as_bytes())?;
+    // let mut bytes_read = 0;
+    // while bytes_read < body_len {
+    //     let chunk = body.chunk();
+    //     let reading = chunk.len();
+    //     // warn!("Writing part of body at offset {}", response_start + preable_len + bytes_read);
+    //     context.write(response_start + preable_len + bytes_read, chunk)?;
+    //     body.advance(reading);
+    //     bytes_read += reading;
+    // }
+    // assert_eq!(
+    //     0,
+    //     body.remaining(),
+    //     "Body should have non remaining as we have read the amount given as len in the beginning"
+    // );
+    
+
     let preable_len = preamble.len();
     let body_len = body.len();
     let response_len = preable_len + body_len;
     let response_start = context.get_free_space(response_len, 128)?;
-    warn!("Writing into context directly with response_len {} and body_len {} at offset {}", response_len, body_len, response_start);
-    context.write(response_start, preamble.as_bytes())?;
-    let mut bytes_read = 0;
-    while bytes_read < body_len {
-        let chunk = body.chunk();
-        let reading = chunk.len();
-        warn!("Writing part of body at offset {}", response_start + preable_len + bytes_read);
-        context.write(response_start + preable_len + bytes_read, chunk)?;
-        body.advance(reading);
-        bytes_read += reading;
+    let preamble_bytes = bytes::Bytes::from(preamble.into_bytes());
+    match &mut context.context {
+        ContextType::System(destination_ctxt) =>{
+            system_context_write_response_information(destination_ctxt, &mut preamble_bytes.clone(), &mut body.clone(), response_start);
+        }
+        _ => return Err(DandelionError::ContextMissmatch)
     }
-    assert_eq!(
-        0,
-        body.remaining(),
-        "Body should have non remaining as we have read the amount given as len in the beginning"
-    );
+
     if let Some(response_set) = &mut context.content[0] {
         response_set.buffers.push(DataItem {
             ident: item_name.clone(),
@@ -357,10 +374,11 @@ async fn http_run(
             return;
         }
     };
-    warn!("http_run with response_vec of length {}", response_vec.len());
+    // warn!("http_run with response_vec of length {}", response_vec.len());
 
     // only clear once for all requests
     context.clear_metadata();
+
     if !output_set_names.is_empty() {
         context.content = vec![None, None];
         if output_set_names.iter().any(|elem| elem == "response") {
