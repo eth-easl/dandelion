@@ -68,8 +68,8 @@ pub enum DandelionError {
     EngineError,
     /// asked driver for engine, but there are no more available
     NoEngineAvailable,
-    /// debt was dropped without fulfilling it
-    PromiseDroppedDebt,
+    /// Error from a promise
+    PromiseError(PromiseError),
     /// there was a non recoverable issue when spawning or running the MMU worker
     MmuWorkerError,
     // system engine errors
@@ -156,4 +156,16 @@ pub enum FrontendError {
 pub enum RegistryError {
     /// Failed to receive local loading result that was triggered by another function
     LocalLoadingReceive,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PromiseError {
+    /// No promises left in promise buffer
+    NoneAvailable,
+    /// Default result, was never replaced
+    Default,
+    /// Dept was dropped without fulfilling it
+    DroppedDebt,
+    /// Promise result after taking it already
+    TakenPromise,
 }

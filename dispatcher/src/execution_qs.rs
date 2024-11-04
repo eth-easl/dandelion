@@ -103,6 +103,6 @@ impl EngineQueue {
             }
             Err(TrySendError::Full(_)) => return Err(DandelionError::WorkQueueFull),
         }
-        return *promise.await;
+        return promise.await;
     }
 }
