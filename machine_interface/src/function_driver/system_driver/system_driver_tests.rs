@@ -240,7 +240,8 @@ dolore magna aliquyam erat, sed diam voluptua."#
     mod reqwest_io {
         use crate::function_driver::system_driver::reqwest::ReqwestDriver;
         use crate::function_driver::ComputeResource;
-        use crate::memory_domain::malloc::MallocMemoryDomain as domain;
+        // use crate::memory_domain::malloc::MallocMemoryDomain as domain;
+        use crate::memory_domain::system_domain::SystemMemoryDomain as domain;
         driverTests!(reqwest_io; domain; crate::memory_domain::MemoryResource::None; ReqwestDriver{}; ComputeResource::CPU(1));
     }
 }

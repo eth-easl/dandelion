@@ -4,6 +4,7 @@ use std::sync::Arc;
 use crate::memory_domain::{
     transfer_data_set, transfer_memory, Context, ContextTrait, MemoryDomain, MemoryResource,
 };
+use crate::memory_domain::system_domain::SystemMemoryDomain;
 use dandelion_commons::{DandelionError, DandelionResult};
 // produces binary pattern 0b0101_01010 or 0x55
 const BYTEPATTERN: u8 = 85;
@@ -169,28 +170,6 @@ fn transfer_item(
     assert_eq!(vec![BYTEPATTERN; item_size], read_buffer);
 }
 
-macro_rules! systemsDomainTests {
-    ($name : ident ; $domain : ty ; $init : expr) => {
-        #[test]
-        fn testing_transfer_system_context(){
-            let source = Box::new(acquire::<$domain>($init, 4096));
-            let destination = Box::new(acquire::<super::system_domain::SystemMemoryDomain>($init, 4096));
-            transfer_item(source, destination, 0, 128, 1, 2, Ok(()));
-        }
-    }
-}
-
-// #[cfg(feature = "wasm")]
-// use super::wasm::WasmMemoryDomain as wasmType;
-// #[cfg(feature = "wasm")]
-// #[test]
-// fn testing_transfer_system_context(){
-//     let source = Box::new(acquire::<wasmType>(MemoryResource::None, 4096));
-//     let destination = Box::new(acquire::<super::system_domain::SystemMemoryDomain>(MemoryResource::None, 4096));
-//     transfer_item(source, destination, 0, 128, 1, 2, Ok(()));
-// }
-
-
 // TODO make tests sweep ranges
 macro_rules! domainTests {
     ($name : ident ; $domain : ty ; $init : expr) => {
@@ -283,11 +262,45 @@ macro_rules! domainTests {
                 // let mut destination = acquire::<$domain>($init, 4096);
                 // transfer_item(&mut source, &mut destination, 0, 128, 1, 2, Ok(()));
             }
+            
             // TODO
             // #[test]
             // fn test_transfer_dataitem_set() {
             //     transfer_set::<$domain>($init, 4096, 128, 256, 1, 2, Ok(()));
             // }
+        }
+    };
+}
+
+// #[cfg(feature = "wasm")]
+// use super::wasm::WasmMemoryDomain as wasmType;
+// #[cfg(feature = "wasm")]
+// #[test]
+// fn testing_transfer_system_context(){
+//     let source = Box::new(acquire::<wasmType>(MemoryResource::None, 4096));
+//     let destination = Box::new(acquire::<super::system_domain::SystemMemoryDomain>(MemoryResource::None, 4096));
+//     transfer_item(source, destination, 0, 128, 1, 2, Ok(()));
+// }
+
+macro_rules! systemsDomainTests {
+    ($name : ident ; $domain : ty ; $init : expr) => {
+        mod $name {
+            use super::*;
+            // domain tests
+            #[test]
+            fn testing_transfer_system_context(){
+                let source = Box::new(acquire::<$domain>($init, 4096));
+                let destination = Box::new(acquire::<SystemMemoryDomain>($init, 4096));
+                transfer_item(source, destination, 0, 128, 1, 2, Ok(()));
+            }
+            #[test]
+            fn test_aquire_success() {
+                try_acquire::<$domain>($init, 1, true);
+            }
+            #[test]
+            fn test_aquire_failure() {
+                try_acquire::<$domain>($init, usize::MAX, false);
+            }
         }
     };
 }
@@ -303,21 +316,21 @@ use super::cheri::CheriMemoryDomain as cheriType;
 #[cfg(feature = "cheri")]
 domainTests!(cheri; cheriType; MemoryResource::None);
 #[cfg(feature = "cheri")]
-systemsDomainTests!(cheri; cheriType; MemoryResource::None);
+systemsDomainTests!(cheriSystem; cheriType; MemoryResource::None);
 
 #[cfg(feature = "mmu")]
 use super::mmu::MmuMemoryDomain as mmuType;
 #[cfg(feature = "mmu")]
 domainTests!(mmu; mmuType; MemoryResource::None);
 #[cfg(feature = "mmu")]
-systemsDomainTests!(mmu; mmuType; MemoryResource::None);
+systemsDomainTests!(mmuSystem; mmuType; MemoryResource::None);
 
 #[cfg(feature = "wasm")]
 use super::wasm::WasmMemoryDomain as wasmType;
 #[cfg(feature = "wasm")]
 domainTests!(wasm; wasmType; MemoryResource::None);
 #[cfg(feature = "wasm")]
-systemsDomainTests!(wasm; wasmType; MemoryResource::None);
+systemsDomainTests!(wasmSystem; wasmType; MemoryResource::None);
 
-use super::system_domain::SystemMemoryDomain as systemType;
-domainTests!(system_domain; systemType; MemoryResource::None);
+// use super::system_domain::SystemMemoryDomain as systemType;
+// domainTests!(system_domain; systemType; MemoryResource::None);

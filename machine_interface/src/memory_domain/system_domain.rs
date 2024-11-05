@@ -1,10 +1,11 @@
 use crate::{memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource}, util::mmapmem::MmapMem};
 use dandelion_commons::{DandelionError, DandelionResult};
+// use tokio::sync::RwLock;
 use std::{
     collections::BTreeMap,
-    sync::Arc,
+    sync::{Arc, RwLock},
 };
-use bytes::Buf;
+use bytes::{Buf, BytesMut};
 use log::{debug, warn};
 
 use super::transfer_memory;
@@ -26,6 +27,8 @@ pub enum DataPosition{
 pub struct SystemContext {
     // Links virtual offset to corresponding data position
     local_offset_to_data_position: BTreeMap<usize, DataPosition>,
+    
+    chunk_ref_return_storage: Arc<RwLock<bytes::Bytes>>,
 }
 
 impl ContextTrait for SystemContext {
@@ -106,7 +109,9 @@ impl ContextTrait for SystemContext {
                 let total_length = preamble_length + body_length;
                 let adjusted_length = std::cmp::min(length, total_length);
 
-                let mut combined = Vec::with_capacity(adjusted_length);
+                let mut combined = BytesMut::with_capacity(length);
+
+                // let mut combined = Vec::with_capacity(adjusted_length);
 
                 if adjusted_length <= preamble_length {
                     combined.extend_from_slice(&cloned_preamble[..adjusted_length]);
@@ -129,10 +134,23 @@ impl ContextTrait for SystemContext {
                         }
                     }
                 }
+
+                let new_bytes = combined.freeze();
+
+                {
+                    let mut external_lock = self.chunk_ref_return_storage.write().unwrap();
+                    *external_lock = new_bytes;
+                }
         
-                // Return the combined slice as a result
-                // Ok(&combined[..adjusted_length])
-                warn!("get_chunk_ref for SystemContext not properly implemented yet");
+                // Read from `external` and return a slice
+                // Clone the Bytes data so we can produce a slice from it
+                let external_clone = {
+                    let external_lock = self.chunk_ref_return_storage.read().unwrap();
+                    external_lock.clone()
+                };
+        
+                // Return a slice from the cloned data
+                // Ok(external_clone.as_ref())
                 Err(DandelionError::NotImplemented)
             }
             _ =>
@@ -151,15 +169,15 @@ impl MemoryDomain for SystemMemoryDomain {
     }
 
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
-        let new_context = Box::new(SystemContext{local_offset_to_data_position: BTreeMap::new()});
+        let new_context = Box::new(SystemContext{local_offset_to_data_position: BTreeMap::new(), chunk_ref_return_storage: Arc::new(RwLock::new(bytes::Bytes::new()))});
         Ok(Context::new(ContextType::System(new_context), size))
     }
 }
 
 pub fn system_context_write_response_information(
     destination: &mut SystemContext,
-    source_preamble: &mut bytes::Bytes,
-    source_body: &mut bytes::Bytes,
+    source_preamble: bytes::Bytes,
+    source_body: bytes::Bytes,
     destination_offset: usize,
 ){
     destination.local_offset_to_data_position.entry(destination_offset).or_insert(DataPosition::ResponseInformationStorage(source_preamble.clone(), source_body.clone()));
