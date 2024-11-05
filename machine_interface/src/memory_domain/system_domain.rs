@@ -181,6 +181,7 @@ pub fn system_context_write_response_information(
     destination_offset: usize,
 ){
     destination.local_offset_to_data_position.entry(destination_offset).or_insert(DataPosition::ResponseInformationStorage(source_preamble.clone(), source_body.clone()));
+    warn!("Written at {} from system_context_write_response_information", destination_offset);
 }
 
 pub fn system_context_transfer(
@@ -229,6 +230,7 @@ pub fn into_system_context_transfer(
         }
         _ => {
             destination.local_offset_to_data_position.entry(destination_offset).or_insert(DataPosition::ContextStorage(source.clone(), source_offset));
+            warn!("Written at {} from into_system_context_transfer", destination_offset);
             Ok(())
         }
     }
