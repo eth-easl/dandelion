@@ -20,15 +20,13 @@ use super::transfer_memory;
 #[derive(Debug)]
 pub enum DataPosition{
     ContextStorage(Arc<Context>, usize),
-    ResponseInformationStorage(bytes::Bytes, bytes::Bytes),
+    ResponseInformationStorage(bytes::Bytes),
 }
 
 #[derive(Debug)]
 pub struct SystemContext {
     // Links virtual offset to corresponding data position
     local_offset_to_data_position: BTreeMap<usize, DataPosition>,
-    
-    chunk_ref_return_storage: Arc<RwLock<bytes::Bytes>>,
 }
 
 impl ContextTrait for SystemContext {
@@ -47,8 +45,7 @@ impl ContextTrait for SystemContext {
             DataPosition::ContextStorage(data_arc_context, actual_offset) => {
                 data_arc_context.read(*actual_offset, read_buffer)
             }
-            DataPosition::ResponseInformationStorage(ref preamble, ref body) => {
-                let cloned_preamble = preamble.clone();
+            DataPosition::ResponseInformationStorage(ref body) => {
                 let mut cloned_body = body.clone();
 
                 if offset % core::mem::align_of::<T>() != 0 {
@@ -56,23 +53,20 @@ impl ContextTrait for SystemContext {
                     return Err(DandelionError::ReadMisaligned);
                 }
                 // ------------------- TODO: Check this? -------------------
-                // We assume preamble_len + body_len = size
-                // assert!(preamble_len + body_len == size)
+                // We assume  body_len = size
+                // assert!(body_len == size)
 
 
 
                 let read_size = core::mem::size_of::<T>() * read_buffer.len();
                 unsafe {
                     let read_memory = core::slice::from_raw_parts_mut(read_buffer.as_mut_ptr() as *mut u8, read_size);
-                    
-                    let preamble_len = cloned_preamble.len();
-                    read_memory[..preamble_len].copy_from_slice(cloned_preamble.as_ref());
     
                     let mut bytes_read = 0;
                     while bytes_read < cloned_body.len() {
                         let chunk = cloned_body.chunk();
                         let reading = chunk.len();
-                        read_memory[preamble_len + bytes_read..preamble_len + bytes_read + reading].copy_from_slice(chunk); // Write the chunk to the read_memory
+                        read_memory[bytes_read..bytes_read + reading].copy_from_slice(chunk); // Write the chunk to the read_memory
                         cloned_body.advance(reading);
                         bytes_read += reading;
                     }
@@ -100,58 +94,10 @@ impl ContextTrait for SystemContext {
             DataPosition::ContextStorage(data_arc_context, actual_offset) => {
                 data_arc_context.get_chunk_ref(*actual_offset, length)
             }
-            DataPosition::ResponseInformationStorage(ref preamble, ref body) => {
-                let cloned_preamble = preamble.clone();
-                let mut cloned_body = body.clone();
-
-                let preamble_length = cloned_preamble.len();
-                let body_length = cloned_body.len();
-                let total_length = preamble_length + body_length;
-                let adjusted_length = std::cmp::min(length, total_length);
-
-                let mut combined = BytesMut::with_capacity(length);
-
-                // let mut combined = Vec::with_capacity(adjusted_length);
-
-                if adjusted_length <= preamble_length {
-                    combined.extend_from_slice(&cloned_preamble[..adjusted_length]);
-                }
-                else {
-                    combined.extend_from_slice(&cloned_preamble);
-                    let remaining_length = adjusted_length - preamble_length;
-                    // combined.extend_from_slice(&cloned_body[..remaining_length]);
-
-                    let mut bytes_read = 0;
-                    while bytes_read < cloned_body.len() {
-                        let chunk = cloned_body.chunk();
-                        let reading = chunk.len();
-                        let to_copy = std::cmp::min(reading, remaining_length - bytes_read);
-                        combined.extend_from_slice(&chunk[..to_copy]);
-                        cloned_body.advance(to_copy);
-                        bytes_read += to_copy;
-                        if bytes_read >= remaining_length {
-                            break;
-                        }
-                    }
-                }
-
-                let new_bytes = combined.freeze();
-
-                {
-                    let mut external_lock = self.chunk_ref_return_storage.write().unwrap();
-                    *external_lock = new_bytes;
-                }
-        
-                // Read from `external` and return a slice
-                // Clone the Bytes data so we can produce a slice from it
-                let external_clone = {
-                    let external_lock = self.chunk_ref_return_storage.read().unwrap();
-                    external_lock.clone()
-                };
-        
-                // Return a slice from the cloned data
-                // Ok(external_clone.as_ref())
-                Err(DandelionError::NotImplemented)
+            DataPosition::ResponseInformationStorage(ref body) => {
+                // ----------------------- TODO -----------------------
+                // Maybe make sure that length <= body.length
+                Ok(&body.as_ref()[..length])
             }
             _ =>
                 {warn!("Invalid DataPosition in system_context_transfer");
@@ -169,19 +115,18 @@ impl MemoryDomain for SystemMemoryDomain {
     }
 
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
-        let new_context = Box::new(SystemContext{local_offset_to_data_position: BTreeMap::new(), chunk_ref_return_storage: Arc::new(RwLock::new(bytes::Bytes::new()))});
+        let new_context = Box::new(SystemContext{local_offset_to_data_position: BTreeMap::new()});
         Ok(Context::new(ContextType::System(new_context), size))
     }
 }
 
 pub fn system_context_write_response_information(
     destination: &mut SystemContext,
-    source_preamble: bytes::Bytes,
-    source_body: bytes::Bytes,
+    source: bytes::Bytes,
     destination_offset: usize,
 ){
-    destination.local_offset_to_data_position.entry(destination_offset).or_insert(DataPosition::ResponseInformationStorage(source_preamble.clone(), source_body.clone()));
-    warn!("Written at {} from system_context_write_response_information", destination_offset);
+    destination.local_offset_to_data_position.entry(destination_offset).or_insert(DataPosition::ResponseInformationStorage(source.clone()));
+    // warn!("Written at {} from system_context_write_response_information", destination_offset);
 }
 
 pub fn system_context_transfer(
@@ -201,8 +146,8 @@ pub fn system_context_transfer(
             match data_position{
                 DataPosition::ContextStorage(data_arc_context, actual_offset) => 
                     {destination.local_offset_to_data_position.entry(destination_offset).or_insert(DataPosition::ContextStorage(data_arc_context.clone(), *actual_offset));}
-                DataPosition::ResponseInformationStorage(ref preamble, ref body) => 
-                    {destination.local_offset_to_data_position.entry(destination_offset).or_insert(DataPosition::ResponseInformationStorage(preamble.clone(), body.clone()));}
+                DataPosition::ResponseInformationStorage(ref body) => 
+                    {destination.local_offset_to_data_position.entry(destination_offset).or_insert(DataPosition::ResponseInformationStorage(body.clone()));}
                 _ =>
                     {warn!("Invalid DataPosition in system_context_transfer");
                     return Err(DandelionError::NotImplemented);}
@@ -230,7 +175,7 @@ pub fn into_system_context_transfer(
         }
         _ => {
             destination.local_offset_to_data_position.entry(destination_offset).or_insert(DataPosition::ContextStorage(source.clone(), source_offset));
-            warn!("Written at {} from into_system_context_transfer", destination_offset);
+            // warn!("Written at {} from into_system_context_transfer", destination_offset);
             Ok(())
         }
     }
@@ -263,16 +208,11 @@ pub fn out_of_system_context_transfer(
                         DataPosition::ContextStorage(data_arc_context, actual_offset) => {
                             transfer_memory(destination, data_arc_context.clone(), destination_offset, *actual_offset, size)
                         }
-                        DataPosition::ResponseInformationStorage(ref preamble, ref body) => {
-
-
-                            let preamble_len = preamble.len();
+                        DataPosition::ResponseInformationStorage(ref body) => {
                             let body_len = body.len();
                             // ------------------- TODO: Check this -------------------
-                            // We assume preamble_len + body_len = size
-                            // assert!(preamble_len + body_len == size)
-
-                            destination.write(destination_offset, preamble)?;
+                            // We assume body_len = size
+                            // assert!(body_len == size)
 
                             // We clone the bytes::Bytes and make it mutable for the advance method
                             let mut cloned_body = body.clone();
@@ -281,7 +221,7 @@ pub fn out_of_system_context_transfer(
                                 let chunk = cloned_body.chunk();
                                 let reading = chunk.len();
                                 // warn!("Writing part of body at offset {}", response_start + preable_len + bytes_read);
-                                destination.write(destination_offset + preamble_len + bytes_read, chunk)?;
+                                destination.write(destination_offset + bytes_read, chunk)?;
                                 cloned_body.advance(reading);
                                 bytes_read += reading;
                             }

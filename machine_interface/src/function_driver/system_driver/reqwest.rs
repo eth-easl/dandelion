@@ -286,9 +286,9 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
         mut body,
     } = response;
     
-    let preable_len = preamble.len();
+    let preamble_len = preamble.len();
     let body_len = body.len();
-    let response_len = preable_len + body_len;
+    let response_len = preamble_len + body_len;
     // allocate space in the context for the entire response
     let response_start = context.get_free_space(response_len, 128)?;
 
@@ -297,7 +297,8 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
             let preamble_bytes = bytes::Bytes::from(preamble.into_bytes());
             match &mut context.context {
                 ContextType::System(destination_ctxt) =>{
-                    system_context_write_response_information(destination_ctxt, preamble_bytes.clone(), body.clone(), response_start);
+                    system_context_write_response_information(destination_ctxt, preamble_bytes.clone(), response_start);
+                    system_context_write_response_information(destination_ctxt, body.clone(), response_start + preamble_len);
                 }
                 _ => return Err(DandelionError::ContextMissmatch)
             }
@@ -310,7 +311,7 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
                 let chunk = body.chunk();
                 let reading = chunk.len();
                 // warn!("Writing part of body at offset {}", response_start + preable_len + bytes_read);
-                context.write(response_start + preable_len + bytes_read, chunk)?;
+                context.write(response_start + preamble_len + bytes_read, chunk)?;
                 body.advance(reading);
                 bytes_read += reading;
             }
@@ -337,8 +338,8 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
             ident: item_name,
             key: item_key,
             data: Position {
-                offset: response_start + preable_len,
-                size: response_len - preable_len,
+                offset: response_start + preamble_len,
+                size: response_len - preamble_len,
             },
         })
     }
