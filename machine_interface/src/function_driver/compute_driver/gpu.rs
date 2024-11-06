@@ -267,30 +267,54 @@ fn common_parse(
     static_domain: &'static dyn crate::memory_domain::MemoryDomain,
 ) -> DandelionResult<crate::function_driver::Function> {
     // Deserialise user provided config JSON, extract module suffix
-    let (mut gpu_config, module_suffix) = config_parsing::parse_config(&function_path)?;
+    let (mut gpu_config, modules_info) = config_parsing::parse_config(&function_path)?;
+
+    gpu_config.code_object_offset =
+            SYSDATA_OFFSET + std::mem::size_of::<DandelionSystemData<usize, usize>>();
 
     let mut path = std::env::var("DANDELION_LIBRARY_PATH")
         .unwrap_or(format!("{}/tests/libs/", env!("CARGO_MANIFEST_DIR")));
 
-    path += &module_suffix;
+    let mut code_objects = Vec::new();
+    let mut sizes = Vec::new();
+    let mut cumulative_size: usize = 0;
+    let mut modules_offsets = HashMap::new();
 
-    let code_object = load_u8_from_file(path)?;
-    let size = code_object.len() * size_of::<u8>();
-    gpu_config.code_object_offset =
-        SYSDATA_OFFSET + std::mem::size_of::<DandelionSystemData<usize, usize>>();
+    for module_info in modules_info.iter() {
+        let module_name = module_info.get("module_name").ok_or(DandelionError::UnknownSymbol)?;
+        let module_path = module_info.get("path").ok_or(DandelionError::UnknownSymbol)?;
+        let full_path = format!("{path}{module_path}");
 
-    let mut context = static_domain.acquire_context(size)?;
-    // Not including SYSDATA_OFFSET here because SystemData is not in static context
-    context.write(0, &code_object)?;
-    // Location of code object
-    context.content = vec![Some(DataSet {
-        ident: String::from("static"),
-        buffers: vec![DataItem {
-            ident: String::from(""),
-            data: Position { offset: 0, size },
-            key: 0,
-        }],
-    })];
+        let code_object = load_u8_from_file(full_path)?;
+        let size = code_object.len() * size_of::<u8>();
+        
+        code_objects.push(code_object);
+        sizes.push(size);
+        modules_offsets.insert(module_name.clone(), cumulative_size);
+
+        cumulative_size += size;
+    }
+
+    let mut context = static_domain.acquire_context(cumulative_size)?;
+    
+    let mut offset: usize = 0;
+    for i in 0..code_objects.len() {
+        // Not including SYSDATA_OFFSET here because SystemData is not in static context
+        context.write(offset, &code_objects[i])?;
+        // Location of code object
+        context.content = vec![Some(DataSet {
+            ident: String::from("static"),
+            buffers: vec![DataItem {
+                ident: String::from(""),
+                data: Position { offset: offset, size: sizes[i] },
+                key: 0,
+            }],
+        })];
+
+        offset += sizes[i];
+    }
+
+    gpu_config.modules_offsets = Arc::new(modules_offsets);
 
     let config = FunctionConfig::GpuConfig(gpu_config);
 

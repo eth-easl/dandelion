@@ -1,6 +1,6 @@
 {
-    "modules": [ { "module_name": "module.hsaco", "path": "module.hsaco" } ],
-    "kernels": [ { "module_name": "module.hsaco", "kernel_name": "check_then_write" } ],
+    "module_path": "module.hsaco",
+    "kernels": ["check_then_write"],
     "blueprint": {
         "inputs": ["A"],
         "buffers": {},

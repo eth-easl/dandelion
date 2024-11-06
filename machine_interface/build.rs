@@ -18,8 +18,8 @@ fn cmake_libraries() -> () {
 }
 
 fn libraries_gpu() {
-    // Link with HIP Runtime 6.1.2
-    println!("cargo:rustc-link-search=/opt/rocm-6.1.2/lib");
+    // Link with HIP Runtime 6.2.2
+    println!("cargo:rustc-link-search=/opt/rocm-6.2.2/lib");
     println!("cargo:rustc-link-lib=amdhip64");
 }
 

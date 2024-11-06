@@ -51,8 +51,8 @@ pub struct ExecutionBlueprint {
 
 #[derive(Deserialize, Serialize, Debug)]
 struct GpuConfigIR {
-    module_path: String,
-    kernels: Vec<String>,
+    modules: Vec<HashMap<String, String>>,
+    kernels: Vec<HashMap<String, String>>,
     blueprint: ExecutionBlueprint,
 }
 
@@ -61,6 +61,7 @@ impl From<GpuConfigIR> for GpuConfig {
         Self {
             system_data_struct_offset: SYSDATA_OFFSET,
             code_object_offset: 0,
+            modules_offsets: Arc::new(HashMap::new()),
             kernels: Arc::new(value.kernels),
             blueprint: Arc::new(value.blueprint),
         }
@@ -70,38 +71,57 @@ impl From<GpuConfigIR> for GpuConfig {
 #[derive(Clone)]
 pub struct RuntimeGpuConfig {
     pub system_data_struct_offset: usize,
-    pub module: Arc<ModuleT>,
+    pub modules: Arc<Vec<ModuleT>>,
     pub kernels: Arc<HashMap<String, FunctionT>>,
     pub blueprint: Arc<ExecutionBlueprint>,
 }
 
 impl GpuConfig {
     pub fn load(self, base: *const u8) -> DandelionResult<RuntimeGpuConfig> {
-        let module = unsafe {
-            hip::module_load_data(base.wrapping_add(self.code_object_offset) as *const c_void)?
-        };
-        let kernels = self
-            .kernels
-            .iter()
-            .map(|kname| {
-                hip::module_get_function(&module, kname).map(|module| (kname.clone(), module))
-            })
-            .collect::<Result<HashMap<_, _>, _>>()?; // this is kinda ugly but also pretty cool
+        let base = base.wrapping_add(self.code_object_offset);
+
+        let mut to_load: HashMap<String, Vec<String>> = HashMap::new();
+        for kernel in self.kernels.iter() {
+            let module_name = kernel.get("module_name").ok_or(DandelionError::UnknownSymbol)?;
+            let kernel_name = kernel.get("kernel_name").ok_or(DandelionError::UnknownSymbol)?;
+
+            to_load
+                .entry(module_name.clone())
+                .or_insert_with(Vec::new)
+                .push(kernel_name.clone());
+        }
+
+        let mut modules = Vec::new();
+        let mut kernels = HashMap::new();
+        for (module_name, kernels_names) in &to_load {
+            let offset = self.modules_offsets.get(module_name).ok_or(DandelionError::UnknownSymbol)?;
+            let base_module = base.wrapping_add(offset.clone());
+
+            let module = unsafe { hip::module_load_data(base_module as *const c_void)? };
+            
+            for kernel_name in kernels_names.iter() {
+                let kernel = hip::module_get_function(&module, kernel_name)?;
+                let _ = kernels.insert(kernel_name.to_string(), kernel).ok_or(DandelionError::UnknownSymbol);
+            }
+
+            modules.push(module);
+        }
+        
         Ok(RuntimeGpuConfig {
             system_data_struct_offset: SYSDATA_OFFSET,
-            module: Arc::new(module),
+            modules: Arc::new(modules),
             kernels: Arc::new(kernels),
             blueprint: self.blueprint,
         })
     }
 }
 
-pub fn parse_config(path: &str) -> DandelionResult<(GpuConfig, String)> {
+pub fn parse_config(path: &str) -> DandelionResult<(GpuConfig, Vec<HashMap<String, String>>)> {
     let file = File::open(path).map_err(|_| DandelionError::FileError)?;
     let reader = BufReader::new(file);
     let ir: GpuConfigIR = serde_json::from_reader(reader)
         .map_err(|e| DandelionError::ParsingJSONError(format!("{e}")))?;
     // Copy kind of unnecessary as ir.into() doesn't need the string, but less bug prone than .drain(..).collect()
-    let module_path = ir.module_path.clone();
-    Ok((ir.into(), module_path))
+    let modules_info = ir.modules.clone();
+    Ok((ir.into(), modules_info))
 }

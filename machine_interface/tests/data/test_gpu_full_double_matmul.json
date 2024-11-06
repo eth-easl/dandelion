@@ -1,0 +1,35 @@
+{
+    "modules": [
+        { "module_name": "tem_fused_linear_0.hsaco", "path": "double_matmul/tem_fused_linear_0.hsaco" },
+        { "module_name": "tem_fused_linear_1.hsaco", "path": "double_matmul/tem_fused_linear_1.hsaco" }
+    ],
+    "kernels": [
+        { "module_name": "tem_fused_linear_0.hsaco", "kernel_name": "kern000" },
+        { "module_name": "tem_fused_linear_1.hsaco", "kernel_name": "kern001" }
+    ],
+    "blueprint": {
+        "inputs": ["A", "W1", "W2"],
+        "buffers": {"B": {"Absolute": 80}, "C": {"Absolute": 48}},
+        "outputs": ["C"],
+        "control_flow": [
+            {"ExecKernel": ["kern000", [{"Ptr": "A"}, {"Ptr": "W1"}, {"Ptr": "B"}], {
+                "grid_dim_x": {"Absolute": 1}, 
+                "grid_dim_y": {"Absolute": 1}, 
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 64}, 
+                "block_dim_y": {"Absolute": 1}, 
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 1024}
+            }]},
+            {"ExecKernel": ["kern001", [{"Ptr": "B"}, {"Ptr": "W2"}, {"Ptr": "C"}], {
+                "grid_dim_x": {"Absolute": 1}, 
+                "grid_dim_y": {"Absolute": 1}, 
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 64}, 
+                "block_dim_y": {"Absolute": 1}, 
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 1024}
+            }]}
+        ]
+    }
+}

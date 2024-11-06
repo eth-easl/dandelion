@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use crate::{
     interface::DandelionSystemData,
     memory_domain::{transfer_memory, Context, MemoryDomain},
@@ -59,7 +60,8 @@ pub struct WasmConfig {
 pub struct GpuConfig {
     pub system_data_struct_offset: usize,
     pub code_object_offset: usize,
-    pub kernels: Arc<Vec<String>>,
+    pub modules_offsets: Arc<HashMap<String, usize>>,
+    pub kernels: Arc<Vec<HashMap<String, String>>>,
     #[cfg(feature = "gpu")]
     pub blueprint: Arc<ExecutionBlueprint>,
 }
