@@ -17,98 +17,6 @@ static PROMISE_ALIVE: u8 = 0b0010_0000;
 static CONTENT_SET: u8 = 0b0100_0000;
 static ALIVE: u8 = DEBT_ALIVE | PROMISE_ALIVE;
 
-// pub struct PromiseBufferInternal {
-//     head: AtomicPtr<ManuallyDrop<DataWrapper>>,
-//     buffer: Box<[ManuallyDrop<DataWrapper>]>,
-// }
-
-// pub struct PromiseBuffer {
-//     internal: Arc<PromiseBufferInternal>,
-// }
-// unsafe impl Send for PromiseBuffer {}
-// unsafe impl Sync for PromiseBuffer {}
-
-// impl PromiseBuffer {
-//     pub fn init(size: usize) -> Self {
-//         let mut vec_buffer = Vec::with_capacity(size);
-//         vec_buffer.resize_with(size, || {
-//             ManuallyDrop::new(DataWrapper {
-//                 next: ptr::null_mut(),
-//             })
-//         });
-//         let mut buffer = vec_buffer.into_boxed_slice();
-//         let head_ptr = ptr::addr_of_mut!(buffer[0]);
-//         // for index in 0..size - 1 {
-//         // buffer[index].next = ptr::addr_of_mut!(buffer[index + 1]);
-//         // }
-//         return Self {
-//             internal: Arc::new(PromiseBufferInternal {
-//                 head: AtomicPtr::new(head_ptr),
-//                 buffer,
-//             }),
-//         };
-//     }
-
-//     pub fn get_promise(&self) -> DandelionResult<(Promise, Debt)> {
-//         // read head so we can take the next one
-//         // let mut data_ptr = self.internal.head.load(Ordering::Acquire);
-//         // if data_ptr.is_null() {
-//         //     return Err(DandelionError::PromiseError(PromiseError::NoneAvailable));
-//         // }
-//         // let mut new_head = unsafe { (*data_ptr).next };
-//         // loop {
-//         //     data_ptr = match self.internal.head.compare_exchange(
-//         //         data_ptr,
-//         //         new_head,
-//         //         Ordering::AcqRel,
-//         //         Ordering::Acquire,
-//         //     ) {
-//         //         Ok(_) => break,
-//         //         Err(new_head) => new_head,
-//         //     };
-//         //     if data_ptr.is_null() {
-//         //         return Err(DandelionError::PromiseError(PromiseError::NoneAvailable));
-//         //     }
-//         //     new_head = unsafe { (*data_ptr).next };
-//         // }
-//         let data = Box::into_raw(Box::new(PromiseData {
-//             abort_handle: AtomicPtr::new(ptr::null_mut()),
-//             results: Cell::new(Err(DandelionError::PromiseError(PromiseError::Default))),
-//             wakers: [Cell::new(None), Cell::new(None)],
-//             flags: AtomicU8::new(DEBT_ALIVE | PROMISE_ALIVE),
-//         }));
-//         // let data;
-//         // unsafe {
-//         //     // data = &mut (*data_ptr).data as *mut ManuallyDrop<PromiseData>;
-//         //     (*data).abort_handle = AtomicPtr::new(ptr::null_mut());
-//         //     (*data).results = Cell::new(Err(DandelionError::PromiseError(PromiseError::Default)));
-//         //     (*data).wakers = [Cell::new(None), Cell::new(None)];
-//         //     (*data).flags = AtomicU8::new(DEBT_ALIVE | PROMISE_ALIVE);
-//         // }
-//         // println!(
-//         //     "found space at {:?} (converted: {:?}), with buffer from {:?} to {:?}",
-//         //     data_ptr,
-//         //     data,
-//         //     ptr::addr_of!(self.internal.buffer[0]),
-//         //     ptr::addr_of!(self.internal.buffer[self.internal.buffer.len() - 1])
-//         // );
-//         let promise = Promise {
-//             data,
-//             origin: self.internal.clone(),
-//         };
-//         let debt = Debt {
-//             data,
-//             origin: self.internal.clone(),
-//         };
-//         return Ok((promise, debt));
-//     }
-// }
-
-// union DataWrapper {
-//     data: ManuallyDrop<PromiseData>,
-//     next: *mut ManuallyDrop<DataWrapper>,
-// }
-
 struct PromiseData {
     /// Abort handle, only to be called once, as long as this value
     ///non null that means the function has not been aborted or terminated on it's own
@@ -121,38 +29,125 @@ struct PromiseData {
     flags: AtomicU8,
 }
 
-fn drop_promise_data(data_ptr: *const PromiseData, drop_origin: u8) {
-    let data = unsafe { &*data_ptr };
-    let previous_flags = data.flags.fetch_and(!drop_origin, Ordering::SeqCst);
-    if ((previous_flags & !drop_origin) & ALIVE) == 0 {
-        let _ = unsafe { Box::from_raw(data_ptr as *mut PromiseData) };
+union DataWrapper {
+    data: ManuallyDrop<PromiseData>,
+    next: *mut DataWrapper,
+}
+unsafe impl Sync for DataWrapper {}
+unsafe impl Send for DataWrapper {}
+
+struct PromiseBufferInternal {
+    head: AtomicPtr<DataWrapper>,
+    _buffer: Pin<Box<[DataWrapper]>>,
+}
+
+impl PromiseBufferInternal {
+    fn init(size: usize) -> Self {
+        if size == 0 {
+            panic!("Promisebuffer with 0 entries")
+        }
+
+        let mut vec_buffer = Vec::with_capacity(size);
+        vec_buffer.resize_with(size, || DataWrapper {
+            next: ptr::null_mut(),
+        });
+        let mut buffer = Pin::new(vec_buffer.into_boxed_slice());
+        let head = AtomicPtr::new(ptr::addr_of!(buffer[0]).cast_mut());
+        for index in 0..size - 1 {
+            buffer[index].next = ptr::addr_of!(buffer[index + 1]).cast_mut();
+        }
+        return Self {
+            head,
+            _buffer: buffer,
+        };
+    }
+
+    pub fn get_promise_data(&self) -> DandelionResult<*mut DataWrapper> {
+        let mut current = self.head.load(Ordering::Acquire);
+        if current.is_null() {
+            return Err(DandelionError::PromiseError(PromiseError::NoneAvailable));
+        }
+        let mut new_head = unsafe { (*current).next };
+        while let Err(current_stored) =
+            self.head
+                .compare_exchange(current, new_head, Ordering::AcqRel, Ordering::Acquire)
+        {
+            current = current_stored;
+            if current.is_null() {
+                return Err(DandelionError::PromiseError(PromiseError::NoneAvailable));
+            }
+            new_head = unsafe { (*current).next };
+        }
+        return Ok(current);
+    }
+
+    fn drop_promise_data(&self, data_ptr: *mut DataWrapper, drop_origin: u8) {
+        let data = unsafe { &(&*data_ptr).data };
+        let previous_flags = data.flags.fetch_and(!drop_origin, Ordering::SeqCst);
+        if ((previous_flags & !drop_origin) & ALIVE) == 0 {
+            // drop data in union so we can reuse
+            unsafe { ManuallyDrop::<PromiseData>::drop(&mut (*data_ptr).data) };
+            // reinsert at head
+            let mut head = self.head.load(Ordering::Acquire);
+            unsafe { (*data_ptr).next = head };
+            while let Err(current_head) =
+                self.head
+                    .compare_exchange(head, data_ptr, Ordering::AcqRel, Ordering::Acquire)
+            {
+                head = current_head;
+                unsafe { (*data_ptr).next = head };
+            }
+        }
     }
 }
 
-pub struct Promise {
-    data: *const PromiseData,
-    // origin: Arc<PromiseBufferInternal>,
+#[derive(Clone)]
+pub struct PromiseBuffer {
+    internal: Arc<PromiseBufferInternal>,
 }
-unsafe impl Send for Promise {}
 
-impl Promise {
-    pub fn new() -> (Promise, Debt) {
-        let data = Box::new(PromiseData {
+impl PromiseBuffer {
+    pub fn init(size: usize) -> Self {
+        return Self {
+            internal: Arc::new(PromiseBufferInternal::init(size)),
+        };
+    }
+
+    pub fn get_promise(&self) -> DandelionResult<(Promise, Debt)> {
+        let data_ptr = self.internal.get_promise_data()?;
+        let data = unsafe { &mut (&mut *data_ptr).data };
+        let default = ManuallyDrop::new(PromiseData {
             abort_handle: AtomicPtr::new(ptr::null_mut()),
             results: Cell::new(Err(DandelionError::PromiseError(PromiseError::Default))),
             wakers: [Cell::new(None), Cell::new(None)],
             flags: AtomicU8::new(DEBT_ALIVE | PROMISE_ALIVE),
         });
-        let data_ptr = Box::into_raw(data);
-        let promise = Promise { data: data_ptr };
-        let debt = Debt { data: data_ptr };
-        return (promise, debt);
+        *data = default;
+
+        let promise = Promise {
+            data: data_ptr,
+            origin: self.internal.clone(),
+        };
+        let debt = Debt {
+            data: data_ptr,
+            origin: self.internal.clone(),
+        };
+        return Ok((promise, debt));
     }
+}
+
+pub struct Promise {
+    data: *mut DataWrapper,
+    origin: Arc<PromiseBufferInternal>,
+}
+unsafe impl Send for Promise {}
+
+impl Promise {
     pub fn abort(self) -> () {
         core::mem::drop(self);
     }
     fn abort_internal(&mut self) {
-        let data = unsafe { &*self.data };
+        let data = unsafe { &(&*self.data).data };
         let abort_handle = data.abort_handle.swap(ptr::null_mut(), Ordering::SeqCst);
         if !abort_handle.is_null() {
             unsafe { (*abort_handle)() }
@@ -165,7 +160,7 @@ impl futures::future::Future for Promise {
     // as per documentation calling after it has resolved once is undefined
     // handle this by returning pending again
     fn poll(self: Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
-        let data = unsafe { &*self.data };
+        let data = unsafe { &(&*self.data).data };
         let flags = data.flags.load(Ordering::SeqCst);
 
         // update the waker
@@ -198,20 +193,27 @@ impl futures::future::Future for Promise {
     }
 }
 
+impl Drop for Promise {
+    fn drop(&mut self) {
+        self.abort_internal();
+        self.origin.drop_promise_data(self.data, PROMISE_ALIVE);
+    }
+}
+
 pub struct Debt {
-    data: *const PromiseData,
-    // origin: Arc<PromiseBufferInternal>,
+    data: *mut DataWrapper,
+    origin: Arc<PromiseBufferInternal>,
 }
 unsafe impl Send for Debt {}
 
 impl Debt {
     pub fn is_alive(&self) -> bool {
-        let data = unsafe { &*self.data };
+        let data = unsafe { &(&*self.data).data };
         return data.flags.load(Ordering::SeqCst) & PROMISE_ALIVE != 0;
     }
 
     pub fn fulfill(self, results: DandelionResult<WorkDone>) {
-        let data = unsafe { &*self.data };
+        let data = unsafe { &(&*self.data).data };
         // make sure we are not aborted by this promise anymore
         data.abort_handle.store(ptr::null_mut(), Ordering::SeqCst);
         // write a result
@@ -223,21 +225,15 @@ impl Debt {
         }
     }
     pub fn install_abort_handle(&self, handle: fn()) {
-        let data = unsafe { &*self.data };
+        let data = unsafe { &(&*self.data).data };
         data.abort_handle
             .store(handle as *mut fn(), Ordering::SeqCst);
     }
 }
 
-impl Drop for Promise {
-    fn drop(&mut self) {
-        self.abort_internal();
-        drop_promise_data(self.data, PROMISE_ALIVE);
-    }
-}
 impl Drop for Debt {
     fn drop(&mut self) {
-        let data = unsafe { &*self.data };
+        let data = unsafe { &(&*self.data).data };
         // make sure we can't get aborted by this handle anymore
         data.abort_handle.store(ptr::null_mut(), Ordering::SeqCst);
         // if promise is still alive, there is still a promise waiting for a result
@@ -254,6 +250,8 @@ impl Drop for Debt {
                 waker.wake();
             }
         }
-        drop_promise_data(self.data, DEBT_ALIVE);
+        self.origin
+            .as_ref()
+            .drop_promise_data(self.data, DEBT_ALIVE);
     }
 }

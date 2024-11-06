@@ -4,7 +4,7 @@ use dandelion_commons::{DandelionError, DandelionResult};
 use log::error;
 use machine_interface::{
     function_driver::{WorkDone, WorkQueue, WorkToDo},
-    promise::{Debt, Promise},
+    promise::{Debt, PromiseBuffer},
 };
 use std::{hint, sync::Arc};
 
@@ -20,6 +20,7 @@ pub struct EngineQueue {
     queue_in: crossbeam::channel::Sender<(WorkToDo, Debt)>,
     queue_out: crossbeam::channel::Receiver<(WorkToDo, Debt)>,
     worker_queue: Arc<AtomicTickets>,
+    promise_buffer: PromiseBuffer,
 }
 
 /// This is run on the engine so it performs asyncornous access to the local state
@@ -91,11 +92,12 @@ impl EngineQueue {
             queue_in: sender,
             queue_out: receiver,
             worker_queue: queue,
+            promise_buffer: PromiseBuffer::init(MAX_QUEUE),
         };
     }
 
     pub async fn enqueu_work(&self, args: WorkToDo) -> DandelionResult<WorkDone> {
-        let (promise, debt) = Promise::new();
+        let (promise, debt) = self.promise_buffer.get_promise()?;
         match self.queue_in.try_send((args, debt)) {
             Ok(()) => (),
             Err(TrySendError::Disconnected(_)) => {
