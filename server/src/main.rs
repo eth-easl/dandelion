@@ -342,10 +342,6 @@ async fn dispatcher_loop(
                 recorder,
                 mut callback,
             } => {
-                // Log the queue lengths before dispatching
-                for (engine_type, length) in dispatcher.get_queue_lengths() {
-                    println!("Queue length for {:?}: {}", engine_type, length);
-                }
                 let function_future =
                     dispatcher.queue_function_by_name(name, inputs, None, is_cold, recorder);
                 spawn(async {
@@ -557,21 +553,16 @@ fn main() -> () {
 
     let _guard = runtime.enter();
 
-    let high_threshold = config.control_high_thre;
-    let low_threshold = config.control_low_thre;
+    let delta = config.control_delta;
     let loop_duration = config.control_interval;
-    println!(
-        "high threshold: {}, low threshold: {}, loop duration: {}",
-        high_threshold, low_threshold, loop_duration
-    );
+    println!("delta {}, loop duration: {}", delta, loop_duration);
 
     #[cfg(feature = "controller")]
     let mut controller = Controller {
         resource_pool,
         dispatcher,
         cpu_core_map,
-        high_threshold,
-        low_threshold,
+        delta,
         loop_duration,
     };
     #[cfg(feature = "controller")]
