@@ -1,4 +1,7 @@
-#[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "wasm")))]
+#[cfg(all(
+    test,
+    any(feature = "cheri", feature = "mmu", feature = "kvm", feature = "wasm")
+))]
 mod dispatcher_tests {
     mod function_tests;
     mod registry_tests;
@@ -167,6 +170,19 @@ mod dispatcher_tests {
         dispatcherTests!(elf_mmu_x86_64; MmuMemoryDomain; MemoryResource::None; EngineType::Process; vec![ComputeResource::CPU(1)]);
         #[cfg(target_arch = "aarch64")]
         dispatcherTests!(elf_mmu_aarch64; MmuMemoryDomain; MemoryResource::None; EngineType::Process; vec![ComputeResource::CPU(1)]);
+    }
+
+    #[cfg(feature = "kvm")]
+    mod kvm {
+        use machine_interface::{
+            function_driver::ComputeResource,
+            machine_config::EngineType,
+            memory_domain::{mmap::MmapMemoryDomain, MemoryResource},
+        };
+        #[cfg(target_arch = "x86_64")]
+        dispatcherTests!(elf_kvm_x86_64; MmapMemoryDomain; MemoryResource::None; EngineType::Kvm; vec![ComputeResource::CPU(1)]);
+        #[cfg(target_arch = "aarch64")]
+        dispatcherTests!(elf_kvm_aarch64; MmapMemoryDomain; MemoryResource::None; EngineType::Kvm; vec![ComputeResource::CPU(1)]);
     }
 
     #[cfg(feature = "wasm")]

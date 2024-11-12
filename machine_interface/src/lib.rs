@@ -6,7 +6,7 @@ pub mod promise;
 /// contexts, and their compatibility with fast to look up structs
 pub mod machine_config;
 
-#[cfg(any(feature = "cheri", feature = "mmu", feature = "wasm"))]
+#[cfg(any(feature = "cheri", feature = "mmu", feature = "kvm", feature = "wasm"))]
 mod interface;
 pub mod util;
 

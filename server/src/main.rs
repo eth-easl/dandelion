@@ -183,6 +183,8 @@ async fn register_function(
         "RWasm" => EngineType::RWasm,
         #[cfg(feature = "mmu")]
         "Process" => EngineType::Process,
+        #[cfg(feature = "kvm")]
+        "Kvm" => EngineType::Kvm,
         #[cfg(feature = "cheri")]
         "Cheri" => EngineType::Cheri,
         unkown => panic!("Unkown engine type string {}", unkown),
@@ -528,9 +530,11 @@ fn main() -> () {
     let engine_type = EngineType::RWasm;
     #[cfg(feature = "mmu")]
     let engine_type = EngineType::Process;
+    #[cfg(feature = "kvm")]
+    let engine_type = EngineType::Kvm;
     #[cfg(feature = "cheri")]
     let engine_type = EngineType::Cheri;
-    #[cfg(any(feature = "cheri", feature = "wasm", feature = "mmu"))]
+    #[cfg(any(feature = "cheri", feature = "wasm", feature = "mmu", feature = "kvm"))]
     pool_map.insert(engine_type, compute_cores);
     #[cfg(feature = "reqwest_io")]
     pool_map.insert(EngineType::Reqwest, communication_cores);
@@ -554,6 +558,8 @@ fn main() -> () {
     print!(" cheri");
     #[cfg(feature = "mmu")]
     print!(" mmu");
+    #[cfg(feature = "kvm")]
+    print!(" kvm");
     #[cfg(feature = "wasm")]
     print!(" wasm");
     #[cfg(feature = "reqwest_io")]

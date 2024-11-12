@@ -8,6 +8,8 @@ default = ["bytes_context"]
 std = []
 cheri = ["std"]
 mmu = ["std"]
+kvm = ["std", "dep:kvm-bindings", "dep:kvm-ioctls"]
+backend_debug = []
 reqwest_io = ["std", "dep:reqwest", "dep:http", "dep:bytes"]
 bytes_context = ["std", "dep:bytes"]
 wasm = ["std"]
@@ -37,6 +39,8 @@ http = { version = "1.1", optional = true }
 bytes = { version = "1.6", optional = true}
 libloading = { version = "0.8.1" }
 log = "0.4.20"
+kvm-bindings = { version = "0.8", optional = true }
+kvm-ioctls = { version = "0.17", optional = true }
 
 # disable benchmarks in library, to not run all unit tests on every benchmark
 # also needs to be disabled for criterion flags to work that are not available for tests
