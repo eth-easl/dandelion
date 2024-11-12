@@ -25,7 +25,7 @@ mod aarch64;
 #[cfg(target_arch = "aarch64")]
 use aarch64::*;
 
-#[allow(unused)]
+#[cfg(feature = "backend_debug")]
 fn dump_memory(data: &[u8]) {
     for (i, &byte) in data.iter().enumerate() {
         if i % 16 == 0 {
@@ -36,7 +36,7 @@ fn dump_memory(data: &[u8]) {
     println!();
 }
 
-#[allow(unused)]
+#[cfg(feature = "backend_debug")]
 fn step_debug(vcpu: &VcpuFd) {
     vcpu.set_guest_debug(&kvm_bindings::kvm_guest_debug {
         control: kvm_bindings::KVM_GUESTDBG_ENABLE | kvm_bindings::KVM_GUESTDBG_SINGLESTEP,
@@ -79,10 +79,13 @@ impl EngineLoop for KvmLoop {
             _ => return Err(DandelionError::ContextMissmatch),
         };
         let guest_mem = unsafe { kvm_context.storage.as_slice_mut() };
-        // println!("context ptr: {:?}", guest_mem.as_ptr());
-        // println!("context size: {}", guest_mem.len());
-        // println!("entry point: {:#x}", elf_config.entry_point);
-        // dump_memory(&guest_mem[elf_config.entry_point..elf_config.entry_point + 64]);
+        #[cfg(feature = "backend_debug")]
+        {
+            println!("context ptr: {:?}", guest_mem.as_ptr());
+            println!("context size: {}", guest_mem.len());
+            println!("entry point: {:#x}", elf_config.entry_point);
+            dump_memory(&guest_mem[elf_config.entry_point..elf_config.entry_point + 64]);
+        }
 
         // attach VM memory
         let mut region = kvm_userspace_memory_region {
@@ -104,9 +107,12 @@ impl EngineLoop for KvmLoop {
         );
         self.state.set_page_table(guest_mem);
 
-        // // configure single-step debugging
-        // step_debug(&self.vcpu);
-        // dump_regs(&self.vcpu);
+        #[cfg(feature = "backend_debug")]
+        {
+            // configure single-step debugging
+            step_debug(&self.vcpu);
+            dump_regs(&self.vcpu);
+        }
 
         // start running the function
         loop {
