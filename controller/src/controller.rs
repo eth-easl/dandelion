@@ -34,6 +34,21 @@ impl Controller {
         }
     }
 
+    /// Print the number of cores allocated to each engine type and the length of each queue
+    fn print_core_info(&self, queue_lengths: &[(EngineType, usize)]) {
+        let mut print_str = String::new();
+        for (engine_type, cores) in self.cpu_core_map.iter() {
+            print_str.push_str(&format!("Engine type: {:?}, Cores: {:?}; ", engine_type, cores.len()));
+        }
+        println!("{}", print_str);
+
+        print_str = String::new();
+        for (engine_type, length) in queue_lengths {
+            print_str.push_str(&format!("Engine type: {:?}, Queue length: {:?}; ", engine_type, length));
+        }
+        println!("{}", print_str);
+    }
+
     /// Monitor the resource pool and allocate resources
     pub async fn monitor_and_allocate(&mut self) {
 
@@ -42,11 +57,7 @@ impl Controller {
             let mut need_more_cores = None;
 
             // Print how many cores are allocated to each engine type
-            let mut print_str = String::new();
-            for (engine_type, cores) in self.cpu_core_map.iter() {
-                print_str.push_str(&format!("Engine type: {:?}, Cores: {:?}; ", engine_type, cores.len()));
-            }
-            println!("{}", print_str);
+            self.print_core_info(&queue_lengths);
 
             let avg_load = queue_lengths.iter().map(|(_, length)| length).sum::<usize>() / queue_lengths.len();
             let most_overloaded_queue = queue_lengths.iter().max_by_key(|(_, length)| *length);
