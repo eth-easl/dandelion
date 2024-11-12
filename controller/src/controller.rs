@@ -105,7 +105,6 @@ impl Controller {
             if let Some(cores_in_use) = self.cpu_core_map.get(engine_type) {
                 if let Some(&core_id) = cores_in_use.first() {
                     // Stop the thread running on this core
-                    // println!("Stopping engine on core {}", core_id);
                     let shutdown_task = WorkToDo::Shutdown();
                     let engine_queue = self.dispatcher.engine_queues.get(engine_type).unwrap().clone();
                     if cores_in_use.len() == 1 && engine_queue.queue_length() > 0 {
@@ -118,8 +117,6 @@ impl Controller {
                     if let Some(core_list) = self.cpu_core_map.get_mut(engine_type) {
                         core_list.retain(|&core| core != core_id);
                     }
-
-                    println!("CPU core map after dellocation: {:?}", self.cpu_core_map);
 
                     // Return the core to the resource pool
                     if let Err(e) = self.resource_pool.release_engine_resource(target_engine, ComputeResource::CPU(core_id)).await {
