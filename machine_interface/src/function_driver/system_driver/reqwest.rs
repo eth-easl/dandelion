@@ -20,7 +20,7 @@ use log::warn;
 use reqwest::{header::HeaderMap, Client};
 use std::sync::Arc;
 use tokio::runtime::Builder;
-use crate::memory_domain::{system_domain::system_context_write_response_information, ContextType};
+use crate::memory_domain::{system_domain::system_context_write_from_bytes, ContextType};
 
 struct RequestInformation {
     /// name of the request item
@@ -293,24 +293,17 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
     let response_start = context.get_free_space(response_len, 128)?;
 
     match &mut context.context {
-        ContextType::System(systems_context) => {
+        ContextType::System(destination_ctxt) => {
             let preamble_bytes = bytes::Bytes::from(preamble.into_bytes());
-            match &mut context.context {
-                ContextType::System(destination_ctxt) =>{
-                    system_context_write_response_information(destination_ctxt, preamble_bytes.clone(), response_start);
-                    system_context_write_response_information(destination_ctxt, body.clone(), response_start + preamble_len);
-                }
-                _ => return Err(DandelionError::ContextMissmatch)
-            }
+            system_context_write_from_bytes(destination_ctxt, preamble_bytes.clone(), response_start, preamble_len);
+            system_context_write_from_bytes(destination_ctxt, body.clone(), response_start + preamble_len, body_len);
         }
         _ => {
-            // warn!("Writing into context directly with response_len {} and body_len {} at offset {}", response_len, body_len, response_start);
             context.write(response_start, preamble.as_bytes())?;
             let mut bytes_read = 0;
             while bytes_read < body_len {
                 let chunk = body.chunk();
                 let reading = chunk.len();
-                // warn!("Writing part of body at offset {}", response_start + preable_len + bytes_read);
                 context.write(response_start + preamble_len + bytes_read, chunk)?;
                 body.advance(reading);
                 bytes_read += reading;
