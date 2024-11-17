@@ -219,20 +219,24 @@ impl Driver for MmuDriver {
         resource: ComputeResource,
         queue: Box<dyn WorkQueue + Send>,
     ) -> DandelionResult<()> {
+        println!("Trying to start MMU engine");
         let cpu_slot = match resource {
             ComputeResource::CPU(core) => core,
             _ => return Err(DandelionError::EngineResourceError),
         };
+        println!("Starting MMU engine on core {}", cpu_slot);
         // check that core is available
         let available_cores = match core_affinity::get_core_ids() {
             None => return Err(DandelionError::EngineError),
             Some(cores) => cores,
         };
+        println!("Available cores: {:?} for cpu slot {}", available_cores, cpu_slot);
         if !available_cores
             .iter()
             .find(|x| x.id == usize::from(cpu_slot))
             .is_some()
         {
+            println!("Core {} is not available to start on MMU", cpu_slot);
             return Err(DandelionError::EngineResourceError);
         }
         start_thread::<MmuLoop>(cpu_slot, queue);

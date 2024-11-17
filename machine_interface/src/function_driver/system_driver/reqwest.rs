@@ -547,21 +547,24 @@ impl Driver for ReqwestDriver {
         resource: ComputeResource,
         queue: Box<dyn WorkQueue + Send>,
     ) -> DandelionResult<()> {
-        log::debug!("Starting hyper engine");
+        println!("Trying to start Reqwest engine");
         let core_id = match resource {
             ComputeResource::CPU(core) => core,
             _ => return Err(DandelionError::EngineResourceError),
         };
+        println!("Starting Reqwest engine on core {}", core_id);
         // check that core is available
         let available_cores = match core_affinity::get_core_ids() {
             None => return Err(DandelionError::EngineResourceError),
             Some(cores) => cores,
         };
+        println!("Available cores: {:?} for cpu slot {}", available_cores, core_id);
         if !available_cores
             .iter()
             .find(|x| x.id == usize::from(core_id))
             .is_some()
         {
+            println!("Core {} is not available to start on Reqwest", core_id);
             return Err(DandelionError::EngineResourceError);
         }
         std::thread::spawn(move || outer_engine(core_id, queue));

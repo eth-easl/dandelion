@@ -47,6 +47,9 @@ impl Controller {
             print_str.push_str(&format!("Engine type: {:?}, Queue length: {:?}; ", engine_type, length));
         }
         println!("{}", print_str);
+
+        let available_cores = core_affinity::get_core_ids().unwrap();
+        println!("Available cores before from controller: {:?}", available_cores);
     }
 
     /// Monitor the resource pool and allocate resources
@@ -79,6 +82,7 @@ impl Controller {
         }
     }
 
+    /// Allocate a core to a target engine type
     async fn allocate_more_cores(&mut self, engine_type: EngineType) {
 
         if let Ok(Some(resource)) = self.resource_pool.sync_acquire_engine_resource(engine_type){
@@ -93,12 +97,18 @@ impl Controller {
                 let drivers = get_available_drivers();
                 if let Some(driver) = drivers.get(&engine_type){
                     let work_queue = self.dispatcher.engine_queues.get(&engine_type).unwrap().clone();
-                    let _ = driver.start_engine(resource, work_queue);
+                    let start_result = driver.start_engine(resource, work_queue);
+                    if let Err(e) = start_result {
+                        println!("Error starting engine: {:?}", e);
+                    } else {
+                        println!("Allocated core {} to engine type {:?}", core_id, engine_type);
+                    }
                 }
             }
         }
     }
 
+    /// Deallocate a core from other engines to allocate to a target engine
     async fn deallocate_cores_from_other_engines(
         &mut self, 
         target_engine: EngineType,
@@ -110,7 +120,6 @@ impl Controller {
             if *engine_type == target_engine && *length > avg_load {
                 continue;
             }
-            // println!("Deallocating core from {:?} to allocate to {:?}", engine_type, target_engine);
             
             // Get the cores allocated to this engine type
             if let Some(cores_in_use) = self.cpu_core_map.get(engine_type) {
@@ -118,7 +127,7 @@ impl Controller {
                     // Stop the thread running on this core
                     let shutdown_task = WorkToDo::Shutdown();
                     let engine_queue = self.dispatcher.engine_queues.get(engine_type).unwrap().clone();
-                    if cores_in_use.len() == 1 && engine_queue.queue_length() > 0 {
+                    if cores_in_use.len() <= 1 {
                         continue;
                     }
 
@@ -134,7 +143,10 @@ impl Controller {
                         println!("Error releasing core {} back to the resource pool: {:?}", core_id, e);
                         continue;
                     }
-                    return true; // Core deallocation successful
+                    println!("Deallocated core {} from engine type {:?}", core_id, engine_type);
+
+                    // Core deallocation successful
+                    return true;
                 }
             }
         }
