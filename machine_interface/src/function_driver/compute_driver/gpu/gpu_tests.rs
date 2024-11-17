@@ -1,3 +1,8 @@
+mod compiled_tests;
+mod load_models;
+mod load_utils;
+mod tests_utils;
+
 use std::sync::{Arc, Mutex};
 
 use dandelion_commons::records::{Archive, ArchiveInit, RecordPoint};
@@ -524,7 +529,7 @@ fn hello_world() {
         &driver,
         vec![ComputeResource::GPU(7, 0, 2)],
     );
-    
+
     let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
         #[cfg(feature = "timestamp")]
         timestamp_count: 1000,
@@ -561,41 +566,41 @@ fn engine_first_double_matmul() {
         prepare_engine_and_function::<GpuMemoryDomain>(filename, dom_init, &driver, drv_init);
 
     let a_size: usize = 4 * 2 * (32 / 8);
-    let weights_size  = 2 * 5 * (32 / 8);
-    let b_size        = 4 * 5 * (32 / 8);
+    let weights_size = 2 * 5 * (32 / 8);
+    let b_size = 4 * 5 * (32 / 8);
 
     let a_offset = function_context
-        .get_free_space_and_write_slice(&[1.0f32, 2.0f32, 3.0f32, 4.0f32, 5.0f32, 6.0f32, 7.0f32, 8.0f32])
+        .get_free_space_and_write_slice(&[
+            1.0f32, 2.0f32, 3.0f32, 4.0f32, 5.0f32, 6.0f32, 7.0f32, 8.0f32,
+        ])
         .expect("Should have space");
     let weights_offset = function_context
-        .get_free_space_and_write_slice(&[1.0f32, 2.0f32, 3.0f32, 4.0f32, 5.0f32, 6.0f32, 7.0f32, 8.0f32, 9.0f32, 10.0f32])
+        .get_free_space_and_write_slice(&[
+            1.0f32, 2.0f32, 3.0f32, 4.0f32, 5.0f32, 6.0f32, 7.0f32, 8.0f32, 9.0f32, 10.0f32,
+        ])
         .expect("Should have space");
-    
+
     function_context.content.push(Some(DataSet {
         ident: "A".to_string(),
-        buffers: vec![
-            DataItem {
-                ident: "".to_string(),
-                data: Position {
-                    offset: a_offset as usize,
-                    size: a_size,
-                },
-                key: 0,
+        buffers: vec![DataItem {
+            ident: "".to_string(),
+            data: Position {
+                offset: a_offset as usize,
+                size: a_size,
             },
-        ],
+            key: 0,
+        }],
     }));
     function_context.content.push(Some(DataSet {
         ident: "W".to_string(),
-        buffers: vec![
-            DataItem {
-                ident: "".to_string(),
-                data: Position {
-                    offset: weights_offset as usize,
-                    size: weights_size,
-                },
-                key: 0,
+        buffers: vec![DataItem {
+            ident: "".to_string(),
+            data: Position {
+                offset: weights_offset as usize,
+                size: weights_size,
             },
-        ],
+            key: 0,
+        }],
     }));
     let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
         #[cfg(feature = "timestamp")]
@@ -622,11 +627,9 @@ fn engine_first_double_matmul() {
     recorder
         .record(RecordPoint::FutureReturn)
         .expect("Should have properly advanced recorder state");
-    //assert_eq!(1, result_context.content.len());
     let output_item = result_context.content[0]
         .as_ref()
         .expect("Set should be present");
-    //assert_eq!(1, output_item.buffers.len());
     let position = output_item.buffers[0].data;
     assert_eq!(b_size, position.size, "Checking for size of output");
     let mut read_buffer = vec![0f32; position.size / 8];
@@ -634,125 +637,12 @@ fn engine_first_double_matmul() {
         .context
         .read(position.offset, &mut read_buffer)
         .expect("Should succeed in reading");
-    //assert_eq!(3, read_buffer[0]);
-    let expected = vec![13f32, 16f32, 19f32, 22f32, 25f32, 27f32, 34f32, 41f32, 48f32, 55f32, 41f32, 52f32, 63f32, 74f32, 85f32, 55f32, 70f32, 85f32, 100f32, 115f32];
-    //assert_eq!(3i64, read_buffer[0]);
+    let expected = vec![
+        13f32, 16f32, 19f32, 22f32, 25f32, 27f32, 34f32, 41f32, 48f32, 55f32, 41f32, 52f32, 63f32,
+        74f32, 85f32, 55f32, 70f32, 85f32, 100f32, 115f32,
+    ];
     for (should, is) in expected.iter().zip(read_buffer.iter()) {
         assert_eq!(should, is, "Checking final result");
     }
-    drop(lock);
-}
-
-#[test]
-fn full_double_matmul() {
-    use std::env;
-    env::set_var("RUST_BACKTRACE", "1");
-
-    let lock = GPU_LOCK.lock().unwrap();
-    let filename = &format!(
-        "{}/tests/data/test_gpu_full_double_matmul.json",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    let dom_init = MemoryResource::None;
-    let driver: Box<dyn Driver> = get_driver();
-    let drv_init = vec![ComputeResource::GPU(7, 0, 2)];
-    let (mut function_context, config, queue) =
-        prepare_engine_and_function::<GpuMemoryDomain>(filename, dom_init, &driver, drv_init);
-
-    let a_size = 4 * 2 * (32 / 8);
-    let w1_size = 2 * 5 * 4;
-    let b_size = 4 * 5 * 4;
-    let w2_size = 5 * 3 * 4;
-    let c_size = 4 * 3 * 4;
-
-    let a_offset = function_context
-        .get_free_space_and_write_slice(&[1.0f32, 2.0f32, 3.0f32, 4.0f32, 5.0f32, 6.0f32, 7.0f32, 8.0f32])
-        .expect("Should have space");
-    let w1_offset = function_context
-        .get_free_space_and_write_slice(&[1.0f32, 2.0f32, 3.0f32, 4.0f32, 5.0f32, 6.0f32, 7.0f32, 8.0f32, 9.0f32, 10.0f32])
-        .expect("Should have space");
-    let w2_offset = function_context
-        .get_free_space_and_write_slice(&[1.0f32, 2.0f32, 3.0f32, 4.0f32, 5.0f32, 6.0f32, 7.0f32, 8.0f32, 9.0f32, 10.0f32, 11.0f32, 12.0f32, 13.0f32, 14.0f32, 15.0f32])
-        .expect("Should have space");
-    
-    function_context.content.push(Some(DataSet {
-        ident: "A".to_string(),
-        buffers: vec![
-            DataItem {
-                ident: "".to_string(),
-                data: Position {
-                    offset: a_offset as usize,
-                    size: a_size,
-                },
-                key: 0,
-            },
-        ],
-    }));
-    function_context.content.push(Some(DataSet {
-        ident: "W1".to_string(),
-        buffers: vec![
-            DataItem {
-                ident: "".to_string(),
-                data: Position {
-                    offset: w1_offset as usize,
-                    size: w1_size,
-                },
-                key: 0,
-            },
-        ],
-    }));
-    function_context.content.push(Some(DataSet {
-        ident: "W2".to_string(),
-        buffers: vec![
-            DataItem {
-                ident: "".to_string(),
-                data: Position {
-                    offset: w2_offset as usize,
-                    size: w2_size,
-                },
-                key: 0,
-            },
-        ],
-    }));
-
-    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
-        #[cfg(feature = "timestamp")]
-        timestamp_count: 1000,
-    })));
-    let mut recorder = archive.get_recorder().unwrap();
-    recorder
-        .record(RecordPoint::TransferEnd)
-        .expect("Should have properly initialized recorder state");
-    let promise = queue.enqueu(WorkToDo::FunctionArguments {
-        config,
-        context: function_context,
-        output_sets: Arc::new(vec![String::from("C")]),
-        recorder: recorder.get_sub_recorder().unwrap(),
-    });
-    queue.enqueu(WorkToDo::Shutdown());
-    let result_context = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap()
-        .block_on(promise)
-        .expect("Engine should run ok with basic function")
-        .get_context();
-    recorder
-        .record(RecordPoint::FutureReturn)
-        .expect("Should have properly advanced recorder state");
-    let output_item = result_context.content[0]
-        .as_ref()
-        .expect("Set should be present");
-    let position = output_item.buffers[0].data;
-    assert_eq!(c_size, position.size, "Checking for size of output");
-    let mut read_buffer = vec![0f32; position.size / 4];
-    result_context
-        .context
-        .read(position.offset, &mut read_buffer)
-        .expect("Should succeed in reading");
-    let expected: Vec<f32> = vec![755.0, 850.0, 945.0, 1645.0, 1850.0, 2055.0, 2535.0, 2850.0, 3165.0, 3425.0, 3850.0, 4275.0];
-    for (should, is) in expected.iter().zip(read_buffer.iter()) {
-        assert_eq!(should, is, "Checking final result");
-    }
-    println!("Correct result!");
     drop(lock);
 }

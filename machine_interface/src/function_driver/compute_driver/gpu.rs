@@ -272,7 +272,7 @@ fn common_parse(
     gpu_config.code_object_offset =
             SYSDATA_OFFSET + std::mem::size_of::<DandelionSystemData<usize, usize>>();
 
-    let mut path = std::env::var("DANDELION_LIBRARY_PATH")
+    let path = std::env::var("DANDELION_LIBRARY_PATH")
         .unwrap_or(format!("{}/tests/libs/", env!("CARGO_MANIFEST_DIR")));
 
     let mut code_objects = Vec::new();

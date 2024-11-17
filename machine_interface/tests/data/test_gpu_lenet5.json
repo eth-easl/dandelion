@@ -1,0 +1,101 @@
+{
+    "modules": [
+        {"module_name": "poi_fused_conv2d_0.hsaco", "path": "lenet5/poi_fused_conv2d_0.hsaco"},
+        {"module_name": "tem_fused_conv2d_relu_1.hsaco", "path": "lenet5/tem_fused_conv2d_relu_1.hsaco"},
+        {"module_name": "poi_fused_conv2d_max_pool2d_relu_2.hsaco", "path": "lenet5/poi_fused_conv2d_max_pool2d_relu_2.hsaco"},
+        {"module_name": "tem_fused_conv2d_max_pool2d_relu_3.hsaco", "path": "lenet5/tem_fused_conv2d_max_pool2d_relu_3.hsaco"},
+        {"module_name": "poi_fused_conv2d_max_pool2d_relu_4.hsaco", "path": "lenet5/poi_fused_conv2d_max_pool2d_relu_4.hsaco"},
+        {"module_name": "tem_fused_relu_5.hsaco", "path": "lenet5/tem_fused_relu_5.hsaco"},
+        {"module_name": "tem_fused_relu_6.hsaco", "path": "lenet5/tem_fused_relu_6.hsaco"},
+        {"module_name": "tem_fused_linear_relu_7.hsaco", "path": "lenet5/tem_fused_linear_relu_7.hsaco"}
+    ],
+    "kernels": [
+        {"module_name": "poi_fused_conv2d_0.hsaco", "kernel_name": "kern000"},
+        {"module_name": "tem_fused_conv2d_relu_1.hsaco", "kernel_name": "kern001"},
+        {"module_name": "poi_fused_conv2d_max_pool2d_relu_2.hsaco", "kernel_name": "kern002"},
+        {"module_name": "tem_fused_conv2d_max_pool2d_relu_3.hsaco", "kernel_name": "kern003"},
+        {"module_name": "poi_fused_conv2d_max_pool2d_relu_4.hsaco", "kernel_name": "kern004"},
+        {"module_name": "tem_fused_relu_5.hsaco", "kernel_name": "kern005"},
+        {"module_name": "tem_fused_relu_6.hsaco", "kernel_name": "kern006"},
+        {"module_name": "tem_fused_linear_relu_7.hsaco", "kernel_name": "kern007"}
+    ],
+    "blueprint": {
+        "inputs": ["var_1", "arg10_1", "conv1_weight", "var_8", "conv2_weight", "conv2_bias", "var_15", "fc1_weight", "fc1_bias", "fc2_weight", "fc2_bias", "fc3_bias", "fc3_weight"],
+        "buffers": {"buf0": {"Absolute": 24}, "buf2": {"Absolute": 18816}, "buf3": {"Absolute": 4704}, "buf5": {"Absolute": 6400}, "buf6": {"Absolute": 1600}, "buf8": {"Absolute": 480}, "buf10": {"Absolute": 336}, "buf11": {"Absolute": 40}},
+        "outputs": ["buf11"],
+        "control_flow": [
+            {"ExecKernel": ["kern000", [{"Ptr": "buf0"}, {"Ptr": "var_1"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 64},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern001", [{"Ptr": "arg10_1"}, {"Ptr": "conv1_weight"}, {"Ptr": "buf0"}, {"Ptr": "buf2"}], {
+                "grid_dim_x": {"Absolute": 13},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 5120}
+            }]},
+            {"ExecKernel": ["kern002", [{"Ptr": "buf2"}, {"Ptr": "buf3"}, {"Ptr": "var_8"}], {
+                "grid_dim_x": {"Absolute": 10},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern003", [{"Ptr": "buf3"}, {"Ptr": "conv2_weight"}, {"Ptr": "conv2_bias"}, {"Ptr": "buf5"}], {
+                "grid_dim_x": {"Absolute": 2},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 5120}
+            }]},
+            {"ExecKernel": ["kern004", [{"Ptr": "buf5"}, {"Ptr": "buf6"}, {"Ptr": "var_15"}], {
+                "grid_dim_x": {"Absolute": 4},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern005", [{"Ptr": "buf6"}, {"Ptr": "fc1_weight"}, {"Ptr": "fc1_bias"}, {"Ptr": "buf8"}], {
+                "grid_dim_x": {"Absolute": 4},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 24576}
+            }]},
+            {"ExecKernel": ["kern006", [{"Ptr": "buf8"}, {"Ptr": "fc2_weight"}, {"Ptr": "fc2_bias"}, {"Ptr": "buf10"}], {
+                "grid_dim_x": {"Absolute": 3},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 16384}
+            }]},
+            {"ExecKernel": ["kern007", [{"Ptr": "fc3_bias"}, {"Ptr": "buf10"}, {"Ptr": "fc3_weight"}, {"Ptr": "buf11"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 64},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 8192}
+            }]}
+        ]
+    }
+}

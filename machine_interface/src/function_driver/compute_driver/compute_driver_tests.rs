@@ -63,7 +63,7 @@ pub(crate) mod compute_driver_tests {
             .start_engine(drv_init[0], queue.clone())
             .expect("Should be able to start engine");
         let function_context = function
-            .load(domain, 0x802_0000)
+            .load(domain, 0x1002_0000)
             .expect("Should be able to load function");
         return (function_context, function.config, queue);
     }
