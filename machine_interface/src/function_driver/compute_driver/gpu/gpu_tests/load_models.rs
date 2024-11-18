@@ -142,11 +142,11 @@ pub fn load_resnet18(mut function_context: Context) -> (usize, String, Vec<f32>,
 pub fn load_simple_conv(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
     let constants_path = "/home/alrusso/pytorch-aot/processed/simple_conv/constants";
 
-    add_buffer("arg7_1", 100, constants_path, &mut function_context);
-    add_buffer("conv_weight", 36, constants_path, &mut function_context);
+    add_buffer("arg5_1", 196, constants_path, &mut function_context);
+    add_number("var_2", 49, &mut function_context);
 
-    let output_name: &str = "buf2";
-    let output_size: usize = 36;
+    let output_name: &str = "buf0";
+    let output_size: usize = 196;
     let expected: Vec<f32> = read_tensor_from_file(output_name, constants_path).unwrap();
 
     (output_size, output_name.to_string(), expected, function_context)
@@ -202,6 +202,24 @@ pub fn load_lenet5(mut function_context: Context) -> (usize, String, Vec<f32>, C
 
     let output_name: &str = "buf11";
     let output_size: usize = 40;
+    let expected: Vec<f32> = read_tensor_from_file(output_name, constants_path).unwrap();
+
+    (output_size, output_name.to_string(), expected, function_context)
+}
+
+pub fn load_simple_resnet(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
+    let constants_path = "/home/alrusso/pytorch-aot/processed/simple_resnet/constants";
+
+    add_buffer("arg7_1", 602112, constants_path, &mut function_context);
+    add_buffer("conv1_weight", 37632, constants_path, &mut function_context);
+    add_buffer("conv1_bias", 256, constants_path, &mut function_context);
+    add_empty_buffer("batch_running_mean", 256, &mut function_context);
+    add_empty_buffer("batch_running_var", 256, &mut function_context);
+    add_buffer("batch_weight", 256, constants_path, &mut function_context);
+    add_buffer("batch_bias", 256, constants_path, &mut function_context);
+
+    let output_name: &str = "buf1";
+    let output_size: usize = 3211264;
     let expected: Vec<f32> = read_tensor_from_file(output_name, constants_path).unwrap();
 
     (output_size, output_name.to_string(), expected, function_context)

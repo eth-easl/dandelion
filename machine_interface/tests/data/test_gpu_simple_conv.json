@@ -1,18 +1,16 @@
 {
     "modules": [
-        {"module_name": "poi_fused_miopen_batch_norm_0.hsaco", "path": "simple_conv/poi_fused_miopen_batch_norm_0.hsaco"},
-        {"module_name": "tem_fused_miopen_batch_norm_1.hsaco", "path": "simple_conv/tem_fused_miopen_batch_norm_1.hsaco"}
+        {"module_name": "poi_fused_miopen_batch_norm_0.hsaco", "path": "simple_conv/poi_fused_miopen_batch_norm_0.hsaco"}
     ],
     "kernels": [
-        {"module_name": "poi_fused_miopen_batch_norm_0.hsaco", "kernel_name": "kern000"},
-        {"module_name": "tem_fused_miopen_batch_norm_1.hsaco", "kernel_name": "kern001"}
+        {"module_name": "poi_fused_miopen_batch_norm_0.hsaco", "kernel_name": "kern000"}
     ],
     "blueprint": {
-        "inputs": ["arg7_1", "conv_weight"],
-        "buffers": {"buf0": {"Absolute": 4}, "buf2": {"Absolute": 36}},
-        "outputs": ["buf2"],
+        "inputs": ["arg5_1", "var_2"],
+        "buffers": {"buf0": {"Absolute": 196}},
+        "outputs": ["buf0"],
         "control_flow": [
-            {"ExecKernel": ["kern000", [{"Ptr": "buf0"}], {
+            {"ExecKernel": ["kern000", [{"Ptr": "arg5_1"}, {"Ptr": "buf0"}, {"Ptr": "var_2"}], {
                 "grid_dim_x": {"Absolute": 1},
                 "grid_dim_y": {"Absolute": 1},
                 "grid_dim_z": {"Absolute": 1},
@@ -20,15 +18,6 @@
                 "block_dim_y": {"Absolute": 1},
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["kern001", [{"Ptr": "arg7_1"}, {"Ptr": "conv_weight"}, {"Ptr": "buf0"}, {"Ptr": "buf2"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 1},
-                "grid_dim_z": {"Absolute": 1},
-                "block_dim_x": {"Absolute": 128},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 1},
-                "shared_mem_bytes": {"Absolute": 2048}
             }]}
         ]
     }

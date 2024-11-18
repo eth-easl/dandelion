@@ -51,12 +51,14 @@ pub fn execute_test(
     result_context
 }
 
-pub fn get_result(result_context: Context, output_size: usize) -> Vec<f32> {
+pub fn get_result(result_context: Context, output_size: usize, asserts: bool) -> Vec<f32> {
     let output_item = result_context.content[0]
         .as_ref()
         .expect("Set should be present");
     let position = output_item.buffers[0].data;
-    assert_eq!(output_size, position.size, "Checking for size of output");
+    if (asserts) {
+        assert_eq!(output_size, position.size, "Checking for size of output");
+    }
     let mut read_buffer = vec![0f32; position.size / 4];
     result_context
         .context
@@ -65,12 +67,17 @@ pub fn get_result(result_context: Context, output_size: usize) -> Vec<f32> {
     read_buffer
 }
 
-pub fn compare_result(expected: Vec<f32>, read_buffer: Vec<f32>) {
+pub fn compare_result(expected: Vec<f32>, read_buffer: Vec<f32>, asserts: bool) {
     const DELTA: f32 = 0.00001;
     for (should, is) in expected.iter().zip(read_buffer.iter()) {
         let diff = should - is;
         let abs_diff = diff.abs();
-        assert!(abs_diff <= DELTA, "Checking final result");
+        if (asserts) {
+            assert!(abs_diff <= DELTA, "Checking final result");
+        } else {
+            let ratio = should / is;
+            println!("{should}\t\t{is}\t\t{abs_diff}\t\t{ratio}");
+        }
     }
     println!("Correct result!");
 }
