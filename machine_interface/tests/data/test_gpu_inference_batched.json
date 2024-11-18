@@ -1,6 +1,10 @@
 {
-    "module_path": "mlops.hsaco",
-    "kernels": ["convolution_f_batched", "relu_2d_f_batched", "maxpool_f_batched"],
+    "modules": [ { "module_name": "mlops.hsaco", "path": "mlops.hsaco" } ],
+    "kernels": [
+        { "module_name": "mlops.hsaco", "kernel_name": "convolution_f_batched" },
+        { "module_name": "mlops.hsaco", "kernel_name": "relu_2d_f_batched" },
+        { "module_name": "mlops.hsaco", "kernel_name": "maxpool_f_batched" }
+    ],
     "blueprint": {
         "inputs": ["cfg", "A", "B"],
         "buffers": {"C": {"Sizeof": "A"}, "D": {"FromInput": {"bufname": "cfg", "idx": 0}}},

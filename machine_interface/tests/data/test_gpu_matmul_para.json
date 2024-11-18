@@ -1,6 +1,6 @@
 {
-    "module_path": "mlops.hsaco",
-    "kernels": ["matmul_para"],
+    "modules": [ { "module_name": "mlops.hsaco", "path": "mlops.hsaco" } ],
+    "kernels": [ { "module_name": "mlops.hsaco", "kernel_name": "matmul_para" } ],
     "blueprint": {
         "inputs": ["cfg", "A"],
         "buffers": {"B": {"Sizeof": "A"}},
