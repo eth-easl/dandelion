@@ -170,7 +170,8 @@ impl futures::stream::Stream for &mut (dyn WorkQueue + Send) {
 }
 
 pub trait Driver: Send + Sync {
-    // the resource descirbed by config and make it into an engine of the type
+    /// Take the resource descirbed by config, validate it against the available cores,
+    /// and make it into an engine of the type
     fn start_engine(
         &self,
         resource: ComputeResource,
@@ -178,9 +179,17 @@ pub trait Driver: Send + Sync {
         queue: Box<dyn WorkQueue + Send>,
     ) -> DandelionResult<()>;
 
-    // parses an executable,
-    // returns the layout requirements and a context containing static data,
-    //  and a layout description for it
+    /// Take the resource described by config and make it into an engine of the type
+    /// without validating against the available cores
+    fn start_engine_unchecked(
+        &self,
+        resource: ComputeResource,
+        queue: Box<dyn WorkQueue + Send>,
+    ) -> DandelionResult<()>;
+
+    /// Parses an executable,
+    /// returns the layout requirements and a context containing static data,
+    /// and a layout description for it
     fn parse_function(
         &self,
         function_path: String,

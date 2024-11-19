@@ -47,9 +47,6 @@ impl Controller {
             print_str.push_str(&format!("Engine type: {:?}, Queue length: {:?}; ", engine_type, length));
         }
         println!("{}", print_str);
-
-        let available_cores = core_affinity::get_core_ids().unwrap();
-        println!("Available cores before from controller: {:?}", available_cores);
     }
 
     /// Monitor the resource pool and allocate resources
@@ -97,12 +94,10 @@ impl Controller {
                 let drivers = get_available_drivers();
                 if let Some(driver) = drivers.get(&engine_type){
                     let work_queue = self.dispatcher.engine_queues.get(&engine_type).unwrap().clone();
-                    let start_result = driver.start_engine(resource, work_queue);
-                    if let Err(e) = start_result {
-                        println!("Error starting engine: {:?}", e);
-                    } else {
-                        println!("Allocated core {} to engine type {:?}", core_id, engine_type);
-                    }
+                    match driver.start_engine_unchecked(resource, work_queue) {
+                        Ok(_) => println!("Allocated core {} to engine type {:?}", core_id, engine_type),
+                        Err(e) => println!("Error starting engine: {:?}", e),
+                    };
                 }
             }
         }
