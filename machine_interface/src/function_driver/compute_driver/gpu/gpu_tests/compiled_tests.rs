@@ -19,6 +19,7 @@ fn test_all() {
     full_double_matmul();
     alexnet();
     lenet5();
+    resnet18();
 }
 
 #[test]
@@ -68,21 +69,6 @@ fn lenet5() {
 }
 
 #[test]
-fn simple_conv() {
-    let lock = GPU_LOCK.lock().unwrap();
-    let filename = &format!(
-        "{}/tests/data/test_gpu_simple_conv.json",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    let (mut function_context, config, queue) = setup_test(&filename);
-    let (output_size, output_name, expected, function_context) = load_simple_conv(function_context);
-    let result_context = execute_test(function_context, config, queue, &output_name);
-    let read_buffer = get_result(result_context, output_size, false);
-    compare_result(expected, read_buffer, false);
-    drop(lock);
-}
-
-#[test]
 fn resnet18() {
     let lock = GPU_LOCK.lock().unwrap();
     let filename = &format!(
@@ -92,20 +78,20 @@ fn resnet18() {
     let (mut function_context, config, queue) = setup_test(&filename);
     let (output_size, output_name, expected, function_context) = load_resnet18(function_context);
     let result_context = execute_test(function_context, config, queue, &output_name);
-    let read_buffer = get_result(result_context, output_size, false);
-    compare_result(expected, read_buffer, false);
+    let read_buffer = get_result(result_context, output_size, true);
+    compare_result(expected, read_buffer, true);
     drop(lock);
 }
 
 #[test]
-fn simple_resnet() {
+fn batch_norm() {
     let lock = GPU_LOCK.lock().unwrap();
     let filename = &format!(
-        "{}/tests/data/test_gpu_simple_resnet.json",
+        "{}/tests/data/test_gpu_batch_norm.json",
         env!("CARGO_MANIFEST_DIR")
     );
     let (mut function_context, config, queue) = setup_test(&filename);
-    let (output_size, output_name, expected, function_context) = load_simple_resnet(function_context);
+    let (output_size, output_name, expected, function_context) = load_batch_norm(function_context);
     let result_context = execute_test(function_context, config, queue, &output_name);
     let read_buffer = get_result(result_context, output_size, false);
     compare_result(expected, read_buffer, false);

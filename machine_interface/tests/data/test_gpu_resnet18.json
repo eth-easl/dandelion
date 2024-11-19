@@ -204,10 +204,10 @@
                 "shared_mem_bytes": {"Absolute": 8192}
             }]},
             {"ExecKernel": ["kern017", [{"Ptr": "buf22"}, {"Ptr": "buf29"}, {"Ptr": "layer3_1_bn2_running_mean"}, {"Ptr": "layer3_1_bn2_running_var"}, {"Ptr": "layer3_1_bn2_weight"}, {"Ptr": "layer3_1_bn2_bias"}, {"Ptr": "var_117"}], {
-                "grid_dim_x": {"Absolute": 196},
+                "grid_dim_x": {"Absolute": 98},
                 "grid_dim_y": {"Absolute": 1},
                 "grid_dim_z": {"Absolute": 1},
-                "block_dim_x": {"Absolute": 256},
+                "block_dim_x": {"Absolute": 128},
                 "block_dim_y": {"Absolute": 1},
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}

@@ -1,0 +1,57 @@
+{
+    "modules": [
+        {"module_name": "tem_fused_conv2d_miopen_batch_norm_relu_0.hsaco", "path": "batch_norm/tem_fused_conv2d_miopen_batch_norm_relu_0.hsaco"},
+        {"module_name": "poi_fused_avg_pool2d_conv2d_max_pool2d_miopen_batch_norm_relu_1.hsaco", "path": "batch_norm/poi_fused_avg_pool2d_conv2d_max_pool2d_miopen_batch_norm_relu_1.hsaco"},
+        {"module_name": "poi_fused_2.hsaco", "path": "batch_norm/poi_fused_2.hsaco"},
+        {"module_name": "tem_fused_linear_3.hsaco", "path": "batch_norm/tem_fused_linear_3.hsaco"}
+    ],
+    "kernels": [
+        {"module_name": "tem_fused_conv2d_miopen_batch_norm_relu_0.hsaco", "kernel_name": "kern000"},
+        {"module_name": "poi_fused_avg_pool2d_conv2d_max_pool2d_miopen_batch_norm_relu_1.hsaco", "kernel_name": "kern001"},
+        {"module_name": "poi_fused_2.hsaco", "kernel_name": "kern002"},
+        {"module_name": "tem_fused_linear_3.hsaco", "kernel_name": "kern003"}
+    ],
+    "blueprint": {
+        "inputs": ["arg9_1", "conv_weight", "conv_bias", "bn_running_mean", "bn_running_var", "bn_weight", "bn_bias", "var_10", "var_12", "fc_weight"],
+        "buffers": {"buf1": {"Absolute": 6400}, "buf2": {"Absolute": 1024}, "buf4": {"Absolute": 12}, "buf5": {"Absolute": 12}},
+        "outputs": ["buf5"],
+        "control_flow": [
+            {"ExecKernel": ["kern000", [{"Ptr": "arg9_1"}, {"Ptr": "conv_weight"}, {"Ptr": "conv_bias"}, {"Ptr": "bn_running_mean"}, {"Ptr": "bn_running_var"}, {"Ptr": "bn_weight"}, {"Ptr": "bn_bias"}, {"Ptr": "buf1"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 4},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 2560}
+            }]},
+            {"ExecKernel": ["kern001", [{"Ptr": "buf2"}, {"Ptr": "buf1"}, {"Ptr": "var_10"}], {
+                "grid_dim_x": {"Absolute": 2},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern002", [{"Ptr": "buf4"}, {"Ptr": "var_12"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 64},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern003", [{"Ptr": "buf4"}, {"Ptr": "buf2"}, {"Ptr": "fc_weight"}, {"Ptr": "buf5"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 64},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 8192}
+            }]}
+        ]
+    }
+}

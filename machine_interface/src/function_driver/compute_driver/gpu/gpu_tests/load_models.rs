@@ -24,107 +24,107 @@ pub fn load_resnet18(mut function_context: Context) -> (usize, String, Vec<f32>,
 
     add_buffer("arg122_1", 602112, constants_path, &mut function_context);
     add_buffer("conv1_weight", 37632, constants_path, &mut function_context);
-    add_empty_buffer("bn1_running_mean", 256, &mut function_context);
-    add_empty_buffer("bn1_running_var", 256, &mut function_context);
+    add_buffer("bn1_running_mean", 256, constants_path, &mut function_context);
+    add_buffer("bn1_running_var", 256, constants_path, &mut function_context);
     add_buffer("bn1_weight", 256, constants_path, &mut function_context);
     add_buffer("bn1_bias", 256, constants_path, &mut function_context);
     add_number("var_9", 200704, &mut function_context);
     add_buffer("layer1_0_conv1_weight", 147456, constants_path, &mut function_context);
-    add_empty_buffer("layer1_0_bn1_running_mean", 256, &mut function_context);
-    add_empty_buffer("layer1_0_bn1_running_var", 256, &mut function_context);
+    add_buffer("layer1_0_bn1_running_mean", 256, constants_path, &mut function_context);
+    add_buffer("layer1_0_bn1_running_var", 256, constants_path, &mut function_context);
     add_buffer("layer1_0_bn1_weight", 256, constants_path, &mut function_context);
     add_buffer("layer1_0_bn1_bias", 256, constants_path, &mut function_context);
     add_buffer("layer1_0_conv2_weight", 147456, constants_path, &mut function_context);
-    add_empty_buffer("layer1_0_bn2_running_mean", 256, &mut function_context);
-    add_empty_buffer("layer1_0_bn2_running_var", 256, &mut function_context);
+    add_buffer("layer1_0_bn2_running_mean", 256, constants_path, &mut function_context);
+    add_buffer("layer1_0_bn2_running_var", 256, constants_path, &mut function_context);
     add_buffer("layer1_0_bn2_weight", 256, constants_path, &mut function_context);
     add_buffer("layer1_0_bn2_bias", 256, constants_path, &mut function_context);
     add_buffer("layer1_1_conv1_weight", 147456, constants_path, &mut function_context);
-    add_empty_buffer("layer1_1_bn1_running_mean", 256, &mut function_context);
-    add_empty_buffer("layer1_1_bn1_running_var", 256, &mut function_context);
+    add_buffer("layer1_1_bn1_running_mean", 256, constants_path, &mut function_context);
+    add_buffer("layer1_1_bn1_running_var", 256, constants_path, &mut function_context);
     add_buffer("layer1_1_bn1_weight", 256, constants_path, &mut function_context);
     add_buffer("layer1_1_bn1_bias", 256, constants_path, &mut function_context);
     add_buffer("layer1_1_conv2_weight", 147456, constants_path, &mut function_context);
-    add_empty_buffer("layer1_1_bn2_running_mean", 256, &mut function_context);
-    add_empty_buffer("layer1_1_bn2_running_var", 256, &mut function_context);
+    add_buffer("layer1_1_bn2_running_mean", 256, constants_path, &mut function_context);
+    add_buffer("layer1_1_bn2_running_var", 256, constants_path, &mut function_context);
     add_buffer("layer1_1_bn2_weight", 256, constants_path, &mut function_context);
     add_buffer("layer1_1_bn2_bias", 256, constants_path, &mut function_context);
     add_buffer("layer2_0_conv1_weight", 294912, constants_path, &mut function_context);
-    add_empty_buffer("layer2_0_bn1_running_mean", 512, &mut function_context);
-    add_empty_buffer("layer2_0_bn1_running_var", 512, &mut function_context);
+    add_buffer("layer2_0_bn1_running_mean", 512, constants_path, &mut function_context);
+    add_buffer("layer2_0_bn1_running_var", 512, constants_path, &mut function_context);
     add_buffer("layer2_0_bn1_weight", 512, constants_path, &mut function_context);
     add_buffer("layer2_0_bn1_bias", 512, constants_path, &mut function_context);
     add_buffer("layer2_0_conv2_weight", 589824, constants_path, &mut function_context);
     add_buffer("layer2_0_downsample_0_weight", 32768, constants_path, &mut function_context);
-    add_empty_buffer("layer2_0_bn2_running_mean", 512, &mut function_context);
-    add_empty_buffer("layer2_0_bn2_running_var", 512, &mut function_context);
+    add_buffer("layer2_0_bn2_running_mean", 512, constants_path, &mut function_context);
+    add_buffer("layer2_0_bn2_running_var", 512, constants_path, &mut function_context);
     add_buffer("layer2_0_bn2_weight", 512, constants_path, &mut function_context);
     add_buffer("layer2_0_bn2_bias", 512, constants_path, &mut function_context);
-    add_empty_buffer("layer2_0_downsample_1_running_mean", 512, &mut function_context);
-    add_empty_buffer("layer2_0_downsample_1_running_var", 512, &mut function_context);
+    add_buffer("layer2_0_downsample_1_running_mean", 512, constants_path, &mut function_context);
+    add_buffer("layer2_0_downsample_1_running_var", 512, constants_path, &mut function_context);
     add_buffer("layer2_0_downsample_1_weight", 512, constants_path, &mut function_context);
     add_buffer("layer2_0_downsample_1_bias", 512, constants_path, &mut function_context);
     add_buffer("layer2_1_conv1_weight", 589824, constants_path, &mut function_context);
-    add_empty_buffer("layer2_1_bn1_running_mean", 512, &mut function_context);
-    add_empty_buffer("layer2_1_bn1_running_var", 512, &mut function_context);
+    add_buffer("layer2_1_bn1_running_mean", 512, constants_path, &mut function_context);
+    add_buffer("layer2_1_bn1_running_var", 512, constants_path, &mut function_context);
     add_buffer("layer2_1_bn1_weight", 512, constants_path, &mut function_context);
     add_buffer("layer2_1_bn1_bias", 512, constants_path, &mut function_context);
     add_buffer("layer2_1_conv2_weight", 589824, constants_path, &mut function_context);
-    add_empty_buffer("layer2_1_bn2_running_mean", 512, &mut function_context);
-    add_empty_buffer("layer2_1_bn2_running_var", 512, &mut function_context);
+    add_buffer("layer2_1_bn2_running_mean", 512, constants_path, &mut function_context);
+    add_buffer("layer2_1_bn2_running_var", 512, constants_path, &mut function_context);
     add_buffer("layer2_1_bn2_weight", 512, constants_path, &mut function_context);
     add_buffer("layer2_1_bn2_bias", 512, constants_path, &mut function_context);
     add_buffer("layer3_0_conv1_weight", 1179648, constants_path, &mut function_context);
-    add_empty_buffer("layer3_0_bn1_running_mean", 1024, &mut function_context);
-    add_empty_buffer("layer3_0_bn1_running_var", 1024, &mut function_context);
+    add_buffer("layer3_0_bn1_running_mean", 1024, constants_path, &mut function_context);
+    add_buffer("layer3_0_bn1_running_var", 1024, constants_path, &mut function_context);
     add_buffer("layer3_0_bn1_weight", 1024, constants_path, &mut function_context);
     add_buffer("layer3_0_bn1_bias", 1024, constants_path, &mut function_context);
     add_buffer("layer3_0_conv2_weight", 2359296, constants_path, &mut function_context);
     add_buffer("layer3_0_downsample_0_weight", 131072, constants_path, &mut function_context);
-    add_empty_buffer("layer3_0_bn2_running_mean", 1024, &mut function_context);
-    add_empty_buffer("layer3_0_bn2_running_var", 1024, &mut function_context);
+    add_buffer("layer3_0_bn2_running_mean", 1024, constants_path, &mut function_context);
+    add_buffer("layer3_0_bn2_running_var", 1024, constants_path, &mut function_context);
     add_buffer("layer3_0_bn2_weight", 1024, constants_path, &mut function_context);
     add_buffer("layer3_0_bn2_bias", 1024, constants_path, &mut function_context);
-    add_empty_buffer("layer3_0_downsample_1_running_mean", 1024, &mut function_context);
-    add_empty_buffer("layer3_0_downsample_1_running_var", 1024, &mut function_context);
+    add_buffer("layer3_0_downsample_1_running_mean", 1024, constants_path, &mut function_context);
+    add_buffer("layer3_0_downsample_1_running_var", 1024, constants_path, &mut function_context);
     add_buffer("layer3_0_downsample_1_weight", 1024, constants_path, &mut function_context);
     add_buffer("layer3_0_downsample_1_bias", 1024, constants_path, &mut function_context);
     add_buffer("layer3_1_conv1_weight", 2359296, constants_path, &mut function_context);
-    add_empty_buffer("layer3_1_bn1_running_mean", 1024, &mut function_context);
-    add_empty_buffer("layer3_1_bn1_running_var", 1024, &mut function_context);
+    add_buffer("layer3_1_bn1_running_mean", 1024, constants_path, &mut function_context);
+    add_buffer("layer3_1_bn1_running_var", 1024, constants_path, &mut function_context);
     add_buffer("layer3_1_bn1_weight", 1024, constants_path, &mut function_context);
     add_buffer("layer3_1_bn1_bias", 1024, constants_path, &mut function_context);
     add_number("var_107", 50176, &mut function_context);
     add_buffer("layer3_1_conv2_weight", 2359296, constants_path, &mut function_context);
-    add_empty_buffer("layer3_1_bn2_running_mean", 1024, &mut function_context);
-    add_empty_buffer("layer3_1_bn2_running_var", 1024, &mut function_context);
+    add_buffer("layer3_1_bn2_running_mean", 1024, constants_path, &mut function_context);
+    add_buffer("layer3_1_bn2_running_var", 1024, constants_path, &mut function_context);
     add_buffer("layer3_1_bn2_weight", 1024, constants_path, &mut function_context);
     add_buffer("layer3_1_bn2_bias", 1024, constants_path, &mut function_context);
     add_number("var_117", 50176, &mut function_context);
     add_buffer("layer4_0_conv1_weight", 4718592, constants_path, &mut function_context);
-    add_empty_buffer("layer4_0_bn1_running_mean", 2048, &mut function_context);
-    add_empty_buffer("layer4_0_bn1_running_var", 2048, &mut function_context);
+    add_buffer("layer4_0_bn1_running_mean", 2048, constants_path, &mut function_context);
+    add_buffer("layer4_0_bn1_running_var", 2048, constants_path, &mut function_context);
     add_buffer("layer4_0_bn1_weight", 2048, constants_path, &mut function_context);
     add_buffer("layer4_0_bn1_bias", 2048, constants_path, &mut function_context);
     add_buffer("layer4_0_conv2_weight", 9437184, constants_path, &mut function_context);
     add_buffer("layer4_0_downsample_0_weight", 524288, constants_path, &mut function_context);
-    add_empty_buffer("layer4_0_bn2_running_mean", 2048, &mut function_context);
-    add_empty_buffer("layer4_0_bn2_running_var", 2048, &mut function_context);
+    add_buffer("layer4_0_bn2_running_mean", 2048, constants_path, &mut function_context);
+    add_buffer("layer4_0_bn2_running_var", 2048, constants_path, &mut function_context);
     add_buffer("layer4_0_bn2_weight", 2048, constants_path, &mut function_context);
     add_buffer("layer4_0_bn2_bias", 2048, constants_path, &mut function_context);
-    add_empty_buffer("layer4_0_downsample_1_running_mean", 2048, &mut function_context);
-    add_empty_buffer("layer4_0_downsample_1_running_var", 2048, &mut function_context);
+    add_buffer("layer4_0_downsample_1_running_mean", 2048, constants_path, &mut function_context);
+    add_buffer("layer4_0_downsample_1_running_var", 2048, constants_path, &mut function_context);
     add_buffer("layer4_0_downsample_1_weight", 2048, constants_path, &mut function_context);
     add_buffer("layer4_0_downsample_1_bias", 2048, constants_path, &mut function_context);
     add_number("var_141", 25088, &mut function_context);
     add_buffer("layer4_1_conv1_weight", 9437184, constants_path, &mut function_context);
-    add_empty_buffer("layer4_1_bn1_running_mean", 2048, &mut function_context);
-    add_empty_buffer("layer4_1_bn1_running_var", 2048, &mut function_context);
+    add_buffer("layer4_1_bn1_running_mean", 2048, constants_path, &mut function_context);
+    add_buffer("layer4_1_bn1_running_var", 2048, constants_path, &mut function_context);
     add_buffer("layer4_1_bn1_weight", 2048, constants_path, &mut function_context);
     add_buffer("layer4_1_bn1_bias", 2048, constants_path, &mut function_context);
     add_buffer("layer4_1_conv2_weight", 9437184, constants_path, &mut function_context);
-    add_empty_buffer("layer4_1_bn2_running_mean", 2048, &mut function_context);
-    add_empty_buffer("layer4_1_bn2_running_var", 2048, &mut function_context);
+    add_buffer("layer4_1_bn2_running_mean", 2048, constants_path, &mut function_context);
+    add_buffer("layer4_1_bn2_running_var", 2048, constants_path, &mut function_context);
     add_buffer("layer4_1_bn2_weight", 2048, constants_path, &mut function_context);
     add_buffer("layer4_1_bn2_bias", 2048, constants_path, &mut function_context);
     add_number("var_159", 512, &mut function_context);
@@ -134,19 +134,6 @@ pub fn load_resnet18(mut function_context: Context) -> (usize, String, Vec<f32>,
 
     let output_name: &str = "buf42";
     let output_size: usize = 4000;
-    let expected: Vec<f32> = read_tensor_from_file(output_name, constants_path).unwrap();
-
-    (output_size, output_name.to_string(), expected, function_context)
-}
-
-pub fn load_simple_conv(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
-    let constants_path = "/home/alrusso/pytorch-aot/processed/simple_conv/constants";
-
-    add_buffer("arg5_1", 196, constants_path, &mut function_context);
-    add_number("var_2", 49, &mut function_context);
-
-    let output_name: &str = "buf0";
-    let output_size: usize = 196;
     let expected: Vec<f32> = read_tensor_from_file(output_name, constants_path).unwrap();
 
     (output_size, output_name.to_string(), expected, function_context)
@@ -207,19 +194,22 @@ pub fn load_lenet5(mut function_context: Context) -> (usize, String, Vec<f32>, C
     (output_size, output_name.to_string(), expected, function_context)
 }
 
-pub fn load_simple_resnet(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
-    let constants_path = "/home/alrusso/pytorch-aot/processed/simple_resnet/constants";
+pub fn load_batch_norm(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
+    let constants_path = "/home/alrusso/pytorch-aot/processed/batch_norm/constants";
 
-    add_buffer("arg7_1", 602112, constants_path, &mut function_context);
-    add_buffer("conv1_weight", 37632, constants_path, &mut function_context);
-    add_buffer("conv1_bias", 256, constants_path, &mut function_context);
-    add_empty_buffer("batch_running_mean", 256, &mut function_context);
-    add_empty_buffer("batch_running_var", 256, &mut function_context);
-    add_buffer("batch_weight", 256, constants_path, &mut function_context);
-    add_buffer("batch_bias", 256, constants_path, &mut function_context);
+    add_buffer("arg9_1", 6400, constants_path, &mut function_context);
+    add_buffer("conv_weight", 147456, constants_path, &mut function_context);
+    add_buffer("conv_bias", 256, constants_path, &mut function_context);
+    add_buffer("bn_running_mean", 256, constants_path, &mut function_context);
+    add_buffer("bn_running_var", 256, constants_path, &mut function_context);
+    add_buffer("bn_weight", 256, constants_path, &mut function_context);
+    add_buffer("bn_bias", 256, constants_path, &mut function_context);
+    add_number("var_10", 256, &mut function_context);
+    add_number("var_12", 3, &mut function_context);
+    add_buffer("fc_weight", 3072, constants_path, &mut function_context);
 
-    let output_name: &str = "buf1";
-    let output_size: usize = 3211264;
+    let output_name: &str = "buf5";
+    let output_size: usize = 12;
     let expected: Vec<f32> = read_tensor_from_file(output_name, constants_path).unwrap();
 
     (output_size, output_name.to_string(), expected, function_context)
