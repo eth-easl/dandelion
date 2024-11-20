@@ -7,6 +7,7 @@ use crate::{
     promise::Debt,
     DataItem, DataSet, Position,
 };
+use log::debug;
 use bytes::Buf;
 use core_affinity::set_for_current;
 use dandelion_commons::{
@@ -292,6 +293,8 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
     // allocate space in the context for the entire response
     let response_start = context.get_free_space(response_len, 128)?;
 
+    debug!("Length if body in http_context_write is {}. Preamble has length {}", body_len, preamble_len);
+
     match &mut context.context {
         ContextType::System(destination_ctxt) => {
             let preamble_bytes = bytes::Bytes::from(preamble.into_bytes());
@@ -315,7 +318,7 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
             );
         }
     }
-
+    
     if let Some(response_set) = &mut context.content[0] {
         response_set.buffers.push(DataItem {
             ident: item_name.clone(),

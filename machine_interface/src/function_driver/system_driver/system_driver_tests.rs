@@ -1,17 +1,22 @@
 #[cfg(all(test, any(feature = "reqwest_io")))]
 mod system_driver_tests {
+    use env_logger;
+    use log::debug;
     use crate::{
         function_driver::{
             system_driver::get_system_function_output_sets, test_queue::TestQueue, ComputeResource,
             Driver, FunctionConfig, SystemFunction, WorkToDo,
         },
-        memory_domain::{Context, ContextTrait, MemoryDomain, MemoryResource},
+        memory_domain::{Context, ContextTrait, MemoryDomain, 
+            MemoryResource, 
+            mmap::MmapMemoryDomain, transfer_memory},
         DataItem, DataSet, Position,
     };
     use dandelion_commons::{
         records::{Archive, ArchiveInit, RecordPoint},
         DandelionResult,
     };
+    use libc::VM_MAX_MAP_COUNT;
     use std::sync::Arc;
 
     const _CONTEXT_SIZE: usize = 2048 * 1024;
@@ -42,8 +47,38 @@ mod system_driver_tests {
     }
 
     fn write_request(context: &mut Context, request: Vec<u8>) -> DandelionResult<()> {
+        
+        let mmap_domain = if let Ok(dom) = MmapMemoryDomain::init(MemoryResource::None) {
+            dom
+        } else {
+            panic!("Domain error")
+        };
+        let mut mmap_context = mmap_domain.acquire_context(_CONTEXT_SIZE).expect("Should be able to get context");
+                
         let request_length = request.len();
-        let request_offset = context.get_free_space_and_write_slice(&request)? as usize;
+        let request_offset_mmap = mmap_context.get_free_space_and_write_slice(&request)? as usize;
+
+        let mut response_buffer_mmap = Vec::<u8>::new();
+        response_buffer_mmap.resize(request_length, 0);
+        mmap_context.read(request_offset_mmap, &mut response_buffer_mmap);
+        let status_mmap = read_status(&response_buffer_mmap);
+        
+        let source_ctxt = Arc::new(mmap_context);
+        let request_offset_ok = context.get_free_space(request_length, 128);
+
+        let request_offset = if let Ok(req) = request_offset_ok {
+            req
+        } else {
+            panic!("offset in write_request is not ok");
+        };
+        
+        transfer_memory(context, source_ctxt, request_offset, request_offset_mmap, request_length).expect("Should successfully transfer");
+
+        let mut response_buffer = Vec::<u8>::new();
+        response_buffer.resize(request_length, 0);
+        context.read(request_offset, &mut response_buffer);
+        let status = read_status(&response_buffer);
+        assert_eq!(status_mmap, status);
 
         context.content.push(Some(DataSet {
             ident: String::from("request"),
@@ -75,7 +110,7 @@ mod system_driver_tests {
         let config = FunctionConfig::SysConfig(SystemFunction::HTTP);
 
         let request = "GET http://httpbin.org/get HTTP/1.1".as_bytes().to_vec();
-
+        
         write_request(&mut context, request).expect("Should be able to prepare request line");
 
         let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
@@ -99,7 +134,6 @@ mod system_driver_tests {
         recorder
             .record(RecordPoint::FutureReturn)
             .expect("Should have advanced record");
-
         let response_set = result_context
             .content
             .iter()
@@ -129,6 +163,9 @@ mod system_driver_tests {
             .iter()
             .find(|set_opt| {
                 if let Some(set) = set_opt {
+                    // debug!("Found set with ident = body. Buffer has size {}, 
+                    //     and first item has offset and length {}, {}",
+                    // set.buffers.len(), set.buffers[0].data.offset, set.buffers[0].data.size);
                     return set.ident == "body";
                 } else {
                     return false;
@@ -139,6 +176,7 @@ mod system_driver_tests {
             .expect("Should have body set");
         assert_eq!(1, body_set.buffers.len());
         let expected_body_len = get_body_size(&response_buffer);
+        // debug!("expected_body_len: {}", expected_body_len);
         assert_eq!(expected_body_len, body_set.buffers[0].data.size);
     }
 
@@ -223,13 +261,15 @@ dolore magna aliquyam erat, sed diam voluptua."#
     macro_rules! driverTests {
         ($name : ident; $domain: ty; $dom_init: expr; $driver : expr ; $drv_init : expr ) => {
             #[test]
-            fn test_http_get() {
+            fn test_http_get() {    
+                let _ = env_logger::builder().is_test(true).try_init();
                 let driver = Box::new($driver);
                 super::get_http::<$domain>($dom_init, driver, $drv_init);
             }
 
             #[test]
             fn test_http_post() {
+                let _ = env_logger::builder().is_test(true).try_init();
                 let driver = Box::new($driver);
                 super::post_http::<$domain>($dom_init, driver, $drv_init);
             }
@@ -242,6 +282,7 @@ dolore magna aliquyam erat, sed diam voluptua."#
         use crate::function_driver::ComputeResource;
         // use crate::memory_domain::malloc::MallocMemoryDomain as domain;
         use crate::memory_domain::system_domain::SystemMemoryDomain as domain;
+        // use crate::memory_domain::mmap::MmapMemoryDomain as domain;
         driverTests!(reqwest_io; domain; crate::memory_domain::MemoryResource::None; ReqwestDriver{}; ComputeResource::CPU(1));
     }
 }
