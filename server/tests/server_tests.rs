@@ -34,13 +34,6 @@ mod server_tests {
         composition: String,
     }
 
-    #[derive(Serialize)]
-    struct MatrixRequest {
-        name: String,
-        rows: u64,
-        cols: u64,
-    }
-
     impl Drop for ServerKiller {
         fn drop(&mut self) {
             let mut kill = Command::new("kill")

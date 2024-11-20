@@ -1,3 +1,4 @@
+pub mod range_pool;
 pub mod records;
 
 pub type FunctionId = u64;
@@ -5,6 +6,8 @@ pub type FunctionId = u64;
 // TODO define error types, possibly better printing than debug
 #[derive(Debug, Clone, PartialEq)]
 pub enum DandelionError {
+    /// errors related to domains themselfs
+    DomainError(DomainError),
     /// trying to use a feature that is not yet implemented
     NotImplemented,
     // errors in configurations
@@ -168,4 +171,22 @@ pub enum PromiseError {
     DroppedDebt,
     /// Promise result after taking it already
     TakenPromise,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DomainError {
+    /// Config parameter does not match any expected option
+    ConfigMissmatch,
+    /// Error opening shared memory file
+    SharedOpen,
+    /// Error truncating shared memory
+    SharedTrunc,
+    /// Error mapping the requested amount
+    Mapping,
+    /// Domain has no space left
+    ReachedCapacity,
+    /// Cleaning of memory range has failed
+    CleaningFailure,
+    /// Impossible context size for the given context type
+    InvalidMemorySize,
 }

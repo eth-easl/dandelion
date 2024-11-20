@@ -7,7 +7,10 @@ mod compute_driver_tests {
         function_driver::{
             test_queue::TestQueue, ComputeResource, Driver, FunctionConfig, WorkToDo,
         },
-        memory_domain::{Context, ContextState, ContextTrait, MemoryDomain, MemoryResource},
+        memory_domain::{
+            test_resource::get_resource, Context, ContextState, ContextTrait, MemoryDomain,
+            MemoryResource,
+        },
         DataItem, DataSet, Position,
     };
     use core::panic;
@@ -20,9 +23,9 @@ mod compute_driver_tests {
     fn loader_empty<Dom: MemoryDomain>(dom_init: MemoryResource, driver: Box<dyn Driver>) {
         // load elf file
         let elf_path = String::new();
-        let domain = Box::leak(Dom::init(dom_init).expect("Should be able to get domain"));
+        let domain = Dom::init(get_resource(dom_init)).expect("Should be able to get domain");
         driver
-            .parse_function(elf_path, domain)
+            .parse_function(elf_path, &domain)
             .expect("Empty string should return error");
     }
 
@@ -54,15 +57,15 @@ mod compute_driver_tests {
         drv_init: Vec<ComputeResource>,
     ) -> (Context, FunctionConfig, Box<TestQueue>) {
         let queue = Box::new(TestQueue::new());
-        let domain = Box::leak(Dom::init(dom_init).expect("Should have initialized domain"));
+        let domain = Dom::init(get_resource(dom_init)).expect("Should have initialized domain");
         let function = driver
-            .parse_function(filename.to_string(), domain)
+            .parse_function(filename.to_string(), &domain)
             .expect("Should be able to parse function");
         driver
             .start_engine(drv_init[0], queue.clone())
             .expect("Should be able to start engine");
         let function_context = function
-            .load(domain, 0x802_0000)
+            .load(&domain, 0x802_0000)
             .expect("Should be able to load function");
         return (function_context, function.config, queue);
     }
@@ -522,20 +525,20 @@ mod compute_driver_tests {
 
     macro_rules! driverTests {
         ($name : ident; $domain : ty; $dom_init: expr; $driver : expr ; $drv_init : expr; $drv_init_wrong : expr) => {
-            #[test]
+            #[test_log::test]
             #[should_panic]
             fn test_loader_empty() {
                 let driver = Box::new($driver);
                 super::loader_empty::<$domain>($dom_init, driver);
             }
 
-            #[test]
+            #[test_log::test]
             fn test_driver() {
                 let driver = Box::new($driver);
                 super::driver(driver, $drv_init, $drv_init_wrong);
             }
 
-            #[test]
+            #[test_log::test]
             fn test_engine_minimal() {
                 let name = format!(
                     "{}/tests/data/test_{}_basic",
@@ -546,7 +549,7 @@ mod compute_driver_tests {
                 super::engine_minimal::<$domain>(&name, $dom_init, driver, $drv_init);
             }
 
-            #[test]
+            #[test_log::test]
             fn test_engine_matmul_single() {
                 let name = format!(
                     "{}/tests/data/test_{}_matmul",
@@ -557,7 +560,7 @@ mod compute_driver_tests {
                 super::engine_matmul_single::<$domain>(&name, $dom_init, driver, $drv_init);
             }
 
-            #[test]
+            #[test_log::test]
             fn test_engine_matmul_size_sweep() {
                 let name = format!(
                     "{}/tests/data/test_{}_matmul",
@@ -568,7 +571,7 @@ mod compute_driver_tests {
                 super::engine_matmul_size_sweep::<$domain>(&name, $dom_init, driver, $drv_init);
             }
 
-            #[test]
+            #[test_log::test]
             #[cfg(not(feature = "wasm"))]
             fn test_engine_stdio() {
                 let name = format!(
@@ -580,7 +583,7 @@ mod compute_driver_tests {
                 super::engine_stdio::<$domain>(&name, $dom_init, driver, $drv_init);
             }
 
-            #[test]
+            #[test_log::test]
             #[cfg(not(feature = "wasm"))]
             fn test_engine_fileio() {
                 let name = format!(
@@ -617,7 +620,7 @@ mod compute_driver_tests {
         use crate::function_driver::{compute_driver::mmu::MmuDriver, ComputeResource};
         use crate::memory_domain::{mmu::MmuMemoryDomain, MemoryResource};
         #[cfg(target_arch = "x86_64")]
-        driverTests!(elf_mmu_x86_64; MmuMemoryDomain; MemoryResource::None; MmuDriver {};
+        driverTests!(elf_mmu_x86_64; MmuMemoryDomain; MemoryResource::Shared { id: 0, size: (1<<30) }; MmuDriver {};
         core_affinity::get_core_ids()
            .and_then(
                 |core_vec|
@@ -630,7 +633,7 @@ mod compute_driver_tests {
             ComputeResource::GPU(0)
         ]);
         #[cfg(target_arch = "aarch64")]
-        driverTests!(elf_mmu_aarch64; MmuMemoryDomain; MemoryResource::None; MmuDriver {};
+        driverTests!(elf_mmu_aarch64; MmuMemoryDomain; MemoryResource::Shared { id: 0, size: (1<<30) }; MmuDriver {};
         core_affinity::get_core_ids()
             .and_then(
                 |core_vec|
@@ -649,7 +652,7 @@ mod compute_driver_tests {
         use crate::function_driver::{compute_driver::kvm::KvmDriver, ComputeResource};
         use crate::memory_domain::{mmap::MmapMemoryDomain, MemoryResource};
         #[cfg(target_arch = "x86_64")]
-        driverTests!(elf_kvm_x86_64; MmapMemoryDomain; MemoryResource::None; KvmDriver {};
+        driverTests!(elf_kvm_x86_64; MmapMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; KvmDriver {};
         core_affinity::get_core_ids()
            .and_then(
                 |core_vec|
@@ -662,7 +665,7 @@ mod compute_driver_tests {
             ComputeResource::GPU(0)
         ]);
         #[cfg(target_arch = "aarch64")]
-        driverTests!(elf_kvm_aarch64; MmapMemoryDomain; MemoryResource::None; KvmDriver {};
+        driverTests!(elf_kvm_aarch64; MmapMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; KvmDriver {};
         core_affinity::get_core_ids()
             .and_then(
                 |core_vec|
@@ -682,7 +685,7 @@ mod compute_driver_tests {
         use crate::memory_domain::{wasm::WasmMemoryDomain, MemoryResource};
 
         #[cfg(target_arch = "x86_64")]
-        driverTests!(sysld_wasm_x86_64; WasmMemoryDomain; MemoryResource::None; WasmDriver {};
+        driverTests!(sysld_wasm_x86_64; WasmMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; WasmDriver {};
         core_affinity::get_core_ids()
             .and_then(
                 |core_vec|
@@ -696,7 +699,7 @@ mod compute_driver_tests {
         ]);
 
         #[cfg(target_arch = "aarch64")]
-        driverTests!(sysld_wasm_aarch64; WasmMemoryDomain; MemoryResource::None; WasmDriver {};
+        driverTests!(sysld_wasm_aarch64; WasmMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; WasmDriver {};
         core_affinity::get_core_ids()
             .and_then(
                 |core_vec|

@@ -95,7 +95,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                 mut recorder,
             } => {
                 recorder.record(RecordPoint::ParsingStart).unwrap();
-                let function_result = driver.parse_function(path, static_domain);
+                let function_result = driver.parse_function(path, &static_domain);
                 recorder.record(RecordPoint::ParsingEnd).unwrap();
                 match function_result {
                     Ok(function) => debt.fulfill(Ok(WorkDone::Function(function))),
@@ -110,7 +110,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                 mut recorder,
             } => {
                 recorder.record(RecordPoint::LoadStart).unwrap();
-                let load_result = function.load(domain, ctx_size);
+                let load_result = function.load(&domain, ctx_size);
                 recorder.record(RecordPoint::LoadEnd).unwrap();
                 match load_result {
                     Ok(context) => debt.fulfill(Ok(WorkDone::Context(context))),

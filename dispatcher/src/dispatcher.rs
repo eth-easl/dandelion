@@ -22,7 +22,7 @@ use machine_interface::{
         get_available_domains, get_available_drivers, get_compatibilty_table, DomainType,
         EngineType,
     },
-    memory_domain::{Context, MemoryDomain},
+    memory_domain::{Context, MemoryDomain, MemoryResource},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -34,17 +34,20 @@ use std::{
 // TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
 // the entire execution time anyway
 pub struct Dispatcher {
-    domains: BTreeMap<DomainType, (&'static dyn MemoryDomain, Box<EngineQueue>)>,
+    domains: BTreeMap<DomainType, (Arc<Box<dyn MemoryDomain>>, Box<EngineQueue>)>,
     engine_queues: BTreeMap<EngineType, Box<EngineQueue>>,
     type_map: BTreeMap<EngineType, DomainType>,
     function_registry: FunctionRegistry,
 }
 
 impl Dispatcher {
-    pub fn init(mut resource_pool: ResourcePool) -> DandelionResult<Dispatcher> {
+    pub fn init(
+        mut resource_pool: ResourcePool,
+        memory_resources: BTreeMap<DomainType, MemoryResource>,
+    ) -> DandelionResult<Dispatcher> {
         // get machine specific configurations
         let type_map = get_compatibilty_table();
-        let domains = get_available_domains();
+        let domains = get_available_domains(memory_resources);
         let drivers = get_available_drivers();
 
         // Insert a work queue for each domain and use up all engine resource available
@@ -58,7 +61,7 @@ impl Dispatcher {
                 driver.start_engine(resource, work_queue.clone())?;
             }
             let domain_type = type_map.get(&engine_type).unwrap();
-            let domain = *domains.get(domain_type).unwrap();
+            let domain = domains.get(domain_type).unwrap().clone();
             domain_map.insert(*domain_type, (domain, work_queue.clone()));
             engine_queues.insert(engine_type, work_queue.clone());
             registry_drivers.insert(
@@ -426,7 +429,7 @@ impl Dispatcher {
             .load(
                 function_id,
                 engine_type,
-                *domain,
+                domain.clone(),
                 ctx_size,
                 non_caching,
                 recorder.get_sub_recorder().unwrap(),
