@@ -483,12 +483,12 @@ impl Dispatcher {
                 );
                 continue;
             }
-            // trace!(
-            //     "preparing function {}: copying composition set {} to function set {}",
-            //     function_id,
-            //     context_set.set_index,
-            //     function_set
-            // );
+            trace!(
+                "preparing function {}: copying composition set {} to function set {}",
+                function_id,
+                context_set.set_index,
+                function_set
+            );
             let mut function_item = 0usize;
             for (subset, item, source_context) in context_set {
                 // TODO get allignment information
