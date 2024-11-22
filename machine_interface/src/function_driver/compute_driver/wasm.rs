@@ -100,7 +100,7 @@ impl Driver for WasmDriver {
     fn parse_function(
         &self,
         function_path: String,
-        static_domain: &'static dyn MemoryDomain,
+        static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<Function> {
         let lib = unsafe {
             Library::new(function_path).map_err(|e| {

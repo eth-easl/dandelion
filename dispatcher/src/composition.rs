@@ -365,21 +365,39 @@ impl From<(usize, Vec<Arc<Context>>)> for CompositionSet {
 pub struct CompositionSetTransferIterator {
     /// which set in the contexts contains the buffer
     set: CompositionSet,
+    current: Option<(Arc<Context>, core::ops::Range<usize>)>,
 }
 
 impl Iterator for CompositionSetTransferIterator {
     type Item = (usize, usize, Arc<Context>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        // if we can guarnatee that there is always an item, we could simplify this to just taking the last one
-        // would requeire ensuring that property for composition sets
-        // TOOD: make composition set ranges private so the constructor can guarantee this
-        while let Some((context, buffer_range)) = self.set.context_list.last_mut() {
-            if buffer_range.end >= buffer_range.start + 1 {
-                buffer_range.end = buffer_range.end - 1;
-                return Some((self.set.set_index, buffer_range.end, context.clone()));
+        // initialization has skipped empty sets, so if current is Some can return aout of there
+        // if current becomes empty, drop it and get next one
+        // if we could guarantee the ranges always contain something could simplify this code
+        if let Some((current_context, ref mut current_range)) = &mut self.current {
+            if current_range.start + 1 == current_range.end {
+                let next = loop {
+                    if let Some(next) = self.set.context_list.pop() {
+                        if next.1.is_empty() {
+                            continue;
+                        } else {
+                            break Some(next);
+                        }
+                    } else {
+                        break None;
+                    }
+                };
+                let (taken_context, taken_range) = self.current.take().unwrap();
+                self.current = next;
+                return Some((self.set.set_index, taken_range.start, taken_context));
             } else {
-                self.set.context_list.pop();
+                current_range.end -= 1;
+                return Some((
+                    self.set.set_index,
+                    current_range.end,
+                    current_context.clone(),
+                ));
             }
         }
         return None;
@@ -389,8 +407,24 @@ impl Iterator for CompositionSetTransferIterator {
 impl IntoIterator for CompositionSet {
     type Item = (usize, usize, Arc<Context>);
     type IntoIter = CompositionSetTransferIterator;
-    fn into_iter(self) -> Self::IntoIter {
-        return CompositionSetTransferIterator { set: self };
+    fn into_iter(mut self) -> Self::IntoIter {
+        loop {
+            if let Some(current) = self.context_list.pop() {
+                if current.1.is_empty() {
+                    continue;
+                } else {
+                    return CompositionSetTransferIterator {
+                        set: self,
+                        current: Some(current),
+                    };
+                }
+            } else {
+                return CompositionSetTransferIterator {
+                    set: self,
+                    current: None,
+                };
+            }
+        }
     }
 }
 
@@ -398,6 +432,7 @@ impl IntoIterator for &CompositionSet {
     type Item = (usize, usize, Arc<Context>);
     type IntoIter = CompositionSetTransferIterator;
     fn into_iter(self) -> Self::IntoIter {
-        return CompositionSetTransferIterator { set: self.clone() };
+        let new_set = self.clone();
+        return new_set.into_iter();
     }
 }

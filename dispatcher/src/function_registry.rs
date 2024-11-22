@@ -84,7 +84,7 @@ impl FunctionDict {
 
 /// Function to create a future that returns the loaded function
 async fn load_local(
-    static_domain: &'static dyn MemoryDomain,
+    static_domain: Arc<Box<dyn MemoryDomain>>,
     driver: &'static dyn Driver,
     mut recorder: Recorder,
     work_queue: Box<EngineQueue>,
@@ -140,7 +140,7 @@ impl FunctionRegistry {
     pub fn new(
         drivers: BTreeMap<EngineType, (&'static dyn Driver, Box<EngineQueue>)>,
         type_map: &BTreeMap<EngineType, DomainType>,
-        domains: &BTreeMap<DomainType, &'static dyn MemoryDomain>,
+        domains: &BTreeMap<DomainType, Arc<Box<dyn MemoryDomain>>>,
     ) -> Self {
         // insert all system functons
         let mut engine_map = BTreeMap::new();
@@ -175,7 +175,7 @@ impl FunctionRegistry {
                 let function_config = driver
                     .parse_function(
                         String::from(""),
-                        *domains.get(type_map.get(engine_type).unwrap()).unwrap(),
+                        domains.get(type_map.get(engine_type).unwrap()).unwrap(),
                     )
                     .unwrap();
                 match function_config.config {
@@ -355,7 +355,7 @@ impl FunctionRegistry {
         &self,
         function_id: FunctionId,
         engine_id: EngineType,
-        domain: &'static dyn MemoryDomain,
+        domain: Arc<Box<dyn MemoryDomain>>,
         ctx_size: usize,
         non_caching: bool,
         mut recorder: Recorder,
@@ -381,7 +381,7 @@ impl FunctionRegistry {
                     func_future.clone()
                 } else {
                     let func_future = (Box::pin(load_local(
-                        domain,
+                        domain.clone(),
                         *driver,
                         recorder.get_sub_recorder()?,
                         load_queue.clone(),

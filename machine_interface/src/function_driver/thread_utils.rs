@@ -57,17 +57,17 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                 mut recorder,
             } => {
                 if let Err(err) = recorder.record(RecordPoint::EngineStart) {
-                    debt.fulfill(Box::new(Err(err)));
+                    debt.fulfill(Err(err));
                     continue;
                 }
                 let result = engine_state.run(config, context, output_sets);
                 if result.is_ok() {
                     if let Err(err) = recorder.record(RecordPoint::EngineEnd) {
-                        debt.fulfill(Box::new(Err(err)));
+                        debt.fulfill(Err(err));
                         continue;
                     }
                 }
-                let results = Box::new(result.and_then(|context| Ok(WorkDone::Context(context))));
+                let results = result.and_then(|context| Ok(WorkDone::Context(context)));
                 debt.fulfill(results);
             }
             WorkToDo::TransferArguments {
@@ -84,7 +84,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                 match recorder.record(RecordPoint::TransferStart) {
                     Ok(()) => (),
                     Err(err) => {
-                        debt.fulfill(Box::new(Err(err)));
+                        debt.fulfill(Err(err));
                         continue;
                     }
                 }
@@ -101,12 +101,12 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                 match recorder.record(RecordPoint::TransferEnd) {
                     Ok(()) => (),
                     Err(err) => {
-                        debt.fulfill(Box::new(Err(err)));
+                        debt.fulfill(Err(err));
                         continue;
                     }
                 }
                 let transfer_return = transfer_result.and(Ok(WorkDone::Context(destination)));
-                debt.fulfill(Box::new(transfer_return));
+                debt.fulfill(transfer_return);
                 continue;
             }
             WorkToDo::ParsingArguments {
@@ -116,11 +116,11 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                 mut recorder,
             } => {
                 recorder.record(RecordPoint::ParsingStart).unwrap();
-                let function_result = driver.parse_function(path, static_domain);
+                let function_result = driver.parse_function(path, &static_domain);
                 recorder.record(RecordPoint::ParsingEnd).unwrap();
                 match function_result {
-                    Ok(function) => debt.fulfill(Box::new(Ok(WorkDone::Function(function)))),
-                    Err(err) => debt.fulfill(Box::new(Err(err))),
+                    Ok(function) => debt.fulfill(Ok(WorkDone::Function(function))),
+                    Err(err) => debt.fulfill(Err(err)),
                 }
                 continue;
             }
@@ -131,18 +131,16 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                 mut recorder,
             } => {
                 recorder.record(RecordPoint::LoadStart).unwrap();
-                let load_result = function.load(domain, ctx_size);
+                let load_result = function.load(&domain, ctx_size);
                 recorder.record(RecordPoint::LoadEnd).unwrap();
                 match load_result {
-                    Ok(context) => debt.fulfill(Box::new(Ok(WorkDone::Context(context)))),
-                    Err(err) => debt.fulfill(Box::new(Err(err))),
+                    Ok(context) => debt.fulfill(Ok(WorkDone::Context(context))),
+                    Err(err) => debt.fulfill(Err(err)),
                 }
                 continue;
             }
             WorkToDo::Shutdown() => {
-                debt.fulfill(Box::new(Ok(WorkDone::Resources(vec![
-                    ComputeResource::CPU(core_id),
-                ]))));
+                debt.fulfill(Ok(WorkDone::Resources(vec![ComputeResource::CPU(core_id)])));
                 return;
             }
         }

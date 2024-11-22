@@ -168,7 +168,7 @@ fn check_compositions_and_metadata(
     }
 }
 
-#[test]
+#[test_log::test]
 fn test_from_module_non_registered_function() {
     let unregistered_function = r#"
         (:function not_registered () -> ())
@@ -185,7 +185,7 @@ fn test_from_module_non_registered_function() {
     }
 }
 
-#[test]
+#[test_log::test]
 fn test_from_module_single_registered_function() {
     let unregistered_function = r#"
         (:function registered () -> ())
@@ -199,7 +199,7 @@ fn test_from_module_single_registered_function() {
     }
 }
 
-#[test]
+#[test_log::test]
 fn test_from_module_minmal_composition() {
     let composition_string = r#"
         (:function Function () -> ())
@@ -231,7 +231,7 @@ fn test_from_module_minmal_composition() {
     check_compositions_and_metadata(compositions, expected, 0..0, 0..0);
 }
 
-#[test]
+#[test_log::test]
 fn test_from_module_minmal_composition_with_inputs() {
     let composition_string = r#"
         (:function Function (Fin) -> (Fout))
@@ -263,7 +263,7 @@ fn test_from_module_minmal_composition_with_inputs() {
     check_compositions_and_metadata(compositions, expected, 0..1, 1..2);
 }
 
-#[test]
+#[test_log::test]
 fn test_from_module_minmal_composition_function_with_unused_input() {
     let composition_string = r#"
         (:function Function (Fin Unused) -> (Fout))

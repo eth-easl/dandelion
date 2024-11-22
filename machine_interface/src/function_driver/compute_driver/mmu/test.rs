@@ -12,16 +12,19 @@ fn test_loader_basic() {
         std::env::consts::ARCH
     );
     let driver = MmuDriver {};
-    let mmu_domain = Box::leak(
-        MmuMemoryDomain::init(crate::memory_domain::MemoryResource::None)
-            .expect("Should be able to get mmu domain"),
-    );
+    let mmu_domain = MmuMemoryDomain::init(crate::memory_domain::test_resource::get_resource(
+        crate::memory_domain::MemoryResource::Shared {
+            id: 0,
+            size: (1 << 30),
+        },
+    ))
+    .expect("Should be able to get mmu domain");
     let Function {
         requirements,
         context,
         config,
     } = driver
-        .parse_function(elf_path, mmu_domain)
+        .parse_function(elf_path, &mmu_domain)
         .expect("Should correctly parse elf file");
     // check requirement list
     #[cfg(target_arch = "x86_64")]
