@@ -1,100 +1,29 @@
 use super::{check_matrix, setup_dispatcher};
-use core::mem::size_of;
 use dandelion_commons::records::{Archive, ArchiveInit, RecordPoint};
 use dispatcher::composition::{Composition, CompositionSet, FunctionDependencies, ShardingMode};
 use machine_interface::{
     function_driver::ComputeResource,
-    machine_config::EngineType,
-    memory_domain::{Context, MemoryDomain, MemoryResource},
+    machine_config::{DomainType, EngineType},
+    memory_domain::{read_only::ReadOnlyContext, MemoryDomain, MemoryResource},
     DataItem, DataSet, Position,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-fn add_matmul_matrix(
-    context: &mut Context,
-    set: usize,
-    key: u32,
-    matrix_dim: u64,
-    mut matrix: Vec<u64>,
-) {
-    // check the sets are not already full and ensure they exist
-    if context.content.len() <= set {
-        context.content.resize_with(set + 1, || None);
-    }
-
-    assert_eq!(matrix_dim * matrix_dim, matrix.len() as u64);
-
-    matrix.insert(0, matrix_dim);
-    let mat_offset = context
-        .get_free_space_and_write_slice(&matrix)
-        .expect("Should have space") as usize;
-    if let Some(set) = &mut context.content[set] {
-        set.buffers.push(DataItem {
-            ident: String::from(""),
-            data: Position {
-                offset: mat_offset,
-                size: matrix.len() * size_of::<i64>(),
-            },
-            key: key,
-        });
-    } else {
-        context.content[set] = Some(DataSet {
-            ident: "".to_string(),
-            buffers: vec![DataItem {
-                ident: "".to_string(),
-                data: Position {
-                    offset: mat_offset,
-                    size: matrix.len() * size_of::<i64>(),
-                },
-                key: key,
-            }],
-        });
-    }
-}
-
-fn add_matmac_matrix(
-    context: &mut Context,
-    set: usize,
-    rows: u64,
-    cols: u64,
-    mut matrix: Vec<u64>,
-) {
-    // check the sets are not already full and ensure they exist
-    if context.content.len() <= set {
-        context.content.resize_with(set + 1, || None);
-    }
-    if context.content[set].is_some() || context.content[set].is_some() {
-        panic!("trying to add matrix where there is already set");
-    }
-
-    assert_eq!(rows * cols, matrix.len() as u64);
-
-    matrix.insert(0, rows);
-
-    let in_mat_offset = context
-        .get_free_space_and_write_slice(&matrix)
-        .expect("Should have space") as usize;
-    context.content[set] = Some(DataSet {
-        ident: "".to_string(),
-        buffers: vec![DataItem {
-            ident: "".to_string(),
-            data: Position {
-                offset: in_mat_offset,
-                size: matrix.len() * 8,
-            },
-            key: 0,
-        }],
-    });
-}
-
 pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
+    memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, function_id) =
-        setup_dispatcher::<Domain>(relative_path, vec![], vec![], engine_type, engine_resource);
+    let (dispatcher, function_id) = setup_dispatcher::<Domain>(
+        relative_path,
+        vec![],
+        vec![],
+        engine_type,
+        engine_resource,
+        memory_resource,
+    );
 
     let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
         #[cfg(feature = "timestamp")]
@@ -114,7 +43,7 @@ pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
 }
 
 pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
-    domain_arg: MemoryResource,
+    memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
@@ -125,13 +54,25 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
         vec![String::from("")],
         engine_type,
         engine_resource,
+        memory_resource,
     );
-    const CONTEXT_SIZE: usize = 5 * 8;
-    let mut in_context = Domain::init(domain_arg)
-        .expect("Should be able to init domain")
-        .acquire_context(CONTEXT_SIZE)
-        .expect("Should get input matrix context");
-    add_matmul_matrix(&mut in_context, 0, 0, 2, vec![1, 2, 3, 4]);
+
+    // matrix with first eleemnt inidicating number of rows
+    let mat_a = vec![2u64, 1, 2, 3, 4];
+    let mat_len = mat_a.len();
+    let mut in_context =
+        ReadOnlyContext::new(mat_a.into()).expect("Should be able to create read only context");
+    in_context.content = vec![Some(DataSet {
+        ident: String::from(""),
+        buffers: vec![DataItem {
+            ident: String::from(""),
+            data: Position {
+                offset: 0,
+                size: mat_len * core::mem::size_of::<u64>(),
+            },
+            key: 0,
+        }],
+    })];
 
     let inputs = vec![(0, CompositionSet::from((0, vec![(Arc::new(in_context))])))];
     let outputs = vec![Some(0)];
@@ -160,7 +101,7 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
 }
 
 pub fn composition_single_matmul<Domain: MemoryDomain>(
-    domain_arg: MemoryResource,
+    memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
@@ -171,13 +112,25 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
         vec![String::from("")],
         engine_type,
         engine_resource,
+        memory_resource,
     );
-    const CONTEXT_SIZE: usize = 9 * 8;
-    let mut in_context = Domain::init(domain_arg)
-        .expect("Should be able to init domain")
-        .acquire_context(CONTEXT_SIZE)
-        .expect("Should get input matrix context");
-    add_matmul_matrix(&mut in_context, 0, 0, 2, vec![1, 2, 3, 4]);
+
+    // matrix with first eleemnt inidicating number of rows
+    let mat_a = vec![2u64, 1, 2, 3, 4];
+    let mat_len = mat_a.len();
+    let mut in_context = ReadOnlyContext::new(mat_a.into_boxed_slice())
+        .expect("Should be able to create read only context");
+    in_context.content = vec![Some(DataSet {
+        ident: String::from(""),
+        buffers: vec![DataItem {
+            ident: String::from(""),
+            data: Position {
+                offset: 0,
+                size: mat_len * core::mem::size_of::<u64>(),
+            },
+            key: 0,
+        }],
+    })];
 
     let composition = Composition {
         dependencies: vec![FunctionDependencies {
@@ -216,7 +169,7 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
 }
 
 pub fn composition_parallel_matmul<Domain: MemoryDomain>(
-    domain_arg: MemoryResource,
+    memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
@@ -227,16 +180,38 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
         vec![String::from("")],
         engine_type,
         engine_resource,
+        memory_resource,
     );
-    // need space for the input matrix of 2x2 uint64_t as well as a output matrix of the same size
-    // and an uint64_t size that gives the column / row size (which is 2)
-    const CONTEXT_SIZE: usize = 18 * 8;
-    let mut in_context = Domain::init(domain_arg)
-        .expect("Should be able to init domain")
-        .acquire_context(CONTEXT_SIZE)
-        .expect("Should get input matrix context");
-    add_matmul_matrix(&mut in_context, 0, 0, 2, vec![1, 2, 3, 4]);
-    add_matmul_matrix(&mut in_context, 0, 1, 2, vec![1, 2, 3, 4]);
+    // matrix with first eleemnt inidicating number of rows
+    let mat_a = vec![2u64, 1, 2, 3, 4];
+    let mat_b = vec![2u64, 1, 2, 3, 4];
+
+    let mut data = vec![];
+    data.extend_from_slice(&mat_a);
+    data.extend_from_slice(&mat_b);
+    let mut in_context = ReadOnlyContext::new(data.into_boxed_slice())
+        .expect("Should be able to create read only context");
+    in_context.content = vec![Some(DataSet {
+        ident: String::from(""),
+        buffers: vec![
+            DataItem {
+                ident: String::from(""),
+                data: Position {
+                    offset: 0,
+                    size: mat_a.len() * core::mem::size_of::<u64>(),
+                },
+                key: 0,
+            },
+            DataItem {
+                ident: String::from(""),
+                data: Position {
+                    offset: mat_a.len() * core::mem::size_of::<u64>(),
+                    size: mat_b.len() * core::mem::size_of::<u64>(),
+                },
+                key: 1,
+            },
+        ],
+    })];
 
     let composition = Composition {
         dependencies: vec![FunctionDependencies {
@@ -284,7 +259,7 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
 }
 
 pub fn composition_chain_matmul<Domain: MemoryDomain>(
-    domain_arg: MemoryResource,
+    memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
@@ -295,13 +270,25 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
         vec![String::from("")],
         engine_type,
         engine_resource,
+        memory_resource,
     );
-    const CONTEXT_SIZE: usize = 9 * 8;
-    let mut in_context = Domain::init(domain_arg)
-        .expect("Should be able to init domain")
-        .acquire_context(CONTEXT_SIZE)
-        .expect("Should get input matrix context");
-    add_matmul_matrix(&mut in_context, 0, 1, 2, vec![1, 2, 3, 4]);
+
+    // matrix with the first number indicating the number of rows
+    let data = vec![2u64, 1, 2, 3, 4];
+    let data_len = data.len();
+    let mut in_context = ReadOnlyContext::new(data.into_boxed_slice())
+        .expect("Should be able to create read only context");
+    in_context.content = vec![Some(DataSet {
+        ident: String::from(""),
+        buffers: vec![DataItem {
+            ident: String::from(""),
+            data: Position {
+                offset: 0,
+                size: data_len * core::mem::size_of::<u64>(),
+            },
+            key: 1,
+        }],
+    })];
 
     let composition = Composition {
         dependencies: vec![
@@ -344,7 +331,7 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
 }
 
 pub fn composition_diamond_matmac<Domain: MemoryDomain>(
-    domain_arg: MemoryResource,
+    memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
@@ -359,18 +346,56 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
         vec![String::from("")],
         engine_type,
         engine_resource,
+        memory_resource,
     );
-    const CONTEXT_SIZE: usize = 12 * 8;
-    let mut in_context = Domain::init(domain_arg)
-        .expect("Should be able to init domain")
-        .acquire_context(CONTEXT_SIZE)
-        .expect("Should get input matrix context");
-    // A = [7]
-    add_matmac_matrix(&mut in_context, 0, 1, 1, vec![7]);
-    // B = [1,2,3,5]
-    add_matmac_matrix(&mut in_context, 1, 1, 4, vec![1, 2, 3, 5]);
-    // B^T
-    add_matmac_matrix(&mut in_context, 2, 4, 1, vec![1, 2, 3, 5]);
+    // A = [7] with row of 1 as first data element
+    let mat_a = vec![1u64, 7];
+    // B = [1,2,3,5] with row inidcator 1 as first data element
+    let mat_b = vec![1u64, 1, 2, 3, 5];
+    // B^T with row indicator of 4 as first data element
+    let mat_bt = vec![4, 1, 2, 3, 5];
+
+    let mut data = vec![];
+    data.extend_from_slice(&mat_a);
+    data.extend_from_slice(&mat_b);
+    data.extend_from_slice(&mat_bt);
+    let mut in_context = ReadOnlyContext::new(data.into_boxed_slice())
+        .expect("Should be able to create read only context");
+    in_context.content = vec![
+        Some(DataSet {
+            ident: String::from(""),
+            buffers: vec![DataItem {
+                ident: String::from(""),
+                data: Position {
+                    offset: 0,
+                    size: mat_a.len() * core::mem::size_of::<u64>(),
+                },
+                key: 0,
+            }],
+        }),
+        Some(DataSet {
+            ident: String::from(""),
+            buffers: vec![DataItem {
+                ident: String::from(""),
+                data: Position {
+                    offset: mat_a.len() * core::mem::size_of::<u64>(),
+                    size: mat_b.len() * core::mem::size_of::<u64>(),
+                },
+                key: 0,
+            }],
+        }),
+        Some(DataSet {
+            ident: String::from(""),
+            buffers: vec![DataItem {
+                ident: String::from(""),
+                data: Position {
+                    offset: (mat_a.len() + mat_b.len()) * core::mem::size_of::<u64>(),
+                    size: mat_b.len() * core::mem::size_of::<u64>(),
+                },
+                key: 0,
+            }],
+        }),
+    ];
 
     let composition = Composition {
         dependencies: vec![

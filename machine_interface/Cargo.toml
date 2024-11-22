@@ -14,6 +14,7 @@ reqwest_io = ["std", "dep:reqwest", "dep:http", "dep:bytes"]
 bytes_context = ["std", "dep:bytes"]
 wasm = ["std"]
 timestamp = ["dandelion_commons/timestamp"]
+test_export = []
 
 [build-dependencies]
 cmake = "0.1"
@@ -22,6 +23,7 @@ cmake = "0.1"
 criterion = "0.4"
 # need to lock this to older version, because morello does not yet have rustc 1.6
 regex = "1.7.1"
+test-log = "0.2.16"
 
 [dependencies]
 dandelion_commons = { path = "../dandelion_commons" }
