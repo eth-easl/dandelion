@@ -111,7 +111,7 @@ impl Driver for CheriDriver {
     fn parse_function(
         &self,
         function_path: String,
-        static_domain: &'static dyn MemoryDomain,
+        static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<Function> {
         let function = load_u8_from_file(function_path)?;
         let elf = elf_parser::ParsedElf::new(&function)?;

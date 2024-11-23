@@ -65,7 +65,7 @@ pub struct Function {
 impl Function {
     pub fn load(
         &self,
-        domain: &'static dyn MemoryDomain,
+        domain: &Box<dyn MemoryDomain>,
         ctx_size: usize,
     ) -> DandelionResult<Context> {
         return match &self.config {
@@ -112,12 +112,12 @@ pub enum WorkToDo {
     ParsingArguments {
         driver: &'static dyn Driver,
         path: String,
-        static_domain: &'static dyn MemoryDomain,
+        static_domain: Arc<Box<dyn MemoryDomain>>,
         recorder: Recorder,
     },
     LoadingArguments {
         function: Arc<Function>,
-        domain: &'static dyn MemoryDomain,
+        domain: Arc<Box<dyn MemoryDomain>>,
         ctx_size: usize,
         recorder: Recorder,
     },
@@ -193,6 +193,6 @@ pub trait Driver: Send + Sync {
     fn parse_function(
         &self,
         function_path: String,
-        static_domain: &'static dyn MemoryDomain,
+        static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<Function>;
 }

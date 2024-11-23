@@ -20,14 +20,15 @@ use hyper::{
 use log::{debug, error, info, trace, warn};
 use machine_interface::{
     function_driver::ComputeResource,
-    machine_config::EngineType,
-    memory_domain::{bytes_context::BytesContext, read_only::ReadOnlyContext},
+    machine_config::{DomainType, EngineType},
+    memory_domain::{bytes_context::BytesContext, read_only::ReadOnlyContext, MemoryResource},
     DataItem, DataSet, Position,
 };
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
     convert::Infallible,
+    fs::read_to_string,
     io::Write,
     net::SocketAddr,
     path::PathBuf,
@@ -547,10 +548,47 @@ fn main() -> () {
     };
 
     let cpu_core_map = BTreeMap::new();
+    // get RAM size
+    // TODO could be a configuration, open question on how to split between engines
+    // or if we unify somehow and have one underlying pool
+    let max_ram = read_to_string("/proc/meminfo")
+        .unwrap()
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("MemTotal:")
+                .and_then(|line| line.strip_suffix("kB"))
+                .and_then(|line| Some(line.trim().parse::<usize>()))
+        })
+        .unwrap()
+        .unwrap()
+        / 2
+        * 1024;
+
+    let memory_pool = BTreeMap::from([
+        (
+            DomainType::Mmap,
+            MemoryResource::Anonymous { size: max_ram },
+        ),
+        #[cfg(feature = "cheri")]
+        (DomainType::Cheri, MemoryResource::None),
+        #[cfg(feature = "mmu")]
+        (
+            DomainType::Process,
+            MemoryResource::Shared {
+                id: 0,
+                size: max_ram,
+            },
+        ),
+        #[cfg(feature = "wasm")]
+        (
+            DomainType::RWasm,
+            MemoryResource::Anonymous { size: max_ram },
+        ),
+    ]);
 
     // Create an ARC pointer to the dispatcher for thread-safe access
     let (dispatcher, resource_pool, cpu_core_map) = Box::leak(Box::new(
-        Dispatcher::init(resource_pool, cpu_core_map).expect("Should be able to start dispatcher"),
+        Dispatcher::init(resource_pool, cpu_core_map, memory_pool).expect("Should be able to start dispatcher"),
     ));
     // start dispatcher
     dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));

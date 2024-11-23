@@ -1,5 +1,5 @@
 use crate::{
-    composition::{Composition, CompositionSet, FunctionDependencies, ShardingMode},
+    composition::{Composition, CompositionSet, ShardingMode},
     execution_qs::EngineQueue,
     function_registry::{FunctionRegistry, FunctionType, Metadata},
     resource_pool::ResourcePool,
@@ -22,7 +22,7 @@ use machine_interface::{
         get_available_domains, get_available_drivers, get_compatibilty_table, DomainType,
         EngineType,
     },
-    memory_domain::{Context, MemoryDomain},
+    memory_domain::{Context, MemoryDomain, MemoryResource},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -34,17 +34,21 @@ use std::{
 // TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
 // the entire execution time anyway
 pub struct Dispatcher {
-    domains: BTreeMap<DomainType, (&'static dyn MemoryDomain, Box<EngineQueue>)>,
+    domains: BTreeMap<DomainType, (Arc<Box<dyn MemoryDomain>>, Box<EngineQueue>)>,
     pub engine_queues: BTreeMap<EngineType, Box<EngineQueue>>,
     type_map: BTreeMap<EngineType, DomainType>,
     function_registry: FunctionRegistry,
 }
 
 impl Dispatcher {
-    pub fn init(mut resource_pool: ResourcePool, mut cpu_core_map: BTreeMap<EngineType, Vec<u8>>) -> DandelionResult<(Dispatcher, ResourcePool, BTreeMap<EngineType, Vec<u8>>)> {
+    pub fn init(
+        mut resource_pool: ResourcePool,
+        mut cpu_core_map: BTreeMap<EngineType, Vec<u8>>,
+        memory_resources: BTreeMap<DomainType, MemoryResource>,
+    ) -> DandelionResult<(Dispatcher, ResourcePool, BTreeMap<EngineType, Vec<u8>>)> {
         // get machine specific configurations
         let type_map = get_compatibilty_table();
-        let domains = get_available_domains();
+        let domains = get_available_domains(memory_resources);
         let drivers = get_available_drivers();
 
         // Insert a work queue for each domain and use up all engine resource available
@@ -64,7 +68,7 @@ impl Dispatcher {
                 }
             }
             let domain_type = type_map.get(&engine_type).unwrap();
-            let domain = *domains.get(domain_type).unwrap();
+            let domain = domains.get(domain_type).unwrap().clone();
             domain_map.insert(*domain_type, (domain, work_queue.clone()));
             engine_queues.insert(engine_type, work_queue.clone());
             registry_drivers.insert(
@@ -139,47 +143,59 @@ impl Dispatcher {
     pub async fn queue_composition(
         &self,
         composition: Composition,
-        mut inputs: BTreeMap<usize, CompositionSet>,
+        inputs: BTreeMap<usize, CompositionSet>,
         non_caching: bool,
         recorder: Recorder,
     ) -> DandelionResult<BTreeMap<usize, CompositionSet>> {
         // build up ready sets
         trace!("queue composition");
-        let (mut ready_functions, mut non_ready_functions): (Vec<_>, Vec<_>) =
-            composition.dependencies.into_iter().partition(
-                |FunctionDependencies {
-                     input_set_ids: in_ids,
-                     output_set_ids: _,
-                     function: _,
-                 }| {
-                    in_ids.iter().all(|index_opt| {
-                        index_opt
-                            .and_then(|(index, _)| Some(inputs.contains_key(&index)))
-                            .unwrap_or(true)
-                    })
-                },
-            );
+        // local state of functions that still need to run
+        struct FunctionArgs {
+            function_id: FunctionId,
+            inptut_sets: Vec<(usize, ShardingMode, CompositionSet)>,
+            output_mapping: Vec<Option<usize>>,
+            missibng_sets: BTreeMap<usize, (usize, ShardingMode)>,
+        }
+
+        // prepare output sets
+        let mut outpu_sets = BTreeMap::new();
+        let mut missing_outpus = composition.output_map;
+        for (input_index, input_set) in &inputs {
+            if let Some(ouput_index) = missing_outpus.remove(&input_index) {
+                outpu_sets.insert(ouput_index, input_set.clone());
+            }
+        }
+
+        let (ready_functions, mut non_ready_functions): (Vec<_>, Vec<_>) = composition
+            .dependencies
+            .into_iter()
+            .map(|deps| {
+                let mut missing_map = BTreeMap::new();
+                let mut ready_inputs = Vec::with_capacity(deps.input_set_ids.len());
+                for (function_index, set) in deps.input_set_ids.iter().enumerate() {
+                    if let Some((set_index, mode)) = set {
+                        if let Some(comp_set) = inputs.get(set_index) {
+                            ready_inputs.push((function_index, *mode, comp_set.clone()));
+                        } else {
+                            missing_map.insert(*set_index, (function_index, *mode));
+                        }
+                    }
+                }
+                FunctionArgs {
+                    function_id: deps.function,
+                    inptut_sets: ready_inputs,
+                    output_mapping: deps.output_set_ids,
+                    missibng_sets: missing_map,
+                }
+            })
+            .partition(|args| args.missibng_sets.is_empty());
         let mut running_functions: FuturesUnordered<_> = ready_functions
             .into_iter()
-            .map(|dependencies| {
-                let function_inputs = dependencies
-                    .input_set_ids
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(function_index, composition_index_opt)| {
-                        if let Some((composition_index, mode)) = composition_index_opt {
-                            inputs.get(composition_index).and_then(|composition_set| {
-                                Some((function_index, *mode, composition_set.clone()))
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
+            .map(|args| {
                 return self.queue_function_sharded(
-                    dependencies.function,
-                    function_inputs,
-                    dependencies.output_set_ids,
+                    args.function_id,
+                    args.inptut_sets,
+                    args.output_mapping,
                     non_caching,
                     recorder.get_sub_recorder().unwrap(),
                 );
@@ -192,62 +208,48 @@ impl Dispatcher {
         );
         while let Some(new_compositions_result) = running_functions.next().await {
             let new_compositions = new_compositions_result?;
-            for (composition_set_index, composition_set) in new_compositions {
-                inputs.insert(composition_set_index, composition_set);
+            for (composition_set_index, composition_set) in &new_compositions {
+                trace!(
+                    "composition set {} arrived at dispatcher",
+                    composition_set_index
+                );
+                if let Some(ouput_index) = missing_outpus.remove(&composition_set_index) {
+                    outpu_sets.insert(ouput_index, composition_set.clone());
+                }
             }
-            // add newly ready ones
-            (ready_functions, non_ready_functions) = non_ready_functions.into_iter().partition(
-                |FunctionDependencies {
-                     input_set_ids: in_ids,
-                     output_set_ids: _,
-                     function: _,
-                 }| {
-                    in_ids.iter().all(|index_opt| {
-                        index_opt
-                            .as_ref()
-                            .and_then(|(index, _)| Some(inputs.contains_key(&index)))
-                            .unwrap_or(true)
-                    })
-                },
-            );
-            for ready_function in ready_functions {
-                let function_inputs = ready_function
-                    .input_set_ids
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(function_index, composition_index_opt)| {
-                        if let Some((composition_index, mode)) = composition_index_opt {
-                            inputs.get(composition_index).and_then(|composition_set| {
-                                Some((function_index, *mode, composition_set.clone()))
-                            })
-                        } else {
-                            None
+            non_ready_functions = non_ready_functions
+                .into_iter()
+                .filter_map(|mut args| {
+                    for (composition_set_index, composition_set) in &new_compositions {
+                        if let Some((index, mode)) =
+                            args.missibng_sets.remove(composition_set_index)
+                        {
+                            args.inptut_sets
+                                .push((index, mode, composition_set.clone()));
                         }
-                    })
-                    .collect();
-                running_functions.push(self.queue_function_sharded(
-                    ready_function.function,
-                    function_inputs,
-                    ready_function.output_set_ids,
-                    non_caching,
-                    recorder.get_sub_recorder().unwrap(),
-                ));
-            }
+                    }
+                    if args.missibng_sets.is_empty() {
+                        running_functions.push(self.queue_function_sharded(
+                            args.function_id,
+                            args.inptut_sets,
+                            args.output_mapping,
+                            non_caching,
+                            recorder.get_sub_recorder().unwrap(),
+                        ));
+                        None
+                    } else {
+                        Some(args)
+                    }
+                })
+                .collect();
             trace!(
-                "functions ready: {}, functions not ready: {}",
+                "functions running: {}, functions not ready: {}",
                 running_functions.len(),
                 non_ready_functions.len()
             );
         }
-        return Ok(inputs
-            .into_iter()
-            .filter_map(|(set_index, composition_set)| {
-                composition
-                    .output_map
-                    .get(&set_index)
-                    .and_then(|output_index| Some((*output_index, composition_set)))
-            })
-            .collect::<BTreeMap<_, _>>());
+
+        return Ok(outpu_sets);
     }
 
     // TODO: Solve the composition. How does it work now??
@@ -376,10 +378,7 @@ impl Dispatcher {
                                     .and_then(|comp_set| Some((composition_set_id, comp_set)))
                                     .or(Some((
                                         composition_set_id,
-                                        CompositionSet {
-                                            set_index: function_set_id,
-                                            context_list: vec![],
-                                        },
+                                        CompositionSet::from((function_set_id, vec![])),
                                     )));
                                 });
                             })
@@ -441,7 +440,7 @@ impl Dispatcher {
             .load(
                 function_id,
                 engine_type,
-                *domain,
+                domain.clone(),
                 ctx_size,
                 non_caching,
                 recorder.get_sub_recorder().unwrap(),

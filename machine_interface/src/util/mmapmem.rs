@@ -1,59 +1,92 @@
-use dandelion_commons::{DandelionError, DandelionResult};
+use dandelion_commons::{range_pool::RangePool, DandelionError, DandelionResult, DomainError};
 use log::{debug, error};
 use nix::{
     fcntl::OFlag,
     sys::{
-        mman::{mmap, munmap, shm_open, shm_unlink, MapFlags, ProtFlags},
-        stat::{fstat, Mode},
+        mman::{madvise, mmap, munmap, shm_open, shm_unlink, MapFlags, MmapAdvise, ProtFlags},
+        stat::Mode,
     },
     unistd::{close, ftruncate},
 };
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     num::NonZeroUsize,
     ops::{Deref, DerefMut},
-    os::fd::RawFd,
+    os::{fd::RawFd, raw::c_void},
+    sync::{Arc, Mutex},
+    u16,
 };
 
-/// A smart pointer for memory mapped memory.
-/// It makes sure that the memory is unmapped when
-/// it is dropped, and prevents Rust from trying to
-/// free the memory through the global allocator.
+/// Internal structure for the memory pool memory to own the allocation.
+/// This is created when mapping and will unmap when dropped.
 #[derive(Debug)]
-pub struct MmapMem {
+struct MmapMemPoolInternal {
     ptr: *mut u8,
     size: usize,
     fd: RawFd,
     filename: Option<String>,
+    occupation: Mutex<RangePool<u16>>,
+}
+unsafe impl Sync for MmapMemPoolInternal {}
+unsafe impl Send for MmapMemPoolInternal {}
+
+impl Drop for MmapMemPoolInternal {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe { munmap(self.ptr as *mut _, self.size).unwrap() };
+        }
+        if let Some(filename) = &self.filename {
+            close(self.fd).unwrap();
+            shm_unlink(filename.as_str()).unwrap();
+        }
+    }
 }
 
-static COUNTER: AtomicU64 = AtomicU64::new(0);
+#[derive(Debug)]
+pub struct MmapMemPool {
+    internal: Arc<MmapMemPoolInternal>,
+}
 
-impl MmapMem {
+// Minimum allocation granularity
+const SLAB_SIZE: usize = 2 << 20;
+
+impl MmapMemPool {
     // Create a memory-mapped file with the given size and protection flags.
     // If a filename is given, memory will be backed by that file,
     // otherwise it will be backed by an anonymous file.
-    pub fn create(size: usize, prot: ProtFlags, shared: bool) -> Result<Self, DandelionError> {
+    pub fn create(
+        size: usize,
+        prot: ProtFlags,
+        shared: Option<u64>,
+    ) -> Result<Self, DandelionError> {
+        // use 2MB for minimal allocation granularity and u16 to keep track of them,
+        // so maximum pool size is 2*MB * u16::MAX ~ 128 GiB
+        assert!(size < (u16::MAX as usize) * SLAB_SIZE);
+        let upper_end = u16::try_from(size / SLAB_SIZE)
+            .expect("Total memory pool should be smaller than 128GiB for current u16 setup");
+        let occupation = Mutex::new(RangePool::new(0..upper_end));
         if size == 0 {
-            return Ok(MmapMem {
-                ptr: core::ptr::null_mut(),
-                size,
-                fd: -1,
-                filename: None,
+            return Ok(MmapMemPool {
+                internal: Arc::new(MmapMemPoolInternal {
+                    ptr: core::ptr::null_mut(),
+                    size,
+                    fd: -1,
+                    filename: None,
+                    occupation,
+                }),
             });
         }
         let mut filename = None;
-        let (fd, map_flags) = if shared {
-            filename = Some(format!("/shm_{:X}", COUNTER.fetch_add(1, Ordering::SeqCst)));
+        let (fd, map_flags) = if let Some(shared_id) = shared {
+            let filename_string = format!("/shm_{:X}", shared_id);
             log::trace!("ctx filename: {:?}", filename);
             let fd = match shm_open(
-                filename.as_ref().unwrap().as_str(),
+                filename_string.as_str(),
                 OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR,
                 Mode::S_IRUSR | Mode::S_IWUSR,
             ) {
                 Err(err) => {
                     error!("Error creating shared memory file: {}", err);
-                    return Err(DandelionError::MemoryAllocationError);
+                    return Err(DandelionError::DomainError(DomainError::SharedOpen));
                 }
                 fd => fd.unwrap(),
             };
@@ -61,13 +94,13 @@ impl MmapMem {
             match ftruncate(fd, size as _) {
                 Err(err) => {
                     close(fd).unwrap();
-                    shm_unlink(filename.unwrap().as_str()).unwrap();
+                    shm_unlink(filename_string.as_str()).unwrap();
                     error!("Error creating shared memory file: {}", err);
-                    return Err(DandelionError::MemoryAllocationError);
+                    return Err(DandelionError::DomainError(DomainError::SharedTrunc));
                 }
                 _ => {}
             };
-
+            filename = Some(filename_string);
             (fd, MapFlags::MAP_SHARED)
         } else {
             (-1, MapFlags::MAP_PRIVATE | MapFlags::MAP_ANONYMOUS)
@@ -84,84 +117,86 @@ impl MmapMem {
                 0,
             ) {
                 Err(err) => {
-                    if shared {
+                    if let Some(filename_string) = filename {
                         close(fd).unwrap();
-                        shm_unlink(filename.unwrap().as_str()).unwrap();
+                        shm_unlink(filename_string.as_str()).unwrap();
                     }
                     error!("Error mapping memory: {}:{}", err, err.desc());
-                    return Err(DandelionError::MemoryAllocationError);
+                    return Err(DandelionError::DomainError(DomainError::Mapping));
                 }
                 Ok(ptr) => ptr as *mut _,
             }
         };
 
-        let shmem = MmapMem {
+        let backing_mem = Arc::new(MmapMemPoolInternal {
             ptr,
             size,
             fd,
             filename,
-        };
+            occupation,
+        });
 
-        Ok(shmem)
+        Ok(MmapMemPool {
+            internal: backing_mem,
+        })
     }
 
-    // Memory-maps a file and protection flags, at the given address.
-    pub fn open(filename: &str, prot: ProtFlags, addr: usize) -> Result<MmapMem, DandelionError> {
-        let shmem_fd = match shm_open(filename, OFlag::O_RDWR, Mode::S_IRUSR) {
-            Err(err) => {
-                error!("Error opening shared memory file: {}:{}", err, err.desc());
-                return Err(DandelionError::FileError);
-            }
-            Ok(fd) => fd,
-        };
-
-        let size = match fstat(shmem_fd) {
-            Err(err) => {
-                error!("Error getting file stats: {}:{}", err, err.desc());
-                return Err(DandelionError::FileError);
-            }
-            Ok(stat) => stat.st_size as usize,
-        };
-
-        let ptr = unsafe {
-            match mmap(
-                NonZeroUsize::new(addr),
-                NonZeroUsize::new(size - addr).unwrap(),
-                prot,
-                MapFlags::MAP_SHARED | MapFlags::MAP_FIXED_NOREPLACE,
-                shmem_fd,
-                addr.try_into().unwrap(),
-            ) {
-                Err(err) => {
-                    error!(
-                        "Error mapping memory from file {} at address {}: {}:{}",
-                        filename,
-                        addr,
-                        err,
-                        err.desc()
-                    );
-                    return Err(DandelionError::MemoryAllocationError);
-                }
-                Ok(ptr) => ptr as *mut _,
-            }
-        };
-
-        let shmem = MmapMem {
-            ptr,
-            size,
-            fd: shmem_fd,
-            filename: Some(filename.to_string()),
-        };
-
-        Ok(shmem)
+    pub fn get_allocation(
+        &self,
+        requested_size: usize,
+        cleaning_flags: MmapAdvise,
+    ) -> DandelionResult<(MmapMem, usize)> {
+        // check requested size is smaller than max avaiable
+        if requested_size > self.internal.size {
+            return Err(DandelionError::DomainError(DomainError::InvalidMemorySize));
+        }
+        // check if space is available
+        let occupation_size = u16::try_from((requested_size + SLAB_SIZE - 1) / SLAB_SIZE)
+            .expect("Allocation size should be within representable sizes");
+        let lenght = usize::from(occupation_size) * SLAB_SIZE;
+        let start_slab = usize::from({
+            let mut occupation = self.internal.occupation.lock().unwrap();
+            occupation
+                .get(occupation_size, u16::MIN)
+                .ok_or(DandelionError::DomainError(DomainError::ReachedCapacity))?
+        });
+        let start_address = unsafe { self.internal.ptr.add(start_slab * SLAB_SIZE) };
+        // clean memory
+        unsafe { madvise(start_address as *mut c_void, lenght, cleaning_flags) }.or(Err(
+            DandelionError::DomainError(DomainError::CleaningFailure),
+        ))?;
+        return Ok((
+            MmapMem {
+                ptr: start_address,
+                size: lenght,
+                origin: self.internal.clone(),
+            },
+            lenght,
+        ));
     }
+}
 
+/// A smart pointer for memory mapped memory.
+/// It makes sure that the memory is returned to the pool when dropped.
+/// Prevents Rust from trying to deallocate through the global allocator.
+#[derive(Debug)]
+pub struct MmapMem {
+    ptr: *mut u8,
+    size: usize,
+    origin: Arc<MmapMemPoolInternal>,
+}
+
+impl MmapMem {
     // Returns the complete path of the file backing the memory.
     pub fn filename(&self) -> Option<&str> {
-        match &self.filename {
-            Some(filename) => Some(filename),
+        match &self.origin.filename {
+            Some(filename) => Some(filename.as_str()),
             None => None,
         }
+    }
+
+    pub fn offset(&self) -> i64 {
+        i64::try_from(unsafe { self.ptr.offset_from(self.origin.ptr) }).unwrap()
     }
 
     pub fn size(&self) -> usize {
@@ -253,12 +288,13 @@ impl DerefMut for MmapMem {
 
 impl Drop for MmapMem {
     fn drop(&mut self) {
-        if !self.ptr.is_null() {
-            unsafe { munmap(self.ptr as *mut _, self.size).unwrap() };
-        }
-        if let Some(filename) = &self.filename {
-            close(self.fd).unwrap();
-            shm_unlink(filename.as_str()).unwrap();
-        }
+        let start = usize::try_from(unsafe { self.ptr.offset_from(self.origin.ptr) }).unwrap();
+        let start_slab = u16::try_from(start / SLAB_SIZE).unwrap();
+        let slab_number = u16::try_from(self.size / SLAB_SIZE).unwrap();
+        self.origin
+            .occupation
+            .lock()
+            .unwrap()
+            .insert(start_slab, start_slab + slab_number);
     }
 }

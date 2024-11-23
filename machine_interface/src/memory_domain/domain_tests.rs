@@ -1,9 +1,9 @@
-use std::vec;
-
 use crate::memory_domain::{
-    transfer_data_set, transfer_memory, Context, ContextTrait, MemoryDomain, MemoryResource,
+    test_resource::get_resource, transfer_data_set, transfer_memory, Context, ContextTrait,
+    MemoryDomain, MemoryResource,
 };
-use dandelion_commons::{DandelionError, DandelionResult};
+use dandelion_commons::{DandelionError, DandelionResult, DomainError};
+
 // produces binary pattern 0b0101_01010 or 0x55
 const BYTEPATTERN: u8 = 85;
 
@@ -14,13 +14,14 @@ fn try_acquire<D: MemoryDomain>(
     acquisition_size: usize,
     expect_success: bool,
 ) {
-    let init_result = D::init(arg);
+    let resource = get_resource(arg);
+    let init_result = D::init(resource);
     let domain = init_result.expect("should have initialized memory domain");
     let context_result = domain.acquire_context(acquisition_size);
     match (expect_success, context_result) {
         (true, Ok(_))
         | (false, Err(DandelionError::OutOfMemory))
-        | (false, Err(DandelionError::InvalidMemorySize))
+        | (false, Err(DandelionError::DomainError(DomainError::InvalidMemorySize)))
         | (false, Err(DandelionError::MemoryAllocationError)) => assert!(true),
         (false, Ok(_)) => assert!(
             false,
@@ -46,7 +47,8 @@ fn acquire<D: MemoryDomain>(arg: MemoryResource, size: usize) -> Context {
 }
 
 fn init_domain<D: MemoryDomain>(arg: MemoryResource) -> Box<dyn MemoryDomain> {
-    let init_result = D::init(arg);
+    let resource = get_resource(arg);
+    let init_result = D::init(resource);
     let domain = init_result.expect("memory domain should have been initialized");
     return domain;
 }
@@ -265,7 +267,7 @@ use super::malloc::MallocMemoryDomain as mallocType;
 domainTests!(malloc; mallocType; MemoryResource::None);
 
 use super::mmap::MmapMemoryDomain as mmapType;
-domainTests!(mmap; mmapType; MemoryResource::None);
+domainTests!(mmap; mmapType; MemoryResource::Anonymous { size: (2<<22) });
 
 #[cfg(feature = "cheri")]
 use super::cheri::CheriMemoryDomain as cheriType;
@@ -275,9 +277,9 @@ domainTests!(cheri; cheriType; MemoryResource::None);
 #[cfg(feature = "mmu")]
 use super::mmu::MmuMemoryDomain as mmuType;
 #[cfg(feature = "mmu")]
-domainTests!(mmu; mmuType; MemoryResource::None);
+domainTests!(mmu; mmuType; MemoryResource::Shared { id: 0, size: (2<<22) });
 
 #[cfg(feature = "wasm")]
 use super::wasm::WasmMemoryDomain as wasmType;
 #[cfg(feature = "wasm")]
-domainTests!(wasm; wasmType; MemoryResource::None);
+domainTests!(wasm; wasmType; MemoryResource::Anonymous { size: (2<<22) });
