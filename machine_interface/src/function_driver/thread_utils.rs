@@ -7,7 +7,6 @@ use dandelion_commons::{records::RecordPoint, DandelionResult};
 use std::thread::spawn;
 use nix::sched::{sched_setaffinity, CpuSet}; // Add nix for CPU affinity
 use nix::unistd::Pid;
-use std::sync::Arc;
 
 extern crate alloc;
 
@@ -21,28 +20,26 @@ pub trait EngineLoop {
     ) -> DandelionResult<Context>;
 }
 
-fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
+fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>, cpu_pinning: bool, compute_range: (usize, usize)) -> () {
     // set core affinity
     // if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
     //     log::error!("core received core id that could not be set");
     //     return;
     // }
 
-    // set core affinity with cpu range
-    // let mut cpuset = CpuSet::new();
-    // cpuset.set(core_id as usize).expect("Failed to set CPU in CpuSet");
-
-    // sched_setaffinity(Pid::from_raw(0), &cpuset)
-    //     .expect("Failed to set CPU affinity for thread");
-
-    // no cpu pinning with cpu range
-    // let mut cpuset = CpuSet::new();
-    // for core in 5..=15 {
-    //     cpuset.set(core).expect("Failed to set CPU in CpuSet");
-    // }
-
-    // sched_setaffinity(Pid::from_raw(0), &cpuset)
-    //     .expect("Failed to set CPU affinity to cores 5-10");
+    let mut cpuset = CpuSet::new();
+    let (start, end) = compute_range;
+    if cpu_pinning {
+        cpuset.set(core_id as usize).expect("Failed to set CPU in CpuSet");
+        sched_setaffinity(Pid::from_raw(0), &cpuset)
+            .expect("Failed to set CPU affinity for thread");
+    } else {
+        for core in start..=end {
+            cpuset.set(core).expect("Failed to set CPU in CpuSet");
+        }
+        sched_setaffinity(Pid::from_raw(0), &cpuset)
+            .expect("Failed to set CPU affinity");
+    }
 
 
     let mut engine_state = E::init(core_id).expect("Failed to initialize thread state");
@@ -147,24 +144,13 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
     }
 }
 
-// pub fn start_thread<E: EngineLoop>(cpu_slot: u8, queue: Box<dyn WorkQueue + Send>) -> () {
-pub fn start_thread<E: EngineLoop>(cpu_slot: u8, queue: Box<dyn WorkQueue + Send>, threads_per_core: usize) -> () {
-
-    // let core_range_start = 5;
-    // let core_range_end = 10;
-    // let core_count = core_range_end - core_range_start + 1;
-    
-    // let core_id = core_range_start + (cpu_slot % core_count) as u8;
-    // spawn(move || run_thread::<E>(core_id, queue));
-
-
-    // spawn(move || run_thread::<E>(cpu_slot, queue));
-
-
-    // let test_queue: Arc<Box<dyn WorkQueue + Send>> = Arc::new(queue);
-
+pub fn start_thread<E: EngineLoop>(cpu_slot: u8, 
+                                queue: Box<dyn WorkQueue + Send>, 
+                                threads_per_core: usize, 
+                                cpu_pinning: bool,
+                                compute_range: (usize, usize)) -> () {
     for _ in 0..threads_per_core {
         let queue_clone = queue.clone_box();
-        spawn(move || run_thread::<E>(cpu_slot, queue_clone));
+        spawn(move || run_thread::<E>(cpu_slot, queue_clone, cpu_pinning, compute_range));
     }
 }

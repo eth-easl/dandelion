@@ -253,6 +253,8 @@ impl Driver for MmuDriver {
         resource: ComputeResource,
         queue: Box<dyn WorkQueue + Send>,
         threads_per_core: usize,
+        cpu_pinning: bool,
+        compute_range: (usize, usize),
     ) -> DandelionResult<()> {
         let cpu_slot = match resource {
             ComputeResource::CPU(core) => core,
@@ -270,7 +272,7 @@ impl Driver for MmuDriver {
         {
             return Err(DandelionError::EngineResourceError);
         }
-        start_thread::<MmuLoop>(cpu_slot, queue, threads_per_core);
+        start_thread::<MmuLoop>(cpu_slot, queue, threads_per_core, cpu_pinning, compute_range);
         return Ok(());
     }
 

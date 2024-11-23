@@ -543,7 +543,9 @@ impl Driver for ReqwestDriver {
         &self,
         resource: ComputeResource,
         queue: Box<dyn WorkQueue + Send>,
-        threads_per_core: usize,
+        _threads_per_core: usize,
+        _cpu_pinning: bool,
+        _compute_range: (usize, usize),
     ) -> DandelionResult<()> {
         log::debug!("Starting hyper engine");
         let core_id = match resource {

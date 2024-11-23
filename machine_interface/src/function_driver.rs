@@ -185,6 +185,8 @@ pub trait Driver: Send + Sync {
         // TODO check out why this can't be impl instead of Box<dyn
         queue: Box<dyn WorkQueue + Send>,
         threads_per_core: usize,
+        cpu_pinning: bool,
+        compute_range: (usize, usize),
     ) -> DandelionResult<()>;
 
     // parses an executable,
