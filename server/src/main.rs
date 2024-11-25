@@ -612,12 +612,6 @@ fn main() -> () {
 
     #[cfg(feature = "controller")]
     let handle = std::thread::spawn(move || {
-        // Set the core affinity for this thread to `dispatcher_core`.
-        if core_affinity::set_for_current(core_affinity::CoreId { id: dispatcher_cores[0].into() }) {
-            println!("Controller runtime successfully bound to core {}", dispatcher_cores[0]);
-        } else {
-            eprintln!("Failed to bind controller runtime to core {}",  dispatcher_cores[0]);
-        }
         controller_runtime.block_on(async {
             controller.monitor_and_allocate().await;
         });
