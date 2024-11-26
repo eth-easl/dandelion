@@ -122,7 +122,7 @@ impl Driver for WasmDriver {
         let sdk_heap_size = call!("get_sdk_heap_size", fn() -> usize);
         let wasm_mem_size = call!("get_wasm_mem_size", fn() -> usize);
 
-        let mut context = static_domain.acquire_context(wasm_mem_size)?;
+        let mut context =  Box::new(static_domain.acquire_context(wasm_mem_size)?);
 
         // there must be one data set, which would normally describe the
         // elf sections to be copied
@@ -142,7 +142,7 @@ impl Driver for WasmDriver {
                 static_requirements: vec![],
                 input_requirements: vec![],
             },
-            context: Arc::new(context),
+            context: Arc::from(context),
         })
     }
 }
