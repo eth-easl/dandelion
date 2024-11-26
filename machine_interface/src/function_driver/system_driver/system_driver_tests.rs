@@ -1,6 +1,5 @@
 #[cfg(all(test, any(feature = "reqwest_io")))]
 mod system_driver_tests {
-    use env_logger;
     use log::debug;
     use crate::{
         function_driver::{
@@ -262,14 +261,12 @@ dolore magna aliquyam erat, sed diam voluptua."#
         ($name : ident; $domain: ty; $dom_init: expr; $driver : expr ; $drv_init : expr ) => {
             #[test]
             fn test_http_get() {    
-                let _ = env_logger::builder().is_test(true).try_init();
                 let driver = Box::new($driver);
                 super::get_http::<$domain>($dom_init, driver, $drv_init);
             }
 
             #[test]
             fn test_http_post() {
-                let _ = env_logger::builder().is_test(true).try_init();
                 let driver = Box::new($driver);
                 super::post_http::<$domain>($dom_init, driver, $drv_init);
             }
