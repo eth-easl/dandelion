@@ -179,14 +179,6 @@ pub trait Driver: Send + Sync {
         queue: Box<dyn WorkQueue + Send>,
     ) -> DandelionResult<()>;
 
-    /// Take the resource described by config and make it into an engine of the type
-    /// without validating against the available cores
-    fn start_engine_unchecked(
-        &self,
-        resource: ComputeResource,
-        queue: Box<dyn WorkQueue + Send>,
-    ) -> DandelionResult<()>;
-
     /// Parses an executable,
     /// returns the layout requirements and a context containing static data,
     /// and a layout description for it

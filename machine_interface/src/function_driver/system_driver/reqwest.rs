@@ -564,19 +564,6 @@ impl Driver for ReqwestDriver {
         return Ok(());
     }
 
-    fn start_engine_unchecked(
-        &self,
-        resource: ComputeResource,
-        queue: Box<dyn WorkQueue + Send>,
-    ) -> DandelionResult<()> {
-        let core_id = match resource {
-            ComputeResource::CPU(core) => core,
-            _ => return Err(DandelionError::EngineResourceError),
-        };
-        std::thread::spawn(move || outer_engine(core_id, queue));
-        return Ok(());
-    }
-
     fn parse_function(
         &self,
         function_path: String,

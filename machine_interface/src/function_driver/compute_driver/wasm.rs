@@ -96,19 +96,6 @@ impl Driver for WasmDriver {
         return Ok(());
     }
 
-    fn start_engine_unchecked(
-        &self,
-        resource: ComputeResource,
-        queue: Box<dyn WorkQueue + Send>,
-    ) -> DandelionResult<()> {
-        let cpu_slot = match resource {
-            ComputeResource::CPU(core) => core,
-            _ => return Err(DandelionError::EngineResourceError),
-        };
-        start_thread::<WasmLoop>(cpu_slot, queue);
-        return Ok(());
-    }
-
     fn parse_function(
         &self,
         function_path: String,

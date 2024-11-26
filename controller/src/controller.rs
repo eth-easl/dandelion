@@ -94,7 +94,7 @@ impl Controller {
                 let drivers = get_available_drivers();
                 if let Some(driver) = drivers.get(&engine_type){
                     let work_queue = self.dispatcher.engine_queues.get(&engine_type).unwrap().clone();
-                    match driver.start_engine_unchecked(resource, work_queue) {
+                    match driver.start_engine(resource, work_queue) {
                         Ok(_) => println!("Allocated core {} to engine type {:?}", core_id, engine_type),
                         Err(e) => println!("Error starting engine: {:?}", e),
                     };

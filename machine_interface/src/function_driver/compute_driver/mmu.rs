@@ -246,19 +246,6 @@ impl Driver for MmuDriver {
         return Ok(());
     }
 
-    fn start_engine_unchecked(
-        &self,
-        resource: ComputeResource,
-        queue: Box<dyn WorkQueue + Send>,
-    ) -> DandelionResult<()> {
-        let cpu_slot = match resource {
-            ComputeResource::CPU(core) => core,
-            _ => return Err(DandelionError::EngineResourceError),
-        };
-        start_thread::<MmuLoop>(cpu_slot, queue);
-        return Ok(());
-    }
-
     // parses an executable,
     // returns the layout requirements and a context containing static data,
     //  and a layout description for it
