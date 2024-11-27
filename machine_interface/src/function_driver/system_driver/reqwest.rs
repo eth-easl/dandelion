@@ -423,6 +423,7 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 };
                 match function {
                     SystemFunction::HTTP => {
+                        // #[cfg(not(feature = "controller"))]
                         tokio::spawn(http_run(
                             context,
                             client.clone(),
@@ -430,6 +431,9 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                             debt,
                             recorder,
                         ));
+
+                        // #[cfg(feature = "controller")]
+                        // http_run(context, client.clone(), output_sets, debt, recorder).await;
                     }
                     #[allow(unreachable_patterns)]
                     _ => {
@@ -532,7 +536,8 @@ fn outer_engine(core_id: u8, queue: Box<dyn WorkQueue + Send>) {
         .or(Err(DandelionError::EngineError))
         .unwrap();
     let debt = runtime.block_on(engine_loop(queue));
-    drop(runtime);
+    runtime.shutdown_timeout(std::time::Duration::from_millis(50));
+    println!("LOG: Shutting down engine on core {}", core_id);
     debt.fulfill(Ok(WorkDone::Resources(vec![ComputeResource::CPU(core_id)])));
 }
 

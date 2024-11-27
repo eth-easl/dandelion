@@ -96,6 +96,16 @@ impl EngineQueue {
         };
     }
 
+    fn get_work_type(&self, work: &WorkToDo) -> String {
+        match work {
+            WorkToDo::FunctionArguments { .. } => "FunctionArguments".to_string(),
+            WorkToDo::TransferArguments { .. } => "TransferArguments".to_string(),
+            WorkToDo::ParsingArguments { .. } => "ParsingArguments".to_string(),
+            WorkToDo::LoadingArguments { .. } => "LoadingArguments".to_string(),
+            WorkToDo::Shutdown() => "Shutdown".to_string(),
+        }
+    }
+
     pub async fn enqueu_work(&self, args: WorkToDo) -> DandelionResult<WorkDone> {
         let (promise, debt) = self.promise_buffer.get_promise()?;
         match self.queue_in.try_send((args, debt)) {
@@ -110,5 +120,9 @@ impl EngineQueue {
 
     pub fn queue_length(&self) -> usize {
         self.queue_out.len()
+    }
+
+    pub fn buffer_size(&self) -> usize {
+        self.promise_buffer.get_buffer_size()
     }
 }

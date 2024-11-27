@@ -99,6 +99,17 @@ impl PromiseBufferInternal {
             }
         }
     }
+
+    fn get_buffer_size(&self) -> usize {
+        let mut current = self.head.load(Ordering::Acquire);
+        let mut count = 0;
+        while !current.is_null() {
+            count += 1;
+            current = unsafe { (*current).next };
+        }
+        let size = self._buffer.len();
+        return size - count;
+    }
 }
 
 #[derive(Clone)]
@@ -133,6 +144,10 @@ impl PromiseBuffer {
             origin: self.internal.clone(),
         };
         return Ok((promise, debt));
+    }
+
+    pub fn get_buffer_size(&self) -> usize {
+        return self.internal.get_buffer_size();
     }
 }
 

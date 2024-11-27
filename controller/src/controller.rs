@@ -8,6 +8,7 @@ use machine_interface::{
 };
 use tokio::time::{sleep, Duration};
 use std::collections::BTreeMap;
+use machine_interface::function_driver::WorkDone;
 
 pub struct Controller {
     pub resource_pool: &'static mut ResourcePool,
@@ -45,6 +46,13 @@ impl Controller {
         print_str = String::new();
         for (engine_type, length) in queue_lengths {
             print_str.push_str(&format!("Engine type: {:?}, Queue length: {:?}; ", engine_type, length));
+        }
+        println!("{}", print_str);
+
+        print_str = String::new();
+        for (engine_type, cores) in self.cpu_core_map.iter() {
+            let buffer_length = self.dispatcher.engine_queues.get(engine_type).unwrap().buffer_size();
+            print_str.push_str(&format!("Engine type: {:?}, Buffer: {:?}; ", engine_type, buffer_length));
         }
         println!("{}", print_str);
     }
@@ -94,8 +102,9 @@ impl Controller {
                 let drivers = get_available_drivers();
                 if let Some(driver) = drivers.get(&engine_type){
                     let work_queue = self.dispatcher.engine_queues.get(&engine_type).unwrap().clone();
+                    let queue_length = work_queue.queue_length();
                     match driver.start_engine(resource, work_queue) {
-                        Ok(_) => println!("Allocated core {} to engine type {:?}", core_id, engine_type),
+                        Ok(_) => println!("Allocated core {} to engine type {:?} when queue size {}", core_id, engine_type, queue_length),
                         Err(e) => println!("Error starting engine: {:?}", e),
                     };
                 }
@@ -112,37 +121,44 @@ impl Controller {
     ) -> bool {
         // Iterate over the engine types to find one to deallocate
         for (engine_type, length) in queue_lengths{
-            if *engine_type == target_engine && *length > avg_load {
+            if *engine_type == target_engine || *length > avg_load {
                 continue;
             }
             
             // Get the cores allocated to this engine type
             if let Some(cores_in_use) = self.cpu_core_map.get(engine_type) {
-                if let Some(&core_id) = cores_in_use.first() {
-                    // Stop the thread running on this core
-                    let shutdown_task = WorkToDo::Shutdown();
-                    let engine_queue = self.dispatcher.engine_queues.get(engine_type).unwrap().clone();
-                    if cores_in_use.len() <= 1 {
-                        continue;
-                    }
-
-                    let _ = engine_queue.enqueu_work(shutdown_task).await;
-
-                    // Remove the core from the cpu_core_map
-                    if let Some(core_list) = self.cpu_core_map.get_mut(engine_type) {
-                        core_list.retain(|&core| core != core_id);
-                    }
-
-                    // Return the core to the resource pool
-                    if let Err(e) = self.resource_pool.release_engine_resource(target_engine, ComputeResource::CPU(core_id)).await {
-                        println!("Error releasing core {} back to the resource pool: {:?}", core_id, e);
-                        continue;
-                    }
-                    println!("Deallocated core {} from engine type {:?}", core_id, engine_type);
-
-                    // Core deallocation successful
-                    return true;
+                // Stop the thread running on this core
+                let shutdown_task = WorkToDo::Shutdown();
+                let engine_queue = self.dispatcher.engine_queues.get(engine_type).unwrap().clone();
+                if cores_in_use.len() <= 1 {
+                    continue;
                 }
+
+                let core_id = match engine_queue.enqueu_work(shutdown_task).await {
+                    Ok(WorkDone::Resources(resources)) => {
+                        if let ComputeResource::CPU(core_id) = resources[0] {
+                            core_id
+                        } else {
+                            continue;
+                        }
+                    },
+                    _ => continue,
+                };
+
+                // Remove the core from the cpu_core_map
+                if let Some(core_list) = self.cpu_core_map.get_mut(engine_type) {
+                    core_list.retain(|&core| core != core_id);
+                }
+
+                // Return the core to the resource pool
+                if let Err(e) = self.resource_pool.release_engine_resource(target_engine, ComputeResource::CPU(core_id)).await {
+                    println!("Error releasing core {} back to the resource pool: {:?}", core_id, e);
+                    continue;
+                }
+                println!("Deallocated core {} from engine type {:?} when queue {}", core_id, engine_type, engine_queue.queue_length());
+
+                // Core deallocation successful
+                return true;
             }
         }
         false // No cores deallocated
