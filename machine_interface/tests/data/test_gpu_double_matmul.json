@@ -1,0 +1,35 @@
+{
+    "modules": [
+        {"module_name": "tem_fused_linear_0.hsaco", "path": "double_matmul/tem_fused_linear_0.hsaco"},
+        {"module_name": "tem_fused_linear_1.hsaco", "path": "double_matmul/tem_fused_linear_1.hsaco"}
+    ],
+    "kernels": [
+        {"module_name": "tem_fused_linear_0.hsaco", "kernel_name": "kern000"},
+        {"module_name": "tem_fused_linear_1.hsaco", "kernel_name": "kern001"}
+    ],
+    "blueprint": {
+        "inputs": ["arg2_1", "linear1_weight", "linear2_weight"],
+        "buffers": {"buf0": {"Absolute": 80}, "buf1": {"Absolute": 48}},
+        "outputs": ["buf1"],
+        "control_flow": [
+            {"ExecKernel": ["kern000", [{"Ptr": "arg2_1"}, {"Ptr": "linear1_weight"}, {"Ptr": "buf0"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 64},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 1024}
+            }]},
+            {"ExecKernel": ["kern001", [{"Ptr": "buf0"}, {"Ptr": "linear2_weight"}, {"Ptr": "buf1"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 64},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 1024}
+            }]}
+        ]
+    }
+}

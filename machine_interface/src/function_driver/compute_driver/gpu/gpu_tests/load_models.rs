@@ -64,6 +64,7 @@ pub fn load_resnet18(mut function_context: Context) -> (usize, String, Vec<f32>,
     add_buffer("layer2_0_downsample_1_running_var", 512, constants_path, &mut function_context);
     add_buffer("layer2_0_downsample_1_weight", 512, constants_path, &mut function_context);
     add_buffer("layer2_0_downsample_1_bias", 512, constants_path, &mut function_context);
+    add_number("var_63", 100352, &mut function_context);
     add_buffer("layer2_1_conv1_weight", 589824, constants_path, &mut function_context);
     add_buffer("layer2_1_bn1_running_mean", 512, constants_path, &mut function_context);
     add_buffer("layer2_1_bn1_running_var", 512, constants_path, &mut function_context);
@@ -94,13 +95,13 @@ pub fn load_resnet18(mut function_context: Context) -> (usize, String, Vec<f32>,
     add_buffer("layer3_1_bn1_running_var", 1024, constants_path, &mut function_context);
     add_buffer("layer3_1_bn1_weight", 1024, constants_path, &mut function_context);
     add_buffer("layer3_1_bn1_bias", 1024, constants_path, &mut function_context);
-    add_number("var_107", 50176, &mut function_context);
+    add_number("var_109", 50176, &mut function_context);
     add_buffer("layer3_1_conv2_weight", 2359296, constants_path, &mut function_context);
     add_buffer("layer3_1_bn2_running_mean", 1024, constants_path, &mut function_context);
     add_buffer("layer3_1_bn2_running_var", 1024, constants_path, &mut function_context);
     add_buffer("layer3_1_bn2_weight", 1024, constants_path, &mut function_context);
     add_buffer("layer3_1_bn2_bias", 1024, constants_path, &mut function_context);
-    add_number("var_117", 50176, &mut function_context);
+    add_number("var_119", 50176, &mut function_context);
     add_buffer("layer4_0_conv1_weight", 4718592, constants_path, &mut function_context);
     add_buffer("layer4_0_bn1_running_mean", 2048, constants_path, &mut function_context);
     add_buffer("layer4_0_bn1_running_var", 2048, constants_path, &mut function_context);
@@ -116,7 +117,7 @@ pub fn load_resnet18(mut function_context: Context) -> (usize, String, Vec<f32>,
     add_buffer("layer4_0_downsample_1_running_var", 2048, constants_path, &mut function_context);
     add_buffer("layer4_0_downsample_1_weight", 2048, constants_path, &mut function_context);
     add_buffer("layer4_0_downsample_1_bias", 2048, constants_path, &mut function_context);
-    add_number("var_141", 25088, &mut function_context);
+    add_number("var_143", 25088, &mut function_context);
     add_buffer("layer4_1_conv1_weight", 9437184, constants_path, &mut function_context);
     add_buffer("layer4_1_bn1_running_mean", 2048, constants_path, &mut function_context);
     add_buffer("layer4_1_bn1_running_var", 2048, constants_path, &mut function_context);
@@ -127,8 +128,8 @@ pub fn load_resnet18(mut function_context: Context) -> (usize, String, Vec<f32>,
     add_buffer("layer4_1_bn2_running_var", 2048, constants_path, &mut function_context);
     add_buffer("layer4_1_bn2_weight", 2048, constants_path, &mut function_context);
     add_buffer("layer4_1_bn2_bias", 2048, constants_path, &mut function_context);
-    add_number("var_159", 512, &mut function_context);
-    add_number("var_160", 49, &mut function_context);
+    add_number("var_161", 512, &mut function_context);
+    add_number("var_162", 49, &mut function_context);
     add_buffer("fc_bias", 4000, constants_path, &mut function_context);
     add_buffer("fc_weight", 2048000, constants_path, &mut function_context);
 

@@ -341,7 +341,9 @@ async fn service(
         | "/cold/compute"
         | "/cold/io"
         | "/cold/inference"
-        | "/cold/inference-batched" => serve_request(true, req, dispatcher).await,
+        | "/cold/inference-batched"
+        | "/cold/double_matmul"
+        | "/cold/lenet5" => serve_request(true, req, dispatcher).await,
         "/cold/chain_scaling" | "/cold/middleware_app" | "/cold/python_app" => {
             serve_request(true, req, dispatcher).await
         }
@@ -350,7 +352,9 @@ async fn service(
         | "/hot/compute"
         | "/hot/io"
         | "/hot/inference"
-        | "/hot/inference-batched" => serve_request(false, req, dispatcher).await,
+        | "/hot/inference-batched"
+        | "/hot/double_matmul"
+        | "/hot/lenet5" => serve_request(false, req, dispatcher).await,
         "/stats" => serve_stats(req).await,
         _ => Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
             format!("Hello, Wor\n").into_bytes(),
@@ -467,6 +471,8 @@ async fn service_loop(request_sender: mpsc::Sender<DispatcherCommand>, port: u16
 }
 
 fn main() -> () {
+    std::env::set_var("RUST_BACKTRACE", "1"); // TODO : remove
+
     // check if there is a configuration file
     let config = dandelion_server::config::DandelionConfig::get_config();
 
