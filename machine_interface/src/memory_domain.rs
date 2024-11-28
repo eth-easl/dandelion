@@ -329,6 +329,15 @@ pub fn transfer_memory(
                 size,
             )
         }
+        (ContextType::System(destination_ctxt), ContextType::System(source_ctxt)) => {
+            system_domain::system_context_transfer(
+                destination_ctxt,
+                source,
+                destination_offset,
+                source_offset,
+                size,
+            )
+        }
         (ContextType::System(destination_ctxt), _) => {
             system_domain::into_system_context_transfer(
                 destination_ctxt,

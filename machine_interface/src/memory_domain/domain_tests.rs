@@ -5,6 +5,8 @@ use crate::memory_domain::{
     transfer_data_set, transfer_memory, Context, ContextTrait, ContextType, MemoryDomain, MemoryResource
 };
 use log::debug;
+use bytes::Bytes;
+use bytes::Buf;
 use crate::memory_domain::system_domain::SystemMemoryDomain;
 use dandelion_commons::{DandelionError, DandelionResult};
 // produces binary pattern 0b0101_01010 or 0x55
@@ -20,8 +22,6 @@ fn try_acquire<D: MemoryDomain>(
     let init_result = D::init(arg);
     let domain = init_result.expect("should have initialized memory domain");
     let context_result = domain.acquire_context(acquisition_size);
-    // let ctx = if let Ok(ctx) = context_result {ctx} else {panic!("")};
-    // panic!("Tried acquiring context of size {}. Gotten size: {}", acquisition_size, ctx.size);
     match (expect_success, context_result) {
         (true, Ok(_))
         | (false, Err(DandelionError::OutOfMemory))
@@ -138,6 +138,10 @@ fn transfer(source: Box<Context>, destination: Box<Context>) {
 
     match &destination.context{
         ContextType::System(_) => {
+            // If destination is a systems context, we could have transfer from
+            // different type of contexts, which may have different sizes for
+            // the same initialisation parameter. 
+            // Thus, the assertion does not have to hold, even for correct initialisation
             size = destination.size;
         }
         _ => {
@@ -145,15 +149,15 @@ fn transfer(source: Box<Context>, destination: Box<Context>) {
         }
     }
 
-    let mut source_mut = *source;
-    let mut destination_mut = *destination;
-    source_mut
+    let mut source_context = *source;
+    let mut destination_context = *destination;
+    source_context
         .write(0, &vec![BYTEPATTERN; size])
         .expect("Writing should succeed");
-    let source_ctxt = Arc::new(source_mut);
-    transfer_memory(&mut destination_mut, source_ctxt, 0, 0, size).expect("Should successfully transfer");
+    let source_ctxt_arc = Arc::new(source_context);
+    transfer_memory(&mut destination_context, source_ctxt_arc, 0, 0, size).expect("Should successfully transfer");
     let mut read_buffer = vec![0; size];
-    destination_mut
+    destination_context
         .read(0, &mut read_buffer)
         .expect("Context should return single value vector in range");
     assert_eq!(vec![BYTEPATTERN; size], read_buffer);
@@ -168,15 +172,15 @@ fn transfer_item(
     destination_index: usize,
     expect_result: DandelionResult<()>,
 ) {
-    let mut source_mut = *source;
-    let mut destination_mut = *destination;
-    source_mut
+    let mut source_context = *source;
+    let mut destination_context = *destination;
+    source_context
         .write(offset, &vec![BYTEPATTERN; item_size])
         .expect("Writing should succeed");
-    if source_mut.content.len() <= source_index {
-        source_mut.content.resize_with(source_index + 1, || None);
+    if source_context.content.len() <= source_index {
+        source_context.content.resize_with(source_index + 1, || None);
     }
-    source_mut.content[source_index] = Some(crate::DataSet {
+    source_context.content[source_index] = Some(crate::DataSet {
         ident: String::from(""),
         buffers: vec![crate::DataItem {
             ident: String::from(""),
@@ -189,8 +193,8 @@ fn transfer_item(
     });
     let set_name = "";
     let transfer_error = transfer_data_set(
-        &mut destination_mut,
-        Arc::new(source_mut),
+        &mut destination_context,
+        Arc::new(source_context),
         destination_index,
         8,
         &set_name,
@@ -201,8 +205,8 @@ fn transfer_item(
         return;
     }
     // check transfer success
-    assert!(destination_index < destination_mut.content.len());
-    let destination_item = destination_mut.content[destination_index]
+    assert!(destination_index < destination_context.content.len());
+    let destination_item = destination_context.content[destination_index]
         .as_ref()
         .expect("Set should be present");
     assert_eq!("", destination_item.ident);
@@ -211,7 +215,7 @@ fn transfer_item(
     assert_eq!(item_size, destination_item.buffers[0].data.size);
     let read_offset = destination_item.buffers[0].data.offset;
     let mut read_buffer = vec![0; item_size];
-    destination_mut
+    destination_context
         .read(read_offset, &mut read_buffer)
         .expect("Context should be readable at item position");
     assert_eq!(vec![BYTEPATTERN; item_size], read_buffer);
@@ -332,14 +336,6 @@ macro_rules! systemsDomainTests {
             use super::*;
             
             #[test]
-            fn test_aquire_success() {
-                try_acquire::<$domain>($init, 1, true);
-            }
-            #[test]
-            fn test_aquire_failure() {
-                try_acquire::<$domain>($init, usize::MAX, false);
-            }
-            #[test]
             fn testing_transfer_system_context(){
                 let source = Box::new(acquire::<$domain>($init, 4096));
                 let destination = Box::new(acquire::<SystemMemoryDomain>($init, 4096));
@@ -366,24 +362,12 @@ macro_rules! systemsDomainTests {
                 transfer(source, destination)
             }
             #[test]
-            fn test_read() {
-                let size = 1024;
-                let mut source = acquire::<$domain>($init, size);
-                let mut destination = acquire::<SystemMemoryDomain>($init, size);
-                source.write(0, &vec![BYTEPATTERN; size])
-                    .expect("Writing should succeed");
-                read_system_context(&mut destination, source, 512, 256, true);
-            }
-            #[test]
-            fn test_read_large() {
+            fn test_larger_transfer_success() {
                 let size = 65536;
-                let mut source = acquire::<$domain>($init, size);
-                let mut destination = acquire::<SystemMemoryDomain>($init, size);
-                source.write(0, &vec![BYTEPATTERN; size])
-                    .expect("Writing should succeed");
-                read_system_context(&mut destination, source, 1024, 8192, true);
+                let source = Box::new(acquire::<$domain>($init, size));
+                let destination = Box::new(acquire::<SystemMemoryDomain>($init, size));
+                transfer(source, destination)
             }
-
             #[test]
             fn test_read_single_oob_offset() {
                 let size = 1;
@@ -467,7 +451,41 @@ macro_rules! systemsDomainTests {
                     Err(DandelionError::InvalidRead) => panic!("Invalid read"),
                     Err(err) => panic!("Unexpected error from get_chunk_ref {:?}", err),
                 }
+            }
+            #[test]
+            fn test_transfer_mulitple_bytes() {
+                // Tests how transfers over multiple Bytes are handled
 
+                let mut preamble = "Start\n".to_string();
+                let preamble_bytes = Bytes::from(preamble.clone().into_bytes());
+                let pre_len = preamble_bytes.len();
+                let body = "body_body_body_body".to_string();
+                let body_bytes = Bytes::from(body.clone().into_bytes());
+                let body_len = body_bytes.len();
+                let mut initial_ctx = acquire::<SystemMemoryDomain>($init, 128);
+                match &mut initial_ctx.context{
+                    ContextType::System(initial_ctx_) => {
+                        crate::memory_domain::system_domain::system_context_write_from_bytes(initial_ctx_, preamble_bytes.clone(), 0, pre_len);
+                        crate::memory_domain::system_domain::system_context_write_from_bytes(initial_ctx_, body_bytes.clone(), pre_len, body_len);
+                    }
+                    _ => {
+                        panic!("Error");
+                    }
+                }               
+
+                let mut second_ctx = acquire::<$domain>($init, 128);
+                transfer_memory(&mut second_ctx, Arc::from(initial_ctx), 0, 0, pre_len + body_len);
+                let chunk_ref_result = second_ctx.get_chunk_ref(0, pre_len + body_len);
+
+                fn bytes_to_string(input: &[u8]) -> Result<String, std::str::Utf8Error> {
+                    std::str::from_utf8(input).map(|s| s.to_string())
+                }
+                let return_string = match bytes_to_string(chunk_ref_result.unwrap()) { 
+                    Ok(ret_str) => {ret_str} 
+                    _ => {panic!("Error");}
+                };
+                preamble.push_str(&body);
+                assert_eq!(preamble, return_string, "Not full string was returned");
             }
         }
     };

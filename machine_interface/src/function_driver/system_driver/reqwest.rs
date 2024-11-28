@@ -293,12 +293,10 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
     // allocate space in the context for the entire response
     let response_start = context.get_free_space(response_len, 128)?;
 
-    // debug!("Length of body in http_context_write is {}. Preamble has length {}", body_len, preamble_len);
-
     match &mut context.context {
         ContextType::System(destination_ctxt) => {
             let preamble_bytes = bytes::Bytes::from(preamble.into_bytes());
-            system_context_write_from_bytes(destination_ctxt, preamble_bytes.clone(), response_start, preamble_len);
+            system_context_write_from_bytes(destination_ctxt, preamble_bytes, response_start, preamble_len);
             system_context_write_from_bytes(destination_ctxt, body.clone(), response_start + preamble_len, body_len);
         }
         _ => {

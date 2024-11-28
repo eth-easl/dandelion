@@ -47,11 +47,8 @@ mod system_driver_tests {
 
     fn write_request(context: &mut Context, request: Vec<u8>) -> DandelionResult<()> {
         
-        let mmap_domain = if let Ok(dom) = MmapMemoryDomain::init(MemoryResource::None) {
-            dom
-        } else {
-            panic!("Domain error")
-        };
+        let mmap_domain = MmapMemoryDomain::init(MemoryResource::None)
+            .expect("Failed to initialize MmapMemoryDomain: Domain Error");
         let mut mmap_context = mmap_domain.acquire_context(_CONTEXT_SIZE).expect("Should be able to get context");
                 
         let request_length = request.len();
@@ -162,9 +159,6 @@ mod system_driver_tests {
             .iter()
             .find(|set_opt| {
                 if let Some(set) = set_opt {
-                    // debug!("Found set with ident = body. Buffer has size {}, 
-                    //     and first item has offset and length {}, {}",
-                    // set.buffers.len(), set.buffers[0].data.offset, set.buffers[0].data.size);
                     return set.ident == "body";
                 } else {
                     return false;
