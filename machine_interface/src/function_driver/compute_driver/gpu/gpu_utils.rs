@@ -205,6 +205,7 @@ struct Worker {
 impl Worker {
     fn new(core_id: u8, gpu_id: u8, worker_count: u8) -> Self {
         // this trick gives the desired path of mmu_worker for packages within the workspace
+        // Note: the gpu_worker binary required is assumed to be present (look at README.md)
         let path = std::env::var("PROCESS_WORKER_PATH").unwrap_or(format!(
             "{}/../target/{}-unknown-linux-gnu/{}/gpu_worker",
             env!("CARGO_MANIFEST_DIR"),

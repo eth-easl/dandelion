@@ -471,8 +471,6 @@ async fn service_loop(request_sender: mpsc::Sender<DispatcherCommand>, port: u16
 }
 
 fn main() -> () {
-    std::env::set_var("RUST_BACKTRACE", "1"); // TODO : remove
-
     // check if there is a configuration file
     let config = dandelion_server::config::DandelionConfig::get_config();
 
