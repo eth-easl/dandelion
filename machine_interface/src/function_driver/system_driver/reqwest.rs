@@ -1,3 +1,4 @@
+use crate::memory_domain::{system_domain::system_context_write_from_bytes, ContextType};
 use crate::{
     function_driver::{
         ComputeResource, Driver, Function, FunctionConfig, SystemFunction, WorkDone, WorkQueue,
@@ -7,7 +8,6 @@ use crate::{
     promise::Debt,
     DataItem, DataSet, Position,
 };
-use log::debug;
 use bytes::Buf;
 use core_affinity::set_for_current;
 use dandelion_commons::{
@@ -17,11 +17,9 @@ use dandelion_commons::{
 use futures::StreamExt;
 use http::{version::Version, HeaderName, HeaderValue, Method};
 use log::error;
-use log::warn;
 use reqwest::{header::HeaderMap, Client};
 use std::sync::Arc;
 use tokio::runtime::Builder;
-use crate::memory_domain::{system_domain::system_context_write_from_bytes, ContextType};
 
 struct RequestInformation {
     /// name of the request item
@@ -286,7 +284,7 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
         preamble,
         mut body,
     } = response;
-    
+
     let preamble_len = preamble.len();
     let body_len = body.len();
     let response_len = preamble_len + body_len;
@@ -296,8 +294,18 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
     match &mut context.context {
         ContextType::System(destination_ctxt) => {
             let preamble_bytes = bytes::Bytes::from(preamble.into_bytes());
-            system_context_write_from_bytes(destination_ctxt, preamble_bytes, response_start, preamble_len);
-            system_context_write_from_bytes(destination_ctxt, body.clone(), response_start + preamble_len, body_len);
+            system_context_write_from_bytes(
+                destination_ctxt,
+                preamble_bytes,
+                response_start,
+                preamble_len,
+            );
+            system_context_write_from_bytes(
+                destination_ctxt,
+                body.clone(),
+                response_start + preamble_len,
+                body_len,
+            );
         }
         _ => {
             context.write(response_start, preamble.as_bytes())?;
@@ -316,7 +324,7 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
             );
         }
     }
-    
+
     if let Some(response_set) = &mut context.content[0] {
         response_set.buffers.push(DataItem {
             ident: item_name.clone(),

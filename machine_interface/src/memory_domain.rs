@@ -332,7 +332,7 @@ pub fn transfer_memory(
         (ContextType::System(destination_ctxt), ContextType::System(source_ctxt)) => {
             system_domain::system_context_transfer(
                 destination_ctxt,
-                source,
+                &source_ctxt,
                 destination_offset,
                 source_offset,
                 size,
@@ -350,7 +350,7 @@ pub fn transfer_memory(
         (_, ContextType::System(source_ctxt)) => {
             system_domain::out_of_system_context_transfer(
                 destination,
-                source,
+                &source_ctxt,
                 destination_offset,
                 source_offset,
                 size,

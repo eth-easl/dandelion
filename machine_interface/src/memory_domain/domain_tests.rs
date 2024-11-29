@@ -1,14 +1,11 @@
-use std::vec;
+use crate::memory_domain::{
+    system_domain::SystemMemoryDomain, transfer_data_set, transfer_memory, Context, ContextTrait,
+    ContextType, MemoryDomain, MemoryResource,
+};
+use bytes::Bytes;
+use dandelion_commons::{DandelionError, DandelionResult};
 use std::sync::Arc;
 
-use crate::memory_domain::{
-    transfer_data_set, transfer_memory, Context, ContextTrait, ContextType, MemoryDomain, MemoryResource
-};
-use log::debug;
-use bytes::Bytes;
-use bytes::Buf;
-use crate::memory_domain::system_domain::SystemMemoryDomain;
-use dandelion_commons::{DandelionError, DandelionResult};
 // produces binary pattern 0b0101_01010 or 0x55
 const BYTEPATTERN: u8 = 85;
 
@@ -78,7 +75,13 @@ fn read(ctx: &mut Context, offset: usize, size: usize, expect_success: bool) {
     }
 }
 
-fn read_system_context(system_ctx: &mut Context, base_ctx: Context, offset: usize, size: usize, expect_success: bool) {
+fn read_system_context(
+    system_ctx: &mut Context,
+    base_ctx: Context,
+    offset: usize,
+    size: usize,
+    expect_success: bool,
+) {
     let _ = transfer_memory(system_ctx, Arc::from(base_ctx), 0, 0, system_ctx.size);
 
     let mut read_buffer = vec![0; size];
@@ -111,7 +114,13 @@ fn get_chunks(ctx: &mut Context, offset: usize, size: usize, expect_success: boo
     }
 }
 
-fn get_chunks_system_context(system_ctx: &mut Context, base_ctx: Context, offset: usize, size: usize, expect_success: bool) {
+fn get_chunks_system_context(
+    system_ctx: &mut Context,
+    base_ctx: Context,
+    offset: usize,
+    size: usize,
+    expect_success: bool,
+) {
     let _ = transfer_memory(system_ctx, Arc::from(base_ctx), 0, 0, system_ctx.size);
 
     let mut total_read = 0usize;
@@ -130,17 +139,17 @@ fn get_chunks_system_context(system_ctx: &mut Context, base_ctx: Context, offset
 }
 
 fn transfer(source: Box<Context>, destination: Box<Context>) {
-    // If destination is a context, we assume that they are both 
+    // If destination is a context, we assume that they are both
     // initialised to the same size. This is because context may be larger
     // than their requested size
 
     let mut size = source.size;
 
-    match &destination.context{
+    match &destination.context {
         ContextType::System(_) => {
             // If destination is a systems context, we could have transfer from
             // different type of contexts, which may have different sizes for
-            // the same initialisation parameter. 
+            // the same initialisation parameter.
             // Thus, the assertion does not have to hold, even for correct initialisation
             size = destination.size;
         }
@@ -155,7 +164,8 @@ fn transfer(source: Box<Context>, destination: Box<Context>) {
         .write(0, &vec![BYTEPATTERN; size])
         .expect("Writing should succeed");
     let source_ctxt_arc = Arc::new(source_context);
-    transfer_memory(&mut destination_context, source_ctxt_arc, 0, 0, size).expect("Should successfully transfer");
+    transfer_memory(&mut destination_context, source_ctxt_arc, 0, 0, size)
+        .expect("Should successfully transfer");
     let mut read_buffer = vec![0; size];
     destination_context
         .read(0, &mut read_buffer)
@@ -178,7 +188,9 @@ fn transfer_item(
         .write(offset, &vec![BYTEPATTERN; item_size])
         .expect("Writing should succeed");
     if source_context.content.len() <= source_index {
-        source_context.content.resize_with(source_index + 1, || None);
+        source_context
+            .content
+            .resize_with(source_index + 1, || None);
     }
     source_context.content[source_index] = Some(crate::DataSet {
         ident: String::from(""),
@@ -310,7 +322,7 @@ macro_rules! domainTests {
                 let destination = Box::new(acquire::<$domain>($init, 4096));
                 transfer_item(source, destination, 0, 128, 1, 2, Ok(()));
             }
-            
+
             // TODO
             // #[test]
             // fn test_transfer_dataitem_set() {
@@ -334,9 +346,9 @@ macro_rules! systemsDomainTests {
     ($name : ident ; $domain : ty ; $init : expr) => {
         mod $name {
             use super::*;
-            
+
             #[test]
-            fn testing_transfer_system_context(){
+            fn testing_transfer_system_context() {
                 let source = Box::new(acquire::<$domain>($init, 4096));
                 let destination = Box::new(acquire::<SystemMemoryDomain>($init, 4096));
                 transfer_item(source, destination, 0, 128, 1, 2, Ok(()));
@@ -373,7 +385,8 @@ macro_rules! systemsDomainTests {
                 let size = 1;
                 let mut source = acquire::<$domain>($init, size);
                 let mut destination = acquire::<SystemMemoryDomain>($init, size);
-                source.write(0, &vec![BYTEPATTERN; size])
+                source
+                    .write(0, &vec![BYTEPATTERN; size])
                     .expect("Writing should succeed");
                 read_system_context(&mut destination, source, size, 1, false);
             }
@@ -382,7 +395,8 @@ macro_rules! systemsDomainTests {
                 let size = 1;
                 let mut source = acquire::<$domain>($init, size);
                 let mut destination = acquire::<SystemMemoryDomain>($init, size);
-                source.write(0, &vec![BYTEPATTERN; size])
+                source
+                    .write(0, &vec![BYTEPATTERN; size])
                     .expect("Writing should succeed");
                 read_system_context(&mut destination, source, 0, size + 1, false);
             }
@@ -391,8 +405,8 @@ macro_rules! systemsDomainTests {
                 let size = 1;
                 let mut source = acquire::<$domain>($init, size);
                 let mut destination = acquire::<SystemMemoryDomain>($init, size);
-                let expected_success = true;
-                source.write(0, &vec![BYTEPATTERN; size])
+                source
+                    .write(0, &vec![BYTEPATTERN; size])
                     .expect("Writing should succeed");
                 get_chunks_system_context(&mut destination, source, 0, 1, true);
             }
@@ -401,8 +415,8 @@ macro_rules! systemsDomainTests {
                 let size = 1;
                 let mut source = acquire::<$domain>($init, size);
                 let mut destination = acquire::<SystemMemoryDomain>($init, size);
-                let expected_success = false;
-                source.write(0, &vec![BYTEPATTERN; size])
+                source
+                    .write(0, &vec![BYTEPATTERN; size])
                     .expect("Writing should succeed");
                 get_chunks_system_context(&mut destination, source, size, 1, false);
             }
@@ -411,8 +425,8 @@ macro_rules! systemsDomainTests {
                 let size = 1;
                 let mut source = acquire::<$domain>($init, size);
                 let mut destination = acquire::<SystemMemoryDomain>($init, size);
-                let expected_success = false;
-                source.write(0, &vec![BYTEPATTERN; size])
+                source
+                    .write(0, &vec![BYTEPATTERN; size])
                     .expect("Writing should succeed");
                 get_chunks_system_context(&mut destination, source, 0, size + 1, false);
             }
@@ -421,28 +435,28 @@ macro_rules! systemsDomainTests {
                 let size = 12288;
                 let mut source = acquire::<$domain>($init, size);
                 let mut destination = acquire::<SystemMemoryDomain>($init, size);
-                let expected_success = true;
-                source.write(0, &vec![BYTEPATTERN; size])
+                source
+                    .write(0, &vec![BYTEPATTERN; size])
                     .expect("Writing should succeed");
-                get_chunks_system_context(&mut destination, source, 2048, 8192, expected_success);
+                get_chunks_system_context(&mut destination, source, 2048, 8192, true);
             }
             #[test]
-            fn test_fragmented_items_get_chunk_success(){
+            fn test_fragmented_items_get_chunk_success() {
                 // Here we test how the get_chunk function handles fractured memory
                 let size = 1024;
                 let mut source1 = acquire::<$domain>($init, size);
                 let mut source2 = acquire::<$domain>($init, size);
                 let mut system_ctx = acquire::<SystemMemoryDomain>($init, size);
-                let expected_success = true;
-                source1.write(0, &vec![BYTEPATTERN; size])
+                source1
+                    .write(0, &vec![BYTEPATTERN; size])
                     .expect("Writing should succeed");
-                source2.write(0, &vec![BYTEPATTERN+1; size])
+                source2
+                    .write(0, &vec![BYTEPATTERN + 1; size])
                     .expect("Writing should succeed");
 
                 let _ = transfer_memory(&mut system_ctx, Arc::from(source1), 0, 0, 128);
                 let _ = transfer_memory(&mut system_ctx, Arc::from(source2), 128, 0, 128);
 
-                let mut total_read = 0usize;
                 let chunk_ref_result = system_ctx.get_chunk_ref(0, 256);
                 match chunk_ref_result {
                     Ok(chunk_ref) => {
@@ -463,26 +477,45 @@ macro_rules! systemsDomainTests {
                 let body_bytes = Bytes::from(body.clone().into_bytes());
                 let body_len = body_bytes.len();
                 let mut initial_ctx = acquire::<SystemMemoryDomain>($init, 128);
-                match &mut initial_ctx.context{
+                match &mut initial_ctx.context {
                     ContextType::System(initial_ctx_) => {
-                        crate::memory_domain::system_domain::system_context_write_from_bytes(initial_ctx_, preamble_bytes.clone(), 0, pre_len);
-                        crate::memory_domain::system_domain::system_context_write_from_bytes(initial_ctx_, body_bytes.clone(), pre_len, body_len);
+                        crate::memory_domain::system_domain::system_context_write_from_bytes(
+                            initial_ctx_,
+                            preamble_bytes.clone(),
+                            0,
+                            pre_len,
+                        );
+                        crate::memory_domain::system_domain::system_context_write_from_bytes(
+                            initial_ctx_,
+                            body_bytes.clone(),
+                            pre_len,
+                            body_len,
+                        );
                     }
                     _ => {
                         panic!("Error");
                     }
-                }               
+                }
 
                 let mut second_ctx = acquire::<$domain>($init, 128);
-                transfer_memory(&mut second_ctx, Arc::from(initial_ctx), 0, 0, pre_len + body_len);
+                transfer_memory(
+                    &mut second_ctx,
+                    Arc::from(initial_ctx),
+                    0,
+                    0,
+                    pre_len + body_len,
+                )
+                .expect("Transfer expected to be valid");
                 let chunk_ref_result = second_ctx.get_chunk_ref(0, pre_len + body_len);
 
                 fn bytes_to_string(input: &[u8]) -> Result<String, std::str::Utf8Error> {
                     std::str::from_utf8(input).map(|s| s.to_string())
                 }
-                let return_string = match bytes_to_string(chunk_ref_result.unwrap()) { 
-                    Ok(ret_str) => {ret_str} 
-                    _ => {panic!("Error");}
+                let return_string = match bytes_to_string(chunk_ref_result.unwrap()) {
+                    Ok(ret_str) => ret_str,
+                    _ => {
+                        panic!("Error");
+                    }
                 };
                 preamble.push_str(&body);
                 assert_eq!(preamble, return_string, "Not full string was returned");
@@ -502,21 +535,18 @@ use super::cheri::CheriMemoryDomain as cheriType;
 #[cfg(feature = "cheri")]
 domainTests!(cheri; cheriType; MemoryResource::None);
 #[cfg(feature = "cheri")]
-systemsDomainTests!(cheriSystem; cheriType; MemoryResource::None);
+systemsDomainTests!(cheri_system; cheriType; MemoryResource::None);
 
 #[cfg(feature = "mmu")]
 use super::mmu::MmuMemoryDomain as mmuType;
 #[cfg(feature = "mmu")]
 domainTests!(mmu; mmuType; MemoryResource::None);
 #[cfg(feature = "mmu")]
-systemsDomainTests!(mmuSystem; mmuType; MemoryResource::None);
+systemsDomainTests!(mmu_system; mmuType; MemoryResource::None);
 
 #[cfg(feature = "wasm")]
 use super::wasm::WasmMemoryDomain as wasmType;
 #[cfg(feature = "wasm")]
 domainTests!(wasm; wasmType; MemoryResource::None);
 #[cfg(feature = "wasm")]
-systemsDomainTests!(wasmSystem; wasmType; MemoryResource::None);
-
-// use super::system_domain::SystemMemoryDomain as systemType;
-// domainTests!(system_domain; systemType; MemoryResource::None);
+systemsDomainTests!(wasm_system; wasmType; MemoryResource::None);
