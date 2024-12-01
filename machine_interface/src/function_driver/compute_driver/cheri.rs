@@ -150,7 +150,7 @@ impl Driver for CheriDriver {
         context.content = vec![Some(new_content)];
         return Ok(Function {
             requirements,
-            context,
+            context: Arc::new(context),
             config,
         });
     }

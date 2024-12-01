@@ -1,3 +1,4 @@
+use crate::memory_domain::{system_domain::system_context_write_from_bytes, ContextType};
 use crate::{
     function_driver::{
         ComputeResource, Driver, Function, FunctionConfig, SystemFunction, WorkDone, WorkQueue,
@@ -284,25 +285,46 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
         mut body,
     } = response;
 
-    // allocate space in the context for the entire response
-    let preable_len = preamble.len();
+    let preamble_len = preamble.len();
     let body_len = body.len();
-    let response_len = preable_len + body_len;
+    let response_len = preamble_len + body_len;
+    // allocate space in the context for the entire response
     let response_start = context.get_free_space(response_len, 128)?;
-    context.write(response_start, preamble.as_bytes())?;
-    let mut bytes_read = 0;
-    while bytes_read < body_len {
-        let chunk = body.chunk();
-        let reading = chunk.len();
-        context.write(response_start + preable_len + bytes_read, chunk)?;
-        body.advance(reading);
-        bytes_read += reading;
+
+    match &mut context.context {
+        ContextType::System(destination_ctxt) => {
+            let preamble_bytes = bytes::Bytes::from(preamble.into_bytes());
+            system_context_write_from_bytes(
+                destination_ctxt,
+                preamble_bytes,
+                response_start,
+                preamble_len,
+            );
+            system_context_write_from_bytes(
+                destination_ctxt,
+                body.clone(),
+                response_start + preamble_len,
+                body_len,
+            );
+        }
+        _ => {
+            context.write(response_start, preamble.as_bytes())?;
+            let mut bytes_read = 0;
+            while bytes_read < body_len {
+                let chunk = body.chunk();
+                let reading = chunk.len();
+                context.write(response_start + preamble_len + bytes_read, chunk)?;
+                body.advance(reading);
+                bytes_read += reading;
+            }
+            assert_eq!(
+                0,
+                body.remaining(),
+                "Body should have non remaining as we have read the amount given as len in the beginning"
+            );
+        }
     }
-    assert_eq!(
-        0,
-        body.remaining(),
-        "Body should have non remaining as we have read the amount given as len in the beginning"
-    );
+
     if let Some(response_set) = &mut context.content[0] {
         response_set.buffers.push(DataItem {
             ident: item_name.clone(),
@@ -318,8 +340,8 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
             ident: item_name,
             key: item_key,
             data: Position {
-                offset: response_start + preable_len,
-                size: response_len - preable_len,
+                offset: response_start + preamble_len,
+                size: response_len - preamble_len,
             },
         })
     }
@@ -354,9 +376,11 @@ async fn http_run(
             return;
         }
     };
+    // warn!("http_run with response_vec of length {}", response_vec.len());
 
     // only clear once for all requests
     context.clear_metadata();
+
     if !output_set_names.is_empty() {
         context.content = vec![None, None];
         if output_set_names.iter().any(|elem| elem == "response") {
@@ -458,7 +482,7 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 }
                 let transfer_result = memory_domain::transfer_data_item(
                     &mut destination,
-                    &source,
+                    source,
                     destination_set_index,
                     destination_allignment,
                     destination_item_index,
@@ -581,7 +605,7 @@ impl Driver for ReqwestDriver {
                 input_requirements: vec![],
                 static_requirements: vec![],
             },
-            context: static_domain.acquire_context(0)?,
+            context: Arc::new(static_domain.acquire_context(0)?),
             config: FunctionConfig::SysConfig(SystemFunction::HTTP),
         });
     }

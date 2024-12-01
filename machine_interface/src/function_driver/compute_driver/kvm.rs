@@ -226,7 +226,7 @@ impl Driver for KvmDriver {
         context.content = vec![Some(new_content)];
         return Ok(Function {
             requirements,
-            context,
+            context: Arc::new(context),
             config,
         });
     }
