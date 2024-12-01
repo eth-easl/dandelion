@@ -1,10 +1,12 @@
 use crate::memory_domain::{
-    system_domain::SystemMemoryDomain, transfer_data_set, transfer_memory, Context, ContextTrait,
+    test_resource::get_resource, transfer_data_set, transfer_memory, Context, ContextTrait,
     ContextType, MemoryDomain, MemoryResource,
 };
-use bytes::Bytes;
-use dandelion_commons::{DandelionError, DandelionResult};
+use dandelion_commons::{DandelionError, DandelionResult, DomainError};
 use std::sync::Arc;
+
+#[cfg(any(feature = "cheri", feature = "mmu", feature = "wasm"))]
+use crate::memory_domain::system_domain::SystemMemoryDomain;
 
 // produces binary pattern 0b0101_01010 or 0x55
 const BYTEPATTERN: u8 = 85;
@@ -16,13 +18,14 @@ fn try_acquire<D: MemoryDomain>(
     acquisition_size: usize,
     expect_success: bool,
 ) {
-    let init_result = D::init(arg);
+    let resource = get_resource(arg);
+    let init_result = D::init(resource);
     let domain = init_result.expect("should have initialized memory domain");
     let context_result = domain.acquire_context(acquisition_size);
     match (expect_success, context_result) {
         (true, Ok(_))
         | (false, Err(DandelionError::OutOfMemory))
-        | (false, Err(DandelionError::InvalidMemorySize))
+        | (false, Err(DandelionError::DomainError(DomainError::InvalidMemorySize)))
         | (false, Err(DandelionError::MemoryAllocationError)) => assert!(true),
         (false, Ok(_)) => assert!(
             false,
@@ -40,7 +43,8 @@ fn try_acquire<D: MemoryDomain>(
 /// Acquire a context with a given size and return it. Will panic if the
 /// context cannot be acquired.
 fn acquire<D: MemoryDomain>(arg: MemoryResource, size: usize) -> Context {
-    let domain = init_domain::<D>(arg);
+    let resource = get_resource(arg);
+    let domain = init_domain::<D>(resource);
     let context = domain
         .acquire_context(size)
         .expect("Context should be allocatable");
@@ -48,7 +52,8 @@ fn acquire<D: MemoryDomain>(arg: MemoryResource, size: usize) -> Context {
 }
 
 fn init_domain<D: MemoryDomain>(arg: MemoryResource) -> Box<dyn MemoryDomain> {
-    let init_result = D::init(arg);
+    let resource = get_resource(arg);
+    let init_result = D::init(resource);
     let domain = init_result.expect("memory domain should have been initialized");
     return domain;
 }
@@ -75,6 +80,7 @@ fn read(ctx: &mut Context, offset: usize, size: usize, expect_success: bool) {
     }
 }
 
+#[cfg(any(feature = "cheri", feature = "mmu", feature = "wasm"))]
 fn read_system_context(
     system_ctx: &mut Context,
     base_ctx: Context,
@@ -114,6 +120,7 @@ fn get_chunks(ctx: &mut Context, offset: usize, size: usize, expect_success: boo
     }
 }
 
+#[cfg(any(feature = "cheri", feature = "mmu", feature = "wasm"))]
 fn get_chunks_system_context(
     system_ctx: &mut Context,
     base_ctx: Context,
@@ -342,6 +349,7 @@ macro_rules! domainTests {
 //     transfer_item(source, destination, 0, 128, 1, 2, Ok(()));
 // }
 
+#[cfg(any(feature = "cheri", feature = "mmu", feature = "wasm"))]
 macro_rules! systemsDomainTests {
     ($name : ident ; $domain : ty ; $init : expr) => {
         mod $name {
@@ -469,12 +477,11 @@ macro_rules! systemsDomainTests {
             #[test]
             fn test_transfer_mulitple_bytes() {
                 // Tests how transfers over multiple Bytes are handled
-
                 let mut preamble = "Start\n".to_string();
-                let preamble_bytes = Bytes::from(preamble.clone().into_bytes());
+                let preamble_bytes = bytes::Bytes::from(preamble.clone().into_bytes());
                 let pre_len = preamble_bytes.len();
                 let body = "body_body_body_body".to_string();
-                let body_bytes = Bytes::from(body.clone().into_bytes());
+                let body_bytes = bytes::Bytes::from(body.clone().into_bytes());
                 let body_len = body_bytes.len();
                 let mut initial_ctx = acquire::<SystemMemoryDomain>($init, 128);
                 match &mut initial_ctx.context {
@@ -528,7 +535,7 @@ use super::malloc::MallocMemoryDomain as mallocType;
 domainTests!(malloc; mallocType; MemoryResource::None);
 
 use super::mmap::MmapMemoryDomain as mmapType;
-domainTests!(mmap; mmapType; MemoryResource::None);
+domainTests!(mmap; mmapType; MemoryResource::Anonymous { size: (2<<22) });
 
 #[cfg(feature = "cheri")]
 use super::cheri::CheriMemoryDomain as cheriType;
@@ -540,13 +547,13 @@ systemsDomainTests!(cheri_system; cheriType; MemoryResource::None);
 #[cfg(feature = "mmu")]
 use super::mmu::MmuMemoryDomain as mmuType;
 #[cfg(feature = "mmu")]
-domainTests!(mmu; mmuType; MemoryResource::None);
+domainTests!(mmu; mmuType; MemoryResource::Shared { id: 0, size: (2<<22) });
 #[cfg(feature = "mmu")]
-systemsDomainTests!(mmu_system; mmuType; MemoryResource::None);
+systemsDomainTests!(mmu_system; mmuType; MemoryResource::Shared {id: 0, size: (2<<22)});
 
 #[cfg(feature = "wasm")]
 use super::wasm::WasmMemoryDomain as wasmType;
 #[cfg(feature = "wasm")]
-domainTests!(wasm; wasmType; MemoryResource::None);
+domainTests!(wasm; wasmType; MemoryResource::Anonymous { size: (2<<22) });
 #[cfg(feature = "wasm")]
-systemsDomainTests!(wasm_system; wasmType; MemoryResource::None);
+systemsDomainTests!(wasm_system; wasmType; MemoryResource::Anonymous{size: (2<<22)});

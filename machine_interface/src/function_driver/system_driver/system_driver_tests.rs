@@ -6,8 +6,8 @@ mod system_driver_tests {
             Driver, FunctionConfig, SystemFunction, WorkToDo,
         },
         memory_domain::{
-            mmap::MmapMemoryDomain, transfer_memory, Context, ContextTrait, MemoryDomain,
-            MemoryResource,
+            mmap::MmapMemoryDomain, test_resource::get_resource, transfer_memory, Context,
+            ContextTrait, MemoryDomain, MemoryResource,
         },
         DataItem, DataSet, Position,
     };
@@ -45,7 +45,7 @@ mod system_driver_tests {
     }
 
     fn write_request(context: &mut Context, request: Vec<u8>) -> DandelionResult<()> {
-        let mmap_domain = MmapMemoryDomain::init(MemoryResource::None)
+        let mmap_domain = MmapMemoryDomain::init(MemoryResource::Anonymous { size: (1 << 22) })
             .expect("Failed to initialize MmapMemoryDomain: Domain Error");
         let mut mmap_context = mmap_domain
             .acquire_context(_CONTEXT_SIZE)
@@ -106,7 +106,7 @@ mod system_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: ComputeResource,
     ) -> () {
-        let domain = Dom::init(dom_init).expect("Should be able to get domain");
+        let domain = Dom::init(get_resource(dom_init)).expect("Should be able to get domain");
         let queue = Box::new(TestQueue::new());
         let mut context = domain
             .acquire_context(_CONTEXT_SIZE)
@@ -190,7 +190,7 @@ mod system_driver_tests {
         drv_init: ComputeResource,
     ) -> () {
         let queue = Box::new(TestQueue::new());
-        let domain = Dom::init(dom_init).expect("Should be able to get domain");
+        let domain = Dom::init(get_resource(dom_init)).expect("Should be able to get domain");
         let mut context = domain
             .acquire_context(_CONTEXT_SIZE)
             .expect("Should be able to get context");
@@ -285,6 +285,6 @@ dolore magna aliquyam erat, sed diam voluptua."#
         // use crate::memory_domain::malloc::MallocMemoryDomain as domain;
         use crate::memory_domain::system_domain::SystemMemoryDomain as domain;
         // use crate::memory_domain::mmap::MmapMemoryDomain as domain;
-        driverTests!(reqwest_io; domain; crate::memory_domain::MemoryResource::None; ReqwestDriver{}; ComputeResource::CPU(1));
+        driverTests!(reqwest_io; domain; crate::memory_domain::MemoryResource::Anonymous{size: (2<<22)}; ReqwestDriver{}; ComputeResource::CPU(1));
     }
 }

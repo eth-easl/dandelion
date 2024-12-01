@@ -1,6 +1,6 @@
 use crate::{
     function_driver::{WorkQueue, WorkToDo},
-    promise::{Debt, Promise},
+    promise::{Debt, Promise, PromiseBuffer},
 };
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -11,12 +11,14 @@ struct TestQueueInternal {
 #[derive(Clone)]
 pub struct TestQueue {
     internal: Arc<(Mutex<TestQueueInternal>, Condvar)>,
+    promise_buffer: PromiseBuffer,
 }
 
 impl TestQueue {
     pub fn new() -> Self {
         return TestQueue {
             internal: Arc::new((Mutex::new(TestQueueInternal { args: None }), Condvar::new())),
+            promise_buffer: PromiseBuffer::init(128),
         };
     }
     pub fn enqueu(&self, args: WorkToDo) -> Promise {
@@ -27,7 +29,7 @@ impl TestQueue {
                 .wait_while(lock_guard, |guard| guard.args.is_some())
                 .expect("Test queue enqueue failed waiting on inserting args");
         }
-        let (promise, debt) = Promise::new();
+        let (promise, debt) = self.promise_buffer.get_promise().unwrap();
         if lock_guard.args.replace((args, debt)).is_some() {
             panic!("Test queue replace args still present")
         };

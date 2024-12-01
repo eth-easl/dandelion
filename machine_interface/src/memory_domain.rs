@@ -246,6 +246,8 @@ impl Context {
 #[derive(Clone, Copy)]
 pub enum MemoryResource {
     None,
+    Anonymous { size: usize },
+    Shared { id: u64, size: usize },
 }
 
 pub trait MemoryDomain: Sync + Send {
@@ -477,6 +479,24 @@ pub fn transfer_data_item(
         source_item.data.size,
     )?;
     Ok(())
+}
+
+#[cfg(any(test, feature = "test_export"))]
+pub mod test_resource {
+    use crate::memory_domain::MemoryResource;
+    use std::sync::atomic::AtomicU64;
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    pub fn get_resource(arg: MemoryResource) -> MemoryResource {
+        match arg {
+            MemoryResource::Shared { id: _, size } => MemoryResource::Shared {
+                id: COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+                size,
+            },
+            MemoryResource::Anonymous { size } => MemoryResource::Anonymous { size },
+            MemoryResource::None => MemoryResource::None,
+        }
+    }
 }
 
 #[cfg(test)]

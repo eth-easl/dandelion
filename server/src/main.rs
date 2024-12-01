@@ -17,14 +17,15 @@ use hyper::{
 use log::{debug, error, info, trace, warn};
 use machine_interface::{
     function_driver::ComputeResource,
-    machine_config::EngineType,
-    memory_domain::{bytes_context::BytesContext, read_only::ReadOnlyContext},
+    machine_config::{DomainType, EngineType},
+    memory_domain::{bytes_context::BytesContext, read_only::ReadOnlyContext, MemoryResource},
     DataItem, DataSet, Position,
 };
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
     convert::Infallible,
+    fs::read_to_string,
     io::Write,
     net::SocketAddr,
     path::PathBuf,
@@ -183,6 +184,8 @@ async fn register_function(
         "RWasm" => EngineType::RWasm,
         #[cfg(feature = "mmu")]
         "Process" => EngineType::Process,
+        #[cfg(feature = "kvm")]
+        "Kvm" => EngineType::Kvm,
         #[cfg(feature = "cheri")]
         "Cheri" => EngineType::Cheri,
         unkown => panic!("Unkown engine type string {}", unkown),
@@ -526,9 +529,11 @@ fn main() -> () {
     let engine_type = EngineType::RWasm;
     #[cfg(feature = "mmu")]
     let engine_type = EngineType::Process;
+    #[cfg(feature = "kvm")]
+    let engine_type = EngineType::Kvm;
     #[cfg(feature = "cheri")]
     let engine_type = EngineType::Cheri;
-    #[cfg(any(feature = "cheri", feature = "wasm", feature = "mmu"))]
+    #[cfg(any(feature = "cheri", feature = "wasm", feature = "mmu", feature = "kvm"))]
     pool_map.insert(engine_type, compute_cores);
     #[cfg(feature = "reqwest_io")]
     pool_map.insert(EngineType::Reqwest, communication_cores);
@@ -536,9 +541,47 @@ fn main() -> () {
         engine_pool: futures::lock::Mutex::new(pool_map),
     };
 
+    // get RAM size
+    // TODO could be a configuration, open question on how to split between engines
+    // or if we unify somehow and have one underlying pool
+    let max_ram = read_to_string("/proc/meminfo")
+        .unwrap()
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("MemTotal:")
+                .and_then(|line| line.strip_suffix("kB"))
+                .and_then(|line| Some(line.trim().parse::<usize>()))
+        })
+        .unwrap()
+        .unwrap()
+        / 2
+        * 1024;
+
+    let memory_pool = BTreeMap::from([
+        (
+            DomainType::Mmap,
+            MemoryResource::Anonymous { size: max_ram },
+        ),
+        #[cfg(feature = "cheri")]
+        (DomainType::Cheri, MemoryResource::None),
+        #[cfg(feature = "mmu")]
+        (
+            DomainType::Process,
+            MemoryResource::Shared {
+                id: 0,
+                size: max_ram,
+            },
+        ),
+        #[cfg(feature = "wasm")]
+        (
+            DomainType::RWasm,
+            MemoryResource::Anonymous { size: max_ram },
+        ),
+    ]);
+
     // Create an ARC pointer to the dispatcher for thread-safe access
     let dispatcher = Box::leak(Box::new(
-        Dispatcher::init(resource_pool).expect("Should be able to start dispatcher"),
+        Dispatcher::init(resource_pool, memory_pool).expect("Should be able to start dispatcher"),
     ));
     // start dispatcher
     dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
@@ -551,6 +594,8 @@ fn main() -> () {
     print!(" cheri");
     #[cfg(feature = "mmu")]
     print!(" mmu");
+    #[cfg(feature = "kvm")]
+    print!(" kvm");
     #[cfg(feature = "wasm")]
     print!(" wasm");
     #[cfg(feature = "reqwest_io")]

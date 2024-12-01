@@ -1,5 +1,5 @@
 #[cfg(all(
-    any(feature = "wasm", feature = "mmu", feature = "cheri"),
+    any(feature = "wasm", feature = "mmu", feature = "kvm", feature = "cheri"),
     feature = "reqwest_io"
 ))]
 mod server_tests {
@@ -32,13 +32,6 @@ mod server_tests {
     #[derive(Serialize)]
     struct RegisterChain {
         composition: String,
-    }
-
-    #[derive(Serialize)]
-    struct MatrixRequest {
-        name: String,
-        rows: u64,
-        cols: u64,
     }
 
     impl Drop for ServerKiller {
@@ -132,6 +125,11 @@ mod server_tests {
         {
             version = format!("elf_mmu_{}", std::env::consts::ARCH);
             engine_type = String::from("Process");
+        }
+        #[cfg(feature = "kvm")]
+        {
+            version = format!("elf_kvm_{}", std::env::consts::ARCH);
+            engine_type = String::from("Kvm");
         }
         #[cfg(feature = "cheri")]
         {
