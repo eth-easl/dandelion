@@ -349,7 +349,10 @@ async fn dispatcher_loop(
                 spawn(async {
                     select! {
                         function_output = function_future => {
-                            callback.send(function_output).unwrap();
+                            // either get an ok, meaning the data was sent, or get the data back
+                            // no need to handle ok, and nothing useful to do with data if we get it back
+                            // drop it here to release resources
+                            let _ = callback.send(function_output);
                         }
                         _ = callback.closed() => ()
                     }
@@ -565,7 +568,6 @@ fn main() -> () {
         })
         .unwrap()
         .unwrap()
-        / 2
         * 1024;
 
     let memory_pool = BTreeMap::from([
