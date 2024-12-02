@@ -560,7 +560,7 @@ fn outer_engine(core_id: u8, queue: Box<dyn WorkQueue + Send>) {
         .or(Err(DandelionError::EngineError))
         .unwrap();
     let debt = runtime.block_on(engine_loop(queue));
-    runtime.shutdown_timeout(std::time::Duration::from_millis(50));
+    drop(runtime);
     println!("LOG: Shutting down engine on core {}", core_id);
     debt.fulfill(Ok(WorkDone::Resources(vec![ComputeResource::CPU(core_id)])));
 }

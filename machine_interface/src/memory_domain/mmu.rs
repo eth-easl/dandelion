@@ -3,7 +3,7 @@ use crate::{
     util::mmapmem::{MmapMem, MmapMemPool},
 };
 use dandelion_commons::{DandelionError, DandelionResult};
-use log::warn;
+use log::debug;
 use nix::sys::mman::ProtFlags;
 
 // TODO: decide this value in a system dependent way
@@ -17,7 +17,7 @@ pub struct MmuContext {
 impl ContextTrait for MmuContext {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
         if offset < MMAP_BASE_ADDR {
-            warn!("write offset smaller than MMAP_BASE_ADDR")
+            debug!("write offset smaller than MMAP_BASE_ADDR")
             // TODO: could be an issue if the context will be used by mmu_worker (function context)
         }
         self.storage.write(offset, data)
@@ -25,7 +25,7 @@ impl ContextTrait for MmuContext {
 
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         if offset < MMAP_BASE_ADDR {
-            warn!("read offset smaller than MMAP_BASE_ADDR")
+            debug!("read offset smaller than MMAP_BASE_ADDR")
             // TODO: could be an issue if the context will be used by mmu_worker (function context)
         }
         self.storage.read(offset, read_buffer)
@@ -33,7 +33,7 @@ impl ContextTrait for MmuContext {
 
     fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
         if offset < MMAP_BASE_ADDR {
-            warn!("read offset smaller than MMAP_BASE_ADDR")
+            debug!("read offset smaller than MMAP_BASE_ADDR")
             // TODO: could be an issue if the context will be used by mmu_worker (function context)
         }
         self.storage.get_chunk_ref(offset, length)

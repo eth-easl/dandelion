@@ -1,7 +1,6 @@
-use std::ops::Sub;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ops::Bound,
+    ops::{Bound, Sub},
 };
 
 /// Structure to keep track of occupation of a range of indices
