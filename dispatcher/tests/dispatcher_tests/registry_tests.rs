@@ -293,6 +293,9 @@ fn test_insert_composition_with_http_func() {
             engine_pool: Mutex::new(BTreeMap::new()),
         },
         memory_resources,
+        1,
+        true,
+        (0, 0),
     )
     .unwrap();
     let composition_string = r#"

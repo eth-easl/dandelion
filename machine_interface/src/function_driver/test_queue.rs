@@ -39,6 +39,10 @@ impl TestQueue {
 }
 
 impl WorkQueue for TestQueue {
+    fn clone_box(&self) -> Box<dyn WorkQueue + Send> {
+        return Box::new(self.clone());
+    }
+
     fn get_engine_args(&self) -> (WorkToDo, Debt) {
         let (lock, arg_var) = self.internal.as_ref();
         let mut lock_guard = lock
