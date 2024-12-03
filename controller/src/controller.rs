@@ -65,7 +65,7 @@ impl Controller {
             let mut need_more_cores = None;
 
             // Print how many cores are allocated to each engine type
-            self.print_core_info(&queue_lengths);
+            // self.print_core_info(&queue_lengths);
 
             let avg_load = queue_lengths.iter().map(|(_, length)| length).sum::<usize>() / queue_lengths.len();
             let most_overloaded_queue = queue_lengths.iter().max_by_key(|(_, length)| *length);

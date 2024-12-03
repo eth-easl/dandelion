@@ -8,7 +8,7 @@ use machine_interface::{
 };
 use std::{hint, sync::Arc};
 
-const MAX_QUEUE: usize = 4096;
+const MAX_QUEUE: usize = 16_384;
 
 struct AtomicTickets {
     start: AtomicUsize,

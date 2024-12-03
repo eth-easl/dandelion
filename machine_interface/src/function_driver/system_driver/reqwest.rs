@@ -447,7 +447,6 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 };
                 match function {
                     SystemFunction::HTTP => {
-                        // #[cfg(not(feature = "controller"))]
                         tokio::spawn(http_run(
                             context,
                             client.clone(),
@@ -455,9 +454,6 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                             debt,
                             recorder,
                         ));
-
-                        // #[cfg(feature = "controller")]
-                        // http_run(context, client.clone(), output_sets, debt, recorder).await;
                     }
                     #[allow(unreachable_patterns)]
                     _ => {
