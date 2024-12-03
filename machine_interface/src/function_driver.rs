@@ -74,9 +74,9 @@ impl Function {
             }
             FunctionConfig::SysConfig(_) => domain.acquire_context(ctx_size),
             FunctionConfig::WasmConfig(c) => {
-                if ctx_size != c.wasm_mem_size {
-                    return Err(DandelionError::WasmContextMemoryMismatch);
-                }
+                // if ctx_size != c.wasm_mem_size {
+                //     return Err(DandelionError::WasmContextMemoryMismatch);
+                // }
                 let mut context = domain.acquire_context(c.wasm_mem_size)?;
                 context.occupy_space(0, c.sdk_heap_base)?;
                 Ok(context)
