@@ -19,7 +19,7 @@ use http::{version::Version, HeaderName, HeaderValue, Method};
 use log::error;
 use reqwest::{header::HeaderMap, Client};
 use std::sync::Arc;
-use tokio::runtime::Builder;
+use tokio::{runtime::Builder, sync::Semaphore};
 
 struct RequestInformation {
     /// name of the request item
@@ -350,7 +350,7 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
 }
 
 async fn http_run(
-    mut context: Context,
+    context: Context,
     client: Client,
     output_set_names: Arc<Vec<String>>,
     debt: Debt,
@@ -363,6 +363,7 @@ async fn http_run(
             return;
         }
     };
+    drop(context);
     let response_vec = match futures::future::try_join_all(
         request_vec
             .into_iter()
@@ -412,12 +413,16 @@ async fn http_run(
     return;
 }
 
+const MAX_INFLIGHT: usize = 128;
+
 async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
     log::debug!("Reqwest engine Init");
     let client = Client::new();
     // TODO FIX! This should not be necessary!
     let mut queue_ref = Box::leak(queue);
     let mut tuple;
+    let work_semaphore = Arc::new(Semaphore::new(MAX_INFLIGHT));
+    let mut current_permit = work_semaphore.clone().acquire_owned().await.unwrap();
     loop {
         (tuple, queue_ref) = queue_ref.into_future().await;
         let (args, debt) = if let Some((tuple_args, tuple_debt)) = tuple {
@@ -447,13 +452,12 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 };
                 match function {
                     SystemFunction::HTTP => {
-                        tokio::spawn(http_run(
-                            context,
-                            client.clone(),
-                            output_sets,
-                            debt,
-                            recorder,
-                        ));
+                        let clone_client = client.clone();
+                        tokio::spawn(async move {
+                            http_run(context, clone_client, output_sets, debt, recorder).await;
+                            drop(current_permit);
+                        });
+                        current_permit = work_semaphore.clone().acquire_owned().await.unwrap();
                     }
                     #[allow(unreachable_patterns)]
                     _ => {
@@ -532,6 +536,10 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 continue;
             }
             WorkToDo::Shutdown() => {
+                let _ = work_semaphore
+                    .acquire_many(u32::try_from(MAX_INFLIGHT - 1).unwrap())
+                    .await
+                    .unwrap();
                 return debt;
             }
         }
