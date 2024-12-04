@@ -1,4 +1,7 @@
-use crate::memory_domain::{system_domain::system_context_write_from_bytes, ContextType};
+use crate::memory_domain::{
+    system_domain::{system_context_write_from_bytes, SystemContext, SystemMemoryDomain},
+    ContextType,
+};
 use crate::{
     function_driver::{
         ComputeResource, Driver, Function, FunctionConfig, SystemFunction, WorkDone, WorkQueue,
@@ -18,7 +21,7 @@ use futures::StreamExt;
 use http::{version::Version, HeaderName, HeaderValue, Method};
 use log::error;
 use reqwest::{header::HeaderMap, Client};
-use std::sync::Arc;
+use std::{alloc::System, collections::BTreeMap, sync::Arc};
 use tokio::{runtime::Builder, sync::Semaphore};
 
 struct RequestInformation {
@@ -363,7 +366,11 @@ async fn http_run(
             return;
         }
     };
+    let context_size = context.size;
+
+    // get rid of systems context to drop references to old contexts before starting to do requests
     drop(context);
+
     let response_vec = match futures::future::try_join_all(
         request_vec
             .into_iter()
@@ -377,28 +384,32 @@ async fn http_run(
             return;
         }
     };
-    // warn!("http_run with response_vec of length {}", response_vec.len());
 
-    // only clear once for all requests
-    context.clear_metadata();
+    let mut out_context = Context::new(
+        ContextType::System(Box::new(SystemContext {
+            local_offset_to_data_position: BTreeMap::new(),
+            size: context_size,
+        })),
+        context_size,
+    );
 
     if !output_set_names.is_empty() {
-        context.content = vec![None, None];
+        out_context.content = vec![None, None];
         if output_set_names.iter().any(|elem| elem == "response") {
-            context.content[0] = Some(DataSet {
+            out_context.content[0] = Some(DataSet {
                 ident: String::from("response"),
                 buffers: vec![],
             })
         }
         if output_set_names.iter().any(|elem| elem == "body") {
-            context.content[1] = Some(DataSet {
+            out_context.content[1] = Some(DataSet {
                 ident: String::from("body"),
                 buffers: vec![],
             })
         }
         let write_results: DandelionResult<Vec<_>> = response_vec
             .into_iter()
-            .map(|response| http_context_write(&mut context, response))
+            .map(|response| http_context_write(&mut out_context, response))
             .collect();
         if let Err(err) = write_results {
             debt.fulfill(Err(err));
@@ -409,7 +420,7 @@ async fn http_run(
         debt.fulfill(Err(err));
         return;
     }
-    debt.fulfill(Ok(WorkDone::Context(context)));
+    debt.fulfill(Ok(WorkDone::Context(out_context)));
     return;
 }
 
