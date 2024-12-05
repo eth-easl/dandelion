@@ -1,5 +1,5 @@
 use crate::memory_domain::{
-    system_domain::{system_context_write_from_bytes, SystemContext, SystemMemoryDomain},
+    system_domain::{system_context_write_from_bytes, SystemContext},
     ContextType,
 };
 use crate::{
@@ -21,8 +21,8 @@ use futures::StreamExt;
 use http::{version::Version, HeaderName, HeaderValue, Method};
 use log::error;
 use reqwest::{header::HeaderMap, Client};
-use std::{alloc::System, collections::BTreeMap, sync::Arc};
-use tokio::{runtime::Builder, sync::Semaphore};
+use std::{collections::BTreeMap, sync::Arc};
+use tokio::{runtime::Builder, sync::RwLock};
 
 struct RequestInformation {
     /// name of the request item
@@ -424,7 +424,7 @@ async fn http_run(
     return;
 }
 
-const MAX_INFLIGHT: usize = 128;
+// const MAX_INFLIGHT: usize = 128;
 
 async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
     log::debug!("Reqwest engine Init");
@@ -432,8 +432,7 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
     // TODO FIX! This should not be necessary!
     let mut queue_ref = Box::leak(queue);
     let mut tuple;
-    let work_semaphore = Arc::new(Semaphore::new(MAX_INFLIGHT));
-    let mut current_permit = work_semaphore.clone().acquire_owned().await.unwrap();
+    let worker_lock = Arc::new(RwLock::new(()));
     loop {
         (tuple, queue_ref) = queue_ref.into_future().await;
         let (args, debt) = if let Some((tuple_args, tuple_debt)) = tuple {
@@ -464,11 +463,11 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 match function {
                     SystemFunction::HTTP => {
                         let clone_client = client.clone();
+                        let new_reader = worker_lock.clone().read_owned().await;
                         tokio::spawn(async move {
                             http_run(context, clone_client, output_sets, debt, recorder).await;
-                            drop(current_permit);
+                            drop(new_reader);
                         });
-                        current_permit = work_semaphore.clone().acquire_owned().await.unwrap();
                     }
                     #[allow(unreachable_patterns)]
                     _ => {
@@ -547,10 +546,7 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 continue;
             }
             WorkToDo::Shutdown() => {
-                let _ = work_semaphore
-                    .acquire_many(u32::try_from(MAX_INFLIGHT - 1).unwrap())
-                    .await
-                    .unwrap();
+                let _ = worker_lock.write_owned().await;
                 return debt;
             }
         }
