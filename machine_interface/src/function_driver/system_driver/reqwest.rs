@@ -1,4 +1,7 @@
-use crate::memory_domain::{system_domain::system_context_write_from_bytes, ContextType};
+use crate::memory_domain::{
+    system_domain::{system_context_write_from_bytes, SystemContext},
+    ContextType,
+};
 use crate::{
     function_driver::{
         ComputeResource, Driver, Function, FunctionConfig, SystemFunction, WorkDone, WorkQueue,
@@ -18,8 +21,8 @@ use futures::StreamExt;
 use http::{version::Version, HeaderName, HeaderValue, Method};
 use log::error;
 use reqwest::{header::HeaderMap, Client};
-use std::sync::Arc;
-use tokio::runtime::Builder;
+use std::{collections::BTreeMap, sync::Arc};
+use tokio::{runtime::Builder, sync::RwLock};
 
 struct RequestInformation {
     /// name of the request item
@@ -350,7 +353,7 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
 }
 
 async fn http_run(
-    mut context: Context,
+    context: Context,
     client: Client,
     output_set_names: Arc<Vec<String>>,
     debt: Debt,
@@ -363,6 +366,11 @@ async fn http_run(
             return;
         }
     };
+    let context_size = context.size;
+
+    // get rid of systems context to drop references to old contexts before starting to do requests
+    drop(context);
+
     let response_vec = match futures::future::try_join_all(
         request_vec
             .into_iter()
@@ -376,28 +384,32 @@ async fn http_run(
             return;
         }
     };
-    // warn!("http_run with response_vec of length {}", response_vec.len());
 
-    // only clear once for all requests
-    context.clear_metadata();
+    let mut out_context = Context::new(
+        ContextType::System(Box::new(SystemContext {
+            local_offset_to_data_position: BTreeMap::new(),
+            size: context_size,
+        })),
+        context_size,
+    );
 
     if !output_set_names.is_empty() {
-        context.content = vec![None, None];
+        out_context.content = vec![None, None];
         if output_set_names.iter().any(|elem| elem == "response") {
-            context.content[0] = Some(DataSet {
+            out_context.content[0] = Some(DataSet {
                 ident: String::from("response"),
                 buffers: vec![],
             })
         }
         if output_set_names.iter().any(|elem| elem == "body") {
-            context.content[1] = Some(DataSet {
+            out_context.content[1] = Some(DataSet {
                 ident: String::from("body"),
                 buffers: vec![],
             })
         }
         let write_results: DandelionResult<Vec<_>> = response_vec
             .into_iter()
-            .map(|response| http_context_write(&mut context, response))
+            .map(|response| http_context_write(&mut out_context, response))
             .collect();
         if let Err(err) = write_results {
             debt.fulfill(Err(err));
@@ -408,9 +420,11 @@ async fn http_run(
         debt.fulfill(Err(err));
         return;
     }
-    debt.fulfill(Ok(WorkDone::Context(context)));
+    debt.fulfill(Ok(WorkDone::Context(out_context)));
     return;
 }
+
+// const MAX_INFLIGHT: usize = 128;
 
 async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
     log::debug!("Reqwest engine Init");
@@ -418,6 +432,7 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
     // TODO FIX! This should not be necessary!
     let mut queue_ref = Box::leak(queue);
     let mut tuple;
+    let worker_lock = Arc::new(RwLock::new(()));
     loop {
         (tuple, queue_ref) = queue_ref.into_future().await;
         let (args, debt) = if let Some((tuple_args, tuple_debt)) = tuple {
@@ -447,13 +462,12 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 };
                 match function {
                     SystemFunction::HTTP => {
-                        tokio::spawn(http_run(
-                            context,
-                            client.clone(),
-                            output_sets,
-                            debt,
-                            recorder,
-                        ));
+                        let clone_client = client.clone();
+                        let new_reader = worker_lock.clone().read_owned().await;
+                        tokio::spawn(async move {
+                            http_run(context, clone_client, output_sets, debt, recorder).await;
+                            drop(new_reader);
+                        });
                     }
                     #[allow(unreachable_patterns)]
                     _ => {
@@ -532,6 +546,7 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 continue;
             }
             WorkToDo::Shutdown() => {
+                let _ = worker_lock.write_owned().await;
                 return debt;
             }
         }
