@@ -336,7 +336,7 @@ async fn dispatcher_loop(
     mut request_receiver: mpsc::Receiver<DispatcherCommand>,
     dispatcher: &'static Dispatcher,
 ) {
-    while let Some(dispatcher_args) = request_receiver.recv().await {     
+    while let Some(dispatcher_args) = request_receiver.recv().await {
         match dispatcher_args {
             DispatcherCommand::FunctionRequest {
                 name,
@@ -545,7 +545,6 @@ fn main() -> () {
     pool_map.insert(engine_type, compute_cores);
     #[cfg(feature = "reqwest_io")]
     pool_map.insert(EngineType::Reqwest, communication_cores);
-    // println!("pool map: {:?}", pool_map);
     let resource_pool = ResourcePool {
         engine_pool: futures::lock::Mutex::new(pool_map),
     };

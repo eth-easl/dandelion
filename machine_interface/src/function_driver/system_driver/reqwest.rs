@@ -556,7 +556,7 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
 fn outer_engine(core_id: u8, queue: Box<dyn WorkQueue + Send>) {
     // set core affinity
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
-        log::error!("core received core id that could not be set");
+        log::error!("[REQWEST] Core received core id that could not be set");
         return;
     }
     let runtime = Builder::new_multi_thread()
@@ -572,7 +572,7 @@ fn outer_engine(core_id: u8, queue: Box<dyn WorkQueue + Send>) {
         .unwrap();
     let debt = runtime.block_on(engine_loop(queue));
     drop(runtime);
-    println!("LOG: Shutting down engine on core {}", core_id);
+    log::debug!("[REQWEST] Shutting down engine on core {}", core_id);
     debt.fulfill(Ok(WorkDone::Resources(vec![ComputeResource::CPU(core_id)])));
 }
 

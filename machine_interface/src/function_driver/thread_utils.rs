@@ -21,7 +21,7 @@ pub trait EngineLoop {
 fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
     // set core affinity
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
-        log::error!("core received core id that could not be set");
+        log::error!("[PROCESS] Core received core id that could not be set");
         return;
     }
     let mut engine_state = E::init(core_id).expect("Failed to initialize thread state");
@@ -119,7 +119,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                 continue;
             }
             WorkToDo::Shutdown() => {
-                println!("LOG: Shutting down engine on core {}", core_id);
+                log::debug!("[PROCESS] Shutting down engine on core {}", core_id);
                 debt.fulfill(Ok(WorkDone::Resources(vec![ComputeResource::CPU(core_id)])));
                 return;
             }
