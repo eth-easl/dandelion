@@ -601,13 +601,13 @@ fn main() -> () {
     println!("delta {}, loop duration: {}", delta, loop_duration);
 
     #[cfg(feature = "controller")]
-    let mut controller = Controller {
+    let mut controller = Controller::new(
         resource_pool,
         dispatcher,
         cpu_core_map,
         delta,
-        loop_duration,
-    };
+        loop_duration
+    );
     #[cfg(feature = "controller")]
     let controller_runtime = Runtime::new().unwrap();
 

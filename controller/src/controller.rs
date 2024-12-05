@@ -38,58 +38,60 @@ impl Controller {
     /// Log queue length and number of allocated cores
     fn log_core_info(&self) {
         let queue_lengths = self.dispatcher.get_queue_lengths();
+        let tasks_lengths = self.dispatcher.get_total_tasks_lengths();
         
         let mut print_str = String::new();
         for (engine_type, cores) in self.cpu_core_map.iter() {
             print_str.push_str(
-                &format!("[CTRL] Engine type: {:?}, Cores: {:?}; ", engine_type, cores.len()));
+                &format!("Engine type: {:?}, Cores: {:?}; ", engine_type, cores.len()));
         }
-        log::debug!("{}", print_str);
+        println!("[CTRL] {}", print_str);
 
         print_str = String::new();
         for (engine_type, length) in queue_lengths {
             print_str.push_str(
-                &format!("[CTRL] Engine type: {:?}, Queue length: {:?}; ", engine_type, length));
+                &format!("Engine type: {:?}, Queue length: {:?}; ", engine_type, length));
         }
-        log::debug!("{}", print_str);
+        println!("[CTRL] {}", print_str);
 
         print_str = String::new();
-        for (engine_type, _) in self.cpu_core_map.iter() {
-            let buffer_length = self.dispatcher.engine_queues.get(engine_type).unwrap().buffer_size();
+        for (engine_type, length) in tasks_lengths {
             print_str.push_str(
-                &format!("[CTRL] Engine type: {:?}, Buffer: {:?}; ", engine_type, buffer_length));
+                &format!("Engine type: {:?}, Tasks: {:?}; ", engine_type, length));
         }
-        log::debug!("{}", print_str);
+        println!("[CTRL] {}", print_str);
     }
 
     /// Monitor the resource pool and allocate resources
     pub async fn monitor_and_allocate(&mut self) {
 
         loop {
-            let queue_lengths = self.dispatcher.get_queue_lengths();
+            let tasks_lengths = self.dispatcher.get_total_tasks_lengths();
             let mut need_more_cores = None;
 
             self.log_core_info();
 
-            let avg_load = queue_lengths.iter().map(|(_, length)| length)
-                .sum::<usize>() / queue_lengths.len();
-            let most_overloaded_queue = queue_lengths.iter().max_by_key(|(_, length)| *length);
+            let avg_load = tasks_lengths.iter().map(|(_, length)| length)
+                .sum::<usize>() / tasks_lengths.len();
+            let most_overloaded_queue = tasks_lengths.iter().max_by_key(|(_, length)| *length);
             if let Some((engine_type, length)) = most_overloaded_queue {
                 if *length > avg_load + self.delta {
                     need_more_cores = Some(*engine_type);
                 }
             }
 
+            let mut deallocated = false;
             if let Some(engine_type_to_expand) = need_more_cores {
-                let deallocated = self.deallocate_cores_from_other_engines(
-                    engine_type_to_expand, &queue_lengths, avg_load).await;
+                deallocated = self.deallocate_cores_from_other_engines(
+                    engine_type_to_expand, &tasks_lengths, avg_load).await;
 
                 if deallocated {
                     self.allocate_more_cores(engine_type_to_expand).await;
                 }
             }
 
-            sleep(Duration::from_millis(self.loop_duration)).await
+            let wait_interval = if deallocated { 10 * self.loop_duration } else { self.loop_duration };
+            sleep(Duration::from_millis(wait_interval)).await;
         }
     }
 
@@ -108,11 +110,11 @@ impl Controller {
                 let drivers = get_available_drivers();
                 if let Some(driver) = drivers.get(&engine_type){
                     let work_queue = self.dispatcher.engine_queues.get(&engine_type).unwrap().clone();
-                    let queue_length = work_queue.queue_length();
+                    let tasks_length = work_queue.total_tasks_length();
                     match driver.start_engine(resource, work_queue) {
-                        Ok(_) => log::debug!(
-                            "[CTRL] Allocated core {} to engine type {:?} when queue size {}",
-                            core_id, engine_type, queue_length),
+                        Ok(_) => println!(
+                            "[CTRL] Allocated core {} to engine type {:?} with {} tasks",
+                            core_id, engine_type, tasks_length),
                         Err(e) => log::error!("[CTRL] Error starting engine for core {}: {:?}",
                             core_id, e),
                     };
@@ -125,11 +127,11 @@ impl Controller {
     async fn deallocate_cores_from_other_engines(
         &mut self, 
         target_engine: EngineType,
-        queue_lengths: &[(EngineType, usize)],
+        tasks_lengths: &[(EngineType, usize)],
         avg_load: usize,
     ) -> bool {
         // Iterate over the engine types to find one to deallocate
-        for (engine_type, length) in queue_lengths{
+        for (engine_type, length) in tasks_lengths {
             if *engine_type == target_engine || *length > avg_load {
                 continue;
             }
@@ -165,8 +167,8 @@ impl Controller {
                         core_id, e);
                     continue;
                 }
-                log::debug!("[CTRL] Deallocated core {} from engine type {:?} when queue {}",
-                    core_id, engine_type, engine_queue.queue_length());
+                println!("[CTRL] Deallocated core {} from engine type {:?} with {} tasks",
+                    core_id, engine_type, engine_queue.total_tasks_length());
 
                 // Core deallocation successful
                 return true;

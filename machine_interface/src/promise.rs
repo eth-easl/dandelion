@@ -5,7 +5,7 @@ use core::{
     mem::ManuallyDrop,
     pin::Pin,
     ptr,
-    sync::atomic::{AtomicPtr, AtomicU8, Ordering},
+    sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering},
     task::{Poll, Waker},
 };
 use dandelion_commons::{DandelionError, DandelionResult, PromiseError};
@@ -39,6 +39,7 @@ unsafe impl Send for DataWrapper {}
 struct PromiseBufferInternal {
     head: AtomicPtr<DataWrapper>,
     _buffer: Pin<Box<[DataWrapper]>>,
+    length: AtomicUsize,
 }
 
 impl PromiseBufferInternal {
@@ -59,6 +60,7 @@ impl PromiseBufferInternal {
         return Self {
             head,
             _buffer: buffer,
+            length: AtomicUsize::new(0),
         };
     }
 
@@ -78,6 +80,8 @@ impl PromiseBufferInternal {
             }
             new_head = unsafe { (*current).next };
         }
+
+        self.length.fetch_add(1, Ordering::SeqCst);
         return Ok(current);
     }
 
@@ -97,18 +101,13 @@ impl PromiseBufferInternal {
                 head = current_head;
                 unsafe { (*data_ptr).next = head };
             }
+            self.length.fetch_sub(1, Ordering::SeqCst);
         }
     }
 
-    fn get_buffer_size(&self) -> usize {
-        let mut current = self.head.load(Ordering::Acquire);
-        let mut count = 0;
-        while !current.is_null() {
-            count += 1;
-            current = unsafe { (*current).next };
-        }
-        let size = self._buffer.len();
-        return size - count;
+    /// Number of promises in internal buffer
+    fn buffer_length(&self) -> usize {
+        return self.length.load(Ordering::SeqCst);
     }
 }
 
@@ -146,8 +145,9 @@ impl PromiseBuffer {
         return Ok((promise, debt));
     }
 
-    pub fn get_buffer_size(&self) -> usize {
-        return self.internal.get_buffer_size();
+    /// Number of promises in internal buffer
+    pub fn buffer_length(&self) -> usize {
+        return self.internal.buffer_length();
     }
 }
 

@@ -119,7 +119,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                 continue;
             }
             WorkToDo::Shutdown() => {
-                log::debug!("[PROCESS] Shutting down engine on core {}", core_id);
+                println!("[PROCESS] Shutting down engine on core {}", core_id);
                 debt.fulfill(Ok(WorkDone::Resources(vec![ComputeResource::CPU(core_id)])));
                 return;
             }

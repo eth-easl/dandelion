@@ -554,6 +554,13 @@ impl Dispatcher {
         return Ok(result);
     }
 
+    pub fn get_total_tasks_lengths(&self) -> Vec<(EngineType, usize)> {
+        self.engine_queues
+            .iter()
+            .map(|(engine_type, queue)| (*engine_type, queue.total_tasks_length()))
+            .collect()
+    }
+
     pub fn get_queue_lengths(&self) -> Vec<(EngineType, usize)> {
         self.engine_queues
             .iter()

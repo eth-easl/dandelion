@@ -122,7 +122,8 @@ impl EngineQueue {
         self.queue_out.len()
     }
 
-    pub fn buffer_size(&self) -> usize {
-        self.promise_buffer.get_buffer_size()
+    /// Get the number of tasks in the queue and the number of in-flight tasks
+    pub fn total_tasks_length(&self) -> usize {
+        self.queue_length() + self.promise_buffer.buffer_length()
     }
 }

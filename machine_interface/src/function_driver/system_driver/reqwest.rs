@@ -572,7 +572,7 @@ fn outer_engine(core_id: u8, queue: Box<dyn WorkQueue + Send>) {
         .unwrap();
     let debt = runtime.block_on(engine_loop(queue));
     drop(runtime);
-    log::debug!("[REQWEST] Shutting down engine on core {}", core_id);
+    println!("[REQWEST] Shutting down engine on core {}", core_id);
     debt.fulfill(Ok(WorkDone::Resources(vec![ComputeResource::CPU(core_id)])));
 }
 
