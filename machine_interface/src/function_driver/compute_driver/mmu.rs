@@ -183,7 +183,7 @@ impl EngineLoop for MmuLoop {
     ) -> DandelionResult<Context> {
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
-            _ => return Err(DandelionError::ConfigMissmatch),
+            _ => return Err(DandelionError::ConfigMismatch),
         };
 
         setup_input_structs::<usize, usize>(
@@ -194,7 +194,7 @@ impl EngineLoop for MmuLoop {
 
         let mmu_context = match &context.context {
             ContextType::Mmu(mmu_context) => mmu_context,
-            _ => return Err(DandelionError::ContextMissmatch),
+            _ => return Err(DandelionError::ContextMismatch),
         };
 
         mmu_run_static(

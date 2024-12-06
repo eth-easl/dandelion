@@ -418,7 +418,7 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 let function = match config {
                     FunctionConfig::SysConfig(sys_func) => sys_func,
                     _ => {
-                        debt.fulfill(Box::new(Err(DandelionError::ConfigMissmatch)));
+                        debt.fulfill(Box::new(Err(DandelionError::ConfigMismatch)));
                         continue;
                     }
                 };

@@ -9,6 +9,9 @@ use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
 #[cfg(feature = "wasm")]
 use libloading::Library;
 
+#[cfg(feature = "fpga")]
+use std::net::{Ipv4Addr, SocketAddrV4};
+
 pub mod compute_driver;
 mod load_utils;
 pub mod system_driver;
@@ -50,10 +53,20 @@ pub struct WasmConfig {
 }
 
 #[derive(Clone)]
+pub struct FpgaConfig {
+    #[cfg(feature = "fpga")]
+    //TODO: other type of identifier?
+    soft_max_tile_queue_length: usize,
+    bitstream_id: u16,
+    dummy_func_num: u32, //exists to differentiate dummy run functions. if 0 then it uses the real function.
+}
+
+#[derive(Clone)]
 pub enum FunctionConfig {
     ElfConfig(ElfConfig),
     SysConfig(SystemFunction),
     WasmConfig(WasmConfig),
+    FpgaConfig(FpgaConfig),
 }
 
 pub struct Function {
@@ -80,6 +93,10 @@ impl Function {
                 let mut context = domain.acquire_context(c.wasm_mem_size)?;
                 context.occupy_space(0, c.sdk_heap_base)?;
                 Ok(context)
+            }
+            FunctionConfig::FpgaConfig(_) => {
+                //I don't think I have to do anything here
+                domain.acquire_context(ctx_size)
             }
         };
     }

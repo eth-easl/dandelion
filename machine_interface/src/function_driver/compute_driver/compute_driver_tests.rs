@@ -674,4 +674,273 @@ mod compute_driver_tests {
             ComputeResource::GPU(0),
         ]);
     }
+
+    #[cfg(feature = "fpga")]
+    mod fpga {
+        use super::engine_minimal;
+        use super::prepare_engine_and_function;
+        use crate::function_driver::WorkDone;
+        use crate::{
+            function_driver::{
+                compute_driver::fpga, compute_driver::fpga::FpgaDriver, thread_utils::EngineLoop,
+                ComputeResource, Driver, WorkToDo::FunctionArguments,
+            },
+            memory_domain::{mmap::MmapMemoryDomain, ContextState, ContextTrait, MemoryResource},
+            DataItem, DataSet, Position,
+        };
+        use dandelion_commons::{
+            records::{Archive, ArchiveInit, RecordPoint},
+            DandelionError,
+        };
+
+        use std::sync::{Arc, Mutex};
+        /*RUST_LOG=debug cargo test --package machine_interface --lib --features mmu --features fpga -- function_driver::compute_driver::compute_driver_tests::compute_driver_tests::fpga::temp_test --exact --show-output  */
+        #[test]
+        fn temp_test() {
+            env_logger::init();
+            let driver: Box<dyn Driver> = Box::new(FpgaDriver {});
+            let filename = "dummy_input";
+            let dom_init = MemoryResource::None;
+            let drv_init = vec![ComputeResource::CPU(1)];
+
+            //TODO VICTOR: replace this with just a prepare engine and a separate prepare function
+            let (mut function_context, config, queue) =
+                prepare_engine_and_function::<MmapMemoryDomain>(
+                    filename, dom_init, &driver, drv_init,
+                );
+            let input_example: [i64; 5] = [2, 5, 5, 5, 5];
+            let bitstream_id: [u16; 1] = [1];
+            let bitstream_id_offset = function_context
+                .get_free_space_and_write_slice(&bitstream_id)
+                .expect("should have space for bitstream id");
+            let data_offset = function_context
+                .get_free_space_and_write_slice(&input_example)
+                .expect("Should have space for a little data");
+            println!("got data offset {:?}", data_offset);
+
+            function_context.content.push(Some(DataSet {
+                ident: "inputset".to_string(),
+                buffers: vec![
+                    DataItem {
+                        ident: "bitstream_id".to_string(),
+                        data: Position {
+                            offset: bitstream_id_offset as usize,
+                            size: 4,
+                        },
+                        key: 0,
+                    },
+                    DataItem {
+                        ident: "inputitem".to_string(),
+                        data: Position {
+                            offset: data_offset as usize,
+                            size: 8 * input_example.len(), //without enabling some weird stuff i dont have sizeof..8 should be just fine though
+                        },
+                        key: 1,
+                    },
+                ],
+            }));
+            let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+                #[cfg(feature = "timestamp")]
+                timestamp_count: 1000,
+            })));
+
+            let mut recorder = archive.get_recorder().unwrap();
+            let promise = queue.enqueu(crate::function_driver::WorkToDo::FunctionArguments {
+                config,
+                context: function_context,
+                output_sets: Arc::new(Vec::new()),
+                recorder: recorder.get_sub_recorder().unwrap(),
+            });
+            let shutdown_promise = queue.enqueu(crate::function_driver::WorkToDo::Shutdown());
+
+            let workdone = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap()
+                .block_on(promise)
+                .expect("Engine should run ok with basic function");
+
+            if let WorkDone::Resources(_resources) = workdone {
+                println!("successfully got back garbage! :D");
+            }
+
+            let shutdown_workdone = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap()
+                .block_on(shutdown_promise)
+                .expect("Engine should run ok with basic function");
+            if let WorkDone::Resources(_resources) = shutdown_workdone {
+                println!("successfully shut down! :D");
+            }
+
+            recorder
+                .record(RecordPoint::FutureReturn)
+                .expect("Should have properly advanced recorder state");
+        }
+
+        //TODO VICTOR: all these test don't work right now
+        #[test]
+        fn run_dummy_input_local_matrix() {
+            let driver: Box<dyn Driver> = Box::new(FpgaDriver {});
+            let filename = "dummy_local_matrix";
+            let dom_init = MemoryResource::None;
+            let drv_init = vec![ComputeResource::CPU(1)];
+
+            let input_example: [i64; 5] = [2, 5, 5, 5, 5];
+
+            let (mut function_context, config, queue) =
+                prepare_engine_and_function::<MmapMemoryDomain>(
+                    filename, dom_init, &driver, drv_init,
+                );
+            let bitstream_id: [u16; 1] = [1];
+            let bitstream_id_offset = function_context
+                .get_free_space_and_write_slice(&bitstream_id)
+                .expect("should have space for bitstream id");
+            let data_offset = function_context
+                .get_free_space_and_write_slice(&input_example)
+                .expect("Should have space for a little data");
+            println!("got data offset {:?}", data_offset);
+
+            function_context.content.push(Some(DataSet {
+                ident: "inputset".to_string(),
+                buffers: vec![
+                    DataItem {
+                        ident: "bitstream_id".to_string(),
+                        data: Position {
+                            offset: bitstream_id_offset as usize,
+                            size: 4,
+                        },
+                        key: 0,
+                    },
+                    DataItem {
+                        ident: "inputitem".to_string(),
+                        data: Position {
+                            offset: data_offset as usize,
+                            size: 8 * input_example.len(), //without enabling some weird stuff i dont have sizeof..8 should be just fine though
+                        },
+                        key: 1,
+                    },
+                ],
+            }));
+
+            let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+                #[cfg(feature = "timestamp")]
+                timestamp_count: 1000,
+            })));
+
+            let mut recorder = archive.get_recorder().unwrap();
+            let promise = queue.enqueu(crate::function_driver::WorkToDo::FunctionArguments {
+                config,
+                context: function_context,
+                output_sets: Arc::new(Vec::new()),
+                recorder: recorder.get_sub_recorder().unwrap(),
+            });
+
+            let result_context = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap()
+                .block_on(promise)
+                .expect("Engine should run ok with basic function")
+                .get_context();
+
+            recorder
+                .record(RecordPoint::FutureReturn)
+                .expect("Should have properly advanced recorder state");
+            // check the function exited with exit code 0
+            match result_context.state {
+                ContextState::InPreparation => {
+                    panic!("context still in preparation, never evaluated ")
+                }
+                ContextState::Run(exit_status) => assert_eq!(0, exit_status),
+            }
+
+            let output_item = result_context.content[0]
+                .as_ref()
+                .expect("Set should be present");
+
+            let position = output_item.buffers[0].data;
+            println!("got dummy context result back. position: {:?}", position);
+            let mut read_buffer = vec![0i64; position.size / 8];
+            result_context
+                .context
+                .read(position.offset, &mut read_buffer)
+                .expect("Should succeed in reading");
+            println!("result is: {:?}", read_buffer);
+        }
+        #[test]
+        fn run_dummy_input_test() {
+            let driver: Box<dyn Driver> = Box::new(FpgaDriver {});
+            let filename = "dummy_input";
+            let dom_init = MemoryResource::None;
+            let drv_init = vec![ComputeResource::CPU(1)];
+
+            let input_example: [i64; 5] = [2, 5, 5, 5, 5];
+
+            let (mut function_context, config, queue) =
+                prepare_engine_and_function::<MmapMemoryDomain>(
+                    filename, dom_init, &driver, drv_init,
+                );
+
+            let data_offset = function_context
+                .get_free_space_and_write_slice(&input_example)
+                .expect("Should have space for a little data");
+            println!("got data offset {:?}", data_offset);
+
+            function_context.content.push(Some(DataSet {
+                ident: "inputset".to_string(),
+                buffers: vec![DataItem {
+                    ident: "inputitem".to_string(),
+                    data: Position {
+                        offset: data_offset as usize,
+                        size: 8 * input_example.len(), //without enabling some weird stuff i dont have sizeof..8 should be just fine though
+                    },
+                    key: 0,
+                }],
+            }));
+
+            let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+                #[cfg(feature = "timestamp")]
+                timestamp_count: 1000,
+            })));
+
+            let mut recorder = archive.get_recorder().unwrap();
+            let promise = queue.enqueu(crate::function_driver::WorkToDo::FunctionArguments {
+                config,
+                context: function_context,
+                output_sets: Arc::new(Vec::new()),
+                recorder: recorder.get_sub_recorder().unwrap(),
+            });
+
+            let result_context = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap()
+                .block_on(promise)
+                .expect("Engine should run ok with basic function")
+                .get_context();
+
+            recorder
+                .record(RecordPoint::FutureReturn)
+                .expect("Should have properly advanced recorder state");
+
+            // check the function exited with exit code 0
+            match result_context.state {
+                ContextState::InPreparation => {
+                    panic!("context still in preparation, never evaluated ")
+                }
+                ContextState::Run(exit_status) => assert_eq!(0, exit_status),
+            }
+
+            let output_item = result_context.content[0]
+                .as_ref()
+                .expect("Set should be present");
+
+            let position = output_item.buffers[0].data;
+            println!("got dummy context result back. position: {:?}", position);
+            let mut read_buffer = vec![0i64; position.size / 8];
+            result_context
+                .context
+                .read(position.offset, &mut read_buffer)
+                .expect("Should succeed in reading");
+            println!("result is: {:?}", read_buffer);
+        }
+    }
 }
