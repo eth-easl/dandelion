@@ -72,12 +72,13 @@ pub fn get_result(result_context: Context, output_size: usize, asserts: bool) ->
 pub fn compare_result(expected: Vec<f32>, read_buffer: Vec<f32>, asserts: bool) {
     const DELTA: f32 = 0.003;
     for (should, is) in expected.iter().zip(read_buffer.iter()) {
+        let abs_diff = (should - is).abs();
         let mut ratio = should / is;
         if ratio.is_nan() { ratio = 1.0; }
-        let diff = ratio - 1.0;
-        let abs_diff = diff.abs();
+        let diff_ratio = ratio - 1.0;
+        let abs_diff_ratio = diff_ratio.abs();
         if asserts {
-            assert!(abs_diff <= DELTA, "Checking final result: {should} - {is}");
+            assert!(abs_diff_ratio <= DELTA, "Checking final result: {should} - {is}");
         } else {
             println!("{should:10.3}\t{is:10.3}\t{abs_diff:10.3}\t{ratio:10.3}");
         }

@@ -341,10 +341,11 @@ async fn service(
         | "/cold/compute"
         | "/cold/io"
         | "/cold/inference"
-        | "/cold/inference-batched"
-        | "/cold/double_matmul"
-        | "/cold/lenet5" => serve_request(true, req, dispatcher).await,
+        | "/cold/inference-batched" => serve_request(true, req, dispatcher).await,
         "/cold/chain_scaling" | "/cold/middleware_app" | "/cold/python_app" => {
+            serve_request(true, req, dispatcher).await
+        }
+        "/cold/double_matmul" | "/cold/lenet5" | "/cold/resnet18" | "/cold/resnet34" | "/cold/resnet152" => {
             serve_request(true, req, dispatcher).await
         }
         "/hot/matmul"
@@ -352,9 +353,10 @@ async fn service(
         | "/hot/compute"
         | "/hot/io"
         | "/hot/inference"
-        | "/hot/inference-batched"
-        | "/hot/double_matmul"
-        | "/hot/lenet5" => serve_request(false, req, dispatcher).await,
+        | "/hot/inference-batched" => serve_request(false, req, dispatcher).await,
+        "/hot/double_matmul" | "/hot/lenet5" | "/hot/resnet18" | "/hot/resnet34" | "/hot/resnet152" => {
+            serve_request(false, req, dispatcher).await
+        }
         "/stats" => serve_stats(req).await,
         _ => Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
             format!("Hello, Wor\n").into_bytes(),
