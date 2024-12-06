@@ -10,6 +10,9 @@ use tokio::time::{sleep, Duration};
 use std::collections::BTreeMap;
 use machine_interface::function_driver::WorkDone;
 
+/// After this threshold, the controller will not deallocate cores
+const ERROR_THRESH: usize = 1_024;
+
 pub struct Controller {
     pub resource_pool: &'static mut ResourcePool,
     pub dispatcher: &'static Dispatcher,
@@ -75,7 +78,7 @@ impl Controller {
                 .sum::<usize>() / tasks_lengths.len();
             let most_overloaded_queue = tasks_lengths.iter().max_by_key(|(_, length)| *length);
             if let Some((engine_type, length)) = most_overloaded_queue {
-                if *length > avg_load + self.delta {
+                if *length > avg_load + self.delta && *length < ERROR_THRESH {
                     need_more_cores = Some(*engine_type);
                 }
             }
