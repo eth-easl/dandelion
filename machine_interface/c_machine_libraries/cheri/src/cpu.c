@@ -1,21 +1,28 @@
 #include "cpu.h"
 
-char cheri_run_static(cheri_context* context, size_t entry_point,
+char cheri_run_static(unsigned char* cap_start, size_t cap_size, size_t entry_point,
                       size_t return_pair_offset, size_t stack_pointer) {
-  void* __capability context_cap = context->cap;
+//   void* __capability context_cap = context->cap;
+  // create capability 
   // set up capability for code
-  unsigned long start_pointer = __builtin_cheri_base_get(context_cap);
-  unsigned long size = __builtin_cheri_length_get(context_cap);
+//   unsigned long start_pointer = __builtin_cheri_base_get(context_cap);
+//   unsigned long size = __builtin_cheri_length_get(context_cap);
+  char* __capability data = (__cheri_tocap char* __capability) (char*)cap_start;
+  data = __builtin_cheri_bounds_set(data, cap_size);
+  // adjust permissions
+  const size_t permission_mask = ~(memory_permissions);
+  __asm__ volatile("clrperm %w0, %w0, %1"
+                   : "+r"(data)
+                   : "r"(permission_mask));
   void* __capability pcc = __builtin_cheri_program_counter_get();
-  pcc = __builtin_cheri_address_set(pcc, start_pointer);
-  pcc = __builtin_cheri_bounds_set(pcc, size);
+  pcc = __builtin_cheri_address_set(pcc, cap_start);
+  pcc = __builtin_cheri_bounds_set(pcc, cap_size);
   pcc = pcc + entry_point;
   // restrict capability to only be fetch,
   // and executive(executive could be removed in future)
   const unsigned long pccPermissionMask = ~(code_permissions);
   __asm__ volatile("clrperm %w0, %w0, %1" : "+r"(pcc) : "r"(pccPermissionMask));
-  return cheri_execute(context_cap, pcc, return_pair_offset,
-                       (void*)stack_pointer);
+  return cheri_execute(data, pcc, return_pair_offset, (void*)stack_pointer);
 }
 
 char cheri_execute(char* __capability memory, void* __capability function,

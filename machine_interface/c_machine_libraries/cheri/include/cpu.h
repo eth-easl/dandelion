@@ -4,7 +4,7 @@
 #include <stdlib.h>
 
 #include "memory.h"
-char cheri_run_static(cheri_context* context, size_t entry_point,
+char cheri_run_static(unsigned char* cap_start, size_t cap_size, size_t entry_point,
                       size_t return_pair_offset, size_t stack_pointer);
 char cheri_execute(char* __capability memory, void* __capability function,
                    size_t return_pair_offset, void* stack_pointer);

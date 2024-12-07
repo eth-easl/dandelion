@@ -573,7 +573,10 @@ fn main() -> () {
             MemoryResource::Anonymous { size: max_ram },
         ),
         #[cfg(feature = "cheri")]
-        (DomainType::Cheri, MemoryResource::None),
+        (
+            DomainType::Cheri,
+            MemoryResource::Anonymous { size: max_ram },
+        ),
         #[cfg(feature = "mmu")]
         (
             DomainType::Process,
