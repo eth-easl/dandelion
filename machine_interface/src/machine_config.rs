@@ -66,7 +66,7 @@ pub fn get_available_domains(
     let mut default_resources = BTreeMap::from([
         (DomainType::Mmap, MemoryResource::Anonymous { size: 0 }),
         #[cfg(feature = "cheri")]
-        (DomainType::Cheri, MemoryResource::None),
+        (DomainType::Cheri, MemoryResource::Anonymous { size: 0 }),
         #[cfg(feature = "mmu")]
         (
             DomainType::Process,
@@ -91,10 +91,7 @@ pub fn get_available_domains(
             #[cfg(feature = "cheri")]
             DomainType::Cheri => (
                 dom_type,
-                Arc::new(
-                    crate::memory_domain::cheri::CheriMemoryDomain::init(MemoryResource::None)
-                        .unwrap(),
-                ),
+                Arc::new(crate::memory_domain::cheri::CheriMemoryDomain::init(resource).unwrap()),
             ),
             #[cfg(feature = "mmu")]
             DomainType::Process => (
