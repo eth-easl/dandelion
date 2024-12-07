@@ -1,125 +1,84 @@
+use crate::{
+    memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource},
+    util::mmapmem::{self, MmapMem, MmapMemPool},
+};
+use dandelion_commons::{DandelionError, DandelionResult};
 use libc::size_t;
-
-// opaque type to allow type enforcement on pointer
-#[repr(C)]
-pub struct cheri_c_context {
-    _data: [u8; 0],
-    _marker: core::marker::PhantomData<(*mut u8, core::marker::PhantomPinned)>,
-}
+use log::debug;
+use nix::sys::mman::ProtFlags;
 
 #[link(name = "cheri_lib")]
 extern "C" {
-    fn cheri_alloc(size: size_t) -> *const cheri_c_context;
-    fn cheri_free(context: *const cheri_c_context) -> ();
-    fn cheri_write_context(
-        context: *const cheri_c_context,
-        source_pointer: *const u8,
-        context_offset: size_t,
-        size: size_t,
-    ) -> ();
-    fn cheri_read_context(
-        context: *const cheri_c_context,
-        destination_pointer: *mut u8,
-        context_offset: size_t,
-        size: size_t,
-    ) -> ();
-    fn cheri_get_chunk_ref(context: *const cheri_c_context, context_offset: size_t) -> *const u8;
-    fn cheri_transfer_context(
-        destination: *const cheri_c_context,
-        source: *const cheri_c_context,
-        destination_offset: size_t,
-        source_offset: size_t,
-        size: size_t,
-    ) -> ();
+    /// returns a mask for how many trailing zeros are needed in allignment
+    /// the mask is all ones from the msb to the last bit that does not need to be alligned
+    /// and all zero for the bits that need to be 0 in the address for it to be alligned
+    fn sandbox_alignment(size: size_t) -> size_t;
 }
-
-use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource};
-use dandelion_commons::{DandelionError, DandelionResult};
-
 #[derive(Debug)]
 pub struct CheriContext {
-    pub context: *const cheri_c_context,
-    pub size: usize,
+    pub storage: MmapMem,
+    pub cap_offset: usize,
 }
 unsafe impl Send for CheriContext {}
 unsafe impl Sync for CheriContext {}
-// TODO implement drop
 
 impl ContextTrait for CheriContext {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
-        // check that buffer has proper allighment
-        if offset % core::mem::align_of::<T>() != 0 {
-            return Err(DandelionError::WriteMisaligned);
-        }
-
-        // perform size checks
-        let write_size = core::mem::size_of::<T>() * data.len();
-        if write_size + offset > self.size {
-            return Err(DandelionError::InvalidWrite);
-        }
-        unsafe {
-            cheri_write_context(self.context, data.as_ptr() as *const u8, offset, write_size);
-        }
-        return Ok(());
+        self.storage.write(offset, data)
     }
+
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
-        // check that buffer has proper allighment
-        if offset % core::mem::align_of::<T>() != 0 {
-            return Err(DandelionError::ReadMisaligned);
-        }
-
-        let read_size = read_buffer.len() * core::mem::size_of::<T>();
-        // perform size checks
-        if read_size + offset > self.size {
-            return Err(DandelionError::InvalidRead);
-        }
-        unsafe {
-            cheri_read_context(
-                self.context,
-                read_buffer.as_mut_ptr() as *mut u8,
-                offset,
-                read_size,
-            )
-        }
-        Ok(())
+        self.storage.read(offset, read_buffer)
     }
+
     fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
-        if offset + length > self.size {
-            return Err(DandelionError::InvalidRead);
-        }
-        Ok(unsafe {
-            core::slice::from_raw_parts(cheri_get_chunk_ref(self.context, offset), length)
-        })
+        self.storage.get_chunk_ref(offset, length)
     }
 }
 
-impl Drop for CheriContext {
-    fn drop(&mut self) {
-        unsafe {
-            cheri_free(self.context);
-        }
-    }
+pub struct CheriMemoryDomain {
+    memory_pool: MmapMemPool,
 }
-
-pub struct CheriMemoryDomain {}
 
 impl MemoryDomain for CheriMemoryDomain {
-    fn init(_config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
-        Ok(Box::new(CheriMemoryDomain {}))
+    fn init(config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
+        let size = match config {
+            MemoryResource::Anonymous { size } => size,
+            _ => {
+                return Err(DandelionError::DomainError(
+                    dandelion_commons::DomainError::ConfigMissmatch,
+                ))
+            }
+        };
+        let memory_pool = MmapMemPool::create(
+            size,
+            ProtFlags::PROT_READ | ProtFlags::PROT_WRITE | ProtFlags::PROT_EXEC,
+            None,
+        )?;
+        Ok(Box::new(CheriMemoryDomain { memory_pool }))
     }
+
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
-        let cheri_context;
-        unsafe {
-            cheri_context = cheri_alloc(size);
-        }
-        if cheri_context.is_null() {
-            return Err(DandelionError::OutOfMemory);
-        }
-        let new_context: Box<CheriContext> = Box::new(CheriContext {
-            context: cheri_context,
-            size: size,
+        // check the capability allighnement requirements
+        let allignment = (!unsafe { sandbox_alignment(size) }) + 1;
+        let additional_space = if allignment < mmapmem::SLAB_SIZE {
+            0
+        } else {
+            allignment
+        };
+        let allocation_size = size
+            .checked_add(additional_space)
+            .ok_or(DandelionError::OutOfMemory)?;
+        let (storage, actual_size) = self
+            .memory_pool
+            .get_allocation(allocation_size, nix::sys::mman::MmapAdvise::MADV_DONTNEED)?;
+        // determine how much we need to offset to be cap alligned
+        let cap_offset = storage.as_ptr().align_offset(allignment);
+        let new_context = Box::new(CheriContext {
+            storage,
+            cap_offset,
         });
-        return Ok(Context::new(ContextType::Cheri(new_context), size));
+        Ok(Context::new(ContextType::Cheri(new_context), actual_size))
     }
 }
 
@@ -130,20 +89,28 @@ pub fn cheri_transfer(
     source_offset: usize,
     size: usize,
 ) -> DandelionResult<()> {
-    if source_offset + size > source.size {
+    // check if there is space in both contexts
+    if source.storage.size() < source_offset + size {
+        debug!(
+            "Source out of bounds: {} < {} + {}",
+            source.storage.size(),
+            source_offset,
+            size
+        );
         return Err(DandelionError::InvalidRead);
     }
-    if destination_offset + size > destination.size {
+    if destination.storage.size() < destination_offset + size {
+        debug!(
+            "Destination out of bounds: {} < {} + {}",
+            destination.storage.size(),
+            destination_offset,
+            size
+        );
         return Err(DandelionError::InvalidWrite);
     }
     unsafe {
-        cheri_transfer_context(
-            destination.context,
-            source.context,
-            destination_offset,
-            source_offset,
-            size,
-        );
+        destination.storage.as_slice_mut()[destination_offset..destination_offset + size]
+            .copy_from_slice(&source.storage.as_slice()[source_offset..source_offset + size]);
     }
     Ok(())
 }

@@ -602,7 +602,7 @@ mod compute_driver_tests {
     mod cheri {
         use crate::function_driver::{compute_driver::cheri::CheriDriver, ComputeResource};
         use crate::memory_domain::{cheri::CheriMemoryDomain, MemoryResource};
-        driverTests!(elf_cheri; CheriMemoryDomain; MemoryResource::None; CheriDriver {};
+        driverTests!(elf_cheri; CheriMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; CheriDriver {};
         core_affinity::get_core_ids()
            .and_then(
                 |core_vec|
