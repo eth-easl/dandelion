@@ -25,26 +25,40 @@ pub struct EngineQueue {
 
 /// This is run on the engine so it performs asyncornous access to the local state
 impl WorkQueue for EngineQueue {
+    fn clone_box(&self) -> Box<dyn WorkQueue + Send> {
+        Box::new(self.clone())
+    }
+    
     fn get_engine_args(&self) -> (WorkToDo, Debt) {
         // make sure only one thread spins on lock and work gets distributed in order of workers getting free
-        let local_ticket = self.worker_queue.end.fetch_add(1, Ordering::AcqRel);
-        while local_ticket != self.worker_queue.start.load(Ordering::Acquire) {
-            hint::spin_loop();
-        }
-        let work = loop {
-            match self.queue_out.try_recv() {
-                Err(TryRecvError::Disconnected) => panic!("Work queue disconnected"),
-                Err(TryRecvError::Empty) => continue,
-                Ok(recieved) => {
-                    let (recieved_args, recevied_dept) = recieved;
-                    if recevied_dept.is_alive() {
-                        break (recieved_args, recevied_dept);
+        #[cfg(not(feature = "wait_polling"))]
+        {
+            let local_ticket = self.worker_queue.end.fetch_add(1, Ordering::AcqRel);
+            while local_ticket != self.worker_queue.start.load(Ordering::Acquire) {
+                hint::spin_loop();
+            }
+            let work = loop {
+                match self.queue_out.try_recv() {
+                    Err(TryRecvError::Disconnected) => panic!("Work queue disconnected"),
+                    Err(TryRecvError::Empty) => continue,
+                    Ok(recieved) => {
+                        let (recieved_args, recevied_dept) = recieved;
+                        if recevied_dept.is_alive() {
+                            break (recieved_args, recevied_dept);
+                        }
                     }
                 }
-            }
-        };
-        self.worker_queue.start.fetch_add(1, Ordering::Release);
-        return work;
+            };
+            self.worker_queue.start.fetch_add(1, Ordering::Release);
+            return work;
+        }
+        
+        #[cfg(feature = "wait_polling")]
+        {
+            let work = self.queue_out.recv().unwrap();
+            return work;
+        }
+        
     }
 
     fn try_get_engine_args(&self) -> Option<(WorkToDo, Debt)> {

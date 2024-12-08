@@ -112,7 +112,7 @@ mod system_driver_tests {
             .acquire_context(_CONTEXT_SIZE)
             .expect("Should be able to get context");
         let _engine = driver
-            .start_engine(drv_init, queue.clone())
+            .start_engine(drv_init, queue.clone(), 1, true, (0, 0))
             .expect("Should be able to get engine");
         let config = FunctionConfig::SysConfig(SystemFunction::HTTP);
 
@@ -195,7 +195,7 @@ mod system_driver_tests {
             .acquire_context(_CONTEXT_SIZE)
             .expect("Should be able to get context");
         let _engine = driver
-            .start_engine(drv_init, queue.clone())
+            .start_engine(drv_init, queue.clone(), 1, true, (0, 0))
             .expect("Should be able to get engine");
         let config = FunctionConfig::SysConfig(SystemFunction::HTTP);
 

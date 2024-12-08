@@ -52,7 +52,7 @@ mod dispatcher_tests {
                 )
             })
             .collect();
-        let dispatcher = Dispatcher::init(resource_pool, memory_resources)
+        let dispatcher = Dispatcher::init(resource_pool, memory_resources, 1, true, (0, 0))
             .expect("Should have initialized dispatcher");
         let function_id = tokio::runtime::Builder::new_current_thread()
             .build()

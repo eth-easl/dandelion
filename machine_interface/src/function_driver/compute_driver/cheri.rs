@@ -75,6 +75,9 @@ impl Driver for CheriDriver {
         &self,
         resource: ComputeResource,
         queue: Box<dyn WorkQueue + Send>,
+        threads_per_core: usize,
+        cpu_pinning: bool,
+        compute_range: (usize, usize),
     ) -> DandelionResult<()> {
         let cpu_slot = match resource {
             ComputeResource::CPU(core) => core,
@@ -92,7 +95,7 @@ impl Driver for CheriDriver {
         {
             return Err(DandelionError::EngineResourceError);
         }
-        start_thread::<CheriLoop>(cpu_slot, queue);
+        start_thread::<CheriLoop>(cpu_slot, queue, threads_per_core, cpu_pinning, compute_range);
         return Ok(());
     }
 

@@ -145,9 +145,17 @@ impl WorkDone {
     }
 }
 
-pub trait WorkQueue {
+pub trait WorkQueue: Send {
+    fn clone_box(&self) -> Box<dyn WorkQueue + Send>;
+
     fn get_engine_args(&self) -> (WorkToDo, crate::promise::Debt);
     fn try_get_engine_args(&self) -> Option<(WorkToDo, crate::promise::Debt)>;
+}
+
+impl Clone for Box<dyn WorkQueue + Send> {
+    fn clone(&self) -> Box<dyn WorkQueue + Send> {
+        self.clone_box()
+    }
 }
 
 impl futures::stream::Stream for &mut (dyn WorkQueue + Send) {
@@ -177,6 +185,9 @@ pub trait Driver: Send + Sync {
         resource: ComputeResource,
         // TODO check out why this can't be impl instead of Box<dyn
         queue: Box<dyn WorkQueue + Send>,
+        threads_per_core: usize,
+        cpu_pinning: bool,
+        compute_range: (usize, usize),
     ) -> DandelionResult<()>;
 
     /// Parses an executable,

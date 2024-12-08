@@ -583,6 +583,9 @@ impl Driver for ReqwestDriver {
         &self,
         resource: ComputeResource,
         queue: Box<dyn WorkQueue + Send>,
+        _threads_per_core: usize,
+        _cpu_pinning: bool,
+        _compute_range: (usize, usize),
     ) -> DandelionResult<()> {
         let core_id = match resource {
             ComputeResource::CPU(core) => core,

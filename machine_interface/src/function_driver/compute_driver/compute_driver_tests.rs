@@ -36,7 +36,8 @@ mod compute_driver_tests {
     ) {
         for wronge_resource in wrong_init {
             let queue_box = Box::new(TestQueue::new());
-            let wrong_resource_engine = driver.start_engine(wronge_resource, queue_box);
+            let wrong_resource_engine =
+                driver.start_engine(wronge_resource, queue_box, 1, true, (0, 0));
             match wrong_resource_engine {
                 Ok(_) => panic!("Should not be able to get engine"),
                 Err(err) => assert_eq!(DandelionError::EngineResourceError, err),
@@ -45,7 +46,7 @@ mod compute_driver_tests {
 
         for resource in init {
             let queue_box = Box::new(TestQueue::new());
-            let engine = driver.start_engine(resource, queue_box);
+            let engine = driver.start_engine(resource, queue_box, 1, true, (0, 0));
             engine.expect("Should be able to get engine");
         }
     }
@@ -62,7 +63,7 @@ mod compute_driver_tests {
             .parse_function(filename.to_string(), &domain)
             .expect("Should be able to parse function");
         driver
-            .start_engine(drv_init[0], queue.clone())
+            .start_engine(drv_init[0], queue.clone(), 1, true, (0, 0))
             .expect("Should be able to start engine");
         let function_context = function
             .load(&domain, 0x802_0000)

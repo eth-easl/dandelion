@@ -311,6 +311,7 @@ async fn service(
         | "/cold/io"
         | "/cold/chain_scaling"
         | "/cold/middleware_app"
+        | "/cold/middleware_app_hybrid"
         | "/cold/compression_app"
         | "/cold/python_app" => serve_request(true, req, dispatcher).await,
         "/hot/matmul"
@@ -319,6 +320,7 @@ async fn service(
         | "/hot/io"
         | "/hot/chain_scaling"
         | "/hot/middleware_app"
+        | "/hot/middleware_app_hybrid"
         | "/hot/compression_app"
         | "/hot/python_app" => serve_request(false, req, dispatcher).await,
         "/stats" => serve_stats(req).await,
@@ -477,7 +479,7 @@ fn main() -> () {
         .into_iter()
         .map(|core| resource_conversion(core))
         .collect();
-    let compute_cores = config
+    let compute_cores: Vec<ComputeResource> = config
         .get_computation_cores()
         .into_iter()
         .map(|core| resource_conversion(core))
@@ -488,6 +490,15 @@ fn main() -> () {
     println!("dispatcher cores: {:?}", dispatcher_cores);
     println!("communication cores: {:?}", communication_cores);
     println!("compute cores: {:?}", compute_cores);
+
+    let compute_core_range = Some((
+        *compute_cores.first().unwrap(),
+        *compute_cores.last().unwrap(),
+    )); 
+    let (compute_start_core, compute_end_core): (usize, usize) = match compute_core_range {
+        Some((ComputeResource::CPU(start), ComputeResource::CPU(end))) => (start as usize, end as usize),
+        _ => return error!("No valid compute core range."), // Handle invalid cases
+    };
 
     // make multithreaded front end runtime
     // set up tokio runtime, need io in any case
@@ -593,8 +604,11 @@ fn main() -> () {
     ]);
 
     // Create an ARC pointer to the dispatcher for thread-safe access
+    let threads_per_core = config.threads_per_core;
+    let cpu_pinning = config.cpu_pinning;
+    let compute_range = (compute_start_core, compute_end_core);
     let (dispatcher, resource_pool, cpu_core_map) = Box::leak(Box::new(
-        Dispatcher::init(resource_pool, cpu_core_map, memory_pool).expect("Should be able to start dispatcher"),
+        Dispatcher::init(resource_pool, cpu_core_map, memory_pool, threads_per_core, cpu_pinning, compute_range).expect("Should be able to start dispatcher"),
     ));
     // start dispatcher
     dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));

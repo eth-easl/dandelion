@@ -45,6 +45,9 @@ impl Dispatcher {
         mut resource_pool: ResourcePool,
         mut cpu_core_map: BTreeMap<EngineType, Vec<u8>>,
         memory_resources: BTreeMap<DomainType, MemoryResource>,
+        threads_per_core: usize,
+        cpu_pinning: bool,
+        compute_range: (usize, usize),
     ) -> DandelionResult<(Dispatcher, ResourcePool, BTreeMap<EngineType, Vec<u8>>)> {
         // get machine specific configurations
         let type_map = get_compatibilty_table();
@@ -64,7 +67,7 @@ impl Dispatcher {
             while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(engine_type) {
                 if let ComputeResource::CPU(core_id) = resource {
                     cpu_core_map.get_mut(&engine_type).unwrap().push(core_id);
-                    driver.start_engine(resource, work_queue.clone())?;
+                    driver.start_engine(resource, work_queue.clone(), threads_per_core, cpu_pinning, compute_range)?;
                 }
             }
             let domain_type = type_map.get(&engine_type).unwrap();

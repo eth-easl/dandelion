@@ -22,6 +22,7 @@ use nix::{
 use std::{
     process::{Command, Stdio},
     sync::Arc,
+    mem::size_of,
 };
 
 fn ptrace_syscall(pid: libc::pid_t) {
@@ -31,6 +32,29 @@ fn ptrace_syscall(pid: libc::pid_t) {
     let res = unsafe { libc::ptrace(libc::PT_SYSCALL, pid, 1 as *mut _, 0) };
     assert_eq!(res, 0);
 }
+
+// fn ptrace_get_syscall_info(pid: libc::pid_t) {
+//     #[cfg(target_os = "linux")]
+//     let syscall_info = libc::ptrace_syscall_info {
+//         op: libc::PTRACE_SYSCALL_INFO_NONE,
+//         pad: [0; 3],
+//         arch: 0,
+//         instruction_pointer: 0,
+//         stack_pointer: 0,
+//         u: libc::__c_anonymous_ptrace_syscall_info_data {seccomp: libc::__c_anonymous_ptrace_syscall_info_seccomp {
+//             nr: 0,
+//             args: [0, 0, 0, 0, 0, 0],
+//             ret_data: 0,
+//         }},
+//     };
+//     // let res = unsafe { libc::ptrace(libc::PTRACE_GET_SYSCALL_INFO, pid, 0, &syscall_info) };
+//     let res = unsafe { libc::ptrace(libc::PTRACE_GET_SYSCALL_INFO, pid, size_of::<libc::ptrace_syscall_info>(), &syscall_info) };
+//     assert_eq!(res, 0);
+
+//     let details = syscall_info.u;
+//     debug!("syscall_info: {:#?}", details);
+// }
+
 
 enum SyscallType {
     Exit,
@@ -148,16 +172,18 @@ fn mmu_run_static(
                     return Ok(());
                 }
                 #[cfg(target_arch = "x86_64")]
-                SyscallType::Authorized => {
+                SyscallType::Authorized | SyscallType::Unauthorized(_) => {
                     debug!("detected authorized syscall");
+                    
+                    // ptrace_get_syscall_info(pid.as_raw());
                     ptrace_syscall(pid.as_raw());
                 }
-                SyscallType::Unauthorized(syscall_id) => {
-                    warn!("detected unauthorized syscall with id {}", syscall_id);
-                    worker.kill().map_err(|_e| DandelionError::MmuWorkerError)?;
-                    warn!("worker killed");
-                    return Err(DandelionError::UnauthorizedSyscall);
-                }
+                // SyscallType::Unauthorized(syscall_id) => {
+                //     warn!("detected unauthorized syscall with id {}", syscall_id);
+                //     worker.kill().map_err(|_e| DandelionError::MmuWorkerError)?;
+                //     warn!("worker killed");
+                //     return Err(DandelionError::UnauthorizedSyscall);
+                // }
             },
             Signal::SIGSEGV => {
                 warn!("detected segmentation fault");
@@ -225,6 +251,9 @@ impl Driver for MmuDriver {
         &self,
         resource: ComputeResource,
         queue: Box<dyn WorkQueue + Send>,
+        threads_per_core: usize,
+        cpu_pinning: bool,
+        compute_range: (usize, usize),
     ) -> DandelionResult<()> {
         let cpu_slot = match resource {
             ComputeResource::CPU(core) => core,
@@ -242,7 +271,7 @@ impl Driver for MmuDriver {
         {
             return Err(DandelionError::EngineResourceError);
         }
-        start_thread::<MmuLoop>(cpu_slot, queue);
+        start_thread::<MmuLoop>(cpu_slot, queue, threads_per_core, cpu_pinning, compute_range);
         return Ok(());
     }
 

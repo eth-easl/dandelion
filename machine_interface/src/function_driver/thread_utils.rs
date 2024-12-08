@@ -5,6 +5,8 @@ use crate::{
 use core::marker::Send;
 use dandelion_commons::{records::RecordPoint, DandelionResult};
 use std::thread::spawn;
+use nix::sched::{sched_setaffinity, CpuSet}; // Add nix for CPU affinity
+use nix::unistd::Pid;
 
 extern crate alloc;
 
@@ -18,12 +20,23 @@ pub trait EngineLoop {
     ) -> DandelionResult<Context>;
 }
 
-fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
+fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>, cpu_pinning: bool, compute_range: (usize, usize)) -> () {
     // set core affinity
-    if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
-        log::error!("[PROCESS] Core received core id that could not be set");
-        return;
+    let mut cpuset = CpuSet::new();
+    let (start, end) = compute_range;
+    if cpu_pinning {
+        cpuset.set(core_id as usize).expect("Failed to set CPU in CpuSet");
+        sched_setaffinity(Pid::from_raw(0), &cpuset)
+            .expect("Failed to set CPU affinity for thread");
+    } else {
+        for core in start..=end {
+            cpuset.set(core).expect("Failed to set CPU in CpuSet");
+        }
+        sched_setaffinity(Pid::from_raw(0), &cpuset)
+            .expect("Failed to set CPU affinity");
     }
+
+
     let mut engine_state = E::init(core_id).expect("Failed to initialize thread state");
     loop {
         // TODO catch unwind so we can always return an error or shut down gracefully
@@ -127,6 +140,13 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
     }
 }
 
-pub fn start_thread<E: EngineLoop>(cpu_slot: u8, queue: Box<dyn WorkQueue + Send>) -> () {
-    spawn(move || run_thread::<E>(cpu_slot, queue));
+pub fn start_thread<E: EngineLoop>(cpu_slot: u8, 
+                                queue: Box<dyn WorkQueue + Send>, 
+                                threads_per_core: usize, 
+                                cpu_pinning: bool,
+                                compute_range: (usize, usize)) -> () {
+    for _ in 0..threads_per_core {
+        let queue_clone = queue.clone_box();
+        spawn(move || run_thread::<E>(cpu_slot, queue_clone, cpu_pinning, compute_range));
+    }
 }

@@ -72,6 +72,9 @@ impl Driver for WasmDriver {
         &self,
         resource: ComputeResource,
         queue: Box<dyn WorkQueue + Send>,
+        threads_per_core: usize,
+        cpu_pinning: bool,
+        compute_range: (usize, usize),
     ) -> DandelionResult<()> {
         // sanity checks; extract core id
         let cpu_slot = match resource {
@@ -92,7 +95,7 @@ impl Driver for WasmDriver {
         }
 
         // create channels and spawn threads
-        start_thread::<WasmLoop>(cpu_slot, queue);
+        start_thread::<WasmLoop>(cpu_slot, queue, threads_per_core, cpu_pinning, compute_range);
         return Ok(());
     }
 

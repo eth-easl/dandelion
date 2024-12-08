@@ -6,6 +6,9 @@ const DEFAULT_CONFIG_PATH: &str = "./dandelion.config";
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_SINGLE_CORE: bool = false;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
+const DEFAULT_THREAD_PER_CORE: usize = 1;
+const DEFAULT_CPU_PINNING: bool = true;
+
 
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
@@ -35,6 +38,12 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = 200)]
     #[serde(default)]
     pub control_interval: u64, // in milliseconds
+    #[arg(long, env, default_value_t = DEFAULT_THREAD_PER_CORE)]
+    #[serde(default)]
+    pub threads_per_core: usize,
+    #[arg(long, env, default_value_t = DEFAULT_CPU_PINNING)]
+    #[serde(default)]
+    pub cpu_pinning: bool,
 }
 
 impl DandelionConfig {
@@ -72,6 +81,18 @@ impl DandelionConfig {
             && self.timestamp_count != default.timestamp_count
         {
             self.timestamp_count = other.timestamp_count;
+        }
+        // threads per core
+        if other.threads_per_core != DEFAULT_THREAD_PER_CORE
+            && self.threads_per_core != default.threads_per_core
+        {
+            self.threads_per_core = other.threads_per_core;
+        }
+        // cpu pinning
+        if other.cpu_pinning != DEFAULT_CPU_PINNING
+            && self.cpu_pinning != default.cpu_pinning
+        {
+            self.cpu_pinning = other.cpu_pinning;
         }
     }
 
