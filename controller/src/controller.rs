@@ -123,7 +123,10 @@ impl Controller {
                 if let Some(driver) = drivers.get(&engine_type){
                     let work_queue = self.dispatcher.engine_queues.get(&engine_type).unwrap().clone();
                     let tasks_length = work_queue.total_tasks_length();
-                    match driver.start_engine(resource, work_queue, threads_per_core, cpu_pinning, compute_range) {
+                    match driver.start_engine(resource, work_queue, 
+                                                self.threads_per_core, 
+                                                self.cpu_pinning, 
+                                                self.compute_range) {
                         Ok(_) => println!(
                             "[CTRL] Allocated core {} to engine type {:?} with {} tasks",
                             core_id, engine_type, tasks_length),
