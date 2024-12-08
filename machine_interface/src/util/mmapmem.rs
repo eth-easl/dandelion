@@ -46,7 +46,7 @@ pub struct MmapMemPool {
 }
 
 // Minimum allocation granularity
-const SLAB_SIZE: usize = 1 << 20;
+pub const SLAB_SIZE: usize = 1 << 20;
 
 impl MmapMemPool {
     // Create a memory-mapped file with the given size and protection flags.

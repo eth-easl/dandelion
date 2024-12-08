@@ -27,6 +27,12 @@ unsigned char sandbox_size_alignment(size_t size) {
   return allignment;
 }
 
+size_t sandbox_alignment(size_t size) {
+  size_t mask;
+  __asm__ volatile("RRMASK %0, %1" : "+r"(mask) : "r"(size));
+  return mask; 
+}
+
 cheri_context *cheri_alloc(size_t size) {
   // setup configure size and allignment
   size_t allocation_size = sandbox_size_rounding(size);

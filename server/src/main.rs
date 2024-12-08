@@ -308,6 +308,7 @@ async fn service(
         | "/cold/io"
         | "/cold/chain_scaling"
         | "/cold/middleware_app"
+        | "/cold/compression_app"
         | "/cold/python_app" => serve_request(true, req, dispatcher).await,
         "/hot/matmul"
         | "/hot/matmulstore"
@@ -315,6 +316,7 @@ async fn service(
         | "/hot/io"
         | "/hot/chain_scaling"
         | "/hot/middleware_app"
+        | "/hot/compression_app"
         | "/hot/python_app" => serve_request(false, req, dispatcher).await,
         "/stats" => serve_stats(req).await,
         other_uri => {
@@ -565,7 +567,10 @@ fn main() -> () {
             MemoryResource::Anonymous { size: max_ram },
         ),
         #[cfg(feature = "cheri")]
-        (DomainType::Cheri, MemoryResource::None),
+        (
+            DomainType::Cheri,
+            MemoryResource::Anonymous { size: max_ram },
+        ),
         #[cfg(feature = "mmu")]
         (
             DomainType::Process,
