@@ -345,18 +345,34 @@ async fn service(
         "/cold/chain_scaling" | "/cold/middleware_app" | "/cold/python_app" => {
             serve_request(true, req, dispatcher).await
         }
-        "/cold/double_matmul" | "/cold/lenet5" | "/cold/resnet18" | "/cold/resnet34" | "/cold/resnet152" => {
-            serve_request(true, req, dispatcher).await
-        }
+        "/cold/double_matmul"
+        | "/cold/lenet5"
+        | "/cold/resnet18"
+        | "/cold/resnet18batch2"
+        | "/cold/resnet18batch4"
+        | "/cold/resnet18batch8"
+        | "/cold/resnet18batch16"
+        | "/cold/resnet18batch32"
+        | "/cold/resnet18batch64"
+        | "/cold/resnet34"
+        | "/cold/resnet152" => serve_request(true, req, dispatcher).await,
         "/hot/matmul"
         | "/hot/matmulstore"
         | "/hot/compute"
         | "/hot/io"
         | "/hot/inference"
         | "/hot/inference-batched" => serve_request(false, req, dispatcher).await,
-        "/hot/double_matmul" | "/hot/lenet5" | "/hot/resnet18" | "/hot/resnet34" | "/hot/resnet152" => {
-            serve_request(false, req, dispatcher).await
-        }
+        "/hot/double_matmul"
+        | "/hot/lenet5"
+        | "/hot/resnet18"
+        | "/hot/resnet18batch2"
+        | "/hot/resnet18batch4"
+        | "/hot/resnet18batch8"
+        | "/hot/resnet18batch16"
+        | "/hot/resnet18batch32"
+        | "/hot/resnet18batch64"
+        | "/hot/resnet34"
+        | "/hot/resnet152" => serve_request(false, req, dispatcher).await,
         "/stats" => serve_stats(req).await,
         _ => Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
             format!("Hello, Wor\n").into_bytes(),

@@ -84,6 +84,51 @@ fn resnet18() {
 }
 
 #[test]
+fn resnet18batch4() {
+    let lock = GPU_LOCK.lock().unwrap();
+    let filename = &format!(
+        "{}/tests/data/test_gpu_resnet18batch4.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let (mut function_context, config, queue) = setup_test(&filename);
+    let (output_size, output_name, expected, function_context) = load_resnet18batch4(function_context);
+    let result_context = execute_test(function_context, config, queue, &output_name);
+    let read_buffer = get_result(result_context, output_size, true);
+    compare_result(expected, read_buffer, true);
+    drop(lock);
+}
+
+#[test]
+fn resnet18batch16() {
+    let lock = GPU_LOCK.lock().unwrap();
+    let filename = &format!(
+        "{}/tests/data/test_gpu_resnet18batch16.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let (mut function_context, config, queue) = setup_test(&filename);
+    let (output_size, output_name, expected, function_context) = load_resnet18batch16(function_context);
+    let result_context = execute_test(function_context, config, queue, &output_name);
+    let read_buffer = get_result(result_context, output_size, true);
+    compare_result(expected, read_buffer, true);
+    drop(lock);
+}
+
+#[test]
+fn resnet18batch64() {
+    let lock = GPU_LOCK.lock().unwrap();
+    let filename = &format!(
+        "{}/tests/data/test_gpu_resnet18batch64.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let (mut function_context, config, queue) = setup_test(&filename);
+    let (output_size, output_name, expected, function_context) = load_resnet18batch64(function_context);
+    let result_context = execute_test(function_context, config, queue, &output_name);
+    let read_buffer = get_result(result_context, output_size, true);
+    compare_result(expected, read_buffer, true);
+    drop(lock);
+}
+
+#[test]
 fn resnet34() {
     let lock = GPU_LOCK.lock().unwrap();
     let filename = &format!(
