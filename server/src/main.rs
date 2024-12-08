@@ -625,7 +625,10 @@ fn main() -> () {
         dispatcher,
         cpu_core_map,
         delta,
-        loop_duration
+        loop_duration,
+        threads_per_core,
+        cpu_pinning,
+        compute_range,
     );
     #[cfg(feature = "controller")]
     let controller_runtime = Runtime::new().unwrap();
