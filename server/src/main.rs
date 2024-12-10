@@ -355,6 +355,10 @@ async fn service(
         | "/cold/resnet18batch32"
         | "/cold/resnet18batch64"
         | "/cold/resnet34"
+        | "/cold/resnet34batch2"
+        | "/cold/resnet34batch4"
+        | "/cold/resnet34batch8"
+        | "/cold/resnet34batch16"
         | "/cold/resnet152" => serve_request(true, req, dispatcher).await,
         "/hot/matmul"
         | "/hot/matmulstore"
@@ -372,6 +376,10 @@ async fn service(
         | "/hot/resnet18batch32"
         | "/hot/resnet18batch64"
         | "/hot/resnet34"
+        | "/hot/resnet34batch2"
+        | "/hot/resnet34batch4"
+        | "/hot/resnet34batch8"
+        | "/hot/resnet34batch16"
         | "/hot/resnet152" => serve_request(false, req, dispatcher).await,
         "/stats" => serve_stats(req).await,
         _ => Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
