@@ -8,39 +8,39 @@ pub enum RecordPoint {
     QueueFunctionDispatcher,
     /// Queue to load the function code + ctx
     PrepareEnvQueue,
-    /// Enque parsing operation
+    /// Enqueue parsing operation (async)
     ParsingQueue,
-    /// Start parsing
+    /// Start parsing (sync)
     ParsingStart,
-    /// Finished Parsing
+    /// Finished Parsing (sync)
     ParsingEnd,
-    /// Dequeue from parsing
+    /// Dequeue from parsing (async)
     ParsingDequeue,
     /// Load function code (async)
     LoadQueue,
-    /// Start loading code + alloc ctx
+    /// Start loading code + alloc ctx (sync)
     LoadStart,
-    /// End loading coad and ctx allocation
+    /// End loading coad and ctx allocation (sync)
     LoadEnd,
-    /// Promise await on loading returned
+    /// Promise await on loading returned (async)
     LoadDequeue,
-    /// Enqueue transfer on work queue
+    /// Enqueue transfer on work queue (async)
     TransferQueue,
-    /// Start data transfer to the ctx (async)
+    /// Start data transfer to the ctx (sync)
     TransferStart,
-    /// End data transfer to the ctx (async)
+    /// End data transfer to the ctx (sync)
     TransferEnd,
-    /// Promise await on transfer returned
+    /// Promise await on transfer returned (async)
     TransferDequeue,
     /// Queue to get an engine for execution
     GetEngineQueue,
-    /// Queue to get the function executed on the engine
+    /// Queue to get the function executed on the engine (async)
     ExecutionQueue,
     /// Start execution of the function on the engine (sync)
     EngineStart,
     /// End execution of the function on the engine (sync)
     EngineEnd,
-    /// Return from execution engine
+    /// Return from execution engine (async)
     FutureReturn,
     /// Send response back to the client
     EndService,
