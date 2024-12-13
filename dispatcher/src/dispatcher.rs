@@ -423,7 +423,6 @@ impl Dispatcher {
             None => return Err(DandelionError::DispatcherConfigError),
         };
         // start doing transfers
-        recorder.record(RecordPoint::LoadQueue)?;
         let (mut function_context, function_config) = self
             .function_registry
             .load(
@@ -435,7 +434,6 @@ impl Dispatcher {
                 recorder.get_sub_recorder().unwrap(),
             )
             .await?;
-        recorder.record(RecordPoint::LoadDequeue)?;
         // make sure all input sets are there at the correct index
         let mut static_sets = BTreeSet::new();
         for (function_set_index, (in_set_name, metadata_set)) in
