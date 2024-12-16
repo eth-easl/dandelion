@@ -69,6 +69,21 @@ fn lenet5() {
 }
 
 #[test]
+fn resnet18base() {
+    let lock = GPU_LOCK.lock().unwrap();
+    let filename = &format!(
+        "{}/tests/data/test_gpu_resnet18.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let (mut function_context, config, queue) = setup_test(&filename);
+    let (output_size, output_name, expected, function_context) = load_resnet18(function_context);
+    let result_context = execute_test(function_context, config, queue, &output_name);
+    let read_buffer = get_result(result_context, output_size, false);
+    compare_result(expected, read_buffer, false);
+    drop(lock);
+}
+
+#[test]
 fn resnet18() {
     let lock = GPU_LOCK.lock().unwrap();
     let filename = &format!(
@@ -129,6 +144,21 @@ fn resnet18batch64() {
 }
 
 #[test]
+fn resnet18onnx() {
+    let lock = GPU_LOCK.lock().unwrap();
+    let filename = &format!(
+        "{}/tests/data/test_gpu_resnet18onnx.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let (mut function_context, config, queue) = setup_test(&filename);
+    let (output_size, output_name, expected, function_context) = load_resnet18onnx(function_context);
+    let result_context = execute_test(function_context, config, queue, &output_name);
+    let read_buffer = get_result(result_context, output_size, false);
+    compare_result(expected, read_buffer, false);
+    drop(lock);
+}
+
+#[test]
 fn resnet34() {
     let lock = GPU_LOCK.lock().unwrap();
     let filename = &format!(
@@ -140,6 +170,21 @@ fn resnet34() {
     let result_context = execute_test(function_context, config, queue, &output_name);
     let read_buffer = get_result(result_context, output_size, true);
     compare_result(expected, read_buffer, true);
+    drop(lock);
+}
+
+#[test]
+fn resnet50() {
+    let lock = GPU_LOCK.lock().unwrap();
+    let filename = &format!(
+        "{}/tests/data/test_gpu_resnet50.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let (mut function_context, config, queue) = setup_test(&filename);
+    let (output_size, output_name, expected, function_context) = load_resnet50(function_context);
+    let result_context = execute_test(function_context, config, queue, &output_name);
+    let read_buffer = get_result(result_context, output_size, false);
+    compare_result(expected, read_buffer, false);
     drop(lock);
 }
 
