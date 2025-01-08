@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 pub fn load_u8_from_file(full_path: String) -> DandelionResult<Vec<u8>> {
     let mut file = match std::fs::File::open(full_path) {
-        Ok(f) => f,
+        Ok(f) => f,    
         Err(_) => return Err(DandelionError::FileError),
     };
 

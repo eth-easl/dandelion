@@ -29,12 +29,14 @@ pub struct ElfConfig {
 #[derive(Clone, Copy)]
 pub enum SystemFunction {
     HTTP,
+    MEMCACHED,
 }
 
 impl core::fmt::Display for SystemFunction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> core::fmt::Result {
         return match self {
             SystemFunction::HTTP => write!(f, "HTTP"),
+            SystemFunction::MEMCACHED => write!(f, "MEMCACHED"),
         };
     }
 }

@@ -92,6 +92,7 @@ fn mmu_run_static(
     protection_flags: &[(u32, Position)],
     entry_point: usize,
 ) -> DandelionResult<()> {
+    debug!("mmu_run_static");
     // TODO: modify ELF header
     // to load mmu_worker into a safe address range
     // that will not collide with those used by user's function
@@ -181,22 +182,26 @@ impl EngineLoop for MmuLoop {
         mut context: Context,
         output_sets: Arc<Vec<String>>,
     ) -> DandelionResult<Context> {
+        debug!("Mmu run");
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
             _ => return Err(DandelionError::ConfigMissmatch),
         };
 
+        debug!("Setting up input structs");
         setup_input_structs::<usize, usize>(
             &mut context,
             elf_config.system_data_offset,
             &output_sets,
         )?;
-
+        
+        debug!("Matching mmu context");
         let mmu_context = match &context.context {
             ContextType::Mmu(mmu_context) => mmu_context,
             _ => return Err(DandelionError::ContextMissmatch),
         };
 
+        debug!("Mmu static run");
         mmu_run_static(
             self.cpu_slot,
             mmu_context.storage.filename().unwrap(),
@@ -204,6 +209,7 @@ impl EngineLoop for MmuLoop {
             elf_config.entry_point,
         )?;
 
+        debug!("Reading output structs");
         read_output_structs::<usize, usize>(&mut context, elf_config.system_data_offset)?;
 
         return Ok(context);

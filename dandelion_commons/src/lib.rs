@@ -101,6 +101,9 @@ pub enum DandelionError {
     DispatcherCompositionCombine,
     /// dispatcher found mistake when trying to find waiting functions
     DispatcherDependencyError,
+    // Memcached errors
+    /// General memcached error
+    MemcachedError,
     /// registry errors
     RegistryError(RegistryError),
     // metering errors

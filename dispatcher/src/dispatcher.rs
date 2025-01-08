@@ -15,7 +15,7 @@ use futures::{
     Future,
 };
 use itertools::Itertools;
-use log::trace;
+use log::{trace, debug};
 use machine_interface::{
     function_driver::{Driver, FunctionConfig, WorkToDo},
     machine_config::{
@@ -105,6 +105,7 @@ impl Dispatcher {
         non_caching: bool,
         recorder: Recorder,
     ) -> DandelionResult<BTreeMap<usize, CompositionSet>> {
+        debug!("Queuing function {}", function_name);
         let function_id = self
             .function_registry
             .get_function_id(&function_name)
@@ -327,6 +328,7 @@ impl Dispatcher {
             if let Some(alternative) = options.iter().next() {
                 match &alternative.function_type {
                     FunctionType::Function(engine_id, ctx_size) => {
+                        debug!("Queuing type Function");
                         recorder.record(RecordPoint::PrepareEnvQueue)?;
                         let (context, config, metadata) = self
                             .prepare_for_engine(
@@ -339,6 +341,11 @@ impl Dispatcher {
                             )
                             .await?;
                         recorder.record(RecordPoint::GetEngineQueue)?;
+                        debug!("running function {} on {:?} type engine with input sets {:?} and output sets {:?}",
+                            function_id,
+                            *engine_id,
+                            metadata.input_sets.iter().map(|(name, _)| name).collect_vec(),
+                            metadata.output_sets);
                         trace!("running function {} on {:?} type engine with input sets {:?} and output sets {:?}",
                             function_id,
                             *engine_id,
@@ -378,6 +385,7 @@ impl Dispatcher {
                     }
                     FunctionType::Composition(composition) => {
                         // need to set the inner composition indexing to the outer composition indexing
+                        debug!("Queuing type Composition");
                         let compositon_output = self
                             .queue_composition(
                                 composition.clone(),
@@ -414,6 +422,7 @@ impl Dispatcher {
         non_caching: bool,
         mut recorder: Recorder,
     ) -> DandelionResult<(Context, FunctionConfig, Metadata)> {
+        debug!("Preparing function {} for engine", function_id);
         let metadata = self.function_registry.get_metadata(function_id).await?;
         // get context and load static data
         let context_id = match self.type_map.get(&engine_type) {
@@ -528,6 +537,7 @@ impl Dispatcher {
         mut recorder: Recorder,
     ) -> DandelionResult<Context> {
         // preparation is done, get engine to receive engine
+        debug!("Running function on engine. Context content size: {}", function_context.content.len());
         let engine_queue = match self.engine_queues.get(&engine_type) {
             Some(q) => q,
             None => return Err(DandelionError::DispatcherConfigError),

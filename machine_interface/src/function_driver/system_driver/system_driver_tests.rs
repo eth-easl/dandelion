@@ -169,7 +169,6 @@ mod system_driver_tests {
             .expect("Should have body set");
         assert_eq!(1, body_set.buffers.len());
         let expected_body_len = get_body_size(&response_buffer);
-        // debug!("expected_body_len: {}", expected_body_len);
         assert_eq!(expected_body_len, body_set.buffers[0].data.size);
     }
 
@@ -254,7 +253,7 @@ dolore magna aliquyam erat, sed diam voluptua."#
     macro_rules! driverTests {
         ($name : ident; $domain: ty; $dom_init: expr; $driver : expr ; $drv_init : expr ) => {
             #[test]
-            fn test_http_get() {    
+            fn test_http_get() {
                 let driver = Box::new($driver);
                 super::get_http::<$domain>($dom_init, driver, $drv_init);
             }

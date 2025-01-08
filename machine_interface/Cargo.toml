@@ -32,11 +32,13 @@ serde_json = "1.0"
 core_affinity = { version = "0.8"}
 futures = { version = "0.3.28" }
 tokio = { version = "1", features = ["full"] }
+memcache = "0.18.0"
 reqwest = { version = "0.12", optional = true }
 http = { version = "1.1", optional = true }
 bytes = { version = "1.6", optional = true}
 libloading = { version = "0.8.1" }
 log = "0.4.20"
+env_logger = "0.11.5"
 
 # disable benchmarks in library, to not run all unit tests on every benchmark
 # also needs to be disabled for criterion flags to work that are not available for tests
