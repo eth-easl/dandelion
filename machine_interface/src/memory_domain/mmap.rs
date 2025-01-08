@@ -1,6 +1,6 @@
 use crate::{
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
-    util::mmapmem::MmapMem,
+    util::mmapmem::{MmapMem, MmapMemPool},
 };
 use dandelion_commons::{DandelionError, DandelionResult};
 use log::debug;
@@ -28,23 +28,33 @@ impl ContextTrait for MmapContext {
 }
 
 #[derive(Debug)]
-pub struct MmapMemoryDomain {}
+pub struct MmapMemoryDomain {
+    memory_pool: MmapMemPool,
+}
 
 impl MemoryDomain for MmapMemoryDomain {
-    fn init(_config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
-        Ok(Box::new(MmapMemoryDomain {}))
+    fn init(config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
+        let size = match config {
+            MemoryResource::Anonymous { size } => size,
+            _ => {
+                return Err(DandelionError::DomainError(
+                    dandelion_commons::DomainError::ConfigMissmatch,
+                ))
+            }
+        };
+        let memory_pool =
+            MmapMemPool::create(size, ProtFlags::PROT_READ | ProtFlags::PROT_WRITE, None)?;
+        Ok(Box::new(MmapMemoryDomain { memory_pool }))
     }
 
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
         // create and map a shared memory region
-        let mem_space =
-            match MmapMem::create(size, ProtFlags::PROT_READ | ProtFlags::PROT_WRITE, false) {
-                Ok(v) => v,
-                Err(_e) => return Err(DandelionError::MemoryAllocationError),
-            };
+        let (mem_space, actual_size) = self
+            .memory_pool
+            .get_allocation(size, nix::sys::mman::MmapAdvise::MADV_DONTNEED)?;
 
         let new_context = Box::new(MmapContext { storage: mem_space });
-        Ok(Context::new(ContextType::Mmap(new_context), size))
+        Ok(Context::new(ContextType::Mmap(new_context), actual_size))
     }
 }
 

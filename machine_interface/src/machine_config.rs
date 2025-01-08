@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use crate::function_driver::SystemFunction;
 #[allow(unused_imports)]
@@ -18,6 +18,8 @@ pub enum EngineType {
     RWasm,
     #[cfg(feature = "mmu")]
     Process,
+    #[cfg(feature = "kvm")]
+    Kvm,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -41,6 +43,8 @@ pub fn get_compatibilty_table() -> BTreeMap<EngineType, DomainType> {
         (EngineType::RWasm, DomainType::RWasm),
         #[cfg(feature = "mmu")]
         (EngineType::Process, DomainType::Process),
+        #[cfg(feature = "kvm")]
+        (EngineType::Kvm, DomainType::Mmap),
     ]);
 }
 
@@ -56,36 +60,54 @@ pub fn get_system_functions(engine_type: EngineType) -> Vec<(SystemFunction, usi
     };
 }
 
-pub fn get_available_domains() -> BTreeMap<DomainType, &'static dyn MemoryDomain> {
-    return BTreeMap::from([
-        (
-            DomainType::Mmap,
-            Box::leak(
-                crate::memory_domain::system_domain::SystemMemoryDomain::init(MemoryResource::None).unwrap(),
-            ) as &'static dyn MemoryDomain,
-        ),
+pub fn get_available_domains(
+    resources: BTreeMap<DomainType, MemoryResource>,
+) -> BTreeMap<DomainType, Arc<Box<dyn MemoryDomain>>> {
+    let mut default_resources = BTreeMap::from([
+        (DomainType::Mmap, MemoryResource::Anonymous { size: 0 }),
         #[cfg(feature = "cheri")]
-        (
-            DomainType::Cheri,
-            Box::leak(
-                crate::memory_domain::cheri::CheriMemoryDomain::init(MemoryResource::None).unwrap(),
-            ) as &'static dyn MemoryDomain,
-        ),
-        #[cfg(feature = "wasm")]
-        (
-            DomainType::RWasm,
-            Box::leak(
-                crate::memory_domain::wasm::WasmMemoryDomain::init(MemoryResource::None).unwrap(),
-            ) as &'static dyn MemoryDomain,
-        ),
+        (DomainType::Cheri, MemoryResource::None),
         #[cfg(feature = "mmu")]
         (
             DomainType::Process,
-            Box::leak(
-                crate::memory_domain::mmu::MmuMemoryDomain::init(MemoryResource::None).unwrap(),
-            ) as &'static dyn MemoryDomain,
+            MemoryResource::Shared {
+                id: u64::MAX,
+                size: 0,
+            },
         ),
+        #[cfg(feature = "wasm")]
+        (DomainType::RWasm, MemoryResource::Anonymous { size: 0 }),
     ]);
+    for (dom, resource) in resources {
+        default_resources.insert(dom, resource);
+    }
+    return default_resources
+        .into_iter()
+        .map(|(dom_type, resource)| match dom_type {
+            DomainType::Mmap => (
+                dom_type,
+                Arc::new(crate::memory_domain::mmap::MmapMemoryDomain::init(resource).unwrap()),
+            ),
+            #[cfg(feature = "cheri")]
+            DomainType::Cheri => (
+                dom_type,
+                Arc::new(
+                    crate::memory_domain::cheri::CheriMemoryDomain::init(MemoryResource::None)
+                        .unwrap(),
+                ),
+            ),
+            #[cfg(feature = "mmu")]
+            DomainType::Process => (
+                dom_type,
+                Arc::new(crate::memory_domain::mmu::MmuMemoryDomain::init(resource).unwrap()),
+            ),
+            #[cfg(feature = "wasm")]
+            DomainType::RWasm => (
+                dom_type,
+                Arc::new(crate::memory_domain::wasm::WasmMemoryDomain::init(resource).unwrap()),
+            ),
+        })
+        .collect();
 }
 
 pub fn get_available_drivers() -> BTreeMap<EngineType, &'static dyn Driver> {
@@ -116,6 +138,13 @@ pub fn get_available_drivers() -> BTreeMap<EngineType, &'static dyn Driver> {
             EngineType::Process,
             Box::leak(Box::new(
                 crate::function_driver::compute_driver::mmu::MmuDriver {},
+            )) as &'static dyn Driver,
+        ),
+        #[cfg(feature = "kvm")]
+        (
+            EngineType::Kvm,
+            Box::leak(Box::new(
+                crate::function_driver::compute_driver::kvm::KvmDriver {},
             )) as &'static dyn Driver,
         ),
     ]);

@@ -1,21 +1,20 @@
 #[cfg(all(test, any(feature = "reqwest_io")))]
 mod system_driver_tests {
-    use log::debug;
     use crate::{
         function_driver::{
             system_driver::get_system_function_output_sets, test_queue::TestQueue, ComputeResource,
             Driver, FunctionConfig, SystemFunction, WorkToDo,
         },
-        memory_domain::{Context, ContextTrait, MemoryDomain, 
-            MemoryResource, 
-            mmap::MmapMemoryDomain, transfer_memory},
+        memory_domain::{
+            mmap::MmapMemoryDomain, test_resource::get_resource, transfer_memory, Context,
+            ContextTrait, MemoryDomain, MemoryResource,
+        },
         DataItem, DataSet, Position,
     };
     use dandelion_commons::{
         records::{Archive, ArchiveInit, RecordPoint},
         DandelionResult,
     };
-    use libc::VM_MAX_MAP_COUNT;
     use std::sync::Arc;
 
     const _CONTEXT_SIZE: usize = 2048 * 1024;
@@ -46,19 +45,22 @@ mod system_driver_tests {
     }
 
     fn write_request(context: &mut Context, request: Vec<u8>) -> DandelionResult<()> {
-        
-        let mmap_domain = MmapMemoryDomain::init(MemoryResource::None)
+        let mmap_domain = MmapMemoryDomain::init(MemoryResource::Anonymous { size: (1 << 22) })
             .expect("Failed to initialize MmapMemoryDomain: Domain Error");
-        let mut mmap_context = mmap_domain.acquire_context(_CONTEXT_SIZE).expect("Should be able to get context");
-                
+        let mut mmap_context = mmap_domain
+            .acquire_context(_CONTEXT_SIZE)
+            .expect("Should be able to get context");
+
         let request_length = request.len();
         let request_offset_mmap = mmap_context.get_free_space_and_write_slice(&request)? as usize;
 
         let mut response_buffer_mmap = Vec::<u8>::new();
         response_buffer_mmap.resize(request_length, 0);
-        mmap_context.read(request_offset_mmap, &mut response_buffer_mmap);
+        mmap_context
+            .read(request_offset_mmap, &mut response_buffer_mmap)
+            .expect("Should be able to read");
         let status_mmap = read_status(&response_buffer_mmap);
-        
+
         let source_ctxt = Arc::new(mmap_context);
         let request_offset_ok = context.get_free_space(request_length, 128);
 
@@ -67,12 +69,21 @@ mod system_driver_tests {
         } else {
             panic!("offset in write_request is not ok");
         };
-        
-        transfer_memory(context, source_ctxt, request_offset, request_offset_mmap, request_length).expect("Should successfully transfer");
+
+        transfer_memory(
+            context,
+            source_ctxt,
+            request_offset,
+            request_offset_mmap,
+            request_length,
+        )
+        .expect("Should successfully transfer");
 
         let mut response_buffer = Vec::<u8>::new();
         response_buffer.resize(request_length, 0);
-        context.read(request_offset, &mut response_buffer);
+        context
+            .read(request_offset, &mut response_buffer)
+            .expect("Should be able to read context");
         let status = read_status(&response_buffer);
         assert_eq!(status_mmap, status);
 
@@ -95,7 +106,7 @@ mod system_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: ComputeResource,
     ) -> () {
-        let domain = Dom::init(dom_init).expect("Should be able to get domain");
+        let domain = Dom::init(get_resource(dom_init)).expect("Should be able to get domain");
         let queue = Box::new(TestQueue::new());
         let mut context = domain
             .acquire_context(_CONTEXT_SIZE)
@@ -106,7 +117,7 @@ mod system_driver_tests {
         let config = FunctionConfig::SysConfig(SystemFunction::HTTP);
 
         let request = "GET http://httpbin.org/get HTTP/1.1".as_bytes().to_vec();
-        
+
         write_request(&mut context, request).expect("Should be able to prepare request line");
 
         let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
@@ -178,7 +189,7 @@ mod system_driver_tests {
         drv_init: ComputeResource,
     ) -> () {
         let queue = Box::new(TestQueue::new());
-        let domain = Dom::init(dom_init).expect("Should be able to get domain");
+        let domain = Dom::init(get_resource(dom_init)).expect("Should be able to get domain");
         let mut context = domain
             .acquire_context(_CONTEXT_SIZE)
             .expect("Should be able to get context");
@@ -273,6 +284,6 @@ dolore magna aliquyam erat, sed diam voluptua."#
         // use crate::memory_domain::malloc::MallocMemoryDomain as domain;
         use crate::memory_domain::system_domain::SystemMemoryDomain as domain;
         // use crate::memory_domain::mmap::MmapMemoryDomain as domain;
-        driverTests!(reqwest_io; domain; crate::memory_domain::MemoryResource::None; ReqwestDriver{}; ComputeResource::CPU(1));
+        driverTests!(reqwest_io; domain; crate::memory_domain::MemoryResource::Anonymous{size: (2<<22)}; ReqwestDriver{}; ComputeResource::CPU(1));
     }
 }

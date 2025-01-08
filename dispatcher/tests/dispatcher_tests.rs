@@ -1,4 +1,7 @@
-#[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "wasm")))]
+#[cfg(all(
+    test,
+    any(feature = "cheri", feature = "mmu", feature = "kvm", feature = "wasm")
+))]
 mod dispatcher_tests {
     mod function_tests;
     mod registry_tests;
@@ -10,8 +13,8 @@ mod dispatcher_tests {
     };
     use machine_interface::{
         function_driver::ComputeResource,
-        machine_config::EngineType,
-        memory_domain::{Context, ContextTrait, MemoryDomain},
+        machine_config::{DomainType, EngineType},
+        memory_domain::{Context, ContextTrait, MemoryDomain, MemoryResource},
     };
     use std::{collections::BTreeMap, sync::Arc};
 
@@ -24,6 +27,7 @@ mod dispatcher_tests {
         out_set_names: Vec<String>,
         engine_type: EngineType,
         engine_resource: Vec<ComputeResource>,
+        memory_resource: (DomainType, MemoryResource),
     ) -> (Dispatcher, FunctionId) {
         let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         path.pop();
@@ -39,8 +43,17 @@ mod dispatcher_tests {
         let resource_pool = ResourcePool {
             engine_pool: futures::lock::Mutex::new(pool_map),
         };
-        let dispatcher =
-            Dispatcher::init(resource_pool).expect("Should have initialized dispatcher");
+        let memory_resources = vec![memory_resource]
+            .into_iter()
+            .map(|(dom, resource)| {
+                (
+                    dom,
+                    machine_interface::memory_domain::test_resource::get_resource(resource),
+                )
+            })
+            .collect();
+        let dispatcher = Dispatcher::init(resource_pool, memory_resources)
+            .expect("Should have initialized dispatcher");
         let function_id = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -93,12 +106,17 @@ mod dispatcher_tests {
                 },
                 registry_tests::{multiple_input_fixed, single_input_fixed},
             };
-            #[test]
+            #[test_log::test]
             fn test_single_domain_and_engine_basic() {
                 let name = format!("test_{}_basic", stringify!($name));
-                single_domain_and_engine_basic::<$domain>(&name, $engine_type, $engine_resource)
+                single_domain_and_engine_basic::<$domain>(
+                    $init,
+                    &name,
+                    $engine_type,
+                    $engine_resource,
+                )
             }
-            #[test]
+            #[test_log::test]
             fn test_single_domain_and_engine_matmul() {
                 let name = format!("test_{}_matmul", stringify!($name));
                 single_domain_and_engine_matmul::<$domain>(
@@ -108,40 +126,40 @@ mod dispatcher_tests {
                     $engine_resource,
                 )
             }
-            #[test]
+            #[test_log::test]
             fn test_composition_single_matmul() {
                 let name = format!("test_{}_matmul", stringify!($name));
                 composition_single_matmul::<$domain>($init, &name, $engine_type, $engine_resource)
             }
 
-            #[test]
+            #[test_log::test]
             fn test_composition_parallel() {
                 let name = format!("test_{}_matmul", stringify!($name));
                 composition_parallel_matmul::<$domain>($init, &name, $engine_type, $engine_resource)
             }
 
-            #[test]
+            #[test_log::test]
             fn test_composition_chain() {
                 let name = format!("test_{}_matmul", stringify!($name));
                 composition_chain_matmul::<$domain>($init, &name, $engine_type, $engine_resource)
             }
 
-            #[test]
+            #[test_log::test]
             fn test_composition_diamond() {
                 let name = format!("test_{}_matmac", stringify!($name));
                 composition_diamond_matmac::<$domain>($init, &name, $engine_type, $engine_resource)
             }
 
-            #[test]
+            #[test_log::test]
             fn test_single_input_fixed() {
                 let name = format!("test_{}_matmac", stringify!($name));
-                single_input_fixed::<$domain>(&name, $engine_type, $engine_resource)
+                single_input_fixed::<$domain>($init, &name, $engine_type, $engine_resource)
             }
 
-            #[test]
+            #[test_log::test]
             fn test_multiple_input_fixed() {
                 let name = format!("test_{}_matmac", stringify!($name));
-                multiple_input_fixed::<$domain>(&name, $engine_type, $engine_resource)
+                multiple_input_fixed::<$domain>($init, &name, $engine_type, $engine_resource)
             }
         };
     }
@@ -150,37 +168,50 @@ mod dispatcher_tests {
     mod cheri {
         use machine_interface::{
             function_driver::ComputeResource,
-            machine_config::EngineType,
+            machine_config::{DomainType, EngineType},
             memory_domain::{cheri::CheriMemoryDomain, MemoryResource},
         };
-        dispatcherTests!(elf_cheri; CheriMemoryDomain; MemoryResource::None; EngineType::Cheri; vec![ComputeResource::CPU(1)]);
+        dispatcherTests!(elf_cheri; CheriMemoryDomain; (DomainType::Cheri, MemoryResource::None); EngineType::Cheri; vec![ComputeResource::CPU(1)]);
     }
 
     #[cfg(feature = "mmu")]
     mod mmu {
         use machine_interface::{
             function_driver::ComputeResource,
-            machine_config::EngineType,
+            machine_config::{DomainType, EngineType},
             memory_domain::{mmu::MmuMemoryDomain, MemoryResource},
         };
         #[cfg(target_arch = "x86_64")]
-        dispatcherTests!(elf_mmu_x86_64; MmuMemoryDomain; MemoryResource::None; EngineType::Process; vec![ComputeResource::CPU(1)]);
+        dispatcherTests!(elf_mmu_x86_64; MmuMemoryDomain; (DomainType::Process ,MemoryResource::Shared { id: 0, size: (1<<30) }); EngineType::Process; vec![ComputeResource::CPU(1)]);
         #[cfg(target_arch = "aarch64")]
-        dispatcherTests!(elf_mmu_aarch64; MmuMemoryDomain; MemoryResource::None; EngineType::Process; vec![ComputeResource::CPU(1)]);
+        dispatcherTests!(elf_mmu_aarch64; MmuMemoryDomain; (DomainType::Process, MemoryResource::Shared { id: 0, size: (1<<30) }); EngineType::Process; vec![ComputeResource::CPU(1)]);
+    }
+
+    #[cfg(feature = "kvm")]
+    mod kvm {
+        use machine_interface::{
+            function_driver::ComputeResource,
+            machine_config::{DomainType, EngineType},
+            memory_domain::{mmap::MmapMemoryDomain, MemoryResource},
+        };
+        #[cfg(target_arch = "x86_64")]
+        dispatcherTests!(elf_kvm_x86_64; MmapMemoryDomain; (DomainType::Mmap, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Kvm; vec![ComputeResource::CPU(1)]);
+        #[cfg(target_arch = "aarch64")]
+        dispatcherTests!(elf_kvm_aarch64; MmapMemoryDomain; (DomainType::Mmap, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Kvm; vec![ComputeResource::CPU(1)]);
     }
 
     #[cfg(feature = "wasm")]
     mod wasm {
         use machine_interface::{
             function_driver::ComputeResource,
-            machine_config::EngineType,
+            machine_config::{DomainType, EngineType},
             memory_domain::{wasm::WasmMemoryDomain, MemoryResource},
         };
 
         #[cfg(target_arch = "x86_64")]
-        dispatcherTests!(sysld_wasm_x86_64; WasmMemoryDomain; MemoryResource::None; EngineType::RWasm; vec![ComputeResource::CPU(1)]);
+        dispatcherTests!(sysld_wasm_x86_64; WasmMemoryDomain; (DomainType::RWasm, MemoryResource::Anonymous { size: (1<<30) }); EngineType::RWasm; vec![ComputeResource::CPU(1)]);
 
         #[cfg(target_arch = "aarch64")]
-        dispatcherTests!(sysld_wasm_aarch64; WasmMemoryDomain; MemoryResource::None; EngineType::RWasm; vec![ComputeResource::CPU(1)]);
+        dispatcherTests!(sysld_wasm_aarch64; WasmMemoryDomain; (DomainType::RWasm, MemoryResource::Anonymous { size: (1<<30) }); EngineType::RWasm; vec![ComputeResource::CPU(1)]);
     }
 }
