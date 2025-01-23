@@ -24,6 +24,7 @@ const HTTP_OUTPUT_SETS: [&str; 2] = ["response", "body"];
 pub fn get_system_function_input_sets(function: SystemFunction) -> Vec<String> {
     return match function {
         SystemFunction::HTTP => HTTP_INPUT_SETS,
+        SystemFunction::MEMCACHED => HTTP_INPUT_SETS,
     }
     .map(|name| name.to_string())
     .to_vec();
@@ -33,6 +34,7 @@ pub fn get_system_function_input_sets(function: SystemFunction) -> Vec<String> {
 pub fn get_system_function_output_sets(function: SystemFunction) -> Vec<String> {
     return match function {
         SystemFunction::HTTP => &HTTP_OUTPUT_SETS,
+        SystemFunction::MEMCACHED => &HTTP_OUTPUT_SETS,
     }
     .map(|name| name.to_string())
     .to_vec();

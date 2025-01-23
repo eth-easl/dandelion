@@ -15,6 +15,8 @@ mod system_driver_tests {
         records::{Archive, ArchiveInit, RecordPoint},
         DandelionResult,
     };
+    use std::thread;
+    use std::time::Duration;
     use std::sync::Arc;
 
     const _CONTEXT_SIZE: usize = 2048 * 1024;
@@ -261,6 +263,122 @@ dolore magna aliquyam erat, sed diam voluptua."#
         assert_eq!("HTTP/1.1 200 OK", status);
     }
 
+    fn memcached_get<Dom: MemoryDomain>(
+        dom_init: MemoryResource,
+        driver: Box<dyn Driver>,
+        drv_init: ComputeResource,
+    ) -> () {
+        let value = "Definitive";
+        let domain = Dom::init(get_resource(dom_init)).expect("Should be able to get domain");
+        let queue = Box::new(TestQueue::new());
+        let mut set_context = domain
+            .acquire_context(_CONTEXT_SIZE)
+            .expect("Should be able to get context");
+        let mut get_context = domain
+            .acquire_context(_CONTEXT_SIZE)
+            .expect("Should be able to get context");
+        let _engine = driver
+            .start_engine(drv_init, queue.clone())
+            .expect("Should be able to get engine");
+        let config = FunctionConfig::SysConfig(SystemFunction::HTTP);
+
+        let mut set_request = "MEMCACHED_SET 127.0.0.1:8000 testKey2\n\n900 ".as_bytes().to_vec();
+        set_request.extend_from_slice(value.as_bytes());
+
+        let get_request = "MEMCACHED_GET 127.0.0.1:8000 testKey2\n\n".as_bytes().to_vec();
+
+        write_request(&mut set_context, set_request).expect("Should be able to prepare request line");
+        write_request(&mut get_context, get_request).expect("Should be able to prepare request line");
+
+        let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+            #[cfg(feature = "timestamp")]
+            timestamp_count: 1000,
+        })));
+        let mut recorder = archive.get_recorder().unwrap();
+        let set_output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
+        let get_output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
+        let set_promise = queue.enqueu(WorkToDo::FunctionArguments {
+            config: config.clone(),
+            context: set_context,
+            output_sets: set_output_sets,
+            recorder: recorder.get_sub_recorder().unwrap(),
+        });
+        thread::sleep(Duration::from_millis(500));
+        let get_promise = queue.enqueu(WorkToDo::FunctionArguments {
+            config,
+            context: get_context,
+            output_sets: get_output_sets,
+            recorder: recorder.get_sub_recorder().unwrap(),
+        });
+        let set_result_context = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(set_promise)
+            .expect("Engine should return without error")
+            .get_context();
+        let get_result_context = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(get_promise)
+            .expect("Engine should return without error")
+            .get_context();
+        recorder
+            .record(RecordPoint::FutureReturn)
+            .expect("Should have advanced record");
+        let response_set = get_result_context
+            .content
+            .iter()
+            .find(|set_opt| {
+                if let Some(set) = set_opt {
+                    return set.ident == "response";
+                } else {
+                    return false;
+                }
+            })
+            .expect("Should have response set")
+            .as_ref()
+            .expect("Should have response set");
+        assert_eq!(1, response_set.buffers.len());
+
+        let status_item = &response_set.buffers[0];
+        let mut response_buffer_status = Vec::<u8>::new();
+        response_buffer_status.resize(status_item.data.size, 0);
+        get_result_context
+            .read(status_item.data.offset, &mut response_buffer_status)
+            .expect("Should be able to read status");
+        let status = read_status(&response_buffer_status);
+        assert_eq!("SUCCESS", status);
+
+        // check body
+        let body_set = get_result_context
+            .content
+            .iter()
+            .find(|set_opt| {
+                if let Some(set) = set_opt {
+                    return set.ident == "body";
+                } else {
+                    return false;
+                }
+            })
+            .expect("Should have body set")
+            .as_ref()
+            .expect("Should have body set");
+        assert_eq!(1, body_set.buffers.len());
+
+        let body_item = &body_set.buffers[0];
+        let mut response_buffer_body = Vec::<u8>::new();
+        response_buffer_body.resize(body_item.data.size, 0);
+        get_result_context
+            .read(body_item.data.offset, &mut response_buffer_body)
+            .expect("Should be able to read body");
+
+        let expected_body_len = get_body_size(&response_buffer_status);
+
+        // debug!("expected_body_len: {}", expected_body_len);
+        assert_eq!(expected_body_len, body_set.buffers[0].data.size);
+        assert_eq!(value, std::str::from_utf8(&response_buffer_body).unwrap());
+    }
+
     // TODO change to start local http server to check against.
     macro_rules! driverTests {
         ($name : ident; $domain: ty; $dom_init: expr; $driver : expr ; $drv_init : expr ) => {
@@ -274,6 +392,12 @@ dolore magna aliquyam erat, sed diam voluptua."#
             fn test_http_post() {
                 let driver = Box::new($driver);
                 super::post_http::<$domain>($dom_init, driver, $drv_init);
+            }
+
+            #[test]
+            fn test_memcached_get() {
+                let driver = Box::new($driver);
+                super::memcached_get::<$domain>($dom_init, driver, $drv_init);
             }
         };
     }
