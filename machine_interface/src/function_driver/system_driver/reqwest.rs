@@ -570,7 +570,7 @@ async fn request_run(
         request_vec
             .into_iter()
             .map(|request| {
-                match request.method { 
+                match request.method {
                     RequestMethod::HTTP_GET | RequestMethod::HTTP_POST | RequestMethod::HTTP_PUT
                         => http_request(client.clone(), request).boxed(), 
                     RequestMethod::MEMCACHED_SET | RequestMethod::MEMCACHED_GET 
