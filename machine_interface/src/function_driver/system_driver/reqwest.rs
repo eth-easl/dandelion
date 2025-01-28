@@ -182,7 +182,7 @@ fn convert_to_request(
                 )?.as_bytes());
                 body.push(b' ');
                 // We jump by two, to ignore the two newline symbols after the header
-                body.extend_from_slice(&raw_request.drain(request_index+2..).collect::<Vec<u8>>());
+                body.extend(raw_request.drain(request_index + 2..));
             } 
         _ => return Err(DandelionError::NotImplemented), 
     }
@@ -366,7 +366,7 @@ async fn memcached_request(
     let mut start_index_payload: usize = 0;
     for (i, &byte) in body.iter().enumerate() {
         if byte.is_ascii_whitespace() {
-            memcached_identifier = String::from_utf8((&body[0..i]).to_vec())
+            memcached_identifier = String::from_utf8((body[0..i]).to_vec())
                 .map_err(|_| DandelionError::MalformedSystemFuncArg(String::from("Invalid memcached identifier")))?;
             start_index_payload = i + 1;
             break;
@@ -397,7 +397,7 @@ async fn memcached_request(
                     break;
                 }
             }
-            let value: Vec<u8> = body.drain(start_index_value..).collect();
+            let value: Vec<u8> = body.split_off(start_index_value);
             if value.is_empty() {
                 return Err(DandelionError::MalformedSystemFuncArg(String::from(
                     "Value to store with memcached set is missing",
@@ -625,6 +625,7 @@ async fn request_run(
 
 async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
     log::debug!("Reqwest engine Init");
+    std::env::set_var("RUST_BACKTRACE", "1");
     let client = HttpClient::new();
     // TODO FIX! This should not be necessary!
     let mut queue_ref = Box::leak(queue);
