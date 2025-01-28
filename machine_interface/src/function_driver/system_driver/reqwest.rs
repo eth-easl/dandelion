@@ -181,7 +181,7 @@ fn convert_to_request(
                 .ok_or(DandelionError::MalformedSystemFuncArg(String::from("No memcached identifier")),
                 )?.as_bytes());
                 body.push(b' ');
-                if request_index + 2 < raw_request.length(){
+                if request_index + 2 < raw_request.len(){
                     // We jump by two, to ignore the two newline symbols after the header
                     body.extend(raw_request.drain(request_index + 2..));
                 }
