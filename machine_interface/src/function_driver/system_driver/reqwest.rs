@@ -181,8 +181,10 @@ fn convert_to_request(
                 .ok_or(DandelionError::MalformedSystemFuncArg(String::from("No memcached identifier")),
                 )?.as_bytes());
                 body.push(b' ');
-                // We jump by two, to ignore the two newline symbols after the header
-                body.extend(raw_request.drain(request_index + 2..));
+                if request_index + 2 < raw_request.length(){
+                    // We jump by two, to ignore the two newline symbols after the header
+                    body.extend(raw_request.drain(request_index + 2..));
+                }
             } 
         _ => return Err(DandelionError::NotImplemented), 
     }
@@ -410,7 +412,7 @@ async fn memcached_request(
             } 
 
             let result = tokio::task::spawn_blocking(move || memcached_client.set(&memcached_identifier, 
-                String::from_utf8((&value).to_vec()).unwrap(),
+                String::from_utf8(value).unwrap(),
                 expiration_time)).await;
 
             match result{
