@@ -499,6 +499,7 @@ async fn memcached_request(
         preamble,
         body: response_body,
     };
+    warn!("Completed memcached_request function");
     return Ok(response_info);
 }
 
@@ -509,7 +510,7 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
         preamble,
         mut body,
     } = response;
-
+    warn!("context_write");
     let preamble_len = preamble.len();
     let body_len = body.len();
     let response_len = preamble_len + body_len;
@@ -518,6 +519,7 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
 
     match &mut context.context {
         ContextType::System(destination_ctxt) => {
+            warn!("Transfering to system_context");
             let preamble_bytes = bytes::Bytes::from(preamble.into_bytes());
             system_context_write_from_bytes(
                 destination_ctxt,
@@ -549,7 +551,7 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
             );
         }
     }
-
+    warn!("Completed transfer. Name and key: {}, {}", item_name.clone(), item_key.clone());
     if let Some(response_set) = &mut context.content[0] {
         response_set.buffers.push(DataItem {
             ident: item_name.clone(),
@@ -609,7 +611,7 @@ async fn request_run(
             return;
         }
     };
-    // warn!("request_run with response_vec of length {}", response_vec.len());
+    warn!("request_run with response_vec of length {}", response_vec.len());
 
     // only clear once for all requests
     context.clear_metadata();
@@ -633,6 +635,7 @@ async fn request_run(
             .map(|response| http_context_write(&mut context, response))
             .collect();
         if let Err(err) = write_results {
+            warn!("Error: {}", err);
             debt.fulfill(Err(err));
             return;
         }
@@ -642,6 +645,7 @@ async fn request_run(
         return;
     }
     debt.fulfill(Ok(WorkDone::Context(context)));
+    warn!("Debt fullfilled");
     return;
 }
 
