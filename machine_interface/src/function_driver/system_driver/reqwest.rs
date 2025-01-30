@@ -447,16 +447,15 @@ async fn memcached_request(
         }
         RequestMethod::MEMCACHED_GET => {
             // Result<Option<Vec<u8>>, tokio_memcached::Error>
-            let memcached_identifier = memcached_identifier.to_string();
             let result = tokio::task::spawn_blocking(move || memcached_client.get::<Vec<u8>>(&memcached_identifier)).await;
 
             match result{
                 Ok(Ok(Some(response))) => {
                     preamble = String::from("SUCCESS");
-                    response_body = Bytes::from(response.to_str());
+                    response_body = Bytes::from(String::from_utf8(response).unwrap());
                 }
                 Ok(Ok(None)) => {
-                    debug!("Key {} did not exist on memcached server. Identifier: {}", item_key, memcached_identifier);
+                    debug!("Key {} did not exist on memcached server", item_key);
                     preamble = String::from("ABSENT");
                     response_body = Bytes::from(vec![0u8]);
                 }
