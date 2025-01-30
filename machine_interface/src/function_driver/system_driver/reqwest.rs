@@ -387,9 +387,11 @@ async fn memcached_request(
             break;
         }
     }
+    warn!("Memcached_identifier: {}", memcached_identifier);
 
     match method {
         RequestMethod::MEMCACHED_SET => {
+            warn!("Starting set");
             let mut expiration_time:u32 = 10800;
             
             // The maximum expiration time in memcached is 30 days, minimum is 0 (never expire)
@@ -424,6 +426,8 @@ async fn memcached_request(
                 )));
             } 
 
+            warn!("Setting identifier to {}\nExpiration time: {:?}", String::from_utf8(value.clone()).unwrap(), expiration_time);
+
             let result = tokio::task::spawn_blocking(move || memcached_client.set(&memcached_identifier, 
                 String::from_utf8(value).unwrap(),
                 expiration_time)).await;
@@ -449,11 +453,13 @@ async fn memcached_request(
             warn!("Completed memcached set");
         }
         RequestMethod::MEMCACHED_GET => {
+            warn!("Starting get");
             // Result<Option<Vec<u8>>, tokio_memcached::Error>
             let result = tokio::task::spawn_blocking(move || memcached_client.get::<Vec<u8>>(&memcached_identifier)).await;
 
             match result{
                 Ok(Ok(Some(response))) => {
+                    warn!("Gotten back {}", String::from_utf8(response.clone()).unwrap());
                     preamble = String::from("SUCCESS");
                     response_body = Bytes::from(String::from_utf8(response).unwrap());
                 }
