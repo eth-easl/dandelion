@@ -338,6 +338,7 @@ async fn memcached_request(
         headermap,
         mut body,
     } = request_info;
+    env::set_var("RUST_LOG", "info");
     // Memcached Basic Text Protocol could have following methods: 
     // Set, add (set if not present), replace (set if present), append, prepend, cas
     // Get, gets (get with cas ), delete, incr/decr
@@ -345,6 +346,7 @@ async fn memcached_request(
     // We try to connect to the server and timeout if not reachable
     const SERVER_TIMEOUT: u64 = 1;
     let ip = format!("memcache://{}", uri.clone());
+    warn!("Trying to connect to {}", uri);
     let mut memcached_client = match timeout(Duration::from_secs(SERVER_TIMEOUT), async {
         tokio::task::spawn_blocking(move || MemcachedClient::connect(ip)).await
     })
