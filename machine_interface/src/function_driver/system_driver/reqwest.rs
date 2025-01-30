@@ -301,6 +301,16 @@ async fn http_request(
         Ok(bytes) => bytes,
         Err(_) => return Err(DandelionError::SystemFuncResponseError),
     };
+    // Could potentially done in chunks, like this:
+    // let mut body = BytesMut::new();
+    // let mut stream = response.bytes_stream();
+    // while let Some(chunk) = stream.next().await {
+    //     match chunk {
+    //         Ok(bytes) => body.extend_from_slice(&bytes),
+    //         Err(_) => return Err(DandelionError::SystemFuncResponseError),
+    //     }
+    // }
+    // body.freeze();
 
     if content_length == body.len() {
         let response_info = ResponseInformation {
@@ -433,6 +443,7 @@ async fn memcached_request(
                     )));
                 }
             }
+            warn!("Completed memcached set");
         }
         RequestMethod::MEMCACHED_GET => {
             // Result<Option<Vec<u8>>, tokio_memcached::Error>
@@ -442,10 +453,10 @@ async fn memcached_request(
             match result{
                 Ok(Ok(Some(response))) => {
                     preamble = String::from("SUCCESS");
-                    response_body = Bytes::from(response);
+                    response_body = Bytes::from(response.to_str());
                 }
                 Ok(Ok(None)) => {
-                    debug!("Key {} did not exist on memcached server", item_key);
+                    debug!("Key {} did not exist on memcached server. Identifier: {}", item_key, memcached_identifier);
                     preamble = String::from("ABSENT");
                     response_body = Bytes::from(vec![0u8]);
                 }
@@ -462,6 +473,7 @@ async fn memcached_request(
                     )));
                 }
             }
+            warn!("Completed memcached get");
         }
         _ => {
             return Err(DandelionError::MalformedSystemFuncArg(String::from(
