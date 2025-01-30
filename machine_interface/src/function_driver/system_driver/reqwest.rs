@@ -24,6 +24,7 @@ use tokio::time::{timeout, Duration, sleep};
 use memcache::Client as MemcachedClient;
 use reqwest::Client as HttpClient;
 use bytes::Bytes;
+use std::env;
 
 #[allow(non_camel_case_types)]
 enum RequestMethod {
