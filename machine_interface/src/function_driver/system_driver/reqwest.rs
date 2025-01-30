@@ -24,6 +24,7 @@ use tokio::time::{timeout, Duration, sleep};
 use memcache::Client as MemcachedClient;
 use reqwest::Client as HttpClient;
 use bytes::Bytes;
+use base64::{Engine as _, engine::general_purpose};
 use std::env;
 
 #[allow(non_camel_case_types)]
@@ -459,13 +460,13 @@ async fn memcached_request(
 
             match result{
                 Ok(Ok(Some(response))) => {
-                    warn!("Gotten back {}", String::from_utf8(response.clone()).unwrap());
-                    preamble = String::from("SUCCESS");
-                    response_body = Bytes::from(String::from_utf8(response).unwrap());
+                    preamble = String::from("SUCCESS!");
+                    let decoded_response = general_purpose::STANDARD.decode(&response).expect("Failed to decode Base64");
+                    response_body = Bytes::from(Bytes::from(decoded_response));
                 }
                 Ok(Ok(None)) => {
                     debug!("Key {} did not exist on memcached server", item_key);
-                    preamble = String::from("ABSENT");
+                    preamble = String::from("ABSENT!!");
                     response_body = Bytes::from(vec![0u8]);
                 }
                 Ok(Err(e)) => {
