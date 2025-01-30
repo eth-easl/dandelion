@@ -427,15 +427,16 @@ async fn memcached_request(
                 )));
             } 
 
-            warn!("Setting identifier to {}\nExpiration time: {:?}", String::from_utf8(value.clone()).unwrap(), expiration_time);
+            warn!("Setting identifier to {:?}\nExpiration time: {:?}", value, expiration_time);
+            let encoded_value = general_purpose::STANDARD.encode(&value);
 
             let result = tokio::task::spawn_blocking(move || memcached_client.set(&memcached_identifier, 
-                String::from_utf8(value).unwrap(),
+                encoded_value,
                 expiration_time)).await;
 
             match result{
                 Ok(Ok(_)) => {
-                    preamble = String::from("SUCCESS");
+                    preamble = String::from("SUCCESS!");
                     response_body = Bytes::from(vec![0u8]);
                 }
                 Ok(Err(e)) => {
