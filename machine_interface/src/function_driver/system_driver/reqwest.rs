@@ -517,6 +517,9 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
     // allocate space in the context for the entire response
     let response_start = context.get_free_space(response_len, 128)?;
 
+    warn!("Preamble: {}", preamble);
+    warn!("body: {:?}", body);
+
     match &mut context.context {
         ContextType::System(destination_ctxt) => {
             warn!("Transfering to system_context");
@@ -535,6 +538,21 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
             );
         }
         _ => {
+            warn!("Doing normal context write");
+            match &mut context.context {
+                ContextType::Malloc(_) => warn!("Malloc context"),
+                ContextType::Mmap(_) => warn!("Mmap context"),
+                ContextType::ReadOnly(_) => warn!("ReadOnly context"),
+                #[cfg(feature = "bytes_context")]
+                ContextType::Bytes(_) => warn!("Bytes context"),
+                #[cfg(feature = "cheri")]
+                ContextType::Cheri(_) => warn!("Cheri context"),
+                #[cfg(feature = "mmu")]
+                ContextType::Mmu(_) => warn!("Mmu context"),
+                #[cfg(feature = "wasm")]
+                ContextType::Wasm(_) => warn!("Wasm context"),
+                ContextType::System(_) => warn!("System context"),
+            }
             context.write(response_start, preamble.as_bytes())?;
             let mut bytes_read = 0;
             while bytes_read < body_len {
