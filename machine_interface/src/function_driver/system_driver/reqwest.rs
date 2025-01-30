@@ -348,7 +348,7 @@ async fn memcached_request(
     // We try to connect to the server and timeout if not reachable
     const SERVER_TIMEOUT: u64 = 1;
     let ip = format!("memcache://{}", uri.clone());
-    warn!("Trying to connect to {}", uri);
+    // warn!("Trying to connect to {}", uri);
     let mut memcached_client = match timeout(Duration::from_secs(SERVER_TIMEOUT), async {
         tokio::task::spawn_blocking(move || MemcachedClient::connect(ip)).await
     })
@@ -388,11 +388,11 @@ async fn memcached_request(
             break;
         }
     }
-    warn!("Memcached_identifier: {}", memcached_identifier);
+    // warn!("Memcached_identifier: {}", memcached_identifier);
 
     match method {
         RequestMethod::MEMCACHED_SET => {
-            warn!("Starting set");
+            // warn!("Starting set");
             let mut expiration_time:u32 = 10800;
             
             // The maximum expiration time in memcached is 30 days, minimum is 0 (never expire)
@@ -427,7 +427,7 @@ async fn memcached_request(
                 )));
             } 
 
-            warn!("Setting identifier to {:?}\nExpiration time: {:?}", value, expiration_time);
+            // warn!("Setting identifier to {:?}\nExpiration time: {:?}", value, expiration_time);
             let encoded_value = general_purpose::STANDARD.encode(&value);
 
             let result = tokio::task::spawn_blocking(move || memcached_client.set(&memcached_identifier, 
@@ -452,10 +452,10 @@ async fn memcached_request(
                     )));
                 }
             }
-            warn!("Completed memcached set");
+            // warn!("Completed memcached set");
         }
         RequestMethod::MEMCACHED_GET => {
-            warn!("Starting get");
+            // warn!("Starting get");
             // Result<Option<Vec<u8>>, tokio_memcached::Error>
             let result = tokio::task::spawn_blocking(move || memcached_client.get::<Vec<u8>>(&memcached_identifier)).await;
 
@@ -483,7 +483,7 @@ async fn memcached_request(
                     )));
                 }
             }
-            warn!("Completed memcached get");
+            // warn!("Completed memcached get");
         }
         _ => {
             return Err(DandelionError::MalformedSystemFuncArg(String::from(
@@ -501,7 +501,7 @@ async fn memcached_request(
         preamble,
         body: response_body,
     };
-    warn!("Completed memcached_request function");
+    // warn!("Completed memcached_request function");
     return Ok(response_info);
 }
 
@@ -512,19 +512,19 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
         preamble,
         mut body,
     } = response;
-    warn!("context_write");
+    // warn!("context_write");
     let preamble_len = preamble.len();
     let body_len = body.len();
     let response_len = preamble_len + body_len;
     // allocate space in the context for the entire response
     let response_start = context.get_free_space(response_len, 128)?;
 
-    warn!("Preamble: {}", preamble);
-    warn!("body: {:?}", body);
+    // warn!("Preamble: {}", preamble);
+    // warn!("body: {:?}", body);
 
     match &mut context.context {
         ContextType::System(destination_ctxt) => {
-            warn!("Transfering to system_context");
+            // warn!("Transfering to system_context");
             let preamble_bytes = bytes::Bytes::from(preamble.into_bytes());
             system_context_write_from_bytes(
                 destination_ctxt,
@@ -540,7 +540,7 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
             );
         }
         _ => {
-            warn!("Doing normal context write");
+            // warn!("Doing normal context write");
             match &mut context.context {
                 ContextType::Malloc(_) => warn!("Malloc context"),
                 ContextType::Mmap(_) => warn!("Mmap context"),
@@ -571,7 +571,7 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
             );
         }
     }
-    warn!("Completed transfer. Name and key: {}, {}", item_name.clone(), item_key.clone());
+    // warn!("Completed transfer. Name and key: {}, {}", item_name.clone(), item_key.clone());
     if let Some(response_set) = &mut context.content[0] {
         response_set.buffers.push(DataItem {
             ident: item_name.clone(),
@@ -631,7 +631,7 @@ async fn request_run(
             return;
         }
     };
-    warn!("request_run with response_vec of length {}", response_vec.len());
+    // warn!("request_run with response_vec of length {}", response_vec.len());
 
     // only clear once for all requests
     context.clear_metadata();
@@ -665,7 +665,7 @@ async fn request_run(
         return;
     }
     debt.fulfill(Ok(WorkDone::Context(context)));
-    warn!("Debt fullfilled");
+    // warn!("Debt fullfilled");
     return;
 }
 
