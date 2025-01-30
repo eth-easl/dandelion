@@ -36,7 +36,7 @@ pub enum DomainType {
 pub fn get_compatibilty_table() -> BTreeMap<EngineType, DomainType> {
     return BTreeMap::from([
         #[cfg(feature = "reqwest_io")]
-        (EngineType::Reqwest, DomainType::Mmap),
+        (EngineType::Reqwest, DomainType::System),
         #[cfg(feature = "cheri")]
         (EngineType::Cheri, DomainType::Cheri),
         #[cfg(feature = "wasm")]
