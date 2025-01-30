@@ -540,21 +540,6 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
             );
         }
         _ => {
-            // warn!("Doing normal context write");
-            match &mut context.context {
-                ContextType::Malloc(_) => warn!("Malloc context"),
-                ContextType::Mmap(_) => warn!("Mmap context"),
-                ContextType::ReadOnly(_) => warn!("ReadOnly context"),
-                #[cfg(feature = "bytes_context")]
-                ContextType::Bytes(_) => warn!("Bytes context"),
-                #[cfg(feature = "cheri")]
-                ContextType::Cheri(_) => warn!("Cheri context"),
-                #[cfg(feature = "mmu")]
-                ContextType::Mmu(_) => warn!("Mmu context"),
-                #[cfg(feature = "wasm")]
-                ContextType::Wasm(_) => warn!("Wasm context"),
-                ContextType::System(_) => warn!("System context"),
-            }
             context.write(response_start, preamble.as_bytes())?;
             let mut bytes_read = 0;
             while bytes_read < body_len {
