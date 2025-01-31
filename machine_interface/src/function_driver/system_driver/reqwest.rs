@@ -352,6 +352,9 @@ async fn memcached_request(
     const SERVER_TIMEOUT: u64 = 1;
     let ip = format!("memcache://{}", uri.clone());
     // warn!("Trying to connect to {}", uri);
+
+    let temp = SystemTime::now();
+
     let mut memcached_client = match timeout(TokioDuration::from_secs(SERVER_TIMEOUT), async {
         tokio::task::spawn_blocking(move || MemcachedClient::connect(ip)).await
     })
@@ -371,6 +374,17 @@ async fn memcached_request(
             return Err(DandelionError::MemcachedServerError(format!("Server could not be reached within {}s: {:?}", SERVER_TIMEOUT, e)));
         }
     };
+    
+    let end = SystemTime::now();
+
+    match end.duration_since(temp) {
+        Ok(duration) => {
+            warn!("Elapsed time for connection to server: {:?}", duration);
+        }
+        Err(e) => {
+            warn!("Error: {:?}", e);
+        }
+    }
 
     // Preamble is SUCCESS for success. For non successfull functions, error message will be stored there
     // Get on non existed key will return ABSENT
@@ -431,11 +445,31 @@ async fn memcached_request(
             } 
 
             // warn!("Setting identifier to {:?}\nExpiration time: {:?}", value, expiration_time);
+            let temp = SystemTime::now();
             let encoded_value = general_purpose::STANDARD.encode(&value);
+            let end = SystemTime::now();
+            match end.duration_since(temp) {
+                Ok(duration) => {
+                    warn!("Elapsed time for encoding value: {:?}", duration);
+                }
+                Err(e) => {
+                    warn!("Error: {:?}", e);
+                }
+            }
 
+            let temp = SystemTime::now();
             let result = tokio::task::spawn_blocking(move || memcached_client.set(&memcached_identifier, 
                 encoded_value,
                 expiration_time)).await;
+            let end = SystemTime::now();
+            match end.duration_since(temp) {
+                Ok(duration) => {
+                    warn!("Elapsed time for raw memcached set: {:?}", duration);
+                }
+                Err(e) => {
+                    warn!("Error: {:?}", e);
+                }
+            }
 
             match result{
                 Ok(Ok(_)) => {
@@ -460,12 +494,32 @@ async fn memcached_request(
         RequestMethod::MEMCACHED_GET => {
             // warn!("Starting get");
             // Result<Option<Vec<u8>>, tokio_memcached::Error>
+            let temp = SystemTime::now();
             let result = tokio::task::spawn_blocking(move || memcached_client.get::<Vec<u8>>(&memcached_identifier)).await;
+            let end = SystemTime::now();
+            match end.duration_since(temp) {
+                Ok(duration) => {
+                    warn!("Elapsed time for raw memcached get: {:?}", duration);
+                }
+                Err(e) => {
+                    warn!("Error: {:?}", e);
+                }
+            }
 
             match result{
                 Ok(Ok(Some(response))) => {
                     preamble = String::from("SUCCESS!");
+                    let temp = SystemTime::now();
                     let decoded_response = general_purpose::STANDARD.decode(&response).expect("Failed to decode Base64");
+                    let end = SystemTime::now();
+                    match end.duration_since(temp) {
+                        Ok(duration) => {
+                            warn!("Elapsed time for decoding value: {:?}", duration);
+                        }
+                        Err(e) => {
+                            warn!("Error: {:?}", e);
+                        }
+                    }
                     response_body = Bytes::from(decoded_response);
                 }
                 Ok(Ok(None)) => {
