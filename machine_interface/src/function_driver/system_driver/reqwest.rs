@@ -246,6 +246,8 @@ async fn http_request(
         headermap,
         body,
     } = request_info;
+    
+    let start = SystemTime::now();
 
     let request_builder = match method {
         RequestMethod::HTTP_PUT => client.put(uri.clone()),
@@ -315,6 +317,21 @@ async fn http_request(
     //     }
     // }
     // body.freeze();
+
+    let end = SystemTime::now();
+    match end.duration_since(start) {
+        Ok(duration) => {
+            match method {
+                RequestMethod::HTTP_PUT => warn!("Elapsed time for http_put to server: {:?}", duration),
+                RequestMethod::HTTP_POST => warn!("Elapsed time for http_post to server: {:?}", duration),
+                RequestMethod::HTTP_GET => warn!("Elapsed time for http_get to server: {:?}", duration),
+                _ => {}
+            }
+        }
+        Err(e) => {
+            warn!("Error: {:?}", e);
+        }
+    }
 
     if content_length == body.len() {
         let response_info = ResponseInformation {
