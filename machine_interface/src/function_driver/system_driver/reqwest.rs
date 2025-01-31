@@ -26,6 +26,7 @@ use reqwest::Client as HttpClient;
 use bytes::Bytes;
 use base64::{Engine as _, engine::general_purpose};
 use std::env;
+use std::time::Duration;
 
 #[allow(non_camel_case_types)]
 enum RequestMethod {
@@ -341,6 +342,7 @@ async fn memcached_request(
         mut body,
     } = request_info;
     env::set_var("RUST_LOG", "info");
+    let start = SystemTime::now();
     // Memcached Basic Text Protocol could have following methods: 
     // Set, add (set if not present), replace (set if present), append, prepend, cas
     // Get, gets (get with cas ), delete, incr/decr
@@ -463,7 +465,7 @@ async fn memcached_request(
                 Ok(Ok(Some(response))) => {
                     preamble = String::from("SUCCESS!");
                     let decoded_response = general_purpose::STANDARD.decode(&response).expect("Failed to decode Base64");
-                    response_body = Bytes::from(Bytes::from(decoded_response));
+                    response_body = Bytes::from(decoded_response);
                 }
                 Ok(Ok(None)) => {
                     debug!("Key {} did not exist on memcached server", item_key);
@@ -501,6 +503,17 @@ async fn memcached_request(
         preamble,
         body: response_body,
     };
+    
+    let end = SystemTime::now();
+
+    match end.duration_since(start) {
+        Ok(duration) => {
+            warn!("Elapsed time for single memcached request: {:?}", duration);
+        }
+        Err(e) => {
+            warn!("Error: {:?}", e);
+        }
+    }
     // warn!("Completed memcached_request function");
     return Ok(response_info);
 }
