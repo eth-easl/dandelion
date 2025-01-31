@@ -20,13 +20,14 @@ use log::{error, warn, debug};
 use reqwest::{header::HeaderMap, Client};
 use std::sync::Arc;
 use tokio::runtime::Builder;
-use tokio::time::{timeout, Duration, sleep};
+use tokio::time::{timeout, sleep};
+use tokio::time::Duration as TokioDuration;
 use memcache::Client as MemcachedClient;
 use reqwest::Client as HttpClient;
 use bytes::Bytes;
 use base64::{Engine as _, engine::general_purpose};
 use std::env;
-use std::time::Duration;
+use std::time::{SystemTime, Duration};
 
 #[allow(non_camel_case_types)]
 enum RequestMethod {
@@ -351,7 +352,7 @@ async fn memcached_request(
     const SERVER_TIMEOUT: u64 = 1;
     let ip = format!("memcache://{}", uri.clone());
     // warn!("Trying to connect to {}", uri);
-    let mut memcached_client = match timeout(Duration::from_secs(SERVER_TIMEOUT), async {
+    let mut memcached_client = match timeout(TokioDuration::from_secs(SERVER_TIMEOUT), async {
         tokio::task::spawn_blocking(move || MemcachedClient::connect(ip)).await
     })
     .await
