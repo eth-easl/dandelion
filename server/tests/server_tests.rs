@@ -172,11 +172,11 @@ mod server_tests {
         let chain_request = RegisterChain {
             composition: format!(
                 r#"
-                (:function {function} (InMats) -> (OutMats))
-                (:composition {chain} (CompInMats) -> (CompOutMats) (
-                    ({function} ((:all InMats <- CompInMats)) => ((InterMat := OutMats)))
-                    ({function} ((:all InMats <- InterMat)) => ((CompOutMats := OutMats)))
-                ))
+                function {function} (InMats) => (OutMats);
+                composition {chain} (CompInMats) => (CompOutMats) {{
+                    {function} (InMats = all CompInMats) => (InterMat = OutMats);
+                    {function} (InMats = all InterMat) => (CompOutMats = OutMats);
+                }}
             "#,
                 function = function_name,
                 chain = chain_name,
