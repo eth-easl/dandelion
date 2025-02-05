@@ -28,6 +28,9 @@ use bytes::Bytes;
 use base64::{Engine as _, engine::general_purpose};
 use std::env;
 use std::time::{SystemTime, Duration};
+use dashmap::DashMap;
+use r2d2::{Pool, PooledConnection};
+use r2d2_memcache::MemcacheConnectionManager;
 
 #[allow(non_camel_case_types)]
 enum RequestMethod {
@@ -347,7 +350,7 @@ async fn http_request(
 }
 
 async fn memcached_request(
-    client: HttpClient,
+    connection: PooledConnection<MemcacheConnectionManager>,
     request_info: RequestInformation,
 ) -> DandelionResult<ResponseInformation> {
     let RequestInformation {
@@ -370,38 +373,38 @@ async fn memcached_request(
     let ip = format!("memcache://{}", uri.clone());
     // warn!("Trying to connect to {}", uri);
 
-    let temp = SystemTime::now();
+    // let temp = SystemTime::now();
 
-    let mut memcached_client = match timeout(TokioDuration::from_secs(SERVER_TIMEOUT), async {
-        tokio::task::spawn_blocking(move || MemcachedClient::connect(ip)).await
-    })
-    .await
-    {
-        Ok(Ok(Ok(client))) => client,
-        Ok(Ok(Err(e))) => {
-            debug!("Could not connect to memcached server with error: {:?}", e);
-            return Err(DandelionError::MemcachedServerError(format!("Server Error: {:?}", e)));
-        }
-        Ok(Err(e)) => {
-            debug!("Could not connect to memcached server with error: {:?}", e);
-            return Err(DandelionError::MemcachedServerError(format!("Connection tokio task failed: {:?}", e)));
-        }
-        Err(e) => {
-            debug!("Could not connect to memcached server with error: {:?}", e);
-            return Err(DandelionError::MemcachedServerError(format!("Server could not be reached within {}s: {:?}", SERVER_TIMEOUT, e)));
-        }
-    };
+    // let mut memcached_client = match timeout(TokioDuration::from_secs(SERVER_TIMEOUT), async {
+    //     tokio::task::spawn_blocking(move || MemcachedClient::connect(ip)).await
+    // })
+    // .await
+    // {
+    //     Ok(Ok(Ok(client))) => client,
+    //     Ok(Ok(Err(e))) => {
+    //         debug!("Could not connect to memcached server with error: {:?}", e);
+    //         return Err(DandelionError::MemcachedServerError(format!("Server Error: {:?}", e)));
+    //     }
+    //     Ok(Err(e)) => {
+    //         debug!("Could not connect to memcached server with error: {:?}", e);
+    //         return Err(DandelionError::MemcachedServerError(format!("Connection tokio task failed: {:?}", e)));
+    //     }
+    //     Err(e) => {
+    //         debug!("Could not connect to memcached server with error: {:?}", e);
+    //         return Err(DandelionError::MemcachedServerError(format!("Server could not be reached within {}s: {:?}", SERVER_TIMEOUT, e)));
+    //     }
+    // };
     
-    let end = SystemTime::now();
+    // let end = SystemTime::now();
 
-    match end.duration_since(temp) {
-        Ok(duration) => {
-            warn!("Elapsed time for connection to server: {:?}", duration);
-        }
-        Err(e) => {
-            warn!("Error: {:?}", e);
-        }
-    }
+    // match end.duration_since(temp) {
+    //     Ok(duration) => {
+    //         warn!("Elapsed time for connection to server: {:?}", duration);
+    //     }
+    //     Err(e) => {
+    //         warn!("Error: {:?}", e);
+    //     }
+    // }
 
     // Preamble is SUCCESS for success. For non successfull functions, error message will be stored there
     // Get on non existed key will return ABSENT
@@ -475,7 +478,7 @@ async fn memcached_request(
             }
 
             let temp = SystemTime::now();
-            let result = tokio::task::spawn_blocking(move || memcached_client.set(&memcached_identifier, 
+            let result = tokio::task::spawn_blocking(move || connection.set(&memcached_identifier, 
                 encoded_value,
                 expiration_time)).await;
             let end = SystemTime::now();
@@ -512,7 +515,7 @@ async fn memcached_request(
             // warn!("Starting get");
             // Result<Option<Vec<u8>>, tokio_memcached::Error>
             let temp = SystemTime::now();
-            let result = tokio::task::spawn_blocking(move || memcached_client.get::<Vec<u8>>(&memcached_identifier)).await;
+            let result = tokio::task::spawn_blocking(move || connection.get::<Vec<u8>>(&memcached_identifier)).await;
             let end = SystemTime::now();
             match end.duration_since(temp) {
                 Ok(duration) => {
@@ -668,7 +671,8 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
 
 async fn request_run(
     mut context: Context,
-    client: HttpClient,
+    client: Option<HttpClient>,
+    mut connection: Option<PooledConnection<MemcacheConnectionManager>>,
     output_set_names: Arc<Vec<String>>,
     debt: Debt,
     mut recorder: Recorder,
@@ -686,9 +690,19 @@ async fn request_run(
             .map(|request| {
                 match request.method {
                     RequestMethod::HTTP_GET | RequestMethod::HTTP_POST | RequestMethod::HTTP_PUT
-                        => http_request(client.clone(), request).boxed(), 
+                        => {
+                            match &client {
+                                Some(client) => http_request(client.clone(), request).boxed(),
+                                _ => unimplemented!(),
+                            }
+                        }
                     RequestMethod::MEMCACHED_SET | RequestMethod::MEMCACHED_GET 
-                        => memcached_request(client.clone(), request).boxed(),
+                        => {
+                            match connection.take() {
+                                Some(connection) => memcached_request(connection, request).boxed(),
+                                _ => unimplemented!(),
+                            }
+                        }
                     _ => unimplemented!(), 
                 }
             }),
@@ -743,6 +757,9 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
     log::debug!("Reqwest engine Init");
     std::env::set_var("RUST_BACKTRACE", "1");
     let client = HttpClient::new();
+    
+    let memcached_connection_pool: Arc<DashMap<String, Pool<MemcacheConnectionManager>>> = Arc::new(DashMap::new());
+
     // TODO FIX! This should not be necessary!
     let mut queue_ref = Box::leak(queue);
     let mut tuple;
@@ -775,9 +792,20 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 };
                 match function {
                     SystemFunction::HTTP | SystemFunction::MEMCACHED => {
+                    // TODO - Change this to the real ip
+                    let addr = "10.233.0.17:11211".to_string();
+                    let MAX_CONNECTION_POOL_SIZE = 50;
+
+                    let pool = memcached_connection_pool.entry(addr.clone()).or_insert_with(|| {
+                        let manager = MemcacheConnectionManager::new(format!("memcache://{}", addr));
+                        Pool::builder().max_size(MAX_CONNECTION_POOL_SIZE).build(manager).unwrap()
+                    });
+                    let connection: PooledConnection<MemcacheConnectionManager> = pool.get().expect("Failed to get a memcached connection");
+
                         tokio::spawn(request_run(
                             context,
-                            client.clone(),
+                            Some(client.clone()),
+                            Some(connection),
                             output_sets,
                             debt,
                             recorder,
