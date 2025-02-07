@@ -646,7 +646,10 @@ fn main() -> () {
     runtime.block_on(service_loop(dispatcher_sender, config.port));
 
     // clean up folder in tmp that is used for function storage
-    std::fs::remove_dir_all(FUNCTION_FOLDER_PATH).unwrap();
+    let removal_error = std::fs::remove_dir_all(FUNCTION_FOLDER_PATH);
+    if let Err(err) = removal_error {
+        warn!("Removing function folder failed with: {}", err);
+    }
     // clean up folder with shared files in case the context backed by shared files left some behind
     for shm_dir_entry in std::fs::read_dir("/dev/shm/").unwrap() {
         if let Ok(shm_file) = shm_dir_entry {

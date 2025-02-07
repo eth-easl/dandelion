@@ -298,6 +298,7 @@ mod server_tests {
         let status = status_result.unwrap();
         assert_eq!(status, None, "Server exited unexpectedly");
     }
+
     #[test]
     #[serial]
     fn serve_matmul_http_1_1() {
