@@ -90,7 +90,7 @@ async fn load_local(
     work_queue: Box<EngineQueue>,
     path: String,
 ) -> DandelionResult<Arc<Function>> {
-    recorder.record(RecordPoint::ParsingQueueu).unwrap();
+    recorder.record(RecordPoint::ParsingQueue).unwrap();
     let function = work_queue
         .enqueu_work(
             machine_interface::function_driver::WorkToDo::ParsingArguments {
@@ -102,7 +102,7 @@ async fn load_local(
         )
         .await?
         .get_function();
-    recorder.record(RecordPoint::ParsingDequeu).unwrap();
+    recorder.record(RecordPoint::ParsingDequeue).unwrap();
     return Ok(Arc::new(function));
 }
 
