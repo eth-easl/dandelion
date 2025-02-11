@@ -1,6 +1,5 @@
 use ariadne::{Color, Config, Fmt, Label, Report, ReportKind, Source};
-use chumsky::{prelude::*, text::whitespace};
-use chumsky::{BoxStream, Flat, Stream};
+use chumsky::prelude::*;
 use std::rc::Rc;
 
 pub type Span = std::ops::Range<usize>;
@@ -21,156 +20,8 @@ pub struct Spanned<T> {
     pub v: T,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Mark {
-    Gets,
-    From,
-    ToSlim,
-    ToFat,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Atom {
-    Ident(String),
-    Int(u64),
-    Bool(bool),
-    Symbol(String),
-    Mark(Mark),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Token {
-    Atom(Atom),
-    ListDelim,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum Node {
-    Atom(Atom),
-    List(Vec<(Self, Span)>),
-    Token(Token),
-}
-
-fn s_parser() -> impl Parser<char, Vec<(Node, Span)>, Error = Simple<char>> {
-    let comment = just(' ')
-        .repeated()
-        .then(just(';'))
-        .padded()
-        .ignore_then(text::newline().not().repeated())
-        .ignore_then(text::newline())
-        .ignored()
-        .labelled("comment")
-        .repeated();
-    let atom = just(":=")
-        .to(Node::Atom(Atom::Mark(Mark::Gets)))
-        .or(just("<-").to(Node::Atom(Atom::Mark(Mark::From))))
-        .or(just("->").to(Node::Atom(Atom::Mark(Mark::ToSlim))))
-        .or(just("=>").to(Node::Atom(Atom::Mark(Mark::ToFat))))
-        .or(just(':')
-            .ignore_then(text::ident())
-            .map(|x| Node::Atom(Atom::Symbol(x))))
-        .or(text::int(10).map(|l: String| Node::Atom(Atom::Int(l.parse().unwrap()))))
-        .or(just("true")
-            .map(|_| true)
-            .or(just("false").map(|_| false))
-            .map(|b| Node::Atom(Atom::Bool(b))))
-        .or(text::ident().map(|x| Node::Atom(Atom::Ident(x))))
-        .labelled("atom");
-    comment
-        .padded()
-        .ignore_then(recursive(|list| {
-            let node = atom.or(list).labelled("atom or list").then_ignore(comment);
-            node.map_with_span(|node, span| (node, span))
-                .separated_by(whitespace().at_least(1))
-                .then_ignore(comment)
-                .padded()
-                .delimited_by(just('('), just(')'))
-                .collect::<Vec<(Node, Span)>>()
-                .map(Node::List)
-                .labelled("list")
-                .then_ignore(comment)
-        }))
-        .labelled("node")
-        .map_with_span(|node, span| (node, span))
-        .separated_by(comment.or(whitespace().at_least(1).labelled("whitespace")))
-        .padded()
-        .then_ignore(comment)
-        .padded()
-}
-
-#[test]
-fn s_parser_test() {
-    let srcs = [
-        r#"
-(a)
-    "#,
-        r#"
-; comment
-(a) ; comment
-(b)
-    "#,
-        r#"
-(a) ; comment
-(a ; comment
-)
-    "#,
-        r#"
-(a) ; comment
-(
-    (a) ; comment
-)
-    "#,
-        r#"
-; this currently fails because support for comments is incomplete
-
-(:function CompileFiles (Source) -> (Out)) ; the key for Out is the binary this file will end up in
-(:function LinkObjects (ObjectFile Library) -> (Binary))
-    "#,
-        r#"
-(:composition CompileMulti (SourceFiles Libraries) -> (Binaries) (
-    (CompileFiles (
-        (:shard Source <- SourceFile)
-    ) => (
-        (ObjectFiles := Out) ; declares a collection ObjectFiles and merges all outputs from the shards of CompileFile into it
-    ))
-
-    (LinkObjects (
-        (:shard Objects <- ObjectFiles)
-        (Libraries <- Libraries) ; no sharding modifier: broadcast libraries to all funciton calls
-    ) => (
-        (Binaries := Binary) ; declares a collection Binaries and merges all outputs from the shards of CompileFile into it
-    ))
-))
-    "#,
-    ];
-    for src in srcs {
-        // eprintln!("{}", src);
-        let nodes = s_parser()
-            .then_ignore(end())
-            .parse(&*src)
-            .expect("parse failed");
-        // dbg!(&nodes);
-        let eoi = 0..src.chars().count();
-        let _token_stream = flatten_tts(eoi, nodes);
-    }
-}
-
 fn span_at(at: usize) -> Span {
     at..at + 1
-}
-
-fn flatten_tts(eoi: Span, token_trees: Vec<(Node, Span)>) -> BoxStream<'static, Token, Span> {
-    use std::iter::once;
-    // Currently, this is quite an explicit process: it will likely become easier in future versions of Chumsky.
-    Stream::from_nested(eoi, token_trees.into_iter(), |(tt, span)| match tt {
-        Node::Token(token) => Flat::Single((token, span)),
-        Node::List(list) => Flat::Many(
-            once((Node::Token(Token::ListDelim), span_at(span.start)))
-                .chain(list.into_iter())
-                .chain(once((Node::Token(Token::ListDelim), span_at(span.end - 1)))),
-        ),
-        Node::Atom(atom) => Flat::Single((Token::Atom(atom), span)),
-    })
 }
 
 fn aspanned<T>(v: T, span: Span) -> std::rc::Rc<Spanned<T>> {
@@ -213,7 +64,7 @@ pub struct InputDescriptor {
     pub name: String,
     pub ident: String,
     pub sharding: Sharding,
-    pub loop_cond: LoopCond,
+    // TODO pub loop_cond: LoopCond,
 }
 
 pub type AOutputDescriptor = Rc<Spanned<OutputDescriptor>>;
@@ -222,7 +73,7 @@ pub type AOutputDescriptor = Rc<Spanned<OutputDescriptor>>;
 pub struct OutputDescriptor {
     pub ident: String,
     pub name: String,
-    pub feedback: bool,
+    // TODO pub feedback: bool,
 }
 
 pub type AFunctionApplication = Rc<Spanned<FunctionApplication>>;
@@ -268,22 +119,24 @@ pub enum Item {
 #[derive(Debug)]
 pub struct Module(pub Vec<Item>);
 
-fn parser() -> impl Parser<Token, Module, Error = Simple<Token>> {
-    let delim = just(Token::ListDelim);
-    let symbol = |s: &'static str| {
-        select! {
-            Token::Atom(Atom::Symbol(symbol)) if symbol == s => s,
-        }
-    };
-    let ident = select! {
-        Token::Atom(Atom::Ident(atom)) => atom,
-    };
-    let function_decl = symbol("function")
-        .ignore_then(ident)
-        .then(ident.repeated().delimited_by(delim.clone(), delim.clone()))
-        .then_ignore(just(Token::Atom(Atom::Mark(Mark::ToSlim))))
-        .then(ident.repeated().delimited_by(delim.clone(), delim.clone()))
-        .delimited_by(delim.clone(), delim.clone())
+fn parser() -> impl Parser<char, Module, Error = Simple<char>> {
+    let function_decl = just("function")
+        .padded()
+        .ignore_then(text::ident().padded())
+        .then(
+            text::ident()
+                .padded()
+                .separated_by(just(','))
+                .delimited_by(just('('), just(')')),
+        )
+        .then_ignore(just("=>").padded())
+        .then(
+            text::ident()
+                .padded()
+                .separated_by(just(','))
+                .delimited_by(just('('), just(')')),
+        )
+        .then_ignore(just(";").padded())
         .map(|((name, params), returns)| FunctionDecl {
             name,
             params,
@@ -291,134 +144,137 @@ fn parser() -> impl Parser<Token, Module, Error = Simple<Token>> {
         })
         .map_with_span(aspanned);
 
-    let input_descriptor = {
-        let sharding = (symbol("all").or(symbol("keyed")).or(symbol("each")))
-            .or_not()
-            .map(|sharding| match sharding {
-                Some("all") => Sharding::All,
-                Some("keyed") => Sharding::Keyed,
-                Some("each") => Sharding::Each,
-                Some(_) => unreachable!(),
-                None => Sharding::All,
-            });
+    //     let loop_cond =
+    //         select! {
+    //             Token::Atom(Atom::Symbol(symbol)) if symbol == "until_empty" || symbol == "until_empty_item" => symbol,
+    //         }.or_not()
+    //         .map(|loop_cond| match loop_cond {
+    //             Some(x) if x == "until_empty" => LoopCond::UntilEmpty,
+    //             Some(x) if x == "until_empty_item" => LoopCond::UntilItemEmpty,
+    //             Some(_) => unreachable!(),
+    //             None => LoopCond::None,
+    //         });
 
-        let loop_cond =
-            select! {
-                Token::Atom(Atom::Symbol(symbol)) if symbol == "until_empty" || symbol == "until_empty_item" => symbol,
-            }.or_not()
-            .map(|loop_cond| match loop_cond {
-                Some(x) if x == "until_empty" => LoopCond::UntilEmpty,
-                Some(x) if x == "until_empty_item" => LoopCond::UntilItemEmpty,
-                Some(_) => unreachable!(),
-                None => LoopCond::None,
-            });
+    //     loop_cond
+    //         .then(sharding)
+    //         .then(ident)
+    //         .then_ignore(just(Token::Atom(Atom::Mark(Mark::From))))
+    //         .then(ident)
+    //         .delimited_by(delim.clone(), delim.clone())
+    //         .map(|(((loop_cond, sharding), name), ident)| InputDescriptor {
+    //             name,
+    //             ident,
+    //             sharding,
+    //             loop_cond,
+    //         })
+    //         .map_with_span(aspanned)
+    // };
 
-        loop_cond
-            .then(sharding)
-            .then(ident)
-            .then_ignore(just(Token::Atom(Atom::Mark(Mark::From))))
-            .then(ident)
-            .delimited_by(delim.clone(), delim.clone())
-            .map(|(((loop_cond, sharding), name), ident)| InputDescriptor {
-                name,
-                ident,
-                sharding,
-                loop_cond,
-            })
-            .map_with_span(aspanned)
-    };
+    // let loop_ = symbol("loop")
+    //     .ignore_then({
+    //         input_descriptor
+    //             .clone()
+    //             .repeated()
+    //             .delimited_by(delim.clone(), delim.clone())
+    //     })
+    //     .then_ignore(just(Token::Atom(Atom::Mark(Mark::ToFat))))
+    //     .then({
+    //         function_application
+    //             .clone()
+    //             .repeated()
+    //             .delimited_by(delim.clone(), delim.clone())
+    //     })
+    //     .then_ignore(just(Token::Atom(Atom::Mark(Mark::ToFat))))
+    //     .then({
+    //         output_descriptor
+    //             .clone()
+    //             .repeated()
+    //             .delimited_by(delim.clone(), delim.clone())
+    //     })
+    //     .delimited_by(delim.clone(), delim.clone())
+    //     .map(|((args, statements), rets)| Loop {
+    //         args,
+    //         rets,
+    //         statements,
+    //     })
+    //     .map_with_span(aspanned);
 
-    let output_descriptor = {
-        symbol("feedback")
-            .or_not()
-            .map(|f| f.is_some())
-            .then(ident)
-            .then_ignore(just(Token::Atom(Atom::Mark(Mark::Gets))))
-            .then(ident)
-            .delimited_by(delim.clone(), delim.clone())
-            .map(|((feedback, ident), name)| OutputDescriptor {
-                ident,
-                name,
-                feedback,
-            })
-            .map_with_span(aspanned)
-    };
-
-    let function_application = ident
+    let input_descriptor = text::ident()
+        .padded()
+        .then_ignore(just('=').padded())
         .then(
-            {
-                input_descriptor
-                    .clone()
-                    .repeated()
-                    .delimited_by(delim.clone(), delim.clone())
-            }
-            .then_ignore(just(Token::Atom(Atom::Mark(Mark::ToFat))))
-            .then({
-                output_descriptor
-                    .clone()
-                    .repeated()
-                    .delimited_by(delim.clone(), delim.clone())
-            }),
+            (just("all").or(just("keyed")).or(just("each")))
+                .map(|sharding| match sharding {
+                    "all" => Sharding::All,
+                    "keyed" => Sharding::Keyed,
+                    "each" => Sharding::Each,
+                    _ => unreachable!(),
+                })
+                .padded(),
         )
-        .delimited_by(delim.clone(), delim.clone())
-        .map(|(name, (args, rets))| FunctionApplication { name, args, rets })
+        .then(text::ident().padded())
+        .map(|((name, sharding), ident)| InputDescriptor {
+            name,
+            ident,
+            sharding,
+        })
         .map_with_span(aspanned);
 
-    let loop_ = symbol("loop")
-        .ignore_then({
+    let output_descriptor = text::ident()
+        .padded()
+        .then_ignore(just("=").padded())
+        .then(text::ident().padded())
+        .map(|(ident, name)| OutputDescriptor {
+            ident,
+            name,
+            // TODO feedback: false,
+        })
+        .map_with_span(aspanned);
+
+    let function_application = text::ident()
+        .then(
             input_descriptor
-                .clone()
-                .repeated()
-                .delimited_by(delim.clone(), delim.clone())
-        })
-        .then_ignore(just(Token::Atom(Atom::Mark(Mark::ToFat))))
-        .then({
-            function_application
-                .clone()
-                .repeated()
-                .delimited_by(delim.clone(), delim.clone())
-        })
-        .then_ignore(just(Token::Atom(Atom::Mark(Mark::ToFat))))
-        .then({
+                .separated_by(just(',').padded())
+                .delimited_by(just('(').padded(), just(')').padded()),
+        )
+        .padded()
+        .then_ignore(just("=>").padded())
+        .then(
             output_descriptor
-                .clone()
-                .repeated()
-                .delimited_by(delim.clone(), delim.clone())
-        })
-        .delimited_by(delim.clone(), delim.clone())
-        .map(|((args, statements), rets)| Loop {
-            args,
-            rets,
-            statements,
-        })
-        .map_with_span(aspanned);
+                .separated_by(just(',').padded())
+                .delimited_by(just('(').padded(), just(')').padded()),
+        )
+        .padded()
+        .map(|((name, args), rets)| FunctionApplication { name, args, rets })
+        .map_with_span(aspanned)
+        .map(Statement::FunctionApplication);
 
-    let composition = symbol("composition")
-        .ignore_then(ident)
+    let statement = function_application.then_ignore(just(';').padded());
+
+    let composition = just("composition")
+        .padded()
+        .ignore_then(text::ident().padded())
         .then(
-            {
-                ident
-                    .clone()
-                    .repeated()
-                    .delimited_by(delim.clone(), delim.clone())
-            }
-            .then_ignore(just(Token::Atom(Atom::Mark(Mark::ToSlim))))
-            .then({
-                ident
-                    .clone()
-                    .repeated()
-                    .delimited_by(delim.clone(), delim.clone())
-            }),
+            text::ident()
+                .padded()
+                .separated_by(just(',').padded())
+                .delimited_by(just('(').padded(), just(')').padded())
+                .padded(),
         )
+        .then_ignore(just("=>").padded())
         .then(
-            function_application
-                .map(|f| Statement::FunctionApplication(f))
-                .or(loop_.map(|l| Statement::Loop(l)))
+            text::ident()
+                .padded()
+                .separated_by(just(',').padded())
+                .delimited_by(just('(').padded(), just(')').padded()),
+        )
+        .padded()
+        .then(
+            statement
                 .repeated()
-                .delimited_by(delim.clone(), delim.clone()),
+                .delimited_by(just('{').padded(), just('}').padded()),
         )
-        .delimited_by(delim.clone(), delim.clone())
-        .map(|((name, (params, returns)), statements)| Composition {
+        .map(|(((name, params), returns), statements)| Composition {
             name,
             params,
             returns,
@@ -426,132 +282,120 @@ fn parser() -> impl Parser<Token, Module, Error = Simple<Token>> {
         })
         .map_with_span(aspanned);
 
-    function_decl
+    (function_decl
         .map(|f| Item::FunctionDecl(f))
-        .or(composition.map(|c| Item::Composition(c)))
-        .repeated()
-        .map(|i| Module(i))
+        .or(composition.map(|c| Item::Composition(c))))
+    .repeated()
+    .padded()
+    .then_ignore(end())
+    .map(|i| Module(i))
 }
 
-#[derive(Debug)]
-pub enum DParserErrors {
-    SExpr(Vec<Simple<char>>),
-    Parse(Vec<Simple<Token>>),
-    // Valid()
-}
-
-pub fn parse(src: &str) -> Result<Module, DParserErrors> {
-    let nodes = match s_parser().then_ignore(end()).parse(src) {
-        Ok(nodes) => nodes,
-        Err(errs) => return Err(DParserErrors::SExpr(errs)),
-    };
-    let eoi = 0..src.chars().count();
-    let token_stream = flatten_tts(eoi, nodes);
-    let module = match parser().then_ignore(end()).parse(token_stream) {
-        Ok(module) => module,
-        Err(errs) => return Err(DParserErrors::Parse(errs)),
-    };
-
-    Ok(module)
+pub fn parse(src: &str) -> Result<Module, Vec<Simple<char>>> {
+    parser().then_ignore(end()).parse(src)
 }
 
 #[test]
-fn basic_test() {
+fn function_test() {
     let src = r#"
-    (:function CompileFiles (Source) -> (Out))
-    (:function LinkObjects (ObjectFile Library) -> (Binary))
+    function Access( AccessToken) => (HTTPRequest);
+    function FanOut(HTTPResponse , Topic) => (HTTPRequests);
+    function Render(HTTPResponses )   => (HTMLOutput);
     
-    (:composition CompileMulti (SourceFiles Libraries) -> (Binaries) (
-        (CompileFiles (
-            (:keyed Source <- SourceFile)
-        ) => (
-            (ObjectFiles := Out)
-        ))
+    function HTTP(Request) => ( Response) ;
+    "#;
+    match parse(src) {
+        Ok(_) => (),
+        Err(e) => {
+            print_errors(src, e);
+            panic!("parse error");
+        }
+    };
+}
+
+#[test]
+fn composition_test() {
+    let src = r#"
+    function Access( AccessToken) => (HTTPRequest);
+    function FanOut(HTTPResponse , Topic) => (HTTPRequests);
+    function Render(HTTPResponses )   => (HTMLOutput);
     
-        (LinkObjects (
-            (:all Objects <- ObjectFiles)
-            (Libraries <- Libraries)
-        ) => (
-            (Binaries := Binary)
-        ))
-    ))
+    function HTTP(Request) => ( Response) ;
     
-    (:function CompileOneFile (SourcesBefore) -> (SourcesAfter Out))
-    
-    (:composition CompileFixpoint (SourceFiles Libraries) -> (Binary) (
-        (:loop (
-            (:until_empty Sources <- SourceFiles) ; until_empty (until the collection is empty), until_empty_item (until the collection's only item has length zero)
-        ) => (
-            (CompileOneFile (
-                (SourcesBefore <- Sources) ; no sharding modifier: run a single function instance with all the collection's inputs
-            ) => (
-                (SourcesAfter := SourcesAfter)
-                (Out := Out)
-            ))
-        ) => (
-            (:feedback Sources := SourcesAfter) ; replaces Sources at each iteration
-            (ObjectFiles := Out)
-        ))
-        
-        (LinkObjects (
-            (Objects <- ObjectFiles)
-            (Libraries <- Libraries) ; no sharding modifier: broadcast libraries to all funciton calls
-        ) => (
-            (Binary := Binary)
-        ))
-    ))
+    composition RenderLogs(InputAccessToken, InputTopic) => (OutHTMLOutput) {
+        Access(AccessToken = all InputAccessToken) => (AuthRequest = HTTPRequest);
+        HTTP(Request = each AuthRequest) => (AuthResponse = Response);
+        FanOut(HTTPResponse = all AuthResponse, Topic = all InputTopic) => (LogRequests = HTTPRequests);
+        HTTP(Request = each LogRequests) => (LogResponses = Response);
+        Render(HTTPResponses = all LogResponses) => (OutHTMLOutput = HTMLOutput);
+    }
 "#;
-    let module = parse(src).expect("successful parse");
-    dbg!(&module);
-    // ...
+    match parse(src) {
+        Ok(_) => (),
+        Err(e) => {
+            print_errors(src, e);
+            panic!("parse error");
+        }
+    };
 }
 
 #[test]
 fn simple_test() {
     let src = r#"
-    (:function MakePNGGrayscaleS3 (S3GetResponse) -> (S3PutRequest))
+    function HTTP(Request) => (Response);
+    function MakePNGGrayscaleS3 (S3GetResponse) => (S3PutRequest);
     
-    (:composition MakePNGGrayscale (S3GetRequest) -> () (
-        (DandelionHTTPGet ( (:keyed Request <- S3GetRequest) ) => ( (ToProcess := Response) ))
-        (MakePNGGrayscale ( (:keyed S3GetResponse <- ToProcess) ) => ( (S3PutRequest := S3PutRequest) ))
-        (DandelionHTTPPut ( (:keyed Request <- S3PutRequest) ) => ( ))
-    ))
+    composition MakePNGGrayscale (S3GetRequest) => () {
+        HTTP(Request = keyed S3GetRequest) => (ToProcess = Response);
+        MakePNGGrayscaleS3 (  S3GetResponse = keyed ToProcess ) => (PutRequest = S3PutRequest) ;
+        HTTP ( Request = keyed PutRequest) => ( );
+    }
 "#;
-    let module = parse(src).expect("successful parse");
-    dbg!(&module);
+    let _ = match parse(src) {
+        Ok(m) => m,
+        Err(e) => {
+            print_errors(src, e);
+            panic!("parse error");
+        }
+    };
+    // TODO add checks on module
 }
 
 #[test]
 fn sharding_test() {
     let src = r#"
-    (:function FunA (A B) -> (C))
-    (:function FunB (A B C) -> (D))
-    (:function FunC (D) -> (E))
+    function FunA (A, B) => (C);
+    function FunB (A, B,C) => (D);
+    function FunC (D) => (E);
     
-    (:composition Test (InputA InputB) -> (OutputE) (
-        (FunA (
-            (:keyed A <- InputA)
-            (:keyed B <- InputB)
-        ) => (
-            (InterC := C)
-        ))
+    composition Test (InputA, InputB) => (OutputE) { 
+        FunA (
+            A = keyed InputA,
+            B = keyed InputB
+        ) => 
+            (InterC = C)
+        ;
     
-        (FunB (
-            (:keyed A <- InputA)
-            (:keyed B <- InputB)
-            (:keyed C <- InputC)
+        FunB (
+            A = keyed InputA,
+            B = keyed InputB,
+            C = keyed InputC
         ) => (
-            (InterD := D)
-        ))
+            InterD = D
+        );
         
-        (FunC (
-            (:all D <- InterD)
-        ) => (
-            (OutputE := E)
-        ))
-    ))
+        FunC
+            ( D = all InterD ) =>
+            ( OutputE = E);
+    }
 "#;
-    let module = parse(src).expect("successful parse");
+    let module = match parse(src) {
+        Ok(m) => m,
+        Err(e) => {
+            print_errors(src, e);
+            panic!("parse error");
+        }
+    };
     dbg!(&module);
     let Module(items) = module;
     let mut functions: Vec<AFunctionDecl> = Vec::new();
@@ -564,70 +408,34 @@ fn sharding_test() {
     }
 }
 
-pub fn print_errors(src: &str, errs: DParserErrors) {
-    match errs {
-        DParserErrors::SExpr(errs) => {
-            errs.into_iter().for_each(|e| {
-                let msg = format!(
-                    "Unexpected {}",
-                    e.found()
-                        .map(|c| format!("token \'{}\'", c.fg(Color::Red)))
-                        .unwrap_or_else(|| "end of input".to_string())
-                );
-                let report = Report::build(ReportKind::Error, (), e.span().start)
-                    .with_config(Config::default())
-                    .with_message(msg)
-                    .with_label(
-                        Label::new(e.span())
-                            .with_message({
-                                let mut expected: Box<dyn Iterator<Item = String>> = Box::new(
-                                    e.expected().filter_map(|e| e.map(|e| format!("'{}'", e))),
-                                );
-                                if let Some(l) = e.label() {
-                                    expected =
-                                        Box::new(expected.chain(std::iter::once(format!("{}", l))));
-                                }
-                                let expected = expected
-                                    .map(|e| e.fg(Color::White).to_string())
-                                    .collect::<Vec<_>>();
-                                format!("Expected one of {}", expected.join(", "))
-                            })
-                            .with_color(Color::Red),
-                    );
-                report.finish().eprint(Source::from(&src)).unwrap();
-            });
-        }
-        DParserErrors::Parse(errs) => {
-            errs.into_iter().for_each(|e| {
-                let msg = format!(
-                    "Unexpected {}",
-                    e.found()
-                        .map(|c| format!("{:?}", c).fg(Color::Red).to_string())
-                        .unwrap_or_else(|| "end of input".to_string())
-                );
-                let report = Report::build(ReportKind::Error, (), e.span().start)
-                    .with_config(Config::default())
-                    .with_message(msg)
-                    .with_label(
-                        Label::new(e.span())
-                            .with_message({
-                                let mut expected: Box<dyn Iterator<Item = String>> = Box::new(
-                                    e.expected()
-                                        .filter_map(|e| e.as_ref().map(|e| format!("{:?}", e))),
-                                );
-                                if let Some(l) = e.label() {
-                                    expected =
-                                        Box::new(expected.chain(std::iter::once(format!("{}", l))));
-                                }
-                                let expected = expected
-                                    .map(|e| e.fg(Color::White).to_string())
-                                    .collect::<Vec<_>>();
-                                format!("Expected one of {}", expected.join(", "))
-                            })
-                            .with_color(Color::Red),
-                    );
-                report.finish().eprint(Source::from(&src)).unwrap();
-            });
-        }
-    }
+pub fn print_errors(src: &str, errs: Vec<Simple<char>>) {
+    errs.into_iter().for_each(|e| {
+        let msg = format!(
+            "Unexpected {}",
+            e.found()
+                .map(|c| format!("{:?}", c).fg(Color::Red).to_string())
+                .unwrap_or_else(|| "end of input".to_string())
+        );
+        let report = Report::build(ReportKind::Error, (), e.span().start)
+            .with_config(Config::default())
+            .with_message(msg)
+            .with_label(
+                Label::new(e.span())
+                    .with_message({
+                        let mut expected: Box<dyn Iterator<Item = String>> = Box::new(
+                            e.expected()
+                                .filter_map(|e| e.as_ref().map(|e| format!("{:?}", e))),
+                        );
+                        if let Some(l) = e.label() {
+                            expected = Box::new(expected.chain(std::iter::once(format!("{}", l))));
+                        }
+                        let expected = expected
+                            .map(|e| e.fg(Color::White).to_string())
+                            .collect::<Vec<_>>();
+                        format!("Expected one of {}", expected.join(", "))
+                    })
+                    .with_color(Color::Red),
+            );
+        report.finish().eprint(Source::from(&src)).unwrap();
+    });
 }
