@@ -536,10 +536,13 @@ async fn memcached_request(
     };
     
     let end = SystemTime::now();
-
     match end.duration_since(start) {
         Ok(duration) => {
-            warn!("Elapsed time for single memcached request: {:?}", duration);
+            match method {
+                RequestMethod::MEMCACHED_GET => warn!("Elapsed time for memcached_get to server: {:?}", duration),
+                RequestMethod::MEMCACHED_SET => warn!("Elapsed time for memcached_set to server: {:?}", duration),
+                _ => {}
+            }
         }
         Err(e) => {
             warn!("Error: {:?}", e);
