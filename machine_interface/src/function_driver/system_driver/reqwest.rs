@@ -248,13 +248,11 @@ async fn http_request(
     );
 
     // read the content length in the header
-    // TODO also accept chunked data
     let content_length = response
         .headers()
         .get("content-length")
         .and_then(|value| value.to_str().ok())
-        .and_then(|len_str| len_str.parse::<usize>().ok())
-        .ok_or(DandelionError::SystemFuncResponseError)?;
+        .and_then(|len_str| len_str.parse::<usize>().ok());
 
     for (key, value) in response.headers() {
         preamble.push_str(&format!("{}:{}\n", key, value.to_str().unwrap()));
@@ -267,17 +265,18 @@ async fn http_request(
         Err(_) => return Err(DandelionError::SystemFuncResponseError),
     };
 
-    if content_length == body.len() {
-        let response_info = ResponseInformation {
-            item_name,
-            item_key,
-            preamble,
-            body,
-        };
-        return Ok(response_info);
-    } else {
-        return Err(DandelionError::SystemFuncResponseError);
+    if let Some(content_len) = content_length {
+        if content_len != body.len() {
+            return Err(DandelionError::SystemFuncResponseError);
+        }
     }
+    let response_info = ResponseInformation {
+        item_name,
+        item_key,
+        preamble,
+        body,
+    };
+    return Ok(response_info);
 }
 
 fn http_context_write(context: &mut Context, response: ResponseInformation) -> DandelionResult<()> {
