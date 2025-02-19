@@ -82,7 +82,7 @@ pub enum DandelionError {
     /// Argument given to system function was not valid
     InvalidSystemFuncArg(String),
     /// System function did get unexpected response
-    SystemFuncResponseError,
+    SystemFuncResponseError(String),
     /// Tried to call parser for system function
     CalledSystemFuncParser,
     // dispatcher errors

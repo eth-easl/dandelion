@@ -236,7 +236,12 @@ async fn http_request(
     };
     let response = match client.execute(request).await {
         Ok(resp) => resp,
-        Err(_) => return Err(DandelionError::SystemFuncResponseError),
+        Err(err) => {
+            error!("Failed to execute request: {}", err);
+            return Err(DandelionError::SystemFuncResponseError(String::from(
+                "Failed to execute request"
+            )))
+        },
     };
 
     // write the status line
@@ -254,7 +259,9 @@ async fn http_request(
         .get("content-length")
         .and_then(|value| value.to_str().ok())
         .and_then(|len_str| len_str.parse::<usize>().ok())
-        .ok_or(DandelionError::SystemFuncResponseError)?;
+        .ok_or(DandelionError::SystemFuncResponseError(String::from(
+            "Failed to get header value for expected key 'content-length'"
+        )))?;
 
     for (key, value) in response.headers() {
         preamble.push_str(&format!("{}:{}\n", key, value.to_str().unwrap()));
@@ -264,7 +271,9 @@ async fn http_request(
 
     let body = match response.bytes().await {
         Ok(bytes) => bytes,
-        Err(_) => return Err(DandelionError::SystemFuncResponseError),
+        Err(_) => return Err(DandelionError::SystemFuncResponseError(String::from(
+            "Failed to get response bytes"
+        ))),
     };
 
     if content_length == body.len() {
@@ -276,7 +285,7 @@ async fn http_request(
         };
         return Ok(response_info);
     } else {
-        return Err(DandelionError::SystemFuncResponseError);
+        return Err(DandelionError::SystemFuncResponseError(String::from("Content length does not match body size")));
     }
 }
 
