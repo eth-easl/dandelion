@@ -5,7 +5,7 @@ use dispatcher::composition::CompositionSet;
 use hyper::body::Frame;
 use machine_interface::memory_domain::{Context, ContextTrait};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, io::IoSlice, sync::Arc};
+use std::{io::IoSlice, sync::Arc};
 
 #[derive(Serialize, Deserialize)]
 pub struct DandelionRequest<'data> {
@@ -101,15 +101,16 @@ fn encode_item(
 }
 
 fn encode_sets(
-    sets: BTreeMap<usize, CompositionSet>,
+    sets: Vec<Option<CompositionSet>>,
     response: &mut Vec<u8>,
     data_items: &mut Vec<ItemData>,
 ) -> usize {
     let mut all_items = 0;
     // filter out empty sets
-    let non_empty_set = sets
-        .into_values()
-        .filter(|set| !set.context_list.is_empty());
+    let non_empty_set = sets.into_iter().filter_map(|set| match set {
+        Some(s) if !s.context_list.is_empty() => Some(s),
+        _ => None,
+    });
     // if list is empty need to push empty string
     for (index, set) in non_empty_set.enumerate() {
         // add item to array with doc type and name equal to index into the array
@@ -163,7 +164,7 @@ fn encode_sets(
     return all_items;
 }
 
-fn encode_response(sets: BTreeMap<usize, CompositionSet>) -> (usize, Vec<u8>, Vec<ItemData>) {
+fn encode_response(sets: Vec<Option<CompositionSet>>) -> (usize, Vec<u8>, Vec<ItemData>) {
     // lenght of dict, list of items closing 0 byte
     let mut response = Vec::<u8>::new();
     let mut data_items = Vec::new();
@@ -353,7 +354,7 @@ pub struct DandelionBody {
 }
 
 impl DandelionBody {
-    pub fn new(sets: BTreeMap<usize, CompositionSet>) -> Self {
+    pub fn new(sets: Vec<Option<CompositionSet>>) -> Self {
         let (total_item_size, serial, items) = encode_response(sets);
         let read_offset = if items.len() > 0 {
             if items[0].response_offset > 0 {
@@ -470,7 +471,7 @@ fn test_dandelion_body_serialization() {
         set_index: 0,
         context_list: vec![(Arc::new(new_context), 0..1)],
     };
-    let context_map = BTreeMap::from([(0, composition_set)]);
+    let context_map = vec![Some(composition_set)];
     let context_body = DandelionBody::new(context_map);
 
     tokio::runtime::Builder::new_current_thread()

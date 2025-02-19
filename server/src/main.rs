@@ -48,10 +48,10 @@ const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 enum DispatcherCommand {
     FunctionRequest {
         name: String,
-        inputs: Vec<(usize, CompositionSet)>,
+        inputs: Vec<Option<CompositionSet>>,
         is_cold: bool,
         recorder: Recorder,
-        callback: oneshot::Sender<DandelionResult<BTreeMap<usize, CompositionSet>>>,
+        callback: oneshot::Sender<DandelionResult<Vec<Option<CompositionSet>>>>,
     },
     FunctionRegistration {
         name: String,
@@ -108,17 +108,9 @@ async fn serve_request(
     // map sets in the order they are in the request
     let request_number = request_context.content.len();
     let request_arc = Arc::new(request_context);
-    let mut inputs = vec![];
-    for request_set in 0..request_number {
-        trace!(
-            "adding input set {} from request",
-            request_arc.content[request_set].as_ref().unwrap().ident
-        );
-        inputs.push((
-            request_set,
-            CompositionSet::from((request_set, vec![request_arc.clone()])),
-        ));
-    }
+    let inputs = (0..request_number)
+        .map(|set_id| Some(CompositionSet::from((set_id, vec![request_arc.clone()]))))
+        .collect();
     // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
     recorder
         .record(RecordPoint::QueueFunctionDispatcher)
@@ -376,7 +368,7 @@ async fn dispatcher_loop(
                 mut callback,
             } => {
                 let function_future =
-                    dispatcher.queue_function_by_name(name, inputs, None, is_cold, recorder);
+                    dispatcher.queue_function_by_name(name, inputs, is_cold, recorder);
                 spawn(async {
                     select! {
                         function_output = function_future => {

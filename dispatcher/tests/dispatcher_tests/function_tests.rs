@@ -35,7 +35,7 @@ pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_function(function_id, Vec::new(), Vec::new(), false, recorder));
+        .block_on(dispatcher.queue_function(function_id, Vec::new(), false, recorder));
     match result {
         Ok(_) => (),
         Err(err) => panic!("Failed with: {:?}", err),
@@ -74,8 +74,10 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
         }],
     })];
 
-    let inputs = vec![(0, CompositionSet::from((0, vec![(Arc::new(in_context))])))];
-    let outputs = vec![Some(0)];
+    let inputs = vec![Some(CompositionSet::from((
+        0,
+        vec![(Arc::new(in_context))],
+    )))];
 
     let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
         #[cfg(feature = "timestamp")]
@@ -87,13 +89,13 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_function(function_id, inputs, outputs, false, recorder));
+        .block_on(dispatcher.queue_function(function_id, inputs, false, recorder));
     let out_sets = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
     };
     assert_eq!(1, out_sets.len());
-    let out_set = out_sets.get(&0).expect("Should have set 0");
+    let out_set = out_sets[0].as_ref().expect("Should have set");
     assert_eq!(1, out_set.context_list.len());
     let out_context = &out_set.context_list[0].0;
     assert_eq!(1, out_context.content.len());
@@ -140,7 +142,7 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
         }],
         output_map: BTreeMap::from([(1, 0)]),
     };
-    let inputs = BTreeMap::from([(0, CompositionSet::from((0, vec![Arc::new(in_context)])))]);
+    let inputs = vec![Some(CompositionSet::from((0, vec![Arc::new(in_context)])))];
 
     let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
         #[cfg(feature = "timestamp")]
@@ -158,7 +160,7 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
         Err(err) => panic!("Failed with: {:?}", err),
     };
     assert_eq!(1, out_contexts.len());
-    let mut out_context_list = out_contexts.remove(&0).expect("Should have set 0");
+    let out_context_list = out_contexts[0].as_mut().expect("Should have set");
 
     assert_eq!(1, out_context_list.context_list.len());
     let out_context = out_context_list.context_list.remove(0).0;
@@ -221,7 +223,7 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
         }],
         output_map: BTreeMap::from([(1, 0)]),
     };
-    let inputs = BTreeMap::from([(0, CompositionSet::from((0, vec![Arc::new(in_context)])))]);
+    let inputs = vec![Some(CompositionSet::from((0, vec![Arc::new(in_context)])))];
 
     let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
         #[cfg(feature = "timestamp")]
@@ -234,15 +236,15 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
         .build()
         .unwrap()
         .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
-    let mut out_vec = match result {
+    let out_vec = match result {
         Ok(v) => v,
         Err(err) => panic!("Failed with: {:?}", err),
     };
     assert_eq!(1, out_vec.len());
-    let out_set = out_vec.remove(&0).expect("Should have set 0");
+    let out_set = out_vec[0].as_ref().expect("Should have set");
     assert_eq!(2, out_set.context_list.len());
     // check for each shard:
-    for (matrix_context, _) in out_set.context_list {
+    for (matrix_context, _) in out_set.context_list.iter() {
         if let Some(matrix_set) = &matrix_context.content[0] {
             assert_eq!(1, matrix_set.buffers.len());
             let matrix_buffer = &matrix_set.buffers[0];
@@ -313,7 +315,7 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
     let mut recorder = archive.get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
 
-    let inputs = BTreeMap::from([(0, CompositionSet::from((0, vec![Arc::new(in_context)])))]);
+    let inputs = vec![Some(CompositionSet::from((0, vec![Arc::new(in_context)])))];
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
@@ -323,7 +325,7 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
         Err(err) => panic!("Failed with: {:?}", err),
     };
     assert_eq!(1, out_contexts.len());
-    let out_composition_set = out_contexts.get(&0).expect("Should have set 0");
+    let out_composition_set = out_contexts[0].as_ref().expect("Should have set 0");
     assert_eq!(1, out_composition_set.context_list.len());
     let out_context = &out_composition_set.context_list[0].0;
     assert_eq!(1, out_context.content.len());
@@ -461,11 +463,11 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
     let _ = recorder.record(RecordPoint::Arrival);
 
     let context_arc = Arc::new(in_context);
-    let inputs = BTreeMap::from([
-        (0, CompositionSet::from((0, vec![context_arc.clone()]))),
-        (1, CompositionSet::from((1, vec![context_arc.clone()]))),
-        (2, CompositionSet::from((2, vec![context_arc.clone()]))),
-    ]);
+    let inputs = vec![
+        Some(CompositionSet::from((0, vec![context_arc.clone()]))),
+        Some(CompositionSet::from((1, vec![context_arc.clone()]))),
+        Some(CompositionSet::from((2, vec![context_arc.clone()]))),
+    ];
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
@@ -475,7 +477,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
         Err(err) => panic!("Failed with: {:?}", err),
     };
     assert_eq!(1, out_contexts.len());
-    let out_composition_set = out_contexts.get(&0).expect("Should have set 0");
+    let out_composition_set = out_contexts[0].as_ref().expect("Should have set 0");
     assert_eq!(1, out_composition_set.context_list.len());
     let out_context = &out_composition_set.context_list[0].0;
     assert_eq!(1, out_context.content.len());

@@ -87,12 +87,13 @@ impl Composition {
                             Entry::Vacant(v) => {
                                 v.insert(set_counter);
                                 output_map.insert(set_counter, output_index);
+                                set_counter += 1;
                             }
-                            Entry::Occupied(_) => {
-                                return Err(DandelionError::CompositionDuplicateSetName);
+                            // output set is input set
+                            Entry::Occupied(occupied) => {
+                                output_map.insert(*occupied.get(), output_index);
                             }
                         };
-                        set_counter += 1;
                     }
                     let output_sets_end = set_counter;
                     // add all return sets from functions
@@ -261,14 +262,10 @@ pub struct CompositionSet {
 
 impl CompositionSet {
     /// index is only take for convenience outside
-    pub fn shard(
-        self,
-        mode: ShardingMode,
-        compositon_index: usize,
-    ) -> Vec<(usize, CompositionSet)> {
+    pub fn shard(self, mode: ShardingMode) -> Vec<Option<CompositionSet>> {
         return match mode {
             ShardingMode::All => {
-                vec![(compositon_index, self)]
+                vec![Some(self)]
             }
             ShardingMode::Key => {
                 let mut key_map = BTreeMap::new();
@@ -295,13 +292,10 @@ impl CompositionSet {
                 key_map
                     .into_iter()
                     .map(|(_, context_list)| {
-                        (
-                            compositon_index,
-                            CompositionSet {
-                                context_list,
-                                set_index: self.set_index,
-                            },
-                        )
+                        Some(CompositionSet {
+                            context_list,
+                            set_index: self.set_index,
+                        })
                     })
                     .collect()
             }
@@ -310,13 +304,10 @@ impl CompositionSet {
                 .into_iter()
                 .map(|(context, range)| {
                     range.into_iter().map(move |index| {
-                        (
-                            compositon_index,
-                            CompositionSet {
-                                context_list: vec![(context.clone(), index..index + 1)],
-                                set_index: self.set_index,
-                            },
-                        )
+                        Some(CompositionSet {
+                            context_list: vec![(context.clone(), index..index + 1)],
+                            set_index: self.set_index,
+                        })
                     })
                 })
                 .flatten()
