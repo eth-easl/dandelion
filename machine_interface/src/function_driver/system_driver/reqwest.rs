@@ -344,7 +344,7 @@ async fn http_request(
         body,
     } = request_info;
     
-    panic!("HTTP URI: {}", uri);
+    // panic!("HTTP URI: {}", uri);
 
     let start = SystemTime::now();
 
@@ -465,8 +465,10 @@ async fn memcached_request(
     // Memcached Basic Text Protocol could have following methods: 
     // Set, add (set if not present), replace (set if present), append, prepend, cas
     // Get, gets (get with cas ), delete, incr/decr
-    panic!("Memcached URI: {}", uri);
+    // panic!("Memcached URI: {}", uri);
 
+
+    // TODO: Remove this hardcoding of storag server and use uri
     let addr = "10.233.0.17:11211".to_string();
     let MAX_CONNECTION_POOL_SIZE = 50;
 
