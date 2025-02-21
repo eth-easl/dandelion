@@ -23,6 +23,10 @@ use crate::{
     execution_qs::EngineQueue,
 };
 
+use machine_interface::function_driver::SystemFunction;
+
+use log::warn;
+
 #[derive(Clone, Debug)]
 pub enum FunctionType {
     /// Function available on an engine holding the engine ID
@@ -171,6 +175,13 @@ impl FunctionRegistry {
                         function_type: FunctionType::Function(*engine_type, context_size),
                         in_memory: true,
                     }]);
+
+                let path = match system_function {
+                    SystemFunction::HTTP => String::from("http"),
+                    SystemFunction::MEMCACHED => String::from("memcached"),
+                    _ => String::from(""),
+                };
+
                 // get the config from the parser
                 let function_config = driver
                     .parse_function(
@@ -205,6 +216,7 @@ impl FunctionRegistry {
                 metadata.entry(function_id).or_insert(function_metadata);
             }
         }
+
         // add metadata for the
         return FunctionRegistry {
             engine_map: Mutex::new(engine_map),

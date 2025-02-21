@@ -32,6 +32,11 @@ use dashmap::DashMap;
 use r2d2::{Pool, PooledConnection};
 use r2d2_memcache::MemcacheConnectionManager;
 
+enum RequestType {
+    HTTP,
+    MEMCACHED,
+}
+
 #[allow(non_camel_case_types)]
 enum RequestMethod {
     HTTP_GET,
@@ -43,6 +48,7 @@ enum RequestMethod {
 
 /// Stores requestInformation for http and memcached request
 /// For memcached requests, version and headermap are not used and ignored for request building
+/// For HTTP requests, memcached_identifier and ttl are not used and ignored for request building
 struct RequestInformation {
     /// name of the request item
     item_name: String,
@@ -50,8 +56,10 @@ struct RequestInformation {
     item_key: u32,
     method: RequestMethod,
     uri: String,
-    version: Version,
-    headermap: HeaderMap,
+    version: Option<Version>,
+    headermap: Option<HeaderMap>,
+    memcached_identifier: Option<String>,
+    ttl: Option<u32>,
     body: Vec<u8>,
 }
 struct ResponseInformation {
@@ -63,7 +71,7 @@ struct ResponseInformation {
     preamble: String,
     body: bytes::Bytes,
 }
-fn convert_to_request(
+fn convert_to_http_request(
     mut raw_request: Vec<u8>,
     item_name: String,
     item_key: u32,
@@ -87,8 +95,11 @@ fn convert_to_request(
     let method = match method_item {
         Some(method_string) if method_string == "GET" => RequestMethod::HTTP_GET,
         Some(method_string) if method_string == "POST" => RequestMethod::HTTP_POST,
-        Some(method_string) if method_string == "MEMCACHED_GET" => RequestMethod::MEMCACHED_GET,
-        Some(method_string) if method_string == "MEMCACHED_SET" => RequestMethod::MEMCACHED_SET,
+        Some(method_string) if method_string == "MEMCACHED_GET" || method_string == "MEMCACHED_SET" => {
+            return Err(DandelionError::InvalidSystemFuncArg(format!(
+                "Unsupported Method: trying to use {} in HTTP method", method_string
+            )));
+        }
         Some(method_string) => {
             return Err(DandelionError::InvalidSystemFuncArg(format!(
                 "Unsupported Method: {}",
@@ -112,102 +123,176 @@ fn convert_to_request(
     let mut version: Version;
     let mut headermap = HeaderMap::new();
     let mut body: Vec<u8>;
-    match method { 
-        RequestMethod::HTTP_GET | RequestMethod::HTTP_POST | RequestMethod::HTTP_PUT
-            => {
-                version = match request_iter.next() {
-                    Some(version_string) if version_string == "HTTP/0.9" => Version::HTTP_09,
-                    Some(version_string) if version_string == "HTTP/1.0" => Version::HTTP_10,
-                    Some(version_string) if version_string == "HTTP/1.1" => Version::HTTP_11,
-                    Some(version_string) if version_string == "HTTP/2.0" => Version::HTTP_2,
-                    Some(version_string) if version_string == "HTTP/3.0" => Version::HTTP_3,
-                    Some(version_string) => {
-                        return Err(DandelionError::InvalidSystemFuncArg(format!(
-                            "unkown http version: {}",
-                            version_string,
-                        )))
-                    }
-                    None => {
-                        return Err(DandelionError::MalformedSystemFuncArg(String::from(
-                            "No http version found",
-                        )))
-                    }
-                };
+    version = match request_iter.next() {
+        Some(version_string) if version_string == "HTTP/0.9" => Version::HTTP_09,
+        Some(version_string) if version_string == "HTTP/1.0" => Version::HTTP_10,
+        Some(version_string) if version_string == "HTTP/1.1" => Version::HTTP_11,
+        Some(version_string) if version_string == "HTTP/2.0" => Version::HTTP_2,
+        Some(version_string) if version_string == "HTTP/3.0" => Version::HTTP_3,
+        Some(version_string) => {
+            return Err(DandelionError::InvalidSystemFuncArg(format!(
+                "unkown http version: {}",
+                version_string,
+            )))
+        }
+        None => {
+            return Err(DandelionError::MalformedSystemFuncArg(String::from(
+                "No http version found",
+            )))
+        }
+    };
 
-                // read new lines until end of header map
-                let mut header_index = request_index + 1;
-                while header_index < raw_request.len() {
-                    let header_line = raw_request[header_index..]
-                        .iter()
-                        .position(|character| *character == b'\n')
-                        .and_then(|header_end| Some(&raw_request[header_index..header_index + header_end]))
-                        .unwrap_or(&raw_request[header_index..]);
-                    // skip the \n at the index itself
-                    header_index += header_line.len() + 1;
-                    // if the header line is empty there are two consequtive new lines which means the headers are finished
-                    // or the request is at the end which also means there are not more lines to read
-                    if header_line.len() == 0 {
-                        break;
-                    }
-                    let split_index = header_line
-                        .iter()
-                        .position(|character| *character == b':')
-                        .ok_or(DandelionError::MalformedSystemFuncArg(String::from(
-                            "Header line does not contain \':\'",
-                        )))?;
-                    let (key, value) = header_line.split_at(split_index);
-                    let header_key = HeaderName::from_bytes(key).or(Err(
-                        DandelionError::MalformedSystemFuncArg(String::from("Header key not utf-8")),
-                    ))?;
-                    let header_value = HeaderValue::from_bytes(&value[1..]).or(Err(
-                        DandelionError::MalformedSystemFuncArg(String::from(
-                            "Header value not utf-8 conformant",
-                        )),
-                    ))?;
-                    match headermap.entry(header_key) {
-                        http::header::Entry::Occupied(mut occupied) => occupied.append(header_value),
-                        http::header::Entry::Vacant(vacant) => {
-                            vacant.insert(header_value);
-                        }
-                    }
-                }
-                body = if header_index < raw_request.len() {
-                    raw_request.drain(..header_index);
-                    raw_request
-                } else {
-                    vec![]
-                };
-                log::trace!("Reqwest body: {:?}", body);
+    // read new lines until end of header map
+    let mut header_index = request_index + 1;
+    while header_index < raw_request.len() {
+        let header_line = raw_request[header_index..]
+            .iter()
+            .position(|character| *character == b'\n')
+            .and_then(|header_end| Some(&raw_request[header_index..header_index + header_end]))
+            .unwrap_or(&raw_request[header_index..]);
+        // skip the \n at the index itself
+        header_index += header_line.len() + 1;
+        // if the header line is empty there are two consequtive new lines which means the headers are finished
+        // or the request is at the end which also means there are not more lines to read
+        if header_line.len() == 0 {
+            break;
+        }
+        let split_index = header_line
+            .iter()
+            .position(|character| *character == b':')
+            .ok_or(DandelionError::MalformedSystemFuncArg(String::from(
+                "Header line does not contain \':\'",
+            )))?;
+        let (key, value) = header_line.split_at(split_index);
+        let header_key = HeaderName::from_bytes(key).or(Err(
+            DandelionError::MalformedSystemFuncArg(String::from("Header key not utf-8")),
+        ))?;
+        let header_value = HeaderValue::from_bytes(&value[1..]).or(Err(
+            DandelionError::MalformedSystemFuncArg(String::from(
+                "Header value not utf-8 conformant",
+            )),
+        ))?;
+        match headermap.entry(header_key) {
+            http::header::Entry::Occupied(mut occupied) => occupied.append(header_value),
+            http::header::Entry::Vacant(vacant) => {
+                vacant.insert(header_value);
             }
-        // For memcached request, the version does not matter, as it is not used
-        RequestMethod::MEMCACHED_SET | RequestMethod::MEMCACHED_GET 
-            => {
-                version = Version::HTTP_10;
-                body = vec![];
-                body.extend_from_slice(request_iter.next()
-                .ok_or(DandelionError::MalformedSystemFuncArg(String::from("No memcached identifier")),
-                )?.as_bytes());
-                body.push(b' ');
-                if request_index + 2 < raw_request.len(){
-                    // We jump by two, to ignore the two newline symbols after the header
-                    body.extend(raw_request.drain(request_index + 2..));
-                }
+        }
+    }
+    body = if header_index < raw_request.len() {
+        raw_request.drain(..header_index);
+        raw_request
+    } else {
+        vec![]
+    };
+    log::trace!("Reqwest body: {:?}", body);
+
+    return Ok(RequestInformation {
+        item_name,
+        item_key,
+        method,
+        uri: uri,
+        version: Some(version),
+        headermap: Some(headermap),
+        memcached_identifier: None,
+        ttl: None,
+        body,
+    });
+}
+
+fn convert_to_memcached_request(
+    mut raw_request: Vec<u8>,
+    item_name: String,
+    item_key: u32,
+) -> DandelionResult<RequestInformation> {
+    // read first line to get request line
+    let request_index = raw_request
+        .iter()
+        .position(|character| *character == b'\n')
+        .unwrap_or(raw_request.len());
+    let request_line = match std::str::from_utf8(&raw_request[0..request_index]) {
+        Ok(line) => line,
+        Err(_) => {
+            return Err(DandelionError::InvalidSystemFuncArg(String::from(
+                "Request line not utf8",
+            )));
+        }
+    };
+    let mut request_iter = request_line.split_ascii_whitespace();
+
+    let method_item = request_iter.next();
+    let method = match method_item {
+        Some(method_string) if method_string == "MEMCACHED_GET" => RequestMethod::MEMCACHED_GET,
+        Some(method_string) if method_string == "MEMCACHED_SET" => RequestMethod::MEMCACHED_SET,
+        Some(method_string) if method_string == "GET" || method_string == "POST" => {
+            return Err(DandelionError::InvalidSystemFuncArg(format!(
+                "Unsupported Method: trying to use {} in HTTP method", method_string
+            )));
+        }
+        Some(method_string) => {
+            return Err(DandelionError::InvalidSystemFuncArg(format!(
+                "Unsupported Method: {}",
+                method_string
+            )))
+        }
+        _ => {
+            return Err(DandelionError::MalformedSystemFuncArg(String::from(
+                "No method found",
+            )))
+        }
+    };
+
+    let uri = String::from(
+        request_iter
+            .next()
+            .ok_or(DandelionError::MalformedSystemFuncArg(String::from(
+                "No uri in request",
+            )))?,
+    );
+
+    let memcached_identifier = Some(String::from(
+        request_iter
+            .next()
+            .ok_or(DandelionError::MalformedSystemFuncArg(String::from(
+                "No memcached_identifier in memcached request",
+            )))?,
+    ));
+    let mut ttl: Option<u32>;
+    match method { 
+        RequestMethod::MEMCACHED_SET => {
+                ttl = Some(request_iter
+                    .next()
+                    .ok_or(DandelionError::MalformedSystemFuncArg(String::from(
+                    "No memcached_identifier in memcached request",
+                )))?.parse().expect("Failed to parse TTL to u32"));
             } 
+        RequestMethod::MEMCACHED_GET => {
+            ttl = None;
+        }
         _ => return Err(DandelionError::NotImplemented), 
     }
+
+    let mut body: Vec<u8> = vec![];
+    if request_index + 2 < raw_request.len(){
+        // We jump by two, to ignore the two newline symbols after the header
+        body.extend(raw_request.drain(request_index + 2..));
+    }
+
 
     return Ok(RequestInformation {
         item_name,
         item_key,
         method,
         uri,
-        version,
-        headermap,
+        version: None,
+        headermap: None,
+        memcached_identifier,
+        ttl,
         body,
     });
 }
 
-fn request_setup(context: &Context) -> DandelionResult<Vec<RequestInformation>> {
+fn request_setup(context: &Context, request_type: RequestType) -> DandelionResult<Vec<RequestInformation>> {
     let request_set = match context.content.iter().find(|set_option| {
         if let Some(set) = set_option {
             return set.ident == "request";
@@ -229,7 +314,14 @@ fn request_setup(context: &Context) -> DandelionResult<Vec<RequestInformation>> 
             let mut request_buffer = Vec::with_capacity(set_item.data.size);
             request_buffer.resize(set_item.data.size, 0);
             context.read(set_item.data.offset, &mut request_buffer)?;
-            convert_to_request(request_buffer, set_item.ident.clone(), set_item.key)
+            match request_type{
+                RequestType::HTTP => convert_to_http_request(request_buffer, set_item.ident.clone(), set_item.key),
+                RequestType::MEMCACHED => convert_to_memcached_request(request_buffer, set_item.ident.clone(), set_item.key),
+                _ => return Err(DandelionError::MalformedSystemFuncArg(String::from(
+                    "Unsupported Method",
+                )))
+            }
+            
             
         })
         .collect();
@@ -247,9 +339,13 @@ async fn http_request(
         uri,
         version,
         headermap,
+        memcached_identifier,
+        ttl,
         body,
     } = request_info;
     
+    panic!("HTTP URI: {}", uri);
+
     let start = SystemTime::now();
 
     let request_builder = match method {
@@ -264,8 +360,8 @@ async fn http_request(
     };
 
     let request = match request_builder
-        .headers(headermap)
-        .version(version)
+        .headers(headermap.expect("No headermap for http request"))
+        .version(version.expect("No version for http request"))
         .body(body)
         .build()
     {
@@ -350,8 +446,8 @@ async fn http_request(
 }
 
 async fn memcached_request(
-    connection: PooledConnection<MemcacheConnectionManager>,
     request_info: RequestInformation,
+    memcached_connection_pool: Arc<DashMap<String, Pool<MemcacheConnectionManager>>>,
 ) -> DandelionResult<ResponseInformation> {
     let RequestInformation {
         item_name,
@@ -359,6 +455,8 @@ async fn memcached_request(
         method,
         uri,
         version,
+        memcached_identifier,
+        ttl,
         headermap,
         mut body,
     } = request_info;
@@ -367,44 +465,17 @@ async fn memcached_request(
     // Memcached Basic Text Protocol could have following methods: 
     // Set, add (set if not present), replace (set if present), append, prepend, cas
     // Get, gets (get with cas ), delete, incr/decr
+    panic!("Memcached URI: {}", uri);
 
-    // We try to connect to the server and timeout if not reachable
-    const SERVER_TIMEOUT: u64 = 1;
-    let ip = format!("memcache://{}", uri.clone());
-    // warn!("Trying to connect to {}", uri);
+    let addr = "10.233.0.17:11211".to_string();
+    let MAX_CONNECTION_POOL_SIZE = 50;
 
-    // let temp = SystemTime::now();
+    let pool = memcached_connection_pool.entry(addr.clone()).or_insert_with(|| {
+        let manager = MemcacheConnectionManager::new(format!("memcache://{}", addr));
+        Pool::builder().max_size(MAX_CONNECTION_POOL_SIZE).build(manager).unwrap()
+    });
+    let connection: PooledConnection<MemcacheConnectionManager> = pool.get().expect("Failed to get a memcached connection");
 
-    // let mut memcached_client = match timeout(TokioDuration::from_secs(SERVER_TIMEOUT), async {
-    //     tokio::task::spawn_blocking(move || MemcachedClient::connect(ip)).await
-    // })
-    // .await
-    // {
-    //     Ok(Ok(Ok(client))) => client,
-    //     Ok(Ok(Err(e))) => {
-    //         debug!("Could not connect to memcached server with error: {:?}", e);
-    //         return Err(DandelionError::MemcachedServerError(format!("Server Error: {:?}", e)));
-    //     }
-    //     Ok(Err(e)) => {
-    //         debug!("Could not connect to memcached server with error: {:?}", e);
-    //         return Err(DandelionError::MemcachedServerError(format!("Connection tokio task failed: {:?}", e)));
-    //     }
-    //     Err(e) => {
-    //         debug!("Could not connect to memcached server with error: {:?}", e);
-    //         return Err(DandelionError::MemcachedServerError(format!("Server could not be reached within {}s: {:?}", SERVER_TIMEOUT, e)));
-    //     }
-    // };
-    
-    // let end = SystemTime::now();
-
-    // match end.duration_since(temp) {
-    //     Ok(duration) => {
-    //         warn!("Elapsed time for connection to server: {:?}", duration);
-    //     }
-    //     Err(e) => {
-    //         warn!("Error: {:?}", e);
-    //     }
-    // }
 
     // Preamble is SUCCESS for success. For non successfull functions, error message will be stored there
     // Get on non existed key will return ABSENT
@@ -412,61 +483,34 @@ async fn memcached_request(
     let mut response_body: bytes::Bytes;
     // Default item size limit is 1MB. If item is larger, we return an error
     const MAX_SIZE: usize = 1_048_576;
-    // Default memcached max size is 30 days
+    // Default memcached max size is 30 days, min is 0 (never expire)
     const MAX_EXPIRATION_TIME: u32 = 60 * 60 * 24 * 30;
-    
-    let mut memcached_identifier: String = "".to_string();
-    let mut start_index_payload: usize = 0;
-    for (i, &byte) in body.iter().enumerate() {
-        if byte.is_ascii_whitespace() {
-            memcached_identifier = String::from_utf8((body[0..i]).to_vec())
-                .map_err(|_| DandelionError::MalformedSystemFuncArg(String::from("Invalid memcached identifier")))?;
-            start_index_payload = i + 1;
-            break;
-        }
-    }
-    // warn!("Memcached_identifier: {}", memcached_identifier);
 
     match method {
         RequestMethod::MEMCACHED_SET => {
             // warn!("Starting set");
             let mut expiration_time:u32 = 10800;
-            
-            // The maximum expiration time in memcached is 30 days, minimum is 0 (never expire)
-            let mut start_index_value: usize = start_index_payload;
-            for (i, &byte) in body[start_index_payload..].iter().enumerate() {
-                if byte.is_ascii_whitespace() {
-                    let time_slice = &body[start_index_payload..start_index_payload + i];
-                    let time_slice_str = std::str::from_utf8(time_slice).map_err(|_| {
-                        DandelionError::MalformedSystemFuncArg(String::from("Invalid UTF-8 in expiration time"))
-                    })?;
-                    expiration_time = time_slice_str.parse::<u32>().map_err(|_| {
-                        DandelionError::MalformedSystemFuncArg(format!("Invalid expiration time format. Slice: {}", time_slice_str))
-                    })?;
-                    if !(0..=MAX_EXPIRATION_TIME).contains(&expiration_time) {
-                        return Err(DandelionError::MalformedSystemFuncArg(String::from(
-                            "Expiration time for memcached set is to large",
-                        )));
-                    }
-                    start_index_value = start_index_payload + i + 1;
-                    break;
-                }
+
+            // If ttl is not valid number, we set it to the DEFAULT (10800s). 
+            // If is is valid, we take it
+            if (0..=MAX_EXPIRATION_TIME).contains(&ttl.expect("No ttl for memcached request")){
+               expiration_time = ttl.unwrap(); 
             }
-            let value: Vec<u8> = body.split_off(start_index_value);
-            if value.is_empty() {
+            
+            if body.is_empty() {
                 return Err(DandelionError::MalformedSystemFuncArg(String::from(
                     "Value to store with memcached set is missing",
                 )));
             }
-            else if value.len() > MAX_SIZE {
+            else if body.len() > MAX_SIZE {
                 return Err(DandelionError::MalformedSystemFuncArg(String::from(
                     "Memcached value is larger than 1MB",
                 )));
             }
 
             let result = tokio::task::spawn_blocking(move || {
-                let value_slice: &[u8] = &value;
-                connection.set(&memcached_identifier, value_slice, expiration_time)}).await;
+                let body_slice: &[u8] = &body;
+                connection.set(&(memcached_identifier.expect("No memcached_identifier for memcached request")), body_slice, expiration_time)}).await;
 
             match result{
                 Ok(Ok(_)) => {
@@ -491,7 +535,7 @@ async fn memcached_request(
         RequestMethod::MEMCACHED_GET => {
             // warn!("Starting get");
             
-            let result = tokio::task::spawn_blocking(move || connection.get::<Vec<u8>>(&memcached_identifier)).await;
+            let result = tokio::task::spawn_blocking(move || connection.get::<Vec<u8>>(&(memcached_identifier.expect("No memcached_identifier for memcached request")))).await;
 
             match result{
                 Ok(Ok(Some(response))) => {
@@ -524,9 +568,6 @@ async fn memcached_request(
             )))
         }
     };
-
-    preamble.push('\n');
-    preamble.push('\n');
 
     let response_info = ResponseInformation {
         item_name,
@@ -631,12 +672,13 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
 async fn request_run(
     mut context: Context,
     client: Option<HttpClient>,
-    mut connection: Option<PooledConnection<MemcacheConnectionManager>>,
+    request_type: RequestType,
+    memcached_connection_pool: Option<Arc<DashMap<String, Pool<MemcacheConnectionManager>>>>,
     output_set_names: Arc<Vec<String>>,
     debt: Debt,
     mut recorder: Recorder,
 ) -> () {
-    let request_vec = match request_setup(&context) {
+    let request_vec = match request_setup(&context, request_type) {
         Ok(request) => request,
         Err(err) => {
             debt.fulfill(Err(err));
@@ -657,10 +699,7 @@ async fn request_run(
                         }
                     RequestMethod::MEMCACHED_SET | RequestMethod::MEMCACHED_GET 
                         => {
-                            match connection.take() {
-                                Some(connection) => memcached_request(connection, request).boxed(),
-                                _ => unimplemented!(),
-                            }
+                            memcached_request(request, memcached_connection_pool.clone().expect("No connection pool for memcached request").clone()).boxed()
                         }
                     _ => unimplemented!(), 
                 }
@@ -750,21 +789,33 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                     }
                 };
                 match function {
-                    SystemFunction::HTTP | SystemFunction::MEMCACHED => {
-                    // TODO - Change this to the real ip
-                    let addr = "10.233.0.17:11211".to_string();
-                    let MAX_CONNECTION_POOL_SIZE = 50;
-
-                    let pool = memcached_connection_pool.entry(addr.clone()).or_insert_with(|| {
-                        let manager = MemcacheConnectionManager::new(format!("memcache://{}", addr));
-                        Pool::builder().max_size(MAX_CONNECTION_POOL_SIZE).build(manager).unwrap()
-                    });
-                    let connection: PooledConnection<MemcacheConnectionManager> = pool.get().expect("Failed to get a memcached connection");
-
+                    SystemFunction::HTTP => {
                         tokio::spawn(request_run(
                             context,
                             Some(client.clone()),
-                            Some(connection),
+                            RequestType::HTTP,
+                            None,
+                            output_sets,
+                            debt,
+                            recorder,
+                        ));
+                    }
+                    SystemFunction::MEMCACHED => {
+                        // TODO - Change this to the real ip
+                        let addr = "10.233.0.17:11211".to_string();
+                        let MAX_CONNECTION_POOL_SIZE = 50;
+    
+                        let pool = memcached_connection_pool.entry(addr.clone()).or_insert_with(|| {
+                            let manager = MemcacheConnectionManager::new(format!("memcache://{}", addr));
+                            Pool::builder().max_size(MAX_CONNECTION_POOL_SIZE).build(manager).unwrap()
+                        });
+                        let connection: PooledConnection<MemcacheConnectionManager> = pool.get().expect("Failed to get a memcached connection");
+                        
+                        tokio::spawn(request_run(
+                            context,
+                            Some(client.clone()),
+                            RequestType::MEMCACHED,
+                            Some(memcached_connection_pool.clone()),
                             output_sets,
                             debt,
                             recorder,
@@ -909,16 +960,25 @@ impl Driver for ReqwestDriver {
         function_path: String,
         static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
     ) -> DandelionResult<Function> {
-        if function_path.len() != 0 {
+        let cnfg = if function_path.len() == 0 {
+            FunctionConfig::SysConfig(SystemFunction::HTTP)
+        } else if function_path == "http"{
+            FunctionConfig::SysConfig(SystemFunction::HTTP)
+        } else if function_path == "memcached"{
+            FunctionConfig::SysConfig(SystemFunction::MEMCACHED)
+        } else {
             return Err(DandelionError::CalledSystemFuncParser);
-        }
+        };
+
+        let reqs = crate::DataRequirementList {
+            input_requirements: vec![],
+            static_requirements: vec![],
+        };
+        let ctx = Arc::new(static_domain.acquire_context(0)?);
         return Ok(Function {
-            requirements: crate::DataRequirementList {
-                input_requirements: vec![],
-                static_requirements: vec![],
-            },
-            context: Arc::new(static_domain.acquire_context(0)?),
-            config: FunctionConfig::SysConfig(SystemFunction::HTTP),
+            requirements: reqs,
+            context: ctx,
+            config: cnfg,
         });
     }
 }

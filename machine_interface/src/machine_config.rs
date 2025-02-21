@@ -25,6 +25,7 @@ pub enum EngineType {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub enum DomainType {
     Mmap,
+    System,
     #[cfg(feature = "cheri")]
     Cheri,
     #[cfg(feature = "wasm")]
@@ -36,7 +37,7 @@ pub enum DomainType {
 pub fn get_compatibilty_table() -> BTreeMap<EngineType, DomainType> {
     return BTreeMap::from([
         #[cfg(feature = "reqwest_io")]
-        (EngineType::Reqwest, DomainType::Mmap),
+        (EngineType::Reqwest, DomainType::System),
         #[cfg(feature = "cheri")]
         (EngineType::Cheri, DomainType::Cheri),
         #[cfg(feature = "wasm")]
@@ -54,7 +55,7 @@ const SYS_FUNC_DEFAULT_CONTEXT_SIZE: usize = 0x200_0000;
 pub fn get_system_functions(engine_type: EngineType) -> Vec<(SystemFunction, usize)> {
     return match engine_type {
         #[cfg(feature = "reqwest_io")]
-        EngineType::Reqwest => vec![(SystemFunction::HTTP, SYS_FUNC_DEFAULT_CONTEXT_SIZE)],
+        EngineType::Reqwest => vec![(SystemFunction::HTTP, SYS_FUNC_DEFAULT_CONTEXT_SIZE), (SystemFunction::MEMCACHED, SYS_FUNC_DEFAULT_CONTEXT_SIZE)],
         #[allow(unreachable_patterns)]
         _ => Vec::new(),
     };
@@ -65,6 +66,7 @@ pub fn get_available_domains(
 ) -> BTreeMap<DomainType, Arc<Box<dyn MemoryDomain>>> {
     let mut default_resources = BTreeMap::from([
         (DomainType::Mmap, MemoryResource::Anonymous { size: 0 }),
+        (DomainType::System, MemoryResource::None),
         #[cfg(feature = "cheri")]
         (DomainType::Cheri, MemoryResource::None),
         #[cfg(feature = "mmu")]
@@ -87,6 +89,10 @@ pub fn get_available_domains(
             DomainType::Mmap => (
                 dom_type,
                 Arc::new(crate::memory_domain::mmap::MmapMemoryDomain::init(resource).unwrap()),
+            ),
+            DomainType::System => (
+                dom_type,
+                Arc::new(crate::memory_domain::system_domain::SystemMemoryDomain::init(resource).unwrap()),
             ),
             #[cfg(feature = "cheri")]
             DomainType::Cheri => (

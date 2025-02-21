@@ -280,7 +280,7 @@ dolore magna aliquyam erat, sed diam voluptua."#
         let _engine = driver
             .start_engine(drv_init, queue.clone())
             .expect("Should be able to get engine");
-        let config = FunctionConfig::SysConfig(SystemFunction::HTTP);
+        let config = FunctionConfig::SysConfig(SystemFunction::MEMCACHED);
 
         let mut set_request = "MEMCACHED_SET 127.0.0.1:8000 testKey2\n\n900 ".as_bytes().to_vec();
         set_request.extend_from_slice(value.as_bytes());
@@ -295,8 +295,8 @@ dolore magna aliquyam erat, sed diam voluptua."#
             timestamp_count: 1000,
         })));
         let mut recorder = archive.get_recorder().unwrap();
-        let set_output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
-        let get_output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
+        let set_output_sets = Arc::new(get_system_function_output_sets(SystemFunction::MEMCACHED));
+        let get_output_sets = Arc::new(get_system_function_output_sets(SystemFunction::MEMCACHED));
         let set_promise = queue.enqueu(WorkToDo::FunctionArguments {
             config: config.clone(),
             context: set_context,
