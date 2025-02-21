@@ -797,23 +797,13 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                             context,
                             Some(client.clone()),
                             RequestType::HTTP,
-                            None,
+                            Some(memcached_connection_pool.clone()),
                             output_sets,
                             debt,
                             recorder,
                         ));
                     }
                     SystemFunction::MEMCACHED => {
-                        // TODO - Change this to the real ip
-                        let addr = "10.233.0.17:11211".to_string();
-                        let MAX_CONNECTION_POOL_SIZE = 50;
-    
-                        let pool = memcached_connection_pool.entry(addr.clone()).or_insert_with(|| {
-                            let manager = MemcacheConnectionManager::new(format!("memcache://{}", addr));
-                            Pool::builder().max_size(MAX_CONNECTION_POOL_SIZE).build(manager).unwrap()
-                        });
-                        let connection: PooledConnection<MemcacheConnectionManager> = pool.get().expect("Failed to get a memcached connection");
-                        
                         tokio::spawn(request_run(
                             context,
                             Some(client.clone()),
