@@ -96,9 +96,10 @@ fn convert_to_http_request(
         Some(method_string) if method_string == "GET" => RequestMethod::HTTP_GET,
         Some(method_string) if method_string == "POST" => RequestMethod::HTTP_POST,
         Some(method_string) if method_string == "MEMCACHED_GET" || method_string == "MEMCACHED_SET" => {
-            return Err(DandelionError::InvalidSystemFuncArg(format!(
-                "Unsupported Method: trying to use {} in HTTP method", method_string
-            )));
+            return convert_to_memcached_request(raw_request, item_name, item_key);
+            // return Err(DandelionError::InvalidSystemFuncArg(format!(
+            //     "Unsupported Method: trying to use {} in HTTP method", method_string
+            // )));
         }
         Some(method_string) => {
             return Err(DandelionError::InvalidSystemFuncArg(format!(
