@@ -81,7 +81,7 @@ impl Controller {
             let tasks_lengths = self.dispatcher.get_total_tasks_lengths();
             let mut need_more_cores = None;
 
-            // self.log_core_info();
+            self.log_core_info();
 
             let avg_load = tasks_lengths.iter().map(|(_, length)| length)
                 .sum::<usize>() / tasks_lengths.len();
