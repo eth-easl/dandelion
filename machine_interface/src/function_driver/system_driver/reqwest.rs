@@ -414,6 +414,7 @@ async fn http_request(
         Ok(bytes) => bytes,
         Err(_) => return Err(DandelionError::SystemFuncResponseError),
     };
+    // For large responses (probably at about 64kB - 128kB)
     // Could potentially done in chunks, like this:
     // let mut body = BytesMut::new();
     // let mut stream = response.bytes_stream();
@@ -693,6 +694,7 @@ async fn request_run(
     debt: Debt,
     mut recorder: Recorder,
 ) -> () {
+    warn!("Executing system function");
     let request_vec = match request_setup(&context, request_type) {
         Ok(request) => request,
         Err(err) => {
@@ -763,6 +765,7 @@ async fn request_run(
     }
     debt.fulfill(Ok(WorkDone::Context(context)));
     // warn!("Debt fullfilled");
+    warn!("Executed system function");
     return;
 }
 
@@ -805,7 +808,6 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 };
                 match function {
                     SystemFunction::HTTP => {
-                        warn!("Handling HTTP function");
                         tokio::spawn(request_run(
                             context,
                             Some(client.clone()),
@@ -815,10 +817,8 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                             debt,
                             recorder,
                         ));
-                        warn!("Handled HTTP function");
                     }
                     SystemFunction::MEMCACHED => {
-                        warn!("Handling MEMCACHED function");
                         tokio::spawn(request_run(
                             context,
                             Some(client.clone()),
@@ -828,7 +828,6 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                             debt,
                             recorder,
                         ));
-                        warn!("Handled MEMCACHED function");
                     }
                     #[allow(unreachable_patterns)]
                     _ => {

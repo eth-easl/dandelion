@@ -329,7 +329,6 @@ impl Dispatcher {
                 match &alternative.function_type {
                     FunctionType::Function(engine_id, ctx_size) => {
                         recorder.record(RecordPoint::PrepareEnvQueue)?;
-                        log::warn!("Preparing function {} for engine", function_id);
                         let (context, config, metadata) = self
                             .prepare_for_engine(
                                 function_id,

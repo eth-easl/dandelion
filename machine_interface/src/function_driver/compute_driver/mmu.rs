@@ -185,6 +185,7 @@ impl EngineLoop for MmuLoop {
         mut context: Context,
         output_sets: Arc<Vec<String>>,
     ) -> DandelionResult<Context> {
+        warn!("Executing MMU function");
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
             _ => return Err(DandelionError::ConfigMissmatch),
@@ -213,6 +214,8 @@ impl EngineLoop for MmuLoop {
         )?;
 
         read_output_structs::<usize, usize>(&mut context, elf_config.system_data_offset)?;
+
+        warn!("Executed MMU function");
 
         return Ok(context);
     }
