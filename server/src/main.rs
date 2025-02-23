@@ -124,6 +124,7 @@ async fn serve_request(
         .record(RecordPoint::QueueFunctionDispatcher)
         .unwrap();
     let (callback, output_recevier) = tokio::sync::oneshot::channel();
+    warn!("Sending function request for {}", function_name);
     dispatcher
         .send(DispatcherCommand::FunctionRequest {
             name: function_name,
@@ -298,6 +299,7 @@ async fn service(
     dispatcher: mpsc::Sender<DispatcherCommand>,
 ) -> Result<Response<DandelionBody>, Infallible> {
     let uri = req.uri().path();
+    warn!("Serving request {}", uri);
     match uri {
         // TODO rename to cold func and hot func, remove matmul, compute, io
         "/register/function" => register_function(req, dispatcher).await,
@@ -344,6 +346,7 @@ async fn dispatcher_loop(
                 recorder,
                 mut callback,
             } => {
+                warn!("Queuing function {}", name);
                 let function_future =
                     dispatcher.queue_function_by_name(name, inputs, None, is_cold, recorder);
                 spawn(async {
@@ -564,6 +567,7 @@ fn main() -> () {
             DomainType::Mmap,
             MemoryResource::Anonymous { size: max_ram },
         ),
+        (DomainType::System, MemoryResource::None),
         #[cfg(feature = "cheri")]
         (DomainType::Cheri, MemoryResource::None),
         #[cfg(feature = "mmu")]

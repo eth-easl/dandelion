@@ -805,6 +805,7 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 };
                 match function {
                     SystemFunction::HTTP => {
+                        warn!("Handling HTTP function");
                         tokio::spawn(request_run(
                             context,
                             Some(client.clone()),
@@ -814,8 +815,10 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                             debt,
                             recorder,
                         ));
+                        warn!("Handled HTTP function");
                     }
                     SystemFunction::MEMCACHED => {
+                        warn!("Handling MEMCACHED function");
                         tokio::spawn(request_run(
                             context,
                             Some(client.clone()),
@@ -825,6 +828,7 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                             debt,
                             recorder,
                         ));
+                        warn!("Handled MEMCACHED function");
                     }
                     #[allow(unreachable_patterns)]
                     _ => {
