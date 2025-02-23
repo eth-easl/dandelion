@@ -484,8 +484,30 @@ async fn memcached_request(
         let manager = MemcacheConnectionManager::new(format!("memcache://{}", addr));
         Pool::builder().max_size(MAX_CONNECTION_POOL_SIZE).build(manager).unwrap()
     });
+
+    let end = SystemTime::now();
+    match end.duration_since(start) {
+        Ok(duration) => {
+            warn!("Elapsed time for retrieval of pool: {:?}", duration)
+        }
+        Err(e) => {
+            warn!("Error: {:?}", e);
+        }
+    }
+    let start = SystemTime::now();
+
     let connection: PooledConnection<MemcacheConnectionManager> = pool.get().expect("Failed to get a memcached connection");
 
+    let end = SystemTime::now();
+    match end.duration_since(start) {
+        Ok(duration) => {
+            warn!("Elapsed time for retrieval of connection from pool: {:?}", duration)
+        }
+        Err(e) => {
+            warn!("Error: {:?}", e);
+        }
+    }
+    let start = SystemTime::now();
 
     // Preamble is SUCCESS for success. For non successfull functions, error message will be stored there
     // Get on non existed key will return ABSENT
