@@ -181,11 +181,11 @@ impl FunctionRegistry {
                     SystemFunction::MEMCACHED => String::from("memcached"),
                     _ => String::from(""),
                 };
-
+                
                 // get the config from the parser
                 let function_config = driver
                     .parse_function(
-                        String::from(""),
+                        path,
                         domains.get(type_map.get(engine_type).unwrap()).unwrap(),
                     )
                     .unwrap();
