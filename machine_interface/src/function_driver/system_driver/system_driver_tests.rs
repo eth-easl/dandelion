@@ -282,7 +282,7 @@ dolore magna aliquyam erat, sed diam voluptua."#
             .expect("Should be able to get engine");
         let config = FunctionConfig::SysConfig(SystemFunction::MEMCACHED);
 
-        let mut set_request = "MEMCACHED_SET 127.0.0.1:8000 testKey2\n\n900 ".as_bytes().to_vec();
+        let mut set_request = "MEMCACHED_SET 127.0.0.1:8000 testKey2 900\n\n".as_bytes().to_vec();
         set_request.extend_from_slice(value.as_bytes());
 
         let get_request = "MEMCACHED_GET 127.0.0.1:8000 testKey2\n\n".as_bytes().to_vec();

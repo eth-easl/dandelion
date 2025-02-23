@@ -89,6 +89,7 @@ fn convert_to_http_request(
             )));
         }
     };
+    warn!("Reading http request line: {:?}", request_line);
     let mut request_iter = request_line.split_ascii_whitespace();
 
     let method_item = request_iter.next();
@@ -96,6 +97,7 @@ fn convert_to_http_request(
         Some(method_string) if method_string == "GET" => RequestMethod::HTTP_GET,
         Some(method_string) if method_string == "POST" => RequestMethod::HTTP_POST,
         Some(method_string) if method_string == "MEMCACHED_GET" || method_string == "MEMCACHED_SET" => {
+            warn!("Found {} in HTTP method, changing to memcached", method_string);
             return convert_to_memcached_request(raw_request, item_name, item_key);
             // return Err(DandelionError::InvalidSystemFuncArg(format!(
             //     "Unsupported Method: trying to use {} in HTTP method", method_string
@@ -219,6 +221,7 @@ fn convert_to_memcached_request(
             )));
         }
     };
+    warn!("Reading memcached request line: {:?}", request_line);
     let mut request_iter = request_line.split_ascii_whitespace();
 
     let method_item = request_iter.next();
@@ -264,7 +267,7 @@ fn convert_to_memcached_request(
                 ttl = Some(request_iter
                     .next()
                     .ok_or(DandelionError::MalformedSystemFuncArg(String::from(
-                    "No memcached_identifier in memcached request",
+                    "No ttl in memcached request",
                 )))?.parse().expect("Failed to parse TTL to u32"));
             } 
         RequestMethod::MEMCACHED_GET => {
@@ -316,8 +319,14 @@ fn request_setup(context: &Context, request_type: RequestType) -> DandelionResul
             request_buffer.resize(set_item.data.size, 0);
             context.read(set_item.data.offset, &mut request_buffer)?;
             match request_type{
-                RequestType::HTTP => convert_to_http_request(request_buffer, set_item.ident.clone(), set_item.key),
-                RequestType::MEMCACHED => convert_to_memcached_request(request_buffer, set_item.ident.clone(), set_item.key),
+                RequestType::HTTP => {
+                    warn!("Convert to http request");
+                    convert_to_http_request(request_buffer, set_item.ident.clone(), set_item.key)
+                }
+                RequestType::MEMCACHED => {
+                    warn!("Convert to memcached request");
+                    convert_to_memcached_request(request_buffer, set_item.ident.clone(), set_item.key)
+                }
                 _ => return Err(DandelionError::MalformedSystemFuncArg(String::from(
                     "Unsupported Method",
                 )))
@@ -954,10 +963,13 @@ impl Driver for ReqwestDriver {
         static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
     ) -> DandelionResult<Function> {
         let cnfg = if function_path.len() == 0 {
+            warn!("Parsing reqwest function with blank path");
             FunctionConfig::SysConfig(SystemFunction::HTTP)
         } else if function_path == "http"{
+            warn!("Parsing reqwest function with path {}", function_path);
             FunctionConfig::SysConfig(SystemFunction::HTTP)
         } else if function_path == "memcached"{
+            warn!("Parsing reqwest function with path {}", function_path);
             FunctionConfig::SysConfig(SystemFunction::MEMCACHED)
         } else {
             return Err(DandelionError::CalledSystemFuncParser);
