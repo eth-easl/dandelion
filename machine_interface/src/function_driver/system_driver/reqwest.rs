@@ -89,7 +89,7 @@ fn convert_to_http_request(
             )));
         }
     };
-    warn!("Reading http request line: {:?}", request_line);
+    // warn!("Reading http request line: {:?}", request_line);
     let mut request_iter = request_line.split_ascii_whitespace();
 
     let method_item = request_iter.next();
@@ -97,7 +97,7 @@ fn convert_to_http_request(
         Some(method_string) if method_string == "GET" => RequestMethod::HTTP_GET,
         Some(method_string) if method_string == "POST" => RequestMethod::HTTP_POST,
         Some(method_string) if method_string == "MEMCACHED_GET" || method_string == "MEMCACHED_SET" => {
-            warn!("Found {} in HTTP method, changing to memcached", method_string);
+            // warn!("Found {} in HTTP method, changing to memcached", method_string);
             return convert_to_memcached_request(raw_request, item_name, item_key);
             // return Err(DandelionError::InvalidSystemFuncArg(format!(
             //     "Unsupported Method: trying to use {} in HTTP method", method_string
@@ -221,7 +221,7 @@ fn convert_to_memcached_request(
             )));
         }
     };
-    warn!("Reading memcached request line: {:?}", request_line);
+    // warn!("Reading memcached request line: {:?}", request_line);
     let mut request_iter = request_line.split_ascii_whitespace();
 
     let method_item = request_iter.next();
@@ -320,11 +320,9 @@ fn request_setup(context: &Context, request_type: RequestType) -> DandelionResul
             context.read(set_item.data.offset, &mut request_buffer)?;
             match request_type{
                 RequestType::HTTP => {
-                    warn!("Convert to http request");
                     convert_to_http_request(request_buffer, set_item.ident.clone(), set_item.key)
                 }
                 RequestType::MEMCACHED => {
-                    warn!("Convert to memcached request");
                     convert_to_memcached_request(request_buffer, set_item.ident.clone(), set_item.key)
                 }
                 _ => return Err(DandelionError::MalformedSystemFuncArg(String::from(
@@ -500,7 +498,6 @@ async fn memcached_request(
 
     match method {
         RequestMethod::MEMCACHED_SET => {
-            // warn!("Starting set");
             let mut expiration_time:u32 = 10800;
 
             // If ttl is not valid number, we set it to the DEFAULT (10800s). 
@@ -542,11 +539,8 @@ async fn memcached_request(
                     )));
                 }
             }
-            // warn!("Completed memcached set");
         }
-        RequestMethod::MEMCACHED_GET => {
-            // warn!("Starting get");
-            
+        RequestMethod::MEMCACHED_GET => {            
             let result = tokio::task::spawn_blocking(move || connection.get::<Vec<u8>>(&(memcached_identifier.expect("No memcached_identifier for memcached request")))).await;
 
             match result{
@@ -572,7 +566,6 @@ async fn memcached_request(
                     )));
                 }
             }
-            // warn!("Completed memcached get");
         }
         _ => {
             return Err(DandelionError::MalformedSystemFuncArg(String::from(
@@ -601,7 +594,6 @@ async fn memcached_request(
             warn!("Error: {:?}", e);
         }
     }
-    // warn!("Completed memcached_request function");
     return Ok(response_info);
 }
 
@@ -962,14 +954,9 @@ impl Driver for ReqwestDriver {
         function_path: String,
         static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
     ) -> DandelionResult<Function> {
-        let cnfg = if function_path.len() == 0 {
-            warn!("Parsing reqwest function with blank path");
+        let cnfg = if function_path.len() == 0 || function_path == "http"{
             FunctionConfig::SysConfig(SystemFunction::HTTP)
-        } else if function_path == "http"{
-            warn!("Parsing reqwest function with path {}", function_path);
-            FunctionConfig::SysConfig(SystemFunction::HTTP)
-        } else if function_path == "memcached"{
-            warn!("Parsing reqwest function with path {}", function_path);
+        }else if function_path == "memcached"{
             FunctionConfig::SysConfig(SystemFunction::MEMCACHED)
         } else {
             return Err(DandelionError::CalledSystemFuncParser);
