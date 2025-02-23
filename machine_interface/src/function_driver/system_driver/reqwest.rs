@@ -485,17 +485,6 @@ async fn memcached_request(
         Pool::builder().max_size(MAX_CONNECTION_POOL_SIZE).build(manager).unwrap()
     });
 
-    let end = SystemTime::now();
-    match end.duration_since(start) {
-        Ok(duration) => {
-            warn!("Elapsed time for retrieval of pool: {:?}", duration)
-        }
-        Err(e) => {
-            warn!("Error: {:?}", e);
-        }
-    }
-    let start = SystemTime::now();
-
     let connection: PooledConnection<MemcacheConnectionManager> = pool.get().expect("Failed to get a memcached connection");
 
     let end = SystemTime::now();
