@@ -125,7 +125,6 @@ fn convert_to_http_request(
     );
     let mut version: Version;
     let mut headermap = HeaderMap::new();
-    let mut body: Vec<u8>;
     version = match request_iter.next() {
         Some(version_string) if version_string == "HTTP/0.9" => Version::HTTP_09,
         Some(version_string) if version_string == "HTTP/1.0" => Version::HTTP_10,
@@ -182,13 +181,14 @@ fn convert_to_http_request(
             }
         }
     }
+    let mut body: Vec<u8>;
     body = if header_index < raw_request.len() {
         raw_request.drain(..header_index);
         raw_request
     } else {
         vec![]
     };
-    log::trace!("Reqwest body: {:?}", body);
+    // log::trace!("Reqwest body: {:?}", body);
 
     return Ok(RequestInformation {
         item_name,
@@ -276,11 +276,19 @@ fn convert_to_memcached_request(
         _ => return Err(DandelionError::NotImplemented), 
     }
 
-    let mut body: Vec<u8> = vec![];
-    if request_index + 2 < raw_request.len(){
-        // We jump by two, to ignore the two newline symbols after the header
-        body.extend(raw_request.drain(request_index + 2..));
-    }
+    // Should be computationally more efficient
+    // let mut body: Vec<u8> = vec![];
+    // if request_index + 2 < raw_request.len(){
+    //     // We jump by two, to ignore the two newline symbols after the header
+    //     body.extend(raw_request.drain(request_index + 2..));
+    // }
+    let mut body: Vec<u8>;
+    body = if request_index + 2 < raw_request.len() {
+        raw_request.drain(..request_index + 2);
+        raw_request
+    } else {
+        vec![]
+    };
 
 
     return Ok(RequestInformation {
@@ -694,7 +702,6 @@ async fn request_run(
     debt: Debt,
     mut recorder: Recorder,
 ) -> () {
-    warn!("Executing system function");
     let request_vec = match request_setup(&context, request_type) {
         Ok(request) => request,
         Err(err) => {
@@ -765,7 +772,6 @@ async fn request_run(
     }
     debt.fulfill(Ok(WorkDone::Context(context)));
     // warn!("Debt fullfilled");
-    warn!("Executed system function");
     return;
 }
 

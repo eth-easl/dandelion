@@ -92,7 +92,7 @@ pub fn get_available_domains(
             ),
             DomainType::System => (
                 dom_type,
-                Arc::new(crate::memory_domain::system_domain::SystemMemoryDomain::init(resource).unwrap()),
+                Arc::new(crate::memory_domain::system_domain::SystemMemoryDomain::init(MemoryResource::None).unwrap()),
             ),
             #[cfg(feature = "cheri")]
             DomainType::Cheri => (
