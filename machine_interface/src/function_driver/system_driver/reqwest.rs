@@ -31,6 +31,16 @@ use std::time::{SystemTime, Duration};
 use dashmap::DashMap;
 use r2d2::{Pool, PooledConnection};
 use r2d2_memcache::MemcacheConnectionManager;
+use async_memcached::Client as AsyncMemcachedClient;
+use bb8::Pool as BB8_Pool;
+use bb8::ManageConnection;
+use tokio::net::TcpStream;
+use tokio_util::codec::{Decoder, Encoder, LinesCodec};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::MutexGuard;
+use tokio::macros::support::Future;
+use tokio::macros::support::Pin;
+use async_trait::async_trait;
 
 enum RequestType {
     HTTP,
@@ -71,6 +81,38 @@ struct ResponseInformation {
     preamble: String,
     body: bytes::Bytes,
 }
+
+#[derive(Debug)]
+struct BB8MemcachedConnectionManager {
+    address: String,
+}
+
+impl ManageConnection for BB8MemcachedConnectionManager {
+    type Connection = AsyncMemcachedClient;
+    type Error = async_memcached::Error;
+
+    fn connect(&self) -> Pin<Box<dyn Future<Output = Result<Self::Connection, Self::Error>> + Send>> {
+        let address = self.address.clone();
+
+        // let stream = TcpStream::connect(address).await;
+        // let codec = LinesCodec::new();
+        // // let client = AsyncMemcachedClient::with_codec(stream, codec);
+        // Box::pin(async move { AsyncMemcachedClient::with_codec(stream, codec) })
+        Box::pin(async move { AsyncMemcachedClient::new(address).await })
+    }
+
+    fn is_valid(
+        &self,
+        _conn: &mut Self::Connection,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send>> {
+        Box::pin(async { Ok(()) }) // Memcached has no built-in ping, assuming it's valid
+    }
+
+    fn has_broken(&self, _conn: &mut Self::Connection) -> bool {
+        false
+    }
+}
+
 fn convert_to_http_request(
     mut raw_request: Vec<u8>,
     item_name: String,
@@ -181,11 +223,6 @@ fn convert_to_http_request(
             }
         }
     }
-    let mut body: Vec<u8> = vec![];
-    if header_index < raw_request.len(){
-        // We jump by two, to ignore the two newline symbols after the header
-        body.extend(raw_request.drain(header_index..));
-    }
     // let mut body: Vec<u8>;
     // body = if header_index < raw_request.len() {
     //     raw_request.drain(..header_index);
@@ -193,6 +230,10 @@ fn convert_to_http_request(
     // } else {
     //     vec![]
     // };
+    let mut body: Vec<u8> = vec![];
+    if header_index < raw_request.len(){
+        body.extend(raw_request.drain(header_index..));
+    }
     // log::trace!("Reqwest body: {:?}", body);
 
     return Ok(RequestInformation {
@@ -282,18 +323,18 @@ fn convert_to_memcached_request(
     }
 
     // Should be computationally more efficient
-    // let mut body: Vec<u8> = vec![];
-    // if request_index + 2 < raw_request.len(){
-    //     // We jump by two, to ignore the two newline symbols after the header
-    //     body.extend(raw_request.drain(request_index + 2..));
-    // }
-    let mut body: Vec<u8>;
-    body = if request_index + 2 < raw_request.len() {
-        raw_request.drain(..request_index + 2);
-        raw_request
-    } else {
-        vec![]
-    };
+    let mut body: Vec<u8> = vec![];
+    if request_index + 2 < raw_request.len(){
+        // We jump by two, to ignore the two newline symbols after the header
+        body.extend(raw_request.drain(request_index + 2..));
+    }
+    // let mut body: Vec<u8>;
+    // body = if request_index + 2 < raw_request.len() {
+    //     raw_request.drain(..request_index + 2);
+    //     raw_request
+    // } else {
+    //     vec![]
+    // };
 
 
     return Ok(RequestInformation {
@@ -469,7 +510,8 @@ async fn http_request(
 
 async fn memcached_request(
     request_info: RequestInformation,
-    memcached_connection_pool: Arc<DashMap<String, Pool<MemcacheConnectionManager>>>,
+    // memcached_connection_pool: Arc<DashMap<String, Pool<MemcacheConnectionManager>>>,
+    memcached_connection_pool: Arc<DashMap<String, BB8_Pool<BB8MemcachedConnectionManager>>>,
 ) -> DandelionResult<ResponseInformation> {
     let RequestInformation {
         item_name,
@@ -491,15 +533,47 @@ async fn memcached_request(
 
 
     // TODO: Remove this hardcoding of storag server and use uri
-    let addr = "10.233.0.17:11211".to_string();
+    let addr = uri.clone();
+    // let addr = "10.233.0.17:11211".to_string();
     let MAX_CONNECTION_POOL_SIZE = 50;
 
-    let pool = memcached_connection_pool.entry(addr.clone()).or_insert_with(|| {
-        let manager = MemcacheConnectionManager::new(format!("memcache://{}", addr));
-        Pool::builder().max_size(MAX_CONNECTION_POOL_SIZE).build(manager).unwrap()
-    });
+    // let pool = memcached_connection_pool.entry(addr.clone()).or_insert_with(|| {
+    //     let manager = MemcacheConnectionManager::new(format!("memcache://{}", addr));
+    //     Pool::builder().max_size(MAX_CONNECTION_POOL_SIZE).build(manager).unwrap()
+    // });
 
-    let connection: PooledConnection<MemcacheConnectionManager> = pool.get().expect("Failed to get a memcached connection");
+    // let connection: PooledConnection<MemcacheConnectionManager> = pool.get().expect("Failed to get a memcached connection");
+
+    // let pool = memcached_connection_pool.entry(addr.clone()).or_insert_with(|| {
+    //     let manager = BB8MemcachedConnectionManager::new(format!("tcp://{}", addr));
+    //     BB8_Pool::builder().max_size(MAX_CONNECTION_POOL_SIZE).build(manager).await?
+    // });
+
+    let pool = if let Some(pool) = memcached_connection_pool.get(&addr) {
+            pool.clone()
+        }
+        else {
+            let manager = BB8MemcachedConnectionManager{
+                address: format!("tcp://{}", addr),
+            };
+            let pool = BB8_Pool::builder()
+                .max_size(MAX_CONNECTION_POOL_SIZE)
+                .build(manager)
+                .await
+                .map_err(|e| DandelionError::MemcachedRequestError(e.to_string()))?;
+            memcached_connection_pool.insert(addr.to_string(), pool.clone());
+            if let Some(pool) = memcached_connection_pool.get(&addr) {
+                pool.clone()
+            }
+            else{
+                return Err(DandelionError::MemcachedRequestError("Retrieving of connection pool failed".to_string()));
+            }
+        };
+
+
+    let mut connection = pool.get()
+        .await
+        .map_err(|e| DandelionError::MemcachedRequestError(e.to_string()))?;
 
     let end = SystemTime::now();
     match end.duration_since(start) {
@@ -523,12 +597,12 @@ async fn memcached_request(
 
     match method {
         RequestMethod::MEMCACHED_SET => {
-            let mut expiration_time:u32 = 10800;
+            let mut expiration_time:i64 = 10800;
 
             // If ttl is not valid number, we set it to the DEFAULT (10800s). 
             // If is is valid, we take it
             if (0..=MAX_EXPIRATION_TIME).contains(&ttl.expect("No ttl for memcached request")){
-               expiration_time = ttl.unwrap(); 
+                expiration_time = ttl.unwrap() as i64;
             }
             
             if body.is_empty() {
@@ -541,56 +615,96 @@ async fn memcached_request(
                     "Memcached value is larger than 1MB",
                 )));
             }
-
-            let result = tokio::task::spawn_blocking(move || {
-                let body_slice: &[u8] = &body;
-                connection.set(&(memcached_identifier.expect("No memcached_identifier for memcached request")), body_slice, expiration_time)}).await;
-
-            match result{
-                Ok(Ok(_)) => {
+            let body_slice: &[u8] = &body;
+            match connection.set(
+                    memcached_identifier.expect("No memcached_identifier for memcached request").as_bytes().to_vec(), 
+                    body_slice, 
+                    Some(expiration_time), 
+                    None).await {
+                Ok(_) => {
                     preamble = String::from("SUCCESS!");
                     response_body = Bytes::from(vec![0u8]);
-                }
-                Ok(Err(e)) => {
-                    debug!("Memcached_request set failed with: {:?}", e);
-                    return Err(DandelionError::MemcachedRequestError(format!(
-                        "Set request failed: {:?}", e
-                    )));
                 }
                 Err(e) => {
                     debug!("Memcached_request set failed with: {:?}", e);
                     return Err(DandelionError::MemcachedRequestError(format!(
-                        "Set request tokio task failed: {:?}", e
+                        "Set request failed: {:?}",
+                        e
                     )));
                 }
             }
-        }
-        RequestMethod::MEMCACHED_GET => {            
-            let result = tokio::task::spawn_blocking(move || connection.get::<Vec<u8>>(&(memcached_identifier.expect("No memcached_identifier for memcached request")))).await;
 
-            match result{
-                Ok(Ok(Some(response))) => {
+            // let result = tokio::task::spawn_blocking(move || {
+            //     let body_slice: &[u8] = &body;
+            //     connection.set(&(memcached_identifier.expect("No memcached_identifier for memcached request")), body_slice, expiration_time)}).await;
+
+            // match result{
+            //     Ok(Ok(_)) => {
+            //         preamble = String::from("SUCCESS!");
+            //         response_body = Bytes::from(vec![0u8]);
+            //     }
+            //     Ok(Err(e)) => {
+            //         debug!("Memcached_request set failed with: {:?}", e);
+            //         return Err(DandelionError::MemcachedRequestError(format!(
+            //             "Set request failed: {:?}", e
+            //         )));
+            //     }
+            //     Err(e) => {
+            //         debug!("Memcached_request set failed with: {:?}", e);
+            //         return Err(DandelionError::MemcachedRequestError(format!(
+            //             "Set request tokio task failed: {:?}", e
+            //         )));
+            //     }
+            // }
+        }
+        RequestMethod::MEMCACHED_GET => {
+            match connection.get::<Vec<u8>>(memcached_identifier.expect("No memcached_identifier for memcached request").as_bytes().to_vec()).await {
+                Ok(Some(response)) => {
                     preamble = String::from("SUCCESS!");
-                    response_body = Bytes::from(response);;
+                    response_body = Bytes::from(response.data);
+                    // response_body = Bytes::from(vec![0u8]);
+                    // return Err(DandelionError::MemcachedRequestError(format!("Value: {}", String::from_utf8(response.data).unwrap())));
                 }
-                Ok(Ok(None)) => {
+                Ok(None) => {
                     debug!("Key {} did not exist on memcached server", item_key);
                     preamble = String::from("ABSENT!!");
                     response_body = Bytes::from(vec![0u8]);
                 }
-                Ok(Err(e)) => {
-                    debug!("Memcached_request get failed with: {:?}", e);
-                    return Err(DandelionError::MemcachedRequestError(format!(
-                        "Get request failed: {:?}", e
-                    )));
-                }
                 Err(e) => {
                     debug!("Memcached_request get failed with: {:?}", e);
                     return Err(DandelionError::MemcachedRequestError(format!(
-                        "Get request tokio task failed: {:?}", e
+                        "Get request failed: {:?}",
+                        e
                     )));
                 }
             }
+            panic!("Finished");
+
+            // let result = tokio::task::spawn_blocking(move || connection.get::<Vec<u8>>(&(memcached_identifier.expect("No memcached_identifier for memcached request")))).await;
+
+            // match result{
+            //     Ok(Ok(Some(response))) => {
+            //         preamble = String::from("SUCCESS!");
+            //         response_body = Bytes::from(response);;
+            //     }
+            //     Ok(Ok(None)) => {
+            //         debug!("Key {} did not exist on memcached server", item_key);
+            //         preamble = String::from("ABSENT!!");
+            //         response_body = Bytes::from(vec![0u8]);
+            //     }
+            //     Ok(Err(e)) => {
+            //         debug!("Memcached_request get failed with: {:?}", e);
+            //         return Err(DandelionError::MemcachedRequestError(format!(
+            //             "Get request failed: {:?}", e
+            //         )));
+            //     }
+            //     Err(e) => {
+            //         debug!("Memcached_request get failed with: {:?}", e);
+            //         return Err(DandelionError::MemcachedRequestError(format!(
+            //             "Get request tokio task failed: {:?}", e
+            //         )));
+            //     }
+            // }
         }
         _ => {
             return Err(DandelionError::MalformedSystemFuncArg(String::from(
@@ -702,7 +816,8 @@ async fn request_run(
     mut context: Context,
     client: Option<HttpClient>,
     request_type: RequestType,
-    memcached_connection_pool: Option<Arc<DashMap<String, Pool<MemcacheConnectionManager>>>>,
+    // memcached_connection_pool: Option<Arc<DashMap<String, Pool<MemcacheConnectionManager>>>>,
+    memcached_connection_pool: Option<Arc<DashMap<String, BB8_Pool<BB8MemcachedConnectionManager>>>>,
     output_set_names: Arc<Vec<String>>,
     debt: Debt,
     mut recorder: Recorder,
@@ -785,7 +900,8 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
     std::env::set_var("RUST_BACKTRACE", "1");
     let client = HttpClient::new();
     
-    let memcached_connection_pool: Arc<DashMap<String, Pool<MemcacheConnectionManager>>> = Arc::new(DashMap::new());
+    // let memcached_connection_pool: Arc<DashMap<String, Pool<MemcacheConnectionManager>>> = Arc::new(DashMap::new());
+    let memcached_connection_pool: Arc<DashMap<String, BB8_Pool<BB8MemcachedConnectionManager>>> = Arc::new(DashMap::new());
 
     // TODO FIX! This should not be necessary!
     let mut queue_ref = Box::leak(queue);
