@@ -678,7 +678,6 @@ async fn memcached_request(
                     )));
                 }
             }
-            panic!("Finished");
 
             // let result = tokio::task::spawn_blocking(move || connection.get::<Vec<u8>>(&(memcached_identifier.expect("No memcached_identifier for memcached request")))).await;
 
