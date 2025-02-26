@@ -181,13 +181,18 @@ fn convert_to_http_request(
             }
         }
     }
-    let mut body: Vec<u8>;
-    body = if header_index < raw_request.len() {
-        raw_request.drain(..header_index);
-        raw_request
-    } else {
-        vec![]
-    };
+    let mut body: Vec<u8> = vec![];
+    if header_index < raw_request.len(){
+        // We jump by two, to ignore the two newline symbols after the header
+        body.extend(raw_request.drain(header_index..));
+    }
+    // let mut body: Vec<u8>;
+    // body = if header_index < raw_request.len() {
+    //     raw_request.drain(..header_index);
+    //     raw_request
+    // } else {
+    //     vec![]
+    // };
     // log::trace!("Reqwest body: {:?}", body);
 
     return Ok(RequestInformation {
