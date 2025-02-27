@@ -1,3 +1,7 @@
+use crate::memory_domain::{
+    system_domain::{system_context_write_from_bytes, SystemContext},
+    ContextType,
+};
 use crate::{
     function_driver::{
         ComputeResource, Driver, Function, FunctionConfig, SystemFunction, WorkDone, WorkQueue,
@@ -17,8 +21,8 @@ use futures::StreamExt;
 use http::{version::Version, HeaderName, HeaderValue, Method};
 use log::error;
 use reqwest::{header::HeaderMap, Client};
-use std::sync::Arc;
-use tokio::runtime::Builder;
+use std::{collections::BTreeMap, sync::Arc};
+use tokio::{runtime::Builder, sync::RwLock};
 
 struct RequestInformation {
     /// name of the request item
@@ -284,25 +288,46 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
         mut body,
     } = response;
 
-    // allocate space in the context for the entire response
-    let preable_len = preamble.len();
+    let preamble_len = preamble.len();
     let body_len = body.len();
-    let response_len = preable_len + body_len;
+    let response_len = preamble_len + body_len;
+    // allocate space in the context for the entire response
     let response_start = context.get_free_space(response_len, 128)?;
-    context.write(response_start, preamble.as_bytes())?;
-    let mut bytes_read = 0;
-    while bytes_read < body_len {
-        let chunk = body.chunk();
-        let reading = chunk.len();
-        context.write(response_start + preable_len + bytes_read, chunk)?;
-        body.advance(reading);
-        bytes_read += reading;
+
+    match &mut context.context {
+        ContextType::System(destination_ctxt) => {
+            let preamble_bytes = bytes::Bytes::from(preamble.into_bytes());
+            system_context_write_from_bytes(
+                destination_ctxt,
+                preamble_bytes,
+                response_start,
+                preamble_len,
+            );
+            system_context_write_from_bytes(
+                destination_ctxt,
+                body.clone(),
+                response_start + preamble_len,
+                body_len,
+            );
+        }
+        _ => {
+            context.write(response_start, preamble.as_bytes())?;
+            let mut bytes_read = 0;
+            while bytes_read < body_len {
+                let chunk = body.chunk();
+                let reading = chunk.len();
+                context.write(response_start + preamble_len + bytes_read, chunk)?;
+                body.advance(reading);
+                bytes_read += reading;
+            }
+            assert_eq!(
+                0,
+                body.remaining(),
+                "Body should have non remaining as we have read the amount given as len in the beginning"
+            );
+        }
     }
-    assert_eq!(
-        0,
-        body.remaining(),
-        "Body should have non remaining as we have read the amount given as len in the beginning"
-    );
+
     if let Some(response_set) = &mut context.content[0] {
         response_set.buffers.push(DataItem {
             ident: item_name.clone(),
@@ -318,8 +343,8 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
             ident: item_name,
             key: item_key,
             data: Position {
-                offset: response_start + preable_len,
-                size: response_len - preable_len,
+                offset: response_start + preamble_len,
+                size: response_len - preamble_len,
             },
         })
     }
@@ -328,7 +353,7 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
 }
 
 async fn http_run(
-    mut context: Context,
+    context: Context,
     client: Client,
     output_set_names: Arc<Vec<String>>,
     debt: Debt,
@@ -337,10 +362,15 @@ async fn http_run(
     let request_vec = match http_setup(&context) {
         Ok(request) => request,
         Err(err) => {
-            debt.fulfill(Box::new(Err(err)));
+            debt.fulfill(Err(err));
             return;
         }
     };
+    let context_size = context.size;
+
+    // get rid of systems context to drop references to old contexts before starting to do requests
+    drop(context);
+
     let response_vec = match futures::future::try_join_all(
         request_vec
             .into_iter()
@@ -350,44 +380,51 @@ async fn http_run(
     {
         Ok(resp) => resp,
         Err(err) => {
-            debt.fulfill(Box::new(Err(err)));
+            debt.fulfill(Err(err));
             return;
         }
     };
 
-    // only clear once for all requests
-    context.clear_metadata();
+    let mut out_context = Context::new(
+        ContextType::System(Box::new(SystemContext {
+            local_offset_to_data_position: BTreeMap::new(),
+            size: context_size,
+        })),
+        context_size,
+    );
+
     if !output_set_names.is_empty() {
-        context.content = vec![None, None];
+        out_context.content = vec![None, None];
         if output_set_names.iter().any(|elem| elem == "response") {
-            context.content[0] = Some(DataSet {
+            out_context.content[0] = Some(DataSet {
                 ident: String::from("response"),
                 buffers: vec![],
             })
         }
         if output_set_names.iter().any(|elem| elem == "body") {
-            context.content[1] = Some(DataSet {
+            out_context.content[1] = Some(DataSet {
                 ident: String::from("body"),
                 buffers: vec![],
             })
         }
         let write_results: DandelionResult<Vec<_>> = response_vec
             .into_iter()
-            .map(|response| http_context_write(&mut context, response))
+            .map(|response| http_context_write(&mut out_context, response))
             .collect();
         if let Err(err) = write_results {
-            debt.fulfill(Box::new(Err(err)));
+            debt.fulfill(Err(err));
             return;
         }
     }
     if let Err(err) = recorder.record(RecordPoint::EngineEnd) {
-        debt.fulfill(Box::new(Err(err)));
+        debt.fulfill(Err(err));
         return;
     }
-    let results = Box::new(Ok(WorkDone::Context(context)));
-    debt.fulfill(results);
+    debt.fulfill(Ok(WorkDone::Context(out_context)));
     return;
 }
+
+// const MAX_INFLIGHT: usize = 128;
 
 async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
     log::debug!("Reqwest engine Init");
@@ -395,6 +432,7 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
     // TODO FIX! This should not be necessary!
     let mut queue_ref = Box::leak(queue);
     let mut tuple;
+    let worker_lock = Arc::new(RwLock::new(()));
     loop {
         (tuple, queue_ref) = queue_ref.into_future().await;
         let (args, debt) = if let Some((tuple_args, tuple_debt)) = tuple {
@@ -410,7 +448,7 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 mut recorder,
             } => {
                 if let Err(err) = recorder.record(RecordPoint::EngineStart) {
-                    debt.fulfill(Box::new(Err(err)));
+                    debt.fulfill(Err(err));
                     continue;
                 }
                 // let result = engine_state.run(config, context, output_sets);
@@ -418,23 +456,22 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 let function = match config {
                     FunctionConfig::SysConfig(sys_func) => sys_func,
                     _ => {
-                        debt.fulfill(Box::new(Err(DandelionError::ConfigMissmatch)));
+                        debt.fulfill(Err(DandelionError::ConfigMissmatch));
                         continue;
                     }
                 };
                 match function {
                     SystemFunction::HTTP => {
-                        tokio::spawn(http_run(
-                            context,
-                            client.clone(),
-                            output_sets,
-                            debt,
-                            recorder,
-                        ));
+                        let clone_client = client.clone();
+                        let new_reader = worker_lock.clone().read_owned().await;
+                        tokio::spawn(async move {
+                            http_run(context, clone_client, output_sets, debt, recorder).await;
+                            drop(new_reader);
+                        });
                     }
                     #[allow(unreachable_patterns)]
                     _ => {
-                        debt.fulfill(Box::new(Err(DandelionError::MalformedConfig)));
+                        debt.fulfill(Err(DandelionError::MalformedConfig));
                     }
                 };
                 continue;
@@ -453,13 +490,13 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 match recorder.record(RecordPoint::TransferStart) {
                     Ok(()) => (),
                     Err(err) => {
-                        debt.fulfill(Box::new(Err(err)));
+                        debt.fulfill(Err(err));
                         continue;
                     }
                 }
                 let transfer_result = memory_domain::transfer_data_item(
                     &mut destination,
-                    &source,
+                    source,
                     destination_set_index,
                     destination_allignment,
                     destination_item_index,
@@ -470,12 +507,12 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 match recorder.record(RecordPoint::TransferEnd) {
                     Ok(()) => (),
                     Err(err) => {
-                        debt.fulfill(Box::new(Err(err)));
+                        debt.fulfill(Err(err));
                         continue;
                     }
                 }
                 let transfer_return = transfer_result.and(Ok(WorkDone::Context(destination)));
-                debt.fulfill(Box::new(transfer_return));
+                debt.fulfill(transfer_return);
                 continue;
             }
             WorkToDo::ParsingArguments {
@@ -485,11 +522,11 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 mut recorder,
             } => {
                 recorder.record(RecordPoint::ParsingStart).unwrap();
-                let function_result = driver.parse_function(path, static_domain);
+                let function_result = driver.parse_function(path, &static_domain);
                 recorder.record(RecordPoint::ParsingEnd).unwrap();
                 match function_result {
-                    Ok(function) => debt.fulfill(Box::new(Ok(WorkDone::Function(function)))),
-                    Err(err) => debt.fulfill(Box::new(Err(err))),
+                    Ok(function) => debt.fulfill(Ok(WorkDone::Function(function))),
+                    Err(err) => debt.fulfill(Err(err)),
                 }
                 continue;
             }
@@ -500,15 +537,16 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 mut recorder,
             } => {
                 recorder.record(RecordPoint::LoadStart).unwrap();
-                let load_result = function.load(domain, ctx_size);
+                let load_result = function.load(&domain, ctx_size);
                 recorder.record(RecordPoint::LoadEnd).unwrap();
                 match load_result {
-                    Ok(context) => debt.fulfill(Box::new(Ok(WorkDone::Context(context)))),
-                    Err(err) => debt.fulfill(Box::new(Err(err))),
+                    Ok(context) => debt.fulfill(Ok(WorkDone::Context(context))),
+                    Err(err) => debt.fulfill(Err(err)),
                 }
                 continue;
             }
             WorkToDo::Shutdown() => {
+                let _ = worker_lock.write_owned().await;
                 return debt;
             }
         }
@@ -534,9 +572,7 @@ fn outer_engine(core_id: u8, queue: Box<dyn WorkQueue + Send>) {
         .unwrap();
     let debt = runtime.block_on(engine_loop(queue));
     drop(runtime);
-    debt.fulfill(Box::new(Ok(WorkDone::Resources(vec![
-        ComputeResource::CPU(core_id),
-    ]))));
+    debt.fulfill(Ok(WorkDone::Resources(vec![ComputeResource::CPU(core_id)])));
 }
 
 pub struct ReqwestDriver {}
@@ -571,7 +607,7 @@ impl Driver for ReqwestDriver {
     fn parse_function(
         &self,
         function_path: String,
-        static_domain: &'static dyn crate::memory_domain::MemoryDomain,
+        static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
     ) -> DandelionResult<Function> {
         if function_path.len() != 0 {
             return Err(DandelionError::CalledSystemFuncParser);
@@ -581,7 +617,7 @@ impl Driver for ReqwestDriver {
                 input_requirements: vec![],
                 static_requirements: vec![],
             },
-            context: static_domain.acquire_context(0)?,
+            context: Arc::new(static_domain.acquire_context(0)?),
             config: FunctionConfig::SysConfig(SystemFunction::HTTP),
         });
     }

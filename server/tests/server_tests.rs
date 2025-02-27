@@ -3,6 +3,7 @@
         feature = "wasm",
         feature = "mmu",
         feature = "cheri",
+        feature = "kvm",
         feature = "gpu_thread",
         feature = "gpu_process"
     ),
@@ -48,15 +49,18 @@ mod server_tests {
     }
 
     #[derive(Serialize)]
+    struct RegisterFunctionLocal {
+        name: String,
+        context_size: u64,
+        engine_type: String,
+        local_path: String,
+        binary: Vec<u8>,
+        input_sets: Vec<(String, Option<Vec<(String, Vec<u8>)>>)>,
+        output_sets: Vec<String>,
+    }
+    #[derive(Serialize)]
     struct RegisterChain {
         composition: String,
-    }
-
-    #[derive(Serialize)]
-    struct MatrixRequest {
-        name: String,
-        rows: u64,
-        cols: u64,
     }
 
     impl Drop for ServerKiller {
@@ -151,9 +155,10 @@ mod server_tests {
         assert_eq!(1, checksum);
     }
 
-    fn register_and_request(http_version: reqwest::Version, client: Client) {
-        let version: String;
-        let mut engine_type;
+    fn register_and_request(http_version: reqwest::Version, client: Client, local: bool) {
+        // register function
+        let version;
+        let engine_type;
         #[cfg(feature = "wasm")]
         {
             version = format!("sysld_wasm_{}", std::env::consts::ARCH);
@@ -163,6 +168,11 @@ mod server_tests {
         {
             version = format!("elf_mmu_{}", std::env::consts::ARCH);
             engine_type = String::from("Process");
+        }
+        #[cfg(feature = "kvm")]
+        {
+            version = format!("elf_kvm_{}", std::env::consts::ARCH);
+            engine_type = String::from("Kvm");
         }
         #[cfg(feature = "cheri")]
         {
@@ -226,18 +236,32 @@ mod server_tests {
         };
 
         let function_name = format!("matmul_{}", version_string);
-        let register_request = RegisterFunction {
-            name: function_name.clone(),
-            context_size: 0x802_0000,
-            binary: std::fs::read(matmul_path).unwrap(),
-            engine_type,
-            input_sets: vec![(String::from("A"), None)],
-            output_sets: vec![String::from("B")],
+        let register_request = if local {
+            bson::to_vec(&RegisterFunctionLocal {
+                name: function_name.clone(),
+                context_size: 0x802_0000,
+                local_path: matmul_path,
+                binary: Vec::new(),
+                engine_type,
+                input_sets: vec![(String::from(""), None)],
+                output_sets: vec![String::from("")],
+            })
+            .unwrap()
+        } else {
+            bson::to_vec(&RegisterFunction {
+                name: function_name.clone(),
+                context_size: 0x802_0000,
+                binary: std::fs::read(matmul_path).unwrap(),
+                engine_type,
+                input_sets: vec![(String::from(""), None)],
+                output_sets: vec![String::from("")],
+            })
+            .unwrap()
         };
         let registration_resp = client
             .post("http://localhost:8080/register/function")
             .version(http_version)
-            .body(bson::to_vec(&register_request).unwrap())
+            .body(register_request)
             .send()
             .unwrap();
         assert!(registration_resp.status().is_success());
@@ -247,11 +271,11 @@ mod server_tests {
             #[cfg(not(feature = "gpu"))]
             composition: format!(
                 r#"
-                (:function {function} (InMats) -> (OutMats))
-                (:composition {chain} (CompInMats) -> (CompOutMats) (
-                    ({function} ((:all InMats <- CompInMats)) => ((InterMat := OutMats)))
-                    ({function} ((:all InMats <- InterMat)) => ((CompOutMats := OutMats)))
-                ))
+                function {function} (InMats) => (OutMats);
+                composition {chain} (CompInMats) => (CompOutMats) {{
+                    {function} (InMats = all CompInMats) => (InterMat = OutMats);
+                    {function} (InMats = all InterMat) => (CompOutMats = OutMats);
+                }}
             "#,
                 function = function_name,
                 chain = chain_name,
@@ -320,7 +344,42 @@ mod server_tests {
             .http2_prior_knowledge()
             .build()
             .unwrap();
-        register_and_request(reqwest::Version::HTTP_2, client);
+        register_and_request(reqwest::Version::HTTP_2, client, false);
+
+        let status_result = server_killer.server.try_wait();
+        drop(server_killer);
+        let status = status_result.unwrap();
+        assert_eq!(status, None, "Server exited unexpectedly");
+    }
+
+    #[test]
+    #[serial]
+    fn serve_matmul_http_2_local() {
+        let mut cmd = Command::cargo_bin("dandelion_server").unwrap();
+        let server = cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut server_killer = ServerKiller { server };
+        let mut reader = BufReader::new(server_killer.server.stdout.take().unwrap());
+        loop {
+            let mut buf = String::new();
+            let len = reader.read_line(&mut buf).unwrap();
+            assert_ne!(len, 0, "Server exited unexpectedly");
+            if buf.contains("Server start") {
+                break;
+            } else {
+                print!("{}", buf);
+            }
+        }
+        let _ = server_killer.server.stdout.insert(reader.into_inner());
+
+        let client = reqwest::blocking::Client::builder()
+            .http2_prior_knowledge()
+            .build()
+            .unwrap();
+        register_and_request(reqwest::Version::HTTP_2, client, true);
 
         let status_result = server_killer.server.try_wait();
         drop(server_killer);
@@ -353,7 +412,7 @@ mod server_tests {
         let _ = server_killer.server.stdout.insert(reader.into_inner());
 
         let client = reqwest::blocking::Client::new();
-        register_and_request(reqwest::Version::HTTP_11, client);
+        register_and_request(reqwest::Version::HTTP_11, client, false);
 
         let status_result = server_killer.server.try_wait();
         drop(server_killer);

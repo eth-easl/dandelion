@@ -8,6 +8,8 @@ default = ["bytes_context"]
 std = []
 cheri = ["std"]
 mmu = ["std"]
+kvm = ["std", "dep:kvm-bindings", "dep:kvm-ioctls"]
+backend_debug = []
 reqwest_io = ["std", "dep:reqwest", "dep:http", "dep:bytes"]
 bytes_context = ["std", "dep:bytes"]
 wasm = ["std"]
@@ -15,6 +17,7 @@ timestamp = ["dandelion_commons/timestamp"]
 gpu = ["std"]
 gpu_process = ["gpu"]
 gpu_thread = ["gpu"]
+test_export = []
 
 [build-dependencies]
 cmake = "0.1"
@@ -23,6 +26,7 @@ cmake = "0.1"
 criterion = { version = "0.4", features = ["html_reports"] }
 # need to lock this to older version, because morello does not yet have rustc 1.6
 regex = "1.7.1"
+test-log = "0.2.16"
 
 [dependencies]
 dandelion_commons = { path = "../dandelion_commons" }
@@ -40,7 +44,12 @@ http = { version = "1.1", optional = true }
 bytes = { version = "1.6", optional = true}
 libloading = { version = "0.8.1" }
 log = "0.4.20"
+<<<<<<< HEAD
 lazy_static = "1.4.0"
+=======
+kvm-bindings = { version = "0.8", optional = true }
+kvm-ioctls = { version = "0.17", optional = true }
+>>>>>>> 90d4dabae9614e75d046a477c55b212c1230800b
 
 # disable benchmarks in library, to not run all unit tests on every benchmark
 # also needs to be disabled for criterion flags to work that are not available for tests

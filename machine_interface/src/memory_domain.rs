@@ -12,10 +12,15 @@ pub mod mmu;
 pub mod read_only;
 #[cfg(feature = "wasm")]
 pub mod wasm;
+pub(crate) mod system_domain;
+
+// Eventually use this
+// pub mod system_domain;
 
 use crate::{DataItem, DataSet, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 pub trait ContextTrait: Send + Sync {
     /// Write data at the given offset into the context
@@ -48,6 +53,8 @@ pub enum ContextType {
     Wasm(Box<wasm::WasmContext>),
     #[cfg(feature = "gpu")]
     Gpu(Box<gpu::GpuContext>),
+    System(Box<system_domain::SystemContext>),
+
 }
 
 impl ContextTrait for ContextType {
@@ -66,6 +73,7 @@ impl ContextTrait for ContextType {
             ContextType::Gpu(context) => context.write(offset, data),
             #[cfg(feature = "bytes_context")]
             ContextType::Bytes(context) => context.write(offset, data),
+            ContextType::System(context) => context.write(offset, data),
         }
     }
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
@@ -83,6 +91,7 @@ impl ContextTrait for ContextType {
             ContextType::Gpu(context) => context.read(offset, read_buffer),
             #[cfg(feature = "bytes_context")]
             ContextType::Bytes(context) => context.read(offset, read_buffer),
+            ContextType::System(context) => context.read(offset, read_buffer),
         }
     }
     fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
@@ -100,6 +109,7 @@ impl ContextTrait for ContextType {
             ContextType::Gpu(context) => context.get_chunk_ref(offset, length),
             #[cfg(feature = "bytes_context")]
             ContextType::Bytes(context) => context.get_chunk_ref(offset, length),
+            ContextType::System(context) => context.get_chunk_ref(offset, length),
         }
     }
 }
@@ -247,6 +257,8 @@ impl Context {
 #[derive(Clone, Copy)]
 pub enum MemoryResource {
     None,
+    Anonymous { size: usize },
+    Shared { id: u64, size: usize },
 }
 
 pub trait MemoryDomain: Sync + Send {
@@ -260,7 +272,7 @@ pub trait MemoryDomain: Sync + Send {
 // Code to specialize transfers between different domains
 pub fn transfer_memory(
     destination: &mut Context,
-    source: &Context,
+    source: Arc<Context>,
     destination_offset: usize,
     source_offset: usize,
     size: usize,
@@ -270,7 +282,7 @@ pub fn transfer_memory(
         (ContextType::Malloc(destination_ctxt), ContextType::Malloc(source_ctxt)) => {
             malloc::malloc_transfer(
                 destination_ctxt,
-                source_ctxt,
+                &source_ctxt,
                 destination_offset,
                 source_offset,
                 size,
@@ -278,7 +290,7 @@ pub fn transfer_memory(
         }
         (ContextType::Mmap(destination_ctxt), ContextType::Mmap(source_ctxt)) => mmap::io_transfer(
             destination_ctxt,
-            source_ctxt,
+            &source_ctxt,
             destination_offset,
             source_offset,
             size,
@@ -287,7 +299,7 @@ pub fn transfer_memory(
         (ContextType::Cheri(destination_ctxt), ContextType::Cheri(source_ctxt)) => {
             cheri::cheri_transfer(
                 destination_ctxt,
-                source_ctxt,
+                &source_ctxt,
                 destination_offset,
                 source_offset,
                 size,
@@ -296,7 +308,7 @@ pub fn transfer_memory(
         #[cfg(feature = "mmu")]
         (ContextType::Mmu(destination_ctxt), ContextType::Mmu(source_ctxt)) => mmu::mmu_transfer(
             destination_ctxt,
-            source_ctxt,
+            &source_ctxt,
             destination_offset,
             source_offset,
             size,
@@ -305,7 +317,7 @@ pub fn transfer_memory(
         (ContextType::Mmu(destination_ctxt), ContextType::Bytes(source_ctxt)) => {
             mmu::bytest_to_mmu_transfer(
                 destination_ctxt,
-                source_ctxt,
+                &source_ctxt,
                 destination_offset,
                 source_offset,
                 size,
@@ -315,7 +327,7 @@ pub fn transfer_memory(
         (ContextType::Wasm(destination_ctxt), ContextType::Wasm(source_ctxt)) => {
             wasm::wasm_transfer(
                 destination_ctxt,
-                source_ctxt,
+                &source_ctxt,
                 destination_offset,
                 source_offset,
                 size,
@@ -325,7 +337,34 @@ pub fn transfer_memory(
         (ContextType::Wasm(destination_ctxt), ContextType::Bytes(source_ctxt)) => {
             wasm::bytes_to_wasm_transfer(
                 destination_ctxt,
-                source_ctxt,
+                &source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+            )
+        }
+        (ContextType::System(destination_ctxt), ContextType::System(source_ctxt)) => {
+            system_domain::system_context_transfer(
+                destination_ctxt,
+                &source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+            )
+        }
+        (ContextType::System(destination_ctxt), _) => {
+            system_domain::into_system_context_transfer(
+                destination_ctxt,
+                source,
+                destination_offset,
+                source_offset,
+                size,
+            )
+        }
+        (_, ContextType::System(source_ctxt)) => {
+            system_domain::out_of_system_context_transfer(
+                destination,
+                &source_ctxt,
                 destination_offset,
                 source_offset,
                 size,
@@ -364,7 +403,7 @@ pub fn transfer_memory(
 /// TODO consider removing destination set name and require the set be present instead
 pub fn transfer_data_set(
     destination: &mut Context,
-    source: &Context,
+    source: Arc<Context>,
     destionation_set_index: usize,
     destination_allignment: usize,
     destination_set_name: &str,
@@ -389,7 +428,7 @@ pub fn transfer_data_set(
     for index in 0..source_set.buffers.len() {
         transfer_data_item(
             destination,
-            source,
+            source.clone(),
             destionation_set_index,
             destination_allignment,
             destination_index_offset + index,
@@ -406,7 +445,7 @@ pub fn transfer_data_set(
 /// a new one is created using the set name given.
 pub fn transfer_data_item(
     destination: &mut Context,
-    source: &Context,
+    source: Arc<Context>,
     destination_set_index: usize,
     destination_allignment: usize,
     destination_item_index: usize,
@@ -464,12 +503,30 @@ pub fn transfer_data_item(
 
     transfer_memory(
         destination,
-        source,
+        source.clone(),
         destination_offset,
         source_item.data.offset,
         source_item.data.size,
     )?;
     Ok(())
+}
+
+#[cfg(any(test, feature = "test_export"))]
+pub mod test_resource {
+    use crate::memory_domain::MemoryResource;
+    use std::sync::atomic::AtomicU64;
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    pub fn get_resource(arg: MemoryResource) -> MemoryResource {
+        match arg {
+            MemoryResource::Shared { id: _, size } => MemoryResource::Shared {
+                id: COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+                size,
+            },
+            MemoryResource::Anonymous { size } => MemoryResource::Anonymous { size },
+            MemoryResource::None => MemoryResource::None,
+        }
+    }
 }
 
 #[cfg(test)]

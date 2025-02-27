@@ -17,14 +17,15 @@ use hyper::{
 use log::{debug, error, info, trace, warn};
 use machine_interface::{
     function_driver::ComputeResource,
-    machine_config::EngineType,
-    memory_domain::{bytes_context::BytesContext, read_only::ReadOnlyContext},
+    machine_config::{DomainType, EngineType},
+    memory_domain::{bytes_context::BytesContext, read_only::ReadOnlyContext, MemoryResource},
     DataItem, DataSet, Position,
 };
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
     convert::Infallible,
+    fs::read_to_string,
     io::Write,
     net::SocketAddr,
     path::PathBuf,
@@ -147,6 +148,11 @@ async fn serve_request(
     return response;
 }
 
+fn default_path() -> String {
+    String::new()
+}
+
+/// Struct containing registration information for new function
 #[derive(Debug, Deserialize)]
 struct RegisterLibrary {
     name: String,
@@ -181,11 +187,20 @@ async fn register_library(req: Request<Incoming>) -> Result<Response<DandelionBo
 
 #[derive(Debug, Deserialize)]
 struct RegisterFunction {
+    /// String name of the function
     name: String,
+    /// Default size for context to allocate to execute function
     context_size: u64,
+    /// Which engine the function should be executed on
     engine_type: String,
+    /// Optional local path to the binary if it is already on local disc
+    #[serde(default = "default_path")]
+    local_path: String,
+    /// Binary representation of the function, ignored if a local path is given
     binary: Vec<u8>,
+    /// Metadata for the sets and optionally static items to pass into the function for that set
     input_sets: Vec<(String, Option<Vec<(String, Vec<u8>)>>)>,
+    /// output set names
     output_sets: Vec<String>,
 }
 
@@ -201,20 +216,39 @@ async fn register_function(
     // find first line end character
     let request_map: RegisterFunction =
         bson::from_slice(&bytes).expect("Should be able to deserialize request");
-    // write function to file
-    std::fs::create_dir_all(FUNCTION_FOLDER_PATH).unwrap();
-    let mut path_buff = PathBuf::from(FUNCTION_FOLDER_PATH);
-    path_buff.push(request_map.name.clone());
-    let mut function_file = std::fs::File::create(path_buff.clone())
-        .expect("Failed to create file for registering function");
-    function_file
-        .write_all(&request_map.binary)
-        .expect("Failed to write file with content for registering");
+    // if local is present ignore the binary
+    let path_string = if !request_map.local_path.is_empty() {
+        // check that file exists
+        if let Err(err) = std::fs::File::open(&request_map.local_path) {
+            let err_message = format!(
+                "Tried to register function with local path, but failed to open file with error {}",
+                err
+            );
+            return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
+                err_message.as_bytes().to_vec(),
+            )));
+        };
+        request_map.local_path
+    } else {
+        // write function to file
+        std::fs::create_dir_all(FUNCTION_FOLDER_PATH).unwrap();
+        let mut path_buff = PathBuf::from(FUNCTION_FOLDER_PATH);
+        path_buff.push(request_map.name.clone());
+        let mut function_file = std::fs::File::create(path_buff.clone())
+            .expect("Failed to create file for registering function");
+        function_file
+            .write_all(&request_map.binary)
+            .expect("Failed to write file with content for registering");
+        path_buff.to_str().unwrap().to_string()
+    };
+
     let engine_type = match request_map.engine_type.as_str() {
         #[cfg(feature = "wasm")]
         "RWasm" => EngineType::RWasm,
         #[cfg(feature = "mmu")]
         "Process" => EngineType::Process,
+        #[cfg(feature = "kvm")]
+        "Kvm" => EngineType::Kvm,
         #[cfg(feature = "cheri")]
         "Cheri" => EngineType::Cheri,
         #[cfg(feature = "gpu_thread")]
@@ -268,7 +302,7 @@ async fn register_function(
             name: request_map.name,
             engine_type,
             context_size: request_map.context_size as usize,
-            path: path_buff.to_str().unwrap().to_string(),
+            path: path_string,
             metadata,
             callback,
         })
@@ -341,10 +375,11 @@ async fn service(
         | "/cold/compute"
         | "/cold/io"
         | "/cold/inference"
-        | "/cold/inference-batched" => serve_request(true, req, dispatcher).await,
-        "/cold/chain_scaling" | "/cold/middleware_app" | "/cold/python_app" => {
-            serve_request(true, req, dispatcher).await
-        }
+        | "/cold/inference-batched"
+        | "/cold/chain_scaling"
+        | "/cold/middleware_app"
+        | "/cold/compression_app"
+        | "/cold/python_app" => serve_request(true, req, dispatcher).await,
         "/cold/double_matmul"
         | "/cold/lenet5"
         | "/cold/resnet18"
@@ -367,7 +402,11 @@ async fn service(
         | "/hot/compute"
         | "/hot/io"
         | "/hot/inference"
-        | "/hot/inference-batched" => serve_request(false, req, dispatcher).await,
+        | "/hot/inference-batched"
+        | "/hot/chain_scaling"
+        | "/hot/middleware_app"
+        | "/hot/compression_app"
+        | "/hot/python_app" => serve_request(false, req, dispatcher).await,
         "/hot/double_matmul"
         | "/hot/lenet5"
         | "/hot/resnet18"
@@ -389,9 +428,6 @@ async fn service(
         _ => Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
             format!("Hello, Wor\n").into_bytes(),
         ))),
-        "/hot/chain_scaling" | "/hot/middleware_app" | "/hot/python_app" => {
-            serve_request(false, req, dispatcher).await
-        }
         "/stats" => serve_stats(req).await,
         other_uri => {
             trace!("Received request on {}", other_uri);
@@ -423,7 +459,10 @@ async fn dispatcher_loop(
                 spawn(async {
                     select! {
                         function_output = function_future => {
-                            callback.send(function_output).unwrap();
+                            // either get an ok, meaning the data was sent, or get the data back
+                            // no need to handle ok, and nothing useful to do with data if we get it back
+                            // drop it here to release resources
+                            let _ = callback.send(function_output);
                         }
                         _ = callback.closed() => ()
                     }
@@ -605,13 +644,15 @@ fn main() -> () {
     let engine_type = EngineType::RWasm;
     #[cfg(feature = "mmu")]
     let engine_type = EngineType::Process;
+    #[cfg(feature = "kvm")]
+    let engine_type = EngineType::Kvm;
     #[cfg(feature = "cheri")]
     let engine_type = EngineType::Cheri;
     #[cfg(feature = "gpu_thread")]
     let engine_type = EngineType::GpuThread;
     #[cfg(feature = "gpu_process")]
     let engine_type = EngineType::GpuProcess;
-    #[cfg(any(feature = "cheri", feature = "wasm", feature = "mmu"))]
+    #[cfg(any(feature = "cheri", feature = "wasm", feature = "mmu", feature = "kvm"))]
     pool_map.insert(engine_type, compute_cores);
     #[cfg(any(feature = "gpu_thread", feature = "gpu_process"))]
     {
@@ -638,9 +679,49 @@ fn main() -> () {
         engine_pool: futures::lock::Mutex::new(pool_map),
     };
 
+    // get RAM size
+    // TODO could be a configuration, open question on how to split between engines
+    // or if we unify somehow and have one underlying pool
+    let max_ram = read_to_string("/proc/meminfo")
+        .unwrap()
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("MemTotal:")
+                .and_then(|line| line.strip_suffix("kB"))
+                .and_then(|line| Some(line.trim().parse::<usize>()))
+        })
+        .unwrap()
+        .unwrap()
+        * 1024;
+
+    let memory_pool = BTreeMap::from([
+        (
+            DomainType::Mmap,
+            MemoryResource::Anonymous { size: max_ram },
+        ),
+        #[cfg(feature = "cheri")]
+        (
+            DomainType::Cheri,
+            MemoryResource::Anonymous { size: max_ram },
+        ),
+        #[cfg(feature = "mmu")]
+        (
+            DomainType::Process,
+            MemoryResource::Shared {
+                id: 0,
+                size: max_ram,
+            },
+        ),
+        #[cfg(feature = "wasm")]
+        (
+            DomainType::RWasm,
+            MemoryResource::Anonymous { size: max_ram },
+        ),
+    ]);
+
     // Create an ARC pointer to the dispatcher for thread-safe access
     let dispatcher = Box::leak(Box::new(
-        Dispatcher::init(resource_pool).expect("Should be able to start dispatcher"),
+        Dispatcher::init(resource_pool, memory_pool).expect("Should be able to start dispatcher"),
     ));
     // start dispatcher
     dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
@@ -653,6 +734,8 @@ fn main() -> () {
     print!(" cheri");
     #[cfg(feature = "mmu")]
     print!(" mmu");
+    #[cfg(feature = "kvm")]
+    print!(" kvm");
     #[cfg(feature = "wasm")]
     print!(" wasm");
     #[cfg(feature = "gpu_thread")]
@@ -669,7 +752,10 @@ fn main() -> () {
     runtime.block_on(service_loop(dispatcher_sender, config.port));
 
     // clean up folder in tmp that is used for function storage
-    std::fs::remove_dir_all(FUNCTION_FOLDER_PATH).unwrap();
+    let removal_error = std::fs::remove_dir_all(FUNCTION_FOLDER_PATH);
+    if let Err(err) = removal_error {
+        warn!("Removing function folder failed with: {}", err);
+    }
     // clean up folder with shared files in case the context backed by shared files left some behind
     for shm_dir_entry in std::fs::read_dir("/dev/shm/").unwrap() {
         if let Ok(shm_file) = shm_dir_entry {

@@ -1,9 +1,9 @@
 use crate::{
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource},
-    util::mmapmem::MmapMem,
+    util::mmapmem::{MmapMem, MmapMemPool},
 };
 use dandelion_commons::{DandelionError, DandelionResult};
-use log::{error, warn};
+use log::{error, warn, debug};
 use nix::sys::mman::ProtFlags;
 
 // TODO: decide this value in a system dependent way
@@ -17,7 +17,7 @@ pub struct MmuContext {
 impl ContextTrait for MmuContext {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
         if offset < MMAP_BASE_ADDR {
-            warn!("write offset smaller than MMAP_BASE_ADDR")
+            debug!("write offset smaller than MMAP_BASE_ADDR")
             // TODO: could be an issue if the context will be used by mmu_worker (function context)
         }
         self.storage.write(offset, data)
@@ -25,7 +25,7 @@ impl ContextTrait for MmuContext {
 
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         if offset < MMAP_BASE_ADDR {
-            warn!("read offset smaller than MMAP_BASE_ADDR")
+            debug!("read offset smaller than MMAP_BASE_ADDR")
             // TODO: could be an issue if the context will be used by mmu_worker (function context)
         }
         self.storage.read(offset, read_buffer)
@@ -33,7 +33,7 @@ impl ContextTrait for MmuContext {
 
     fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
         if offset < MMAP_BASE_ADDR {
-            warn!("read offset smaller than MMAP_BASE_ADDR")
+            debug!("read offset smaller than MMAP_BASE_ADDR")
             // TODO: could be an issue if the context will be used by mmu_worker (function context)
         }
         self.storage.get_chunk_ref(offset, length)
@@ -41,23 +41,33 @@ impl ContextTrait for MmuContext {
 }
 
 #[derive(Debug)]
-pub struct MmuMemoryDomain {}
+pub struct MmuMemoryDomain {
+    memory_pool: MmapMemPool,
+}
 
 impl MemoryDomain for MmuMemoryDomain {
-    fn init(_config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
-        Ok(Box::new(MmuMemoryDomain {}))
+    fn init(config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
+        let (id, size) = match config {
+            MemoryResource::Shared { id, size } => (id, size),
+            _ => {
+                return Err(DandelionError::DomainError(
+                    dandelion_commons::DomainError::ConfigMissmatch,
+                ))
+            }
+        };
+        let memory_pool =
+            MmapMemPool::create(size, ProtFlags::PROT_READ | ProtFlags::PROT_WRITE, Some(id))?;
+        Ok(Box::new(MmuMemoryDomain { memory_pool }))
     }
 
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
         // create and map a shared memory region
-        let mem_space =
-            match MmapMem::create(size, ProtFlags::PROT_READ | ProtFlags::PROT_WRITE, true) {
-                Ok(v) => v,
-                Err(_e) => return Err(DandelionError::MemoryAllocationError),
-            };
+        let (mem_space, actual_size) = self
+            .memory_pool
+            .get_allocation(size, nix::sys::mman::MmapAdvise::MADV_REMOVE)?;
 
         let new_context = Box::new(MmuContext { storage: mem_space });
-        Ok(Context::new(ContextType::Mmu(new_context), size))
+        Ok(Context::new(ContextType::Mmu(new_context), actual_size))
     }
 }
 

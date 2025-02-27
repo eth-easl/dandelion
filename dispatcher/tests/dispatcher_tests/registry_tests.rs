@@ -6,8 +6,8 @@ use dispatcher::{
 use futures::lock::Mutex;
 use machine_interface::{
     function_driver::ComputeResource,
-    machine_config::EngineType,
-    memory_domain::{read_only::ReadOnlyContext, Context, MemoryDomain},
+    machine_config::{DomainType, EngineType},
+    memory_domain::{read_only::ReadOnlyContext, Context, MemoryDomain, MemoryResource},
     DataItem, DataSet, Position,
 };
 use std::{collections::BTreeMap, sync::Arc};
@@ -38,6 +38,7 @@ fn create_context(matrix: Box<[u64]>) -> Context {
 /// check once for the ouput being correct in absence of an input set for the fixed one,
 /// and once for correct behavior if there is a set provided for the fixed one
 pub fn single_input_fixed<Domain: MemoryDomain>(
+    memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
@@ -69,6 +70,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         out_set_names.clone(),
         engine_type,
         engine_resource,
+        memory_resource,
     );
     let mut absolute_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     absolute_path.pop();
@@ -159,6 +161,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
 
 /// check functionallity with multiple fixed inputs with and without input provided for the fixed sets
 pub fn multiple_input_fixed<Domain: MemoryDomain>(
+    memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
@@ -190,6 +193,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         out_set_names.clone(),
         engine_type,
         engine_resource,
+        memory_resource,
     );
     let mut absolute_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     absolute_path.pop();
@@ -277,18 +281,25 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
     }
 }
 
-#[test]
+#[test_log::test]
 #[cfg(any(feature = "reqwest_io"))]
 fn test_insert_composition_with_http_func() {
-    let dispatcher = Dispatcher::init(dispatcher::resource_pool::ResourcePool {
-        engine_pool: Mutex::new(BTreeMap::new()),
-    })
+    let memory_resources = BTreeMap::from([(
+        DomainType::Mmap,
+        MemoryResource::Anonymous { size: (1 << 30) },
+    )]);
+    let dispatcher = Dispatcher::init(
+        dispatcher::resource_pool::ResourcePool {
+            engine_pool: Mutex::new(BTreeMap::new()),
+        },
+        memory_resources,
+    )
     .unwrap();
     let composition_string = r#"
-        (:function HTTP (request headers body) -> (status headers body))
-        (:composition Composition (comp_request req_body) -> (comp_status resp_body) (
-            (HTTP ((:all request <- comp_request) (:all body <- req_body)) => ((resp_body := body) (comp_status := status)))
-        ))
+        function HTTP (request, headers, body) => (status, headers, body);
+        composition Composition (comp_request, req_body) => (comp_status, resp_body) {
+            HTTP (request = all comp_request, body = all req_body) => (resp_body = body, comp_status = status);
+        }
     "#;
     tokio::runtime::Builder::new_current_thread()
         .build()

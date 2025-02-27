@@ -76,19 +76,19 @@ pub enum FunctionConfig {
 
 pub struct Function {
     pub requirements: DataRequirementList,
-    pub context: Context,
+    pub context: Arc<Context>,
     pub config: FunctionConfig,
 }
 
 impl Function {
     pub fn load(
         &self,
-        domain: &'static dyn MemoryDomain,
+        domain: &Box<dyn MemoryDomain>,
         ctx_size: usize,
     ) -> DandelionResult<Context> {
         match &self.config {
             FunctionConfig::ElfConfig(_) => {
-                load_utils::load_static(domain, &self.context, &self.requirements, ctx_size)
+                load_utils::load_static(domain, self.context.clone(), &self.requirements, ctx_size)
             }
             FunctionConfig::SysConfig(_) => domain.acquire_context(ctx_size),
             FunctionConfig::WasmConfig(c) => {
@@ -150,12 +150,12 @@ pub enum WorkToDo {
     ParsingArguments {
         driver: &'static dyn Driver,
         path: String,
-        static_domain: &'static dyn MemoryDomain,
+        static_domain: Arc<Box<dyn MemoryDomain>>,
         recorder: Recorder,
     },
     LoadingArguments {
         function: Arc<Function>,
-        domain: &'static dyn MemoryDomain,
+        domain: Arc<Box<dyn MemoryDomain>>,
         ctx_size: usize,
         recorder: Recorder,
     },
@@ -222,6 +222,6 @@ pub trait Driver: Send + Sync {
     fn parse_function(
         &self,
         function_path: String,
-        static_domain: &'static dyn MemoryDomain,
+        static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<Function>;
 }

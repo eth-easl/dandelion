@@ -89,6 +89,8 @@ fn check_syscall(pid: libc::pid_t) -> SyscallType {
 fn mmu_run_static(
     cpu_slot: u8,
     storage_id: &str,
+    offset: i64,
+    size: usize,
     protection_flags: &[(u32, Position)],
     entry_point: usize,
 ) -> DandelionResult<()> {
@@ -112,6 +114,8 @@ fn mmu_run_static(
     let mut worker = Command::new(path)
         .arg(cpu_slot.to_string())
         .arg(storage_id)
+        .arg(offset.to_string())
+        .arg(size.to_string())
         .arg(entry_point.to_string())
         .arg(serde_json::to_string(protection_flags).unwrap())
         .env_clear()
@@ -200,9 +204,13 @@ impl EngineLoop for MmuLoop {
             _ => return Err(DandelionError::ContextMissmatch),
         };
 
+        let offset = mmu_context.storage.offset();
+        let size = mmu_context.storage.size();
         mmu_run_static(
             self.cpu_slot,
             mmu_context.storage.filename().unwrap(),
+            offset,
+            size,
             &elf_config.protection_flags,
             elf_config.entry_point,
         )?;
@@ -248,7 +256,7 @@ impl Driver for MmuDriver {
     fn parse_function(
         &self,
         function_path: String,
-        static_domain: &'static dyn MemoryDomain,
+        static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<Function> {
         let function = load_u8_from_file(function_path)?;
         let elf = elf_parser::ParsedElf::new(&function)?;
@@ -272,7 +280,7 @@ impl Driver for MmuDriver {
         for position in source_layout.iter() {
             total_size += position.size;
         }
-        let mut context = static_domain.acquire_context(total_size)?;
+        let mut context =  Box::new(static_domain.acquire_context(total_size)?);
         // copy all
         let mut write_counter = 0;
         let mut new_content = DataSet {
@@ -298,7 +306,7 @@ impl Driver for MmuDriver {
         context.content = vec![Some(new_content)];
         return Ok(Function {
             requirements,
-            context,
+            context: Arc::from(context),
             config,
         });
     }

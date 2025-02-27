@@ -10,6 +10,7 @@ pub mod machine_config;
     feature = "cheri",
     feature = "mmu",
     feature = "wasm",
+    feature = "kvm",
     feature = "gpu",
     feature = "reqwest"
 ))]

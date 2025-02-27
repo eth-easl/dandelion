@@ -168,10 +168,10 @@ fn check_compositions_and_metadata(
     }
 }
 
-#[test]
+#[test_log::test]
 fn test_from_module_non_registered_function() {
     let unregistered_function = r#"
-        (:function not_registered () -> ())
+        function not_registered () => ();
     "#;
     let mut function_dict = FunctionDict::new();
     let module = get_module(unregistered_function);
@@ -185,10 +185,10 @@ fn test_from_module_non_registered_function() {
     }
 }
 
-#[test]
+#[test_log::test]
 fn test_from_module_single_registered_function() {
     let unregistered_function = r#"
-        (:function registered () -> ())
+        function registered () => ();
     "#;
     let mut function_dict = FunctionDict::new();
     function_dict.insert_or_lookup(String::from("registered"));
@@ -199,13 +199,13 @@ fn test_from_module_single_registered_function() {
     }
 }
 
-#[test]
+#[test_log::test]
 fn test_from_module_minmal_composition() {
     let composition_string = r#"
-        (:function Function () -> ())
-        (:composition Composition () -> () (
-            (Function () => ())
-        ))
+        function Function () => ();
+        composition Composition () => () {
+            Function () => ();
+        }
     "#;
     let mut function_dict = FunctionDict::new();
     let function_id = function_dict.insert_or_lookup(String::from("Function"));
@@ -231,13 +231,13 @@ fn test_from_module_minmal_composition() {
     check_compositions_and_metadata(compositions, expected, 0..0, 0..0);
 }
 
-#[test]
+#[test_log::test]
 fn test_from_module_minmal_composition_with_inputs() {
     let composition_string = r#"
-        (:function Function (Fin) -> (Fout))
-        (:composition Composition (Cin) -> (Cout) (
-            (Function ((:all Fin <- Cin)) => ((Cout := Fout)))
-        ))
+        function Function (Fin) => (Fout);
+        composition Composition (Cin) => (Cout) {
+            Function (Fin = all Cin) => (Cout = Fout);
+        }
     "#;
     let mut function_dict = FunctionDict::new();
     let function_id = function_dict.insert_or_lookup(String::from("Function"));
@@ -263,13 +263,13 @@ fn test_from_module_minmal_composition_with_inputs() {
     check_compositions_and_metadata(compositions, expected, 0..1, 1..2);
 }
 
-#[test]
+#[test_log::test]
 fn test_from_module_minmal_composition_function_with_unused_input() {
     let composition_string = r#"
-        (:function Function (Fin Unused) -> (Fout))
-        (:composition Composition (Cin) -> (Cout) (
-            (Function ((:all Fin <- Cin)) => ((Cout := Fout)))
-        ))
+        function Function (Fin, Unused) => (Fout);
+        composition Composition (Cin) => (Cout) {
+            Function (Fin = all Cin) => (Cout = Fout);
+        }
     "#;
     let mut function_dict = FunctionDict::new();
     let function_id = function_dict.insert_or_lookup(String::from("Function"));
@@ -298,10 +298,10 @@ fn test_from_module_minmal_composition_function_with_unused_input() {
 #[test]
 fn test_from_module_minmal_composition_function_with_unused_output() {
     let composition_string = r#"
-        (:function Function (Fin) -> (Fout Unused))
-        (:composition Composition (Cin) -> (Cout) (
-            (Function ((:all Fin <- Cin)) => ((Cout := Fout)))
-        ))
+        function Function (Fin) => (Fout, Unused);
+        composition Composition (Cin) => (Cout) {
+            Function (Fin = all Cin) => (Cout = Fout);
+        }
     "#;
     let mut function_dict = FunctionDict::new();
     let function_id = function_dict.insert_or_lookup(String::from("Function"));
@@ -331,10 +331,10 @@ fn test_from_module_minmal_composition_function_with_unused_output() {
 #[should_panic]
 fn test_from_module_minmal_composition_with_missing_input() {
     let composition_string = r#"
-        (:function Function (Fin) -> (Fout))
-        (:composition Composition (Cin) -> (Cout) (
-            (Function ((:all Fin <- NonExistent)) => ((Cout := Fout)))
-        ))
+        function Function (Fin) => (Fout);
+        composition Composition (Cin) => (Cout) {
+            Function (Fin = all NonExistent) => (Cout = Fout);
+        }
     "#;
     let mut function_dict = FunctionDict::new();
     let function_id = function_dict.insert_or_lookup(String::from("Function"));
@@ -364,10 +364,10 @@ fn test_from_module_minmal_composition_with_missing_input() {
 #[should_panic]
 fn test_from_module_minmal_composition_missing_output() {
     let composition_string = r#"
-        (:function Function (Fin) -> ())
-        (:composition Composition (Cin) -> (Cout) (
-            (Function ((:all Fin <- Cin)) => ())
-        ))
+        function Function (Fin) => ();
+        composition Composition (Cin) => (Cout) { 
+            Function (Fin = all Cin) => ();
+        }
     "#;
     let mut function_dict = FunctionDict::new();
     let function_id = function_dict.insert_or_lookup(String::from("Function"));
