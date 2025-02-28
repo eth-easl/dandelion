@@ -1,5 +1,5 @@
 use super::{check_matrix, setup_dispatcher};
-use dandelion_commons::records::{Archive, ArchiveInit, RecordPoint};
+use dandelion_commons::records::Recorder;
 use dispatcher::{
     composition::{
         Composition, CompositionSet, FunctionDependencies, InputSetDescriptor, ShardingMode,
@@ -12,8 +12,8 @@ use machine_interface::{
     memory_domain::{read_only::ReadOnlyContext, MemoryDomain, MemoryResource},
     DataItem, DataSet, Position,
 };
-use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::{collections::BTreeMap, time::Instant};
 
 pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
     memory_resource: (DomainType, MemoryResource),
@@ -30,13 +30,7 @@ pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
         memory_resource,
     );
 
-    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
-        #[cfg(feature = "timestamp")]
-        timestamp_count: 1000,
-    })));
-    let mut recorder = archive.get_recorder().unwrap();
-    let _ = recorder.record(RecordPoint::Arrival);
-
+    let recorder = Recorder::new(0, Instant::now());
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
@@ -84,12 +78,7 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
         vec![(Arc::new(in_context))],
     )))];
 
-    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
-        #[cfg(feature = "timestamp")]
-        timestamp_count: 1000,
-    })));
-    let mut recorder = archive.get_recorder().unwrap();
-    let _ = recorder.record(RecordPoint::Arrival);
+    let recorder = Recorder::new(0, Instant::now());
 
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -155,12 +144,7 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
     };
     let inputs = vec![Some(CompositionSet::from((0, vec![Arc::new(in_context)])))];
 
-    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
-        #[cfg(feature = "timestamp")]
-        timestamp_count: 1000,
-    })));
-    let mut recorder = archive.get_recorder().unwrap();
-    let _ = recorder.record(RecordPoint::Arrival);
+    let recorder = Recorder::new(0, Instant::now());
 
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -187,11 +171,7 @@ fn composition_option_helper(
     inputs: Vec<Option<CompositionSet>>,
     dispatcher: &mut Dispatcher,
 ) -> Vec<Option<CompositionSet>> {
-    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
-        #[cfg(feature = "timestamp")]
-        timestamp_count: 1000,
-    })));
-    let recorder = archive.get_recorder().unwrap();
+    let recorder = Recorder::new(0, Instant::now());
 
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -411,12 +391,7 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
     };
     let inputs = vec![Some(CompositionSet::from((0, vec![Arc::new(in_context)])))];
 
-    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
-        #[cfg(feature = "timestamp")]
-        timestamp_count: 1000,
-    })));
-    let mut recorder = archive.get_recorder().unwrap();
-    let _ = recorder.record(RecordPoint::Arrival);
+    let recorder = Recorder::new(0, Instant::now());
 
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -505,12 +480,7 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
         output_map: BTreeMap::from([(2, 0)]),
     };
 
-    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
-        #[cfg(feature = "timestamp")]
-        timestamp_count: 1000,
-    })));
-    let mut recorder = archive.get_recorder().unwrap();
-    let _ = recorder.record(RecordPoint::Arrival);
+    let recorder = Recorder::new(0, Instant::now());
 
     let inputs = vec![Some(CompositionSet::from((0, vec![Arc::new(in_context)])))];
     let result = tokio::runtime::Builder::new_current_thread()
@@ -702,12 +672,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
         output_map: BTreeMap::from([(7, 0)]),
     };
 
-    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
-        #[cfg(feature = "timestamp")]
-        timestamp_count: 1000,
-    })));
-    let mut recorder = archive.get_recorder().unwrap();
-    let _ = recorder.record(RecordPoint::Arrival);
+    let recorder = Recorder::new(0, Instant::now());
 
     let context_arc = Arc::new(in_context);
     let inputs = vec![
