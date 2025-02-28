@@ -90,19 +90,19 @@ async fn load_local(
     work_queue: Box<EngineQueue>,
     path: String,
 ) -> DandelionResult<Arc<Function>> {
-    recorder.record(RecordPoint::ParsingQueue).unwrap();
+    recorder.record(RecordPoint::ParsingQueue);
     let function = work_queue
         .enqueu_work(
             machine_interface::function_driver::WorkToDo::ParsingArguments {
                 driver,
                 path,
                 static_domain,
-                recorder: recorder.get_sub_recorder().unwrap(),
+                recorder: recorder.get_sub_recorder(),
             },
         )
         .await?
         .get_function();
-    recorder.record(RecordPoint::ParsingDequeue).unwrap();
+    recorder.record(RecordPoint::ParsingDequeue);
     return Ok(Arc::new(function));
 }
 
@@ -383,7 +383,7 @@ impl FunctionRegistry {
                     let func_future = (Box::pin(load_local(
                         domain.clone(),
                         *driver,
-                        recorder.get_sub_recorder()?,
+                        recorder.get_sub_recorder(),
                         load_queue.clone(),
                         path.clone(),
                     ))
@@ -400,18 +400,18 @@ impl FunctionRegistry {
         drop(lock_guard);
         let function = function_future.await?;
         let function_config = function.config.clone();
-        recorder.record(RecordPoint::LoadQueue)?;
+        recorder.record(RecordPoint::LoadQueue);
         let context_work_done = load_queue
             .enqueu_work(
                 machine_interface::function_driver::WorkToDo::LoadingArguments {
                     function,
                     domain,
-                    recorder: recorder.get_sub_recorder()?,
+                    recorder: recorder.get_sub_recorder(),
                     ctx_size: ctx_size,
                 },
             )
             .await;
-        recorder.record(RecordPoint::LoadDequeue)?;
+        recorder.record(RecordPoint::LoadDequeue);
         let function_context = context_work_done?.get_context();
         return Ok((function_context, function_config));
     }

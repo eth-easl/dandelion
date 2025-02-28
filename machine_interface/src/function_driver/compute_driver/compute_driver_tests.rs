@@ -14,11 +14,8 @@ mod compute_driver_tests {
         DataItem, DataSet, Position,
     };
     use core::panic;
-    use dandelion_commons::{
-        records::{Archive, ArchiveInit, RecordPoint},
-        DandelionError,
-    };
-    use std::sync::Arc;
+    use dandelion_commons::{records::Recorder, DandelionError};
+    use std::{sync::Arc, time::Instant};
 
     fn loader_empty<Dom: MemoryDomain>(dom_init: MemoryResource, driver: Box<dyn Driver>) {
         // load elf file
@@ -78,11 +75,8 @@ mod compute_driver_tests {
     ) {
         let (function_context, config, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
-        let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
-            #[cfg(feature = "timestamp")]
-            timestamp_count: 1000,
-        })));
-        let recorder = archive.get_recorder().unwrap();
+
+        let recorder = Recorder::new(0, Instant::now());
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config: config,
             context: function_context,
@@ -119,20 +113,13 @@ mod compute_driver_tests {
                 key: 0,
             }],
         }));
-        let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
-            #[cfg(feature = "timestamp")]
-            timestamp_count: 1000,
-        })));
 
-        let mut recorder = archive.get_recorder().unwrap();
-        recorder
-            .record(RecordPoint::TransferEnd)
-            .expect("Should have properly initialized recorder state");
+        let recorder = Recorder::new(0, Instant::now());
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config,
             context: function_context,
             output_sets: Arc::new(vec![String::from("")]),
-            recorder: recorder.get_sub_recorder().unwrap(),
+            recorder,
         });
         let result_context = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -140,9 +127,6 @@ mod compute_driver_tests {
             .block_on(promise)
             .expect("Engine should run ok with basic function")
             .get_context();
-        recorder
-            .record(RecordPoint::FutureReturn)
-            .expect("Should have properly advanced recorder state");
         // check that result is 4
         assert_eq!(1, result_context.content.len());
         let output_item = result_context.content[0]
@@ -212,19 +196,13 @@ mod compute_driver_tests {
                     key: 0,
                 }],
             }));
-            let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
-                #[cfg(feature = "timestamp")]
-                timestamp_count: 1000,
-            })));
-            let mut recorder = archive.get_recorder().unwrap();
-            recorder
-                .record(RecordPoint::TransferEnd)
-                .expect("Should have properly initialized recorder state");
+
+            let recorder = Recorder::new(0, Instant::now());
             let promise = queue.enqueu(WorkToDo::FunctionArguments {
                 config,
                 context: function_context,
                 output_sets: Arc::new(vec![String::from("")]),
-                recorder: recorder.get_sub_recorder().unwrap(),
+                recorder,
             });
             let result_context = tokio::runtime::Builder::new_current_thread()
                 .build()
@@ -232,9 +210,6 @@ mod compute_driver_tests {
                 .block_on(promise)
                 .expect("Engine should run ok with basic function")
                 .get_context();
-            recorder
-                .record(RecordPoint::FutureReturn)
-                .expect("Should have properly advanced recorder state");
             assert_eq!(1, result_context.content.len());
             let output_item = &result_context.content[0]
                 .as_ref()
@@ -309,19 +284,13 @@ mod compute_driver_tests {
                 },
             ],
         }));
-        let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
-            #[cfg(feature = "timestamp")]
-            timestamp_count: 1000,
-        })));
-        let mut recorder = archive.get_recorder().unwrap();
-        recorder
-            .record(RecordPoint::TransferEnd)
-            .expect("Should have properly initialized recorder state");
+
+        let recorder = Recorder::new(0, Instant::now());
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config,
             context: function_context,
             output_sets: Arc::new(vec![String::from("stdio")]),
-            recorder: recorder.get_sub_recorder().unwrap(),
+            recorder,
         });
         let result_context = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -329,9 +298,7 @@ mod compute_driver_tests {
             .block_on(promise)
             .expect("Engine should run ok with basic function")
             .get_context();
-        recorder
-            .record(RecordPoint::FutureReturn)
-            .expect("Should have properly advanced recorder state");
+
         // check the function exited with exit code 0
         match result_context.state {
             ContextState::InPreparation => panic!("context still in preparation, never evaluated "),
@@ -458,14 +425,7 @@ mod compute_driver_tests {
                 },
             ],
         }));
-        let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
-            #[cfg(feature = "timestamp")]
-            timestamp_count: 1000,
-        })));
-        let mut recorder = archive.get_recorder().unwrap();
-        recorder
-            .record(RecordPoint::TransferEnd)
-            .expect("Should have properly initialized recorder state");
+        let recorder = Recorder::new(0, Instant::now());
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config: config,
             context: function_context,
@@ -474,7 +434,7 @@ mod compute_driver_tests {
                 "out".to_string(),
                 "out_nested".to_string(),
             ]),
-            recorder: recorder.get_sub_recorder().unwrap(),
+            recorder,
         });
         let result_context = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -482,9 +442,6 @@ mod compute_driver_tests {
             .block_on(promise)
             .expect("Engine should run ok with basic function")
             .get_context();
-        recorder
-            .record(RecordPoint::FutureReturn)
-            .expect("Should have properly advanced recorder state");
         assert_eq!(3, result_context.content.len());
         // check out set
         let set1 = result_context.content[1]

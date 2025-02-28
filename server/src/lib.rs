@@ -1,6 +1,6 @@
 pub mod config;
 
-use dandelion_commons::DandelionError;
+use dandelion_commons::{records::Recorder, DandelionError};
 use dispatcher::composition::CompositionSet;
 use hyper::body::Frame;
 use machine_interface::memory_domain::{Context, ContextTrait};
@@ -18,6 +18,8 @@ pub struct DandelionRequest<'data> {
 pub struct DandelionDeserializeResponse<'data> {
     #[serde(borrow)]
     pub sets: Vec<InputSet<'data>>,
+    #[cfg(feature = "timestamp")]
+    pub timestamps: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -163,7 +165,10 @@ fn encode_sets(
     return all_items;
 }
 
-fn encode_response(sets: BTreeMap<usize, CompositionSet>) -> (usize, Vec<u8>, Vec<ItemData>) {
+fn encode_response(
+    sets: BTreeMap<usize, CompositionSet>,
+    _timings: &Recorder,
+) -> (usize, Vec<u8>, Vec<ItemData>) {
     // lenght of dict, list of items closing 0 byte
     let mut response = Vec::<u8>::new();
     let mut data_items = Vec::new();
@@ -184,6 +189,23 @@ fn encode_response(sets: BTreeMap<usize, CompositionSet>) -> (usize, Vec<u8>, Ve
     let set_array_length = (response.len() - set_length_offset + all_items) as i32;
     response[set_length_offset..set_length_offset + 4]
         .copy_from_slice(&set_array_length.to_le_bytes());
+
+    // if timestamp are on, add in timing information as string
+    #[cfg(feature = "timestamp")]
+    {
+        // timestamps formated as formatted string, consisting of a length, the string and a NULL byte
+        response.push(2);
+        response.extend_from_slice("timestamps\0".as_bytes());
+        let timestamp_length_offset = response.len();
+        response.extend_from_slice(&0i32.to_be_bytes());
+        let timestamp_string = format!("{}", _timings);
+        response.extend_from_slice(timestamp_string.as_bytes());
+        response.push(0);
+        // set length + 1 to account for terminating 0
+        let timestamp_string_len = (timestamp_string.len() + 1) as i32;
+        response[timestamp_length_offset..timestamp_length_offset + 4]
+            .copy_from_slice(&timestamp_string_len.to_le_bytes());
+    }
 
     // end docuemnt and set length
     response.push(0);
@@ -353,8 +375,8 @@ pub struct DandelionBody {
 }
 
 impl DandelionBody {
-    pub fn new(sets: BTreeMap<usize, CompositionSet>) -> Self {
-        let (total_item_size, serial, items) = encode_response(sets);
+    pub fn new(sets: BTreeMap<usize, CompositionSet>, timing: &Recorder) -> Self {
+        let (total_item_size, serial, items) = encode_response(sets, timing);
         let read_offset = if items.len() > 0 {
             if items[0].response_offset > 0 {
                 ReadMode::ToItem(0, items[0].response_offset)
@@ -442,6 +464,8 @@ fn test_dandelion_body_serialization() {
     }
     let data_box = data.clone().into_boxed_slice();
 
+    let recorder = Recorder::new(0, std::time::Instant::now());
+
     let expected_response_struct = DandelionDeserializeResponse {
         sets: vec![InputSet {
             identifier: String::from("set_ident"),
@@ -451,6 +475,8 @@ fn test_dandelion_body_serialization() {
                 data: &data_box,
             }],
         }],
+        #[cfg(feature = "timestamp")]
+        timestamps: format!("{}", recorder),
     };
     let expected_response = bson::to_vec(&expected_response_struct).unwrap();
 
@@ -471,7 +497,7 @@ fn test_dandelion_body_serialization() {
         context_list: vec![(Arc::new(new_context), 0..1)],
     };
     let context_map = BTreeMap::from([(0, composition_set)]);
-    let context_body = DandelionBody::new(context_map);
+    let context_body = DandelionBody::new(context_map, &recorder);
 
     tokio::runtime::Builder::new_current_thread()
         .build()

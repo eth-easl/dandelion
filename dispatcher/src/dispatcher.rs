@@ -106,13 +106,16 @@ impl Dispatcher {
         inputs: Vec<(usize, CompositionSet)>,
         output_mapping_option: Option<Vec<Option<usize>>>,
         non_caching: bool,
-        recorder: Recorder,
-    ) -> DandelionResult<BTreeMap<usize, CompositionSet>> {
+        start_time: std::time::Instant,
+    ) -> DandelionResult<(BTreeMap<usize, CompositionSet>, Recorder)> {
         let function_id = self
             .function_registry
             .get_function_id(&function_name)
             .await
             .ok_or(DandelionError::DispatcherUnavailableFunction)?;
+
+        let recorder = Recorder::new(function_id, start_time);
+
         let output_mapping = if let Some(mapping) = output_mapping_option {
             mapping
         } else {
@@ -125,8 +128,15 @@ impl Dispatcher {
             mapping
         };
         return self
-            .queue_function(function_id, inputs, output_mapping, non_caching, recorder)
-            .await;
+            .queue_function(
+                function_id,
+                inputs,
+                output_mapping,
+                non_caching,
+                recorder.get_sub_recorder(),
+            )
+            .await
+            .and_then(|result| Ok((result, recorder)));
     }
 
     pub async fn queue_composition(
@@ -134,7 +144,7 @@ impl Dispatcher {
         composition: Composition,
         inputs: BTreeMap<usize, CompositionSet>,
         non_caching: bool,
-        recorder: Recorder,
+        mut recorder: Recorder,
     ) -> DandelionResult<BTreeMap<usize, CompositionSet>> {
         // build up ready sets
         trace!("queue composition");
@@ -186,7 +196,7 @@ impl Dispatcher {
                     args.inptut_sets,
                     args.output_mapping,
                     non_caching,
-                    recorder.get_sub_recorder().unwrap(),
+                    recorder.get_sub_recorder(),
                 );
             })
             .collect();
@@ -196,7 +206,8 @@ impl Dispatcher {
             non_ready_functions.len()
         );
         while let Some(new_compositions_result) = running_functions.next().await {
-            let new_compositions = new_compositions_result?;
+            let (new_compositions, new_recorders) = new_compositions_result?;
+            recorder.add_childred(new_recorders);
             for (composition_set_index, composition_set) in &new_compositions {
                 trace!(
                     "composition set {} arrived at dispatcher",
@@ -223,7 +234,7 @@ impl Dispatcher {
                             args.inptut_sets,
                             args.output_mapping,
                             non_caching,
-                            recorder.get_sub_recorder().unwrap(),
+                            recorder.get_sub_recorder(),
                         ));
                         None
                     } else {
@@ -249,7 +260,7 @@ impl Dispatcher {
         output_mapping: Vec<Option<usize>>,
         non_caching: bool,
         recorder: Recorder,
-    ) -> DandelionResult<BTreeMap<usize, CompositionSet>> {
+    ) -> DandelionResult<(BTreeMap<usize, CompositionSet>, Vec<Recorder>)> {
         trace!(
             "queue function {} shareded and input sets: {:?}",
             function_id,
@@ -257,26 +268,44 @@ impl Dispatcher {
         );
         // TODO this is added to support functions with all functions defined as static sets
         // might want to differentiate between those that have static sets and those that did not get input from predecessors
+        let mut recorders;
         let composition_results: DandelionResult<Vec<_>> = if input_sets.len() != 0 {
-            let results: Vec<_> = input_sets
+            let multi_product = input_sets
                 .into_iter()
                 .map(|(index, mode, composition_set)| composition_set.shard(mode, index))
-                .multi_cartesian_product()
+                .multi_cartesian_product();
+
+            let size_hint = multi_product.size_hint().1.unwrap_or(1);
+            recorders = Vec::with_capacity(size_hint);
+            let results: FuturesUnordered<_> = multi_product
                 .map(|input_sets_local| {
-                    Box::pin(self.queue_function(
+                    let new_recorder = Recorder::new_from_parent(function_id, &recorder);
+                    let future_box = Box::new(self.queue_function(
                         function_id,
                         input_sets_local,
                         output_mapping.clone(),
                         non_caching,
-                        recorder.get_sub_recorder().unwrap(),
-                    ))
+                        new_recorder.get_sub_recorder(),
+                    ));
+                    recorders.push(new_recorder);
+                    future_box
                 })
                 .collect();
             join_all(results).await.into_iter().collect()
         } else {
-            self.queue_function(function_id, vec![], output_mapping, non_caching, recorder)
+            let new_recorder = Recorder::new_from_parent(function_id, &recorder);
+            let future_box = self
+                .queue_function(
+                    function_id,
+                    vec![],
+                    output_mapping,
+                    non_caching,
+                    new_recorder.get_sub_recorder(),
+                )
                 .await
-                .and_then(|result| Ok(vec![result]))
+                .and_then(|result| Ok(vec![result]));
+            recorders = vec![new_recorder];
+            future_box
         };
         // let : DandelionResult<Vec<_>> =
         let mut composition_set_maps = composition_results?.into_iter();
@@ -298,9 +327,9 @@ impl Dispatcher {
                         .or_insert(additional_set);
                 }
             }
-            return Ok(result_set_map);
+            return Ok((result_set_map, recorders));
         } else {
-            return Ok(BTreeMap::new());
+            return Ok((BTreeMap::new(), Vec::new()));
         };
     }
 
@@ -328,7 +357,7 @@ impl Dispatcher {
             if let Some(alternative) = options.iter().next() {
                 match &alternative.function_type {
                     FunctionType::Function(engine_id, ctx_size) => {
-                        recorder.record(RecordPoint::PrepareEnvQueue)?;
+                        recorder.record(RecordPoint::PrepareEnvQueue);
                         let (context, config, metadata) = self
                             .prepare_for_engine(
                                 function_id,
@@ -336,10 +365,10 @@ impl Dispatcher {
                                 inputs,
                                 *ctx_size,
                                 non_caching,
-                                recorder.get_sub_recorder()?,
+                                recorder.get_sub_recorder(),
                             )
                             .await?;
-                        recorder.record(RecordPoint::GetEngineQueue)?;
+                        recorder.record(RecordPoint::GetEngineQueue);
                         trace!("running function {} on {:?} type engine with input sets {:?} and output sets {:?}",
                             function_id,
                             *engine_id,
@@ -351,7 +380,7 @@ impl Dispatcher {
                                 config,
                                 metadata.output_sets,
                                 context,
-                                recorder.get_sub_recorder()?,
+                                recorder.get_sub_recorder(),
                             )
                             .await?;
                         let context_arc = Arc::new(context);
@@ -431,7 +460,7 @@ impl Dispatcher {
                 domain.clone(),
                 ctx_size,
                 non_caching,
-                recorder.get_sub_recorder().unwrap(),
+                recorder.get_sub_recorder(),
             )
             .await?;
         // make sure all input sets are there at the correct index
@@ -463,11 +492,11 @@ impl Dispatcher {
                         destination_set_name: in_set_name.clone(),
                         source_set_index: subset,
                         source_item_index: item,
-                        recorder: recorder.get_sub_recorder().unwrap(),
+                        recorder: recorder.get_sub_recorder(),
                     };
-                    recorder.record(RecordPoint::TransferQueue)?;
+                    recorder.record(RecordPoint::TransferQueue);
                     function_context = transfer_queue.enqueu_work(args).await?.get_context();
-                    recorder.record(RecordPoint::TransferDequeue)?;
+                    recorder.record(RecordPoint::TransferDequeue);
                     function_buffer += 1;
                 }
             }
@@ -504,11 +533,11 @@ impl Dispatcher {
                     destination_set_name: set_name,
                     source_set_index: subset,
                     source_item_index: item,
-                    recorder: recorder.get_sub_recorder().unwrap(),
+                    recorder: recorder.get_sub_recorder(),
                 };
-                recorder.record(RecordPoint::TransferQueue).unwrap();
+                recorder.record(RecordPoint::TransferQueue);
                 function_context = transfer_queue.enqueu_work(args).await?.get_context();
-                recorder.record(RecordPoint::TransferDequeue).unwrap();
+                recorder.record(RecordPoint::TransferDequeue);
                 function_item += 1;
             }
         }
@@ -528,16 +557,16 @@ impl Dispatcher {
             Some(q) => q,
             None => return Err(DandelionError::DispatcherConfigError),
         };
-        let subrecoder = recorder.get_sub_recorder()?;
+        let subrecoder = recorder.get_sub_recorder();
         let args = WorkToDo::FunctionArguments {
             config: function_config,
             context: function_context,
             output_sets,
             recorder: subrecoder,
         };
-        recorder.record(RecordPoint::ExecutionQueue)?;
+        recorder.record(RecordPoint::ExecutionQueue);
         let result = engine_queue.enqueu_work(args).await?.get_context();
-        recorder.record(RecordPoint::FutureReturn)?;
+        recorder.record(RecordPoint::FutureReturn);
         return Ok(result);
     }
 }
