@@ -141,14 +141,14 @@ pub fn module_load(path: &str) -> DandelionResult<Module> {
 
 /// # Safety
 /// Requires *image* to point to a valid hsaco code object
-pub unsafe fn module_load_data(image: *const c_void) -> DandelionResult<Module> {
+pub fn module_load_data(image: *const c_void) -> DandelionResult<Module> {
     let mut ret: _ModuleT = null();
 
     checked_call!(hipModuleLoadData(&mut ret as *mut _ModuleT, image));
     Ok(Module(ret))
 }
 
-pub fn module_get_function(module: &ModuleT, name: &str) -> DandelionResult<Function> {
+pub fn module_get_function(module: &Module, name: &str) -> DandelionResult<Function> {
     let mut ret: _FunctionT = null();
     let kname = CString::new(name).or(Err(DandelionError::HipError("Invalid Name".into())))?;
     checked_call!(hipModuleGetFunction(
@@ -162,7 +162,7 @@ pub fn module_get_function(module: &ModuleT, name: &str) -> DandelionResult<Func
 /// # Safety
 /// Requires *kernel_params* to point to an array of valid pointers to kernel arguments
 #[allow(clippy::too_many_arguments)]
-pub unsafe fn module_launch_kernel(
+pub fn module_launch_kernel(
     function: &Function,
     grid_dim_x: u32,
     grid_dim_y: u32,
@@ -170,7 +170,7 @@ pub unsafe fn module_launch_kernel(
     block_dim_x: u32,
     block_dim_y: u32,
     block_dim_z: u32,
-    shared_mem_bytes: u64,
+    shared_mem_bytes: u32,
     stream: StreamT,
     kernel_params: *const *const c_void,
     extra: *const *const c_void,
@@ -183,7 +183,7 @@ pub unsafe fn module_launch_kernel(
         block_dim_x,
         block_dim_y,
         block_dim_z,
-        shared_mem_bytes as usize,
+        shared_mem_bytes as u32,
         stream,
         kernel_params,
         extra,
@@ -247,7 +247,7 @@ impl Drop for DeviceAllocation {
 
 /// # Safety
 /// Requires *src* to point to valid memory
-pub unsafe fn memcpy_h_to_d(
+pub fn memcpy_h_to_d(
     dst: &DevicePointer,
     dev_offset: isize,
     src: *const c_void,
@@ -263,7 +263,7 @@ pub unsafe fn memcpy_h_to_d(
 
 /// # Safety
 /// Requires *dst* to point to valid memory
-pub unsafe fn memcpy_d_to_h(
+pub fn memcpy_d_to_h(
     dst: *const c_void,
     src: &DevicePointer,
     size_bytes: usize,

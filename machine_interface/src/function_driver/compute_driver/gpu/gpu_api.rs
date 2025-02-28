@@ -1,17 +1,12 @@
-#[cfg(feature = "hip")]
-pub mod gpu_api {
-    include!("hip.rs");
-}
+#[cfg(all(feature = "hip", feature = "cuda"))]
+compile_error!("Cannot compile with both the hip and cuda features");
 
-#[cfg(feature = "cuda")]
-pub mod gpu_api {
-    include!("cuda.rs");
-}
+#[cfg_attr(feature = "hip", path = "hip.rs")]
+#[cfg_attr(feature = "cuda", path = "cuda.rs")]
+pub mod gpu_api;
 
 pub use gpu_api::{
-    initialize,
     limit_heap_size,
-    create_context,
     get_device_count,
     set_device,
     module_load_data,

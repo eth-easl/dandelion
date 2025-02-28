@@ -1,4 +1,4 @@
-/// Rust bindings for a subset of the CUDA Device API
+//! Rust bindings for a subset of the CUDA Device API
 
 use dandelion_commons::{DandelionError, DandelionResult};
 use libc::{c_void, size_t};
