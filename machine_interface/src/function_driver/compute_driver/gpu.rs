@@ -5,7 +5,7 @@ use crate::{
         ComputeResource, Driver, Function, FunctionConfig, GpuConfig, WorkQueue,
     },
     interface::{read_output_structs, setup_input_structs, DandelionSystemData},
-    memory_domain::{Context, ContextTrait, ContextType},
+    memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
     DataItem, DataRequirementList, DataSet, Position,
 };
 use config_parsing::SYSDATA_OFFSET;
@@ -30,16 +30,20 @@ use self::{
     gpu_utils::{
         copy_data_to_device, get_data_length, get_size, start_gpu_process_pool, write_gpu_outputs,
     },
-    hip::DEFAULT_STREAM,
 };
 
 pub(crate) mod buffer_pool;
 pub(crate) mod config_parsing;
 pub mod gpu_utils;
-pub mod hip;
+mod gpu_api;
 
 #[cfg(test)]
-mod gpu_tests;
+#[cfg(feature = "hip")]
+mod hip_tests;
+
+#[cfg(test)]
+#[cfg(feature = "cuda")]
+mod cuda_tests;
 
 fn execute(
     actions: &Vec<Action>,
@@ -86,24 +90,22 @@ fn execute(
                     };
                 }
 
-                unsafe {
-                    hip::module_launch_kernel(
-                        config
-                            .kernels
-                            .get(name)
-                            .ok_or(DandelionError::UndeclaredIdentifier(name.to_owned()))?,
-                        get_size(&launch_config.grid_dim_x, buffers, context)? as u32,
-                        get_size(&launch_config.grid_dim_y, buffers, context)? as u32,
-                        get_size(&launch_config.grid_dim_z, buffers, context)? as u32,
-                        get_size(&launch_config.block_dim_x, buffers, context)? as u32,
-                        get_size(&launch_config.block_dim_y, buffers, context)? as u32,
-                        get_size(&launch_config.block_dim_z, buffers, context)? as u32,
-                        get_size(&launch_config.shared_mem_bytes, buffers, context)?,
-                        DEFAULT_STREAM,
-                        params.as_ptr(),
-                        null(),
-                    )?
-                };
+                gpu_api::module_launch_kernel(
+                    config
+                        .kernels
+                        .get(name)
+                        .ok_or(DandelionError::UndeclaredIdentifier(name.to_owned()))?,
+                    get_size(&launch_config.grid_dim_x, buffers, context)? as u32,
+                    get_size(&launch_config.grid_dim_y, buffers, context)? as u32,
+                    get_size(&launch_config.grid_dim_z, buffers, context)? as u32,
+                    get_size(&launch_config.block_dim_x, buffers, context)? as u32,
+                    get_size(&launch_config.block_dim_y, buffers, context)? as u32,
+                    get_size(&launch_config.block_dim_z, buffers, context)? as u32,
+                    get_size(&launch_config.shared_mem_bytes, buffers, context)? as u32,
+                    gpu_api::DEFAULT_STREAM,
+                    params.as_ptr(),
+                    null(),
+                )?;
 
                 // Manually deallocate heap memory we performed into_raw on
                 for ptr in dev_ptrs {
@@ -137,8 +139,7 @@ pub fn gpu_run(
         return Err(DandelionError::EngineResourceError);
     }
 
-    hip::set_device(gpu_id)?;
-    hip::limit_heap_size(0)?;
+    gpu_api::set_device(gpu_id)?;
 
     let mmu_context = match &context.context {
         ContextType::Gpu(ref mmu_context) => mmu_context,
@@ -206,8 +207,10 @@ pub struct GpuLoop {
 #[allow(non_upper_case_globals)]
 const Gi: usize = 1 << 30;
 
-// TODO: add adaptive amount of other GPUs are used, MI210 has 64GiB
-const VRAM_SIZE: usize = 60 * Gi;
+// TODO: add adaptive amount of other GPUs are used:
+// MI210    - 64GiB => 60 * Gi
+// RTX 3090 - 24GiB => 20 * Gi
+const VRAM_SIZE: usize = 20 * Gi;
 
 impl EngineLoop for GpuLoop {
     fn init(resource: ComputeResource) -> DandelionResult<Box<Self>> {
@@ -269,7 +272,7 @@ impl EngineLoop for GpuLoop {
 // Function parsing logic that can be shared between gpu_thread and gpu_process variants
 fn common_parse(
     function_path: String,
-    static_domain: &'static dyn crate::memory_domain::MemoryDomain,
+    static_domain: &Box<dyn MemoryDomain>,
 ) -> DandelionResult<crate::function_driver::Function> {
     // Deserialise user provided config JSON, extract module suffix
     let (mut gpu_config, modules_info) = config_parsing::parse_config(&function_path)?;
@@ -330,7 +333,7 @@ fn common_parse(
 
     Ok(Function {
         requirements,
-        context,
+        context: Arc::new(context),
         config,
     })
 }
@@ -354,7 +357,8 @@ fn common_start(resource: ComputeResource) -> DandelionResult<(u8, u8, u8)> {
         return Err(DandelionError::EngineResourceError);
     }
     // check gpu is available
-    if usize::from(gpu_id) >= hip::get_device_count()? {
+    // gpu_api::limit_heap_size(0)?;
+    if usize::from(gpu_id) >= gpu_api::get_device_count()? {
         return Err(DandelionError::EngineResourceError);
     }
 
@@ -379,7 +383,7 @@ impl Driver for GpuThreadDriver {
     fn parse_function(
         &self,
         function_path: String,
-        static_domain: &'static dyn crate::memory_domain::MemoryDomain,
+        static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<crate::function_driver::Function> {
         common_parse(function_path, static_domain)
     }
@@ -402,7 +406,7 @@ impl Driver for GpuProcessDriver {
     fn parse_function(
         &self,
         function_path: String,
-        static_domain: &'static dyn crate::memory_domain::MemoryDomain,
+        static_domain: &Box<dyn MemoryDomain>,
     ) -> DandelionResult<crate::function_driver::Function> {
         common_parse(function_path, static_domain)
     }

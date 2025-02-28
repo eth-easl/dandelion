@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::function_driver::GpuConfig;
 
-use super::hip::{self, FunctionT, ModuleT};
+use super::gpu_api::{self, Function, Module};
 
 pub const SYSDATA_OFFSET: usize = 0usize;
 
@@ -71,8 +71,8 @@ impl From<GpuConfigIR> for GpuConfig {
 #[derive(Clone)]
 pub struct RuntimeGpuConfig {
     pub system_data_struct_offset: usize,
-    pub modules: Arc<Vec<ModuleT>>,
-    pub kernels: Arc<HashMap<String, FunctionT>>,
+    pub modules: Arc<Vec<Module>>,
+    pub kernels: Arc<HashMap<String, Function>>,
     pub blueprint: Arc<ExecutionBlueprint>,
 }
 
@@ -97,10 +97,10 @@ impl GpuConfig {
             let offset = self.modules_offsets.get(module_name).ok_or(DandelionError::UnknownSymbol)?;
             let base_module = base.wrapping_add(offset.clone());
 
-            let module = unsafe { hip::module_load_data(base_module as *const c_void)? };
+            let module = gpu_api::module_load_data(base_module as *const c_void)?;
             
             for kernel_name in kernels_names.iter() {
-                let kernel = hip::module_get_function(&module, kernel_name)?;
+                let kernel = gpu_api::module_get_function(&module, kernel_name)?;
                 let _ = kernels.insert(kernel_name.to_string(), kernel).ok_or(DandelionError::UnknownSymbol);
             }
 

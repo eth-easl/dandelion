@@ -1,17 +1,7 @@
-use crate::{
-    function_driver::{
-        compute_driver::{
-            compute_driver_tests::compute_driver_tests::prepare_engine_and_function,
-            gpu::gpu_tests::{
-                get_driver,
-                load_models::*,
-                tests_utils::{compare_result, execute_test, get_result, setup_test},
-                Archive, ArchiveInit, RecordPoint, GPU_LOCK,
-            },
-        },
-        Arc, ComputeResource, Driver, WorkToDo,
-    },
-    memory_domain::{gpu::GpuMemoryDomain, ContextTrait, MemoryResource},
+use crate::function_driver::compute_driver::gpu::hip_tests::{
+    load_models::*,
+    tests_utils::{compare_result, execute_test, get_result, setup_test},
+    GPU_LOCK,
 };
 
 #[test]
@@ -29,7 +19,7 @@ fn full_double_matmul() {
         "{}/tests/data/test_gpu_full_double_matmul.json",
         env!("CARGO_MANIFEST_DIR")
     );
-    let (mut function_context, config, queue) = setup_test(&filename);
+    let (function_context, config, queue) = setup_test(&filename);
     let (output_size, output_name, expected, function_context) =
         load_double_matmul(function_context);
     let result_context = execute_test(function_context, config, queue, &output_name);
@@ -45,7 +35,7 @@ fn alexnet() {
         "{}/tests/data/test_gpu_alexnet.json",
         env!("CARGO_MANIFEST_DIR")
     );
-    let (mut function_context, config, queue) = setup_test(&filename);
+    let (function_context, config, queue) = setup_test(&filename);
     let (output_size, output_name, expected, function_context) = load_alexnet(function_context);
     let result_context = execute_test(function_context, config, queue, &output_name);
     let read_buffer = get_result(result_context, output_size, true);
@@ -60,7 +50,7 @@ fn lenet5() {
         "{}/tests/data/test_gpu_lenet5.json",
         env!("CARGO_MANIFEST_DIR")
     );
-    let (mut function_context, config, queue) = setup_test(&filename);
+    let (function_context, config, queue) = setup_test(&filename);
     let (output_size, output_name, expected, function_context) = load_lenet5(function_context);
     let result_context = execute_test(function_context, config, queue, &output_name);
     let read_buffer = get_result(result_context, output_size, true);
@@ -75,7 +65,7 @@ fn resnet18base() {
         "{}/tests/data/test_gpu_resnet18.json",
         env!("CARGO_MANIFEST_DIR")
     );
-    let (mut function_context, config, queue) = setup_test(&filename);
+    let (function_context, config, queue) = setup_test(&filename);
     let (output_size, output_name, expected, function_context) = load_resnet18(function_context);
     let result_context = execute_test(function_context, config, queue, &output_name);
     let read_buffer = get_result(result_context, output_size, false);
@@ -90,7 +80,7 @@ fn resnet18() {
         "{}/tests/data/test_gpu_resnet18.json",
         env!("CARGO_MANIFEST_DIR")
     );
-    let (mut function_context, config, queue) = setup_test(&filename);
+    let (function_context, config, queue) = setup_test(&filename);
     let (output_size, output_name, expected, function_context) = load_resnet18(function_context);
     let result_context = execute_test(function_context, config, queue, &output_name);
     let read_buffer = get_result(result_context, output_size, true);
@@ -105,7 +95,7 @@ fn resnet18batch4() {
         "{}/tests/data/test_gpu_resnet18batch4.json",
         env!("CARGO_MANIFEST_DIR")
     );
-    let (mut function_context, config, queue) = setup_test(&filename);
+    let (function_context, config, queue) = setup_test(&filename);
     let (output_size, output_name, expected, function_context) = load_resnet18batch4(function_context);
     let result_context = execute_test(function_context, config, queue, &output_name);
     let read_buffer = get_result(result_context, output_size, true);
@@ -120,7 +110,7 @@ fn resnet18batch16() {
         "{}/tests/data/test_gpu_resnet18batch16.json",
         env!("CARGO_MANIFEST_DIR")
     );
-    let (mut function_context, config, queue) = setup_test(&filename);
+    let (function_context, config, queue) = setup_test(&filename);
     let (output_size, output_name, expected, function_context) = load_resnet18batch16(function_context);
     let result_context = execute_test(function_context, config, queue, &output_name);
     let read_buffer = get_result(result_context, output_size, true);
@@ -135,7 +125,7 @@ fn resnet18batch64() {
         "{}/tests/data/test_gpu_resnet18batch64.json",
         env!("CARGO_MANIFEST_DIR")
     );
-    let (mut function_context, config, queue) = setup_test(&filename);
+    let (function_context, config, queue) = setup_test(&filename);
     let (output_size, output_name, expected, function_context) = load_resnet18batch64(function_context);
     let result_context = execute_test(function_context, config, queue, &output_name);
     let read_buffer = get_result(result_context, output_size, true);
@@ -150,7 +140,7 @@ fn resnet18onnx() {
         "{}/tests/data/test_gpu_resnet18onnx.json",
         env!("CARGO_MANIFEST_DIR")
     );
-    let (mut function_context, config, queue) = setup_test(&filename);
+    let (function_context, config, queue) = setup_test(&filename);
     let (output_size, output_name, expected, function_context) = load_resnet18onnx(function_context);
     let result_context = execute_test(function_context, config, queue, &output_name);
     let read_buffer = get_result(result_context, output_size, false);
@@ -165,7 +155,7 @@ fn resnet34() {
         "{}/tests/data/test_gpu_resnet34.json",
         env!("CARGO_MANIFEST_DIR")
     );
-    let (mut function_context, config, queue) = setup_test(&filename);
+    let (function_context, config, queue) = setup_test(&filename);
     let (output_size, output_name, expected, function_context) = load_resnet34(function_context);
     let result_context = execute_test(function_context, config, queue, &output_name);
     let read_buffer = get_result(result_context, output_size, true);
@@ -180,7 +170,7 @@ fn resnet50() {
         "{}/tests/data/test_gpu_resnet50.json",
         env!("CARGO_MANIFEST_DIR")
     );
-    let (mut function_context, config, queue) = setup_test(&filename);
+    let (function_context, config, queue) = setup_test(&filename);
     let (output_size, output_name, expected, function_context) = load_resnet50(function_context);
     let result_context = execute_test(function_context, config, queue, &output_name);
     let read_buffer = get_result(result_context, output_size, false);
@@ -195,7 +185,7 @@ fn resnet152() {
         "{}/tests/data/test_gpu_resnet152.json",
         env!("CARGO_MANIFEST_DIR")
     );
-    let (mut function_context, config, queue) = setup_test(&filename);
+    let (function_context, config, queue) = setup_test(&filename);
     let (output_size, output_name, expected, function_context) = load_resnet152(function_context);
     let result_context = execute_test(function_context, config, queue, &output_name);
     let read_buffer = get_result(result_context, output_size, true);
@@ -210,7 +200,7 @@ fn batch_norm() {
         "{}/tests/data/test_gpu_batch_norm.json",
         env!("CARGO_MANIFEST_DIR")
     );
-    let (mut function_context, config, queue) = setup_test(&filename);
+    let (function_context, config, queue) = setup_test(&filename);
     let (output_size, output_name, expected, function_context) = load_batch_norm(function_context);
     let result_context = execute_test(function_context, config, queue, &output_name);
     let read_buffer = get_result(result_context, output_size, false);

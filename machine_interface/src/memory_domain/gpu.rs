@@ -1,6 +1,6 @@
 use crate::{
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource},
-    util::mmapmem::MmapMem,
+    util::mmapmem::{MmapMem, MmapMemPool},
 };
 use dandelion_commons::{DandelionError, DandelionResult};
 use log::error;
@@ -26,23 +26,33 @@ impl ContextTrait for GpuContext {
 }
 
 #[derive(Debug)]
-pub struct GpuMemoryDomain {}
+pub struct GpuMemoryDomain {
+    memory_pool: MmapMemPool,
+}
 
 impl MemoryDomain for GpuMemoryDomain {
-    fn init(_config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
-        Ok(Box::new(GpuMemoryDomain {}))
+    fn init(config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
+        let (id, size) = match config {
+            MemoryResource::Shared { id, size } => (id, size),
+            _ => {
+                return Err(DandelionError::DomainError(
+                    dandelion_commons::DomainError::ConfigMissmatch,
+                ))
+            }
+        };
+        let memory_pool =
+            MmapMemPool::create(size, ProtFlags::PROT_READ | ProtFlags::PROT_WRITE, Some(id))?;
+        Ok(Box::new(GpuMemoryDomain { memory_pool }))
     }
 
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
         // create and map a shared memory region
-        let mem_space =
-            match MmapMem::create(size, ProtFlags::PROT_READ | ProtFlags::PROT_WRITE, true) {
-                Ok(v) => v,
-                Err(_e) => return Err(DandelionError::MemoryAllocationError),
-            };
+        let (mem_space, actual_size) = self
+            .memory_pool
+            .get_allocation(size, nix::sys::mman::MmapAdvise::MADV_DONTNEED)?;
 
         let new_context = Box::new(GpuContext { storage: mem_space });
-        Ok(Context::new(ContextType::Gpu(new_context), size))
+        Ok(Context::new(ContextType::Gpu(new_context), actual_size))
     }
 }
 

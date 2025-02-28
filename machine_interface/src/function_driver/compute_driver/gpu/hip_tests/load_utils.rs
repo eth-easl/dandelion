@@ -23,7 +23,7 @@ pub fn read_tensor_from_file(file_path: &str, file_folder: &str) -> io::Result<V
     Ok(floats.to_vec())
 }
 
-pub fn add_number(name: &str, value: i64, mut function_context: &mut Context) {
+pub fn add_number(name: &str, value: i64, function_context: &mut Context) {
     let offset = function_context
         .get_free_space_and_write_slice(&vec![value as i64])
         .expect("Should have space");
@@ -40,7 +40,7 @@ pub fn add_number(name: &str, value: i64, mut function_context: &mut Context) {
     }));
 }
 
-pub fn add_empty_buffer(name: &str, size: usize, mut function_context: &mut Context) {
+pub fn add_empty_buffer(name: &str, size: usize, function_context: &mut Context) {
     let offset = function_context
         .get_free_space_and_write_slice(&vec![0f32; size / 4])
         .expect("Should have space");
@@ -57,7 +57,7 @@ pub fn add_empty_buffer(name: &str, size: usize, mut function_context: &mut Cont
     }));
 }
 
-pub fn add_buffer(name: &str, size: usize, path: &str, mut function_context: &mut Context) {
+pub fn add_buffer(name: &str, size: usize, path: &str, function_context: &mut Context) {
     let offset = function_context
         .get_free_space_and_write_slice(&read_tensor_from_file(&name, &path).unwrap())
         .expect("Should have space");

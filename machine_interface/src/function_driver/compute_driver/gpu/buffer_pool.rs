@@ -1,7 +1,7 @@
 use dandelion_commons::{DandelionError, DandelionResult};
 use log::debug;
 
-use super::hip::{self, DeviceAllocation, DevicePointer};
+use super::gpu_api::{self, DeviceAllocation, DevicePointer};
 
 #[derive(Debug)]
 struct Buffer {
@@ -25,9 +25,9 @@ pub struct BufferPool {
 
 impl BufferPool {
     pub fn try_new(gpu_id: u8, region_size: usize) -> DandelionResult<Self> {
-        hip::set_device(gpu_id)?;
+        gpu_api::set_device(gpu_id)?;
 
-        let mut allocation = hip::DeviceAllocation::try_new(region_size)?;
+        let mut allocation = gpu_api::DeviceAllocation::try_new(region_size)?;
         allocation.zero_out()?;
         // sentinel buffer to simplify logic
         let buffers = vec![Buffer::sentinel()];

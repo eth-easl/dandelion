@@ -18,9 +18,23 @@ fn cmake_libraries() -> () {
 }
 
 fn libraries_gpu() {
-    // Link with HIP Runtime 6.2.2
-    println!("cargo:rustc-link-search=/opt/rocm-6.2.2/lib");
-    println!("cargo:rustc-link-lib=amdhip64");
+    #[cfg(feature = "hip")]
+    {
+        // Link with HIP Runtime 6.2.2
+        println!("cargo:rustc-link-search=/opt/rocm-6.2.2/lib");
+        println!("cargo:rustc-link-lib=amdhip64");
+    }
+
+    #[cfg(feature = "cuda")]
+    {
+        // Link with CUDA Device API
+        println!("cargo:rustc-link-search=/usr/local/cuda/lib64/stubs");
+        println!("cargo:rustc-link-lib=cuda");
+
+        // Link with CUDA Runtime API
+        println!("cargo:rustc-link-search=/usr/local/cuda/lib64");
+        println!("cargo:rustc-link-lib=cudart");
+    }
 }
 
 fn main() {

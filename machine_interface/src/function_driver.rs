@@ -110,7 +110,7 @@ impl Function {
                 // Transfer code object
                 transfer_memory(
                     &mut ctxt,
-                    &self.context,
+                    self.context.clone(),
                     cfg.code_object_offset,
                     0,
                     self.context.size,

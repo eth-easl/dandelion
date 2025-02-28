@@ -1,5 +1,5 @@
 use crate::{
-    function_driver::compute_driver::gpu::gpu_tests::load_utils::{
+    function_driver::compute_driver::gpu::hip_tests::load_utils::{
         add_buffer, add_empty_buffer, add_number, read_tensor_from_file,
     },
     memory_domain::Context,

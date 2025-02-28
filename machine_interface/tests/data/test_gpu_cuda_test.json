@@ -1,0 +1,25 @@
+{
+    "modules": [ 
+        { "module_name": "kernelCheck.cubin", "path": "kernelCheck.cubin" },
+        { "module_name": "kernelCheck.ptx", "path": "kernelCheck.ptx" } 
+    ],
+    "kernels": [ 
+        { "module_name": "kernelCheck.cubin", "kernel_name": "self_add" }
+    ],
+    "blueprint": {
+        "inputs": ["A"],
+        "buffers": {},
+        "outputs": ["A"],
+        "control_flow": [
+            {"ExecKernel": ["self_add", [{"Ptr": "A"}], {
+                "grid_dim_x": {"Absolute": 1}, 
+                "grid_dim_y": {"Absolute": 1}, 
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 8}, 
+                "block_dim_y": {"Absolute": 1}, 
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]}
+        ]
+    } 
+}

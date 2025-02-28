@@ -11,17 +11,17 @@ type ErrorT = u32;
 
 // typedef struct ihipModule_t* hipModule_t
 type _ModuleT = *const c_void;
-pub struct ModuleT(_ModuleT);
+pub struct Module(_ModuleT);
 
-unsafe impl Send for ModuleT {}
-unsafe impl Sync for ModuleT {}
+unsafe impl Send for Module {}
+unsafe impl Sync for Module {}
 
 // typedef struct iHipModuleSymbol_t* hipFunction_t
 type _FunctionT = *const c_void;
-pub struct FunctionT(_FunctionT);
+pub struct Function(_FunctionT);
 
-unsafe impl Send for FunctionT {}
-unsafe impl Sync for FunctionT {}
+unsafe impl Send for Function {}
+unsafe impl Sync for Function {}
 
 // typedef struct iHipStream_t* hipStream_t
 pub type StreamT = *const c_void;
@@ -60,13 +60,13 @@ extern "C" {
     ) -> ErrorT;
     fn hipModuleLaunchKernel(
         function: _FunctionT,
-        gridDimX: u32,
-        gridDimY: u32,
-        gridDimZ: u32,
-        blockDimX: u32,
-        blockDimY: u32,
-        blockDimZ: u32,
-        sharedMemBytes: usize,
+        grid_dim_x: u32,
+        grid_dim_y: u32,
+        grid_dim_z: u32,
+        block_dim_x: u32,
+        block_dim_y: u32,
+        block_dim_z: u32,
+        shared_mem_bytes: u32,
         stream: StreamT,
         kernel_params: *const *const c_void,
         extra: *const *const c_void,
@@ -131,24 +131,24 @@ pub fn limit_heap_size(size: usize) -> DandelionResult<()> {
     Ok(())
 }
 
-pub fn module_load(path: &str) -> DandelionResult<ModuleT> {
+pub fn module_load(path: &str) -> DandelionResult<Module> {
     let mut ret: _ModuleT = null();
     let fname =
         CString::new(path).or(Err(DandelionError::HipError("Invalid Module Path".into())))?;
     checked_call!(hipModuleLoad(&mut ret as *mut _ModuleT, fname.as_ptr()));
-    Ok(ModuleT(ret))
+    Ok(Module(ret))
 }
 
 /// # Safety
 /// Requires *image* to point to a valid hsaco code object
-pub unsafe fn module_load_data(image: *const c_void) -> DandelionResult<ModuleT> {
+pub unsafe fn module_load_data(image: *const c_void) -> DandelionResult<Module> {
     let mut ret: _ModuleT = null();
 
     checked_call!(hipModuleLoadData(&mut ret as *mut _ModuleT, image));
-    Ok(ModuleT(ret))
+    Ok(Module(ret))
 }
 
-pub fn module_get_function(module: &ModuleT, name: &str) -> DandelionResult<FunctionT> {
+pub fn module_get_function(module: &ModuleT, name: &str) -> DandelionResult<Function> {
     let mut ret: _FunctionT = null();
     let kname = CString::new(name).or(Err(DandelionError::HipError("Invalid Name".into())))?;
     checked_call!(hipModuleGetFunction(
@@ -156,14 +156,14 @@ pub fn module_get_function(module: &ModuleT, name: &str) -> DandelionResult<Func
         module.0,
         kname.as_ptr()
     ));
-    Ok(FunctionT(ret))
+    Ok(Function(ret))
 }
 
 /// # Safety
 /// Requires *kernel_params* to point to an array of valid pointers to kernel arguments
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn module_launch_kernel(
-    function: &FunctionT,
+    function: &Function,
     grid_dim_x: u32,
     grid_dim_y: u32,
     grid_dim_z: u32,
@@ -191,7 +191,7 @@ pub unsafe fn module_launch_kernel(
     Ok(())
 }
 
-impl Drop for ModuleT {
+impl Drop for Module {
     fn drop(&mut self) {
         unsafe {
             if hipModuleUnload(self.0) != 0 {

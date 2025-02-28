@@ -520,7 +520,7 @@ fn inference_benchmark_function() {
 fn hello_world() {
     let lock = GPU_LOCK.lock().unwrap();
     let driver: Box<dyn Driver> = get_driver();
-    let (mut function_context, config, queue) = prepare_engine_and_function::<GpuMemoryDomain>(
+    let (function_context, config, queue) = prepare_engine_and_function::<GpuMemoryDomain>(
         &format!(
             "{}/tests/data/test_gpu_hello_world.json",
             env!("CARGO_MANIFEST_DIR")

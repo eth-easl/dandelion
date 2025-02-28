@@ -2,7 +2,7 @@ use crate::{
     function_driver::{
         compute_driver::{
             compute_driver_tests::compute_driver_tests::prepare_engine_and_function,
-            gpu::gpu_tests::{get_driver, Archive, ArchiveInit, RecordPoint},
+            gpu::hip_tests::{get_driver, Archive, ArchiveInit, RecordPoint},
         },
         test_queue::TestQueue,
         Arc, ComputeResource, Driver, FunctionConfig, WorkToDo,

@@ -22,10 +22,12 @@ use std::{
     thread::spawn,
 };
 
-use self::super::hip;
 use super::buffer_pool::BufferPool;
 
-use super::{config_parsing::Sizing, hip::DevicePointer};
+use super::{
+    config_parsing::Sizing, 
+    gpu_api::{self, DevicePointer},
+};
 
 pub fn get_data_length(ident: &str, context: &Context) -> DandelionResult<usize> {
     let dataset = context
@@ -71,7 +73,7 @@ pub unsafe fn copy_data_to_device(
         let length = item.data.size;
         let offset = item.data.offset;
         let src = base.byte_offset((offset) as isize) as *const c_void;
-        hip::memcpy_h_to_d(dev_ptr, total, src, length)?;
+        gpu_api::memcpy_h_to_d(dev_ptr, total, src, length)?;
         total += length as isize;
     }
     Ok(())
@@ -129,7 +131,7 @@ pub unsafe fn write_gpu_outputs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
 
         let dst = unsafe { base.byte_offset(buf_offset as isize) } as *const c_void;
         let dev_ptr = buffer_pool.get(*dev_ptr_idx)?;
-        hip::memcpy_d_to_h(dst, &dev_ptr, *size)?;
+        gpu_api::memcpy_d_to_h(dst, &dev_ptr, *size)?;
 
         output_buffers.push(IoBufferDescriptor {
             ident: ptr_t!(0),
@@ -257,7 +259,7 @@ pub struct SendContext {
     pub occupation: Vec<Position>,
 }
 
-impl TryFrom<SendContext> for Context {
+/*impl TryFrom<SendContext> for Context {
     type Error = DandelionError;
 
     fn try_from(value: SendContext) -> Result<Self, Self::Error> {
@@ -274,7 +276,7 @@ impl TryFrom<SendContext> for Context {
             occupation: value.occupation,
         })
     }
-}
+}*/
 
 impl TryFrom<&Context> for SendContext {
     type Error = DandelionError;
@@ -332,17 +334,17 @@ fn manage_worker(
                 mut recorder,
             } => {
                 if let Err(err) = recorder.record(RecordPoint::EngineStart) {
-                    debt.fulfill(Box::new(Err(err)));
+                    debt.fulfill(Err(err));
                     continue;
                 }
 
                 // transform relevant data into serialisable counterparts
                 let FunctionConfig::GpuConfig(config) = config else {
-                    debt.fulfill(Box::new(Err(DandelionError::ConfigMissmatch)));
+                    debt.fulfill(Err(DandelionError::ConfigMissmatch));
                     return;
                 };
                 let Ok(send_context) = (&context).try_into() else {
-                    debt.fulfill(Box::new(Err(DandelionError::ConfigMissmatch)));
+                    debt.fulfill(Err(DandelionError::ConfigMissmatch));
                     return;
                 };
 
@@ -357,7 +359,7 @@ fn manage_worker(
                 task += "\n";
 
                 if let Err(e) = recorder.record(RecordPoint::EngineStart) {
-                    debt.fulfill(Box::new(Err(e)));
+                    debt.fulfill(Err(e));
                     return;
                 }
 
@@ -379,16 +381,15 @@ fn manage_worker(
                     }
 
                     if let Err(e) = recorder.record(RecordPoint::EngineEnd) {
-                        debt.fulfill(Box::new(Err(e)));
+                        debt.fulfill(Err(e));
                         break;
                     } else if line.trim().starts_with("__ERROR__") {
                         error!("GPU error: {}", line);
-                        debt.fulfill(Box::new(Err(DandelionError::EngineError)));
+                        debt.fulfill(Err(DandelionError::EngineError));
                         break;
                     } else {
                         read_output_structs::<usize, usize>(&mut context, 0).unwrap();
-                        let results = Box::new(Ok(WorkDone::Context(context)));
-                        debt.fulfill(results);
+                        debt.fulfill(Ok(WorkDone::Context(context)));
                         break;
                     }
                 }
@@ -407,13 +408,13 @@ fn manage_worker(
                 match recorder.record(RecordPoint::TransferStart) {
                     Ok(()) => (),
                     Err(err) => {
-                        debt.fulfill(Box::new(Err(err)));
+                        debt.fulfill(Err(err));
                         continue;
                     }
                 }
                 let transfer_result = memory_domain::transfer_data_item(
                     &mut destination,
-                    &source,
+                    source,
                     destination_set_index,
                     destination_allignment,
                     destination_item_index,
@@ -424,12 +425,12 @@ fn manage_worker(
                 match recorder.record(RecordPoint::TransferEnd) {
                     Ok(()) => (),
                     Err(err) => {
-                        debt.fulfill(Box::new(Err(err)));
+                        debt.fulfill(Err(err));
                         continue;
                     }
                 }
                 let transfer_return = transfer_result.and(Ok(WorkDone::Context(destination)));
-                debt.fulfill(Box::new(transfer_return));
+                debt.fulfill(transfer_return);
                 continue;
             }
             WorkToDo::ParsingArguments {
@@ -439,11 +440,11 @@ fn manage_worker(
                 mut recorder,
             } => {
                 recorder.record(RecordPoint::ParsingStart).unwrap();
-                let function_result = driver.parse_function(path, static_domain);
+                let function_result = driver.parse_function(path, &static_domain);
                 recorder.record(RecordPoint::ParsingEnd).unwrap();
                 match function_result {
-                    Ok(function) => debt.fulfill(Box::new(Ok(WorkDone::Function(function)))),
-                    Err(err) => debt.fulfill(Box::new(Err(err))),
+                    Ok(function) => debt.fulfill(Ok(WorkDone::Function(function))),
+                    Err(err) => debt.fulfill(Err(err)),
                 }
                 continue;
             }
@@ -454,19 +455,19 @@ fn manage_worker(
                 mut recorder,
             } => {
                 recorder.record(RecordPoint::LoadStart).unwrap();
-                let load_result = function.load(domain, ctx_size);
+                let load_result = function.load(&domain, ctx_size);
                 recorder.record(RecordPoint::LoadEnd).unwrap();
                 match load_result {
-                    Ok(context) => debt.fulfill(Box::new(Ok(WorkDone::Context(context)))),
-                    Err(err) => debt.fulfill(Box::new(Err(err))),
+                    Ok(context) => debt.fulfill(Ok(WorkDone::Context(context))),
+                    Err(err) => debt.fulfill(Err(err)),
                 }
                 continue;
             }
             WorkToDo::Shutdown() => {
                 // Return original resources that were given to Engine
-                debt.fulfill(Box::new(Ok(WorkDone::Resources(vec![
+                debt.fulfill(Ok(WorkDone::Resources(vec![
                     ComputeResource::GPU(resources.0, resources.1, resources.2),
-                ]))));
+                ])));
 
                 // Inform other threads to shutdown as well when they are done
                 done.swap(true, Ordering::SeqCst);

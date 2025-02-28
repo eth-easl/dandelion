@@ -88,12 +88,7 @@ pub fn get_available_domains(
             },
         ),
         #[cfg(feature = "gpu")]
-        (
-            DomainType::Gpu,
-            Box::leak(
-                crate::memory_domain::gpu::GpuMemoryDomain::init(MemoryResource::None).unwrap(),
-            ) as &'static dyn MemoryDomain,
-        ),
+        (DomainType::Gpu, MemoryResource::Anonymous { size: 0 }),
         #[cfg(feature = "wasm")]
         (DomainType::RWasm, MemoryResource::Anonymous { size: 0 }),
     ]);
@@ -123,6 +118,11 @@ pub fn get_available_domains(
             DomainType::Process => (
                 dom_type,
                 Arc::new(crate::memory_domain::mmu::MmuMemoryDomain::init(resource).unwrap()),
+            ),
+            #[cfg(feature = "gpu")]
+            DomainType::Gpu => (
+                dom_type,
+                Arc::new(crate::memory_domain::gpu::GpuMemoryDomain::init(resource).unwrap()),
             ),
             #[cfg(feature = "wasm")]
             DomainType::RWasm => (

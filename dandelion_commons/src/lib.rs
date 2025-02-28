@@ -132,6 +132,8 @@ pub enum DandelionError {
     // GPU engine specfific errors
     /// error from HIP Runtime
     HipError(String),
+    /// error from HIP Runtime
+    CudaError(String),
     /// identifier used in config file was not declared before
     UndeclaredIdentifier(String),
     /// argument given to the FromInput sizing was out of bounds
