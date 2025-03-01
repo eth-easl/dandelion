@@ -21,7 +21,8 @@ pub struct Controller {
     pub loop_duration: u64,
     threads_per_core: usize,
     cpu_pinning: bool,
-    compute_range: (usize, usize), 
+    compute_range: (usize, usize),
+    prev_tasks_lengths: BTreeMap<EngineType, usize>,
 }
 
 impl Controller {
@@ -44,6 +45,7 @@ impl Controller {
             threads_per_core,
             cpu_pinning,
             compute_range,
+            prev_tasks_lengths: BTreeMap::new(),
         }
     }
 
@@ -51,7 +53,7 @@ impl Controller {
     fn log_core_info(&self) {
         let queue_lengths = self.dispatcher.get_queue_lengths();
         let tasks_lengths = self.dispatcher.get_total_tasks_lengths();
-        
+
         let mut print_str = String::new();
         for (engine_type, cores) in self.cpu_core_map.iter() {
             print_str.push_str(
@@ -79,23 +81,15 @@ impl Controller {
 
         loop {
             let tasks_lengths = self.dispatcher.get_total_tasks_lengths();
-            let mut need_more_cores = None;
 
-            // self.log_core_info();
+            self.log_core_info();
 
-            let avg_load = tasks_lengths.iter().map(|(_, length)| length)
-                .sum::<usize>() / tasks_lengths.len();
-            let most_overloaded_queue = tasks_lengths.iter().max_by_key(|(_, length)| *length);
-            if let Some((engine_type, length)) = most_overloaded_queue {
-                if *length > avg_load + self.delta && *length < ERROR_THRESH {
-                    need_more_cores = Some(*engine_type);
-                }
-            }
+            let need_more_cores = self.get_engine_type_to_expand(&tasks_lengths);
 
             let mut deallocated = false;
             if let Some(engine_type_to_expand) = need_more_cores {
                 deallocated = self.deallocate_cores_from_other_engines(
-                    engine_type_to_expand, &tasks_lengths, avg_load).await;
+                    engine_type_to_expand, &tasks_lengths).await;
 
                 if deallocated {
                     self.allocate_more_cores(engine_type_to_expand).await;
@@ -107,9 +101,83 @@ impl Controller {
         }
     }
 
+    /// Return the engine type that needs more cores
+    fn get_engine_type_to_expand(&mut self, tasks_lengths: &Vec<(EngineType, usize)>) -> Option<EngineType> {
+        // Calculate the growth rate of each engine type
+        let mut max_growth_rate = 0;
+        let mut min_growth_rate = usize::MAX;
+        let mut engine_type_to_expand = None;
+
+        // Calculate tasks growth rates as percentage
+        for (engine_type, length) in tasks_lengths {
+            if let Some(prev_length) = self.prev_tasks_lengths.get(engine_type) {
+                let growth_rate = (length - prev_length) * 100 / prev_length;
+                if growth_rate < min_growth_rate {
+                    min_growth_rate = growth_rate;
+                }
+
+                if growth_rate > max_growth_rate {
+                    max_growth_rate = growth_rate;
+                    engine_type_to_expand = Some(*engine_type);
+                }
+            }
+
+            self.prev_tasks_lengths.insert(*engine_type, *length);
+        }
+
+        // Calculate error as the difference between the max and min growth rates
+        let error = max_growth_rate - min_growth_rate;
+        if error > self.delta {
+            return engine_type_to_expand;
+        }
+        None
+    }
+
+    /// Check if a core can be deallocated from the engine type
+    fn check_can_deallocate(&self, engine_type: EngineType, length: usize) -> bool {
+        if let Some(cores) = self.cpu_core_map.get(&engine_type) {
+            if cores.len() <= 1 || length > ERROR_THRESH {
+                return false;
+            }
+
+            return true
+        }
+        false
+    }
+
+    async fn deallocate_from_engine_type(&mut self, engine_type: EngineType) -> Option<u8> {
+        let engine_queue = self.dispatcher.engine_queues.get(&engine_type).unwrap().clone();
+        let shutdown_task = WorkToDo::Shutdown();
+
+        // Enqueue a shutdown task to deallocate a core
+        let core_id = match engine_queue.enqueu_work(shutdown_task).await {
+            Ok(WorkDone::Resources(resources)) => {
+                if let ComputeResource::CPU(core_id) = resources[0] {
+                    core_id
+                } else {
+                    return None;
+                }
+            },
+            _ => return None,
+        };
+
+        // Remove the core from the core list
+        if let Some(core_list) = self.cpu_core_map.get_mut(&engine_type) {
+            core_list.retain(|&core| core != core_id);
+        }
+
+        // Release the core back to the resource pool
+        if let Err(e) = self.resource_pool.release_engine_resource(engine_type, ComputeResource::CPU(core_id)).await {
+            log::error!("[CTRL] Error releasing core {} back to the resource pool: {:?}", core_id, e);
+            return None;
+        }
+
+        println!("[CTRL] Deallocated core {} from engine type {:?} with {} tasks", core_id, engine_type, engine_queue.total_tasks_length());
+        Some(core_id)
+    }
+
     /// Allocate a core to a target engine type
     async fn allocate_more_cores(&mut self, engine_type: EngineType) {
-
         if let Ok(Some(resource)) = self.resource_pool.sync_acquire_engine_resource(engine_type){
             if let ComputeResource::CPU(core_id) = resource {
                 if let Some(core_list) = self.cpu_core_map.get_mut(&engine_type) {
@@ -120,12 +188,12 @@ impl Controller {
                 }
 
                 let drivers = get_available_drivers();
-                if let Some(driver) = drivers.get(&engine_type){
+                if let Some(driver) = drivers.get(&engine_type) {
                     let work_queue = self.dispatcher.engine_queues.get(&engine_type).unwrap().clone();
                     let tasks_length = work_queue.total_tasks_length();
-                    match driver.start_engine(resource, work_queue, 
-                                                self.threads_per_core, 
-                                                self.cpu_pinning, 
+                    match driver.start_engine(resource, work_queue,
+                                                self.threads_per_core,
+                                                self.cpu_pinning,
                                                 self.compute_range) {
                         Ok(_) => println!(
                             "[CTRL] Allocated core {} to engine type {:?} with {} tasks",
@@ -140,55 +208,22 @@ impl Controller {
 
     /// Deallocate a core from other engines to allocate to a target engine
     async fn deallocate_cores_from_other_engines(
-        &mut self, 
+        &mut self,
         target_engine: EngineType,
         tasks_lengths: &[(EngineType, usize)],
-        avg_load: usize,
     ) -> bool {
         // Iterate over the engine types to find one to deallocate
         for (engine_type, length) in tasks_lengths {
-            if *engine_type == target_engine || *length > avg_load {
+            if *engine_type == target_engine || !self.check_can_deallocate(*engine_type, *length) {
                 continue;
             }
-            
-            // Get the cores allocated to this engine type
-            if let Some(cores_in_use) = self.cpu_core_map.get(engine_type) {
-                // Stop the thread running on this core
-                let shutdown_task = WorkToDo::Shutdown();
-                let engine_queue = self.dispatcher.engine_queues.get(engine_type).unwrap().clone();
-                if cores_in_use.len() <= 1 {
-                    continue;
-                }
-
-                let core_id = match engine_queue.enqueu_work(shutdown_task).await {
-                    Ok(WorkDone::Resources(resources)) => {
-                        if let ComputeResource::CPU(core_id) = resources[0] {
-                            core_id
-                        } else {
-                            continue;
-                        }
-                    },
-                    _ => continue,
-                };
-
-                // Remove the core from the cpu_core_map
-                if let Some(core_list) = self.cpu_core_map.get_mut(engine_type) {
-                    core_list.retain(|&core| core != core_id);
-                }
-
-                // Return the core to the resource pool
-                if let Err(e) = self.resource_pool.release_engine_resource(target_engine, ComputeResource::CPU(core_id)).await {
-                    log::error!("[CTRL] Error releasing core {} back to the resource pool: {:?}",
-                        core_id, e);
-                    continue;
-                }
-                println!("[CTRL] Deallocated core {} from engine type {:?} with {} tasks",
-                    core_id, engine_type, engine_queue.total_tasks_length());
-
-                // Core deallocation successful
-                return true;
-            }
         }
+
+        // Deallocate a core from the engine type
+        if let Some(_) = self.deallocate_from_engine_type(target_engine).await {
+            return true;
+        }
+
         false // No cores deallocated
     }
 }
