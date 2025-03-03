@@ -67,6 +67,15 @@ pub struct InputDescriptor {
     // TODO pub loop_cond: LoopCond,
 }
 
+#[derive(Debug, Clone)]
+pub enum JoinFilterStrategy {
+    Cross,
+    Inner,
+    Left,
+    Right,
+    Full,
+}
+
 pub type AOutputDescriptor = Rc<Spanned<OutputDescriptor>>;
 
 #[derive(Debug)]
@@ -78,11 +87,18 @@ pub struct OutputDescriptor {
 
 pub type AFunctionApplication = Rc<Spanned<FunctionApplication>>;
 
+#[derive(Debug, Clone)]
+pub struct FunctionApplicationJoinStrategy {
+    pub join_strategy_order: Vec<String>,
+    pub join_strategies: Vec<JoinFilterStrategy>,
+}
+
 #[derive(Debug)]
 pub struct FunctionApplication {
     pub name: String,
     pub args: Vec<AInputDescriptor>,
     pub rets: Vec<AOutputDescriptor>,
+    pub join_strategy: Option<FunctionApplicationJoinStrategy>,
 }
 
 pub type ALoop = Rc<Spanned<Loop>>;
@@ -230,6 +246,26 @@ fn parser() -> impl Parser<char, Module, Error = Simple<char>> {
             // TODO feedback: false,
         })
         .map_with_span(aspanned);
+    
+    let name_followed_by_strategy = text::ident().padded()
+        .then
+            (just("cross").or(just("inner")).or(just("left")).or(just("right")).or(just("full"))
+                .map(|sharding| match sharding {
+                    "cross" => JoinFilterStrategy::Cross,
+                    "inner" => JoinFilterStrategy::Inner,
+                    "left" => JoinFilterStrategy::Left,
+                    "right" => JoinFilterStrategy::Right,
+                    "full" => JoinFilterStrategy::Full,
+                    _ => unreachable!(),
+                }))
+                .padded();
+
+    let by_join_strategy = just("by").padded().ignore_then(
+        name_followed_by_strategy.repeated().padded().then(text::ident()).map(|(xs, x): (Vec<(String, JoinFilterStrategy)>, String)| {
+            let (mut names, strats): (Vec<_>, Vec<_>) = xs.iter().cloned().unzip();
+            names.push(x);
+            FunctionApplicationJoinStrategy { join_strategy_order: names, join_strategies: strats }
+        }));
 
     let function_application = text::ident()
         .then(
@@ -245,7 +281,10 @@ fn parser() -> impl Parser<char, Module, Error = Simple<char>> {
                 .delimited_by(just('(').padded(), just(')').padded()),
         )
         .padded()
-        .map(|((name, args), rets)| FunctionApplication { name, args, rets })
+        .then(by_join_strategy.or_not())
+        .map(|(((name, args), rets), join_strategy)| FunctionApplication {
+            name, args, rets, join_strategy
+        })
         .map_with_span(aspanned)
         .map(Statement::FunctionApplication);
 
