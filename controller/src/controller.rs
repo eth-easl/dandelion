@@ -217,11 +217,11 @@ impl Controller {
             if *engine_type == target_engine || !self.check_can_deallocate(*engine_type, *length) {
                 continue;
             }
-        }
 
-        // Deallocate a core from the engine type
-        if let Some(_) = self.deallocate_from_engine_type(target_engine).await {
-            return true;
+            // Deallocate a core from the engine type
+            if let Some(_) = self.deallocate_from_engine_type(*engine_type).await {
+                return true;
+            }
         }
 
         false // No cores deallocated
