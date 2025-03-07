@@ -122,6 +122,7 @@ impl Controller {
         // Calculate tasks growth rates as percentage
         for (engine_type, length) in tasks_lengths {
             if let Some(&prev_length) = self.prev_tasks_lengths.get(engine_type) {
+                self.prev_tasks_lengths.insert(*engine_type, *length);
                 if prev_length == 0 {
                     continue;
                 }
@@ -136,12 +137,14 @@ impl Controller {
                     engine_type_to_expand = Some(*engine_type);
                 }
             }
-
-            self.prev_tasks_lengths.insert(*engine_type, *length);
         }
 
         // Calculate error as the difference between the max and min growth rates
         let error = max_growth_rate - min_growth_rate;
+        println!(
+            "[CTRL] Growth rates: max: {}, min: {}, error: {}",
+            max_growth_rate, min_growth_rate, error
+        );
         if error > self.delta {
             return engine_type_to_expand;
         }
