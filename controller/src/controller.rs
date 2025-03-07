@@ -121,24 +121,28 @@ impl Controller {
 
         // Calculate tasks growth rates as percentage
         for (engine_type, length) in tasks_lengths {
-            if let Some(&prev_length) = self.prev_tasks_lengths.get(engine_type) {
-                self.prev_tasks_lengths.insert(*engine_type, *length);
-                let growth_rate = if prev_length == 0 && *length == 0 {
-                    0
-                } else if prev_length == 0 {
-                    100
-                } else {
-                    (*length - prev_length) * 100 / prev_length
-                };
+            let prev_length = if let Some(&prev_length) = self.prev_tasks_lengths.get(engine_type) {
+                prev_length
+            } else {
+                0
+            };
+            self.prev_tasks_lengths.insert(*engine_type, *length);
 
-                if growth_rate < min_growth_rate {
-                    min_growth_rate = growth_rate;
-                }
+            let growth_rate = if prev_length == 0 && *length == 0 {
+                0
+            } else if prev_length == 0 {
+                100
+            } else {
+                (*length - prev_length) * 100 / prev_length
+            };
 
-                if growth_rate > max_growth_rate {
-                    max_growth_rate = growth_rate;
-                    engine_type_to_expand = Some(*engine_type);
-                }
+            if growth_rate < min_growth_rate {
+                min_growth_rate = growth_rate;
+            }
+
+            if growth_rate > max_growth_rate {
+                max_growth_rate = growth_rate;
+                engine_type_to_expand = Some(*engine_type);
             }
         }
 
