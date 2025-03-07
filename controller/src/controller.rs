@@ -123,11 +123,14 @@ impl Controller {
         for (engine_type, length) in tasks_lengths {
             if let Some(&prev_length) = self.prev_tasks_lengths.get(engine_type) {
                 self.prev_tasks_lengths.insert(*engine_type, *length);
-                if prev_length == 0 {
-                    continue;
-                }
+                let growth_rate = if prev_length == 0 && *length == 0 {
+                    0
+                } else if prev_length == 0 {
+                    100
+                } else {
+                    (*length - prev_length) * 100 / prev_length
+                };
 
-                let growth_rate = (length - prev_length) * 100 / prev_length;
                 if growth_rate < min_growth_rate {
                     min_growth_rate = growth_rate;
                 }
