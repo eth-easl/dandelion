@@ -116,7 +116,7 @@ impl Controller {
     ) -> Option<EngineType> {
         // Calculate the growth rate of each engine type
         let mut max_growth_rate = 0;
-        let mut min_growth_rate = usize::MAX;
+        let mut min_growth_rate = 100;
         let mut engine_type_to_expand = None;
 
         // Calculate tasks growth rates as percentage
