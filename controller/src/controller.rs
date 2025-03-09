@@ -171,55 +171,6 @@ impl Controller {
         false
     }
 
-    async fn deallocate_from_engine_type(&mut self, engine_type: EngineType) -> Option<u8> {
-        let engine_queue = self
-            .dispatcher
-            .engine_queues
-            .get(&engine_type)
-            .unwrap()
-            .clone();
-        let shutdown_task = WorkToDo::Shutdown();
-
-        // Enqueue a shutdown task to deallocate a core
-        let core_id = match engine_queue.enqueu_work(shutdown_task).await {
-            Ok(WorkDone::Resources(resources)) => {
-                if let ComputeResource::CPU(core_id) = resources[0] {
-                    core_id
-                } else {
-                    return None;
-                }
-            }
-            _ => return None,
-        };
-
-        // Remove the core from the core list
-        if let Some(core_list) = self.cpu_core_map.get_mut(&engine_type) {
-            core_list.retain(|&core| core != core_id);
-        }
-
-        // Release the core back to the resource pool
-        if let Err(e) = self
-            .resource_pool
-            .release_engine_resource(engine_type, ComputeResource::CPU(core_id))
-            .await
-        {
-            log::error!(
-                "[CTRL] Error releasing core {} back to the resource pool: {:?}",
-                core_id,
-                e
-            );
-            return None;
-        }
-
-        println!(
-            "[CTRL] Deallocated core {} from engine type {:?} with {} tasks",
-            core_id,
-            engine_type,
-            engine_queue.total_tasks_length()
-        );
-        Some(core_id)
-    }
-
     /// Allocate a core to a target engine type
     async fn allocate_more_cores(&mut self, engine_type: EngineType) {
         if let Ok(Some(resource)) = self.resource_pool.sync_acquire_engine_resource(engine_type) {
@@ -274,12 +225,60 @@ impl Controller {
                 continue;
             }
 
-            // Deallocate a core from the engine type
-            if let Some(_) = self.deallocate_from_engine_type(*engine_type).await {
+            // Get the cores allocated to this engine type
+            if let Some(cores_in_use) = self.cpu_core_map.get(engine_type) {
+                // Stop the thread running on this core
+                let shutdown_task = WorkToDo::Shutdown();
+                let engine_queue = self
+                    .dispatcher
+                    .engine_queues
+                    .get(engine_type)
+                    .unwrap()
+                    .clone();
+                if cores_in_use.len() <= 1 {
+                    continue;
+                }
+
+                let core_id = match engine_queue.enqueu_work(shutdown_task).await {
+                    Ok(WorkDone::Resources(resources)) => {
+                        if let ComputeResource::CPU(core_id) = resources[0] {
+                            core_id
+                        } else {
+                            continue;
+                        }
+                    }
+                    _ => continue,
+                };
+
+                // Remove the core from the cpu_core_map
+                if let Some(core_list) = self.cpu_core_map.get_mut(engine_type) {
+                    core_list.retain(|&core| core != core_id);
+                }
+
+                // Return the core to the resource pool
+                if let Err(e) = self
+                    .resource_pool
+                    .release_engine_resource(target_engine, ComputeResource::CPU(core_id))
+                    .await
+                {
+                    log::error!(
+                        "[CTRL] Error releasing core {} back to the resource pool: {:?}",
+                        core_id,
+                        e
+                    );
+                    continue;
+                }
+                println!(
+                    "[CTRL] Deallocated core {} from engine type {:?} with {} tasks",
+                    core_id,
+                    engine_type,
+                    engine_queue.total_tasks_length()
+                );
+
+                // Core deallocation successful
                 return true;
             }
         }
-
         false // No cores deallocated
     }
 }
