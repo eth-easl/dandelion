@@ -115,8 +115,8 @@ impl Controller {
         tasks_lengths: &Vec<(EngineType, usize)>,
     ) -> Option<EngineType> {
         // Calculate the growth rate of each engine type
-        let mut max_growth_rate = 0;
-        let mut min_growth_rate = 100;
+        let mut max_growth_rate: i32 = 0;
+        let mut min_growth_rate: i32 = 100;
         let mut engine_type_to_expand = None;
 
         // Calculate tasks growth rates as percentage
@@ -128,12 +128,13 @@ impl Controller {
             };
             self.prev_tasks_lengths.insert(*engine_type, *length);
 
-            let growth_rate = if prev_length == 0 && *length == 0 {
+            let growth_rate: i32 = if prev_length == 0 && *length == 0 {
                 0
             } else if prev_length == 0 {
                 100
             } else {
-                (*length - prev_length) * 100 / prev_length
+                let diff = *length as i32 - prev_length as i32;
+                diff * 100 / prev_length as i32
             };
 
             if growth_rate < min_growth_rate {
@@ -152,7 +153,7 @@ impl Controller {
             "[CTRL] Growth rates: max: {}, min: {}, error: {}",
             max_growth_rate, min_growth_rate, error
         );
-        if error > self.delta {
+        if error > self.delta as i32 {
             return engine_type_to_expand;
         }
         None
