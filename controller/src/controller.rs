@@ -1,14 +1,11 @@
-use dispatcher::{
-    dispatcher::Dispatcher,
-    resource_pool::ResourcePool,
-};
-use machine_interface::{
-    machine_config::{get_available_drivers, EngineType},
-    function_driver::{WorkToDo, ComputeResource},
-};
-use tokio::time::{sleep, Duration};
-use std::collections::BTreeMap;
+use dispatcher::{dispatcher::Dispatcher, resource_pool::ResourcePool};
 use machine_interface::function_driver::WorkDone;
+use machine_interface::{
+    function_driver::{ComputeResource, WorkToDo},
+    machine_config::{get_available_drivers, EngineType},
+};
+use std::collections::BTreeMap;
+use tokio::time::{sleep, Duration};
 
 /// After this threshold, the controller will not deallocate cores
 const ERROR_THRESH: usize = 1_024;
@@ -21,7 +18,7 @@ pub struct Controller {
     pub loop_duration: u64,
     threads_per_core: usize,
     cpu_pinning: bool,
-    compute_range: (usize, usize), 
+    compute_range: (usize, usize),
 }
 
 impl Controller {
@@ -51,66 +48,88 @@ impl Controller {
     fn log_core_info(&self) {
         let queue_lengths = self.dispatcher.get_queue_lengths();
         let tasks_lengths = self.dispatcher.get_total_tasks_lengths();
-        
+
         let mut print_str = String::new();
         for (engine_type, cores) in self.cpu_core_map.iter() {
-            print_str.push_str(
-                &format!("Engine type: {:?}, Cores: {:?}; ", engine_type, cores.len()));
+            print_str.push_str(&format!(
+                "Engine type: {:?}, Cores: {:?}; ",
+                engine_type,
+                cores.len()
+            ));
         }
         println!("[CTRL] {}", print_str);
 
         print_str = String::new();
         for (engine_type, length) in queue_lengths {
-            print_str.push_str(
-                &format!("Engine type: {:?}, Queue length: {:?}; ", engine_type, length));
+            print_str.push_str(&format!(
+                "Engine type: {:?}, Queue length: {:?}; ",
+                engine_type, length
+            ));
         }
         println!("[CTRL] {}", print_str);
 
         print_str = String::new();
         for (engine_type, length) in tasks_lengths {
-            print_str.push_str(
-                &format!("Engine type: {:?}, Tasks: {:?}; ", engine_type, length));
+            print_str.push_str(&format!(
+                "Engine type: {:?}, Tasks: {:?}; ",
+                engine_type, length
+            ));
         }
         println!("[CTRL] {}", print_str);
     }
 
     /// Monitor the resource pool and allocate resources
     pub async fn monitor_and_allocate(&mut self) {
-
         loop {
             let tasks_lengths = self.dispatcher.get_total_tasks_lengths();
             let mut need_more_cores = None;
 
             self.log_core_info();
 
-            let avg_load = tasks_lengths.iter().map(|(_, length)| length)
-                .sum::<usize>() / tasks_lengths.len();
+            let avg_load = tasks_lengths
+                .iter()
+                .map(|(_, length)| length)
+                .sum::<usize>()
+                / tasks_lengths.len();
             let most_overloaded_queue = tasks_lengths.iter().max_by_key(|(_, length)| *length);
             if let Some((engine_type, length)) = most_overloaded_queue {
-                if *length > avg_load + self.delta && *length < ERROR_THRESH {
+                let load_overhead = if avg_load == 0 || *length < avg_load {
+                    0
+                } else {
+                    (*length - avg_load) * 100 / avg_load
+                };
+                if load_overhead > self.delta && *length < ERROR_THRESH {
                     need_more_cores = Some(*engine_type);
                 }
             }
 
             let mut deallocated = false;
             if let Some(engine_type_to_expand) = need_more_cores {
-                deallocated = self.deallocate_cores_from_other_engines(
-                    engine_type_to_expand, &tasks_lengths, avg_load).await;
+                deallocated = self
+                    .deallocate_cores_from_other_engines(
+                        engine_type_to_expand,
+                        &tasks_lengths,
+                        avg_load,
+                    )
+                    .await;
 
                 if deallocated {
                     self.allocate_more_cores(engine_type_to_expand).await;
                 }
             }
 
-            let wait_interval = if deallocated { 10 * self.loop_duration } else { self.loop_duration };
+            let wait_interval = if deallocated {
+                10 * self.loop_duration
+            } else {
+                self.loop_duration
+            };
             sleep(Duration::from_millis(wait_interval)).await;
         }
     }
 
     /// Allocate a core to a target engine type
     async fn allocate_more_cores(&mut self, engine_type: EngineType) {
-
-        if let Ok(Some(resource)) = self.resource_pool.sync_acquire_engine_resource(engine_type){
+        if let Ok(Some(resource)) = self.resource_pool.sync_acquire_engine_resource(engine_type) {
             if let ComputeResource::CPU(core_id) = resource {
                 if let Some(core_list) = self.cpu_core_map.get_mut(&engine_type) {
                     core_list.push(core_id);
@@ -120,18 +139,30 @@ impl Controller {
                 }
 
                 let drivers = get_available_drivers();
-                if let Some(driver) = drivers.get(&engine_type){
-                    let work_queue = self.dispatcher.engine_queues.get(&engine_type).unwrap().clone();
+                if let Some(driver) = drivers.get(&engine_type) {
+                    let work_queue = self
+                        .dispatcher
+                        .engine_queues
+                        .get(&engine_type)
+                        .unwrap()
+                        .clone();
                     let tasks_length = work_queue.total_tasks_length();
-                    match driver.start_engine(resource, work_queue, 
-                                                self.threads_per_core, 
-                                                self.cpu_pinning, 
-                                                self.compute_range) {
+                    match driver.start_engine(
+                        resource,
+                        work_queue,
+                        self.threads_per_core,
+                        self.cpu_pinning,
+                        self.compute_range,
+                    ) {
                         Ok(_) => println!(
                             "[CTRL] Allocated core {} to engine type {:?} with {} tasks",
-                            core_id, engine_type, tasks_length),
-                        Err(e) => log::error!("[CTRL] Error starting engine for core {}: {:?}",
-                            core_id, e),
+                            core_id, engine_type, tasks_length
+                        ),
+                        Err(e) => log::error!(
+                            "[CTRL] Error starting engine for core {}: {:?}",
+                            core_id,
+                            e
+                        ),
                     };
                 }
             }
@@ -140,7 +171,7 @@ impl Controller {
 
     /// Deallocate a core from other engines to allocate to a target engine
     async fn deallocate_cores_from_other_engines(
-        &mut self, 
+        &mut self,
         target_engine: EngineType,
         tasks_lengths: &[(EngineType, usize)],
         avg_load: usize,
@@ -150,12 +181,17 @@ impl Controller {
             if *engine_type == target_engine || *length > avg_load {
                 continue;
             }
-            
+
             // Get the cores allocated to this engine type
             if let Some(cores_in_use) = self.cpu_core_map.get(engine_type) {
                 // Stop the thread running on this core
                 let shutdown_task = WorkToDo::Shutdown();
-                let engine_queue = self.dispatcher.engine_queues.get(engine_type).unwrap().clone();
+                let engine_queue = self
+                    .dispatcher
+                    .engine_queues
+                    .get(engine_type)
+                    .unwrap()
+                    .clone();
                 if cores_in_use.len() <= 1 {
                     continue;
                 }
@@ -167,7 +203,7 @@ impl Controller {
                         } else {
                             continue;
                         }
-                    },
+                    }
                     _ => continue,
                 };
 
@@ -177,13 +213,24 @@ impl Controller {
                 }
 
                 // Return the core to the resource pool
-                if let Err(e) = self.resource_pool.release_engine_resource(target_engine, ComputeResource::CPU(core_id)).await {
-                    log::error!("[CTRL] Error releasing core {} back to the resource pool: {:?}",
-                        core_id, e);
+                if let Err(e) = self
+                    .resource_pool
+                    .release_engine_resource(target_engine, ComputeResource::CPU(core_id))
+                    .await
+                {
+                    log::error!(
+                        "[CTRL] Error releasing core {} back to the resource pool: {:?}",
+                        core_id,
+                        e
+                    );
                     continue;
                 }
-                println!("[CTRL] Deallocated core {} from engine type {:?} with {} tasks",
-                    core_id, engine_type, engine_queue.total_tasks_length());
+                println!(
+                    "[CTRL] Deallocated core {} from engine type {:?} with {} tasks",
+                    core_id,
+                    engine_type,
+                    engine_queue.total_tasks_length()
+                );
 
                 // Core deallocation successful
                 return true;
