@@ -14,6 +14,7 @@ pub use gpu_api::{
     module_get_function,
     memcpy_h_to_d,
     memcpy_d_to_h,
+    synchronize,
     Function,
     Module,
     DeviceAllocation,

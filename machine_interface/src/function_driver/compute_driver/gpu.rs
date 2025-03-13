@@ -38,12 +38,7 @@ pub mod gpu_utils;
 mod gpu_api;
 
 #[cfg(test)]
-#[cfg(feature = "hip")]
-mod hip_tests;
-
-#[cfg(test)]
-#[cfg(feature = "cuda")]
-mod cuda_tests;
+mod gpu_tests;
 
 fn execute(
     actions: &Vec<Action>,

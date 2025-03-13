@@ -1,0 +1,32 @@
+{
+    "modules": [{"module_name": "double_matmul.cubin", "path": "cuda/double_matmul.cubin"}],
+    "kernels": [
+        {"module_name": "double_matmul.cubin", "kernel_name": "tvmgen_default_fused_nn_dense_kernel"},
+        {"module_name": "double_matmul.cubin", "kernel_name": "tvmgen_default_fused_nn_dense_1_kernel"}
+    ],
+    "blueprint": {
+        "inputs": ["input", "p0", "p1"],
+        "buffers": {"b2": {"Absolute": 20}, "output": {"Absolute": 12}},
+        "outputs": ["output"],
+        "control_flow": [
+            {"ExecKernel": ["tvmgen_default_fused_nn_dense_kernel", [{"Ptr": "b2"}, {"Ptr": "input"}, {"Ptr": "p0"}], {
+                "grid_dim_x": {"Absolute": 5},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 64},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_dense_1_kernel", [{"Ptr": "output"}, {"Ptr": "b2"}, {"Ptr": "p1"}], {
+                "grid_dim_x": {"Absolute": 3},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 64},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]}
+        ]
+    }
+}

@@ -56,6 +56,8 @@ unsafe extern "C" {
     fn cudaMemset(dst: *const c_void, value: i32, count: size_t) -> ErrorT;
     fn cudaFree(ptr: *const c_void) -> ErrorT;
     fn cudaMemcpy(dst: *const c_void, src: *const c_void, count: size_t, kind: u8) -> ErrorT;
+
+    fn cudaDeviceSynchronize() -> ErrorT;
 }
 
 #[link(name = "cuda")]
@@ -351,5 +353,11 @@ pub fn memcpy_d_to_h(
     size_bytes: usize,
 ) -> DandelionResult<()> {
     cuda_checked_call!(cudaMemcpy(dst, src.ptr, size_bytes, 2));
+    Ok(())
+}
+
+pub fn synchronize() -> DandelionResult<()> {
+    // TODO : make synchronization more fine-grained, e.g. on stream level
+    cuda_checked_call!(cudaDeviceSynchronize());
     Ok(())
 }

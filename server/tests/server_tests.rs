@@ -192,7 +192,7 @@ mod server_tests {
         #[cfg(feature = "gpu")]
         {
             matmul_path = format!(
-                "{}/../machine_interface/tests/data/test_gpu_matmul_para.json",
+                "{}/../machine_interface/tests/data/hip/test_gpu_matmul_para.json",
                 env!("CARGO_MANIFEST_DIR"),
             );
             #[cfg(feature = "gpu_thread")]
@@ -517,7 +517,7 @@ mod server_tests {
         let engine_type;
         #[cfg(feature = "gpu")]
         let inference_path = format!(
-            "{}/../machine_interface/tests/data/test_gpu_inference.json",
+            "{}/../machine_interface/tests/data/hip/test_gpu_inference.json",
             env!("CARGO_MANIFEST_DIR"),
         );
         #[cfg(feature = "mmu")]
