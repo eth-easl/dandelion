@@ -1,12 +1,11 @@
-use std::{collections::BTreeMap, ops::Range, sync::Arc, vec};
-
 use crate::{
-    composition::{Composition, FunctionDependencies, ShardingMode},
+    composition::{Composition, FunctionDependencies, OutputMap, ShardingMode},
     function_registry::{FunctionDict, Metadata},
 };
 use dandelion_commons::DandelionError;
 use dparser::Module;
 use itertools::Itertools;
+use std::{collections::BTreeMap, ops::Range, sync::Arc, vec};
 
 fn get_module(comp_string: &str) -> Module {
     return dparser::parse(comp_string).unwrap_or_else(|err| {
@@ -73,12 +72,28 @@ fn check_composition(
                     let expected_set_opt = expected_function.input_set_ids[set_index];
                     match (actual_set_opt, expected_set_opt) {
                         (None, None) => (),
-                        (None, Some(_)) | (Some(_), None) => return None,
-                        (Some((a_index, a_sharding)), Some((e_index, e_sharding))) => {
+                        (None, Some(_))
+                        | (Some(_), None)
+                        | (Some((OutputMap::Global(_), _)), Some((OutputMap::Local(_), _)))
+                        | (Some((OutputMap::Local(_), _)), Some((OutputMap::Global(_), _))) => {
+                            return None
+                        }
+                        (
+                            Some((OutputMap::Local(a_index), a_sharding)),
+                            Some((OutputMap::Local(e_index), e_sharding)),
+                        ) => {
                             if a_sharding != e_sharding {
                                 return None;
                             }
                             if input_set_range.contains(&e_index) && e_index != a_index {
+                                return None;
+                            }
+                        }
+                        (
+                            Some((OutputMap::Global(a_index), a_sharding)),
+                            Some((OutputMap::Global(e_index), e_sharding)),
+                        ) => {
+                            if a_sharding != e_sharding || a_index != e_index {
                                 return None;
                             }
                         }
@@ -89,12 +104,17 @@ fn check_composition(
                     let expected_set_op = expected_function.output_set_ids[set_index];
                     match (actual_set_op, expected_set_op) {
                         (None, None) => (),
-                        (None, Some(_)) | (Some(_), None) => return None,
-                        (Some(a_index), Some(e_index)) => {
+                        (Some(OutputMap::Local(a_index)), Some(OutputMap::Local(e_index))) => {
                             if output_set_range.contains(&e_index) && e_index != a_index {
                                 return None;
                             }
                         }
+                        (Some(OutputMap::Global(a_index)), Some(OutputMap::Global(e_index))) => {
+                            if a_index != e_index {
+                                return None;
+                            }
+                        }
+                        _ => return None,
                     };
                 }
                 return Some(0);
@@ -250,10 +270,10 @@ fn test_from_module_minmal_composition_with_inputs() {
         Composition {
             dependencies: vec![FunctionDependencies {
                 function: function_id,
-                input_set_ids: vec![Some((0, ShardingMode::All))],
-                output_set_ids: vec![Some(1)],
+                input_set_ids: vec![Some((OutputMap::Local(0), ShardingMode::All))],
+                output_set_ids: vec![Some(OutputMap::Local(1))],
             }],
-            output_map: BTreeMap::from([(1, 0)]),
+            output_map: BTreeMap::from([(OutputMap::Local(1), 0)]),
         },
         Metadata {
             input_sets: Arc::new(vec![(String::from("Cin"), None)]),
@@ -282,10 +302,10 @@ fn test_from_module_minmal_composition_function_with_unused_input() {
         Composition {
             dependencies: vec![FunctionDependencies {
                 function: function_id,
-                input_set_ids: vec![Some((0, ShardingMode::All)), None],
-                output_set_ids: vec![Some(1)],
+                input_set_ids: vec![Some((OutputMap::Local(0), ShardingMode::All)), None],
+                output_set_ids: vec![Some(OutputMap::Local(1))],
             }],
-            output_map: BTreeMap::from([(1, 0)]),
+            output_map: BTreeMap::from([(OutputMap::Local(1), 0)]),
         },
         Metadata {
             input_sets: Arc::new(vec![(String::from("Cin"), None)]),
@@ -314,10 +334,10 @@ fn test_from_module_minmal_composition_function_with_unused_output() {
         Composition {
             dependencies: vec![FunctionDependencies {
                 function: function_id,
-                input_set_ids: vec![Some((0, ShardingMode::All))],
-                output_set_ids: vec![Some(1), None],
+                input_set_ids: vec![Some((OutputMap::Local(0), ShardingMode::All))],
+                output_set_ids: vec![Some(OutputMap::Local(1)), None],
             }],
-            output_map: BTreeMap::from([(1, 0)]),
+            output_map: BTreeMap::from([(OutputMap::Local(1), 0)]),
         },
         Metadata {
             input_sets: Arc::new(vec![(String::from("Cin"), None)]),
@@ -347,10 +367,10 @@ fn test_from_module_minmal_composition_with_missing_input() {
         Composition {
             dependencies: vec![FunctionDependencies {
                 function: function_id,
-                input_set_ids: vec![Some((0, ShardingMode::All))],
-                output_set_ids: vec![Some(1)],
+                input_set_ids: vec![Some((OutputMap::Local(0), ShardingMode::All))],
+                output_set_ids: vec![Some(OutputMap::Local(1))],
             }],
-            output_map: BTreeMap::from([(1, 0)]),
+            output_map: BTreeMap::from([(OutputMap::Local(1), 0)]),
         },
         Metadata {
             input_sets: Arc::new(vec![(String::from("Cin"), None)]),
@@ -380,10 +400,10 @@ fn test_from_module_minmal_composition_missing_output() {
         Composition {
             dependencies: vec![FunctionDependencies {
                 function: function_id,
-                input_set_ids: vec![Some((0, ShardingMode::All))],
-                output_set_ids: vec![Some(1)],
+                input_set_ids: vec![Some((OutputMap::Local(0), ShardingMode::All))],
+                output_set_ids: vec![Some(OutputMap::Local(1))],
             }],
-            output_map: BTreeMap::from([(1, 0)]),
+            output_map: BTreeMap::from([(OutputMap::Local(1), 0)]),
         },
         Metadata {
             input_sets: Arc::new(vec![(String::from("Cin"), None)]),

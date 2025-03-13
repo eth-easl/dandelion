@@ -1,5 +1,5 @@
 use crate::function_registry::{FunctionDict, Metadata};
-use dandelion_commons::{DandelionError, DandelionResult, FunctionId};
+use dandelion_commons::{DandelionError, DandelionResult, DispatcherError, FunctionId};
 use dparser;
 use itertools::Itertools;
 use machine_interface::memory_domain::Context;
@@ -8,6 +8,8 @@ use std::{
     sync::Arc,
 };
 
+pub type GlobalSetId = u64;
+
 /// A composition has a composition wide id space that maps ids of
 /// the input and output sets to sets of individual functions to a unified
 /// namespace. The ids in this namespace are used to find out which
@@ -15,7 +17,16 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct Composition {
     pub dependencies: Vec<FunctionDependencies>,
-    pub output_map: BTreeMap<usize, usize>,
+    pub output_map: BTreeMap<OutputMap, usize>,
+}
+
+/// Used to indicate how a output set of a function is to be handled
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OutputMap {
+    /// Function output set should be entered into set registry with id
+    Global(GlobalSetId),
+    /// Function output set should be returned with set id
+    Local(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -24,10 +35,10 @@ pub struct FunctionDependencies {
     /// composition set ids that the function needs to get ready and
     /// the mapping to local ids is given implicitly through the index in the vec
     /// if the id is none, that set is not provided by the compostion
-    pub input_set_ids: Vec<Option<(usize, ShardingMode)>>,
+    pub input_set_ids: Vec<Option<(OutputMap, ShardingMode)>>,
     /// the composition ids for the output sets of the function,
     /// if the id is none, that set is not needed for the composition
-    pub output_set_ids: Vec<Option<usize>>,
+    pub output_set_ids: Vec<Option<OutputMap>>,
 }
 
 impl ShardingMode {
@@ -86,12 +97,12 @@ impl Composition {
                         match set_numbers.entry(output_set_name.clone()) {
                             Entry::Vacant(v) => {
                                 v.insert(set_counter);
-                                output_map.insert(set_counter, output_index);
+                                output_map.insert(OutputMap::Local(set_counter), output_index);
                                 set_counter += 1;
                             }
                             // output set is input set
                             Entry::Occupied(occupied) => {
-                                output_map.insert(*occupied.get(), output_index);
+                                output_map.insert(OutputMap::Local(*occupied.get()), output_index);
                             }
                         };
                     }
@@ -158,7 +169,7 @@ impl Composition {
                                             ),
                                         )?;
                                         input_set_ids[index] = Some((
-                                            *set_id,
+                                            OutputMap::Local(*set_id),
                                             ShardingMode::from_parser_sharding(
                                                 &argument.v.sharding,
                                             ),
@@ -191,7 +202,7 @@ impl Composition {
                                                 return_set.v.ident.clone(),
                                             ),
                                         )?;
-                                        output_set_ids[index] = Some(*set_id);
+                                        output_set_ids[index] = Some(OutputMap::Local(*set_id));
                                     } else {
                                         return Err(
                                             DandelionError::CompositionFunctionInvalidIdentifier(
@@ -320,7 +331,9 @@ impl CompositionSet {
             set_index,
         } = additional;
         if self.set_index != *set_index {
-            return Err(DandelionError::DispatcherCompositionCombine);
+            return Err(DandelionError::Dispatcher(
+                DispatcherError::CompositionCombine,
+            ));
         }
         self.context_list.append(context_list);
         return Ok(());

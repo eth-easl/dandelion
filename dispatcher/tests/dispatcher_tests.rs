@@ -58,7 +58,7 @@ mod dispatcher_tests {
             .build()
             .unwrap()
             .block_on(dispatcher.insert_func(
-                String::from(""),
+                String::from("test_function"),
                 engine_type,
                 DEFAULT_CONTEXT_SIZE,
                 path_string,
@@ -100,9 +100,10 @@ mod dispatcher_tests {
         ($name: ident; $domain : ty; $init : expr; $engine_type : expr; $engine_resource: expr) => {
             use crate::dispatcher_tests::{
                 function_tests::{
-                    composition_chain_matmul, composition_diamond_matmac,
-                    composition_parallel_matmul, composition_single_matmul,
-                    single_domain_and_engine_basic, single_domain_and_engine_matmul,
+                    composition_chain_matmul, composition_chain_matmul_global_sets,
+                    composition_diamond_matmac, composition_parallel_matmul,
+                    composition_single_matmul, single_domain_and_engine_basic,
+                    single_domain_and_engine_matmul,
                 },
                 registry_tests::{multiple_input_fixed, single_input_fixed},
             };
@@ -142,6 +143,17 @@ mod dispatcher_tests {
             fn test_composition_chain() {
                 let name = format!("test_{}_matmul", stringify!($name));
                 composition_chain_matmul::<$domain>($init, &name, $engine_type, $engine_resource)
+            }
+
+            #[test_log::test]
+            fn test_composition_chain_global_sets() {
+                let name = format!("test_{}_matmul", stringify!($name));
+                composition_chain_matmul_global_sets::<$domain>(
+                    $init,
+                    &name,
+                    $engine_type,
+                    $engine_resource,
+                )
             }
 
             #[test_log::test]

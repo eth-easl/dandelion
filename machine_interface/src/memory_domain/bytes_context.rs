@@ -138,6 +138,15 @@ fn read_and_check_type(buf: &mut impl bytes::Buf, expected_type: i8) -> Dandelio
     return Ok(());
 }
 
+fn read_and_check_termination(buf: &mut impl bytes::Buf) -> DandelionResult<()> {
+    check_remaining::<u8>(buf)?;
+    if buf.get_u8() == 0 {
+        Ok(())
+    } else {
+        Err(DandelionError::RequestError(FrontendError::ViolatedSpec))
+    }
+}
+
 fn read_length(buf: &mut impl bytes::Buf) -> DandelionResult<usize> {
     check_remaining::<i32>(buf)?;
     return usize::try_from(buf.get_i32_le()).or(Err(DandelionError::RequestError(
@@ -191,9 +200,8 @@ fn read_string(buf: &mut impl bytes::Buf) -> DandelionResult<String> {
     // do not copy null char
     buf.copy_to_slice(byte_buffer.as_mut_slice());
     // read the trailing null bytes
-    if buf.get_i8() != 0 {
-        return Err(DandelionError::RequestError(FrontendError::ViolatedSpec));
-    }
+    read_and_check_termination(buf)?;
+
     let string = String::from_utf8(byte_buffer).or(Err(DandelionError::RequestError(
         FrontendError::ViolatedSpec,
     )))?;
@@ -248,14 +256,9 @@ fn read_data_item(
     let offset = total_length - buf.remaining();
     let size = binary_lenght;
     buf.advance(size);
-    let doc_termination = buf.get_i8();
-    if doc_termination != 0 {
-        debug!(
-            "Terminating 0 of data item not 0, {} instead",
-            doc_termination
-        );
-        return Err(DandelionError::RequestError(FrontendError::ViolatedSpec));
-    }
+
+    read_and_check_termination(buf)?;
+
     return Ok(Some(DataItem {
         ident,
         key,
@@ -294,10 +297,11 @@ fn read_data_set(
     read_and_check_cstring(buf, "items\0")?;
 
     // read array lenghth
-    let item_array_size = read_length(buf)?;
     let mut items = Vec::new();
-    let array_end = buf.remaining() + 4 - item_array_size;
-    // reads all items, as well as the last terminating 0 of the array
+    let mut array_end = buf.remaining();
+    array_end = array_end - read_length(buf)?;
+    // reads all items, as well as the last terminating 0 of the array document
+    // the terminating 0 is read by the one that return None
     while buf.remaining() > array_end {
         if let Some(item) = read_data_item(buf, total_length)? {
             items.push(item);
@@ -305,12 +309,9 @@ fn read_data_set(
             break;
         }
     }
-    // read terminating 0 char of the document
-    check_remaining::<i8>(buf)?;
-    if buf.get_i8() != 0 {
-        debug!("Terminating 0 not 0");
-        return Err(DandelionError::RequestError(FrontendError::ViolatedSpec));
-    }
+
+    // read terminating 0 of document arround array
+    read_and_check_termination(buf)?;
 
     return Ok(Some(DataSet {
         ident: set_name,
@@ -318,11 +319,65 @@ fn read_data_set(
     }));
 }
 
+fn read_local_set_vec(
+    buf: &mut impl bytes::Buf,
+    vec_name: &str,
+) -> DandelionResult<Vec<(usize, u64)>> {
+    let mut set_vec = Vec::new();
+
+    // make sure it is a array and has the correct name
+    read_and_check_type(buf, 4)?;
+    read_and_check_cstring(buf, vec_name)?;
+    let mut array_end = buf.remaining();
+    array_end = array_end - read_length(buf)?;
+    while buf.remaining() > array_end {
+        // each tuple is another array
+        match read_type_byte(buf)? {
+            4 => (),
+            0 => break,
+            _ => {
+                return Err(DandelionError::RequestError(
+                    FrontendError::MalformedMessage,
+                ))
+            }
+        };
+        read_cstring(buf)?;
+        if read_length(buf)? != 23 {
+            return Err(DandelionError::RequestError(
+                FrontendError::MalformedMessage,
+            ));
+        }
+
+        // read the int 32 for the index
+        read_and_check_type(buf, 16)?;
+        read_cstring(buf)?;
+        check_remaining::<u32>(buf)?;
+        let index = usize::try_from(buf.get_u32()).unwrap();
+
+        read_and_check_type(buf, 18)?;
+        read_cstring(buf)?;
+        check_remaining::<u64>(buf)?;
+        let local_index = buf.get_u64();
+        set_vec.push((index, local_index));
+
+        read_and_check_termination(buf)?;
+    }
+
+    return Ok(set_vec);
+}
+
+#[derive(Debug, Clone)]
+pub struct RequestMetadata {
+    pub name: String,
+    pub input_local: Vec<(usize, u64)>,
+    pub output_local: Vec<(usize, u64)>,
+}
+
 impl BytesContext {
     pub async fn from_bytes_vec(
         frame_data: Vec<Bytes>,
         total_size: usize,
-    ) -> DandelionResult<(String, Context)> {
+    ) -> DandelionResult<(RequestMetadata, Context)> {
         let mut frame_buf = FrameBuf {
             byte_iter: &frame_data,
             remaining: total_size,
@@ -343,33 +398,42 @@ impl BytesContext {
         // expecting sets to be an array
         read_and_check_type(&mut frame_buf, 4)?;
         read_and_check_cstring(&mut frame_buf, "sets\0")?;
-        let _ = read_length(&mut frame_buf);
+        // total length
+        let mut set_vec_end = frame_buf.remaining();
+        set_vec_end = set_vec_end - read_length(&mut frame_buf)?;
         // parse elements one by one
         let mut sets: Vec<Option<DataSet>> = Vec::new();
-        while frame_buf.remaining() > 0 {
+        // the none iteration consumes the terminating 0 of the array document
+        while frame_buf.remaining() > set_vec_end {
             if let Some(set) = read_data_set(&mut frame_buf, bson_dict_length)? {
                 sets.push(Some(set));
             } else {
                 break;
             }
         }
-        // read terminating 0
-        check_remaining::<i8>(&frame_buf)?;
-        let last_byte = frame_buf.get_i8();
-        if last_byte != 0 || frame_buf.remaining > 0 {
-            debug!(
-                "Context terminating 0 char not 0, is {} and frame buffer has {} remaining",
-                last_byte, frame_buf.remaining
-            );
-            return Err(DandelionError::RequestError(FrontendError::ViolatedSpec));
-        }
+
+        // read the input and output sets that should be read from local set registry
+        let input_local = read_local_set_vec(&mut frame_buf, "local_ins\0")?;
+        let output_local = read_local_set_vec(&mut frame_buf, "local_outs\0")?;
+
+        // reading terminating 0 of total document
+        read_and_check_termination(&mut frame_buf)?;
+
         let mut context = Context::new(
             crate::memory_domain::ContextType::Bytes(Box::new(BytesContext { frames: frame_data })),
             bson_dict_length,
         );
         context.occupy_space(0, bson_dict_length)?;
         context.content = sets;
-        return Ok((function_name, context));
+
+        return Ok((
+            RequestMetadata {
+                name: function_name,
+                input_local,
+                output_local,
+            },
+            context,
+        ));
     }
 }
 

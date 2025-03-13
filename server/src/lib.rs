@@ -12,6 +12,8 @@ pub struct DandelionRequest<'data> {
     pub name: String,
     #[serde(borrow)]
     pub sets: Vec<InputSet<'data>>,
+    pub local_ins: Vec<(i32, u64)>,
+    pub local_outs: Vec<(i32, u64)>,
 }
 
 #[derive(Serialize, Deserialize)]

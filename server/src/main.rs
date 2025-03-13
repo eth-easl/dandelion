@@ -5,7 +5,9 @@ use dandelion_commons::{
 };
 use dandelion_server::DandelionBody;
 use dispatcher::{
-    composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
+    composition::{CompositionSet, GlobalSetId},
+    dispatcher::{Dispatcher, DispatcherInput},
+    function_registry::Metadata,
     resource_pool::ResourcePool,
 };
 use http_body_util::BodyExt;
@@ -48,7 +50,8 @@ const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 enum DispatcherCommand {
     FunctionRequest {
         name: String,
-        inputs: Vec<Option<CompositionSet>>,
+        inputs: Vec<DispatcherInput>,
+        local_outs: Vec<(usize, GlobalSetId)>,
         is_cold: bool,
         recorder: Recorder,
         callback: oneshot::Sender<DandelionResult<Vec<Option<CompositionSet>>>>,
@@ -102,15 +105,25 @@ async fn serve_request(
     if request_context_result.is_err() {
         warn!("request parsing failed with: {:?}", request_context_result);
     }
-    let (function_name, request_context) = request_context_result.unwrap();
+    let (function_metadata, request_context) = request_context_result.unwrap();
     debug!("finshed creating request context");
+
     // TODO match set names to assign sets to composition sets
     // map sets in the order they are in the request
     let request_number = request_context.content.len();
     let request_arc = Arc::new(request_context);
-    let inputs = (0..request_number)
-        .map(|set_id| Some(CompositionSet::from((set_id, vec![request_arc.clone()]))))
-        .collect();
+    let mut inputs = (0..request_number)
+        .map(|set_id| {
+            DispatcherInput::Set(CompositionSet::from((set_id, vec![request_arc.clone()])))
+        })
+        .collect::<Vec<_>>();
+    // overwrite sets that should be used from node global
+    for (input_index, global_index) in function_metadata.input_local {
+        if input_index < request_number {
+            inputs[input_index] = DispatcherInput::Global(global_index);
+        }
+    }
+
     // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
     recorder
         .record(RecordPoint::QueueFunctionDispatcher)
@@ -118,8 +131,9 @@ async fn serve_request(
     let (callback, output_recevier) = tokio::sync::oneshot::channel();
     dispatcher
         .send(DispatcherCommand::FunctionRequest {
-            name: function_name,
+            name: function_metadata.name,
             inputs,
+            local_outs: function_metadata.output_local,
             is_cold,
             recorder: recorder.get_sub_recorder().unwrap(),
             callback,
@@ -363,12 +377,13 @@ async fn dispatcher_loop(
             DispatcherCommand::FunctionRequest {
                 name,
                 inputs,
+                local_outs,
                 is_cold,
                 recorder,
                 mut callback,
             } => {
                 let function_future =
-                    dispatcher.queue_function_by_name(name, inputs, is_cold, recorder);
+                    dispatcher.queue_function_by_name(name, inputs, local_outs, is_cold, recorder);
                 spawn(async {
                     select! {
                         function_output = function_future => {

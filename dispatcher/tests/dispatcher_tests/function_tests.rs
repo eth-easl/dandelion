@@ -1,6 +1,9 @@
 use super::{check_matrix, setup_dispatcher};
 use dandelion_commons::records::{Archive, ArchiveInit, RecordPoint};
-use dispatcher::composition::{Composition, CompositionSet, FunctionDependencies, ShardingMode};
+use dispatcher::{
+    composition::{Composition, CompositionSet, FunctionDependencies, OutputMap, ShardingMode},
+    dispatcher::DispatcherInput,
+};
 use machine_interface::{
     function_driver::ComputeResource,
     machine_config::{DomainType, EngineType},
@@ -137,10 +140,10 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
     let composition = Composition {
         dependencies: vec![FunctionDependencies {
             function: function_id,
-            input_set_ids: vec![Some((0, ShardingMode::All))],
-            output_set_ids: vec![Some(1)],
+            input_set_ids: vec![Some((OutputMap::Local(0), ShardingMode::All))],
+            output_set_ids: vec![Some(OutputMap::Local(1))],
         }],
-        output_map: BTreeMap::from([(1, 0)]),
+        output_map: BTreeMap::from([(OutputMap::Local(1), 0)]),
     };
     let inputs = vec![Some(CompositionSet::from((0, vec![Arc::new(in_context)])))];
 
@@ -218,10 +221,10 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
     let composition = Composition {
         dependencies: vec![FunctionDependencies {
             function: function_id,
-            input_set_ids: vec![Some((0, ShardingMode::Each))],
-            output_set_ids: vec![Some(1)],
+            input_set_ids: vec![Some((OutputMap::Local(0), ShardingMode::Each))],
+            output_set_ids: vec![Some(OutputMap::Local(1))],
         }],
-        output_map: BTreeMap::from([(1, 0)]),
+        output_map: BTreeMap::from([(OutputMap::Local(1), 0)]),
     };
     let inputs = vec![Some(CompositionSet::from((0, vec![Arc::new(in_context)])))];
 
@@ -296,16 +299,16 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
         dependencies: vec![
             FunctionDependencies {
                 function: function_id,
-                input_set_ids: vec![Some((0, ShardingMode::All))],
-                output_set_ids: vec![Some(1)],
+                input_set_ids: vec![Some((OutputMap::Local(0), ShardingMode::All))],
+                output_set_ids: vec![Some(OutputMap::Local(1))],
             },
             FunctionDependencies {
                 function: function_id,
-                input_set_ids: vec![Some((1, ShardingMode::All))],
-                output_set_ids: vec![Some(2)],
+                input_set_ids: vec![Some((OutputMap::Local(1), ShardingMode::All))],
+                output_set_ids: vec![Some(OutputMap::Local(2))],
             },
         ],
-        output_map: BTreeMap::from([(2, 0)]),
+        output_map: BTreeMap::from([(OutputMap::Local(2), 0)]),
     };
 
     let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
@@ -320,6 +323,88 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
         .build()
         .unwrap()
         .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
+    let out_contexts = match result {
+        Ok(context) => context,
+        Err(err) => panic!("Failed with: {:?}", err),
+    };
+    assert_eq!(1, out_contexts.len());
+    let out_composition_set = out_contexts[0].as_ref().expect("Should have set 0");
+    assert_eq!(1, out_composition_set.context_list.len());
+    let out_context = &out_composition_set.context_list[0].0;
+    assert_eq!(1, out_context.content.len());
+    check_matrix(&out_context, 0, 0, 2, vec![146, 330, 330, 746]);
+}
+
+pub fn composition_chain_matmul_global_sets<Domain: MemoryDomain>(
+    memory_resource: (DomainType, MemoryResource),
+    relative_path: &str,
+    engine_type: EngineType,
+    engine_resource: Vec<ComputeResource>,
+) {
+    let (dispatcher, _) = setup_dispatcher::<Domain>(
+        relative_path,
+        vec![(String::from(""), None)],
+        vec![String::from("")],
+        engine_type,
+        engine_resource,
+        memory_resource,
+    );
+
+    // matrix with the first number indicating the number of rows
+    let data = vec![2u64, 1, 2, 3, 4];
+    let data_len = data.len();
+    let mut in_context = ReadOnlyContext::new(data.into_boxed_slice())
+        .expect("Should be able to create read only context");
+    in_context.content = vec![Some(DataSet {
+        ident: String::from(""),
+        buffers: vec![DataItem {
+            ident: String::from(""),
+            data: Position {
+                offset: 0,
+                size: data_len * core::mem::size_of::<u64>(),
+            },
+            key: 1,
+        }],
+    })];
+
+    let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+        #[cfg(feature = "timestamp")]
+        timestamp_count: 1000,
+    })));
+    let mut recorder = archive.get_recorder().unwrap();
+    let _ = recorder.record(RecordPoint::Arrival);
+
+    let inputs = vec![DispatcherInput::Set(CompositionSet::from((
+        0,
+        vec![Arc::new(in_context)],
+    )))];
+
+    let intermediate = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(dispatcher.queue_function_by_name(
+            String::from("test_function"),
+            inputs,
+            vec![(0, 1)],
+            false,
+            recorder,
+        ))
+        .unwrap();
+    assert_eq!(1, intermediate.len());
+    assert!(intermediate[0].is_none());
+
+    let mut recorder = archive.get_recorder().unwrap();
+    let _ = recorder.record(RecordPoint::Arrival);
+    let result = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(dispatcher.queue_function_by_name(
+            String::from("test_function"),
+            vec![DispatcherInput::Global(1)],
+            vec![],
+            false,
+            recorder,
+        ));
     let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -405,54 +490,54 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             FunctionDependencies {
                 function: function_id,
                 input_set_ids: vec![
-                    Some((0, ShardingMode::All)),
-                    Some((1, ShardingMode::All)),
+                    Some((OutputMap::Local(0), ShardingMode::All)),
+                    Some((OutputMap::Local(1), ShardingMode::All)),
                     None,
                 ],
-                output_set_ids: vec![Some(3)],
+                output_set_ids: vec![Some(OutputMap::Local(3))],
             },
             // D = B^T*A
             FunctionDependencies {
                 function: function_id,
                 input_set_ids: vec![
-                    Some((2, ShardingMode::All)),
-                    Some((0, ShardingMode::All)),
+                    Some((OutputMap::Local(2), ShardingMode::All)),
+                    Some((OutputMap::Local(0), ShardingMode::All)),
                     None,
                 ],
-                output_set_ids: vec![Some(4)],
+                output_set_ids: vec![Some(OutputMap::Local(4))],
             },
             // E = B + C
             FunctionDependencies {
                 function: function_id,
                 input_set_ids: vec![
                     None,
-                    Some((1, ShardingMode::All)),
-                    Some((3, ShardingMode::All)),
+                    Some((OutputMap::Local(1), ShardingMode::All)),
+                    Some((OutputMap::Local(3), ShardingMode::All)),
                 ],
-                output_set_ids: vec![Some(5)],
+                output_set_ids: vec![Some(OutputMap::Local(5))],
             },
             // G = D * C
             FunctionDependencies {
                 function: function_id,
                 input_set_ids: vec![
-                    Some((4, ShardingMode::All)),
-                    Some((3, ShardingMode::All)),
+                    Some((OutputMap::Local(4), ShardingMode::All)),
+                    Some((OutputMap::Local(3), ShardingMode::All)),
                     None,
                 ],
-                output_set_ids: vec![Some(6)],
+                output_set_ids: vec![Some(OutputMap::Local(6))],
             },
             // Result = D*E + G
             FunctionDependencies {
                 function: function_id,
                 input_set_ids: vec![
-                    Some((4, ShardingMode::All)),
-                    Some((5, ShardingMode::All)),
-                    Some((6, ShardingMode::All)),
+                    Some((OutputMap::Local(4), ShardingMode::All)),
+                    Some((OutputMap::Local(5), ShardingMode::All)),
+                    Some((OutputMap::Local(6), ShardingMode::All)),
                 ],
-                output_set_ids: vec![Some(7)],
+                output_set_ids: vec![Some(OutputMap::Local(7))],
             },
         ],
-        output_map: BTreeMap::from([(7, 0)]),
+        output_map: BTreeMap::from([(OutputMap::Local(7), 0)]),
     };
 
     let archive = Box::leak(Box::new(Archive::init(ArchiveInit {

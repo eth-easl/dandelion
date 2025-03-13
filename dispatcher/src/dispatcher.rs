@@ -1,16 +1,17 @@
 use crate::{
-    composition::{Composition, CompositionSet, ShardingMode},
+    composition::{Composition, CompositionSet, GlobalSetId, OutputMap, ShardingMode},
     execution_qs::EngineQueue,
     function_registry::{FunctionRegistry, FunctionType, Metadata},
     resource_pool::ResourcePool,
+    set_registry::SetRegistry,
 };
 use core::pin::Pin;
 use dandelion_commons::{
     records::{RecordPoint, Recorder},
-    DandelionError, DandelionResult, FunctionId,
+    DandelionError, DandelionResult, DispatcherError, FunctionId,
 };
 use futures::{
-    future::join_all,
+    future::{join_all, Either},
     stream::{FuturesUnordered, StreamExt},
     Future,
 };
@@ -29,6 +30,13 @@ use std::{
     sync::Arc,
 };
 
+#[derive(Debug, Clone)]
+pub enum DispatcherInput {
+    None,
+    Set(CompositionSet),
+    Global(GlobalSetId),
+}
+
 // TODO here and in registry can probably replace driver and loader function maps with fixed size arrays
 // That have compile time size and static indexing
 // TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
@@ -38,6 +46,7 @@ pub struct Dispatcher {
     engine_queues: BTreeMap<EngineType, Box<EngineQueue>>,
     type_map: BTreeMap<EngineType, DomainType>,
     function_registry: FunctionRegistry,
+    set_registry: SetRegistry,
 }
 
 impl Dispatcher {
@@ -69,13 +78,16 @@ impl Dispatcher {
                 (driver as &'static dyn Driver, work_queue.clone()),
             );
         }
+
         let function_registry = FunctionRegistry::new(registry_drivers, &type_map, &domains);
+        let set_registry = SetRegistry::new();
 
         return Ok(Dispatcher {
             domains: domain_map,
             engine_queues,
             type_map,
             function_registry,
+            set_registry,
         });
     }
 
@@ -100,10 +112,25 @@ impl Dispatcher {
             .await;
     }
 
+    async fn get_global_set(
+        &self,
+        index: usize,
+        global_id: GlobalSetId,
+    ) -> DandelionResult<(usize, CompositionSet)> {
+        Ok((
+            index,
+            self.set_registry.get_set_future(&global_id).await?[0]
+                .take()
+                .unwrap()
+                .1,
+        ))
+    }
+
     pub async fn queue_function_by_name(
         &self,
         function_name: String,
-        inputs: Vec<Option<CompositionSet>>,
+        inputs: Vec<DispatcherInput>,
+        outputs: Vec<(usize, GlobalSetId)>,
         non_caching: bool,
         recorder: Recorder,
     ) -> DandelionResult<Vec<Option<CompositionSet>>> {
@@ -111,12 +138,53 @@ impl Dispatcher {
             .function_registry
             .get_function_id(&function_name)
             .await
-            .ok_or(DandelionError::DispatcherUnavailableFunction)?;
-        return self
-            .queue_function(function_id, inputs, non_caching, recorder)
-            .await;
+            .ok_or(DandelionError::Dispatcher(
+                DispatcherError::UnavailableFunction,
+            ))?;
+
+        let mut input_vec = Vec::with_capacity(inputs.len());
+        input_vec.resize(inputs.len(), None);
+        let global_sets = FuturesUnordered::new();
+
+        for (index, input) in inputs.into_iter().enumerate() {
+            match input {
+                DispatcherInput::None => (),
+                DispatcherInput::Set(set) => {
+                    input_vec[index] = Some(set);
+                }
+                DispatcherInput::Global(global_id) => {
+                    global_sets.push(self.get_global_set(index, global_id));
+                }
+            }
+        }
+        for global_result in global_sets.collect::<Vec<_>>().await.into_iter() {
+            let (index, set) = global_result?;
+            input_vec[index] = Some(set);
+        }
+
+        let mut results = self
+            .queue_function(function_id, input_vec, non_caching, recorder)
+            .await?;
+
+        for (output_index, global_index) in outputs {
+            if output_index < results.len() {
+                if let Some(set) = results[output_index].take() {
+                    self.set_registry.register_set(global_index, 1, 1).await?;
+                    self.set_registry.insert_set(global_index, Ok(set)).await?;
+                }
+            }
+        }
+
+        return Ok(results);
     }
 
+    /// Queue a composition for execution.
+    /// Returns a Vec of sets with the index corresponding to the set index in the composition definition
+    ///
+    /// # Arguments
+    ///
+    /// * `composition`
+    /// * `inputs` vec of input set options, where the index in the vec is the input set number
     pub async fn queue_composition(
         &self,
         composition: Composition,
@@ -130,19 +198,21 @@ impl Dispatcher {
         struct FunctionArgs {
             function_id: FunctionId,
             inptut_sets: Vec<Option<(ShardingMode, CompositionSet)>>,
-            output_mapping: Vec<Option<usize>>,
-            missing_sets: BTreeMap<usize, (usize, ShardingMode)>,
+            output_mapping: Vec<Option<OutputMap>>,
+            missing_sets: BTreeMap<OutputMap, (usize, ShardingMode)>,
         }
 
-        // prepare output sets
+        // prepare output sets, that are also input sets
         let output_number = composition.output_map.len();
         let mut output_sets = Vec::with_capacity(output_number);
         output_sets.resize(output_number, None);
         for (input_index, input_set) in inputs.iter().enumerate() {
-            if let Some(out_index) = composition.output_map.get(&input_index) {
+            if let Some(out_index) = composition.output_map.get(&OutputMap::Local(input_index)) {
                 output_sets[*out_index] = input_set.clone();
             }
         }
+
+        let mut global_sets = BTreeSet::new();
 
         let (ready_functions, mut non_ready_functions): (Vec<_>, Vec<_>) = composition
             .dependencies
@@ -154,12 +224,20 @@ impl Dispatcher {
                 ready_inputs.resize(deps.input_set_ids.len(), None);
                 for (function_index, set) in deps.input_set_ids.iter().enumerate() {
                     if let Some((set_index, mode)) = set {
-                        if *set_index < inputs.len() {
-                            if let Some(comp_set) = &inputs[*set_index] {
-                                ready_inputs[function_index] = Some((*mode, comp_set.clone()));
+                        match set_index {
+                            OutputMap::Local(local)
+                                if *local < inputs.len() && inputs[*local].is_some() =>
+                            {
+                                ready_inputs[function_index] =
+                                    Some((*mode, inputs[*local].as_ref().unwrap().clone()));
                             }
-                        } else {
-                            missing_map.insert(*set_index, (function_index, *mode));
+                            OutputMap::Global(global) => {
+                                global_sets.insert(*global);
+                                missing_map.insert(*set_index, (function_index, *mode));
+                            }
+                            _ => {
+                                missing_map.insert(*set_index, (function_index, *mode));
+                            }
                         }
                     }
                 }
@@ -171,29 +249,40 @@ impl Dispatcher {
                 }
             })
             .partition(|args| args.missing_sets.is_empty());
-        let mut running_functions: FuturesUnordered<_> = ready_functions
+
+        // start all functions that are ready and insert their sets into the awaited ones
+        let mut awaited_sets: FuturesUnordered<Either<_, _>> = ready_functions
             .into_iter()
             .map(|args| {
-                return self.queue_function_sharded(
+                return Either::Left(self.queue_function_sharded(
                     args.function_id,
                     args.inptut_sets,
                     args.output_mapping,
                     non_caching,
                     recorder.get_sub_recorder().unwrap(),
-                );
+                ));
             })
             .collect();
+        let num_running_functions = awaited_sets.len();
+
+        // insert all sets with a global mapping into awaiting them
+        for global_id in global_sets.iter() {
+            awaited_sets.push(Either::Right(self.set_registry.get_set_future(&global_id)));
+        }
+
         trace!(
-            "functions ready: {}, functions not ready: {}",
-            running_functions.len(),
-            non_ready_functions.len()
+            "functions ready: {}, functions not ready: {}, global sets awaited: {}",
+            num_running_functions,
+            non_ready_functions.len(),
+            global_sets.len(),
         );
-        while let Some(new_compositions_result) = running_functions.next().await {
+
+        while let Some(new_compositions_result) = awaited_sets.next().await {
             let new_compositions = new_compositions_result?;
             for new_composition_set_option in new_compositions {
                 if let Some((composition_set_index, composition_set)) = new_composition_set_option {
                     trace!(
-                        "composition set {} arrived at dispatcher",
+                        "composition set {:?} arrived at dispatcher",
                         composition_set_index
                     );
                     if let Some(output_index) = composition.output_map.get(&composition_set_index) {
@@ -208,13 +297,13 @@ impl Dispatcher {
                                 args.inptut_sets[index] = Some((mode, composition_set.clone()));
                             }
                             if args.missing_sets.is_empty() {
-                                running_functions.push(self.queue_function_sharded(
+                                awaited_sets.push(Either::Left(self.queue_function_sharded(
                                     args.function_id,
                                     args.inptut_sets,
                                     args.output_mapping,
                                     non_caching,
                                     recorder.get_sub_recorder().unwrap(),
-                                ));
+                                )));
                                 None
                             } else {
                                 Some(args)
@@ -224,8 +313,8 @@ impl Dispatcher {
                 }
             }
             trace!(
-                "functions running: {}, functions not ready: {}",
-                running_functions.len(),
+                "waiting for {} sets (running functions and global sets), functions not ready: {}",
+                awaited_sets.len(),
                 non_ready_functions.len()
             );
         }
@@ -241,10 +330,10 @@ impl Dispatcher {
         &self,
         function_id: FunctionId,
         input_sets: Vec<Option<(ShardingMode, CompositionSet)>>,
-        output_mapping: Vec<Option<usize>>,
+        output_mapping: Vec<Option<OutputMap>>,
         non_caching: bool,
         recorder: Recorder,
-    ) -> DandelionResult<Vec<Option<(usize, CompositionSet)>>> {
+    ) -> DandelionResult<Vec<Option<(OutputMap, CompositionSet)>>> {
         trace!(
             "queue function {} shareded and input sets: {:?}",
             function_id,
@@ -395,7 +484,9 @@ impl Dispatcher {
                     }
                 }
             } else {
-                return Err(DandelionError::DispatcherUnavailableFunction);
+                return Err(DandelionError::Dispatcher(
+                    DispatcherError::UnavailableFunction,
+                ));
             }
         })
     }
@@ -413,11 +504,11 @@ impl Dispatcher {
         // get context and load static data
         let context_id = match self.type_map.get(&engine_type) {
             Some(id) => id,
-            None => return Err(DandelionError::DispatcherConfigError),
+            None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
         };
         let (domain, transfer_queue) = match self.domains.get(context_id) {
             Some(d) => d,
-            None => return Err(DandelionError::DispatcherConfigError),
+            None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
         };
         // start doing transfers
         let (mut function_context, function_config) = self
@@ -528,7 +619,7 @@ impl Dispatcher {
         // preparation is done, get engine to receive engine
         let engine_queue = match self.engine_queues.get(&engine_type) {
             Some(q) => q,
-            None => return Err(DandelionError::DispatcherConfigError),
+            None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
         };
         let subrecoder = recorder.get_sub_recorder()?;
         let args = WorkToDo::FunctionArguments {

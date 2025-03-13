@@ -99,6 +99,8 @@ mod server_tests {
                     data: &data,
                 }],
             }],
+            local_ins: vec![],
+            local_outs: vec![],
         };
 
         let resp = client
@@ -122,7 +124,83 @@ mod server_tests {
         assert_eq!(1, checksum);
     }
 
-    fn register_and_request(http_version: reqwest::Version, client: Client, local: bool) {
+    fn send_matrix_request_local_sets(
+        endpoint: &str,
+        function_name: String,
+        http_version: reqwest::Version,
+        client: Client,
+    ) {
+        // call into function
+        let mut data = Vec::new();
+        data.extend_from_slice(&i64::to_le_bytes(1));
+        data.extend_from_slice(&i64::to_le_bytes(2));
+        let first_mat_request = DandelionRequest {
+            name: function_name.clone(),
+            sets: vec![InputSet {
+                identifier: String::from(""),
+                items: vec![InputItem {
+                    identifier: String::from(""),
+                    key: 0,
+                    data: &data,
+                }],
+            }],
+            local_ins: vec![],
+            local_outs: vec![(0, 1)],
+        };
+
+        let second_mat_request = DandelionRequest {
+            name: function_name,
+            sets: vec![InputSet {
+                identifier: String::from(""),
+                items: vec![InputItem {
+                    identifier: String::from(""),
+                    key: 0,
+                    data: &data,
+                }],
+            }],
+            local_ins: vec![(0, 1)],
+            local_outs: vec![],
+        };
+
+        let first_resp = client
+            .post(endpoint)
+            .version(http_version)
+            .body(bson::to_vec(&first_mat_request).unwrap())
+            .send()
+            .unwrap();
+        assert!(first_resp.status().is_success());
+
+        let first_body = first_resp.bytes().unwrap();
+        let first_response: DandelionDeserializeResponse = bson::from_slice(&first_body).unwrap();
+        assert_eq!(0, first_response.sets.len());
+
+        let second_resp = client
+            .post(endpoint)
+            .version(http_version)
+            .body(bson::to_vec(&second_mat_request).unwrap())
+            .send()
+            .unwrap();
+        assert!(second_resp.status().is_success());
+
+        let second_body = second_resp.bytes().unwrap();
+        let second_response: DandelionDeserializeResponse = bson::from_slice(&second_body).unwrap();
+        assert_eq!(1, second_response.sets.len());
+        assert_eq!(1, second_response.sets[0].items.len());
+        let response_data = second_response.sets[0].items[0].data;
+        assert_eq!(response_data.len(), 16);
+        let mut reader = Cursor::new(response_data);
+        let mat_size = reader.read_u64::<LittleEndian>().unwrap();
+        assert_eq!(1, mat_size);
+        let checksum = reader.read_u64::<LittleEndian>().unwrap();
+        assert_eq!(16, checksum);
+    }
+
+    fn register_and_request(
+        http_version: reqwest::Version,
+        client: Client,
+        local_path: bool,
+        local_sets: bool,
+    ) {
         // register function
         let version;
         let engine_type;
@@ -162,7 +240,7 @@ mod server_tests {
         };
 
         let function_name = format!("matmul_{}", version_string);
-        let register_request = if local {
+        let register_request = if local_path {
             bson::to_vec(&RegisterFunctionLocal {
                 name: function_name.clone(),
                 context_size: 0x802_0000,
@@ -215,18 +293,27 @@ mod server_tests {
             .unwrap();
         assert!(chain_resp.status().is_success());
 
-        send_matrix_request(
-            "http://localhost:8080/hot/matmul",
-            function_name,
-            http_version,
-            client.clone(),
-        );
-        send_matrix_request(
-            "http://localhost:8080/hot/matmul",
-            chain_name,
-            http_version,
-            client,
-        );
+        if local_sets {
+            send_matrix_request_local_sets(
+                "http://localhost:8080/hot/matmul",
+                function_name,
+                http_version,
+                client.clone(),
+            );
+        } else {
+            send_matrix_request(
+                "http://localhost:8080/hot/matmul",
+                function_name,
+                http_version,
+                client.clone(),
+            );
+            send_matrix_request(
+                "http://localhost:8080/hot/matmul",
+                chain_name,
+                http_version,
+                client,
+            );
+        }
     }
 
     #[test]
@@ -256,7 +343,7 @@ mod server_tests {
             .http2_prior_knowledge()
             .build()
             .unwrap();
-        register_and_request(reqwest::Version::HTTP_2, client, false);
+        register_and_request(reqwest::Version::HTTP_2, client, false, false);
 
         let status_result = server_killer.server.try_wait();
         drop(server_killer);
@@ -266,7 +353,7 @@ mod server_tests {
 
     #[test]
     #[serial]
-    fn serve_matmul_http_2_local() {
+    fn serve_matmul_http_2_local_path() {
         let mut cmd = Command::cargo_bin("dandelion_server").unwrap();
         let server = cmd
             .stdout(Stdio::piped())
@@ -291,7 +378,42 @@ mod server_tests {
             .http2_prior_knowledge()
             .build()
             .unwrap();
-        register_and_request(reqwest::Version::HTTP_2, client, true);
+        register_and_request(reqwest::Version::HTTP_2, client, true, false);
+
+        let status_result = server_killer.server.try_wait();
+        drop(server_killer);
+        let status = status_result.unwrap();
+        assert_eq!(status, None, "Server exited unexpectedly");
+    }
+
+    #[test]
+    #[serial]
+    fn serve_matmul_http_2_local_sets() {
+        let mut cmd = Command::cargo_bin("dandelion_server").unwrap();
+        let server = cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut server_killer = ServerKiller { server };
+        let mut reader = BufReader::new(server_killer.server.stdout.take().unwrap());
+        loop {
+            let mut buf = String::new();
+            let len = reader.read_line(&mut buf).unwrap();
+            assert_ne!(len, 0, "Server exited unexpectedly");
+            if buf.contains("Server start") {
+                break;
+            } else {
+                print!("{}", buf);
+            }
+        }
+        let _ = server_killer.server.stdout.insert(reader.into_inner());
+
+        let client = reqwest::blocking::Client::builder()
+            .http2_prior_knowledge()
+            .build()
+            .unwrap();
+        register_and_request(reqwest::Version::HTTP_2, client, false, true);
 
         let status_result = server_killer.server.try_wait();
         drop(server_killer);
@@ -323,7 +445,7 @@ mod server_tests {
         let _ = server_killer.server.stdout.insert(reader.into_inner());
 
         let client = reqwest::blocking::Client::new();
-        register_and_request(reqwest::Version::HTTP_11, client, false);
+        register_and_request(reqwest::Version::HTTP_11, client, false, false);
 
         let status_result = server_killer.server.try_wait();
         drop(server_killer);
