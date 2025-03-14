@@ -191,7 +191,7 @@ impl Recorder {
         self.timestamps.record(_current_point);
     }
 
-    pub fn add_childred(&mut self, _new_children: Vec<Recorder>) {
+    pub fn add_children(&mut self, _new_children: Vec<Recorder>) {
         #[cfg(feature = "timestamp")]
         for child in _new_children {
             self.timestamps.add_children(child.timestamps);

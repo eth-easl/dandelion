@@ -207,7 +207,7 @@ impl Dispatcher {
         );
         while let Some(new_compositions_result) = running_functions.next().await {
             let (new_compositions, new_recorders) = new_compositions_result?;
-            recorder.add_childred(new_recorders);
+            recorder.add_children(new_recorders);
             for (composition_set_index, composition_set) in &new_compositions {
                 trace!(
                     "composition set {} arrived at dispatcher",
