@@ -32,9 +32,9 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = DEFAULT_TIMESTAMP_COUNT)]
     #[serde(default)]
     pub timestamp_count: usize,
-    #[arg(long, env, default_value_t = 100)]
+    #[arg(long, env, default_value_t = 1.0)]
     #[serde(default)]
-    pub control_delta: usize, // number of tasks
+    pub control_delta: f64,
     #[arg(long, env, default_value_t = 200)]
     #[serde(default)]
     pub control_interval: u64, // in milliseconds

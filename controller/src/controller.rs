@@ -7,14 +7,11 @@ use machine_interface::{
 use std::collections::BTreeMap;
 use tokio::time::{sleep, Duration};
 
-/// After this threshold, the controller will not deallocate cores
-const ERROR_THRESH: usize = 1_024;
-
 pub struct Controller {
     pub resource_pool: &'static mut ResourcePool,
     pub dispatcher: &'static Dispatcher,
     pub cpu_core_map: &'static mut BTreeMap<EngineType, Vec<u8>>,
-    pub delta: usize,
+    pub delta: f64,
     pub loop_duration: u64,
     threads_per_core: usize,
     cpu_pinning: bool,
@@ -27,7 +24,7 @@ impl Controller {
         resource_pool: &'static mut ResourcePool,
         dispatcher: &'static Dispatcher,
         cpu_core_map: &'static mut BTreeMap<EngineType, Vec<u8>>,
-        delta: usize,
+        delta: f64,
         loop_duration: u64,
         threads_per_core: usize,
         cpu_pinning: bool,
@@ -83,29 +80,29 @@ impl Controller {
     /// Monitor the resource pool and allocate resources
     pub async fn monitor_and_allocate(&mut self) {
         loop {
-            // let tasks_lengths = self.dispatcher.get_total_tasks_lengths();
+            let tasks_lengths = self.dispatcher.get_total_tasks_lengths();
 
             self.log_core_info();
 
-            // let need_more_cores = self.get_engine_type_to_expand(&tasks_lengths);
+            let need_more_cores = self.get_engine_type_to_expand(&tasks_lengths);
 
-            // let mut deallocated = false;
-            // if let Some(engine_type_to_expand) = need_more_cores {
-            //     deallocated = self
-            //         .deallocate_cores_from_other_engines(engine_type_to_expand, &tasks_lengths)
-            //         .await;
+            let mut deallocated = false;
+            if let Some(engine_type_to_expand) = need_more_cores {
+                deallocated = self
+                    .deallocate_cores_from_other_engines(engine_type_to_expand, &tasks_lengths)
+                    .await;
 
-            //     if deallocated {
-            //         self.allocate_more_cores(engine_type_to_expand).await;
-            //     }
-            // }
+                if deallocated {
+                    self.allocate_more_cores(engine_type_to_expand).await;
+                }
+            }
 
-            // let wait_interval = if deallocated {
-            //     10 * self.loop_duration
-            // } else {
-            //     self.loop_duration
-            // };
-            sleep(Duration::from_millis(self.loop_duration)).await;
+            let wait_interval = if deallocated {
+                10 * self.loop_duration
+            } else {
+                self.loop_duration
+            };
+            sleep(Duration::from_millis(wait_interval)).await; //
         }
     }
 
@@ -115,27 +112,16 @@ impl Controller {
         tasks_lengths: &Vec<(EngineType, usize)>,
     ) -> Option<EngineType> {
         // Calculate the growth rate of each engine type
-        let mut max_growth_rate: i32 = 0;
-        let mut min_growth_rate: i32 = 100;
+        let mut max_growth_rate: f64 = 0.0;
+        let mut min_growth_rate: f64 = 100.0;
         let mut engine_type_to_expand = None;
 
         // Calculate tasks growth rates as percentage
         for (engine_type, length) in tasks_lengths {
-            let prev_length = if let Some(&prev_length) = self.prev_tasks_lengths.get(engine_type) {
-                prev_length
-            } else {
-                0
-            };
+            let prev_length = *self.prev_tasks_lengths.get(engine_type).unwrap_or(&0);
             self.prev_tasks_lengths.insert(*engine_type, *length);
 
-            let growth_rate: i32 = if prev_length == 0 && *length == 0 {
-                0
-            } else if prev_length == 0 {
-                100
-            } else {
-                let diff = *length as i32 - prev_length as i32;
-                diff * 100 / prev_length as i32
-            };
+            let growth_rate = (1.0 + (*length as f64)).log2() - (1.0 + (prev_length as f64)).log2();
 
             if growth_rate < min_growth_rate {
                 min_growth_rate = growth_rate;
@@ -153,16 +139,16 @@ impl Controller {
             "[CTRL] Growth rates: max: {}, min: {}, error: {}",
             max_growth_rate, min_growth_rate, error
         );
-        if error > self.delta as i32 {
+        if error > self.delta {
             return engine_type_to_expand;
         }
         None
     }
 
     /// Check if a core can be deallocated from the engine type
-    fn check_can_deallocate(&self, engine_type: EngineType, length: usize) -> bool {
+    fn check_can_deallocate(&self, engine_type: EngineType) -> bool {
         if let Some(cores) = self.cpu_core_map.get(&engine_type) {
-            if cores.len() <= 1 || length > ERROR_THRESH {
+            if cores.len() <= 1 {
                 return false;
             }
 
@@ -220,8 +206,8 @@ impl Controller {
         tasks_lengths: &[(EngineType, usize)],
     ) -> bool {
         // Iterate over the engine types to find one to deallocate
-        for (engine_type, length) in tasks_lengths {
-            if *engine_type == target_engine || !self.check_can_deallocate(*engine_type, *length) {
+        for (engine_type, _length) in tasks_lengths {
+            if *engine_type == target_engine || !self.check_can_deallocate(*engine_type) {
                 continue;
             }
 
