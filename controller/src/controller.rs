@@ -83,29 +83,29 @@ impl Controller {
     /// Monitor the resource pool and allocate resources
     pub async fn monitor_and_allocate(&mut self) {
         loop {
-            let tasks_lengths = self.dispatcher.get_total_tasks_lengths();
+            // let tasks_lengths = self.dispatcher.get_total_tasks_lengths();
 
             self.log_core_info();
 
-            let need_more_cores = self.get_engine_type_to_expand(&tasks_lengths);
+            // let need_more_cores = self.get_engine_type_to_expand(&tasks_lengths);
 
-            let mut deallocated = false;
-            if let Some(engine_type_to_expand) = need_more_cores {
-                deallocated = self
-                    .deallocate_cores_from_other_engines(engine_type_to_expand, &tasks_lengths)
-                    .await;
+            // let mut deallocated = false;
+            // if let Some(engine_type_to_expand) = need_more_cores {
+            //     deallocated = self
+            //         .deallocate_cores_from_other_engines(engine_type_to_expand, &tasks_lengths)
+            //         .await;
 
-                if deallocated {
-                    self.allocate_more_cores(engine_type_to_expand).await;
-                }
-            }
+            //     if deallocated {
+            //         self.allocate_more_cores(engine_type_to_expand).await;
+            //     }
+            // }
 
-            let wait_interval = if deallocated {
-                10 * self.loop_duration
-            } else {
-                self.loop_duration
-            };
-            sleep(Duration::from_millis(wait_interval)).await;
+            // let wait_interval = if deallocated {
+            //     10 * self.loop_duration
+            // } else {
+            //     self.loop_duration
+            // };
+            sleep(Duration::from_millis(self.loop_duration)).await;
         }
     }
 
