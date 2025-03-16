@@ -42,8 +42,8 @@ impl Controller {
         cpu_pinning: bool,
         compute_range: (usize, usize),
     ) -> Self {
-        let control_kp = 0.6 * control_ku;
-        let control_ki = 1.2 * control_ku / control_tu;
+        let control_kp = 0.45 * control_ku;
+        let control_ki = 0.54 * control_ku / control_tu;
         let control_kd = 0.075 * control_ku * control_tu;
 
         println!("[CTRL] Control parameters: kp: {}, ki: {}, kd: {}", control_kp, control_ki, control_kd);
@@ -167,8 +167,7 @@ impl Controller {
         let prev_integral = *self.prev_integral.get(&target_engine).unwrap_or(&0.0);
         
         let pid_signal = self.control_kp * error
-            + self.control_ki * prev_integral
-            + self.control_kd * (error - prev_error);
+            + self.control_ki * prev_integral;
 
         println!("[CTRL] min: {}, max: {}, error: {}, prev_error: {}, prev_integral: {}, pid_signal: {}", min_growth_rate, max_growth_rate, error, prev_error, prev_integral, pid_signal);
 
