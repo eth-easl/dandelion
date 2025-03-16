@@ -7,11 +7,14 @@ use machine_interface::{
 use std::collections::BTreeMap;
 use tokio::time::{sleep, Duration};
 
+/// Do not perform re-allocations if the absolute error is less than this value
+const EPSILON: f64 = 1.0;
+
 pub struct Controller {
     pub resource_pool: &'static mut ResourcePool,
     pub dispatcher: &'static Dispatcher,
     pub cpu_core_map: &'static mut BTreeMap<EngineType, Vec<u8>>,
-    pub delta: f64,
+    pub control_ku: f64,
     pub loop_duration: u64,
     threads_per_core: usize,
     cpu_pinning: bool,
@@ -24,7 +27,7 @@ impl Controller {
         resource_pool: &'static mut ResourcePool,
         dispatcher: &'static Dispatcher,
         cpu_core_map: &'static mut BTreeMap<EngineType, Vec<u8>>,
-        delta: f64,
+        control_ku: f64,
         loop_duration: u64,
         threads_per_core: usize,
         cpu_pinning: bool,
@@ -34,7 +37,7 @@ impl Controller {
             resource_pool,
             dispatcher,
             cpu_core_map,
-            delta,
+            control_ku,
             loop_duration,
             threads_per_core,
             cpu_pinning,
@@ -139,7 +142,7 @@ impl Controller {
             "[CTRL] Growth rates: max: {}, min: {}, error: {}",
             max_growth_rate, min_growth_rate, error
         );
-        if error > self.delta {
+        if error * self.control_ku > EPSILON {
             return engine_type_to_expand;
         }
         None

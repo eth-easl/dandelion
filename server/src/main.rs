@@ -615,16 +615,16 @@ fn main() -> () {
 
     let _guard = runtime.enter();
 
-    let delta = config.control_delta;
+    let control_ku = config.control_ku;
     let loop_duration = config.control_interval;
-    println!("delta {}, loop duration: {}", delta, loop_duration);
+    println!("ku {}, loop duration: {}", control_ku, loop_duration);
 
     #[cfg(feature = "controller")]
     let mut controller = Controller::new(
         resource_pool,
         dispatcher,
         cpu_core_map,
-        delta,
+        control_ku,
         loop_duration,
         threads_per_core,
         cpu_pinning,
