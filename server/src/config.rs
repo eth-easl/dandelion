@@ -35,7 +35,10 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = 1.0)]
     #[serde(default)]
     pub control_ku: f64,
-    #[arg(long, env, default_value_t = 200)]
+    #[arg(long, env, default_value_t = 30.0)]
+    #[serde(default)] 
+    pub control_tu: f64,
+    #[arg(long, env, default_value_t = 30)]
     #[serde(default)]
     pub control_interval: u64, // in milliseconds
     #[arg(long, env, default_value_t = DEFAULT_THREAD_PER_CORE)]

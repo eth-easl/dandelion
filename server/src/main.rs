@@ -617,7 +617,8 @@ fn main() -> () {
 
     let control_ku = config.control_ku;
     let loop_duration = config.control_interval;
-    println!("ku {}, loop duration: {}", control_ku, loop_duration);
+    let control_tu = config.control_tu;
+    println!("ku {}, tu {}, loop duration: {}", control_ku, control_tu, loop_duration);
 
     #[cfg(feature = "controller")]
     let mut controller = Controller::new(
@@ -625,6 +626,7 @@ fn main() -> () {
         dispatcher,
         cpu_core_map,
         control_ku,
+        control_tu,
         loop_duration,
         threads_per_core,
         cpu_pinning,
