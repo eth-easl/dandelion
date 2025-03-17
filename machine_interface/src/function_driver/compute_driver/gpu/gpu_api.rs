@@ -1,8 +1,8 @@
-#[cfg(all(feature = "hip", feature = "cuda"))]
-compile_error!("Cannot compile with both the hip and cuda features");
+#[cfg(all(feature = "cuda", feature = "hip"))]
+compile_error!("Cannot compile with both the cuda and hip features");
 
-#[cfg_attr(feature = "hip", path = "hip.rs")]
 #[cfg_attr(feature = "cuda", path = "cuda.rs")]
+#[cfg_attr(feature = "hip", path = "hip.rs")]
 pub mod gpu_api;
 
 pub use gpu_api::{

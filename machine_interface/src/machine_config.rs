@@ -88,7 +88,7 @@ pub fn get_available_domains(
             },
         ),
         #[cfg(feature = "gpu")]
-        (DomainType::Gpu, MemoryResource::Anonymous { size: 0 }),
+        (DomainType::Gpu, MemoryResource::Shared { id: u64::MAX, size: 0 }),
         #[cfg(feature = "wasm")]
         (DomainType::RWasm, MemoryResource::Anonymous { size: 0 }),
     ]);

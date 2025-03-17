@@ -712,6 +712,14 @@ fn main() -> () {
                 size: max_ram,
             },
         ),
+        #[cfg(feature = "gpu")]
+        (
+            DomainType::Gpu,
+            MemoryResource::Shared {
+                id: 0,
+                size: max_ram,
+            },
+        ),
         #[cfg(feature = "wasm")]
         (
             DomainType::RWasm,
