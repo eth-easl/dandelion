@@ -298,7 +298,7 @@ fn common_parse(
         cumulative_size += size;
     }
 
-    let mut context = static_domain.acquire_context(cumulative_size)?;
+    let mut context = Box::new(static_domain.acquire_context(cumulative_size)?);
     
     let mut offset: usize = 0;
     for i in 0..code_objects.len() {
@@ -328,7 +328,7 @@ fn common_parse(
 
     Ok(Function {
         requirements,
-        context: Arc::new(context),
+        context: Arc::from(context),
         config,
     })
 }
