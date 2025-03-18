@@ -615,18 +615,18 @@ fn main() -> () {
 
     let _guard = runtime.enter();
 
-    let control_ku = config.control_ku;
+    let control_kp = config.control_kp;
     let loop_duration = config.control_interval;
-    let control_tu = config.control_tu;
-    println!("ku {}, tu {}, loop duration: {}", control_ku, control_tu, loop_duration);
+    let control_ki = config.control_ki;
+    println!("kp {}, ki {}, loop duration: {}", control_kp, control_ki, loop_duration);
 
     #[cfg(feature = "controller")]
     let mut controller = Controller::new(
         resource_pool,
         dispatcher,
         cpu_core_map,
-        control_ku,
-        control_tu,
+        control_kp,
+        control_ki,
         loop_duration,
         threads_per_core,
         cpu_pinning,

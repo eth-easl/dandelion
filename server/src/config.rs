@@ -34,10 +34,10 @@ pub struct DandelionConfig {
     pub timestamp_count: usize,
     #[arg(long, env, default_value_t = 1.0)]
     #[serde(default)]
-    pub control_ku: f64,
-    #[arg(long, env, default_value_t = 30.0)]
+    pub control_kp: f64,
+    #[arg(long, env, default_value_t = 0.0)]
     #[serde(default)] 
-    pub control_tu: f64,
+    pub control_ki: f64,
     #[arg(long, env, default_value_t = 30)]
     #[serde(default)]
     pub control_interval: u64, // in milliseconds

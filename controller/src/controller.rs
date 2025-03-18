@@ -7,9 +7,6 @@ use machine_interface::{
 use std::collections::BTreeMap;
 use tokio::time::{sleep, Duration};
 
-/// Do not perform re-allocations if the absolute error is less than this value
-const EPSILON: f64 = 1.0;
-
 pub struct Controller {
     pub resource_pool: &'static mut ResourcePool,
     pub dispatcher: &'static Dispatcher,
@@ -17,8 +14,6 @@ pub struct Controller {
 
     pub control_kp: f64,
     pub control_ki: f64,
-    pub control_kd: f64,
-    pub control_tu: f64,
     pub loop_duration: u64,
 
     threads_per_core: usize,
@@ -26,8 +21,7 @@ pub struct Controller {
     compute_range: (usize, usize),
 
     prev_tasks_lengths: BTreeMap<EngineType, usize>,
-    prev_error: BTreeMap<EngineType, f64>,
-    prev_integral: BTreeMap<EngineType, f64>,
+    prev_integral: BTreeMap<EngineType, i32>,
 }
 
 impl Controller {
@@ -35,18 +29,14 @@ impl Controller {
         resource_pool: &'static mut ResourcePool,
         dispatcher: &'static Dispatcher,
         cpu_core_map: &'static mut BTreeMap<EngineType, Vec<u8>>,
-        control_ku: f64,
-        control_tu: f64,
+        control_kp: f64,
+        control_ki: f64,
         loop_duration: u64,
         threads_per_core: usize,
         cpu_pinning: bool,
         compute_range: (usize, usize),
     ) -> Self {
-        let control_kp = 0.45 * control_ku;
-        let control_ki = 0.54 * control_ku / control_tu;
-        let control_kd = 0.075 * control_ku * control_tu;
-
-        println!("[CTRL] Control parameters: kp: {}, ki: {}, kd: {}", control_kp, control_ki, control_kd);
+        println!("[CTRL] Controller initialized with Kp={}, Ki={}", control_kp, control_ki);
 
         Controller {
             resource_pool,
@@ -54,14 +44,11 @@ impl Controller {
             cpu_core_map,
             control_kp,
             control_ki,
-            control_kd,
-            control_tu,
             loop_duration,
             threads_per_core,
             cpu_pinning,
             compute_range,
             prev_tasks_lengths: BTreeMap::new(),
-            prev_error: BTreeMap::new(),
             prev_integral: BTreeMap::new(),
         }
     }
@@ -135,16 +122,16 @@ impl Controller {
         tasks_lengths: &Vec<(EngineType, usize)>,
     ) -> Option<EngineType> {
         // Calculate the growth rate of each engine type
-        let mut max_growth_rate: f64 = 0.0;
-        let mut min_growth_rate: f64 = 100.0;
+        let mut max_growth_rate: i32 = -16_384;
+        let mut min_growth_rate: i32 = 16_384;
         let mut engine_type_to_expand = None;
 
-        // Calculate tasks logarithmic growth rates
+        // Calculate tasks absolute growth rates
         for (engine_type, length) in tasks_lengths {
             let prev_length = *self.prev_tasks_lengths.get(engine_type).unwrap_or(&0);
             self.prev_tasks_lengths.insert(*engine_type, *length);
 
-            let growth_rate = (1.0 + (*length as f64)).log2() - (1.0 + (prev_length as f64)).log2();
+            let growth_rate = *length as i32 - prev_length as i32;
 
             if growth_rate < min_growth_rate {
                 min_growth_rate = growth_rate;
@@ -163,22 +150,17 @@ impl Controller {
         // Calculate error as the difference between the max and min growth rates
         let error = max_growth_rate - min_growth_rate;
         let target_engine = engine_type_to_expand.unwrap();
-        let prev_error = *self.prev_error.get(&target_engine).unwrap_or(&0.0);
-        let prev_integral = *self.prev_integral.get(&target_engine).unwrap_or(&0.0);
+        let prev_integral = *self.prev_integral.get(&target_engine).unwrap_or(&0);
         
-        let pid_signal = self.control_kp * error
-            + self.control_ki * prev_integral;
-
-        println!("[CTRL] min: {}, max: {}, error: {}, prev_error: {}, prev_integral: {}, pid_signal: {}", min_growth_rate, max_growth_rate, error, prev_error, prev_integral, pid_signal);
+        let pid_signal = self.control_kp * (error as f64) + self.control_ki * (prev_integral as f64);
 
         // Update previous error and integral for each engine type
         for (engine_type, _) in tasks_lengths {
-            self.prev_error.insert(*engine_type, if engine_type == &target_engine { error } else { -error });
-            let new_integral = self.prev_integral.get(engine_type).unwrap_or(&0.0) + (if engine_type == &target_engine { error } else { -error });
+            let new_integral = self.prev_integral.get(engine_type).unwrap_or(&0) + (if engine_type == &target_engine { error } else { -error });
             self.prev_integral.insert(*engine_type, new_integral);
         }
 
-        if pid_signal < EPSILON {
+        if pid_signal <= 0.0 {
             return None;
         }
         
