@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use tokio::time::{sleep, Duration};
 
 const INTEGRAL_WINDOW_SIZE: usize = 10;
+const EPSILON: f64 = 1.0;
 
 pub struct Controller {
     pub resource_pool: &'static mut ResourcePool,
@@ -171,7 +172,7 @@ impl Controller {
             self.integral_window.insert(*engine_type, integral_window);
         }
 
-        if pid_signal <= 0.0 {
+        if pid_signal <= EPSILON {
             return None;
         }
         
