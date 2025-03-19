@@ -7,6 +7,8 @@ use machine_interface::{
 use std::collections::BTreeMap;
 use tokio::time::{sleep, Duration};
 
+const INTEGRAL_WINDOW_SIZE: usize = 10;
+
 pub struct Controller {
     pub resource_pool: &'static mut ResourcePool,
     pub dispatcher: &'static Dispatcher,
@@ -21,7 +23,7 @@ pub struct Controller {
     compute_range: (usize, usize),
 
     prev_tasks_lengths: BTreeMap<EngineType, usize>,
-    prev_integral: BTreeMap<EngineType, i32>,
+    integral_window: BTreeMap<EngineType, Vec<i32>>,
 }
 
 impl Controller {
@@ -49,7 +51,7 @@ impl Controller {
             cpu_pinning,
             compute_range,
             prev_tasks_lengths: BTreeMap::new(),
-            prev_integral: BTreeMap::new(),
+            integral_window: BTreeMap::new(),
         }
     }
 
@@ -124,7 +126,7 @@ impl Controller {
         // Calculate the growth rate of each engine type
         let mut max_growth_rate: i32 = -16_384;
         let mut min_growth_rate: i32 = 16_384;
-        let mut engine_type_to_expand = None;
+        let mut engine_type_to_expand: Option<EngineType> = None;
 
         // Calculate tasks absolute growth rates
         for (engine_type, length) in tasks_lengths {
@@ -150,14 +152,23 @@ impl Controller {
         // Calculate error as the difference between the max and min growth rates
         let error = max_growth_rate - min_growth_rate;
         let target_engine = engine_type_to_expand.unwrap();
-        let prev_integral = *self.prev_integral.get(&target_engine).unwrap_or(&0);
+        let prev_integral = match self.integral_window.get(&target_engine) {
+            Some(window) => window.iter().sum(),
+            None => 0,
+        };
         
         let pid_signal = self.control_kp * (error as f64) + self.control_ki * (prev_integral as f64);
 
         // Update previous error and integral for each engine type
         for (engine_type, _) in tasks_lengths {
-            let new_integral = self.prev_integral.get(engine_type).unwrap_or(&0) + (if engine_type == &target_engine { error } else { -error });
-            self.prev_integral.insert(*engine_type, new_integral);
+            let error_to_add = if *engine_type == target_engine { error } else { -error };
+
+            let mut integral_window = self.integral_window.get(engine_type).unwrap_or(&Vec::new()).clone();
+            integral_window.push(error_to_add);
+            if integral_window.len() > INTEGRAL_WINDOW_SIZE {
+                integral_window.remove(0);
+            }
+            self.integral_window.insert(*engine_type, integral_window);
         }
 
         if pid_signal <= 0.0 {
