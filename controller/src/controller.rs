@@ -8,7 +8,6 @@ use std::collections::BTreeMap;
 use tokio::time::{sleep, Duration};
 
 const INTEGRAL_WINDOW_SIZE: usize = 10;
-const EPSILON: f64 = 1.0;
 
 pub struct Controller {
     pub resource_pool: &'static mut ResourcePool,
@@ -125,7 +124,7 @@ impl Controller {
         tasks_lengths: &Vec<(EngineType, usize)>,
     ) -> Option<EngineType> {
         // Calculate the growth rate of each engine type
-        let mut max_growth_rate: i32 = -16_384;
+        let mut max_growth_rate: i32 = 0;
         let mut min_growth_rate: i32 = 16_384;
         let mut engine_type_to_expand: Option<EngineType> = None;
 
@@ -158,7 +157,7 @@ impl Controller {
             None => 0,
         };
         
-        let pid_signal = self.control_kp * (error as f64) + self.control_ki * (prev_integral as f64);
+        let pid_signal = self.control_kp * (error as f64) + self.control_ki * (prev_integral as f64) - 1.0;
 
         // Update previous error and integral for each engine type
         for (engine_type, _) in tasks_lengths {
@@ -172,7 +171,7 @@ impl Controller {
             self.integral_window.insert(*engine_type, integral_window);
         }
 
-        if pid_signal <= EPSILON {
+        if pid_signal <= 0.0 {
             return None;
         }
         
