@@ -4,11 +4,11 @@
         {"module_name": "simple.cubin", "kernel_name": "tvmgen_default_fused_nn_dense_kernel"}
     ],
     "blueprint": {
-        "inputs": ["input", "p0"],
+        "inputs": ["test", "p0"],
         "buffers": {"output": {"Absolute": 8}},
         "outputs": ["output"],
         "control_flow": [
-            {"ExecKernel": ["tvmgen_default_fused_nn_dense_kernel", [{"Ptr": "output"}, {"Ptr": "input"}, {"Ptr": "p0"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_dense_kernel", [{"Ptr": "output"}, {"Ptr": "test"}, {"Ptr": "p0"}], {
                 "grid_dim_x": {"Absolute": 1},
                 "grid_dim_y": {"Absolute": 2},
                 "grid_dim_z": {"Absolute": 1},

@@ -136,15 +136,17 @@ pub fn gpu_run(
 
     gpu_api::set_device(gpu_id)?;
 
-    let mmu_context = match &context.context {
-        ContextType::Gpu(ref mmu_context) => mmu_context,
+    let base = match &context.context {
+        ContextType::Gpu(ref mmu_context) => mmu_context.storage.as_ptr(),
+        #[cfg(feature = "gpu_process")]
+        ContextType::GpuProcess(ref gpu_process_context) => gpu_process_context.as_ptr(),
         _ => return Err(DandelionError::ConfigMissmatch),
     };
     /*let ContextType::Gpu(ref mmu_context) = context.context else {
         return Err(DandelionError::ConfigMissmatch);
     };*/
     
-    let base = mmu_context.storage.as_ptr();
+    // let base = mmu_context.storage.as_ptr();
     let config = config.load(base)?;
 
     let mut buffer_pool = buffer_pool.lock().unwrap();
@@ -249,6 +251,7 @@ impl EngineLoop for GpuLoop {
             sender.send(result).unwrap();
         });
 
+        // HERE!!!
         // TODO: add proper error handling mechanisms
         // Use an mpsc to receive results. If a fault occured, the handler could be registered to put an error on the channel,
         // while the work thread wouldn't return. This means it would have to be shot down

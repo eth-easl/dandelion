@@ -254,21 +254,73 @@ impl Drop for Worker {
 pub struct SendContext {
     pub context_filename: String,
     pub content: Vec<Option<DataSet>>,
+    pub offset: i64,
     pub size: usize,
     pub state: ContextState,
     pub occupation: Vec<Position>,
 }
 
-/*impl TryFrom<SendContext> for Context {
+pub const GPU_BASE_ADDR: usize = 0x10000;
+use crate::memory_domain::gpu::GpuProcessContext;
+use nix::sys::mman::shm_open;
+use nix::fcntl::OFlag;
+use nix::sys::stat::Mode;
+use nix::sys::stat::fstat;
+use nix::sys::mman::mmap;
+use std::num::NonZeroUsize;
+use nix::sys::mman::MapFlags;
+
+#[cfg(feature = "gpu_process")]
+impl TryFrom<SendContext> for Context {
     type Error = DandelionError;
 
     fn try_from(value: SendContext) -> Result<Self, Self::Error> {
+        let filename = &value.context_filename;
+        let shmem_fd = match shm_open(filename.as_str(), OFlag::O_RDWR, Mode::S_IRUSR) {
+            Err(err) => {
+                error!("Error opening shared memory file: {}:{}", err, err.desc());
+                return Err(DandelionError::FileError);
+            }
+            Ok(fd) => fd,
+        };
+
+        let size = match fstat(shmem_fd) {
+            Err(err) => {
+                error!("Error getting file stats: {}:{}", err, err.desc());
+                return Err(DandelionError::FileError);
+            }
+            Ok(stat) => stat.st_size as usize,
+        };
+
+        let ptr = unsafe {
+            match mmap(
+                None, //NonZeroUsize::new(GPU_BASE_ADDR),
+                NonZeroUsize::new(size).unwrap(), // - GPU_BASE_ADDR).unwrap(),
+                ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+                MapFlags::MAP_SHARED,
+                shmem_fd,
+                value.offset, // + (GPU_BASE_ADDR as i64),
+            ) {
+                Err(err) => {
+                    eprintln!(
+                        "Error mapping memory from file {} at address {} with size {} and offset {}: {}:{}",
+                        filename,
+                        GPU_BASE_ADDR,
+                        size - GPU_BASE_ADDR,
+                        value.offset + (GPU_BASE_ADDR as i64),
+                        err,
+                        err.desc()
+                    );
+                    return Err(DandelionError::MemoryAllocationError);
+                }
+                Ok(ptr) => ptr as *mut _,
+            }
+        };
+
         Ok(Self {
-            context: ContextType::Gpu(Box::new(GpuContext {
-                storage: MmapMem::alt_open(
-                    &value.context_filename,
-                    ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
-                )?,
+            context: ContextType::GpuProcess(Box::new(GpuProcessContext {
+                ptr,
+                size,
             })),
             content: value.content,
             size: value.size,
@@ -276,7 +328,7 @@ pub struct SendContext {
             occupation: value.occupation,
         })
     }
-}*/
+}
 
 impl TryFrom<&Context> for SendContext {
     type Error = DandelionError;
@@ -290,7 +342,8 @@ impl TryFrom<&Context> for SendContext {
             // unwrap okay, as Mmu memory is always created as shared so a filename exists
             context_filename: ctxt.storage.filename().unwrap().to_string(),
             content: value.content.clone(),
-            size: value.size,
+            offset: ctxt.storage.offset(),
+            size: ctxt.storage.size(),
             state: value.state.clone(),
             occupation: value.occupation.clone(),
         })
@@ -385,6 +438,7 @@ fn manage_worker(
                         break;
                     } else if line.trim().starts_with("__ERROR__") {
                         error!("GPU error: {}", line);
+                        println!("GPU error: {}", line);
                         debt.fulfill(Err(DandelionError::EngineError));
                         break;
                     } else {

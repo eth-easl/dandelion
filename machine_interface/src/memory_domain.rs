@@ -53,6 +53,8 @@ pub enum ContextType {
     Wasm(Box<wasm::WasmContext>),
     #[cfg(feature = "gpu")]
     Gpu(Box<gpu::GpuContext>),
+    #[cfg(feature = "gpu_process")]
+    GpuProcess(Box<gpu::GpuProcessContext>),
     System(Box<system_domain::SystemContext>),
 
 }
@@ -71,6 +73,8 @@ impl ContextTrait for ContextType {
             ContextType::Wasm(context) => context.write(offset, data),
             #[cfg(feature = "gpu")]
             ContextType::Gpu(context) => context.write(offset, data),
+            #[cfg(feature = "gpu_process")]
+            ContextType::GpuProcess(context) => context.write(offset, data),
             #[cfg(feature = "bytes_context")]
             ContextType::Bytes(context) => context.write(offset, data),
             ContextType::System(context) => context.write(offset, data),
@@ -89,6 +93,8 @@ impl ContextTrait for ContextType {
             ContextType::Wasm(context) => context.read(offset, read_buffer),
             #[cfg(feature = "gpu")]
             ContextType::Gpu(context) => context.read(offset, read_buffer),
+            #[cfg(feature = "gpu_process")]
+            ContextType::GpuProcess(context) => context.read(offset, read_buffer),
             #[cfg(feature = "bytes_context")]
             ContextType::Bytes(context) => context.read(offset, read_buffer),
             ContextType::System(context) => context.read(offset, read_buffer),
@@ -107,6 +113,8 @@ impl ContextTrait for ContextType {
             ContextType::Wasm(context) => context.get_chunk_ref(offset, length),
             #[cfg(feature = "gpu")]
             ContextType::Gpu(context) => context.get_chunk_ref(offset, length),
+            #[cfg(feature = "gpu_process")]
+            ContextType::GpuProcess(context) => context.get_chunk_ref(offset, length),
             #[cfg(feature = "bytes_context")]
             ContextType::Bytes(context) => context.get_chunk_ref(offset, length),
             ContextType::System(context) => context.get_chunk_ref(offset, length),
