@@ -124,7 +124,7 @@ impl Controller {
         tasks_lengths: &Vec<(EngineType, usize)>,
     ) -> Option<EngineType> {
         // Calculate the growth rate of each engine type
-        let mut max_growth_rate: f64 = 0.0;
+        let mut max_growth_rate: f64 = -16_384.0;
         let mut min_growth_rate: f64 = 16_384.0;
         let mut engine_type_to_expand: Option<EngineType> = None;
 
@@ -133,7 +133,7 @@ impl Controller {
             let prev_length = *self.prev_tasks_lengths.get(engine_type).unwrap_or(&0);
             self.prev_tasks_lengths.insert(*engine_type, *length);
 
-            let growth_rate = (*length as f64 + 1.0) / (prev_length as f64 + 1.0);
+            let growth_rate = (*length as f64 + 1.0) / (prev_length as f64 + 1.0) - 1.0;
 
             if growth_rate < min_growth_rate {
                 min_growth_rate = growth_rate;
