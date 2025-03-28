@@ -131,14 +131,14 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         };
         assert_eq!(1, out_sets.len());
         assert_eq!(1, overwrite_sets.len());
-        let result_set = &out_sets[0].as_ref().unwrap().context_list;
-        let overwrite_set = &overwrite_sets[0].as_ref().unwrap().context_list;
-        assert_eq!(1, result_set.len());
-        assert_eq!(1, overwrite_set.len());
-        let (result_context, _) = &result_set[0];
-        let (overwrite_context, _) = &overwrite_set[0];
-        check_matrix(&result_context, 0, 0, 1, vec![expected[i]]);
-        check_matrix(&overwrite_context, 0, 0, 1, vec![expected[i]]);
+        let mut result_iter = out_sets[0].as_ref().unwrap().into_iter();
+        let (_, _, result_set) = result_iter.next().unwrap();
+        assert!(result_iter.next().is_none());
+        let mut overwrite_iter = overwrite_sets[0].as_ref().unwrap().into_iter();
+        let (_, _, overwrite_set) = overwrite_iter.next().unwrap();
+        assert!(overwrite_iter.next().is_none());
+        check_matrix(&result_set, 0, 0, 1, vec![expected[i]]);
+        check_matrix(&overwrite_set, 0, 0, 1, vec![expected[i]]);
     }
 }
 
@@ -238,14 +238,14 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         };
         assert_eq!(1, out_sets.len());
         assert_eq!(1, overwrite_sets.len());
-        let result_set = &out_sets[0].as_ref().unwrap().context_list;
-        let overwrite_set = &overwrite_sets[0].as_ref().unwrap().context_list;
-        assert_eq!(1, result_set.len());
-        assert_eq!(1, overwrite_set.len());
-        let (result_context, _) = &result_set[0];
-        let (overwrite_context, _) = &overwrite_set[0];
-        check_matrix(&result_context, 0, 0, 1, vec![expected[i]]);
-        check_matrix(&overwrite_context, 0, 0, 1, vec![expected[i]]);
+        let mut result_iter = out_sets[0].as_ref().unwrap().into_iter();
+        let (_, _, result_set) = result_iter.next().unwrap();
+        assert!(result_iter.next().is_none());
+        let mut overwrite_iter = overwrite_sets[0].as_ref().unwrap().into_iter();
+        let (_, _, overwrite_set) = overwrite_iter.next().unwrap();
+        assert!(overwrite_iter.next().is_none());
+        check_matrix(&result_set, 0, 0, 1, vec![expected[i]]);
+        check_matrix(&overwrite_set, 0, 0, 1, vec![expected[i]]);
     }
 }
 

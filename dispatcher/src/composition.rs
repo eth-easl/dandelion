@@ -29,6 +29,23 @@ pub enum OutputMap {
     Local(usize),
 }
 
+/// Modes for the composition set iteratior to return sharding
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ShardingMode {
+    All,
+    Each,
+    Key,
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum JoinStrategy {
+    Inner,
+    Left,
+    Right,
+    Outer,
+    Cross,
+}
+
 #[derive(Clone, Debug)]
 pub struct FunctionDependencies {
     pub function: FunctionId,
@@ -36,6 +53,7 @@ pub struct FunctionDependencies {
     /// the mapping to local ids is given implicitly through the index in the vec
     /// if the id is none, that set is not provided by the compostion
     pub input_set_ids: Vec<Option<(OutputMap, ShardingMode)>>,
+    pub join_info: (Vec<usize>, Vec<JoinStrategy>),
     /// the composition ids for the output sets of the function,
     /// if the id is none, that set is not needed for the composition
     pub output_set_ids: Vec<Option<OutputMap>>,
@@ -43,11 +61,23 @@ pub struct FunctionDependencies {
 
 impl ShardingMode {
     pub fn from_parser_sharding(sharding: &dparser::Sharding) -> Self {
-        return match sharding {
+        match sharding {
             dparser::Sharding::All => Self::All,
             dparser::Sharding::Keyed => Self::Key,
             dparser::Sharding::Each => Self::Each,
-        };
+        }
+    }
+}
+
+impl JoinStrategy {
+    pub fn from_parser_strategy(sharding: &dparser::JoinFilterStrategy) -> Self {
+        match sharding {
+            dparser::JoinFilterStrategy::Inner => Self::Inner,
+            dparser::JoinFilterStrategy::Left => Self::Left,
+            dparser::JoinFilterStrategy::Right => Self::Right,
+            dparser::JoinFilterStrategy::Full => Self::Outer,
+            dparser::JoinFilterStrategy::Cross => panic!("Parser should not produce cross"),
+        }
     }
 }
 
@@ -134,6 +164,7 @@ impl Composition {
                             }
                         }
                     }
+
                     // have enumerated all set that are available so can start putting the composition together
                     let dependencies = comp
                         .v
@@ -157,9 +188,9 @@ impl Composition {
                                     .or(Err(DandelionError::OutOfMemory))?;
                                 input_set_ids.resize(function_decl.v.params.len(), None);
                                 for argument in function_application.v.args.iter() {
-                                    if let Some((index, _)) =
-                                        function_decl.v.params.iter().enumerate().find(
-                                            |(_, &ref param_name)| argument.v.name == *param_name,
+                                    if let Some(index) =
+                                        function_decl.v.params.iter().position(
+                                            |param_name| argument.v.name == *param_name,
                                         )
                                     {
                                         let set_id = set_numbers.get(&argument.v.ident).ok_or(
@@ -183,6 +214,32 @@ impl Composition {
                                         );
                                     }
                                 }
+
+                                // find the join order
+                                let mut all_sets: Vec<_> =
+                                    (0..function_decl.v.params.len())
+                                    .map(|index| Some(index)).collect();
+                                let mut join_set_order = Vec::new();
+                                join_set_order.try_reserve(function_decl.v.params.len())
+                                    .or(Err(DandelionError::OutOfMemory))?;
+                                let mut join_strategies = Vec::new();
+                                join_strategies.try_reserve(function_decl.v.params.len())
+                                    .or(Err(DandelionError::OutOfMemory))?;
+                                if let Some(strategy) = function_application.v.join_strategy.as_ref().and_then(|strategy| if strategy.join_strategy_order.is_empty() || strategy.join_strategies.is_empty() {None} else {Some(strategy)}) {
+                                    for set_name in strategy.join_strategy_order.iter() {
+                                        let set_index = function_decl.v.params.iter()
+                                            .position(|param_name| *param_name == *set_name)
+                                            .ok_or_else(||DandelionError::CompositionFunctionInvalidIdentifier(
+                                                format!("Join order for {} contains invalid set name: {}", function_application.v.name, set_name))
+                                            )?;
+                                        all_sets[set_index] = None;
+                                        join_set_order.push(set_index);
+                                    }
+                                    for join_strategy in strategy.join_strategies.iter() {
+                                        join_strategies.push(JoinStrategy::from_parser_strategy(&join_strategy))
+                                    }
+                                } 
+
                                 // find the index set index in the original definition for each return set in the application
                                 let mut output_set_ids = Vec::new();
                                 output_set_ids
@@ -190,9 +247,9 @@ impl Composition {
                                     .or(Err(DandelionError::OutOfMemory))?;
                                 output_set_ids.resize(function_decl.v.returns.len(), None);
                                 for return_set in function_application.v.rets.iter() {
-                                    if let Some((index, _)) =
-                                        function_decl.v.returns.iter().enumerate().find(
-                                            |(_, &ref return_name)| {
+                                    if let Some(index) =
+                                        function_decl.v.returns.iter().position(
+                                            |return_name| {
                                                 return_set.v.name == *return_name
                                             },
                                         )
@@ -214,6 +271,7 @@ impl Composition {
                                 Ok(FunctionDependencies {
                                     function: *function_id,
                                     input_set_ids,
+                                    join_info: (join_set_order, join_strategies),
                                     output_set_ids,
                                 })
                             }
@@ -254,88 +312,69 @@ impl Composition {
     }
 }
 
-/// Modes for the composition set iteratior to return sharding
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ShardingMode {
-    All,
-    Key,
-    Each,
-}
-
 /// Struct that has all locations belonging to one set, that is potentially spread over multiple contexts.
 #[derive(Clone, Debug)]
 pub struct CompositionSet {
-    /// list of all contexts and the set index in that context that belongs to the composition set and the buffer indexes which are present
-    pub context_list: Vec<(Arc<Context>, core::ops::Range<usize>)>,
+    /// items identfied by tuple of key, item index and the context reference
+    item_list: Vec<(u32, usize, Arc<Context>)>,
     /// the set side inside the contexts the composition set represents
-    pub set_index: usize,
+    set_index: usize,
 }
 
 impl CompositionSet {
-    /// index is only take for convenience outside
-    pub fn shard(self, mode: ShardingMode) -> Vec<Option<CompositionSet>> {
+    pub fn is_empty(&self) -> bool {
+        self.item_list.is_empty()
+    }
+
+    pub fn shard(self, mode: ShardingMode) -> Vec<CompositionSet> {
         return match mode {
             ShardingMode::All => {
-                vec![Some(self)]
+                vec![self]
             }
             ShardingMode::Key => {
-                let mut key_map = BTreeMap::new();
-                for (context, range) in self.context_list {
-                    for index in range {
-                        // TODO check / make sure all contexts actually have he set
-                        if let Some(set) = &context.content[self.set_index] {
-                            key_map
-                                .entry(set.buffers[index].key)
-                                .and_modify(
-                                    |previous: &mut Vec<(
-                                        Arc<Context>,
-                                        core::ops::Range<usize>,
-                                    )>| {
-                                        // TODO find if we can extend ranges on consequtive matches
-                                        // remeber that indexes might be consequtive, but different contexts
-                                        previous.push((context.clone(), index..index + 1))
-                                    },
-                                )
-                                .or_insert(vec![(context.clone(), index..index + 1)]);
-                        }
+                let CompositionSet {
+                    mut item_list,
+                    set_index,
+                } = self;
+                let mut keyed_vec = Vec::new();
+                while !item_list.is_empty() {
+                    let (last_key, _, _) = item_list.last().unwrap();
+                    let mut position = item_list.len() - 1;
+                    while position > 0 && item_list[position - 1].0 == *last_key {
+                        position -= 1;
                     }
+                    let new_list = item_list.split_off(position);
+                    let new_composition = CompositionSet {
+                        item_list: new_list,
+                        set_index,
+                    };
+                    keyed_vec.push(new_composition);
                 }
-                key_map
-                    .into_iter()
-                    .map(|(_, context_list)| {
-                        Some(CompositionSet {
-                            context_list,
-                            set_index: self.set_index,
-                        })
-                    })
-                    .collect()
+                keyed_vec
             }
             ShardingMode::Each => self
-                .context_list
+                .item_list
                 .into_iter()
-                .map(|(context, range)| {
-                    range.into_iter().map(move |index| {
-                        Some(CompositionSet {
-                            context_list: vec![(context.clone(), index..index + 1)],
-                            set_index: self.set_index,
-                        })
-                    })
+                .map(|item| CompositionSet {
+                    item_list: vec![item],
+                    set_index: self.set_index,
                 })
-                .flatten()
                 .collect(),
         };
     }
-    pub fn combine(&mut self, additional: &mut CompositionSet) -> DandelionResult<()> {
+
+    pub fn combine(&mut self, additional: CompositionSet) -> DandelionResult<()> {
         let CompositionSet {
-            context_list,
+            item_list,
             set_index,
         } = additional;
-        if self.set_index != *set_index {
+        if self.set_index != set_index {
             return Err(DandelionError::Dispatcher(
                 DispatcherError::CompositionCombine,
             ));
         }
-        self.context_list.append(context_list);
+        self.item_list.extend(item_list.into_iter());
+        self.item_list.sort_unstable_by_key(|a| a.0);
         return Ok(());
     }
 }
@@ -343,100 +382,342 @@ impl CompositionSet {
 impl From<(usize, Vec<Arc<Context>>)> for CompositionSet {
     fn from(pair: (usize, Vec<Arc<Context>>)) -> Self {
         let (set_index, context_vec) = pair;
-        let context_list = context_vec
-            .into_iter()
-            .filter_map(|context| {
-                if context.content.len() > set_index {
-                    context.content[set_index].as_ref().and_then(|set| {
-                        if set.buffers.len() > 0 {
-                            Some((context.clone(), 0..set.buffers.len()))
-                        } else {
-                            None
-                        }
-                    })
-                } else {
-                    None
+        let mut item_list = Vec::new();
+        for context in context_vec.into_iter() {
+            if let Some(Some(set)) = context.content.get(set_index) {
+                for (item_index, buffer) in set.buffers.iter().enumerate() {
+                    item_list.push((buffer.key, item_index, context.clone()));
                 }
-            })
-            .collect();
+            }
+        }
+        item_list.sort_unstable_by_key(|a| a.0);
         return CompositionSet {
-            context_list: context_list,
-            set_index: set_index,
+            item_list,
+            set_index,
         };
     }
 }
 
-pub struct CompositionSetTransferIterator {
-    /// which set in the contexts contains the buffer
-    set: CompositionSet,
-    current: Option<(Arc<Context>, core::ops::Range<usize>)>,
+pub struct CompositionSetTransferIterator<'origin> {
+    /// set for which this iterator is implemented
+    set_iterator: std::slice::Iter<'origin, (u32, usize, Arc<Context>)>,
+    set_index: usize,
 }
 
-impl Iterator for CompositionSetTransferIterator {
+impl Iterator for CompositionSetTransferIterator<'_> {
     type Item = (usize, usize, Arc<Context>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        // initialization has skipped empty sets, so if current is Some can return aout of there
-        // if current becomes empty, drop it and get next one
-        // if we could guarantee the ranges always contain something could simplify this code
-        if let Some((current_context, ref mut current_range)) = &mut self.current {
-            if current_range.start + 1 == current_range.end {
-                let next = loop {
-                    if let Some(next) = self.set.context_list.pop() {
-                        if next.1.is_empty() {
-                            continue;
+        self.set_iterator
+            .next()
+            .and_then(|(_, item_index, context)| {
+                Some((self.set_index, *item_index, context.clone()))
+            })
+    }
+}
+
+impl<'origin> IntoIterator for &'origin CompositionSet {
+    type Item = (usize, usize, Arc<Context>);
+    type IntoIter = CompositionSetTransferIterator<'origin>;
+    fn into_iter(self) -> Self::IntoIter {
+        Self::IntoIter {
+            set_iterator: self.item_list.iter(),
+            set_index: self.set_index,
+        }
+    }
+}
+
+pub fn get_sharding(
+    mut sets: Vec<Option<(ShardingMode, CompositionSet)>>,
+    mut join_order: Vec<usize>,
+    mut join_strategies: Vec<JoinStrategy>,
+) -> Vec<Vec<Option<CompositionSet>>> {
+    let set_num = sets.len();
+    let mut final_sharding = Vec::new();
+
+    if set_num == 0 {
+        return final_sharding;
+    }
+
+    // make sure every set is in the order and has a strategy
+    let mut missing_sets: Vec<_> = (0..set_num).map(|index| Some(index) ).collect();
+    for index in join_order.iter() {
+        missing_sets[*index] = None;
+    }
+    for missing_index in missing_sets {
+        if let Some(missing) = missing_index {
+            join_order.push(missing);
+        }
+    }
+    join_strategies.resize(set_num -1, JoinStrategy::Cross);
+
+    let mut join_iter_opt = JoinIterator::new(
+        JoinStrategy::Outer,
+        None,
+        sets[join_order[0]].take(),
+        join_order[0],
+    );
+    for (set_index, startegy) in join_order[1..].iter().zip_eq(join_strategies) {
+        join_iter_opt =
+            JoinIterator::new(startegy, join_iter_opt, sets[*set_index].take(), *set_index);
+    }
+
+    if let Some(mut join_iter) = join_iter_opt {
+        let mut new_sets = Vec::with_capacity(set_num);
+        new_sets.resize(set_num, None);
+        join_iter.fill_in(&mut new_sets);
+        final_sharding.push(new_sets);
+        while join_iter.advance() {
+            let mut advance_sets = Vec::with_capacity(set_num);
+            advance_sets.resize(set_num, None);
+            join_iter.fill_in(&mut advance_sets);
+            final_sharding.push(advance_sets);
+        }
+    }
+
+    final_sharding
+}
+
+struct JoinIterator {
+    left: Option<Box<JoinIterator>>,
+    right: Vec<CompositionSet>,
+    right_index: usize,
+    write_index: usize,
+    mode: JoinStrategy,
+    key: u32,
+}
+
+impl JoinIterator {
+    fn new(
+        mode: JoinStrategy,
+        mut left_opt: Option<Box<Self>>,
+        right_opt: Option<(ShardingMode, CompositionSet)>,
+        write_index: usize,
+    ) -> Option<Box<Self>> {
+        if right_opt.is_none() {
+            return left_opt;
+        }
+        let (set_mode, set) = right_opt.unwrap();
+        let right = set.shard(set_mode);
+        if right.is_empty() {
+            return left_opt;
+        }
+
+        let mut right_index = 0;
+        let mut key = right[0].item_list[0].0;
+
+        if let Some(left) = &mut left_opt {
+            match mode {
+                JoinStrategy::Inner => {
+                    while right_index < right.len() && key != left.key {
+                        if key < left.key {
+                            right_index += 1;
+                            if right_index < right.len() {
+                                key = right[right_index].item_list[0].0;
+                            }
                         } else {
-                            break Some(next);
+                            if !left.advance() {
+                                right_index = right.len();
+                            }
+                        }
+                    }
+                    if right_index == right.len() {
+                        return None;
+                    }
+                }
+                JoinStrategy::Left => {
+                    while right_index < right.len() && right[right_index].item_list[0].0 < left.key
+                    {
+                        right_index += 1;
+                    }
+                    key = left.key;
+                    if right_index == right.len() {
+                        return left_opt;
+                    }
+                }
+                JoinStrategy::Outer => {
+                    if left.key < key {
+                        key = left.key;
+                    }
+                    // else already has the correct key set
+                }
+                JoinStrategy::Right | JoinStrategy::Cross => (),
+            }
+        // there is not left iterator
+        } else {
+            match mode {
+                JoinStrategy::Inner | JoinStrategy::Left => {
+                    return None;
+                }
+                _ => (),
+            }
+        }
+        Some(Box::new(Self {
+            left: left_opt,
+            right,
+            right_index: 0,
+            write_index,
+            mode,
+            key,
+        }))
+    }
+
+    fn fill_in(&mut self, to_fill: &mut Vec<Option<CompositionSet>>) -> bool {
+        let left_filled = if let Some(left) = &mut self.left {
+            left.fill_in(to_fill)
+        } else {
+            false
+        };
+        let right_filled = if self.right_index < self.right.len()
+            && self.key == self.right[self.right_index].item_list[0].0
+        {
+            to_fill[self.write_index] = Some(self.right[self.right_index].clone());
+            true
+        } else {
+            false
+        };
+        left_filled || right_filled
+    }
+
+    fn advance(&mut self) -> bool {
+        let right = &mut self.right;
+        if let Some(left) = &mut self.left {
+            match self.mode {
+                JoinStrategy::Inner => {
+                    // advance both at least once for inner
+                    // left is advanced on checking (after checking right can stil be advanced)
+                    // right is advanced after
+                    if self.right_index >= right.len() || left.advance() {
+                        return false;
+                    }
+                    self.right_index += 1;
+                    self.key = right[self.right_index].item_list[0].0;
+                    loop {
+                        if self.key > left.key {
+                            if !left.advance() {
+                                return false;
+                            }
+                        } else if self.key < left.key {
+                            self.right_index += 1;
+                            if self.right_index < right.len() {
+                                self.key = right[self.right_index].item_list[0].0;
+                            } else {
+                                return false;
+                            }
+                        } else {
+                            return true;
+                        }
+                    }
+                }
+                JoinStrategy::Left => {
+                    // advance left and see if we can match
+                    if left.advance() {
+                        while self.right_index < right.len()
+                            && right[self.right_index].item_list[0].0 < left.key
+                        {
+                            self.right_index += 1;
+                        }
+                        // after this they key is guaranteed to be equal to the left key or bigger
+                        // so if the keys match that will be fine for copy in, otherwise this will be skipped
+                        // if the key already equal or bigger, it was not advanced
+                        self.key = left.key;
+                        true
+                    } else {
+                        self.right_index = right.len();
+                        false
+                    }
+                }
+                JoinStrategy::Right => {
+                    if !(self.right_index < right.len()) {
+                        return false;
+                    }
+                    self.right_index += 1;
+                    if self.right_index < right.len() {
+                        self.key = right[self.right_index].item_list[0].0;
+                        while self.key > left.key {
+                            if !left.advance() {
+                                break;
+                            }
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                }
+                JoinStrategy::Outer => {
+                    // could be that right has no more items to contribute,
+                    // but left still can advance
+                    if !(self.right_index < right.len()) {
+                        if left.advance() {
+                            self.key = left.key;
+                            return true;
+                        } else {
+                            return false;
+                        }
+                    }
+                    // right still has items to contribute, check if both, right or left should be advanced
+                    if left.key == right[self.right_index].item_list[0].0 {
+                        let left_advance = left.advance();
+                        self.right_index += 1;
+                        match (self.right_index < right.len(), left_advance) {
+                            (true, false) => {
+                                self.key = right[self.right_index].item_list[0].0;
+                                true
+                            }
+                            (false, true) => {
+                                self.key = left.key;
+                                true
+                            }
+                            (true, true) => {
+                                let possible_key = right[self.right_index].item_list[0].0;
+                                self.key = if possible_key < left.key {
+                                    possible_key
+                                } else {
+                                    left.key
+                                };
+                                true
+                            }
+                            (false, false) => false,
                         }
                     } else {
-                        break None;
+                        false
                     }
-                };
-                let (taken_context, taken_range) = self.current.take().unwrap();
-                self.current = next;
-                return Some((self.set.set_index, taken_range.start, taken_context));
-            } else {
-                current_range.end -= 1;
-                return Some((
-                    self.set.set_index,
-                    current_range.end,
-                    current_context.clone(),
-                ));
+                }
+                JoinStrategy::Cross => {
+                    if self.right_index + 1 < right.len() {
+                        self.right_index += 1;
+                        self.key = right[self.right_index].item_list[0].0;
+                        true
+                    } else if left.advance() {
+                        self.right_index = 0;
+                        self.key = right[0].item_list[0].0;
+                        true
+                    } else {
+                        // set right index to len so we can't accidentally copy something
+                        self.right_index = right.len();
+                        false
+                    }
+                }
             }
-        }
-        return None;
-    }
-}
-
-impl IntoIterator for CompositionSet {
-    type Item = (usize, usize, Arc<Context>);
-    type IntoIter = CompositionSetTransferIterator;
-    fn into_iter(mut self) -> Self::IntoIter {
-        loop {
-            if let Some(current) = self.context_list.pop() {
-                if current.1.is_empty() {
-                    continue;
+        } else {
+            if !(self.right_index < right.len()) {
+                return false;
+            }
+            // advancing only makes sense for certain modes here
+            if self.mode == JoinStrategy::Right
+                || self.mode == JoinStrategy::Outer
+                || self.mode == JoinStrategy::Cross
+            {
+                self.right_index += 1;
+                if self.right_index < right.len() {
+                    self.key = right[self.right_index].item_list[0].0;
+                    true
                 } else {
-                    return CompositionSetTransferIterator {
-                        set: self,
-                        current: Some(current),
-                    };
+                    false
                 }
             } else {
-                return CompositionSetTransferIterator {
-                    set: self,
-                    current: None,
-                };
+                panic!("Should never have join iterator with left or inner that has None for the left value");
             }
         }
-    }
-}
-
-impl IntoIterator for &CompositionSet {
-    type Item = (usize, usize, Arc<Context>);
-    type IntoIter = CompositionSetTransferIterator;
-    fn into_iter(self) -> Self::IntoIter {
-        let new_set = self.clone();
-        return new_set.into_iter();
     }
 }

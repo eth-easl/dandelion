@@ -249,13 +249,10 @@ async fn register_function(
                                 key: 0,
                             }],
                         }));
-                        (Arc::new(new_context), 0usize..1usize)
+                        Arc::new(new_context)
                     })
                     .collect();
-                let composition_set = CompositionSet {
-                    set_index: 0,
-                    context_list: data_contexts,
-                };
+                let composition_set = CompositionSet::from((0, data_contexts));
                 (name, Some(composition_set))
             } else {
                 (name, None)

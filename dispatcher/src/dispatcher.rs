@@ -1,5 +1,8 @@
 use crate::{
-    composition::{Composition, CompositionSet, GlobalSetId, OutputMap, ShardingMode},
+    composition::{
+        get_sharding, Composition, CompositionSet, GlobalSetId, JoinStrategy, OutputMap,
+        ShardingMode,
+    },
     execution_qs::EngineQueue,
     function_registry::{FunctionRegistry, FunctionType, Metadata},
     resource_pool::ResourcePool,
@@ -198,6 +201,7 @@ impl Dispatcher {
         struct FunctionArgs {
             function_id: FunctionId,
             inptut_sets: Vec<Option<(ShardingMode, CompositionSet)>>,
+            join_info: (Vec<usize>, Vec<JoinStrategy>),
             output_mapping: Vec<Option<OutputMap>>,
             missing_sets: BTreeMap<OutputMap, (usize, ShardingMode)>,
         }
@@ -244,6 +248,7 @@ impl Dispatcher {
                 FunctionArgs {
                     function_id: deps.function,
                     inptut_sets: ready_inputs,
+                    join_info: deps.join_info,
                     output_mapping: deps.output_set_ids,
                     missing_sets: missing_map,
                 }
@@ -257,6 +262,8 @@ impl Dispatcher {
                 return Either::Left(self.queue_function_sharded(
                     args.function_id,
                     args.inptut_sets,
+                    args.join_info.0,
+                    args.join_info.1,
                     args.output_mapping,
                     non_caching,
                     recorder.get_sub_recorder().unwrap(),
@@ -300,6 +307,8 @@ impl Dispatcher {
                                 awaited_sets.push(Either::Left(self.queue_function_sharded(
                                     args.function_id,
                                     args.inptut_sets,
+                                    args.join_info.0,
+                                    args.join_info.1,
                                     args.output_mapping,
                                     non_caching,
                                     recorder.get_sub_recorder().unwrap(),
@@ -330,6 +339,8 @@ impl Dispatcher {
         &self,
         function_id: FunctionId,
         input_sets: Vec<Option<(ShardingMode, CompositionSet)>>,
+        join_order: Vec<usize>,
+        join_strategies: Vec<JoinStrategy>,
         output_mapping: Vec<Option<OutputMap>>,
         non_caching: bool,
         recorder: Recorder,
@@ -340,28 +351,21 @@ impl Dispatcher {
             input_sets
         );
         let composition_results: DandelionResult<Vec<_>> = if input_sets.len() != 0 {
-            let results: Vec<_> = input_sets
+            let sharded = get_sharding(input_sets, join_order, join_strategies);
+            let resutls: Vec<_> = sharded
                 .into_iter()
-                .map(|composition_option| {
-                    if let Some((mode, set)) = composition_option {
-                        set.shard(mode)
-                    } else {
-                        vec![None]
-                    }
-                })
-                .multi_cartesian_product()
-                .map(|input_sets_local| {
+                .map(|ins| {
                     Box::pin(self.queue_function(
                         function_id,
-                        input_sets_local,
+                        ins,
                         non_caching,
                         recorder.get_sub_recorder().unwrap(),
                     ))
                 })
                 .collect();
-            join_all(results).await.into_iter().collect()
-        // TODO this is added to support functions with all functions defined as static sets
-        // might want to differentiate between those that have static sets and those that did not get input from predecessors
+            join_all(resutls).await.into_iter().collect()
+            // TODO this is added to support functions with all functions defined as static sets
+            // might want to differentiate between those that have static sets and those that did not get input from predecessors
         } else {
             self.queue_function(function_id, vec![], non_caching, recorder)
                 .await
@@ -369,6 +373,7 @@ impl Dispatcher {
         };
 
         // collect vec of vec of shards into vec of sets
+        // TODO: collect vector of sets and rewrite combine to do it in one go instead of calling it over and over again
         let output_lenght = output_mapping.len();
         let composition_set_vecs = composition_results?
             .into_iter()
@@ -380,9 +385,9 @@ impl Dispatcher {
                         (insert @ None, Some(set)) => {
                             *insert = Some(set);
                         }
-                        (Some(old_set), Some(mut new_set)) => {
+                        (Some(old_set), Some(new_set)) => {
                             old_set
-                                .combine(&mut new_set)
+                                .combine(new_set)
                                 .expect("Should always be possible to combine");
                         }
                     }
@@ -402,13 +407,7 @@ impl Dispatcher {
             .map(
                 |(index_option, set_option)| match (index_option, set_option) {
                     (Some(index), Some(set)) => Some((index, set)),
-                    (Some(index), None) => Some((
-                        index,
-                        CompositionSet {
-                            context_list: Vec::new(),
-                            set_index: 0,
-                        },
-                    )),
+                    (Some(index), None) => Some((index, CompositionSet::from((0, Vec::new())))),
                     (None, _) => None,
                 },
             )

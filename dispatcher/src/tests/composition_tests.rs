@@ -238,6 +238,7 @@ fn test_from_module_minmal_composition() {
         Composition {
             dependencies: vec![FunctionDependencies {
                 function: function_id,
+                join_info: (vec![], vec![]),
                 input_set_ids: vec![],
                 output_set_ids: vec![],
             }],
@@ -270,6 +271,7 @@ fn test_from_module_minmal_composition_with_inputs() {
         Composition {
             dependencies: vec![FunctionDependencies {
                 function: function_id,
+                join_info: (vec![], vec![]),
                 input_set_ids: vec![Some((OutputMap::Local(0), ShardingMode::All))],
                 output_set_ids: vec![Some(OutputMap::Local(1))],
             }],
@@ -302,6 +304,7 @@ fn test_from_module_minmal_composition_function_with_unused_input() {
         Composition {
             dependencies: vec![FunctionDependencies {
                 function: function_id,
+                join_info: (vec![], vec![]),
                 input_set_ids: vec![Some((OutputMap::Local(0), ShardingMode::All)), None],
                 output_set_ids: vec![Some(OutputMap::Local(1))],
             }],
@@ -334,6 +337,7 @@ fn test_from_module_minmal_composition_function_with_unused_output() {
         Composition {
             dependencies: vec![FunctionDependencies {
                 function: function_id,
+                join_info: (vec![], vec![]),
                 input_set_ids: vec![Some((OutputMap::Local(0), ShardingMode::All))],
                 output_set_ids: vec![Some(OutputMap::Local(1)), None],
             }],
@@ -367,6 +371,7 @@ fn test_from_module_minmal_composition_with_missing_input() {
         Composition {
             dependencies: vec![FunctionDependencies {
                 function: function_id,
+                join_info: (vec![], vec![]),
                 input_set_ids: vec![Some((OutputMap::Local(0), ShardingMode::All))],
                 output_set_ids: vec![Some(OutputMap::Local(1))],
             }],
@@ -400,6 +405,7 @@ fn test_from_module_minmal_composition_missing_output() {
         Composition {
             dependencies: vec![FunctionDependencies {
                 function: function_id,
+                join_info: (vec![], vec![]),
                 input_set_ids: vec![Some((OutputMap::Local(0), ShardingMode::All))],
                 output_set_ids: vec![Some(OutputMap::Local(1))],
             }],

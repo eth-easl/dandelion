@@ -38,7 +38,7 @@ impl SetEntry {
                 self.set = set;
             // both are okay, so unwrap and fuse them
             } else {
-                self.set.as_mut().unwrap().combine(&mut set.unwrap())?;
+                self.set.as_mut().unwrap().combine(set.unwrap())?;
             }
         }
         Ok(())

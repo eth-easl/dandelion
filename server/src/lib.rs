@@ -110,7 +110,13 @@ fn encode_sets(
     let mut all_items = 0;
     // filter out empty sets
     let non_empty_set = sets.into_iter().filter_map(|set| match set {
-        Some(s) if !s.context_list.is_empty() => Some(s),
+        Some(s) => {
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
+        }
         _ => None,
     });
     // if list is empty need to push empty string
@@ -126,10 +132,9 @@ fn encode_sets(
         // set identifier: string type, identifier e_name and actual set name as length, string, null byte
         response.push(2);
         response.extend_from_slice("identifier\0".as_bytes());
-        let set_name = &set.context_list[0].0.content[set.set_index]
-            .as_ref()
-            .unwrap()
-            .ident;
+        let mut set_iter = set.into_iter().peekable();
+        let (set_index, _, zero_set) = set_iter.peek().unwrap();
+        let set_name = &zero_set.content[*set_index].as_ref().unwrap().ident;
         response.extend_from_slice(&((set_name.len() + 1) as i32).to_le_bytes());
         response.extend_from_slice(set_name.as_bytes());
         response.push(0);
@@ -141,7 +146,7 @@ fn encode_sets(
         response.extend_from_slice(&0i32.to_le_bytes());
 
         let mut set_items_length = 0;
-        for (array_index, (set_index, item_index, context)) in set.into_iter().enumerate() {
+        for (array_index, (set_index, item_index, context)) in set_iter.enumerate() {
             set_items_length += encode_item(
                 set_index,
                 item_index,
@@ -469,10 +474,7 @@ fn test_dandelion_body_serialization() {
             },
         }],
     })];
-    let composition_set = CompositionSet {
-        set_index: 0,
-        context_list: vec![(Arc::new(new_context), 0..1)],
-    };
+    let composition_set = CompositionSet::from((0, vec![Arc::new(new_context)]));
     let context_map = vec![Some(composition_set)];
     let context_body = DandelionBody::new(context_map);
 
