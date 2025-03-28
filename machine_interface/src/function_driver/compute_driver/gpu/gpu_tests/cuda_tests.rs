@@ -46,7 +46,7 @@ fn minimal_matmul() {
         size: (1 << 30),
     };
     let driver: Box<dyn Driver> = get_driver();
-    let drv_init = vec![ComputeResource::GPU(7, 0, 2)];
+    let drv_init = vec![ComputeResource::GPU(7, 2, 2)];
     let (mut function_context, config, queue) =
         prepare_engine_and_function::<GpuMemoryDomain>(filename, dom_init, &driver, drv_init);
 

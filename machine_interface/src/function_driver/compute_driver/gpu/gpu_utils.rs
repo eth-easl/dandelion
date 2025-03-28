@@ -1,32 +1,40 @@
-use crate::interface::{DandelionSystemData, SizedIntTrait};
+use super::{
+    buffer_pool::BufferPool,
+    config_parsing::Sizing,
+    gpu_api::{self, DevicePointer},
+};
 use crate::{
     function_driver::{ComputeResource, FunctionConfig, GpuConfig, WorkDone, WorkQueue, WorkToDo},
-    interface::read_output_structs,
-    memory_domain::{self, gpu::GpuContext, Context, ContextState, ContextTrait, ContextType},
+    interface::{read_output_structs, DandelionSystemData, SizedIntTrait},
+    memory_domain::{
+        self,
+        gpu::{GpuContext, GpuProcessContext},
+        Context, ContextState, ContextTrait, ContextType,
+    },
     util::mmapmem::MmapMem,
     DataSet, Position,
 };
 use dandelion_commons::{records::RecordPoint, DandelionError, DandelionResult};
 use libc::c_void;
 use log::{debug, error};
-use nix::sys::mman::ProtFlags;
+use nix::{
+    fcntl::OFlag,
+    sys::{
+        mman::{mmap, shm_open, MapFlags, ProtFlags},
+        stat::{fstat, Mode},
+    },
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Write},
+    num::NonZeroUsize,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
     thread::spawn,
-};
-
-use super::buffer_pool::BufferPool;
-
-use super::{
-    config_parsing::Sizing, 
-    gpu_api::{self, DevicePointer},
 };
 
 pub fn get_data_length(ident: &str, context: &Context) -> DandelionResult<usize> {
@@ -260,16 +268,6 @@ pub struct SendContext {
     pub occupation: Vec<Position>,
 }
 
-pub const GPU_BASE_ADDR: usize = 0x10000;
-use crate::memory_domain::gpu::GpuProcessContext;
-use nix::sys::mman::shm_open;
-use nix::fcntl::OFlag;
-use nix::sys::stat::Mode;
-use nix::sys::stat::fstat;
-use nix::sys::mman::mmap;
-use std::num::NonZeroUsize;
-use nix::sys::mman::MapFlags;
-
 #[cfg(feature = "gpu_process")]
 impl TryFrom<SendContext> for Context {
     type Error = DandelionError;
@@ -294,20 +292,19 @@ impl TryFrom<SendContext> for Context {
 
         let ptr = unsafe {
             match mmap(
-                None, //NonZeroUsize::new(GPU_BASE_ADDR),
-                NonZeroUsize::new(size).unwrap(), // - GPU_BASE_ADDR).unwrap(),
+                None,
+                NonZeroUsize::new(size).unwrap(),
                 ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
                 MapFlags::MAP_SHARED,
                 shmem_fd,
-                value.offset, // + (GPU_BASE_ADDR as i64),
+                value.offset,
             ) {
                 Err(err) => {
                     eprintln!(
-                        "Error mapping memory from file {} at address {} with size {} and offset {}: {}:{}",
+                        "Error mapping memory from file {} with size {} and offset {}: {}:{}",
                         filename,
-                        GPU_BASE_ADDR,
-                        size - GPU_BASE_ADDR,
-                        value.offset + (GPU_BASE_ADDR as i64),
+                        size,
+                        value.offset,
                         err,
                         err.desc()
                     );
@@ -318,10 +315,7 @@ impl TryFrom<SendContext> for Context {
         };
 
         Ok(Self {
-            context: ContextType::GpuProcess(Box::new(GpuProcessContext {
-                ptr,
-                size,
-            })),
+            context: ContextType::GpuProcess(Box::new(GpuProcessContext { ptr, size })),
             content: value.content,
             size: value.size,
             state: value.state,
@@ -519,9 +513,11 @@ fn manage_worker(
             }
             WorkToDo::Shutdown() => {
                 // Return original resources that were given to Engine
-                debt.fulfill(Ok(WorkDone::Resources(vec![
-                    ComputeResource::GPU(resources.0, resources.1, resources.2),
-                ])));
+                debt.fulfill(Ok(WorkDone::Resources(vec![ComputeResource::GPU(
+                    resources.0,
+                    resources.1,
+                    resources.2,
+                )])));
 
                 // Inform other threads to shutdown as well when they are done
                 done.swap(true, Ordering::SeqCst);

@@ -17,6 +17,7 @@ fn test_all() {
     test_model("rnn", true);
     test_model("lstm", true);
     test_model("vit_b_16", true);
+    test_model("bert", true);
 }
 
 fn get_function(model_name: &str) -> Option<fn(Context) -> (usize, String, Vec<f32>, Context)> {
@@ -28,6 +29,8 @@ fn get_function(model_name: &str) -> Option<fn(Context) -> (usize, String, Vec<f
     methods.insert("rnn", load_rnn);
     methods.insert("lstm", load_lstm);
     methods.insert("vit_b_16", load_vit_b_16);
+    methods.insert("bert", load_bert);
+    methods.insert("llama", load_llama);
 
     methods.get(model_name).copied()
 }
@@ -77,4 +80,14 @@ fn lstm() {
 #[test]
 fn vit_b_16() {
     test_model("vit_b_16", true);
+}
+
+#[test]
+fn bert() {
+    test_model("bert", true);
+}
+
+#[test]
+fn llama() {
+    test_model("llama", false);
 }
