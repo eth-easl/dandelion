@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use tokio::time::{sleep, Duration};
 
 const INTEGRAL_WINDOW_SIZE: usize = 10;
+const ERROR_THRESH: usize = 1_024;
 
 pub struct Controller {
     pub resource_pool: &'static mut ResourcePool,
@@ -124,7 +125,7 @@ impl Controller {
         tasks_lengths: &Vec<(EngineType, usize)>,
     ) -> Option<EngineType> {
         // Calculate the growth rate of each engine type
-        let mut max_growth_rate: f64 = -16_384.0;
+        let mut max_growth_rate: f64 = -1.0;
         let mut min_growth_rate: f64 = 16_384.0;
         let mut engine_type_to_expand: Option<EngineType> = None;
 
@@ -179,7 +180,11 @@ impl Controller {
     }
 
     /// Check if a core can be deallocated from the engine type
-    fn check_can_deallocate(&self, engine_type: EngineType) -> bool {
+    fn check_can_deallocate(&self, engine_type: EngineType, length: usize) -> bool {
+        if length > ERROR_THRESH {
+            return false;
+        }
+
         if let Some(cores) = self.cpu_core_map.get(&engine_type) {
             if cores.len() <= 1 {
                 return false;
@@ -239,8 +244,8 @@ impl Controller {
         tasks_lengths: &[(EngineType, usize)],
     ) -> bool {
         // Iterate over the engine types to find one to deallocate
-        for (engine_type, _length) in tasks_lengths {
-            if *engine_type == target_engine || !self.check_can_deallocate(*engine_type) {
+        for (engine_type, length) in tasks_lengths {
+            if *engine_type == target_engine || !self.check_can_deallocate(*engine_type, *length) {
                 continue;
             }
 
