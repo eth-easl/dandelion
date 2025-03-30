@@ -428,7 +428,13 @@ async fn http_run(
 
 async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
     log::debug!("Reqwest engine Init");
-    let client = Client::new();
+    let client = Client::builder()
+         .pool_max_idle_per_host(0)
+         .build()
+         .unwrap_or_else(|e| {
+             log::error!("Failed to build reqwest client: {:?}", e);
+             panic!("Client initialization failed");
+         });
     // TODO FIX! This should not be necessary!
     let mut queue_ref = Box::leak(queue);
     let mut tuple;
