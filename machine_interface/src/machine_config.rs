@@ -50,7 +50,7 @@ pub fn get_compatibilty_table() -> BTreeMap<EngineType, DomainType> {
 }
 
 #[cfg(any(feature = "reqwest_io"))]
-const SYS_FUNC_DEFAULT_CONTEXT_SIZE: usize = 0x1000_0000;
+const SYS_FUNC_DEFAULT_CONTEXT_SIZE: usize = 0x400_0000; // 64 MiB
 
 pub fn get_system_functions(engine_type: EngineType) -> Vec<(SystemFunction, usize)> {
     return match engine_type {
