@@ -151,13 +151,27 @@ async fn serve_request(
     return response;
 }
 
+fn default_path() -> String {
+    String::new()
+}
+
+/// Struct containing registration information for new function
 #[derive(Debug, Deserialize)]
 struct RegisterFunction {
+    /// String name of the function
     name: String,
+    /// Default size for context to allocate to execute function
     context_size: u64,
+    /// Which engine the function should be executed on
     engine_type: String,
+    /// Optional local path to the binary if it is already on local disc
+    #[serde(default = "default_path")]
+    local_path: String,
+    /// Binary representation of the function, ignored if a local path is given
     binary: Vec<u8>,
+    /// Metadata for the sets and optionally static items to pass into the function for that set
     input_sets: Vec<(String, Option<Vec<(String, Vec<u8>)>>)>,
+    /// output set names
     output_sets: Vec<String>,
 }
 
@@ -173,15 +187,32 @@ async fn register_function(
     // find first line end character
     let request_map: RegisterFunction =
         bson::from_slice(&bytes).expect("Should be able to deserialize request");
-    // write function to file
-    std::fs::create_dir_all(FUNCTION_FOLDER_PATH).unwrap();
-    let mut path_buff = PathBuf::from(FUNCTION_FOLDER_PATH);
-    path_buff.push(request_map.name.clone());
-    let mut function_file = std::fs::File::create(path_buff.clone())
-        .expect("Failed to create file for registering function");
-    function_file
-        .write_all(&request_map.binary)
-        .expect("Failed to write file with content for registering");
+    // if local is present ignore the binary
+    let path_string = if !request_map.local_path.is_empty() {
+        // check that file exists
+        if let Err(err) = std::fs::File::open(&request_map.local_path) {
+            let err_message = format!(
+                "Tried to register function with local path, but failed to open file with error {}",
+                err
+            );
+            return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
+                err_message.as_bytes().to_vec(),
+            )));
+        };
+        request_map.local_path
+    } else {
+        // write function to file
+        std::fs::create_dir_all(FUNCTION_FOLDER_PATH).unwrap();
+        let mut path_buff = PathBuf::from(FUNCTION_FOLDER_PATH);
+        path_buff.push(request_map.name.clone());
+        let mut function_file = std::fs::File::create(path_buff.clone())
+            .expect("Failed to create file for registering function");
+        function_file
+            .write_all(&request_map.binary)
+            .expect("Failed to write file with content for registering");
+        path_buff.to_str().unwrap().to_string()
+    };
+
     let engine_type = match request_map.engine_type.as_str() {
         #[cfg(feature = "wasm")]
         "RWasm" => EngineType::RWasm,
@@ -238,7 +269,7 @@ async fn register_function(
             name: request_map.name,
             engine_type,
             context_size: request_map.context_size as usize,
-            path: path_buff.to_str().unwrap().to_string(),
+            path: path_string,
             metadata,
             callback,
         })
@@ -663,7 +694,10 @@ fn main() -> () {
     runtime.block_on(service_loop(dispatcher_sender, config.port));
 
     // clean up folder in tmp that is used for function storage
-    std::fs::remove_dir_all(FUNCTION_FOLDER_PATH).unwrap();
+    let removal_error = std::fs::remove_dir_all(FUNCTION_FOLDER_PATH);
+    if let Err(err) = removal_error {
+        warn!("Removing function folder failed with: {}", err);
+    }
     // clean up folder with shared files in case the context backed by shared files left some behind
     for shm_dir_entry in std::fs::read_dir("/dev/shm/").unwrap() {
         if let Ok(shm_file) = shm_dir_entry {

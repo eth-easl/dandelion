@@ -299,10 +299,10 @@ fn test_insert_composition_with_http_func() {
     )
     .unwrap();
     let composition_string = r#"
-        (:function HTTP (request headers body) -> (status headers body))
-        (:composition Composition (comp_request req_body) -> (comp_status resp_body) (
-            (HTTP ((:all request <- comp_request) (:all body <- req_body)) => ((resp_body := body) (comp_status := status)))
-        ))
+        function HTTP (request, headers, body) => (status, headers, body);
+        composition Composition (comp_request, req_body) => (comp_status, resp_body) {
+            HTTP (request = all comp_request, body = all req_body) => (resp_body = body, comp_status = status);
+        }
     "#;
     tokio::runtime::Builder::new_current_thread()
         .build()
