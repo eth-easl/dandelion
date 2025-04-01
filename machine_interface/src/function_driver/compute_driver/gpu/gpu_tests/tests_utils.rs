@@ -13,7 +13,7 @@ use crate::{
 pub fn setup_test(filename: &str) -> (Context, FunctionConfig, Box<TestQueue>) {
     let dom_init = MemoryResource::Shared {
         id: 0,
-        size: (1 << 38), // TODO : choose a good value for the context size
+        size: (1 << 38), // TODO(GPU) : choose a good value for the context size
     };
     let driver: Box<dyn Driver> = get_driver();
     let drv_init = vec![ComputeResource::GPU(7, 0, 2)];

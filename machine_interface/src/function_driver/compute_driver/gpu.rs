@@ -206,8 +206,8 @@ const Gi: usize = 1 << 30;
 
 // TODO: add adaptive amount of other GPUs are used:
 // MI210    - 64GiB => 60 * Gi
-// RTX 3090 - 24GiB => 20 * Gi
-const VRAM_SIZE: usize = 20 * Gi;
+// RTX 3090 - 24GiB => 23 * Gi
+const VRAM_SIZE: usize = 23 * Gi;
 
 impl EngineLoop for GpuLoop {
     fn init(resource: ComputeResource) -> DandelionResult<Box<Self>> {

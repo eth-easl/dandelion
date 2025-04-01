@@ -89,5 +89,5 @@ fn bert() {
 
 #[test]
 fn llama() {
-    test_model("llama", false);
+    test_model("llama", true);
 }
