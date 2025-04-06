@@ -646,16 +646,18 @@ fn main() -> () {
 
     let _guard = runtime.enter();
 
-    let delta = config.control_delta;
+    let control_kp = config.control_kp;
     let loop_duration = config.control_interval;
-    println!("delta {}, loop duration: {}", delta, loop_duration);
+    let control_ki = config.control_ki;
+    println!("kp {}, ki {}, loop duration: {}", control_kp, control_ki, loop_duration);
 
     #[cfg(feature = "controller")]
     let mut controller = Controller::new(
         resource_pool,
         dispatcher,
         cpu_core_map,
-        delta,
+        control_kp,
+        control_ki,
         loop_duration,
         threads_per_core,
         cpu_pinning,
