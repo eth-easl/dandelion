@@ -60,7 +60,9 @@ impl Composition {
                         (
                             function_ids
                                 .lookup(&fdecl.v.name)
-                                .ok_or(DandelionError::CompositionContainsInvalidFunction)?,
+                                .ok_or(DandelionError::CompositionContainsInvalidFunction(
+                                    format!("{}", &fdecl.v.name)
+                                ))?,
                             fdecl,
                         ),
                     );
@@ -131,12 +133,16 @@ impl Composition {
                             dparser::Statement::FunctionApplication(function_application) => {
                                 let (function_id, function_decl) = known_functions
                                     .get(&function_application.v.name)
-                                    .ok_or(DandelionError::CompositionContainsInvalidFunction)?;
+                                    .ok_or(DandelionError::CompositionContainsInvalidFunction(
+                                        format!("{}", &function_application.v.name)
+                                    ))?;
                                 if function_decl.v.params.len() < function_application.v.args.len()
                                     || function_decl.v.returns.len()
                                         < function_application.v.rets.len()
                                 {
-                                    return Err(DandelionError::CompositionContainsInvalidFunction);
+                                    return Err(DandelionError::CompositionContainsInvalidFunction(
+                                        format!("{}", function_decl.v.name)
+                                    ));
                                 }
                                 // find the indeces of the sets in the function application by looking though the definition
                                 let mut input_set_ids = Vec::new();

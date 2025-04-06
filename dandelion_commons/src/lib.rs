@@ -19,7 +19,7 @@ pub enum DandelionError {
     /// parser did not find symbol that it was searching for
     UnknownSymbol,
     /// Composition contains function that does not exist
-    CompositionContainsInvalidFunction,
+    CompositionContainsInvalidFunction(String),
     /// Function in parsing has identifier that is not defined in composition
     CompositionFunctionInvalidIdentifier(String),
     /// Set indentifier is produced by multiple functions in a composition
@@ -82,7 +82,7 @@ pub enum DandelionError {
     /// Argument given to system function was not valid
     InvalidSystemFuncArg(String),
     /// System function did get unexpected response
-    SystemFuncResponseError,
+    SystemFuncResponseError(String),
     /// Tried to call parser for system function
     CalledSystemFuncParser,
     // dispatcher errors
