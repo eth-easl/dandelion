@@ -222,7 +222,7 @@ impl FunctionRegistry {
         let alternatives = lock_guard.get(&function_id);
         return alternatives
             .and_then(|alt| Some(alt.to_vec()))
-            .ok_or(DandelionError::DispatcherUnavailableFunction);
+            .ok_or(DandelionError::DispatcherUnavailableFunction(format!("id: {}", function_id)));
     }
 
     pub async fn get_metadata(&self, function_id: FunctionId) -> DandelionResult<Metadata> {
@@ -232,7 +232,7 @@ impl FunctionRegistry {
             .await
             .get(&function_id)
             .and_then(|meta| Some(meta.clone()))
-            .ok_or(DandelionError::DispatcherUnavailableFunction);
+            .ok_or(DandelionError::DispatcherUnavailableFunction(format!("id: {}", function_id)));
     }
 
     /// TODO: find a better way to keep track of functions, so we can support updates to functions and compositions
@@ -250,7 +250,7 @@ impl FunctionRegistry {
         {
             let mut dict_lock = self.function_dict.lock().await;
             if dict_lock.lookup(&function_name).is_some() {
-                return Err(DandelionError::DispatcherDuplicateFunction);
+                return Err(DandelionError::DispatcherDuplicateFunction(function_name));
             }
             function_id = dict_lock.insert_or_lookup(function_name);
         }
@@ -395,7 +395,7 @@ impl FunctionRegistry {
                     func_future
                 }
             } else {
-                return Err(DandelionError::DispatcherUnavailableFunction);
+                return Err(DandelionError::DispatcherUnavailableFunction(format!("id: {}", function_id)));
             };
         drop(lock_guard);
         let function = function_future.await?;

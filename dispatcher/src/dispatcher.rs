@@ -112,7 +112,7 @@ impl Dispatcher {
             .function_registry
             .get_function_id(&function_name)
             .await
-            .ok_or(DandelionError::DispatcherUnavailableFunction)?;
+            .ok_or(DandelionError::DispatcherUnavailableFunction(function_name))?;
 
         let recorder = Recorder::new(function_id, start_time);
 
@@ -427,7 +427,7 @@ impl Dispatcher {
                     }
                 }
             } else {
-                return Err(DandelionError::DispatcherUnavailableFunction);
+                return Err(DandelionError::DispatcherUnavailableFunction(format!("id: {}", function_id)));
             }
         })
     }

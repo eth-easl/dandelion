@@ -91,9 +91,9 @@ pub enum DandelionError {
     /// error from resulting from assumptions based on config passed to dispatcher
     DispatcherConfigError,
     /// dispatcher was asked to queue function it can't find
-    DispatcherUnavailableFunction,
+    DispatcherUnavailableFunction(String),
     /// dispatcher was asked to add function to registry that is already present
-    DispatcherDuplicateFunction,
+    DispatcherDuplicateFunction(String),
     /// function to register did not have metadata available
     DispatcherMetaDataUnavailable,
     /// dispatcher encountered an issue when trasmitting data between tasks
