@@ -31,8 +31,9 @@ fn main() {
     let entry_point: usize = args[5].parse().unwrap();
     // eprintln!("[worker] started with core {}, shared memory {} and entry point {:#x}", core_id, mem_id, entry_point);
 
-    // set cpu affinity
-    assert!(core_affinity::set_for_current(CoreId { id: core_id }));
+    // assume the parent has set the core afinity properly
+    // // set cpu affinity
+    // assert!(core_affinity::set_for_current(CoreId { id: core_id }));
 
     // open and map a shared memory region
     let shmem_fd = match shm_open(mem_id.as_str(), OFlag::O_RDWR, Mode::S_IRUSR) {
