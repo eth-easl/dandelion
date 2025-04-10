@@ -16,7 +16,7 @@ pub fn setup_test(filename: &str) -> (Context, FunctionConfig, Box<TestQueue>) {
         size: (1 << 38), // TODO(GPU) : choose a good value for the context size
     };
     let driver: Box<dyn Driver> = get_driver();
-    let drv_init = vec![ComputeResource::GPU(7, 0, 2)];
+    let drv_init = vec![ComputeResource::GPU(7, 2, 2)];
 
     prepare_engine_and_function::<GpuMemoryDomain>(filename, dom_init, &driver, drv_init)
 }
@@ -68,6 +68,48 @@ pub fn get_result(result_context: Context, output_size: usize, asserts: bool) ->
         );
     }
     let mut read_buffer = vec![0f32; position.size / 4];
+    result_context
+        .context
+        .read(position.offset, &mut read_buffer)
+        .expect("Should succeed in reading");
+    read_buffer
+}
+
+pub fn get_resulti32(result_context: Context, output_size: usize, asserts: bool) -> Vec<i32> {
+    let output_item = result_context.content[0]
+        .as_ref()
+        .expect("Set should be present");
+    let position = output_item.buffers[0].data;
+    if asserts {
+        assert_eq!(output_size, position.size, "Checking for size of output");
+    } else {
+        println!(
+            "Expected output size: {output_size}\t\tActual size: {0}",
+            position.size
+        );
+    }
+    let mut read_buffer = vec![0i32; position.size / 4];
+    result_context
+        .context
+        .read(position.offset, &mut read_buffer)
+        .expect("Should succeed in reading");
+    read_buffer
+}
+
+pub fn get_resulti64(result_context: Context, output_size: usize, asserts: bool) -> Vec<i64> {
+    let output_item = result_context.content[0]
+        .as_ref()
+        .expect("Set should be present");
+    let position = output_item.buffers[0].data;
+    if asserts {
+        assert_eq!(output_size, position.size, "Checking for size of output");
+    } else {
+        println!(
+            "Expected output size: {output_size}\t\tActual size: {0}",
+            position.size
+        );
+    }
+    let mut read_buffer = vec![0i64; position.size / 8];
     result_context
         .context
         .read(position.offset, &mut read_buffer)

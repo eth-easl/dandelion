@@ -2,7 +2,7 @@ use crate::{
     function_driver::compute_driver::gpu::gpu_tests::{
         cuda_tests::load_models::*,
         get_driver,
-        tests_utils::{compare_result, execute_test, get_result, setup_test},
+        tests_utils::{compare_result, execute_test, get_result, get_resulti32, get_resulti64, setup_test},
         GPU_LOCK,
     },
     memory_domain::Context,
@@ -31,6 +31,7 @@ fn get_function(model_name: &str) -> Option<fn(Context) -> (usize, String, Vec<f
     methods.insert("vit_b_16", load_vit_b_16);
     methods.insert("bert", load_bert);
     methods.insert("llama", load_llama);
+    methods.insert("llama_kv", load_llama_kv);
 
     methods.get(model_name).copied()
 }
@@ -88,6 +89,56 @@ fn bert() {
 }
 
 #[test]
-fn llama() {
-    test_model("llama", true);
+fn one_llama() {
+    test_model("llama", false);
+}
+
+#[test]
+fn full_llama() {
+    let lock = GPU_LOCK.lock().unwrap();
+    let filename = &format!(
+        "{}/tests/data/cuda/test_gpu_llama-full.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let (function_context, config, queue) = setup_test(&filename);
+    let (mut output_size, mut output_name, expected, function_context) = load_llama(function_context);
+    output_size = 1024;
+    output_name = "token_ids".to_string();
+    
+    let result_context = execute_test(function_context, config, queue, &output_name);
+
+    let read_buffer = get_resulti64(result_context, output_size, false);
+    println!("{:?}", read_buffer);
+
+    drop(lock);
+}
+
+#[test]
+fn one_kv_llama() {
+    test_model("llama_kv", true);
+}
+
+#[test]
+fn full_kv_llama() {
+    let lock = GPU_LOCK.lock().unwrap();
+    let filename = &format!(
+        "{}/tests/data/cuda/test_gpu_llama_kv-full.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let (function_context, config, queue) = setup_test(&filename);
+    let (mut output_size, mut output_name, expected, function_context) = load_llama_kv(function_context);
+    output_size = 16777216; // 1024;
+    output_name = "keys".to_string(); // "token_ids".to_string();
+    
+    let result_context = execute_test(function_context, config, queue, &output_name);
+
+    // let read_buffer = get_resulti64(result_context, output_size, false);
+    let read_buffer = get_result(result_context, output_size, false);
+    for i in 0..16777216 / 4 {
+        if read_buffer[i] != 0.0 {
+            println!("{} - {:?}, ", i, read_buffer[i]);
+        }
+    }
+
+    drop(lock);
 }
