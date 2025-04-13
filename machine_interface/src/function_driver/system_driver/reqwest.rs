@@ -258,6 +258,16 @@ async fn http_request(
         .headers()
         .get("content-length");
 
+    let content_length = if content_len_header.is_some() {
+        content_len_header.and_then(|value| value.to_str().ok())
+            .and_then(|len_str| len_str.parse::<usize>().ok())
+            .ok_or(DandelionError::SystemFuncResponseError(String::from(
+                "Failed to get header value for expected key 'content-length'"
+            )))?
+    } else {
+        usize::MAX
+    };
+
     for (key, value) in response.headers() {
         preamble.push_str(&format!("{}:{}\n", key, value.to_str().unwrap()));
     }
@@ -271,15 +281,8 @@ async fn http_request(
         ))),
     };
 
-    if content_len_header.is_some() {
-        let content_length = content_len_header.and_then(|value| value.to_str().ok())
-            .and_then(|len_str| len_str.parse::<usize>().ok())
-            .ok_or(DandelionError::SystemFuncResponseError(String::from(
-                "Failed to get header value for expected key 'content-length'"
-            )))?;
-        if content_length != body.len() {
-            return Err(DandelionError::SystemFuncResponseError(String::from("Content length does not match body size")));
-        }
+    if content_length < usize::MAX && content_length != body.len() {
+        return Err(DandelionError::SystemFuncResponseError(String::from("Content length does not match body size")));
     }
 
     let response_info = ResponseInformation {
