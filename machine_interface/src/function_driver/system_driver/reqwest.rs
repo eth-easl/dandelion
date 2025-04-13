@@ -252,17 +252,6 @@ async fn http_request(
         response.status().canonical_reason().unwrap_or("")
     );
 
-    // read the content length in the header
-    // TODO also accept chunked data
-    let content_length = response
-        .headers()
-        .get("content-length")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|len_str| len_str.parse::<usize>().ok())
-        .ok_or(DandelionError::SystemFuncResponseError(String::from(
-            "Failed to get header value for expected key 'content-length'"
-        )))?;
-
     for (key, value) in response.headers() {
         preamble.push_str(&format!("{}:{}\n", key, value.to_str().unwrap()));
     }
@@ -276,17 +265,29 @@ async fn http_request(
         ))),
     };
 
-    if content_length == body.len() {
-        let response_info = ResponseInformation {
-            item_name,
-            item_key,
-            preamble,
-            body,
-        };
-        return Ok(response_info);
-    } else {
-        return Err(DandelionError::SystemFuncResponseError(String::from("Content length does not match body size")));
+    // read the content length in the header
+    // TODO also accept chunked data
+    let content_len_header = response
+        .headers()
+        .get("content-length");
+    if content_len_header.is_some() {
+        let content_length = content_len_header.and_then(|value| value.to_str().ok())
+            .and_then(|len_str| len_str.parse::<usize>().ok())
+            .ok_or(DandelionError::SystemFuncResponseError(String::from(
+                "Failed to get header value for expected key 'content-length'"
+            )))?;
+        if content_length != body.len() {
+            return Err(DandelionError::SystemFuncResponseError(String::from("Content length does not match body size")));
+        }
     }
+
+    let response_info = ResponseInformation {
+        item_name,
+        item_key,
+        preamble,
+        body,
+    };
+    Ok(response_info)
 }
 
 fn http_context_write(context: &mut Context, response: ResponseInformation) -> DandelionResult<()> {
