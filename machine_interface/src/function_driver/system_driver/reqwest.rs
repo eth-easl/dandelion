@@ -252,6 +252,12 @@ async fn http_request(
         response.status().canonical_reason().unwrap_or("")
     );
 
+    // read the content length in the header
+    // TODO also accept chunked data
+    let content_len_header = response
+        .headers()
+        .get("content-length");
+
     for (key, value) in response.headers() {
         preamble.push_str(&format!("{}:{}\n", key, value.to_str().unwrap()));
     }
@@ -265,11 +271,6 @@ async fn http_request(
         ))),
     };
 
-    // read the content length in the header
-    // TODO also accept chunked data
-    let content_len_header = response
-        .headers()
-        .get("content-length");
     if content_len_header.is_some() {
         let content_length = content_len_header.and_then(|value| value.to_str().ok())
             .and_then(|len_str| len_str.parse::<usize>().ok())
