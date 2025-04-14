@@ -586,7 +586,7 @@ fn main() -> () {
     #[cfg(feature = "cheri")]
     let engine_type = EngineType::Cheri;
     #[cfg(any(feature = "cheri", feature = "wasm", feature = "mmu", feature = "kvm"))]
-    pool_map.insert(engine_type, vec![compute_cores[0].clone()]);
+    pool_map.insert(engine_type, compute_cores);
     #[cfg(feature = "reqwest_io")]
     pool_map.insert(EngineType::Reqwest, communication_cores);
     let resource_pool = ResourcePool {
