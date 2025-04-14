@@ -362,6 +362,7 @@ async fn http_run(
     let request_vec = match http_setup(&context) {
         Ok(request) => request,
         Err(err) => {
+            drop(recorder);
             debt.fulfill(Err(err));
             return;
         }
@@ -380,6 +381,7 @@ async fn http_run(
     {
         Ok(resp) => resp,
         Err(err) => {
+            drop(recorder);
             debt.fulfill(Err(err));
             return;
         }
@@ -412,13 +414,14 @@ async fn http_run(
             .map(|response| http_context_write(&mut out_context, response))
             .collect();
         if let Err(err) = write_results {
+            drop(recorder);
             debt.fulfill(Err(err));
             return;
         }
     }
 
     recorder.record(RecordPoint::EngineEnd);
-
+    drop(recorder);
     debt.fulfill(Ok(WorkDone::Context(out_context)));
     return;
 }
@@ -453,6 +456,7 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 let function = match config {
                     FunctionConfig::SysConfig(sys_func) => sys_func,
                     _ => {
+                        drop(recorder);
                         debt.fulfill(Err(DandelionError::ConfigMissmatch));
                         continue;
                     }
@@ -468,6 +472,7 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                     }
                     #[allow(unreachable_patterns)]
                     _ => {
+                        drop(recorder);
                         debt.fulfill(Err(DandelionError::MalformedConfig));
                     }
                 };
@@ -500,6 +505,7 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 recorder.record(RecordPoint::TransferEnd);
 
                 let transfer_return = transfer_result.and(Ok(WorkDone::Context(destination)));
+                drop(recorder);
                 debt.fulfill(transfer_return);
                 continue;
             }
@@ -512,6 +518,7 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 recorder.record(RecordPoint::ParsingStart);
                 let function_result = driver.parse_function(path, &static_domain);
                 recorder.record(RecordPoint::ParsingEnd);
+                drop(recorder);
                 match function_result {
                     Ok(function) => debt.fulfill(Ok(WorkDone::Function(function))),
                     Err(err) => debt.fulfill(Err(err)),
@@ -527,6 +534,7 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 recorder.record(RecordPoint::LoadStart);
                 let load_result = function.load(&domain, ctx_size);
                 recorder.record(RecordPoint::LoadEnd);
+                drop(recorder);
                 match load_result {
                     Ok(context) => debt.fulfill(Ok(WorkDone::Context(context))),
                     Err(err) => debt.fulfill(Err(err)),

@@ -40,6 +40,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                 let result = engine_state.run(config, context, output_sets);
 
                 recorder.record(RecordPoint::EngineEnd);
+                drop(recorder);
 
                 let results = result.and_then(|context| Ok(WorkDone::Context(context)));
                 debt.fulfill(results);
@@ -69,6 +70,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                 );
 
                 recorder.record(RecordPoint::TransferEnd);
+                drop(recorder);
 
                 let transfer_return = transfer_result.and(Ok(WorkDone::Context(destination)));
                 debt.fulfill(transfer_return);
@@ -83,6 +85,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                 recorder.record(RecordPoint::ParsingStart);
                 let function_result = driver.parse_function(path, &static_domain);
                 recorder.record(RecordPoint::ParsingEnd);
+                drop(recorder);
                 match function_result {
                     Ok(function) => debt.fulfill(Ok(WorkDone::Function(function))),
                     Err(err) => debt.fulfill(Err(err)),
@@ -98,6 +101,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
                 recorder.record(RecordPoint::LoadStart);
                 let load_result = function.load(&domain, ctx_size);
                 recorder.record(RecordPoint::LoadEnd);
+                drop(recorder);
                 match load_result {
                     Ok(context) => debt.fulfill(Ok(WorkDone::Context(context))),
                     Err(err) => debt.fulfill(Err(err)),
