@@ -175,3 +175,25 @@ They can be built with a normal make command, but have the following requirement
 - make: "/usr/src/sys/conf/kmod.mk" line 549: is ZFSTOP set?
   - solution `export ZFSTOP=/usr/src/sys/contrib/openzfs`
 - currently syscall seems not to work, but loading does, with cpuset -l <core> a specific core can be setup. repeat for each core on machine to set up entire machine.
+
+## GPU worker build
+
+The `gpu_worker` binary required by the `gpu_process` is assumed to be present in corresponding `target` directory:
+```
+cargo build --bin gpu_worker --features gpu_process --target $(arch)-unknown-linux-gnu [--release]
+```
+
+Also make sure that shared memory objects are executable:
+```
+sudo mount -o remount,exec /dev/shm
+```
+
+### GPU worker path
+
+To use a `gpu_worker` that is not at the original location it was built in, set the `GPU_WORKER_PATH` environment variable to point to the desired binary
+
+## GPU engine library path
+`DANDELION_LIBRARY_PATH` overwrites the directory where the GPU engines will look for kernel libraries. If the variable is unset the engines will look in `machine_interface/tests/libs/`.
+
+## GPU Allocations
+To prevent memory leakage, GPU kernels are disallowed from calling `malloc()`. All the memory a kernel requires should be specified in the respective config file.

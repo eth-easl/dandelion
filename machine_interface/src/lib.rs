@@ -6,7 +6,14 @@ pub mod promise;
 /// contexts, and their compatibility with fast to look up structs
 pub mod machine_config;
 
-#[cfg(any(feature = "cheri", feature = "mmu", feature = "kvm", feature = "wasm"))]
+#[cfg(any(
+    feature = "cheri",
+    feature = "mmu",
+    feature = "wasm",
+    feature = "kvm",
+    feature = "gpu",
+    feature = "reqwest"
+))]
 mod interface;
 pub mod util;
 
@@ -44,13 +51,13 @@ pub struct Position {
     pub size: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DataSet {
     pub ident: String,
     pub buffers: Vec<DataItem>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataItem {
     pub ident: String,
     pub data: Position,

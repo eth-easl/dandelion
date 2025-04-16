@@ -1,8 +1,9 @@
 #[cfg(all(
     test,
-    any(feature = "cheri", feature = "mmu", feature = "kvm", feature = "wasm")
+    any(feature = "cheri", feature = "mmu", feature = "kvm", feature = "wasm", feature = "gpu")
 ))]
-mod compute_driver_tests {
+#[allow(clippy::module_inception)]
+pub(crate) mod compute_driver_tests {
     use crate::{
         function_driver::{
             test_queue::TestQueue, ComputeResource, Driver, FunctionConfig, WorkToDo,
@@ -50,7 +51,7 @@ mod compute_driver_tests {
         }
     }
 
-    fn prepare_engine_and_function<Dom: MemoryDomain>(
+    pub fn prepare_engine_and_function<Dom: MemoryDomain>(
         filename: &str,
         dom_init: MemoryResource,
         driver: &Box<dyn Driver>,
@@ -65,12 +66,12 @@ mod compute_driver_tests {
             .start_engine(drv_init[0], queue.clone())
             .expect("Should be able to start engine");
         let function_context = function
-            .load(&domain, 0x802_0000)
+            .load(&domain, 0x1_8002_0000) // TODO(GPU) : choose a good value for the context size
             .expect("Should be able to load function");
         return (function_context, function.config, queue);
     }
 
-    fn engine_minimal<Dom: MemoryDomain>(
+    pub fn engine_minimal<Dom: MemoryDomain>(
         filename: &str,
         dom_init: MemoryResource,
         driver: Box<dyn Driver>,
@@ -160,7 +161,7 @@ mod compute_driver_tests {
         assert_eq!(4, read_buffer[1]);
     }
 
-    fn get_expected_mat(size: usize) -> Vec<i64> {
+    pub fn get_expected_mat(size: usize) -> Vec<i64> {
         let mut in_mat_vec = Vec::<i64>::new();
         for i in 0..(size * size) {
             in_mat_vec.push(i as i64);
@@ -611,7 +612,7 @@ mod compute_driver_tests {
                     .collect())).expect("Should have at least one core");
         vec![
             ComputeResource::CPU(255),
-            ComputeResource::GPU(0)
+            ComputeResource::GPU(0, 0, 0)
         ]);
     }
 
@@ -630,7 +631,7 @@ mod compute_driver_tests {
                     .collect())).expect("Should have at least one core");
         vec![
             ComputeResource::CPU(255),
-            ComputeResource::GPU(0)
+            ComputeResource::GPU(0, 0, 0)
         ]);
         #[cfg(target_arch = "aarch64")]
         driverTests!(elf_mmu_aarch64; MmuMemoryDomain; MemoryResource::Shared { id: 0, size: (1<<30) }; MmuDriver {};
@@ -675,7 +676,7 @@ mod compute_driver_tests {
                     .collect())).expect("Should have at least one core");
         vec![
             ComputeResource::CPU(255),
-            ComputeResource::GPU(0),
+            ComputeResource::GPU(0, 0, 0),
         ]);
     }
 
@@ -695,7 +696,7 @@ mod compute_driver_tests {
                     .collect())).expect("Should have at least one core");
         vec![
             ComputeResource::CPU(255),
-            ComputeResource::GPU(0),
+            ComputeResource::GPU(0, 0, 0),
         ]);
 
         #[cfg(target_arch = "aarch64")]
@@ -709,7 +710,7 @@ mod compute_driver_tests {
                     .collect())).expect("Should have at least one core");
         vec![
             ComputeResource::CPU(255),
-            ComputeResource::GPU(0),
+            ComputeResource::GPU(0, 0, 0),
         ]);
     }
 }

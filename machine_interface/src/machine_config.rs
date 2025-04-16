@@ -18,6 +18,10 @@ pub enum EngineType {
     RWasm,
     #[cfg(feature = "mmu")]
     Process,
+    #[cfg(feature = "gpu_thread")]
+    GpuThread,
+    #[cfg(feature = "gpu_process")]
+    GpuProcess,
     #[cfg(feature = "kvm")]
     Kvm,
 }
@@ -32,6 +36,8 @@ pub enum DomainType {
     RWasm,
     #[cfg(feature = "mmu")]
     Process,
+    #[cfg(feature = "gpu")]
+    Gpu,
 }
 
 pub fn get_compatibilty_table() -> BTreeMap<EngineType, DomainType> {
@@ -44,6 +50,10 @@ pub fn get_compatibilty_table() -> BTreeMap<EngineType, DomainType> {
         (EngineType::RWasm, DomainType::RWasm),
         #[cfg(feature = "mmu")]
         (EngineType::Process, DomainType::Process),
+        #[cfg(feature = "gpu_thread")]
+        (EngineType::GpuThread, DomainType::Gpu),
+        #[cfg(feature = "gpu_process")]
+        (EngineType::GpuProcess, DomainType::Gpu),
         #[cfg(feature = "kvm")]
         (EngineType::Kvm, DomainType::Mmap),
     ]);
@@ -77,6 +87,8 @@ pub fn get_available_domains(
                 size: 0,
             },
         ),
+        #[cfg(feature = "gpu")]
+        (DomainType::Gpu, MemoryResource::Shared { id: u64::MAX, size: 0 }),
         #[cfg(feature = "wasm")]
         (DomainType::RWasm, MemoryResource::Anonymous { size: 0 }),
     ]);
@@ -106,6 +118,11 @@ pub fn get_available_domains(
             DomainType::Process => (
                 dom_type,
                 Arc::new(crate::memory_domain::mmu::MmuMemoryDomain::init(resource).unwrap()),
+            ),
+            #[cfg(feature = "gpu")]
+            DomainType::Gpu => (
+                dom_type,
+                Arc::new(crate::memory_domain::gpu::GpuMemoryDomain::init(resource).unwrap()),
             ),
             #[cfg(feature = "wasm")]
             DomainType::RWasm => (
@@ -144,6 +161,20 @@ pub fn get_available_drivers() -> BTreeMap<EngineType, &'static dyn Driver> {
             EngineType::Process,
             Box::leak(Box::new(
                 crate::function_driver::compute_driver::mmu::MmuDriver {},
+            )) as &'static dyn Driver,
+        ),
+        #[cfg(feature = "gpu_thread")]
+        (
+            EngineType::GpuThread,
+            Box::leak(Box::new(
+                crate::function_driver::compute_driver::gpu::GpuThreadDriver {},
+            )) as &'static dyn Driver,
+        ),
+        #[cfg(feature = "gpu_process")]
+        (
+            EngineType::GpuProcess,
+            Box::leak(Box::new(
+                crate::function_driver::compute_driver::gpu::GpuProcessDriver {},
             )) as &'static dyn Driver,
         ),
         #[cfg(feature = "kvm")]

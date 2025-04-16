@@ -3,6 +3,8 @@
 pub mod bytes_context;
 #[cfg(feature = "cheri")]
 pub mod cheri;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod malloc;
 pub mod mmap;
 #[cfg(feature = "mmu")]
@@ -17,6 +19,7 @@ pub(crate) mod system_domain;
 
 use crate::{DataItem, DataSet, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 pub trait ContextTrait: Send + Sync {
@@ -48,6 +51,10 @@ pub enum ContextType {
     Mmu(Box<mmu::MmuContext>),
     #[cfg(feature = "wasm")]
     Wasm(Box<wasm::WasmContext>),
+    #[cfg(feature = "gpu")]
+    Gpu(Box<gpu::GpuContext>),
+    #[cfg(feature = "gpu_process")]
+    GpuProcess(Box<gpu::GpuProcessContext>),
     System(Box<system_domain::SystemContext>),
 
 }
@@ -64,6 +71,10 @@ impl ContextTrait for ContextType {
             ContextType::Mmu(context) => context.write(offset, data),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.write(offset, data),
+            #[cfg(feature = "gpu")]
+            ContextType::Gpu(context) => context.write(offset, data),
+            #[cfg(feature = "gpu_process")]
+            ContextType::GpuProcess(context) => context.write(offset, data),
             #[cfg(feature = "bytes_context")]
             ContextType::Bytes(context) => context.write(offset, data),
             ContextType::System(context) => context.write(offset, data),
@@ -80,6 +91,10 @@ impl ContextTrait for ContextType {
             ContextType::Mmu(context) => context.read(offset, read_buffer),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.read(offset, read_buffer),
+            #[cfg(feature = "gpu")]
+            ContextType::Gpu(context) => context.read(offset, read_buffer),
+            #[cfg(feature = "gpu_process")]
+            ContextType::GpuProcess(context) => context.read(offset, read_buffer),
             #[cfg(feature = "bytes_context")]
             ContextType::Bytes(context) => context.read(offset, read_buffer),
             ContextType::System(context) => context.read(offset, read_buffer),
@@ -96,6 +111,10 @@ impl ContextTrait for ContextType {
             ContextType::Mmu(context) => context.get_chunk_ref(offset, length),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.get_chunk_ref(offset, length),
+            #[cfg(feature = "gpu")]
+            ContextType::Gpu(context) => context.get_chunk_ref(offset, length),
+            #[cfg(feature = "gpu_process")]
+            ContextType::GpuProcess(context) => context.get_chunk_ref(offset, length),
             #[cfg(feature = "bytes_context")]
             ContextType::Bytes(context) => context.get_chunk_ref(offset, length),
             ContextType::System(context) => context.get_chunk_ref(offset, length),
@@ -103,7 +122,7 @@ impl ContextTrait for ContextType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum ContextState {
     InPreparation,
     Run(i32),
@@ -115,7 +134,7 @@ pub struct Context {
     pub content: Vec<Option<DataSet>>,
     pub size: usize,
     pub state: ContextState,
-    occupation: Vec<Position>,
+    pub occupation: Vec<Position>,
 }
 
 impl ContextTrait for Context {
@@ -266,6 +285,7 @@ pub fn transfer_memory(
     source_offset: usize,
     size: usize,
 ) -> DandelionResult<()> {
+    #[allow(clippy::needless_return)]
     return match (&mut destination.context, &source.context) {
         (ContextType::Malloc(destination_ctxt), ContextType::Malloc(source_ctxt)) => {
             malloc::malloc_transfer(
@@ -353,6 +373,24 @@ pub fn transfer_memory(
             system_domain::out_of_system_context_transfer(
                 destination,
                 &source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+            )
+        }
+        #[cfg(feature = "gpu")]
+        (ContextType::Gpu(destination_ctxt), ContextType::Gpu(source_ctxt)) => gpu::gpu_transfer(
+            destination_ctxt,
+            source_ctxt,
+            destination_offset,
+            source_offset,
+            size,
+        ),
+        #[cfg(all(feature = "gpu", feature = "bytes_context"))]
+        (ContextType::Gpu(destination_ctxt), ContextType::Bytes(source_ctxt)) => {
+            gpu::bytest_to_gpu_transfer(
+                destination_ctxt,
+                source_ctxt,
                 destination_offset,
                 source_offset,
                 size,

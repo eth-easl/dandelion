@@ -1,0 +1,24 @@
+{
+    "modules": [ { "module_name": "module.hsaco", "path": "module.hsaco" } ],
+    "kernels": [ 
+        { "module_name": "module.hsaco", "kernel_name": "set_mem" },
+        { "module_name": "module.hsaco", "kernel_name": "check_mem" },
+        { "module_name": "module.hsaco", "kernel_name": "hello_world" }
+    ],
+    "blueprint": {
+        "inputs": [],
+        "buffers": {"A": {"Absolute": 1024}},
+        "outputs": [],
+        "control_flow": [
+            {"ExecKernel": ["set_mem", [{"Ptr": "A"}, {"Sizeof": "A"}], {
+                "grid_dim_x": {"Absolute": 1}, 
+                "grid_dim_y": {"Absolute": 1}, 
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 1024}, 
+                "block_dim_y": {"Absolute": 1}, 
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]}
+        ]
+    } 
+}

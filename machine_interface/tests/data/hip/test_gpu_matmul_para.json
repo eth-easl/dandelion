@@ -1,0 +1,20 @@
+{
+    "modules": [ { "module_name": "mlops.hsaco", "path": "mlops.hsaco" } ],
+    "kernels": [ { "module_name": "mlops.hsaco", "kernel_name": "matmul_para" } ],
+    "blueprint": {
+        "inputs": ["cfg", "A"],
+        "buffers": {"B": {"Sizeof": "A"}},
+        "outputs": ["B"],
+        "control_flow": [
+            {"ExecKernel": ["matmul_para", [{"Ptr": "A"}, {"Sizeof": "A"}, {"Ptr": "B"}], {
+                "grid_dim_x": {"FromInput": {"bufname": "cfg", "idx": 0}}, 
+                "grid_dim_y": {"FromInput": {"bufname": "cfg", "idx": 0}}, 
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 32}, 
+                "block_dim_y": {"Absolute": 32}, 
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]}
+        ]
+    } 
+}

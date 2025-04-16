@@ -1,0 +1,44 @@
+{
+    "modules": [ { "module_name": "mlops.hsaco", "path": "mlops.hsaco" } ],
+    "kernels": [
+        { "module_name": "mlops.hsaco", "kernel_name": "convolution_f_batched" },
+        { "module_name": "mlops.hsaco", "kernel_name": "relu_2d_f_batched" },
+        { "module_name": "mlops.hsaco", "kernel_name": "maxpool_f_batched" }
+    ],
+    "blueprint": {
+        "inputs": ["cfg", "A", "B"],
+        "buffers": {"C": {"Sizeof": "A"}, "D": {"FromInput": {"bufname": "cfg", "idx": 0}}},
+        "outputs": ["D"],
+        "control_flow": [
+            {"Repeat": [{"FromInput": {"bufname": "cfg", "idx": 3}}, [
+                {"ExecKernel": ["convolution_f_batched", [{"Ptr": "C"}, {"Ptr": "A"}, {"Ptr": "B"}, {"Ptr": "cfg"}], {
+                    "grid_dim_x": {"FromInput": {"bufname": "cfg", "idx": 1}}, 
+                    "grid_dim_y": {"FromInput": {"bufname": "cfg", "idx": 1}}, 
+                    "grid_dim_z": {"FromInput": {"bufname": "cfg", "idx": 4}},
+                    "block_dim_x": {"Absolute": 32},
+                    "block_dim_y": {"Absolute": 32},
+                    "block_dim_z": {"Absolute": 1},
+                    "shared_mem_bytes": {"Absolute": 0}
+                }]},
+                {"ExecKernel": ["relu_2d_f_batched", [{"Ptr": "C"}, {"Ptr": "cfg"}], {
+                    "grid_dim_x": {"FromInput": {"bufname": "cfg", "idx": 1}}, 
+                    "grid_dim_y": {"FromInput": {"bufname": "cfg", "idx": 1}}, 
+                    "grid_dim_z": {"FromInput": {"bufname": "cfg", "idx": 4}},
+                    "block_dim_x": {"Absolute": 32},
+                    "block_dim_y": {"Absolute": 32},
+                    "block_dim_z": {"Absolute": 1},
+                    "shared_mem_bytes": {"Absolute": 0}
+                }]},
+                {"ExecKernel": ["maxpool_f_batched", [{"Ptr": "D"}, {"Ptr": "C"}, {"Constant": 2}, {"Ptr": "cfg"}], {
+                    "grid_dim_x": {"FromInput": {"bufname": "cfg", "idx": 2}}, 
+                    "grid_dim_y": {"FromInput": {"bufname": "cfg", "idx": 2}}, 
+                    "grid_dim_z": {"FromInput": {"bufname": "cfg", "idx": 4}},
+                    "block_dim_x": {"Absolute": 32},
+                    "block_dim_y": {"Absolute": 32},
+                    "block_dim_z": {"Absolute": 1},
+                    "shared_mem_bytes": {"Absolute": 0}
+                }]}]
+            ]}
+        ]
+    } 
+}

@@ -6,6 +6,8 @@ const DEFAULT_CONFIG_PATH: &str = "./dandelion.config";
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_SINGLE_CORE: bool = false;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
+const DEFAULT_GPU_COUNT: usize = 4;
+const DEFAULT_GPU_WORKER_COUNT: usize = 2;
 
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
@@ -26,6 +28,10 @@ pub struct DandelionConfig {
     pub frontend_cores: Option<usize>,
     #[arg(long, env)]
     pub io_cores: Option<usize>,
+    #[arg(long, env, default_value_t = DEFAULT_GPU_COUNT)]
+    pub gpu_count: usize,
+    #[arg(long, env, default_value_t = DEFAULT_GPU_WORKER_COUNT)]
+    pub gpu_worker_count: usize,
     #[arg(long, env, default_value_t = DEFAULT_TIMESTAMP_COUNT)]
     #[serde(default)]
     pub timestamp_count: usize,
@@ -60,6 +66,14 @@ impl DandelionConfig {
         }
         if let Some(other_val) = other.io_cores {
             self.io_cores.get_or_insert(other_val);
+        }
+        if self.gpu_count != DEFAULT_GPU_COUNT && other.gpu_count != default.gpu_count {
+            self.gpu_count = other.gpu_count;
+        }
+        if self.gpu_worker_count != DEFAULT_GPU_WORKER_COUNT
+            && other.gpu_worker_count != default.gpu_worker_count
+        {
+            self.gpu_worker_count = other.gpu_worker_count;
         }
         // timestamp count
         if other.timestamp_count != DEFAULT_TIMESTAMP_COUNT

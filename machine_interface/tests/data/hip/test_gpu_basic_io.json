@@ -1,0 +1,20 @@
+{
+    "modules": [ { "module_name": "module.hsaco", "path": "module.hsaco" } ],
+    "kernels": [ { "module_name": "module.hsaco", "kernel_name": "check_then_write" } ],
+    "blueprint": {
+        "inputs": ["A"],
+        "buffers": {},
+        "outputs": ["A"],
+        "control_flow": [
+            {"ExecKernel": ["check_then_write", [{"Ptr": "A"}], {
+                "grid_dim_x": {"Absolute": 1}, 
+                "grid_dim_y": {"Absolute": 1}, 
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 1}, 
+                "block_dim_y": {"Absolute": 1}, 
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]}
+        ]
+    } 
+}

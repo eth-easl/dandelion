@@ -1,0 +1,22 @@
+{
+    "modules": [{"module_name": "simple.cubin", "path": "cuda/simple.cubin"}],
+    "kernels": [
+        {"module_name": "simple.cubin", "kernel_name": "tvmgen_default_fused_nn_dense_kernel"}
+    ],
+    "blueprint": {
+        "inputs": ["test", "p0"],
+        "buffers": {"output": {"Absolute": 8}},
+        "outputs": ["output"],
+        "control_flow": [
+            {"ExecKernel": ["tvmgen_default_fused_nn_dense_kernel", [{"Ptr": "output"}, {"Ptr": "test"}, {"Ptr": "p0"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 2},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 64},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]}
+        ]
+    }
+}

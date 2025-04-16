@@ -472,6 +472,7 @@ impl Dispatcher {
                 }
             }
         }
+
         for (function_set, context_set) in inputs {
             if static_sets.contains(&function_set) {
                 trace!(

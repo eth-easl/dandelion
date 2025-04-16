@@ -17,8 +17,8 @@ type WasmEntryPoint = fn(&mut [u8], usize) -> Option<i32>;
 struct WasmLoop {}
 
 impl EngineLoop for WasmLoop {
-    fn init(_core_id: u8) -> DandelionResult<Box<Self>> {
-        return Ok(Box::new(WasmLoop {}));
+    fn init(_core_id: ComputeResource) -> DandelionResult<Box<Self>> {
+        Ok(Box::new(WasmLoop {}))
     }
     fn run(
         &mut self,
@@ -71,7 +71,7 @@ impl Driver for WasmDriver {
     fn start_engine(
         &self,
         resource: ComputeResource,
-        queue: Box<dyn WorkQueue + Send>,
+        queue: Box<dyn WorkQueue + Send + Sync>,
     ) -> DandelionResult<()> {
         // sanity checks; extract core id
         let cpu_slot = match resource {

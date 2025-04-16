@@ -1,0 +1,592 @@
+{
+    "modules": [
+        {"module_name": "tem_fused_conv2d_0.hsaco", "path": "hip/resnet34batch8/tem_fused_conv2d_0.hsaco"},
+        {"module_name": "poi_fused_miopen_batch_norm_relu_1.hsaco", "path": "hip/resnet34batch8/poi_fused_miopen_batch_norm_relu_1.hsaco"},
+        {"module_name": "poi_fused_max_pool2d_miopen_batch_norm_relu_2.hsaco", "path": "hip/resnet34batch8/poi_fused_max_pool2d_miopen_batch_norm_relu_2.hsaco"},
+        {"module_name": "tem_fused_conv2d_miopen_batch_norm_relu_3.hsaco", "path": "hip/resnet34batch8/tem_fused_conv2d_miopen_batch_norm_relu_3.hsaco"},
+        {"module_name": "tem_fused_conv2d_miopen_batch_norm_relu_4.hsaco", "path": "hip/resnet34batch8/tem_fused_conv2d_miopen_batch_norm_relu_4.hsaco"},
+        {"module_name": "poi_fused_add_miopen_batch_norm_relu_5.hsaco", "path": "hip/resnet34batch8/poi_fused_add_miopen_batch_norm_relu_5.hsaco"},
+        {"module_name": "tem_fused_conv2d_miopen_batch_norm_relu_6.hsaco", "path": "hip/resnet34batch8/tem_fused_conv2d_miopen_batch_norm_relu_6.hsaco"},
+        {"module_name": "tem_fused_conv2d_miopen_batch_norm_relu_7.hsaco", "path": "hip/resnet34batch8/tem_fused_conv2d_miopen_batch_norm_relu_7.hsaco"},
+        {"module_name": "tem_fused_conv2d_8.hsaco", "path": "hip/resnet34batch8/tem_fused_conv2d_8.hsaco"},
+        {"module_name": "poi_fused_add_miopen_batch_norm_relu_9.hsaco", "path": "hip/resnet34batch8/poi_fused_add_miopen_batch_norm_relu_9.hsaco"},
+        {"module_name": "poi_fused_conv2d_miopen_batch_norm_relu_10.hsaco", "path": "hip/resnet34batch8/poi_fused_conv2d_miopen_batch_norm_relu_10.hsaco"},
+        {"module_name": "poi_fused_add_miopen_batch_norm_relu_11.hsaco", "path": "hip/resnet34batch8/poi_fused_add_miopen_batch_norm_relu_11.hsaco"},
+        {"module_name": "tem_fused_conv2d_miopen_batch_norm_relu_12.hsaco", "path": "hip/resnet34batch8/tem_fused_conv2d_miopen_batch_norm_relu_12.hsaco"},
+        {"module_name": "tem_fused_conv2d_miopen_batch_norm_relu_13.hsaco", "path": "hip/resnet34batch8/tem_fused_conv2d_miopen_batch_norm_relu_13.hsaco"},
+        {"module_name": "tem_fused_add_conv2d_miopen_batch_norm_relu_14.hsaco", "path": "hip/resnet34batch8/tem_fused_add_conv2d_miopen_batch_norm_relu_14.hsaco"},
+        {"module_name": "tem_fused_conv2d_miopen_batch_norm_relu_15.hsaco", "path": "hip/resnet34batch8/tem_fused_conv2d_miopen_batch_norm_relu_15.hsaco"},
+        {"module_name": "poi_fused_add_miopen_batch_norm_relu_16.hsaco", "path": "hip/resnet34batch8/poi_fused_add_miopen_batch_norm_relu_16.hsaco"},
+        {"module_name": "tem_fused_conv2d_17.hsaco", "path": "hip/resnet34batch8/tem_fused_conv2d_17.hsaco"},
+        {"module_name": "poi_fused_conv2d_miopen_batch_norm_relu_18.hsaco", "path": "hip/resnet34batch8/poi_fused_conv2d_miopen_batch_norm_relu_18.hsaco"},
+        {"module_name": "tem_fused_conv2d_miopen_batch_norm_relu_19.hsaco", "path": "hip/resnet34batch8/tem_fused_conv2d_miopen_batch_norm_relu_19.hsaco"},
+        {"module_name": "tem_fused_add_conv2d_miopen_batch_norm_relu_20.hsaco", "path": "hip/resnet34batch8/tem_fused_add_conv2d_miopen_batch_norm_relu_20.hsaco"},
+        {"module_name": "poi_fused_add_miopen_batch_norm_relu_21.hsaco", "path": "hip/resnet34batch8/poi_fused_add_miopen_batch_norm_relu_21.hsaco"},
+        {"module_name": "per_fused_adaptive_avg_pool2d_add_miopen_batch_norm_relu_22.hsaco", "path": "hip/resnet34batch8/per_fused_adaptive_avg_pool2d_add_miopen_batch_norm_relu_22.hsaco"},
+        {"module_name": "tem_fused_linear_23.hsaco", "path": "hip/resnet34batch8/tem_fused_linear_23.hsaco"}
+    ],
+    "kernels": [
+        {"module_name": "tem_fused_conv2d_0.hsaco", "kernel_name": "kern000"},
+        {"module_name": "poi_fused_miopen_batch_norm_relu_1.hsaco", "kernel_name": "kern001"},
+        {"module_name": "poi_fused_max_pool2d_miopen_batch_norm_relu_2.hsaco", "kernel_name": "kern002"},
+        {"module_name": "tem_fused_conv2d_miopen_batch_norm_relu_3.hsaco", "kernel_name": "kern003"},
+        {"module_name": "tem_fused_conv2d_miopen_batch_norm_relu_4.hsaco", "kernel_name": "kern004"},
+        {"module_name": "poi_fused_add_miopen_batch_norm_relu_5.hsaco", "kernel_name": "kern005"},
+        {"module_name": "tem_fused_conv2d_miopen_batch_norm_relu_6.hsaco", "kernel_name": "kern012"},
+        {"module_name": "tem_fused_conv2d_miopen_batch_norm_relu_7.hsaco", "kernel_name": "kern013"},
+        {"module_name": "tem_fused_conv2d_8.hsaco", "kernel_name": "kern014"},
+        {"module_name": "poi_fused_add_miopen_batch_norm_relu_9.hsaco", "kernel_name": "kern015"},
+        {"module_name": "poi_fused_conv2d_miopen_batch_norm_relu_10.hsaco", "kernel_name": "kern017"},
+        {"module_name": "poi_fused_add_miopen_batch_norm_relu_11.hsaco", "kernel_name": "kern019"},
+        {"module_name": "tem_fused_conv2d_miopen_batch_norm_relu_12.hsaco", "kernel_name": "kern028"},
+        {"module_name": "tem_fused_conv2d_miopen_batch_norm_relu_13.hsaco", "kernel_name": "kern029"},
+        {"module_name": "tem_fused_add_conv2d_miopen_batch_norm_relu_14.hsaco", "kernel_name": "kern030"},
+        {"module_name": "tem_fused_conv2d_miopen_batch_norm_relu_15.hsaco", "kernel_name": "kern031"},
+        {"module_name": "poi_fused_add_miopen_batch_norm_relu_16.hsaco", "kernel_name": "kern033"},
+        {"module_name": "tem_fused_conv2d_17.hsaco", "kernel_name": "kern046"},
+        {"module_name": "poi_fused_conv2d_miopen_batch_norm_relu_18.hsaco", "kernel_name": "kern047"},
+        {"module_name": "tem_fused_conv2d_miopen_batch_norm_relu_19.hsaco", "kernel_name": "kern048"},
+        {"module_name": "tem_fused_add_conv2d_miopen_batch_norm_relu_20.hsaco", "kernel_name": "kern049"},
+        {"module_name": "poi_fused_add_miopen_batch_norm_relu_21.hsaco", "kernel_name": "kern053"},
+        {"module_name": "per_fused_adaptive_avg_pool2d_add_miopen_batch_norm_relu_22.hsaco", "kernel_name": "kern057"},
+        {"module_name": "tem_fused_linear_23.hsaco", "kernel_name": "kern058"}
+    ],
+    "blueprint": {
+        "inputs": ["arg218_1", "conv1_weight", "bn1_running_mean", "bn1_running_var", "bn1_weight", "bn1_bias", "var_8", "var_11", "layer1_0_conv1_weight", "layer1_0_bn1_running_mean", "layer1_0_bn1_running_var", "layer1_0_bn1_weight", "layer1_0_bn1_bias", "layer1_0_conv2_weight", "layer1_0_bn2_running_mean", "layer1_0_bn2_running_var", "layer1_0_bn2_weight", "layer1_0_bn2_bias", "var_28", "layer1_1_conv1_weight", "layer1_1_bn1_running_mean", "layer1_1_bn1_running_var", "layer1_1_bn1_weight", "layer1_1_bn1_bias", "layer1_1_conv2_weight", "layer1_1_bn2_running_mean", "layer1_1_bn2_running_var", "layer1_1_bn2_weight", "layer1_1_bn2_bias", "var_45", "layer1_2_conv1_weight", "layer1_2_bn1_running_mean", "layer1_2_bn1_running_var", "layer1_2_bn1_weight", "layer1_2_bn1_bias", "layer1_2_conv2_weight", "layer1_2_bn2_running_mean", "layer1_2_bn2_running_var", "layer1_2_bn2_weight", "layer1_2_bn2_bias", "var_62", "layer2_0_conv1_weight", "layer2_0_bn1_running_mean", "layer2_0_bn1_running_var", "layer2_0_bn1_weight", "layer2_0_bn1_bias", "layer2_0_conv2_weight", "layer2_0_downsample_0_weight", "layer2_0_bn2_running_mean", "layer2_0_bn2_running_var", "layer2_0_bn2_weight", "layer2_0_bn2_bias", "layer2_0_downsample_1_running_mean", "layer2_0_downsample_1_running_var", "layer2_0_downsample_1_weight", "layer2_0_downsample_1_bias", "var_86", "layer2_1_conv1_weight", "layer2_1_bn1_running_mean", "layer2_1_bn1_running_var", "layer2_1_bn1_weight", "layer2_1_bn1_bias", "var_95", "layer2_1_conv2_weight", "layer2_1_bn2_running_mean", "layer2_1_bn2_running_var", "layer2_1_bn2_weight", "layer2_1_bn2_bias", "var_105", "layer2_2_conv1_weight", "layer2_2_bn1_running_mean", "layer2_2_bn1_running_var", "layer2_2_bn1_weight", "layer2_2_bn1_bias", "var_114", "layer2_2_conv2_weight", "layer2_2_bn2_running_mean", "layer2_2_bn2_running_var", "layer2_2_bn2_weight", "layer2_2_bn2_bias", "var_124", "layer2_3_conv1_weight", "layer2_3_bn1_running_mean", "layer2_3_bn1_running_var", "layer2_3_bn1_weight", "layer2_3_bn1_bias", "var_133", "layer2_3_conv2_weight", "layer2_3_bn2_running_mean", "layer2_3_bn2_running_var", "layer2_3_bn2_weight", "layer2_3_bn2_bias", "var_143", "layer3_0_conv1_weight", "layer3_0_bn1_running_mean", "layer3_0_bn1_running_var", "layer3_0_bn1_weight", "layer3_0_bn1_bias", "layer3_0_conv2_weight", "layer3_0_downsample_0_weight", "layer3_0_bn2_running_mean", "layer3_0_bn2_running_var", "layer3_0_bn2_weight", "layer3_0_bn2_bias", "layer3_0_downsample_1_running_mean", "layer3_0_downsample_1_running_var", "layer3_0_downsample_1_weight", "layer3_0_downsample_1_bias", "layer3_1_conv1_weight", "layer3_1_bn1_running_mean", "layer3_1_bn1_running_var", "layer3_1_bn1_weight", "layer3_1_bn1_bias", "layer3_1_conv2_weight", "layer3_1_bn2_running_mean", "layer3_1_bn2_running_var", "layer3_1_bn2_weight", "layer3_1_bn2_bias", "var_182", "layer3_2_conv1_weight", "layer3_2_bn1_running_mean", "layer3_2_bn1_running_var", "layer3_2_bn1_weight", "layer3_2_bn1_bias", "layer3_2_conv2_weight", "layer3_2_bn2_running_mean", "layer3_2_bn2_running_var", "layer3_2_bn2_weight", "layer3_2_bn2_bias", "var_199", "layer3_3_conv1_weight", "layer3_3_bn1_running_mean", "layer3_3_bn1_running_var", "layer3_3_bn1_weight", "layer3_3_bn1_bias", "layer3_3_conv2_weight", "layer3_3_bn2_running_mean", "layer3_3_bn2_running_var", "layer3_3_bn2_weight", "layer3_3_bn2_bias", "var_216", "layer3_4_conv1_weight", "layer3_4_bn1_running_mean", "layer3_4_bn1_running_var", "layer3_4_bn1_weight", "layer3_4_bn1_bias", "layer3_4_conv2_weight", "layer3_4_bn2_running_mean", "layer3_4_bn2_running_var", "layer3_4_bn2_weight", "layer3_4_bn2_bias", "var_233", "layer3_5_conv1_weight", "layer3_5_bn1_running_mean", "layer3_5_bn1_running_var", "layer3_5_bn1_weight", "layer3_5_bn1_bias", "layer3_5_conv2_weight", "layer3_5_bn2_running_mean", "layer3_5_bn2_running_var", "layer3_5_bn2_weight", "layer3_5_bn2_bias", "var_250", "layer4_0_conv1_weight", "layer4_0_bn1_running_mean", "layer4_0_bn1_running_var", "layer4_0_bn1_weight", "layer4_0_bn1_bias", "var_259", "layer4_0_conv2_weight", "layer4_0_downsample_0_weight", "layer4_0_bn2_running_mean", "layer4_0_bn2_running_var", "layer4_0_bn2_weight", "layer4_0_bn2_bias", "layer4_0_downsample_1_running_mean", "layer4_0_downsample_1_running_var", "layer4_0_downsample_1_weight", "layer4_0_downsample_1_bias", "layer4_1_conv1_weight", "layer4_1_bn1_running_mean", "layer4_1_bn1_running_var", "layer4_1_bn1_weight", "layer4_1_bn1_bias", "var_283", "layer4_1_conv2_weight", "layer4_1_bn2_running_mean", "layer4_1_bn2_running_var", "layer4_1_bn2_weight", "layer4_1_bn2_bias", "var_293", "layer4_2_conv1_weight", "layer4_2_bn1_running_mean", "layer4_2_bn1_running_var", "layer4_2_bn1_weight", "layer4_2_bn1_bias", "var_302", "layer4_2_conv2_weight", "layer4_2_bn2_running_mean", "layer4_2_bn2_running_var", "layer4_2_bn2_weight", "layer4_2_bn2_bias", "var_313", "var_314", "fc_bias", "fc_weight"],
+        "buffers": {"buf0": {"Absolute": 25690112}, "buf2": {"Absolute": 6422528}, "buf4": {"Absolute": 6422528}, "buf5": {"Absolute": 6422528}, "buf16": {"Absolute": 3211264}, "buf17": {"Absolute": 3211264}, "buf23": {"Absolute": 3211264}, "buf34": {"Absolute": 1605632}, "buf35": {"Absolute": 1605632}, "buf41": {"Absolute": 1605632}, "buf59": {"Absolute": 802816}, "buf61": {"Absolute": 802816}, "buf67": {"Absolute": 802816}, "buf72": {"Absolute": 16384}, "buf74": {"Absolute": 32000}},
+        "outputs": ["buf74"],
+        "control_flow": [
+            {"ExecKernel": ["kern000", [{"Ptr": "arg218_1"}, {"Ptr": "conv1_weight"}, {"Ptr": "buf0"}], {
+                "grid_dim_x": {"Absolute": 784},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 512},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 8192}
+            }]},
+            {"ExecKernel": ["kern001", [{"Ptr": "buf0"}, {"Ptr": "bn1_running_mean"}, {"Ptr": "bn1_running_var"}, {"Ptr": "bn1_weight"}, {"Ptr": "bn1_bias"}, {"Ptr": "var_8"}], {
+                "grid_dim_x": {"Absolute": 6272},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern002", [{"Ptr": "buf0"}, {"Ptr": "buf2"}, {"Ptr": "var_11"}], {
+                "grid_dim_x": {"Absolute": 3136},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern003", [{"Ptr": "buf2"}, {"Ptr": "layer1_0_conv1_weight"}, {"Ptr": "layer1_0_bn1_running_mean"}, {"Ptr": "layer1_0_bn1_running_var"}, {"Ptr": "layer1_0_bn1_weight"}, {"Ptr": "layer1_0_bn1_bias"}, {"Ptr": "buf4"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 512},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 32768}
+            }]},
+            {"ExecKernel": ["kern004", [{"Ptr": "buf4"}, {"Ptr": "layer1_0_conv2_weight"}, {"Ptr": "buf5"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 512},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 32768}
+            }]},
+            {"ExecKernel": ["kern005", [{"Ptr": "buf2"}, {"Ptr": "buf5"}, {"Ptr": "layer1_0_bn2_running_mean"}, {"Ptr": "layer1_0_bn2_running_var"}, {"Ptr": "layer1_0_bn2_weight"}, {"Ptr": "layer1_0_bn2_bias"}, {"Ptr": "var_28"}], {
+                "grid_dim_x": {"Absolute": 3136},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern003", [{"Ptr": "buf2"}, {"Ptr": "layer1_1_conv1_weight"}, {"Ptr": "layer1_1_bn1_running_mean"}, {"Ptr": "layer1_1_bn1_running_var"}, {"Ptr": "layer1_1_bn1_weight"}, {"Ptr": "layer1_1_bn1_bias"}, {"Ptr": "buf5"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 512},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 32768}
+            }]},
+            {"ExecKernel": ["kern004", [{"Ptr": "buf5"}, {"Ptr": "layer1_1_conv2_weight"}, {"Ptr": "buf4"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 512},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 32768}
+            }]},
+            {"ExecKernel": ["kern005", [{"Ptr": "buf2"}, {"Ptr": "buf4"}, {"Ptr": "layer1_1_bn2_running_mean"}, {"Ptr": "layer1_1_bn2_running_var"}, {"Ptr": "layer1_1_bn2_weight"}, {"Ptr": "layer1_1_bn2_bias"}, {"Ptr": "var_45"}], {
+                "grid_dim_x": {"Absolute": 3136},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern003", [{"Ptr": "buf2"}, {"Ptr": "layer1_2_conv1_weight"}, {"Ptr": "layer1_2_bn1_running_mean"}, {"Ptr": "layer1_2_bn1_running_var"}, {"Ptr": "layer1_2_bn1_weight"}, {"Ptr": "layer1_2_bn1_bias"}, {"Ptr": "buf4"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 512},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 32768}
+            }]},
+            {"ExecKernel": ["kern004", [{"Ptr": "buf4"}, {"Ptr": "layer1_2_conv2_weight"}, {"Ptr": "buf5"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 512},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 32768}
+            }]},
+            {"ExecKernel": ["kern005", [{"Ptr": "buf2"}, {"Ptr": "buf5"}, {"Ptr": "layer1_2_bn2_running_mean"}, {"Ptr": "layer1_2_bn2_running_var"}, {"Ptr": "layer1_2_bn2_weight"}, {"Ptr": "layer1_2_bn2_bias"}, {"Ptr": "var_62"}], {
+                "grid_dim_x": {"Absolute": 3136},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern012", [{"Ptr": "buf2"}, {"Ptr": "layer2_0_conv1_weight"}, {"Ptr": "layer2_0_bn1_running_mean"}, {"Ptr": "layer2_0_bn1_running_var"}, {"Ptr": "layer2_0_bn1_weight"}, {"Ptr": "layer2_0_bn1_bias"}, {"Ptr": "buf16"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 2},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 8704}
+            }]},
+            {"ExecKernel": ["kern013", [{"Ptr": "buf16"}, {"Ptr": "layer2_0_conv2_weight"}, {"Ptr": "buf17"}], {
+                "grid_dim_x": {"Absolute": 25},
+                "grid_dim_y": {"Absolute": 2},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 512},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 32768}
+            }]},
+            {"ExecKernel": ["kern014", [{"Ptr": "buf2"}, {"Ptr": "layer2_0_downsample_0_weight"}, {"Ptr": "buf16"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 2},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 8192}
+            }]},
+            {"ExecKernel": ["kern015", [{"Ptr": "buf17"}, {"Ptr": "layer2_0_bn2_running_mean"}, {"Ptr": "layer2_0_bn2_running_var"}, {"Ptr": "layer2_0_bn2_weight"}, {"Ptr": "layer2_0_bn2_bias"}, {"Ptr": "buf16"}, {"Ptr": "layer2_0_downsample_1_running_mean"}, {"Ptr": "layer2_0_downsample_1_running_var"}, {"Ptr": "layer2_0_downsample_1_weight"}, {"Ptr": "layer2_0_downsample_1_bias"}, {"Ptr": "var_86"}], {
+                "grid_dim_x": {"Absolute": 784},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern013", [{"Ptr": "buf17"}, {"Ptr": "layer2_1_conv1_weight"}, {"Ptr": "buf16"}], {
+                "grid_dim_x": {"Absolute": 25},
+                "grid_dim_y": {"Absolute": 2},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 512},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 32768}
+            }]},
+            {"ExecKernel": ["kern017", [{"Ptr": "buf16"}, {"Ptr": "layer2_1_bn1_running_mean"}, {"Ptr": "layer2_1_bn1_running_var"}, {"Ptr": "layer2_1_bn1_weight"}, {"Ptr": "layer2_1_bn1_bias"}, {"Ptr": "var_95"}], {
+                "grid_dim_x": {"Absolute": 784},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern013", [{"Ptr": "buf16"}, {"Ptr": "layer2_1_conv2_weight"}, {"Ptr": "buf23"}], {
+                "grid_dim_x": {"Absolute": 25},
+                "grid_dim_y": {"Absolute": 2},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 512},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 32768}
+            }]},
+            {"ExecKernel": ["kern019", [{"Ptr": "buf17"}, {"Ptr": "buf23"}, {"Ptr": "layer2_1_bn2_running_mean"}, {"Ptr": "layer2_1_bn2_running_var"}, {"Ptr": "layer2_1_bn2_weight"}, {"Ptr": "layer2_1_bn2_bias"}, {"Ptr": "var_105"}], {
+                "grid_dim_x": {"Absolute": 1568},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern013", [{"Ptr": "buf17"}, {"Ptr": "layer2_2_conv1_weight"}, {"Ptr": "buf23"}], {
+                "grid_dim_x": {"Absolute": 25},
+                "grid_dim_y": {"Absolute": 2},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 512},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 32768}
+            }]},
+            {"ExecKernel": ["kern017", [{"Ptr": "buf23"}, {"Ptr": "layer2_2_bn1_running_mean"}, {"Ptr": "layer2_2_bn1_running_var"}, {"Ptr": "layer2_2_bn1_weight"}, {"Ptr": "layer2_2_bn1_bias"}, {"Ptr": "var_114"}], {
+                "grid_dim_x": {"Absolute": 784},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern013", [{"Ptr": "buf23"}, {"Ptr": "layer2_2_conv2_weight"}, {"Ptr": "buf16"}], {
+                "grid_dim_x": {"Absolute": 25},
+                "grid_dim_y": {"Absolute": 2},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 512},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 32768}
+            }]},
+            {"ExecKernel": ["kern019", [{"Ptr": "buf17"}, {"Ptr": "buf16"}, {"Ptr": "layer2_2_bn2_running_mean"}, {"Ptr": "layer2_2_bn2_running_var"}, {"Ptr": "layer2_2_bn2_weight"}, {"Ptr": "layer2_2_bn2_bias"}, {"Ptr": "var_124"}], {
+                "grid_dim_x": {"Absolute": 1568},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern013", [{"Ptr": "buf17"}, {"Ptr": "layer2_3_conv1_weight"}, {"Ptr": "buf16"}], {
+                "grid_dim_x": {"Absolute": 25},
+                "grid_dim_y": {"Absolute": 2},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 512},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 32768}
+            }]},
+            {"ExecKernel": ["kern017", [{"Ptr": "buf16"}, {"Ptr": "layer2_3_bn1_running_mean"}, {"Ptr": "layer2_3_bn1_running_var"}, {"Ptr": "layer2_3_bn1_weight"}, {"Ptr": "layer2_3_bn1_bias"}, {"Ptr": "var_133"}], {
+                "grid_dim_x": {"Absolute": 784},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern013", [{"Ptr": "buf16"}, {"Ptr": "layer2_3_conv2_weight"}, {"Ptr": "buf23"}], {
+                "grid_dim_x": {"Absolute": 25},
+                "grid_dim_y": {"Absolute": 2},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 512},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 32768}
+            }]},
+            {"ExecKernel": ["kern019", [{"Ptr": "buf17"}, {"Ptr": "buf23"}, {"Ptr": "layer2_3_bn2_running_mean"}, {"Ptr": "layer2_3_bn2_running_var"}, {"Ptr": "layer2_3_bn2_weight"}, {"Ptr": "layer2_3_bn2_bias"}, {"Ptr": "var_143"}], {
+                "grid_dim_x": {"Absolute": 1568},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern028", [{"Ptr": "buf17"}, {"Ptr": "layer3_0_conv1_weight"}, {"Ptr": "layer3_0_bn1_running_mean"}, {"Ptr": "layer3_0_bn1_running_var"}, {"Ptr": "layer3_0_bn1_weight"}, {"Ptr": "layer3_0_bn1_bias"}, {"Ptr": "buf34"}], {
+                "grid_dim_x": {"Absolute": 25},
+                "grid_dim_y": {"Absolute": 4},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 17408}
+            }]},
+            {"ExecKernel": ["kern029", [{"Ptr": "buf34"}, {"Ptr": "layer3_0_conv2_weight"}, {"Ptr": "buf35"}], {
+                "grid_dim_x": {"Absolute": 25},
+                "grid_dim_y": {"Absolute": 4},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 8192}
+            }]},
+            {"ExecKernel": ["kern030", [{"Ptr": "buf17"}, {"Ptr": "layer3_0_downsample_0_weight"}, {"Ptr": "buf35"}, {"Ptr": "layer3_0_bn2_running_mean"}, {"Ptr": "layer3_0_bn2_running_var"}, {"Ptr": "layer3_0_bn2_weight"}, {"Ptr": "layer3_0_bn2_bias"}, {"Ptr": "layer3_0_downsample_1_running_mean"}, {"Ptr": "layer3_0_downsample_1_running_var"}, {"Ptr": "layer3_0_downsample_1_weight"}, {"Ptr": "layer3_0_downsample_1_bias"}, {"Ptr": "buf34"}], {
+                "grid_dim_x": {"Absolute": 25},
+                "grid_dim_y": {"Absolute": 4},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 17408}
+            }]},
+            {"ExecKernel": ["kern031", [{"Ptr": "buf34"}, {"Ptr": "layer3_1_conv1_weight"}, {"Ptr": "layer3_1_bn1_running_mean"}, {"Ptr": "layer3_1_bn1_running_var"}, {"Ptr": "layer3_1_bn1_weight"}, {"Ptr": "layer3_1_bn1_bias"}, {"Ptr": "buf35"}], {
+                "grid_dim_x": {"Absolute": 25},
+                "grid_dim_y": {"Absolute": 4},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 17408}
+            }]},
+            {"ExecKernel": ["kern029", [{"Ptr": "buf35"}, {"Ptr": "layer3_1_conv2_weight"}, {"Ptr": "buf41"}], {
+                "grid_dim_x": {"Absolute": 25},
+                "grid_dim_y": {"Absolute": 4},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 8192}
+            }]},
+            {"ExecKernel": ["kern033", [{"Ptr": "buf34"}, {"Ptr": "buf41"}, {"Ptr": "layer3_1_bn2_running_mean"}, {"Ptr": "layer3_1_bn2_running_var"}, {"Ptr": "layer3_1_bn2_weight"}, {"Ptr": "layer3_1_bn2_bias"}, {"Ptr": "var_182"}], {
+                "grid_dim_x": {"Absolute": 392},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern031", [{"Ptr": "buf34"}, {"Ptr": "layer3_2_conv1_weight"}, {"Ptr": "layer3_2_bn1_running_mean"}, {"Ptr": "layer3_2_bn1_running_var"}, {"Ptr": "layer3_2_bn1_weight"}, {"Ptr": "layer3_2_bn1_bias"}, {"Ptr": "buf41"}], {
+                "grid_dim_x": {"Absolute": 25},
+                "grid_dim_y": {"Absolute": 4},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 17408}
+            }]},
+            {"ExecKernel": ["kern029", [{"Ptr": "buf41"}, {"Ptr": "layer3_2_conv2_weight"}, {"Ptr": "buf35"}], {
+                "grid_dim_x": {"Absolute": 25},
+                "grid_dim_y": {"Absolute": 4},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 8192}
+            }]},
+            {"ExecKernel": ["kern033", [{"Ptr": "buf34"}, {"Ptr": "buf35"}, {"Ptr": "layer3_2_bn2_running_mean"}, {"Ptr": "layer3_2_bn2_running_var"}, {"Ptr": "layer3_2_bn2_weight"}, {"Ptr": "layer3_2_bn2_bias"}, {"Ptr": "var_199"}], {
+                "grid_dim_x": {"Absolute": 392},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern031", [{"Ptr": "buf34"}, {"Ptr": "layer3_3_conv1_weight"}, {"Ptr": "layer3_3_bn1_running_mean"}, {"Ptr": "layer3_3_bn1_running_var"}, {"Ptr": "layer3_3_bn1_weight"}, {"Ptr": "layer3_3_bn1_bias"}, {"Ptr": "buf35"}], {
+                "grid_dim_x": {"Absolute": 25},
+                "grid_dim_y": {"Absolute": 4},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 17408}
+            }]},
+            {"ExecKernel": ["kern029", [{"Ptr": "buf35"}, {"Ptr": "layer3_3_conv2_weight"}, {"Ptr": "buf41"}], {
+                "grid_dim_x": {"Absolute": 25},
+                "grid_dim_y": {"Absolute": 4},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 8192}
+            }]},
+            {"ExecKernel": ["kern033", [{"Ptr": "buf34"}, {"Ptr": "buf41"}, {"Ptr": "layer3_3_bn2_running_mean"}, {"Ptr": "layer3_3_bn2_running_var"}, {"Ptr": "layer3_3_bn2_weight"}, {"Ptr": "layer3_3_bn2_bias"}, {"Ptr": "var_216"}], {
+                "grid_dim_x": {"Absolute": 392},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern031", [{"Ptr": "buf34"}, {"Ptr": "layer3_4_conv1_weight"}, {"Ptr": "layer3_4_bn1_running_mean"}, {"Ptr": "layer3_4_bn1_running_var"}, {"Ptr": "layer3_4_bn1_weight"}, {"Ptr": "layer3_4_bn1_bias"}, {"Ptr": "buf41"}], {
+                "grid_dim_x": {"Absolute": 25},
+                "grid_dim_y": {"Absolute": 4},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 17408}
+            }]},
+            {"ExecKernel": ["kern029", [{"Ptr": "buf41"}, {"Ptr": "layer3_4_conv2_weight"}, {"Ptr": "buf35"}], {
+                "grid_dim_x": {"Absolute": 25},
+                "grid_dim_y": {"Absolute": 4},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 8192}
+            }]},
+            {"ExecKernel": ["kern033", [{"Ptr": "buf34"}, {"Ptr": "buf35"}, {"Ptr": "layer3_4_bn2_running_mean"}, {"Ptr": "layer3_4_bn2_running_var"}, {"Ptr": "layer3_4_bn2_weight"}, {"Ptr": "layer3_4_bn2_bias"}, {"Ptr": "var_233"}], {
+                "grid_dim_x": {"Absolute": 392},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern031", [{"Ptr": "buf34"}, {"Ptr": "layer3_5_conv1_weight"}, {"Ptr": "layer3_5_bn1_running_mean"}, {"Ptr": "layer3_5_bn1_running_var"}, {"Ptr": "layer3_5_bn1_weight"}, {"Ptr": "layer3_5_bn1_bias"}, {"Ptr": "buf35"}], {
+                "grid_dim_x": {"Absolute": 25},
+                "grid_dim_y": {"Absolute": 4},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 17408}
+            }]},
+            {"ExecKernel": ["kern029", [{"Ptr": "buf35"}, {"Ptr": "layer3_5_conv2_weight"}, {"Ptr": "buf41"}], {
+                "grid_dim_x": {"Absolute": 25},
+                "grid_dim_y": {"Absolute": 4},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 8192}
+            }]},
+            {"ExecKernel": ["kern033", [{"Ptr": "buf34"}, {"Ptr": "buf41"}, {"Ptr": "layer3_5_bn2_running_mean"}, {"Ptr": "layer3_5_bn2_running_var"}, {"Ptr": "layer3_5_bn2_weight"}, {"Ptr": "layer3_5_bn2_bias"}, {"Ptr": "var_250"}], {
+                "grid_dim_x": {"Absolute": 392},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern046", [{"Ptr": "buf34"}, {"Ptr": "layer4_0_conv1_weight"}, {"Ptr": "buf59"}], {
+                "grid_dim_x": {"Absolute": 7},
+                "grid_dim_y": {"Absolute": 8},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 8192}
+            }]},
+            {"ExecKernel": ["kern047", [{"Ptr": "buf59"}, {"Ptr": "layer4_0_bn1_running_mean"}, {"Ptr": "layer4_0_bn1_running_var"}, {"Ptr": "layer4_0_bn1_weight"}, {"Ptr": "layer4_0_bn1_bias"}, {"Ptr": "var_259"}], {
+                "grid_dim_x": {"Absolute": 196},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern048", [{"Ptr": "buf59"}, {"Ptr": "layer4_0_conv2_weight"}, {"Ptr": "buf61"}], {
+                "grid_dim_x": {"Absolute": 7},
+                "grid_dim_y": {"Absolute": 8},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 8192}
+            }]},
+            {"ExecKernel": ["kern049", [{"Ptr": "buf34"}, {"Ptr": "layer4_0_downsample_0_weight"}, {"Ptr": "buf61"}, {"Ptr": "layer4_0_bn2_running_mean"}, {"Ptr": "layer4_0_bn2_running_var"}, {"Ptr": "layer4_0_bn2_weight"}, {"Ptr": "layer4_0_bn2_bias"}, {"Ptr": "layer4_0_downsample_1_running_mean"}, {"Ptr": "layer4_0_downsample_1_running_var"}, {"Ptr": "layer4_0_downsample_1_weight"}, {"Ptr": "layer4_0_downsample_1_bias"}, {"Ptr": "buf59"}], {
+                "grid_dim_x": {"Absolute": 7},
+                "grid_dim_y": {"Absolute": 8},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 17408}
+            }]},
+            {"ExecKernel": ["kern048", [{"Ptr": "buf59"}, {"Ptr": "layer4_1_conv1_weight"}, {"Ptr": "buf61"}], {
+                "grid_dim_x": {"Absolute": 7},
+                "grid_dim_y": {"Absolute": 8},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 8192}
+            }]},
+            {"ExecKernel": ["kern047", [{"Ptr": "buf61"}, {"Ptr": "layer4_1_bn1_running_mean"}, {"Ptr": "layer4_1_bn1_running_var"}, {"Ptr": "layer4_1_bn1_weight"}, {"Ptr": "layer4_1_bn1_bias"}, {"Ptr": "var_283"}], {
+                "grid_dim_x": {"Absolute": 196},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern048", [{"Ptr": "buf61"}, {"Ptr": "layer4_1_conv2_weight"}, {"Ptr": "buf67"}], {
+                "grid_dim_x": {"Absolute": 7},
+                "grid_dim_y": {"Absolute": 8},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 8192}
+            }]},
+            {"ExecKernel": ["kern053", [{"Ptr": "buf59"}, {"Ptr": "buf67"}, {"Ptr": "layer4_1_bn2_running_mean"}, {"Ptr": "layer4_1_bn2_running_var"}, {"Ptr": "layer4_1_bn2_weight"}, {"Ptr": "layer4_1_bn2_bias"}, {"Ptr": "var_293"}], {
+                "grid_dim_x": {"Absolute": 196},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern048", [{"Ptr": "buf59"}, {"Ptr": "layer4_2_conv1_weight"}, {"Ptr": "buf67"}], {
+                "grid_dim_x": {"Absolute": 7},
+                "grid_dim_y": {"Absolute": 8},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 8192}
+            }]},
+            {"ExecKernel": ["kern047", [{"Ptr": "buf67"}, {"Ptr": "layer4_2_bn1_running_mean"}, {"Ptr": "layer4_2_bn1_running_var"}, {"Ptr": "layer4_2_bn1_weight"}, {"Ptr": "layer4_2_bn1_bias"}, {"Ptr": "var_302"}], {
+                "grid_dim_x": {"Absolute": 196},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["kern048", [{"Ptr": "buf67"}, {"Ptr": "layer4_2_conv2_weight"}, {"Ptr": "buf61"}], {
+                "grid_dim_x": {"Absolute": 7},
+                "grid_dim_y": {"Absolute": 8},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 8192}
+            }]},
+            {"ExecKernel": ["kern057", [{"Ptr": "buf72"}, {"Ptr": "buf61"}, {"Ptr": "layer4_2_bn2_running_mean"}, {"Ptr": "layer4_2_bn2_running_var"}, {"Ptr": "layer4_2_bn2_weight"}, {"Ptr": "layer4_2_bn2_bias"}, {"Ptr": "buf59"}, {"Ptr": "var_313"}, {"Ptr": "var_314"}], {
+                "grid_dim_x": {"Absolute": 512},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 256},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 32}
+            }]},
+            {"ExecKernel": ["kern058", [{"Ptr": "fc_bias"}, {"Ptr": "buf72"}, {"Ptr": "fc_weight"}, {"Ptr": "buf74"}], {
+                "grid_dim_x": {"Absolute": 32},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 24576}
+            }]}
+        ]
+    }
+}
