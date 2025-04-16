@@ -27,6 +27,7 @@ signal-hook-tokio = {version = "0.3.1", features = [ "futures-v0_3"]}
 # input parsing
 clap = {version = "4.5", features = ["env","derive"]}
 lazy_static = "1.4.0"
+flexbuffers = "25.2.10"
 
 [dev-dependencies]
 assert_cmd = "2.0"

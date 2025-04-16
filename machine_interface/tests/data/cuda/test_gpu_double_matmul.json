@@ -5,11 +5,11 @@
         {"module_name": "double_matmul.cubin", "kernel_name": "tvmgen_default_fused_nn_dense_kernel"}
     ],
     "blueprint": {
-        "inputs": ["test", "p0", "p1"],
+        "inputs": ["input", "p0", "p1"],
         "buffers": {"output": {"Absolute": 12}, "b2": {"Absolute": 20}},
         "outputs": ["output"],
         "control_flow": [
-            {"ExecKernel": ["tvmgen_default_fused_nn_dense_kernel", [{"Ptr": "b2"}, {"Ptr": "test"}, {"Ptr": "p0"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_dense_kernel", [{"Ptr": "b2"}, {"Ptr": "input"}, {"Ptr": "p0"}], {
                 "grid_dim_x": {"Absolute": 5},
                 "grid_dim_y": {"Absolute": 1},
                 "grid_dim_z": {"Absolute": 1},

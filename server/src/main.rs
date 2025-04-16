@@ -186,6 +186,12 @@ async fn register_library(req: Request<Incoming>) -> Result<Response<DandelionBo
 }
 
 #[derive(Debug, Deserialize)]
+pub struct InputChunk {
+    #[serde(with = "serde_bytes")]
+    pub chunk: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
 struct RegisterFunction {
     /// String name of the function
     name: String,
@@ -199,7 +205,7 @@ struct RegisterFunction {
     /// Binary representation of the function, ignored if a local path is given
     binary: Vec<u8>,
     /// Metadata for the sets and optionally static items to pass into the function for that set
-    input_sets: Vec<(String, Option<Vec<(String, Vec<u8>)>>)>,
+    input_sets: Vec<(String, Option<Vec<(String, Vec<InputChunk>)>>)>,
     /// output set names
     output_sets: Vec<String>,
 }
@@ -213,9 +219,16 @@ async fn register_function(
         .await
         .expect("Failed to extract body from function registration")
         .to_bytes();
+    info!("Size received: {:?}", bytes.len());
     // find first line end character
-    let request_map: RegisterFunction =
-        bson::from_slice(&bytes).expect("Should be able to deserialize request");
+    /*let request_map: RegisterFunction =
+        bson::from_slice(&bytes).expect("Should be able to deserialize request");*/
+    
+    use flexbuffers;
+    let slice: &[u8] = &bytes;
+    let deserializer = flexbuffers::Reader::get_root(slice).unwrap();
+    let request_map: RegisterFunction = RegisterFunction::deserialize(deserializer).unwrap();
+    
     // if local is present ignore the binary
     let path_string = if !request_map.local_path.is_empty() {
         // check that file exists
@@ -264,7 +277,11 @@ async fn register_function(
             if let Some(static_data) = data {
                 let data_contexts = static_data
                     .into_iter()
-                    .map(|(item_name, data_vec)| {
+                    .map(|(item_name, data_chunks)| {
+                        let mut data_vec: Vec<u8> = Vec::new();
+                        for mut chunk in data_chunks {
+                            data_vec.append(&mut chunk.chunk);
+                        }
                         let item_size = data_vec.len();
                         let mut new_context =
                             ReadOnlyContext::new(data_vec.into_boxed_slice()).unwrap();
@@ -396,7 +413,8 @@ async fn service(
         | "/cold/resnet34batch8"
         | "/cold/resnet34batch16"
         | "/cold/resnet50"
-        | "/cold/resnet152" => serve_request(true, req, dispatcher).await,
+        | "/cold/resnet152"
+        | "/cold/llama_kv" => serve_request(true, req, dispatcher).await,
         "/hot/matmul"
         | "/hot/matmulstore"
         | "/hot/compute"
@@ -423,7 +441,8 @@ async fn service(
         | "/hot/resnet34batch8"
         | "/hot/resnet34batch16"
         | "/hot/resnet50"
-        | "/hot/resnet152" => serve_request(false, req, dispatcher).await,
+        | "/hot/resnet152"
+        | "/hot/llama_kv" => serve_request(false, req, dispatcher).await,
         "/stats" => serve_stats(req).await,
         _ => Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
             format!("Hello, Wor\n").into_bytes(),

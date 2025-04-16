@@ -119,16 +119,16 @@ fn one_kv_llama() {
 }
 
 #[test]
-fn full_kv_llama() {
+fn hand_kv_llama() {
     let lock = GPU_LOCK.lock().unwrap();
     let filename = &format!(
-        "{}/tests/data/cuda/test_gpu_llama_kv-full.json",
+        "{}/tests/data/cuda/test_gpu_llama_kv.json",
         env!("CARGO_MANIFEST_DIR")
     );
     let (function_context, config, queue) = setup_test(&filename);
     let (mut output_size, mut output_name, expected, function_context) = load_llama_kv(function_context);
     output_size = 16777216; // 1024;
-    output_name = "keys".to_string(); // "token_ids".to_string();
+    output_name = "b41".to_string(); // "token_ids".to_string();
     
     let result_context = execute_test(function_context, config, queue, &output_name);
 
@@ -139,6 +139,32 @@ fn full_kv_llama() {
             println!("{} - {:?}, ", i, read_buffer[i]);
         }
     }
+
+    drop(lock);
+}
+
+#[test]
+fn full_kv_llama() {
+    let lock = GPU_LOCK.lock().unwrap();
+    let filename = &format!(
+        "{}/tests/data/cuda/test_gpu_llama_kv-full.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let (function_context, config, queue) = setup_test(&filename);
+    let (mut output_size, mut output_name, expected, function_context) = full_load_llama_kv(function_context);
+    output_size = 1024;
+    output_name = "token_ids".to_string();
+    
+    let result_context = execute_test(function_context, config, queue, &output_name);
+
+    let read_buffer = get_resulti64(result_context, output_size, false);
+    println!("{:?}", read_buffer);
+    /*let read_buffer = get_result(result_context, output_size, false);
+    for i in 5000..5100 { // 16777216 / 4 {
+        if read_buffer[i] != 0.0 {
+            println!("{} - {:?}, ", i, read_buffer[i]);
+        }
+    }*/
 
     drop(lock);
 }
