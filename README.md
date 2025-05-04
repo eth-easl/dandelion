@@ -1,7 +1,12 @@
-# dandelion
+# Dandelion
 
-This project is aiming to build a workernode for serverless computing with
-minimal, secure isolation.
+Dandelion is a workernode system for serverless processing focused on maximizing elasticity.
+
+In Dandelion applications are split into untrusted compute functions and trusted communication functions.
+The compute functions are provided by users, while communication functions are built into the system.
+The [Dandelion SDK](https://github.com/eth-easl/dandelionSDK) describes the interfaces user functions can use in more detail.
+Functions can be composed into graphs, where nodes are functions and edges describe which data is passed between them.
+These compostions can be described using the composition language described in the README.md in the dparser folder.
 
 # Structure
 
@@ -16,16 +21,15 @@ The main code for dandelion is organized in the following rust modules:
 
 # Cargo 
 
-The documentation can for all modules can be built by executing `cargo doc` in the top level directory.
-To build only for a specific module, execue the command in the corresponding folder.
-
 The tests can be run using `cargo test`, which if executed in the top level directory will run tests for all the modules.
-As a large number of tests need at least some engine enabled via a feature flag, only running test without any feature flags will not run a lot.
-To get most test coverage all viable features should be enabled.
+As a large number of tests need at least some engine enabled via a feature flag, only running test without any feature flags will not be very useful.
+Usually we run tests with at least a compute engine feature and a communication engine feature enabled.
+To build only a specific module (for example the machine interface), execue the command in the corresponding folder.
 For more details on features see bellow.
 
 To build the main server, the binary has to be specified using the `--bin dandelion_server` flag, giving the full command:
 `cargo build --bin dandelion_server`, can also be run directly, by replacing build with run.
+The server can also be run directly by replacing `build` with `run`.
 
 # Features
 
@@ -34,7 +38,8 @@ All features are disabled by default and should be able to be enabled independen
 The server module currently assumes only computation and one communication engine feature to be enabled, but should be fixed in the future.
 
 Feature flags for computation engines:
-- `cheri` for enabling cheri backed isolation 
+- `cheri` for enabling cheri backed isolation, requires a cheri capable compiler and hardware to run it.
+- `kvm` for enabling kvm backed isolation, requires KVM module installed and user to have permissions to access `/dev/kvm`
 - `mmu` for enabling process based isolation
 - `wasm` for enabling rwasm based isolation
 
@@ -62,12 +67,14 @@ The default search path for the config file is `./dandelion.config`, but can be 
 
 The number of compute engine cores is inferred from the total number of cores by deducting the number of other cores.
 
-**WARNING** if no cores are allocated for the communication engines, the communication functions currently will hang indefinetly.
+**WARNING** if 0 are allocated for the communication engines, the communication functions currently will hang indefinetly.
 
 Additional configuration:
 
 Dandelion respects `RUST_LOG` which can be used to set the log level, it can be set to the standard log levels: [`error`, `warn`, `info`, `debug`, `trace`]
 For additional information consult the rust log and env_log modules. 
+
+To use a `mmu_worker` that is not at the original location it was built in, set the `PROCESS_WORKER_PATH` environment variable to point to the desired binary
 
 # MMU worker build
 
@@ -87,91 +94,6 @@ Also make sure that shared memory objects are executable:
 sudo mount -o remount,exec /dev/shm
 ```
 
-## MMU worker path
-
-To use a `mmu_worker` that is not at the original location it was built in, set the `PROCESS_WORKER_PATH` environment variable to point to the desired binary
-
 # C Dependencies
 
 For testing the C code to interact with Cheri we are using unity which is included directly in the project.
-
-# Cheri / BSD setup
-This is mostly legacy information, but is kept for reproduction without cheri hardware running linux
-
-## Cheri setup
-
-First clone the Cheribuild repository onto a local disk.
-It is important that it is on a local disk, as it needs to lock some files which
-does not work with remote file systems.
-
-```
-git clone https://github.com/CTSRD-CHERI/cheribuild.git
-```
-
-Then go into the cheribuild folder and copy the cheribuild.json into it.
-It contains configurations that make it easier to manage the output produced by
-the build process and also manages the ssh-ports for the different builds.
-Then build the sources with:
-```
-./cheribuild.py -d cheribsd-morello-purecap
-```
-This will generate the sources to make an image and install all dependencies.
-If there are any errors consult the cheribuild git repo.
-
-Then add your ssh keys to the configured source folder.
-```
-cd <cheri-source>/extra-files
-mkdir root && cd root
-mkdir .ssh && cd .ssh
-cp <public-key-path> authorized_keys
-```
-
-Then you can build the disk image in the cheribsd folder:
-```
-./cheribuild.py disk-image-morello-purecap
-```
-
-And start it with either QEMU or FVP.
-To run it for the first time add a -d at the end.
-This will rebuild all dependencies (including the steps we already did)
-If the image is already built and QEMU or FVP are installed separately then it
-it can be executed right away.
-```
-./cheribuild.py run-morello-purecap
-./cheribuild.py run-fvp-morello-purecap
-```
-
-To manually set the ssh-port to another port that the one set by the config
-(55555) use `--run/ssh-forwarding-port=<portno>` or
-`--run-fvp/ssh-port=<portno>` before the run command.
-
-## Build
-
-Before cross compilation can be used you need to fill in the respective paths
-in the toolchain file.
-
-If the toolchain still needs to be built, set up the cheribuild repository as
-described above and build it with `./cheribuild sdk-morello-purecap -d`
-
-After specifying them you can make a build folder, change in to it, and start
-building with the toolchain file:
-```
-mkdir build
-cd build
-cmake -DCMAKE_TOOLCHAIN_FILE=../morello-toolchain.txt ..
-make
-```
-For native builds the toolchain specification can be omitted.
-
-## Kernel module build
-
-The kernel modules needed are in the kernelModule folder.
-They can be built with a normal make command, but have the following requirements:
-
-- the /usr/src folder contains the OS source
-
-## Known issues
-
-- make: "/usr/src/sys/conf/kmod.mk" line 549: is ZFSTOP set?
-  - solution `export ZFSTOP=/usr/src/sys/contrib/openzfs`
-- currently syscall seems not to work, but loading does, with cpuset -l <core> a specific core can be setup. repeat for each core on machine to set up entire machine.

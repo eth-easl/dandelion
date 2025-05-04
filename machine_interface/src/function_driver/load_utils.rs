@@ -5,6 +5,7 @@ use crate::{
 use dandelion_commons::{DandelionError, DandelionResult};
 use std::sync::Arc;
 
+#[cfg(any(feature = "cheri", feature = "mmu", feature = "kvm"))]
 pub fn load_u8_from_file(full_path: String) -> DandelionResult<Vec<u8>> {
     let mut file = match std::fs::File::open(full_path) {
         Ok(f) => f,

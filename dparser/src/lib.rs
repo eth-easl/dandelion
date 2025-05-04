@@ -20,10 +20,6 @@ pub struct Spanned<T> {
     pub v: T,
 }
 
-fn span_at(at: usize) -> Span {
-    at..at + 1
-}
-
 fn aspanned<T>(v: T, span: Span) -> std::rc::Rc<Spanned<T>> {
     std::rc::Rc::new(Spanned { v, span })
 }
