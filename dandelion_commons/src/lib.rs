@@ -4,10 +4,19 @@ pub mod records;
 pub type FunctionId = u64;
 
 // TODO define error types, possibly better printing than debug
+// TODO make naming consistent and move groups to subtypes, e.g. DomainError -> Domain in main enum
 #[derive(Debug, Clone, PartialEq)]
 pub enum DandelionError {
+    /// errors related to the dispatcher
+    Dispatcher(DispatcherError),
     /// errors related to domains themselfs
     DomainError(DomainError),
+    /// Error from a promise
+    PromiseError(PromiseError),
+    /// registry errors
+    FunctionRegistryError(FunctionRegistryError),
+    /// Error in the frontend receiveing requests
+    RequestError(FrontendError),
     /// trying to use a feature that is not yet implemented
     NotImplemented,
     // errors in configurations
@@ -71,8 +80,6 @@ pub enum DandelionError {
     EngineError,
     /// asked driver for engine, but there are no more available
     NoEngineAvailable,
-    /// Error from a promise
-    PromiseError(PromiseError),
     /// there was a non recoverable issue when spawning or running the MMU worker
     MmuWorkerError,
     // system engine errors
@@ -85,27 +92,6 @@ pub enum DandelionError {
     SystemFuncResponseError,
     /// Tried to call parser for system function
     CalledSystemFuncParser,
-    // dispatcher errors
-    /// dispatcher does not find a loader for this engine type
-    DispatcherMissingLoader(String),
-    /// error from resulting from assumptions based on config passed to dispatcher
-    DispatcherConfigError,
-    /// dispatcher was asked to queue function it can't find
-    DispatcherUnavailableFunction,
-    /// dispatcher was asked to add function to registry that is already present
-    DispatcherDuplicateFunction,
-    /// function to register did not have metadata available
-    DispatcherMetaDataUnavailable,
-    /// dispatcher encountered an issue when trasmitting data between tasks
-    DispatcherChannelError,
-    /// dispatcher found set to transfer that has no registered name
-    DispatcherSetMissmatch,
-    /// dispatcher failed to combine two composition sets
-    DispatcherCompositionCombine,
-    /// dispatcher found mistake when trying to find waiting functions
-    DispatcherDependencyError,
-    /// registry errors
-    RegistryError(RegistryError),
     // metering errors
     /// Mutex for metering was poisoned
     RecordLockFailure,
@@ -126,9 +112,6 @@ pub enum DandelionError {
     FunctionError(i32),
     /// Work queue from the dispatcher to the engines is full
     WorkQueueFull,
-    // Frontend errors
-    /// Error in the frontend receiveing requests
-    RequestError(FrontendError),
 }
 
 // Implement display to be compliant with core::error::Error
@@ -141,37 +124,6 @@ impl core::fmt::Display for DandelionError {
 impl std::error::Error for DandelionError {}
 
 pub type DandelionResult<T> = std::result::Result<T, DandelionError>;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum FrontendError {
-    /// Failed to get more frames from the connection
-    FailledToGetFrames,
-    /// Attemped to read bytes form stream to desiarialize but stream ran out
-    StreamEnd,
-    /// The stream was not formated according to the expected specification
-    ViolatedSpec,
-    /// The structure descibed does not cofrom with the expected message
-    MalformedMessage,
-}
-
-/// Error caused in the function registry
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum RegistryError {
-    /// Failed to receive local loading result that was triggered by another function
-    LocalLoadingReceive,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PromiseError {
-    /// No promises left in promise buffer
-    NoneAvailable,
-    /// Default result, was never replaced
-    Default,
-    /// Dept was dropped without fulfilling it
-    DroppedDebt,
-    /// Promise result after taking it already
-    TakenPromise,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DomainError {
@@ -189,4 +141,57 @@ pub enum DomainError {
     CleaningFailure,
     /// Impossible context size for the given context type
     InvalidMemorySize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DispatcherError {
+    /// dispatcher does not find a loader for this engine type
+    MissingLoader,
+    /// error from resulting from assumptions based on config passed to dispatcher
+    ConfigError,
+    /// dispatcher was asked to queue function it can't find
+    UnavailableFunction,
+    /// dispatcher was asked to add function to registry that is already present
+    DuplicateFunction,
+    /// function to register did not have metadata available
+    MetaDataUnavailable,
+    /// dispatcher encountered an issue when trasmitting data between tasks
+    ChannelError,
+    /// dispatcher found set to transfer that has no registered name
+    SetMissmatch,
+    /// dispatcher failed to combine two composition sets
+    CompositionCombine,
+    /// dispatcher found mistake when trying to find waiting functions
+    DependencyError,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FrontendError {
+    /// Failed to get more frames from the connection
+    FailledToGetFrames,
+    /// Attemped to read bytes form stream to desiarialize but stream ran out
+    StreamEnd,
+    /// The stream was not formated according to the expected specification
+    ViolatedSpec,
+    /// The structure descibed does not cofrom with the expected message
+    MalformedMessage,
+}
+
+/// Error caused in the function registry
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FunctionRegistryError {
+    /// Failed to receive local loading result that was triggered by another function
+    LocalLoadingReceive,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PromiseError {
+    /// No promises left in promise buffer
+    NoneAvailable,
+    /// Default result, was never replaced
+    Default,
+    /// Dept was dropped without fulfilling it
+    DroppedDebt,
+    /// Promise result after taking it already
+    TakenPromise,
 }

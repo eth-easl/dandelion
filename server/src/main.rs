@@ -5,7 +5,9 @@ use dandelion_commons::{
 };
 use dandelion_server::DandelionBody;
 use dispatcher::{
-    composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
+    composition::CompositionSet,
+    dispatcher::{Dispatcher, DispatcherInput},
+    function_registry::Metadata,
     resource_pool::ResourcePool,
 };
 use http_body_util::BodyExt;
@@ -48,10 +50,10 @@ const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 enum DispatcherCommand {
     FunctionRequest {
         name: String,
-        inputs: Vec<(usize, CompositionSet)>,
+        inputs: Vec<DispatcherInput>,
         is_cold: bool,
         recorder: Recorder,
-        callback: oneshot::Sender<DandelionResult<BTreeMap<usize, CompositionSet>>>,
+        callback: oneshot::Sender<DandelionResult<Vec<Option<CompositionSet>>>>,
     },
     FunctionRegistration {
         name: String,
@@ -104,21 +106,17 @@ async fn serve_request(
     }
     let (function_name, request_context) = request_context_result.unwrap();
     debug!("finshed creating request context");
+
     // TODO match set names to assign sets to composition sets
     // map sets in the order they are in the request
     let request_number = request_context.content.len();
     let request_arc = Arc::new(request_context);
-    let mut inputs = vec![];
-    for request_set in 0..request_number {
-        trace!(
-            "adding input set {} from request",
-            request_arc.content[request_set].as_ref().unwrap().ident
-        );
-        inputs.push((
-            request_set,
-            CompositionSet::from((request_set, vec![request_arc.clone()])),
-        ));
-    }
+    let inputs = (0..request_number)
+        .map(|set_id| {
+            DispatcherInput::Set(CompositionSet::from((set_id, vec![request_arc.clone()])))
+        })
+        .collect::<Vec<_>>();
+
     // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
     recorder
         .record(RecordPoint::QueueFunctionDispatcher)
@@ -243,13 +241,10 @@ async fn register_function(
                                 key: 0,
                             }],
                         }));
-                        (Arc::new(new_context), 0usize..1usize)
+                        Arc::new(new_context)
                     })
                     .collect();
-                let composition_set = CompositionSet {
-                    set_index: 0,
-                    context_list: data_contexts,
-                };
+                let composition_set = CompositionSet::from((0, data_contexts));
                 (name, Some(composition_set))
             } else {
                 (name, None)
@@ -376,7 +371,7 @@ async fn dispatcher_loop(
                 mut callback,
             } => {
                 let function_future =
-                    dispatcher.queue_function_by_name(name, inputs, None, is_cold, recorder);
+                    dispatcher.queue_function_by_name(name, inputs, is_cold, recorder);
                 spawn(async {
                     select! {
                         function_output = function_future => {

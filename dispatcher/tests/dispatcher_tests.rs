@@ -58,7 +58,7 @@ mod dispatcher_tests {
             .build()
             .unwrap()
             .block_on(dispatcher.insert_func(
-                String::from(""),
+                String::from("test_function"),
                 engine_type,
                 DEFAULT_CONTEXT_SIZE,
                 path_string,
