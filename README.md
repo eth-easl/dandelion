@@ -4,6 +4,7 @@ Dandelion is a workernode system for serverless processing focused on maximizing
 
 In Dandelion applications are split into untrusted compute functions and trusted communication functions.
 The compute functions are provided by users, while communication functions are built into the system.
+A more in depth explanation can be found in the [paper here](https://arxiv.org/abs/2505.01603).
 The [Dandelion SDK](https://github.com/eth-easl/dandelionSDK) describes the interfaces user functions can use in more detail.
 Functions can be composed into graphs, where nodes are functions and edges describe which data is passed between them.
 These compostions can be described using the composition language described in the README.md in the dparser folder.
@@ -92,6 +93,20 @@ RUSTFLAGS='-C target-feature=+crt-static -C link-arg=-Wl,-fuse-ld=lld,--image-ba
 Also make sure that shared memory objects are executable:
 ```
 sudo mount -o remount,exec /dev/shm
+```
+
+## Paper
+If you use Dandelion, please cite our paper:
+```bibtex
+@misc{kuchler2025unlockingtrueelasticitycloudnative,
+      title={Unlocking True Elasticity for the Cloud-Native Era with Dandelion}, 
+      author={Tom Kuchler and Pinghe Li and Yazhuo Zhang and Lazar Cvetković and Boris Goranov and Tobias Stocker and Leon Thomm and Simone Kalbermatter and Tim Notter and Andrea Lattuada and Ana Klimovic},
+      year={2025},
+      eprint={2505.01603},
+      archivePrefix={arXiv},
+      primaryClass={cs.DC},
+      url={https://arxiv.org/abs/2505.01603}, 
+}
 ```
 
 # C Dependencies
