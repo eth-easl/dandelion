@@ -5,7 +5,7 @@ use dispatcher::composition::CompositionSet;
 use hyper::body::Frame;
 use machine_interface::memory_domain::{Context, ContextTrait};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, io::IoSlice, sync::Arc};
+use std::{io::IoSlice, sync::Arc};
 
 #[derive(Serialize, Deserialize)]
 pub struct DandelionRequest<'data> {
@@ -101,15 +101,22 @@ fn encode_item(
 }
 
 fn encode_sets(
-    sets: BTreeMap<usize, CompositionSet>,
+    sets: Vec<Option<CompositionSet>>,
     response: &mut Vec<u8>,
     data_items: &mut Vec<ItemData>,
 ) -> usize {
     let mut all_items = 0;
     // filter out empty sets
-    let non_empty_set = sets
-        .into_values()
-        .filter(|set| !set.context_list.is_empty());
+    let non_empty_set = sets.into_iter().filter_map(|set| match set {
+        Some(s) => {
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
+        }
+        _ => None,
+    });
     // if list is empty need to push empty string
     for (index, set) in non_empty_set.enumerate() {
         // add item to array with doc type and name equal to index into the array
@@ -123,10 +130,9 @@ fn encode_sets(
         // set identifier: string type, identifier e_name and actual set name as length, string, null byte
         response.push(2);
         response.extend_from_slice("identifier\0".as_bytes());
-        let set_name = &set.context_list[0].0.content[set.set_index]
-            .as_ref()
-            .unwrap()
-            .ident;
+        let mut set_iter = set.into_iter().peekable();
+        let (set_index, _, zero_set) = set_iter.peek().unwrap();
+        let set_name = &zero_set.content[*set_index].as_ref().unwrap().ident;
         response.extend_from_slice(&((set_name.len() + 1) as i32).to_le_bytes());
         response.extend_from_slice(set_name.as_bytes());
         response.push(0);
@@ -138,7 +144,7 @@ fn encode_sets(
         response.extend_from_slice(&0i32.to_le_bytes());
 
         let mut set_items_length = 0;
-        for (array_index, (set_index, item_index, context)) in set.into_iter().enumerate() {
+        for (array_index, (set_index, item_index, context)) in set_iter.enumerate() {
             set_items_length += encode_item(
                 set_index,
                 item_index,
@@ -163,7 +169,7 @@ fn encode_sets(
     return all_items;
 }
 
-fn encode_response(sets: BTreeMap<usize, CompositionSet>) -> (usize, Vec<u8>, Vec<ItemData>) {
+fn encode_response(sets: Vec<Option<CompositionSet>>) -> (usize, Vec<u8>, Vec<ItemData>) {
     // lenght of dict, list of items closing 0 byte
     let mut response = Vec::<u8>::new();
     let mut data_items = Vec::new();
@@ -353,7 +359,7 @@ pub struct DandelionBody {
 }
 
 impl DandelionBody {
-    pub fn new(sets: BTreeMap<usize, CompositionSet>) -> Self {
+    pub fn new(sets: Vec<Option<CompositionSet>>) -> Self {
         let (total_item_size, serial, items) = encode_response(sets);
         let read_offset = if items.len() > 0 {
             if items[0].response_offset > 0 {
@@ -466,11 +472,8 @@ fn test_dandelion_body_serialization() {
             },
         }],
     })];
-    let composition_set = CompositionSet {
-        set_index: 0,
-        context_list: vec![(Arc::new(new_context), 0..1)],
-    };
-    let context_map = BTreeMap::from([(0, composition_set)]);
+    let composition_set = CompositionSet::from((0, vec![Arc::new(new_context)]));
+    let context_map = vec![Some(composition_set)];
     let context_body = DandelionBody::new(context_map);
 
     tokio::runtime::Builder::new_current_thread()

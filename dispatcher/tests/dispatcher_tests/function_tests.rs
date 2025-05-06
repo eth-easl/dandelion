@@ -35,7 +35,7 @@ pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_function(function_id, Vec::new(), Vec::new(), false, recorder));
+        .block_on(dispatcher.queue_function(function_id, Vec::new(), false, recorder));
     match result {
         Ok(_) => (),
         Err(err) => panic!("Failed with: {:?}", err),
@@ -74,8 +74,10 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
         }],
     })];
 
-    let inputs = vec![(0, CompositionSet::from((0, vec![(Arc::new(in_context))])))];
-    let outputs = vec![Some(0)];
+    let inputs = vec![Some(CompositionSet::from((
+        0,
+        vec![(Arc::new(in_context))],
+    )))];
 
     let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
         #[cfg(feature = "timestamp")]
@@ -87,15 +89,16 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_function(function_id, inputs, outputs, false, recorder));
+        .block_on(dispatcher.queue_function(function_id, inputs, false, recorder));
     let out_sets = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
     };
     assert_eq!(1, out_sets.len());
-    let out_set = out_sets.get(&0).expect("Should have set 0");
-    assert_eq!(1, out_set.context_list.len());
-    let out_context = &out_set.context_list[0].0;
+    let out_set = out_sets[0].as_ref().expect("Should have set");
+    let mut out_set_iter = out_set.into_iter();
+    let (_, _, out_context) = out_set_iter.next().unwrap();
+    assert!(out_set_iter.next().is_none());
     assert_eq!(1, out_context.content.len());
     check_matrix(&out_context, 0, 0, 2, vec![5, 11, 11, 25])
 }
@@ -135,12 +138,13 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
     let composition = Composition {
         dependencies: vec![FunctionDependencies {
             function: function_id,
+            join_info: (vec![], vec![]),
             input_set_ids: vec![Some((0, ShardingMode::All))],
             output_set_ids: vec![Some(1)],
         }],
         output_map: BTreeMap::from([(1, 0)]),
     };
-    let inputs = BTreeMap::from([(0, CompositionSet::from((0, vec![Arc::new(in_context)])))]);
+    let inputs = vec![Some(CompositionSet::from((0, vec![Arc::new(in_context)])))];
 
     let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
         #[cfg(feature = "timestamp")]
@@ -158,10 +162,11 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
         Err(err) => panic!("Failed with: {:?}", err),
     };
     assert_eq!(1, out_contexts.len());
-    let mut out_context_list = out_contexts.remove(&0).expect("Should have set 0");
+    let out_context_list = out_contexts[0].as_mut().expect("Should have set");
 
-    assert_eq!(1, out_context_list.context_list.len());
-    let out_context = out_context_list.context_list.remove(0).0;
+    let mut out_context_iter = out_context_list.into_iter();
+    let (_, _, out_context) = out_context_iter.next().unwrap();
+    assert!(out_context_iter.next().is_none());
     assert_eq!(1, out_context.content.len());
     let out_mat_set = out_context.content[0].as_ref().expect("Should have set");
     assert_eq!(1, out_mat_set.buffers.len());
@@ -216,12 +221,13 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
     let composition = Composition {
         dependencies: vec![FunctionDependencies {
             function: function_id,
+            join_info: (vec![], vec![]),
             input_set_ids: vec![Some((0, ShardingMode::Each))],
             output_set_ids: vec![Some(1)],
         }],
         output_map: BTreeMap::from([(1, 0)]),
     };
-    let inputs = BTreeMap::from([(0, CompositionSet::from((0, vec![Arc::new(in_context)])))]);
+    let inputs = vec![Some(CompositionSet::from((0, vec![Arc::new(in_context)])))];
 
     let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
         #[cfg(feature = "timestamp")]
@@ -234,15 +240,16 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
         .build()
         .unwrap()
         .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
-    let mut out_vec = match result {
+    let out_vec = match result {
         Ok(v) => v,
         Err(err) => panic!("Failed with: {:?}", err),
     };
     assert_eq!(1, out_vec.len());
-    let out_set = out_vec.remove(&0).expect("Should have set 0");
-    assert_eq!(2, out_set.context_list.len());
+    let out_set = out_vec[0].as_ref().expect("Should have set");
+
     // check for each shard:
-    for (matrix_context, _) in out_set.context_list {
+    for (index, (_, _, matrix_context)) in out_set.into_iter().enumerate() {
+        assert!(index < 2);
         if let Some(matrix_set) = &matrix_context.content[0] {
             assert_eq!(1, matrix_set.buffers.len());
             let matrix_buffer = &matrix_set.buffers[0];
@@ -294,11 +301,13 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
         dependencies: vec![
             FunctionDependencies {
                 function: function_id,
+                join_info: (vec![], vec![]),
                 input_set_ids: vec![Some((0, ShardingMode::All))],
                 output_set_ids: vec![Some(1)],
             },
             FunctionDependencies {
                 function: function_id,
+                join_info: (vec![], vec![]),
                 input_set_ids: vec![Some((1, ShardingMode::All))],
                 output_set_ids: vec![Some(2)],
             },
@@ -313,7 +322,7 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
     let mut recorder = archive.get_recorder().unwrap();
     let _ = recorder.record(RecordPoint::Arrival);
 
-    let inputs = BTreeMap::from([(0, CompositionSet::from((0, vec![Arc::new(in_context)])))]);
+    let inputs = vec![Some(CompositionSet::from((0, vec![Arc::new(in_context)])))];
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
@@ -323,9 +332,10 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
         Err(err) => panic!("Failed with: {:?}", err),
     };
     assert_eq!(1, out_contexts.len());
-    let out_composition_set = out_contexts.get(&0).expect("Should have set 0");
-    assert_eq!(1, out_composition_set.context_list.len());
-    let out_context = &out_composition_set.context_list[0].0;
+    let out_composition_set = out_contexts[0].as_ref().expect("Should have set 0");
+    let mut out_context_iter = out_composition_set.into_iter();
+    let (_, _, out_context) = out_context_iter.next().unwrap();
+    assert!(out_context_iter.next().is_none());
     assert_eq!(1, out_context.content.len());
     check_matrix(&out_context, 0, 0, 2, vec![146, 330, 330, 746]);
 }
@@ -402,6 +412,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             // C = A*B
             FunctionDependencies {
                 function: function_id,
+                join_info: (vec![], vec![]),
                 input_set_ids: vec![
                     Some((0, ShardingMode::All)),
                     Some((1, ShardingMode::All)),
@@ -412,6 +423,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             // D = B^T*A
             FunctionDependencies {
                 function: function_id,
+                join_info: (vec![], vec![]),
                 input_set_ids: vec![
                     Some((2, ShardingMode::All)),
                     Some((0, ShardingMode::All)),
@@ -422,6 +434,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             // E = B + C
             FunctionDependencies {
                 function: function_id,
+                join_info: (vec![], vec![]),
                 input_set_ids: vec![
                     None,
                     Some((1, ShardingMode::All)),
@@ -432,6 +445,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             // G = D * C
             FunctionDependencies {
                 function: function_id,
+                join_info: (vec![], vec![]),
                 input_set_ids: vec![
                     Some((4, ShardingMode::All)),
                     Some((3, ShardingMode::All)),
@@ -442,6 +456,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             // Result = D*E + G
             FunctionDependencies {
                 function: function_id,
+                join_info: (vec![], vec![]),
                 input_set_ids: vec![
                     Some((4, ShardingMode::All)),
                     Some((5, ShardingMode::All)),
@@ -461,11 +476,11 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
     let _ = recorder.record(RecordPoint::Arrival);
 
     let context_arc = Arc::new(in_context);
-    let inputs = BTreeMap::from([
-        (0, CompositionSet::from((0, vec![context_arc.clone()]))),
-        (1, CompositionSet::from((1, vec![context_arc.clone()]))),
-        (2, CompositionSet::from((2, vec![context_arc.clone()]))),
-    ]);
+    let inputs = vec![
+        Some(CompositionSet::from((0, vec![context_arc.clone()]))),
+        Some(CompositionSet::from((1, vec![context_arc.clone()]))),
+        Some(CompositionSet::from((2, vec![context_arc.clone()]))),
+    ];
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
@@ -475,12 +490,13 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
         Err(err) => panic!("Failed with: {:?}", err),
     };
     assert_eq!(1, out_contexts.len());
-    let out_composition_set = out_contexts.get(&0).expect("Should have set 0");
-    assert_eq!(1, out_composition_set.context_list.len());
-    let out_context = &out_composition_set.context_list[0].0;
+    let out_composition_set = out_contexts[0].as_ref().expect("Should have set 0");
+    let mut out_context_iter = out_composition_set.into_iter();
+    let (_, _, out_context) = out_context_iter.next().unwrap();
+    assert!(out_context_iter.next().is_none());
     assert_eq!(1, out_context.content.len());
     check_matrix(
-        out_context,
+        &out_context,
         0,
         0,
         4,

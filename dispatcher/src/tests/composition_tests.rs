@@ -1,5 +1,3 @@
-use std::{collections::BTreeMap, ops::Range, sync::Arc, vec};
-
 use crate::{
     composition::{Composition, FunctionDependencies, ShardingMode},
     function_registry::{FunctionDict, Metadata},
@@ -7,6 +5,7 @@ use crate::{
 use dandelion_commons::DandelionError;
 use dparser::Module;
 use itertools::Itertools;
+use std::{collections::BTreeMap, ops::Range, sync::Arc, vec};
 
 fn get_module(comp_string: &str) -> Module {
     return dparser::parse(comp_string).unwrap_or_else(|err| {
@@ -218,6 +217,7 @@ fn test_from_module_minmal_composition() {
         Composition {
             dependencies: vec![FunctionDependencies {
                 function: function_id,
+                join_info: (vec![], vec![]),
                 input_set_ids: vec![],
                 output_set_ids: vec![],
             }],
@@ -251,6 +251,7 @@ fn test_from_module_minmal_composition_with_inputs() {
             dependencies: vec![FunctionDependencies {
                 function: function_id,
                 input_set_ids: vec![Some((0, ShardingMode::All))],
+                join_info: (vec![], vec![]),
                 output_set_ids: vec![Some(1)],
             }],
             output_map: BTreeMap::from([(1, 0)]),
@@ -283,6 +284,7 @@ fn test_from_module_minmal_composition_function_with_unused_input() {
             dependencies: vec![FunctionDependencies {
                 function: function_id,
                 input_set_ids: vec![Some((0, ShardingMode::All)), None],
+                join_info: (vec![], vec![]),
                 output_set_ids: vec![Some(1)],
             }],
             output_map: BTreeMap::from([(1, 0)]),
@@ -314,6 +316,7 @@ fn test_from_module_minmal_composition_function_with_unused_output() {
         Composition {
             dependencies: vec![FunctionDependencies {
                 function: function_id,
+                join_info: (vec![], vec![]),
                 input_set_ids: vec![Some((0, ShardingMode::All))],
                 output_set_ids: vec![Some(1), None],
             }],
@@ -347,6 +350,7 @@ fn test_from_module_minmal_composition_with_missing_input() {
         Composition {
             dependencies: vec![FunctionDependencies {
                 function: function_id,
+                join_info: (vec![], vec![]),
                 input_set_ids: vec![Some((0, ShardingMode::All))],
                 output_set_ids: vec![Some(1)],
             }],
@@ -380,6 +384,7 @@ fn test_from_module_minmal_composition_missing_output() {
         Composition {
             dependencies: vec![FunctionDependencies {
                 function: function_id,
+                join_info: (vec![], vec![]),
                 input_set_ids: vec![Some((0, ShardingMode::All))],
                 output_set_ids: vec![Some(1)],
             }],
