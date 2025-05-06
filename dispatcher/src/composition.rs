@@ -227,7 +227,7 @@ impl Composition {
                                     for join_strategy in strategy.join_strategies.iter() {
                                         join_strategies.push(JoinStrategy::from_parser_strategy(&join_strategy))
                                     }
-                                } 
+                                }
 
                                 // find the index set index in the original definition for each return set in the application
                                 let mut output_set_ids = Vec::new();
@@ -429,7 +429,7 @@ pub fn get_sharding(
     }
 
     // make sure every set is in the order and has a strategy
-    let mut missing_sets: Vec<_> = (0..set_num).map(|index| Some(index) ).collect();
+    let mut missing_sets: Vec<_> = (0..set_num).map(|index| Some(index)).collect();
     for index in join_order.iter() {
         missing_sets[*index] = None;
     }
@@ -438,7 +438,7 @@ pub fn get_sharding(
             join_order.push(missing);
         }
     }
-    join_strategies.resize(set_num -1, JoinStrategy::Cross);
+    join_strategies.resize(set_num - 1, JoinStrategy::Cross);
 
     let mut join_iter_opt = JoinIterator::new(
         JoinStrategy::Outer,
