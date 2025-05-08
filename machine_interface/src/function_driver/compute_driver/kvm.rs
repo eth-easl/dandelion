@@ -185,7 +185,6 @@ impl Driver for KvmDriver {
         let config = FunctionConfig::ElfConfig(ElfConfig {
             system_data_offset: system_data.0,
             entry_point: entry,
-            protection_flags: Arc::new(elf.get_memory_protection_layout()),
         });
         let (static_requirements, source_layout) = elf.get_layout_pair();
         let requirements = DataRequirementList {

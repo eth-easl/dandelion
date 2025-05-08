@@ -1,6 +1,6 @@
 use crate::{
     memory_domain::{Context, MemoryDomain},
-    DataRequirementList, Position,
+    DataRequirementList,
 };
 extern crate alloc;
 use alloc::sync::Arc;
@@ -17,13 +17,15 @@ mod test_queue;
 mod thread_utils;
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct ElfConfig {
     // TODO change to positions
     system_data_offset: usize,
     #[cfg(feature = "cheri")]
     return_offset: (usize, usize),
     entry_point: usize,
-    protection_flags: Arc<Vec<(u32, Position)>>,
+    #[cfg(feature = "mmu")]
+    protection_flags: Arc<Vec<(u32, crate::Position)>>,
 }
 
 #[derive(Clone, Copy)]
@@ -40,6 +42,7 @@ impl core::fmt::Display for SystemFunction {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct WasmConfig {
     #[cfg(feature = "wasm")]
     lib: Arc<Library>,

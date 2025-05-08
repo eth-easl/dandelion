@@ -8,8 +8,7 @@ mod compute_driver_tests {
             test_queue::TestQueue, ComputeResource, Driver, FunctionConfig, WorkToDo,
         },
         memory_domain::{
-            test_resource::get_resource, Context, ContextState, ContextTrait, MemoryDomain,
-            MemoryResource,
+            test_resource::get_resource, Context, ContextTrait, MemoryDomain, MemoryResource,
         },
         DataItem, DataSet, Position,
     };
@@ -234,6 +233,7 @@ mod compute_driver_tests {
         }
     }
 
+    #[cfg(not(feature = "wasm"))]
     fn engine_stdio<Dom: MemoryDomain>(
         filename: &str,
         dom_init: MemoryResource,
@@ -300,6 +300,7 @@ mod compute_driver_tests {
             .get_context();
 
         // check the function exited with exit code 0
+        use crate::memory_domain::ContextState;
         match result_context.state {
             ContextState::InPreparation => panic!("context still in preparation, never evaluated "),
             ContextState::Run(exit_status) => assert_eq!(0, exit_status),
@@ -349,6 +350,7 @@ mod compute_driver_tests {
         assert_eq!("Test string to stderr\n", stderr_string);
     }
 
+    #[cfg(not(feature = "wasm"))]
     fn engine_fileio<Dom: MemoryDomain>(
         filename: &str,
         dom_init: MemoryResource,

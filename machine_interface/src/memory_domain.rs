@@ -8,9 +8,9 @@ pub mod mmap;
 #[cfg(feature = "mmu")]
 pub mod mmu;
 pub mod read_only;
+pub(crate) mod system_domain;
 #[cfg(feature = "wasm")]
 pub mod wasm;
-pub(crate) mod system_domain;
 
 // Eventually use this
 // pub mod system_domain;
@@ -49,7 +49,6 @@ pub enum ContextType {
     #[cfg(feature = "wasm")]
     Wasm(Box<wasm::WasmContext>),
     System(Box<system_domain::SystemContext>),
-
 }
 
 impl ContextTrait for ContextType {
@@ -340,24 +339,20 @@ pub fn transfer_memory(
                 size,
             )
         }
-        (ContextType::System(destination_ctxt), _) => {
-            system_domain::into_system_context_transfer(
-                destination_ctxt,
-                source,
-                destination_offset,
-                source_offset,
-                size,
-            )
-        }
-        (_, ContextType::System(source_ctxt)) => {
-            system_domain::out_of_system_context_transfer(
-                destination,
-                &source_ctxt,
-                destination_offset,
-                source_offset,
-                size,
-            )
-        }
+        (ContextType::System(destination_ctxt), _) => system_domain::into_system_context_transfer(
+            destination_ctxt,
+            source,
+            destination_offset,
+            source_offset,
+            size,
+        ),
+        (_, ContextType::System(source_ctxt)) => system_domain::out_of_system_context_transfer(
+            destination,
+            &source_ctxt,
+            destination_offset,
+            source_offset,
+            size,
+        ),
         // default implementation using reads and writes
         (destination, source) => {
             let mut read_buffer: Vec<u8> = vec![0; size];

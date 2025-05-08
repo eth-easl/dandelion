@@ -113,7 +113,6 @@ impl Driver for CheriDriver {
             system_data_offset: system_data.0,
             return_offset: return_offset,
             entry_point: entry,
-            protection_flags: Arc::new(elf.get_memory_protection_layout()),
         });
         let (static_requirements, source_layout) = elf.get_layout_pair();
         let requirements = DataRequirementList {

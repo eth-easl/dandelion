@@ -1,20 +1,6 @@
 use ariadne::Report;
 use dparser::{print_errors, Span};
 
-trait ToReport<T> {
-    fn rep(self) -> Result<T, Report<'static>>;
-}
-
-impl<T> ToReport<T> for Result<T, String> {
-    fn rep(self) -> Result<T, Report<'static>> {
-        self.map_err(|e| {
-            Report::<Span>::build(ariadne::ReportKind::Error, (), 0)
-                .with_message(e)
-                .finish()
-        })
-    }
-}
-
 fn main() {
     let stdin = std::io::stdin().lock();
     let input = match std::io::read_to_string(stdin) {
