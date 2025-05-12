@@ -302,7 +302,6 @@ mod server_tests {
     #[test]
     #[serial]
     fn serve_matmul_http_1_1() {
-
         let mut cmd = Command::cargo_bin("dandelion_server").unwrap();
         let server = cmd
             .stdout(Stdio::piped())

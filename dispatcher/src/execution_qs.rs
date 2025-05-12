@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crossbeam::channel::{TryRecvError, TrySendError};
 use dandelion_commons::{DandelionError, DandelionResult};
-use log::{error, debug};
+use log::{debug, error};
 use machine_interface::{
     function_driver::{WorkDone, WorkQueue, WorkToDo},
     promise::{Debt, PromiseBuffer},
