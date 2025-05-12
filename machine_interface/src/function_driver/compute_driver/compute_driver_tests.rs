@@ -8,8 +8,7 @@ mod compute_driver_tests {
             test_queue::TestQueue, ComputeResource, Driver, FunctionConfig, WorkToDo,
         },
         memory_domain::{
-            test_resource::get_resource, Context, ContextState, ContextTrait, MemoryDomain,
-            MemoryResource,
+            test_resource::get_resource, Context, ContextTrait, MemoryDomain, MemoryResource,
         },
         DataItem, DataSet, Position,
     };
@@ -259,6 +258,7 @@ mod compute_driver_tests {
         }
     }
 
+    #[cfg(not(feature = "wasm"))]
     fn engine_stdio<Dom: MemoryDomain>(
         filename: &str,
         dom_init: MemoryResource,
@@ -333,6 +333,7 @@ mod compute_driver_tests {
             .record(RecordPoint::FutureReturn)
             .expect("Should have properly advanced recorder state");
         // check the function exited with exit code 0
+        use crate::memory_domain::ContextState;
         match result_context.state {
             ContextState::InPreparation => panic!("context still in preparation, never evaluated "),
             ContextState::Run(exit_status) => assert_eq!(0, exit_status),
@@ -382,6 +383,7 @@ mod compute_driver_tests {
         assert_eq!("Test string to stderr\n", stderr_string);
     }
 
+    #[cfg(not(feature = "wasm"))]
     fn engine_fileio<Dom: MemoryDomain>(
         filename: &str,
         dom_init: MemoryResource,
@@ -601,7 +603,7 @@ mod compute_driver_tests {
     mod cheri {
         use crate::function_driver::{compute_driver::cheri::CheriDriver, ComputeResource};
         use crate::memory_domain::{cheri::CheriMemoryDomain, MemoryResource};
-        driverTests!(elf_cheri; CheriMemoryDomain; MemoryResource::None; CheriDriver {};
+        driverTests!(elf_cheri; CheriMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; CheriDriver {};
         core_affinity::get_core_ids()
            .and_then(
                 |core_vec|

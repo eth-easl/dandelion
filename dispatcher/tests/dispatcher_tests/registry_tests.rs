@@ -99,45 +99,28 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
                 ),
             )
             .expect("should be able to update function");
+
+        // prepare inputs
         let input_sets = (0..=2)
             .into_iter()
             .filter(|index| *index != i)
             .collect::<Vec<_>>();
-        let inputs = vec![
-            (
-                input_sets[0],
-                CompositionSet::from((0, vec![mat_con_b.clone()])),
-            ),
-            (
-                input_sets[1],
-                CompositionSet::from((0, vec![mat_con_c.clone()])),
-            ),
-        ];
+        let mut inputs = vec![None; 3];
+        inputs[input_sets[0]] = Some(CompositionSet::from((0, vec![mat_con_b.clone()])));
+        inputs[input_sets[1]] = Some(CompositionSet::from((0, vec![mat_con_c.clone()])));
         let mut overwrite_inputs = inputs.clone();
-        overwrite_inputs.push((i, CompositionSet::from((0, vec![mat_fault.clone()]))));
-        let outputs = vec![Some(0)];
+        overwrite_inputs[i] = Some(CompositionSet::from((0, vec![mat_fault.clone()])));
+
         let mut recorder = archive.get_recorder().unwrap();
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(
-                function_id,
-                inputs,
-                outputs.clone(),
-                false,
-                recorder,
-            ));
+            .block_on(dispatcher.queue_function(function_id, inputs, false, recorder));
         recorder = archive.get_recorder().unwrap();
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(
-                function_id,
-                overwrite_inputs,
-                outputs,
-                false,
-                recorder,
-            ));
+            .block_on(dispatcher.queue_function(function_id, overwrite_inputs, false, recorder));
         let out_sets = match result {
             Ok(composition_sets) => composition_sets,
             Err(err) => panic!("Non overwrite failed with: {:?}", err),
@@ -146,16 +129,16 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
             Ok(compostion_set) => compostion_set,
             Err(err) => panic!("Overwrite input failed with: {:?}", err),
         };
-        assert!(out_sets.contains_key(&0));
-        assert!(overwrite_sets.contains_key(&0));
-        let result_set = &out_sets.get(&0).unwrap().context_list;
-        let overwrite_set = &overwrite_sets.get(&0).unwrap().context_list;
-        assert_eq!(1, result_set.len());
-        assert_eq!(1, overwrite_set.len());
-        let (result_context, _) = &result_set[0];
-        let (overwrite_context, _) = &overwrite_set[0];
-        check_matrix(&result_context, 0, 0, 1, vec![expected[i]]);
-        check_matrix(&overwrite_context, 0, 0, 1, vec![expected[i]]);
+        assert_eq!(1, out_sets.len());
+        assert_eq!(1, overwrite_sets.len());
+        let mut result_iter = out_sets[0].as_ref().unwrap().into_iter();
+        let (_, _, result_set) = result_iter.next().unwrap();
+        assert!(result_iter.next().is_none());
+        let mut overwrite_iter = overwrite_sets[0].as_ref().unwrap().into_iter();
+        let (_, _, overwrite_set) = overwrite_iter.next().unwrap();
+        assert!(overwrite_iter.next().is_none());
+        check_matrix(&result_set, 0, 0, 1, vec![expected[i]]);
+        check_matrix(&overwrite_set, 0, 0, 1, vec![expected[i]]);
     }
 }
 
@@ -227,39 +210,24 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
                 ),
             )
             .expect("should be able to update function");
-        let inputs = vec![(i, CompositionSet::from((0, vec![mat_con_a.clone()])))];
+
+        // prepare inputs
+        let mut inputs = vec![None; 3];
+        inputs[i] = Some(CompositionSet::from((0, vec![mat_con_a.clone()])));
         let mut overwrite_inputs = inputs.clone();
-        overwrite_inputs.push((
-            fixed_sets[0],
-            CompositionSet::from((0, vec![mat_fault.clone()])),
-        ));
-        overwrite_inputs.push((
-            fixed_sets[1],
-            CompositionSet::from((0, vec![mat_fault.clone()])),
-        ));
-        let outputs = vec![Some(0)];
+        overwrite_inputs[fixed_sets[0]] = Some(CompositionSet::from((0, vec![mat_fault.clone()])));
+        overwrite_inputs[fixed_sets[1]] = Some(CompositionSet::from((0, vec![mat_fault.clone()])));
+
         let mut recorder = archive.get_recorder().unwrap();
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(
-                function_id,
-                inputs,
-                outputs.clone(),
-                false,
-                recorder,
-            ));
+            .block_on(dispatcher.queue_function(function_id, inputs, false, recorder));
         recorder = archive.get_recorder().unwrap();
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(
-                function_id,
-                overwrite_inputs,
-                outputs,
-                false,
-                recorder,
-            ));
+            .block_on(dispatcher.queue_function(function_id, overwrite_inputs, false, recorder));
         let out_sets = match result {
             Ok(composition_sets) => composition_sets,
             Err(err) => panic!("Non overwrite failed with: {:?}", err),
@@ -268,16 +236,16 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
             Ok(compostion_set) => compostion_set,
             Err(err) => panic!("Overwrite input failed with: {:?}", err),
         };
-        assert!(out_sets.contains_key(&0));
-        assert!(overwrite_sets.contains_key(&0));
-        let result_set = &out_sets.get(&0).unwrap().context_list;
-        let overwrite_set = &overwrite_sets.get(&0).unwrap().context_list;
-        assert_eq!(1, result_set.len());
-        assert_eq!(1, overwrite_set.len());
-        let (result_context, _) = &result_set[0];
-        let (overwrite_context, _) = &overwrite_set[0];
-        check_matrix(&result_context, 0, 0, 1, vec![expected[i]]);
-        check_matrix(&overwrite_context, 0, 0, 1, vec![expected[i]]);
+        assert_eq!(1, out_sets.len());
+        assert_eq!(1, overwrite_sets.len());
+        let mut result_iter = out_sets[0].as_ref().unwrap().into_iter();
+        let (_, _, result_set) = result_iter.next().unwrap();
+        assert!(result_iter.next().is_none());
+        let mut overwrite_iter = overwrite_sets[0].as_ref().unwrap().into_iter();
+        let (_, _, overwrite_set) = overwrite_iter.next().unwrap();
+        assert!(overwrite_iter.next().is_none());
+        check_matrix(&result_set, 0, 0, 1, vec![expected[i]]);
+        check_matrix(&overwrite_set, 0, 0, 1, vec![expected[i]]);
     }
 }
 
@@ -296,10 +264,10 @@ fn test_insert_composition_with_http_func() {
     )
     .unwrap();
     let composition_string = r#"
-        (:function HTTP (request headers body) -> (status headers body))
-        (:composition Composition (comp_request req_body) -> (comp_status resp_body) (
-            (HTTP ((:all request <- comp_request) (:all body <- req_body)) => ((resp_body := body) (comp_status := status)))
-        ))
+        function HTTP (request, headers, body) => (status, headers, body);
+        composition Composition (comp_request, req_body) => (comp_status, resp_body) {
+            HTTP (request = all comp_request, body = all req_body) => (resp_body = body, comp_status = status);
+        }
     "#;
     tokio::runtime::Builder::new_current_thread()
         .build()

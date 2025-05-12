@@ -28,8 +28,8 @@ pub enum DataPosition {
 pub struct SystemContext {
     /// Links virtual offset to corresponding data position and size of item
     /// Position is currently either in Arc<Context> with corresponding offset or in Bytes
-    local_offset_to_data_position: BTreeMap<usize, (DataPosition, usize)>,
-    size: usize,
+    pub(crate) local_offset_to_data_position: BTreeMap<usize, (DataPosition, usize)>,
+    pub(crate) size: usize,
 }
 
 impl ContextTrait for SystemContext {

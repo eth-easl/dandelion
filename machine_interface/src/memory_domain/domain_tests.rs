@@ -540,9 +540,9 @@ domainTests!(mmap; mmapType; MemoryResource::Anonymous { size: (2<<22) });
 #[cfg(feature = "cheri")]
 use super::cheri::CheriMemoryDomain as cheriType;
 #[cfg(feature = "cheri")]
-domainTests!(cheri; cheriType; MemoryResource::None);
+domainTests!(cheri; cheriType; MemoryResource::Anonymous { size: (2<<22) });
 #[cfg(feature = "cheri")]
-systemsDomainTests!(cheri_system; cheriType; MemoryResource::None);
+systemsDomainTests!(cheri_system; cheriType; MemoryResource::Anonymous { size: (2<<22) });
 
 #[cfg(feature = "mmu")]
 use super::mmu::MmuMemoryDomain as mmuType;

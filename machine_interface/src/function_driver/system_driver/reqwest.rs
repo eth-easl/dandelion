@@ -1,4 +1,7 @@
-use crate::memory_domain::{system_domain::system_context_write_from_bytes, ContextType};
+use crate::memory_domain::{
+    system_domain::{system_context_write_from_bytes, SystemContext},
+    ContextType,
+};
 use crate::{
     function_driver::{
         ComputeResource, Driver, Function, FunctionConfig, SystemFunction, WorkDone, WorkQueue,
@@ -15,44 +18,51 @@ use dandelion_commons::{
     records::{RecordPoint, Recorder},
     DandelionError, DandelionResult,
 };
-use futures::{StreamExt, FutureExt};
-use http::{version::Version, HeaderName, HeaderValue, Method};
-use log::error;
-use reqwest::{header::HeaderMap, Client};
-use std::sync::Arc;
-use tokio::runtime::Builder;
-// use async_memcached::Client as MemcachedClient;
+use futures::{FutureExt, StreamExt};
+use http::{version::Version as HttpVersion, HeaderName, HeaderValue, Method as HttpMethod};
+use log::{debug, error, warn};
 use memcache::Client as MemcachedClient;
-use reqwest::Client as HttpClient;
-use crate::memory_domain::{system_domain::system_context_write_from_bytes, ContextType};
+use reqwest::{header::HeaderMap, Client as HttpClient};
+use std::{collections::BTreeMap, sync::Arc};
+use tokio::{runtime::Builder, sync::RwLock};
 
-enum RequestType {
-    HTTP,
-    MEMCACHED,
+trait Request
+where
+    Self: Sized,
+{
+    fn from_raw(raw_request: Vec<u8>, item_name: String, item_key: u32) -> DandelionResult<Self>;
 }
 
-enum RequestMethod {
-    HTTP_GET,
-    HTTP_POST,
-    HTTP_PUT,
-    MEMCACHED_SET,
-    MEMCACHED_GET,
-}
-
-/// Stores requestInformation for http and memcached request
-/// For memcached requests, version and headermap are not used and ignored for request building
-struct RequestInformation {
+/// Stores requestInformation for http
+struct HttpRequest {
     /// name of the request item
     item_name: String,
     /// key of the request item
     item_key: u32,
-    method: RequestMethod,
+    method: HttpMethod,
     uri: String,
-    version: Version,
-    memcached_identifier: String,
+    version: HttpVersion,
     headermap: HeaderMap,
     body: Vec<u8>,
 }
+
+enum MemcachedMethod {
+    SET,
+    GET,
+}
+
+/// Stores requestInformation for memcached request
+struct MemcachedRequest {
+    /// name of the request item
+    item_name: String,
+    /// key of the request item
+    item_key: u32,
+    method: MemcachedMethod,
+    uri: String,
+    memcached_identifier: String,
+    body: Vec<u8>,
+}
+
 struct ResponseInformation {
     /// name of the original request data item
     item_name: String,
@@ -63,152 +73,198 @@ struct ResponseInformation {
     body: bytes::Bytes,
 }
 
-fn convert_to_request(
-    mut raw_request: Vec<u8>,
-    item_name: String,
-    item_key: u32,
-) -> DandelionResult<RequestInformation> {
-    // read first line to get request line
-    let request_index = raw_request
-        .iter()
-        .position(|character| *character == b'\n')
-        .unwrap_or(raw_request.len());
-    let request_line = match std::str::from_utf8(&raw_request[0..request_index]) {
-        Ok(line) => line,
-        Err(_) => {
-            return Err(DandelionError::InvalidSystemFuncArg(String::from(
-                "Request line not utf8",
-            )));
-        }
-    };
-    let mut request_iter = request_line.split_ascii_whitespace();
-
-    let method_item = request_iter.next();
-    let method = match method_item {
-        Some(method_string) if method_string == "GET" => RequestMethod::HTTP_GET,
-        Some(method_string) if method_string == "POST" => RequestMethod::HTTP_POST,
-        Some(method_string) if method_string == "MEMCACHED_GET" => RequestMethod::MEMCACHED_GET,
-        Some(method_string) if method_string == "MEMCACHED_SET" => RequestMethod::MEMCACHED_SET,
-        Some(method_string) => {
-            return Err(DandelionError::InvalidSystemFuncArg(format!(
-                "Unsupported Method: {}",
-                method_string
-            )))
-        }
-        _ => {
-            return Err(DandelionError::MalformedSystemFuncArg(String::from(
-                "No method found",
-            )))
-        }
-    };
-
-    let uri = String::from(
-        request_iter
-            .next()
-            .ok_or(DandelionError::MalformedSystemFuncArg(String::from(
-                "No uri in request",
-            )))?,
-    );
-    let mut version: Version;
-    let mut memcached_identifier: String;
-    match method { 
-        RequestMethod::HTTP_GET | RequestMethod::HTTP_POST | RequestMethod::HTTP_PUT
-            => {
-                version = match request_iter.next() {
-                    Some(version_string) if version_string == "HTTP/0.9" => Version::HTTP_09,
-                    Some(version_string) if version_string == "HTTP/1.0" => Version::HTTP_10,
-                    Some(version_string) if version_string == "HTTP/1.1" => Version::HTTP_11,
-                    Some(version_string) if version_string == "HTTP/2.0" => Version::HTTP_2,
-                    Some(version_string) if version_string == "HTTP/3.0" => Version::HTTP_3,
-                    Some(version_string) => {
-                        return Err(DandelionError::InvalidSystemFuncArg(format!(
-                            "unkown http version: {}",
-                            version_string,
-                        )))
-                    }
-                    None => {
-                        return Err(DandelionError::MalformedSystemFuncArg(String::from(
-                            "No http version found",
-                        )))
-                    }
-                };
-                memcached_identifier = String::from("");
-            }
-            // This does not matter, as version is not used for memcached functions
-        RequestMethod::MEMCACHED_SET | RequestMethod::MEMCACHED_GET 
-            => {
-                version = Version::HTTP_10;
-                memcached_identifier = match request_iter.next() {
-                    Some(identifier) => identifier.to_string(),
-                    None => {
-                        return Err(DandelionError::MalformedSystemFuncArg(String::from(
-                            "No memcached identifier found",
-                        )))
-                    }
-                }
-            } 
-        _ => return Err(DandelionError::NotImplemented), 
-    }
-
-    // read new lines until end of header map
-    let mut header_index = request_index + 1;
-    let mut headermap = HeaderMap::new();
-    while header_index < raw_request.len() {
-        let header_line = raw_request[header_index..]
+impl Request for HttpRequest {
+    fn from_raw(
+        mut raw_request: Vec<u8>,
+        item_name: String,
+        item_key: u32,
+    ) -> DandelionResult<Self> {
+        // read first line to get request line
+        let request_index = raw_request
             .iter()
             .position(|character| *character == b'\n')
-            .and_then(|header_end| Some(&raw_request[header_index..header_index + header_end]))
-            .unwrap_or(&raw_request[header_index..]);
-        // skip the \n at the index itself
-        header_index += header_line.len() + 1;
-        // if the header line is empty there are two consequtive new lines which means the headers are finished
-        // or the request is at the end which also means there are not more lines to read
-        if header_line.len() == 0 {
-            break;
-        }
-        let split_index = header_line
-            .iter()
-            .position(|character| *character == b':')
-            .ok_or(DandelionError::MalformedSystemFuncArg(String::from(
-                "Header line does not contain \':\'",
-            )))?;
-        let (key, value) = header_line.split_at(split_index);
-        let header_key = HeaderName::from_bytes(key).or(Err(
-            DandelionError::MalformedSystemFuncArg(String::from("Header key not utf-8")),
-        ))?;
-        let header_value = HeaderValue::from_bytes(&value[1..]).or(Err(
-            DandelionError::MalformedSystemFuncArg(String::from(
-                "Header value not utf-8 conformant",
-            )),
-        ))?;
-        match headermap.entry(header_key) {
-            http::header::Entry::Occupied(mut occupied) => occupied.append(header_value),
-            http::header::Entry::Vacant(vacant) => {
-                vacant.insert(header_value);
+            .unwrap_or(raw_request.len());
+        let request_line = match std::str::from_utf8(&raw_request[0..request_index]) {
+            Ok(line) => line,
+            Err(_) => {
+                return Err(DandelionError::InvalidSystemFuncArg(String::from(
+                    "Request line not utf8",
+                )));
+            }
+        };
+        let mut request_iter = request_line.split_ascii_whitespace();
+
+        let method_item = request_iter.next();
+        let method = match method_item {
+            Some(method_string) if method_string == "GET" => HttpMethod::GET,
+            Some(method_string) if method_string == "POST" => HttpMethod::POST,
+            Some(method_string) if method_string == "PUT" => HttpMethod::PUT,
+            Some(method_string) => {
+                return Err(DandelionError::InvalidSystemFuncArg(format!(
+                    "Unsupported Method: {}",
+                    method_string
+                )))
+            }
+            _ => {
+                return Err(DandelionError::MalformedSystemFuncArg(String::from(
+                    "No method found",
+                )))
+            }
+        };
+
+        let uri = String::from(request_iter.next().ok_or(
+            DandelionError::MalformedSystemFuncArg(String::from("No uri in request")),
+        )?);
+
+        let version = match request_iter.next() {
+            Some(version_string) if version_string == "HTTP/0.9" => HttpVersion::HTTP_09,
+            Some(version_string) if version_string == "HTTP/1.0" => HttpVersion::HTTP_10,
+            Some(version_string) if version_string == "HTTP/1.1" => HttpVersion::HTTP_11,
+            Some(version_string) if version_string == "HTTP/2.0" => HttpVersion::HTTP_2,
+            Some(version_string) if version_string == "HTTP/3.0" => HttpVersion::HTTP_3,
+            Some(version_string) => {
+                return Err(DandelionError::InvalidSystemFuncArg(format!(
+                    "Unkown http version: {}",
+                    version_string,
+                )))
+            }
+            None => {
+                return Err(DandelionError::MalformedSystemFuncArg(String::from(
+                    "No http version found",
+                )))
+            }
+        };
+
+        // read new lines until end of header map
+        let mut header_index = request_index + 1;
+        let mut headermap = HeaderMap::new();
+        while header_index < raw_request.len() {
+            let header_line = raw_request[header_index..]
+                .iter()
+                .position(|character| *character == b'\n')
+                .and_then(|header_end| Some(&raw_request[header_index..header_index + header_end]))
+                .unwrap_or(&raw_request[header_index..]);
+            // skip the \n at the index itself
+            header_index += header_line.len() + 1;
+            // if the header line is empty there are two consequtive new lines which means the headers are finished
+            // or the request is at the end which also means there are not more lines to read
+            if header_line.len() == 0 {
+                break;
+            }
+            let split_index = header_line
+                .iter()
+                .position(|character| *character == b':')
+                .ok_or(DandelionError::MalformedSystemFuncArg(String::from(
+                    "Header line does not contain \':\'",
+                )))?;
+            let (key, value) = header_line.split_at(split_index);
+            let header_key = HeaderName::from_bytes(key).or(Err(
+                DandelionError::MalformedSystemFuncArg(String::from("Header key not utf-8")),
+            ))?;
+            let header_value = HeaderValue::from_bytes(&value[1..]).or(Err(
+                DandelionError::MalformedSystemFuncArg(String::from(
+                    "Header value not utf-8 conformant",
+                )),
+            ))?;
+            match headermap.entry(header_key) {
+                http::header::Entry::Occupied(mut occupied) => occupied.append(header_value),
+                http::header::Entry::Vacant(vacant) => {
+                    vacant.insert(header_value);
+                }
             }
         }
-    }
-    let body = if header_index < raw_request.len() {
-        raw_request.drain(..header_index);
-        raw_request
-    } else {
-        vec![]
-    };
-    log::trace!("Reqwest body: {:?}", body);
 
-    return Ok(RequestInformation {
-        item_name,
-        item_key,
-        method,
-        uri,
-        version,
-        memcached_identifier,
-        headermap,
-        body,
-    });
+        let body = if header_index < raw_request.len() {
+            // TODO check if this copies the data (also used in other request types)
+            raw_request.drain(..header_index);
+            raw_request
+        } else {
+            vec![]
+        };
+        log::trace!("Reqwest body: {:?}", body);
+
+        Ok(HttpRequest {
+            item_name,
+            item_key,
+            method,
+            uri,
+            version,
+            headermap,
+            body,
+        })
+    }
 }
 
-fn request_setup(context: &Context) -> DandelionResult<Vec<RequestInformation>> {
+impl Request for MemcachedRequest {
+    fn from_raw(
+        mut raw_request: Vec<u8>,
+        item_name: String,
+        item_key: u32,
+    ) -> DandelionResult<Self> {
+        // read first line to get request line
+        let request_index = raw_request
+            .iter()
+            .position(|character| *character == b'\n')
+            .unwrap_or(raw_request.len());
+        let request_line = match std::str::from_utf8(&raw_request[0..request_index]) {
+            Ok(line) => line,
+            Err(_) => {
+                return Err(DandelionError::InvalidSystemFuncArg(String::from(
+                    "Request line not utf8",
+                )));
+            }
+        };
+        let mut request_iter = request_line.split_ascii_whitespace();
+
+        let method_item = request_iter.next();
+        let method = match method_item {
+            Some(method_string) if method_string == "MEMCACHED_GET" => MemcachedMethod::GET,
+            Some(method_string) if method_string == "MEMCACHED_SET" => MemcachedMethod::SET,
+            Some(method_string) => {
+                return Err(DandelionError::InvalidSystemFuncArg(format!(
+                    "Unsupported Method: {}",
+                    method_string
+                )))
+            }
+            _ => {
+                return Err(DandelionError::MalformedSystemFuncArg(String::from(
+                    "No method found",
+                )))
+            }
+        };
+
+        let uri = String::from(request_iter.next().ok_or(
+            DandelionError::MalformedSystemFuncArg(String::from("No uri in request")),
+        )?);
+        let memcached_identifier = match request_iter.next() {
+            Some(identifier) => identifier.to_string(),
+            None => {
+                return Err(DandelionError::MalformedSystemFuncArg(String::from(
+                    "No memcached identifier found",
+                )))
+            }
+        };
+
+        let body = if request_index + 1 < raw_request.len() {
+            raw_request.drain(..=request_index);
+            raw_request
+        } else {
+            vec![]
+        };
+        log::trace!("Reqwest body: {:?}", body);
+
+        return Ok(Self {
+            item_name,
+            item_key,
+            method,
+            uri,
+            memcached_identifier,
+            body,
+        });
+    }
+}
+
+fn parse_requests<RequestType: Request>(context: &Context) -> DandelionResult<Vec<RequestType>> {
     let request_set = match context.content.iter().find(|set_option| {
         if let Some(set) = set_option {
             return set.ident == "request";
@@ -223,15 +279,14 @@ fn request_setup(context: &Context) -> DandelionResult<Vec<RequestInformation>> 
             )))
         }
     };
-    let request_info: DandelionResult<Vec<RequestInformation>> = request_set
+    let request_info: DandelionResult<Vec<RequestType>> = request_set
         .buffers
         .iter()
         .map(|set_item| {
             let mut request_buffer = Vec::with_capacity(set_item.data.size);
             request_buffer.resize(set_item.data.size, 0);
             context.read(set_item.data.offset, &mut request_buffer)?;
-            convert_to_request(request_buffer, set_item.ident.clone(), set_item.key)
-            
+            RequestType::from_raw(request_buffer, set_item.ident.clone(), set_item.key)
         })
         .collect();
     return request_info;
@@ -239,23 +294,22 @@ fn request_setup(context: &Context) -> DandelionResult<Vec<RequestInformation>> 
 
 async fn http_request(
     client: HttpClient,
-    request_info: RequestInformation,
+    request_info: HttpRequest,
 ) -> DandelionResult<ResponseInformation> {
-    let RequestInformation {
+    let HttpRequest {
         item_name,
         item_key,
         method,
         uri,
         version,
-        memcached_identifier,
         headermap,
         body,
     } = request_info;
 
     let request_builder = match method {
-        RequestMethod::HTTP_PUT => client.put(uri.clone()),
-        RequestMethod::HTTP_POST => client.post(uri.clone()),
-        RequestMethod::HTTP_GET => client.get(uri.clone()),
+        HttpMethod::PUT => client.put(uri.clone()),
+        HttpMethod::POST => client.post(uri.clone()),
+        HttpMethod::GET => client.get(uri.clone()),
         _ => {
             return Err(DandelionError::MalformedSystemFuncArg(String::from(
                 "Unsupported Method",
@@ -292,13 +346,11 @@ async fn http_request(
     );
 
     // read the content length in the header
-    // TODO also accept chunked data
     let content_length = response
         .headers()
         .get("content-length")
         .and_then(|value| value.to_str().ok())
-        .and_then(|len_str| len_str.parse::<usize>().ok())
-        .ok_or(DandelionError::SystemFuncResponseError)?;
+        .and_then(|len_str| len_str.parse::<usize>().ok());
 
     for (key, value) in response.headers() {
         preamble.push_str(&format!("{}:{}\n", key, value.to_str().unwrap()));
@@ -311,57 +363,56 @@ async fn http_request(
         Err(_) => return Err(DandelionError::SystemFuncResponseError),
     };
 
-    if content_length == body.len() {
-        let response_info = ResponseInformation {
-            item_name,
-            item_key,
-            preamble,
-            body,
-        };
-        return Ok(response_info);
-    } else {
-        return Err(DandelionError::SystemFuncResponseError);
+    if let Some(content_len) = content_length {
+        if content_len != body.len() {
+            return Err(DandelionError::SystemFuncResponseError);
+        }
     }
+    let response_info = ResponseInformation {
+        item_name,
+        item_key,
+        preamble,
+        body,
+    };
+    return Ok(response_info);
 }
 
-async fn memcached_request(
-    client: HttpClient,
-    request_info: RequestInformation,
-) -> DandelionResult<ResponseInformation> {
-    let RequestInformation {
+async fn memcached_request(request_info: MemcachedRequest) -> DandelionResult<ResponseInformation> {
+    let MemcachedRequest {
         item_name,
         item_key,
         method,
         uri,
-        version,
         memcached_identifier,
-        headermap,
         body,
     } = request_info;
 
     // For simplicity, we use the same Methods as http.
-    // Memcached Basic Text Protocol could have following methods: 
+    // Memcached Basic Text Protocol could have following methods:
     // Set, add (set if not present), replace (set if present), append, prepend, cas
     // Get, gets (get with cas ), delete, incr/decr
 
     let ip = format!("memcache://{}", uri.clone());
-    let mut memcached_client = match MemcachedClient::connect(ip){
+    let memcached_client = match MemcachedClient::connect(ip) {
         Ok(client) => client,
-        Err(r) => return Err(DandelionError::MemcachedError),
+        Err(_) => return Err(DandelionError::MemcachedError),
     };
 
     // Preamble is SUCCESS for success. For non successfull functions, error message will be stored there
     let mut preamble: String;
-    let mut response_body: bytes::Bytes;
+    let response_body: bytes::Bytes;
     // Default item size limit is 1MB. If item is larger, we ignore it
     match method {
-        RequestMethod::MEMCACHED_SET => {
+        MemcachedMethod::SET => {
             // Assemble value to set
             // TODO Make timeout a parameter
 
-            let result = tokio::task::spawn_blocking(move || memcached_client.set(&memcached_identifier, &*body, 3600)).await;
+            let result = tokio::task::spawn_blocking(move || {
+                memcached_client.set(&memcached_identifier, &*body, 3600)
+            })
+            .await;
 
-            match result{
+            match result {
                 Ok(Ok(_)) => {
                     preamble = String::from("SUCCESS");
                     response_body = Bytes::from(vec![0u8]);
@@ -377,11 +428,14 @@ async fn memcached_request(
                 }
             }
         }
-        RequestMethod::MEMCACHED_GET => {
+        MemcachedMethod::GET => {
             // Result<Option<Vec<u8>>, tokio_memcached::Error>
-            let result = tokio::task::spawn_blocking(move || memcached_client.get::<Vec<u8>>(&memcached_identifier)).await;
+            let result = tokio::task::spawn_blocking(move || {
+                memcached_client.get::<Vec<u8>>(&memcached_identifier)
+            })
+            .await;
 
-            match result{
+            match result {
                 Ok(Ok(Some(response))) => {
                     preamble = String::from("SUCCESS");
                     // preamble.push_str(&format!(", {:?}", response.key));
@@ -407,11 +461,6 @@ async fn memcached_request(
                 }
             }
         }
-        _ => {
-            return Err(DandelionError::MalformedSystemFuncArg(String::from(
-                "Unsupported Method",
-            )))
-        }
     };
 
     preamble.push('\n');
@@ -425,7 +474,7 @@ async fn memcached_request(
     return Ok(response_info);
 }
 
-fn http_context_write(context: &mut Context, response: ResponseInformation) -> DandelionResult<()> {
+fn response_write(context: &mut Context, response: ResponseInformation) -> DandelionResult<()> {
     let ResponseInformation {
         item_name,
         item_key,
@@ -497,63 +546,38 @@ fn http_context_write(context: &mut Context, response: ResponseInformation) -> D
     return Ok(());
 }
 
-async fn request_run(
-    mut context: Context,
-    client: HttpClient,
+fn responses_write(
+    context_size: usize,
     output_set_names: Arc<Vec<String>>,
     debt: Debt,
     mut recorder: Recorder,
-) -> () {
-    let request_vec = match request_setup(&context) {
-        Ok(request) => request,
-        Err(err) => {
-            debt.fulfill(Err(err));
-            return;
-        }
-    };
-    
-    let response_vec = match futures::future::try_join_all(
-        request_vec
-            .into_iter()
-            .map(|request| {
-                match request.method { 
-                    RequestMethod::HTTP_GET | RequestMethod::HTTP_POST | RequestMethod::HTTP_PUT
-                        => http_request(client.clone(), request).boxed(), 
-                    RequestMethod::MEMCACHED_SET | RequestMethod::MEMCACHED_GET 
-                        => memcached_request(client.clone(), request).boxed(),
-                    _ => unimplemented!(), 
-                }
-            }),
-    )
-    .await
-    {
-        Ok(resp) => resp,
-        Err(err) => {
-            debt.fulfill(Err(err));
-            return;
-        }
-    };
-
-    // only clear once for all requests
-    context.clear_metadata();
+    responses: Vec<ResponseInformation>,
+) {
+    let mut out_context = Context::new(
+        ContextType::System(Box::new(SystemContext {
+            local_offset_to_data_position: BTreeMap::new(),
+            size: context_size,
+        })),
+        context_size,
+    );
 
     if !output_set_names.is_empty() {
-        context.content = vec![None, None];
+        out_context.content = vec![None, None];
         if output_set_names.iter().any(|elem| elem == "response") {
-            context.content[0] = Some(DataSet {
+            out_context.content[0] = Some(DataSet {
                 ident: String::from("response"),
                 buffers: vec![],
             })
         }
         if output_set_names.iter().any(|elem| elem == "body") {
-            context.content[1] = Some(DataSet {
+            out_context.content[1] = Some(DataSet {
                 ident: String::from("body"),
                 buffers: vec![],
             })
         }
-        let write_results: DandelionResult<Vec<_>> = response_vec
+        let write_results: DandelionResult<Vec<_>> = responses
             .into_iter()
-            .map(|response| http_context_write(&mut context, response))
+            .map(|response| response_write(&mut out_context, response))
             .collect();
         if let Err(err) = write_results {
             debt.fulfill(Err(err));
@@ -564,26 +588,89 @@ async fn request_run(
         debt.fulfill(Err(err));
         return;
     }
-    debt.fulfill(Ok(WorkDone::Context(context)));
+    debt.fulfill(Ok(WorkDone::Context(out_context)));
     return;
 }
 
+async fn run_http_request(
+    context: Context,
+    client: HttpClient,
+    output_set_names: Arc<Vec<String>>,
+    debt: Debt,
+    recorder: Recorder,
+) -> () {
+    let request_vec = match parse_requests(&context) {
+        Ok(request) => request,
+        Err(err) => {
+            debt.fulfill(Err(err));
+            return;
+        }
+    };
+    let context_size = context.size;
+
+    // get rid of systems context to drop references to old contexts before starting to do requests
+    drop(context);
+
+    let responses = match futures::future::try_join_all(
+        request_vec
+            .into_iter()
+            .map(|request| http_request(client.clone(), request).boxed()),
+    )
+    .await
+    {
+        Ok(resp) => resp,
+        Err(err) => {
+            debt.fulfill(Err(err));
+            return;
+        }
+    };
+
+    responses_write(context_size, output_set_names, debt, recorder, responses);
+}
+
+async fn run_memcached_request(
+    context: Context,
+    output_set_names: Arc<Vec<String>>,
+    debt: Debt,
+    recorder: Recorder,
+) -> () {
+    let request_vec = match parse_requests(&context) {
+        Ok(request) => request,
+        Err(err) => {
+            debt.fulfill(Err(err));
+            return;
+        }
+    };
+    let context_size = context.size;
+
+    // get rid of systems context to drop references to old contexts before starting to do requests
+    drop(context);
+
+    let responses = match futures::future::try_join_all(
+        request_vec
+            .into_iter()
+            .map(|request| memcached_request(request).boxed()),
+    )
+    .await
+    {
+        Ok(resp) => resp,
+        Err(err) => {
+            debt.fulfill(Err(err));
+            return;
+        }
+    };
+
+    responses_write(context_size, output_set_names, debt, recorder, responses);
+}
+
 async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
-    env_logger::init();
     log::debug!("Reqwest engine Init");
     let http_client = HttpClient::new();
-
-    // TODO
-    // Single instantiation of Memcached server that has to be manually setup
-    // Change this to be a pool
-    // Currently it is not used at all
-    // let memcached_address = "10.233.0.17:8000";
-    // let mut memcached_client = MemcachedClient::connect(memcached_address).await?;
-
 
     // TODO FIX! This should not be necessary!
     let mut queue_ref = Box::leak(queue);
     let mut tuple;
+    let worker_lock = Arc::new(RwLock::new(()));
     loop {
         (tuple, queue_ref) = queue_ref.into_future().await;
         let (args, debt) = if let Some((tuple_args, tuple_debt)) = tuple {
@@ -612,8 +699,8 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                     }
                 };
                 match function {
-                    SystemFunction::HTTP | SystemFunction::MEMCACHED => {
-                        tokio::spawn(request_run(
+                    SystemFunction::HTTP => {
+                        tokio::spawn(run_http_request(
                             context,
                             http_client.clone(),
                             output_sets,
@@ -622,13 +709,7 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                         ));
                     }
                     SystemFunction::MEMCACHED => {
-                        tokio::spawn(request_run(
-                            context,
-                            http_client.clone(),
-                            output_sets,
-                            debt,
-                            recorder,
-                        ));
+                        tokio::spawn(run_memcached_request(context, output_sets, debt, recorder));
                     }
                     #[allow(unreachable_patterns)]
                     _ => {
@@ -707,6 +788,7 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                 continue;
             }
             WorkToDo::Shutdown() => {
+                let _ = worker_lock.write_owned().await;
                 return debt;
             }
         }

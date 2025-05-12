@@ -138,6 +138,15 @@ fn read_and_check_type(buf: &mut impl bytes::Buf, expected_type: i8) -> Dandelio
     return Ok(());
 }
 
+fn read_and_check_termination(buf: &mut impl bytes::Buf) -> DandelionResult<()> {
+    check_remaining::<u8>(buf)?;
+    if buf.get_u8() == 0 {
+        Ok(())
+    } else {
+        Err(DandelionError::RequestError(FrontendError::ViolatedSpec))
+    }
+}
+
 fn read_length(buf: &mut impl bytes::Buf) -> DandelionResult<usize> {
     check_remaining::<i32>(buf)?;
     return usize::try_from(buf.get_i32_le()).or(Err(DandelionError::RequestError(
@@ -191,9 +200,8 @@ fn read_string(buf: &mut impl bytes::Buf) -> DandelionResult<String> {
     // do not copy null char
     buf.copy_to_slice(byte_buffer.as_mut_slice());
     // read the trailing null bytes
-    if buf.get_i8() != 0 {
-        return Err(DandelionError::RequestError(FrontendError::ViolatedSpec));
-    }
+    read_and_check_termination(buf)?;
+
     let string = String::from_utf8(byte_buffer).or(Err(DandelionError::RequestError(
         FrontendError::ViolatedSpec,
     )))?;
@@ -248,14 +256,9 @@ fn read_data_item(
     let offset = total_length - buf.remaining();
     let size = binary_lenght;
     buf.advance(size);
-    let doc_termination = buf.get_i8();
-    if doc_termination != 0 {
-        debug!(
-            "Terminating 0 of data item not 0, {} instead",
-            doc_termination
-        );
-        return Err(DandelionError::RequestError(FrontendError::ViolatedSpec));
-    }
+
+    read_and_check_termination(buf)?;
+
     return Ok(Some(DataItem {
         ident,
         key,
@@ -294,10 +297,11 @@ fn read_data_set(
     read_and_check_cstring(buf, "items\0")?;
 
     // read array lenghth
-    let item_array_size = read_length(buf)?;
     let mut items = Vec::new();
-    let array_end = buf.remaining() + 4 - item_array_size;
-    // reads all items, as well as the last terminating 0 of the array
+    let mut array_end = buf.remaining();
+    array_end = array_end - read_length(buf)?;
+    // reads all items, as well as the last terminating 0 of the array document
+    // the terminating 0 is read by the one that return None
     while buf.remaining() > array_end {
         if let Some(item) = read_data_item(buf, total_length)? {
             items.push(item);
@@ -305,12 +309,9 @@ fn read_data_set(
             break;
         }
     }
-    // read terminating 0 char of the document
-    check_remaining::<i8>(buf)?;
-    if buf.get_i8() != 0 {
-        debug!("Terminating 0 not 0");
-        return Err(DandelionError::RequestError(FrontendError::ViolatedSpec));
-    }
+
+    // read terminating 0 of document arround array
+    read_and_check_termination(buf)?;
 
     return Ok(Some(DataSet {
         ident: set_name,

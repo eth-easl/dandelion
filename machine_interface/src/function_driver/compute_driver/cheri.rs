@@ -5,7 +5,7 @@ use crate::{
         ComputeResource, Driver, ElfConfig, Function, FunctionConfig, WorkQueue,
     },
     interface::{read_output_structs, setup_input_structs},
-    memory_domain::{cheri::cheri_c_context, Context, ContextTrait, ContextType, MemoryDomain},
+    memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
     DataItem, DataRequirement, DataRequirementList, DataSet, Position,
 };
@@ -17,7 +17,8 @@ use std::sync::Arc;
 #[link(name = "cheri_lib")]
 extern "C" {
     fn cheri_run_static(
-        context: *const cheri_c_context,
+        cap_start: *const u8,
+        cap_size: size_t,
         entry_point: size_t,
         return_pair_offset: size_t,
         stack_pointer: size_t,
@@ -45,12 +46,15 @@ impl EngineLoop for CheriLoop {
             ContextType::Cheri(cheri_context) => cheri_context,
             _ => return Err(DandelionError::ContextMissmatch),
         };
+        let cap_offset = cheri_context.cap_offset;
+        let stack_end = cheri_context.storage.size() - cap_offset - 32;
         let cheri_error = unsafe {
             cheri_run_static(
-                cheri_context.context,
+                cheri_context.storage.as_ptr().add(cap_offset),
+                cheri_context.storage.size(),
                 elf_config.entry_point,
                 elf_config.return_offset.0,
-                cheri_context.size - 32,
+                stack_end,
             )
         };
         match cheri_error {
@@ -109,7 +113,6 @@ impl Driver for CheriDriver {
             system_data_offset: system_data.0,
             return_offset: return_offset,
             entry_point: entry,
-            protection_flags: Arc::new(elf.get_memory_protection_layout()),
         });
         let (static_requirements, source_layout) = elf.get_layout_pair();
         let requirements = DataRequirementList {

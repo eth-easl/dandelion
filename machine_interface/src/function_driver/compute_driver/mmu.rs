@@ -186,7 +186,6 @@ impl EngineLoop for MmuLoop {
         mut context: Context,
         output_sets: Arc<Vec<String>>,
     ) -> DandelionResult<Context> {
-        debug!("Mmu run");
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
             _ => return Err(DandelionError::ConfigMissmatch),
@@ -198,7 +197,7 @@ impl EngineLoop for MmuLoop {
             elf_config.system_data_offset,
             &output_sets,
         )?;
-        
+
         debug!("Matching mmu context");
         let mmu_context = match &context.context {
             ContextType::Mmu(mmu_context) => mmu_context,
@@ -282,7 +281,7 @@ impl Driver for MmuDriver {
         for position in source_layout.iter() {
             total_size += position.size;
         }
-        let mut context =  Box::new(static_domain.acquire_context(total_size)?);
+        let mut context = Box::new(static_domain.acquire_context(total_size)?);
         // copy all
         let mut write_counter = 0;
         let mut new_content = DataSet {

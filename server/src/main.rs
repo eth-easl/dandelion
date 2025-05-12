@@ -5,7 +5,9 @@ use dandelion_commons::{
 };
 use dandelion_server::DandelionBody;
 use dispatcher::{
-    composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
+    composition::CompositionSet,
+    dispatcher::{Dispatcher, DispatcherInput},
+    function_registry::Metadata,
     resource_pool::ResourcePool,
 };
 use http_body_util::BodyExt;
@@ -48,10 +50,10 @@ const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 enum DispatcherCommand {
     FunctionRequest {
         name: String,
-        inputs: Vec<(usize, CompositionSet)>,
+        inputs: Vec<DispatcherInput>,
         is_cold: bool,
         recorder: Recorder,
-        callback: oneshot::Sender<DandelionResult<BTreeMap<usize, CompositionSet>>>,
+        callback: oneshot::Sender<DandelionResult<Vec<Option<CompositionSet>>>>,
     },
     FunctionRegistration {
         name: String,
@@ -104,22 +106,18 @@ async fn serve_request(
     }
     let (function_name, request_context) = request_context_result.unwrap();
     debug!("finished creating request context");
+
     // TODO match set names to assign sets to composition sets
     // map sets in the order they are in the request
     let request_number = request_context.content.len();
     debug!("Request number of request_context: {}", request_number);
     let request_arc = Arc::new(request_context);
-    let mut inputs = vec![];
-    for request_set in 0..request_number {
-        trace!(
-            "adding input set {} from request",
-            request_arc.content[request_set].as_ref().unwrap().ident
-        );
-        inputs.push((
-            request_set,
-            CompositionSet::from((request_set, vec![request_arc.clone()])),
-        ));
-    }
+    let inputs = (0..request_number)
+        .map(|set_id| {
+            DispatcherInput::Set(CompositionSet::from((set_id, vec![request_arc.clone()])))
+        })
+        .collect::<Vec<_>>();
+
     // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
     recorder
         .record(RecordPoint::QueueFunctionDispatcher)
@@ -149,13 +147,27 @@ async fn serve_request(
     return response;
 }
 
+fn default_path() -> String {
+    String::new()
+}
+
+/// Struct containing registration information for new function
 #[derive(Debug, Deserialize)]
 struct RegisterFunction {
+    /// String name of the function
     name: String,
+    /// Default size for context to allocate to execute function
     context_size: u64,
+    /// Which engine the function should be executed on
     engine_type: String,
+    /// Optional local path to the binary if it is already on local disc
+    #[serde(default = "default_path")]
+    local_path: String,
+    /// Binary representation of the function, ignored if a local path is given
     binary: Vec<u8>,
+    /// Metadata for the sets and optionally static items to pass into the function for that set
     input_sets: Vec<(String, Option<Vec<(String, Vec<u8>)>>)>,
+    /// output set names
     output_sets: Vec<String>,
 }
 
@@ -171,15 +183,32 @@ async fn register_function(
     // find first line end character
     let request_map: RegisterFunction =
         bson::from_slice(&bytes).expect("Should be able to deserialize request");
-    // write function to file
-    std::fs::create_dir_all(FUNCTION_FOLDER_PATH).unwrap();
-    let mut path_buff = PathBuf::from(FUNCTION_FOLDER_PATH);
-    path_buff.push(request_map.name.clone());
-    let mut function_file = std::fs::File::create(path_buff.clone())
-        .expect("Failed to create file for registering function");
-    function_file
-        .write_all(&request_map.binary)
-        .expect("Failed to write file with content for registering");
+    // if local is present ignore the binary
+    let path_string = if !request_map.local_path.is_empty() {
+        // check that file exists
+        if let Err(err) = std::fs::File::open(&request_map.local_path) {
+            let err_message = format!(
+                "Tried to register function with local path, but failed to open file with error {}",
+                err
+            );
+            return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
+                err_message.as_bytes().to_vec(),
+            )));
+        };
+        request_map.local_path
+    } else {
+        // write function to file
+        std::fs::create_dir_all(FUNCTION_FOLDER_PATH).unwrap();
+        let mut path_buff = PathBuf::from(FUNCTION_FOLDER_PATH);
+        path_buff.push(request_map.name.clone());
+        let mut function_file = std::fs::File::create(path_buff.clone())
+            .expect("Failed to create file for registering function");
+        function_file
+            .write_all(&request_map.binary)
+            .expect("Failed to write file with content for registering");
+        path_buff.to_str().unwrap().to_string()
+    };
+
     let engine_type = match request_map.engine_type.as_str() {
         #[cfg(feature = "wasm")]
         "RWasm" => EngineType::RWasm,
@@ -213,13 +242,10 @@ async fn register_function(
                                 key: 0,
                             }],
                         }));
-                        (Arc::new(new_context), 0usize..1usize)
+                        Arc::new(new_context)
                     })
                     .collect();
-                let composition_set = CompositionSet {
-                    set_index: 0,
-                    context_list: data_contexts,
-                };
+                let composition_set = CompositionSet::from((0, data_contexts));
                 (name, Some(composition_set))
             } else {
                 (name, None)
@@ -236,7 +262,7 @@ async fn register_function(
             name: request_map.name,
             engine_type,
             context_size: request_map.context_size as usize,
-            path: path_buff.to_str().unwrap().to_string(),
+            path: path_string,
             metadata,
             callback,
         })
@@ -309,6 +335,7 @@ async fn service(
         | "/cold/io"
         | "/cold/chain_scaling"
         | "/cold/middleware_app"
+        | "/cold/compression_app"
         | "/cold/python_app" => serve_request(true, req, dispatcher).await,
         "/hot/matmul"
         | "/hot/matmulstore"
@@ -316,6 +343,7 @@ async fn service(
         | "/hot/io"
         | "/hot/chain_scaling"
         | "/hot/middleware_app"
+        | "/hot/compression_app"
         | "/hot/python_app" => serve_request(false, req, dispatcher).await,
         "/stats" => serve_stats(req).await,
         other_uri => {
@@ -345,11 +373,14 @@ async fn dispatcher_loop(
             } => {
                 debug!("Handling function request for function {}", name);
                 let function_future =
-                    dispatcher.queue_function_by_name(name, inputs, None, is_cold, recorder);
+                    dispatcher.queue_function_by_name(name, inputs, is_cold, recorder);
                 spawn(async {
                     select! {
                         function_output = function_future => {
-                            callback.send(function_output).unwrap();
+                            // either get an ok, meaning the data was sent, or get the data back
+                            // no need to handle ok, and nothing useful to do with data if we get it back
+                            // drop it here to release resources
+                            let _ = callback.send(function_output);
                         }
                         _ = callback.closed() => ()
                     }
@@ -557,7 +588,6 @@ fn main() -> () {
         })
         .unwrap()
         .unwrap()
-        / 2
         * 1024;
 
     let memory_pool = BTreeMap::from([
@@ -566,7 +596,10 @@ fn main() -> () {
             MemoryResource::Anonymous { size: max_ram },
         ),
         #[cfg(feature = "cheri")]
-        (DomainType::Cheri, MemoryResource::None),
+        (
+            DomainType::Cheri,
+            MemoryResource::Anonymous { size: max_ram },
+        ),
         #[cfg(feature = "mmu")]
         (
             DomainType::Process,
@@ -611,7 +644,10 @@ fn main() -> () {
     runtime.block_on(service_loop(dispatcher_sender, config.port));
 
     // clean up folder in tmp that is used for function storage
-    std::fs::remove_dir_all(FUNCTION_FOLDER_PATH).unwrap();
+    let removal_error = std::fs::remove_dir_all(FUNCTION_FOLDER_PATH);
+    if let Err(err) = removal_error {
+        warn!("Removing function folder failed with: {}", err);
+    }
     // clean up folder with shared files in case the context backed by shared files left some behind
     for shm_dir_entry in std::fs::read_dir("/dev/shm/").unwrap() {
         if let Ok(shm_file) = shm_dir_entry {

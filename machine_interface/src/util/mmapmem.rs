@@ -13,7 +13,6 @@ use std::{
     ops::{Deref, DerefMut},
     os::{fd::RawFd, raw::c_void},
     sync::{Arc, Mutex},
-    u16,
 };
 
 /// Internal structure for the memory pool memory to own the allocation.
@@ -24,7 +23,7 @@ struct MmapMemPoolInternal {
     size: usize,
     fd: RawFd,
     filename: Option<String>,
-    occupation: Mutex<RangePool<u16>>,
+    occupation: Mutex<RangePool<u32>>,
 }
 unsafe impl Sync for MmapMemPoolInternal {}
 unsafe impl Send for MmapMemPoolInternal {}
@@ -47,7 +46,7 @@ pub struct MmapMemPool {
 }
 
 // Minimum allocation granularity
-const SLAB_SIZE: usize = 2 << 20;
+pub const SLAB_SIZE: usize = 1 << 20;
 
 impl MmapMemPool {
     // Create a memory-mapped file with the given size and protection flags.
@@ -58,11 +57,10 @@ impl MmapMemPool {
         prot: ProtFlags,
         shared: Option<u64>,
     ) -> Result<Self, DandelionError> {
-        // use 2MB for minimal allocation granularity and u16 to keep track of them,
-        // so maximum pool size is 2*MB * u16::MAX ~ 128 GiB
-        assert!(size < (u16::MAX as usize) * SLAB_SIZE);
-        let upper_end = u16::try_from(size / SLAB_SIZE)
-            .expect("Total memory pool should be smaller than 128GiB for current u16 setup");
+        // use 1MB for minimal allocation granularity and u32 to keep track of them,
+        assert!(size < (u32::MAX as usize) * SLAB_SIZE);
+        let upper_end = u32::try_from(size / SLAB_SIZE)
+            .expect("Total memory pool should be smaller for current u32 setup");
         let occupation = Mutex::new(RangePool::new(0..upper_end));
         if size == 0 {
             return Ok(MmapMemPool {
@@ -151,15 +149,16 @@ impl MmapMemPool {
             return Err(DandelionError::DomainError(DomainError::InvalidMemorySize));
         }
         // check if space is available
-        let occupation_size = u16::try_from((requested_size + SLAB_SIZE - 1) / SLAB_SIZE)
+        let occupation_size = u32::try_from((requested_size + SLAB_SIZE - 1) / SLAB_SIZE)
             .expect("Allocation size should be within representable sizes");
-        let lenght = usize::from(occupation_size) * SLAB_SIZE;
-        let start_slab = usize::from({
+        let lenght = usize::try_from(occupation_size).unwrap() * SLAB_SIZE;
+        let start_slab = usize::try_from({
             let mut occupation = self.internal.occupation.lock().unwrap();
             occupation
-                .get(occupation_size, u16::MIN)
+                .get(occupation_size, u32::MIN)
                 .ok_or(DandelionError::DomainError(DomainError::ReachedCapacity))?
-        });
+        })
+        .unwrap();
         let start_address = unsafe { self.internal.ptr.add(start_slab * SLAB_SIZE) };
         // clean memory
         unsafe { madvise(start_address as *mut c_void, lenght, cleaning_flags) }.or(Err(
@@ -289,8 +288,8 @@ impl DerefMut for MmapMem {
 impl Drop for MmapMem {
     fn drop(&mut self) {
         let start = usize::try_from(unsafe { self.ptr.offset_from(self.origin.ptr) }).unwrap();
-        let start_slab = u16::try_from(start / SLAB_SIZE).unwrap();
-        let slab_number = u16::try_from(self.size / SLAB_SIZE).unwrap();
+        let start_slab = u32::try_from(start / SLAB_SIZE).unwrap();
+        let slab_number = u32::try_from(self.size / SLAB_SIZE).unwrap();
         self.origin
             .occupation
             .lock()

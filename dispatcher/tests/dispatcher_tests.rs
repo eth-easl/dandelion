@@ -58,7 +58,7 @@ mod dispatcher_tests {
             .build()
             .unwrap()
             .block_on(dispatcher.insert_func(
-                String::from(""),
+                String::from("test_function"),
                 engine_type,
                 DEFAULT_CONTEXT_SIZE,
                 path_string,
@@ -171,7 +171,7 @@ mod dispatcher_tests {
             machine_config::{DomainType, EngineType},
             memory_domain::{cheri::CheriMemoryDomain, MemoryResource},
         };
-        dispatcherTests!(elf_cheri; CheriMemoryDomain; (DomainType::Cheri, MemoryResource::None); EngineType::Cheri; vec![ComputeResource::CPU(1)]);
+        dispatcherTests!(elf_cheri; CheriMemoryDomain; (DomainType::Cheri, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Cheri; vec![ComputeResource::CPU(1)]);
     }
 
     #[cfg(feature = "mmu")]
