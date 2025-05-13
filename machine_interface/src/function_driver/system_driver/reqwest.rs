@@ -236,7 +236,12 @@ async fn http_request(
     };
     let response = match client.execute(request).await {
         Ok(resp) => resp,
-        Err(_) => return Err(DandelionError::SystemFuncResponseError),
+        Err(err) => {
+            error!("Failed to execute request: {}", err);
+            return Err(DandelionError::SystemFuncResponseError(String::from(
+                "Failed to execute request"
+            )))
+        },
     };
 
     // write the status line
@@ -248,11 +253,20 @@ async fn http_request(
     );
 
     // read the content length in the header
-    let content_length = response
+    // TODO also accept chunked data
+    let content_len_header = response
         .headers()
-        .get("content-length")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|len_str| len_str.parse::<usize>().ok());
+        .get("content-length");
+
+    let content_length = if content_len_header.is_some() {
+        content_len_header.and_then(|value| value.to_str().ok())
+            .and_then(|len_str| len_str.parse::<usize>().ok())
+            .ok_or(DandelionError::SystemFuncResponseError(String::from(
+                "Failed to get header value for expected key 'content-length'"
+            )))?
+    } else {
+        usize::MAX
+    };
 
     for (key, value) in response.headers() {
         preamble.push_str(&format!("{}:{}\n", key, value.to_str().unwrap()));
@@ -262,21 +276,22 @@ async fn http_request(
 
     let body = match response.bytes().await {
         Ok(bytes) => bytes,
-        Err(_) => return Err(DandelionError::SystemFuncResponseError),
+        Err(_) => return Err(DandelionError::SystemFuncResponseError(String::from(
+            "Failed to get response bytes"
+        ))),
     };
 
-    if let Some(content_len) = content_length {
-        if content_len != body.len() {
-            return Err(DandelionError::SystemFuncResponseError);
-        }
+    if content_length < usize::MAX && content_length != body.len() {
+        return Err(DandelionError::SystemFuncResponseError(String::from("Content length does not match body size")));
     }
+
     let response_info = ResponseInformation {
         item_name,
         item_key,
         preamble,
         body,
     };
-    return Ok(response_info);
+    Ok(response_info)
 }
 
 fn http_context_write(context: &mut Context, response: ResponseInformation) -> DandelionResult<()> {
