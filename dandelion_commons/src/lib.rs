@@ -28,7 +28,7 @@ pub enum DandelionError {
     /// parser did not find symbol that it was searching for
     UnknownSymbol,
     /// Composition contains function that does not exist
-    CompositionContainsInvalidFunction,
+    CompositionContainsInvalidFunction(String),
     /// Function in parsing has identifier that is not defined in composition
     CompositionFunctionInvalidIdentifier(String),
     /// Set indentifier is produced by multiple functions in a composition
