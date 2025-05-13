@@ -88,11 +88,12 @@ impl Composition {
                     known_functions.insert(
                         fdecl.v.name.clone(),
                         (
-                            function_ids
-                                .lookup(&fdecl.v.name)
-                                .ok_or(DandelionError::CompositionContainsInvalidFunction(
-                                    format!("{}", &fdecl.v.name)
-                                ))?,
+                            function_ids.lookup(&fdecl.v.name).ok_or(
+                                DandelionError::CompositionContainsInvalidFunction(format!(
+                                    "{}",
+                                    &fdecl.v.name
+                                )),
+                            )?,
                             fdecl,
                         ),
                     );

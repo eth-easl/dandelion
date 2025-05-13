@@ -175,7 +175,7 @@ fn test_from_module_non_registered_function() {
     let mut function_dict = FunctionDict::new();
     let module = get_module(unregistered_function);
     match Composition::from_module(&module, &mut function_dict) {
-        Err(DandelionError::CompositionContainsInvalidFunction) => (),
+        Err(DandelionError::CompositionContainsInvalidFunction(str)) => (),
         Err(err) => panic!(
             "Found wrong error on composition with invalid function: {:?}",
             err
