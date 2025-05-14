@@ -10,7 +10,6 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
     # set to fail fast to false so all combinations are tested
     strategy:
       fail-fast: false
@@ -18,6 +17,10 @@ jobs:
       matrix:
         compute_driver: [ mmu, wasm ]
         system_driver: [ reqwest_io ]
+        platfrom: [ubuntu-24.04, ubuntu-24.04-arm]
+
+    runs-on: ${{matrix.platform}}
+
     steps:
     # check out the code
     - uses: actions/checkout@v3
