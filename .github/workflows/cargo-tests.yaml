@@ -17,7 +17,7 @@ jobs:
       matrix:
         compute_driver: [ mmu ]
         system_driver: [ reqwest_io ]
-        platfrom: [ubuntu-24.04, ubuntu-24.04-arm]
+        platform: [ubuntu-24.04, ubuntu-24.04-arm]
 
     runs-on: ${{matrix.platform}}
 
