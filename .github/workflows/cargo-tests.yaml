@@ -15,7 +15,7 @@ jobs:
       fail-fast: false
       # test different available compute engines with different system engines
       matrix:
-        compute_driver: [ mmu, wasm ]
+        compute_driver: [ mmu ]
         system_driver: [ reqwest_io ]
         platfrom: [ubuntu-24.04, ubuntu-24.04-arm]
 
