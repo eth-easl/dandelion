@@ -199,7 +199,7 @@ impl Composition {
                                         )?;
                                         input_set_ids[index] = Some(InputSetDescriptor {
                                             composition_id: *set_id,
-                                            sharding: 
+                                            sharding:
                                             ShardingMode::from_parser_sharding(
                                                 &argument.v.sharding,
                                             ),
