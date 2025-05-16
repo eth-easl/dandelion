@@ -17,6 +17,8 @@ pub enum DandelionError {
     FunctionRegistryError(FunctionRegistryError),
     /// Error in the frontend receiveing requests
     RequestError(FrontendError),
+    /// Failures in user code or compositions
+    UserError(UserError),
     /// trying to use a feature that is not yet implemented
     NotImplemented,
     // errors in configurations
@@ -110,9 +112,6 @@ pub enum DandelionError {
     SegmentationFault,
     /// other protection errors caused by the function
     OtherProctionError,
-    // errors from the functions
-    /// Function indicated it failed
-    FunctionError(i32),
     /// Work queue from the dispatcher to the engines is full
     WorkQueueFull,
 }
@@ -197,4 +196,12 @@ pub enum PromiseError {
     DroppedDebt,
     /// Promise result after taking it already
     TakenPromise,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum UserError {
+    /// Set not declared optional is empty
+    EmptyNonOptional,
+    /// Function indicated it failed
+    FunctionError(i32),
 }

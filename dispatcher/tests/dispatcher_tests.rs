@@ -100,12 +100,13 @@ mod dispatcher_tests {
         ($name: ident; $domain : ty; $init : expr; $engine_type : expr; $engine_resource: expr) => {
             use crate::dispatcher_tests::{
                 function_tests::{
-                    composition_chain_matmul, composition_diamond_matmac,
+                    composition_chain_matmul, composition_diamond_matmac, composition_optional,
                     composition_parallel_matmul, composition_single_matmul,
                     single_domain_and_engine_basic, single_domain_and_engine_matmul,
                 },
                 registry_tests::{multiple_input_fixed, single_input_fixed},
             };
+
             #[test_log::test]
             fn test_single_domain_and_engine_basic() {
                 let name = format!("test_{}_basic", stringify!($name));
@@ -116,6 +117,7 @@ mod dispatcher_tests {
                     $engine_resource,
                 )
             }
+
             #[test_log::test]
             fn test_single_domain_and_engine_matmul() {
                 let name = format!("test_{}_matmul", stringify!($name));
@@ -126,10 +128,17 @@ mod dispatcher_tests {
                     $engine_resource,
                 )
             }
+
             #[test_log::test]
             fn test_composition_single_matmul() {
                 let name = format!("test_{}_matmul", stringify!($name));
                 composition_single_matmul::<$domain>($init, &name, $engine_type, $engine_resource)
+            }
+
+            #[test_log::test]
+            fn test_composition_optional() {
+                let name = format!("test_{}_basic", stringify!($name));
+                composition_optional::<$domain>($init, &name, $engine_type, $engine_resource)
             }
 
             #[test_log::test]

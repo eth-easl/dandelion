@@ -33,14 +33,15 @@ terminated by `;`.
 Example:
 ```
 <function name>
-    (<input set name> = <parallelization keyword> <composition set name>, ...)
+    (<input set name> = [optional] <parallelization keyword> <composition set name>, ...)
         =>
     (<composition set name> = <output set name>, ...);
 ```
-
 The input and output set names are the set names given in the function declrataion.
 Composition sets can be defined either in the composition signature as composition input or output sets, or when a function application produces an output which is assigned to a not yet defined composition set name.
 A composition set name can only be assigned to as output by a single function, but can be used as input by an arbitrary number of functions. 
+The `optional` keyword is optional and when present expresses, that the function can also run if the input set is empty.
+If the optional keyword is not present, the function will not be executed and instead an empty set will be forwareded to all assigned outputs.
 Functions can be applied multiple times in the same function.
 The parallelization keywords are further described [here](###paralelization-keywords) together with the `by` clause that can be added at the end of a applicaition. 
 

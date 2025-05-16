@@ -35,13 +35,22 @@ pub enum JoinStrategy {
     Cross,
 }
 
+/// Describes an input set the function dependencies of a composition.
+#[derive(Clone, Copy, Debug)]
+pub struct InputSetDescriptor {
+    /// the composition wide set id corresponding to this input set
+    pub composition_id: usize,
+    /// the sharding mode to apply
+    pub sharding: ShardingMode,
+    /// If false, the set needs to contain at least one item for the function to run.
+    pub optional: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct FunctionDependencies {
     pub function: FunctionId,
-    /// composition set ids that the function needs to get ready and
-    /// the mapping to local ids is given implicitly through the index in the vec
-    /// if the id is none, that set is not provided by the compostion
-    pub input_set_ids: Vec<Option<(usize, ShardingMode)>>,
+    /// Input set dependencies, function local set ids are given implicitly by the vector index of the descriptor
+    pub input_set_ids: Vec<Option<InputSetDescriptor>>,
     pub join_info: (Vec<usize>, Vec<JoinStrategy>),
     /// the composition ids for the output sets of the function,
     /// if the id is none, that set is not needed for the composition
@@ -188,12 +197,14 @@ impl Composition {
                                                 argument.v.ident, function_application.v.name)
                                             ),
                                         )?;
-                                        input_set_ids[index] = Some((
-                                            *set_id,
+                                        input_set_ids[index] = Some(InputSetDescriptor {
+                                            composition_id: *set_id,
+                                            sharding:
                                             ShardingMode::from_parser_sharding(
                                                 &argument.v.sharding,
                                             ),
-                                        ));
+                                            optional: argument.v.optional }
+                                        );
                                     } else {
                                         return Err(
                                             DandelionError::CompositionFunctionInvalidIdentifier(
@@ -483,7 +494,7 @@ impl JoinIterator {
         right_opt: Option<(ShardingMode, CompositionSet)>,
         write_index: usize,
     ) -> Option<Box<Self>> {
-        if right_opt.is_none() {
+        if right_opt.is_none() || right_opt.as_ref().unwrap().1.is_empty() {
             return left_opt;
         }
         let (set_mode, set) = right_opt.unwrap();

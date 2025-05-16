@@ -1,5 +1,7 @@
 use crate::{
-    composition::{get_sharding, Composition, CompositionSet, JoinStrategy, ShardingMode},
+    composition::{
+        get_sharding, Composition, CompositionSet, InputSetDescriptor, JoinStrategy, ShardingMode,
+    },
     execution_qs::EngineQueue,
     function_registry::{FunctionRegistry, FunctionType, Metadata},
     resource_pool::ResourcePool,
@@ -10,7 +12,7 @@ use dandelion_commons::{
     DandelionError, DandelionResult, DispatcherError, FunctionId,
 };
 use futures::{
-    future::join_all,
+    future::{join_all, ready, Either},
     stream::{FuturesUnordered, StreamExt},
     Future,
 };
@@ -111,9 +113,9 @@ impl Dispatcher {
         function_name: String,
         inputs: Vec<DispatcherInput>,
         non_caching: bool,
-        recorder: Recorder,
-    ) -> DandelionResult<Vec<Option<CompositionSet>>> {
-        debug!("Queuing function {}", function_name);
+        start_time: std::time::Instant,
+    ) -> DandelionResult<(Vec<Option<CompositionSet>>, Recorder)> {
+        trace!("Queuing function {}", function_name);
         let function_id = self
             .function_registry
             .get_function_id(&function_name)
@@ -121,6 +123,8 @@ impl Dispatcher {
             .ok_or(DandelionError::Dispatcher(
                 DispatcherError::UnavailableFunction,
             ))?;
+
+        let recorder = Recorder::new(function_id, start_time);
 
         let mut input_vec = Vec::with_capacity(inputs.len());
         input_vec.resize(inputs.len(), None);
@@ -135,10 +139,15 @@ impl Dispatcher {
         }
 
         let results = self
-            .queue_function(function_id, input_vec, non_caching, recorder)
+            .queue_function(
+                function_id,
+                input_vec,
+                non_caching,
+                recorder.get_sub_recorder(),
+            )
             .await?;
 
-        return Ok(results);
+        return Ok((results, recorder));
     }
 
     /// Queue a composition for execution.
@@ -153,7 +162,7 @@ impl Dispatcher {
         composition: Composition,
         inputs: Vec<Option<CompositionSet>>,
         non_caching: bool,
-        recorder: Recorder,
+        mut recorder: Recorder,
     ) -> DandelionResult<Vec<Option<CompositionSet>>> {
         // build up ready sets
         trace!("queue composition");
@@ -163,7 +172,7 @@ impl Dispatcher {
             inptut_sets: Vec<Option<(ShardingMode, CompositionSet)>>,
             join_info: (Vec<usize>, Vec<JoinStrategy>),
             output_mapping: Vec<Option<usize>>,
-            missing_sets: BTreeMap<usize, (usize, ShardingMode)>,
+            missing_sets: BTreeMap<usize, (usize, ShardingMode, bool)>,
         }
 
         // prepare output sets, that are also input sets
@@ -176,50 +185,69 @@ impl Dispatcher {
             }
         }
 
+        let mut awaited_sets = FuturesUnordered::new();
+
         let (ready_functions, mut non_ready_functions): (Vec<_>, Vec<_>) = composition
             .dependencies
             .into_iter()
-            .map(|deps| {
+            .filter_map(|deps| {
                 let mut missing_map = BTreeMap::new();
                 let input_set_number: usize = deps.input_set_ids.len();
                 let mut ready_inputs = Vec::with_capacity(input_set_number);
                 ready_inputs.resize(deps.input_set_ids.len(), None);
-                for (function_index, set) in deps.input_set_ids.iter().enumerate() {
-                    if let Some((set_index, mode)) = set {
-                        if let Some(comp_set) = inputs.get(*set_index) {
+                for (function_index, in_set_decriptor) in deps.input_set_ids.iter().enumerate() {
+                    if let Some(InputSetDescriptor {
+                        composition_id,
+                        sharding,
+                        optional,
+                    }) = in_set_decriptor
+                    {
+                        if let Some(comp_set) = inputs.get(*composition_id) {
+                            // this means the a non optional set is empty, so we can skip it and directly queue all outputs are ready none
+                            if !*optional
+                                && (comp_set.is_none() || comp_set.as_ref().unwrap().is_empty())
+                            {
+                                let new_sets = deps
+                                    .output_set_ids
+                                    .iter()
+                                    .filter_map(|index_opt| {
+                                        index_opt.and_then(|index| Some((index, None)))
+                                    })
+                                    .collect();
+                                awaited_sets.push(Either::Left(ready(Ok((new_sets, Vec::new())))));
+                                return None;
+                            }
                             if let Some(set) = comp_set {
-                                ready_inputs[function_index] = Some((*mode, set.clone()));
+                                ready_inputs[function_index] = Some((*sharding, set.clone()));
                             }
                         } else {
-                            missing_map.insert(*set_index, (function_index, *mode));
+                            missing_map
+                                .insert(*composition_id, (function_index, *sharding, *optional));
                         }
                     }
                 }
-                FunctionArgs {
+                Some(FunctionArgs {
                     function_id: deps.function,
                     inptut_sets: ready_inputs,
                     join_info: deps.join_info,
                     output_mapping: deps.output_set_ids,
                     missing_sets: missing_map,
-                }
+                })
             })
             .partition(|args| args.missing_sets.is_empty());
 
         // start all functions that are ready and insert their sets into the awaited ones
-        let mut awaited_sets: FuturesUnordered<_> = ready_functions
-            .into_iter()
-            .map(|args| {
-                return self.queue_function_sharded(
-                    args.function_id,
-                    args.inptut_sets,
-                    args.join_info.0,
-                    args.join_info.1,
-                    args.output_mapping,
-                    non_caching,
-                    recorder.get_sub_recorder().unwrap(),
-                );
-            })
-            .collect();
+        for args in ready_functions.into_iter() {
+            awaited_sets.push(Either::Right(self.queue_function_sharded(
+                args.function_id,
+                args.inptut_sets,
+                args.join_info.0,
+                args.join_info.1,
+                args.output_mapping,
+                non_caching,
+                recorder.get_sub_recorder(),
+            )));
+        }
         let num_running_functions = awaited_sets.len();
 
         trace!(
@@ -227,43 +255,59 @@ impl Dispatcher {
             num_running_functions,
             non_ready_functions.len()
         );
-
         while let Some(new_compositions_result) = awaited_sets.next().await {
-            let new_compositions = new_compositions_result?;
-            for new_composition_set_option in new_compositions {
-                if let Some((composition_set_index, composition_set)) = new_composition_set_option {
-                    trace!(
-                        "composition set {:?} arrived at dispatcher",
-                        composition_set_index
-                    );
-                    if let Some(output_index) = composition.output_map.get(&composition_set_index) {
-                        output_sets[*output_index] = Some(composition_set.clone());
-                    }
-                    non_ready_functions = non_ready_functions
-                        .into_iter()
-                        .filter_map(|mut args| {
-                            if let Some((index, mode)) =
-                                args.missing_sets.remove(&composition_set_index)
-                            {
-                                args.inptut_sets[index] = Some((mode, composition_set.clone()));
-                            }
-                            if args.missing_sets.is_empty() {
-                                awaited_sets.push(self.queue_function_sharded(
-                                    args.function_id,
-                                    args.inptut_sets,
-                                    args.join_info.0,
-                                    args.join_info.1,
-                                    args.output_mapping,
-                                    non_caching,
-                                    recorder.get_sub_recorder().unwrap(),
-                                ));
-                                None
-                            } else {
-                                Some(args)
-                            }
-                        })
-                        .collect();
+            let (new_compositions, new_recorders) = new_compositions_result?;
+            recorder.add_children(new_recorders);
+            for (composition_set_index, composition_set_option) in &new_compositions {
+                trace!(
+                    "composition set {:?} arrived at dispatcher is some: {}",
+                    composition_set_index,
+                    composition_set_option.is_some()
+                );
+                if let Some(output_index) = composition.output_map.get(&composition_set_index) {
+                    output_sets[*output_index] = composition_set_option.clone();
                 }
+                non_ready_functions = non_ready_functions
+                    .into_iter()
+                    .filter_map(|mut args| {
+                        if let Some((index, mode, optional)) =
+                            args.missing_sets.remove(&composition_set_index)
+                        {
+                            // if it was not optional skip executing and push all output sets
+                            if !optional
+                                && (composition_set_option.is_none()
+                                    || composition_set_option.as_ref().unwrap().is_empty())
+                            {
+                                let new_sets = args
+                                    .output_mapping
+                                    .iter()
+                                    .filter_map(|index_opt| {
+                                        index_opt.and_then(|index| Some((index, None)))
+                                    })
+                                    .collect();
+                                awaited_sets.push(Either::Left(ready(Ok((new_sets, Vec::new())))));
+                                return None;
+                            }
+                            args.inptut_sets[index] = composition_set_option
+                                .clone()
+                                .and_then(|set| Some((mode, set)));
+                        }
+                        if args.missing_sets.is_empty() {
+                            awaited_sets.push(Either::Right(self.queue_function_sharded(
+                                args.function_id,
+                                args.inptut_sets,
+                                args.join_info.0,
+                                args.join_info.1,
+                                args.output_mapping,
+                                non_caching,
+                                recorder.get_sub_recorder(),
+                            )));
+                            None
+                        } else {
+                            Some(args)
+                        }
+                    })
+                    .collect();
             }
             trace!(
                 "waiting for {} sets (running functions and global sets), functions not ready: {}",
@@ -288,32 +332,54 @@ impl Dispatcher {
         output_mapping: Vec<Option<usize>>,
         non_caching: bool,
         recorder: Recorder,
-    ) -> DandelionResult<Vec<Option<(usize, CompositionSet)>>> {
+    ) -> DandelionResult<(Vec<(usize, Option<CompositionSet>)>, Vec<Recorder>)> {
         trace!(
             "queue function {} shareded and input sets: {:?}",
             function_id,
             input_sets
         );
-        let composition_results: DandelionResult<Vec<_>> = if input_sets.len() != 0 {
+        let mut recorders;
+
+        // check if there are no input sets or all of them are none, then don't need sharding,
+        // but still want to run if we queued it.
+        let is_sharded = input_sets.len() != 0
+            && input_sets
+                .iter()
+                .any(|opt| opt.is_some() && !opt.as_ref().unwrap().1.is_empty());
+        let composition_results: DandelionResult<Vec<_>> = if is_sharded {
             let sharded = get_sharding(input_sets, join_order, join_strategies);
+            let size_hint = sharded.len();
+            recorders = Vec::with_capacity(size_hint);
             let resutls: Vec<_> = sharded
                 .into_iter()
                 .map(|ins| {
-                    Box::pin(self.queue_function(
+                    let new_recorder = Recorder::new_from_parent(function_id, &recorder);
+                    let future_box = Box::pin(self.queue_function(
                         function_id,
                         ins,
                         non_caching,
-                        recorder.get_sub_recorder().unwrap(),
-                    ))
+                        new_recorder.get_sub_recorder(),
+                    ));
+                    recorders.push(new_recorder);
+                    future_box
                 })
                 .collect();
             join_all(resutls).await.into_iter().collect()
             // TODO this is added to support functions with all functions defined as static sets
             // might want to differentiate between those that have static sets and those that did not get input from predecessors
         } else {
-            self.queue_function(function_id, vec![], non_caching, recorder)
+            let new_recorder = Recorder::new_from_parent(function_id, &recorder);
+            let future_box = self
+                .queue_function(
+                    function_id,
+                    vec![],
+                    non_caching,
+                    new_recorder.get_sub_recorder(),
+                )
                 .await
-                .and_then(|result| Ok(vec![result]))
+                .and_then(|result| Ok(vec![result]));
+            recorders = vec![new_recorder];
+            future_box
         };
 
         // collect vec of vec of shards into vec of sets
@@ -345,17 +411,16 @@ impl Dispatcher {
             });
 
         // assiociated sets with composition ids
-        Ok(output_mapping
-            .into_iter()
-            .zip(composition_set_vecs.into_iter())
-            .map(
-                |(index_option, set_option)| match (index_option, set_option) {
-                    (Some(index), Some(set)) => Some((index, set)),
-                    (Some(index), None) => Some((index, CompositionSet::from((0, Vec::new())))),
-                    (None, _) => None,
-                },
-            )
-            .collect())
+        Ok((
+            output_mapping
+                .into_iter()
+                .zip(composition_set_vecs.into_iter())
+                .filter_map(|(index_option, set_option)| {
+                    index_option.and_then(|index| Some((index, set_option)))
+                })
+                .collect(),
+            recorders,
+        ))
     }
 
     /// returns a vector of pairs of a index and a composition set
@@ -377,8 +442,7 @@ impl Dispatcher {
             if let Some(alternative) = options.iter().next() {
                 match &alternative.function_type {
                     FunctionType::Function(engine_id, ctx_size) => {
-                        debug!("Queuing type Function");
-                        recorder.record(RecordPoint::PrepareEnvQueue)?;
+                        recorder.record(RecordPoint::PrepareEnvQueue);
                         let (context, config, metadata) = self
                             .prepare_for_engine(
                                 function_id,
@@ -386,15 +450,10 @@ impl Dispatcher {
                                 inputs,
                                 *ctx_size,
                                 non_caching,
-                                recorder.get_sub_recorder()?,
+                                recorder.get_sub_recorder(),
                             )
                             .await?;
-                        recorder.record(RecordPoint::GetEngineQueue)?;
-                        debug!("running function {} on {:?} type engine with input sets {:?} and output sets {:?}",
-                            function_id,
-                            *engine_id,
-                            metadata.input_sets.iter().map(|(name, _)| name).collect_vec(),
-                            metadata.output_sets);
+                        recorder.record(RecordPoint::GetEngineQueue);
                         trace!("running function {} on {:?} type engine with input sets {:?} and output sets {:?}",
                             function_id,
                             *engine_id,
@@ -406,7 +465,7 @@ impl Dispatcher {
                                 config,
                                 metadata.output_sets,
                                 context,
-                                recorder.get_sub_recorder()?,
+                                recorder.get_sub_recorder(),
                             )
                             .await?;
                         let context_arc = Arc::new(context);
@@ -470,7 +529,7 @@ impl Dispatcher {
                 domain.clone(),
                 ctx_size,
                 non_caching,
-                recorder.get_sub_recorder().unwrap(),
+                recorder.get_sub_recorder(),
             )
             .await?;
         // make sure all input sets are there at the correct index
@@ -502,11 +561,11 @@ impl Dispatcher {
                         destination_set_name: in_set_name.clone(),
                         source_set_index: subset,
                         source_item_index: item,
-                        recorder: recorder.get_sub_recorder().unwrap(),
+                        recorder: recorder.get_sub_recorder(),
                     };
-                    recorder.record(RecordPoint::TransferQueue)?;
+                    recorder.record(RecordPoint::TransferQueue);
                     function_context = transfer_queue.enqueu_work(args).await?.get_context();
-                    recorder.record(RecordPoint::TransferDequeue)?;
+                    recorder.record(RecordPoint::TransferDequeue);
                     function_buffer += 1;
                 }
             }
@@ -548,11 +607,11 @@ impl Dispatcher {
                     destination_set_name: set_name,
                     source_set_index: subset,
                     source_item_index: item,
-                    recorder: recorder.get_sub_recorder().unwrap(),
+                    recorder: recorder.get_sub_recorder(),
                 };
-                recorder.record(RecordPoint::TransferQueue).unwrap();
+                recorder.record(RecordPoint::TransferQueue);
                 function_context = transfer_queue.enqueu_work(args).await?.get_context();
-                recorder.record(RecordPoint::TransferDequeue).unwrap();
+                recorder.record(RecordPoint::TransferDequeue);
                 function_item += 1;
             }
         }
@@ -576,16 +635,16 @@ impl Dispatcher {
             Some(q) => q,
             None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
         };
-        let subrecoder = recorder.get_sub_recorder()?;
+        let subrecoder = recorder.get_sub_recorder();
         let args = WorkToDo::FunctionArguments {
             config: function_config,
             context: function_context,
             output_sets,
             recorder: subrecoder,
         };
-        recorder.record(RecordPoint::ExecutionQueue)?;
+        recorder.record(RecordPoint::ExecutionQueue);
         let result = engine_queue.enqueu_work(args).await?.get_context();
-        recorder.record(RecordPoint::FutureReturn)?;
+        recorder.record(RecordPoint::FutureReturn);
         return Ok(result);
     }
 }

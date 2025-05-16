@@ -60,6 +60,7 @@ pub struct InputDescriptor {
     pub name: String,
     pub ident: String,
     pub sharding: Sharding,
+    pub optional: bool,
     // TODO pub loop_cond: LoopCond,
 }
 
@@ -214,6 +215,7 @@ fn parser() -> impl Parser<char, Module, Error = Simple<char>> {
     let input_descriptor = text::ident()
         .padded()
         .then_ignore(just('=').padded())
+        .then(just("optional").padded().or_not())
         .then(
             (just("all").or(just("keyed")).or(just("each")))
                 .map(|sharding| match sharding {
@@ -225,10 +227,11 @@ fn parser() -> impl Parser<char, Module, Error = Simple<char>> {
                 .padded(),
         )
         .then(text::ident().padded())
-        .map(|((name, sharding), ident)| InputDescriptor {
+        .map(|(((name, optional), sharding), ident)| InputDescriptor {
             name,
             ident,
             sharding,
+            optional: optional.is_some(),
         })
         .map_with_span(aspanned);
 
@@ -416,6 +419,28 @@ fn simple_test() {
 }
 
 #[test]
+fn optional_test() {
+    let src = r#"
+    function HTTP(Request) => (Response);
+    function MakePNGGrayscaleS3 (S3GetResponse) => (S3PutRequest);
+    
+    composition MakePNGGrayscale (S3GetRequest) => () {
+        HTTP(Request = optional keyed S3GetRequest) => (ToProcess = Response);
+        MakePNGGrayscaleS3 (  S3GetResponse =optional      keyed ToProcess ) => (PutRequest = S3PutRequest) ;
+        HTTP ( Request = keyed PutRequest) => ( );
+    }
+"#;
+    let _ = match parse(src) {
+        Ok(m) => m,
+        Err(e) => {
+            print_errors(src, e);
+            panic!("parse error");
+        }
+    };
+    // TODO add checks on module
+}
+
+#[test]
 fn sharding_test() {
     let src = r#"
     function FunA (A, B) => (C);
@@ -460,6 +485,7 @@ fn sharding_test() {
             Item::Composition(c) => compositions.push(c),
         }
     }
+    // TODO: here and in join test, check the data structure is what we expect
 }
 
 #[test]
