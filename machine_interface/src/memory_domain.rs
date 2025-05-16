@@ -12,9 +12,6 @@ pub(crate) mod system_domain;
 #[cfg(feature = "wasm")]
 pub mod wasm;
 
-// Eventually use this
-// pub mod system_domain;
-
 use crate::{DataItem, DataSet, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
 use std::sync::Arc;
@@ -457,6 +454,7 @@ pub fn transfer_data_item(
         destination_set.buffers[destination_item_index].data.offset = destination_offset;
         destination_set.buffers[destination_item_index].data.size = source_item.data.size;
         destination_set.buffers[destination_item_index].ident = source_item.ident.clone();
+        destination_set.buffers[destination_item_index].key = source_item.key;
     }
 
     log::trace!(

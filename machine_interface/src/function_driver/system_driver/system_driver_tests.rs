@@ -247,13 +247,13 @@ dolore magna aliquyam erat, sed diam voluptua."#
     // TODO change to start local http server to check against.
     macro_rules! driverTests {
         ($name : ident; $domain: ty; $dom_init: expr; $driver : expr ; $drv_init : expr ) => {
-            #[test]
+            #[test_log::test]
             fn test_http_get() {
                 let driver = Box::new($driver);
                 super::get_http::<$domain>($dom_init, driver, $drv_init);
             }
 
-            #[test]
+            #[test_log::test]
             fn test_http_post() {
                 let driver = Box::new($driver);
                 super::post_http::<$domain>($dom_init, driver, $drv_init);

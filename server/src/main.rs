@@ -106,11 +106,12 @@ async fn serve_request(
         warn!("request parsing failed with: {:?}", request_context_result);
     }
     let (function_name, request_context) = request_context_result.unwrap();
-    debug!("finshed creating request context");
+    debug!("finished creating request context");
 
     // TODO match set names to assign sets to composition sets
     // map sets in the order they are in the request
     let request_number = request_context.content.len();
+    debug!("Request number of request_context: {}", request_number);
     let request_arc = Arc::new(request_context);
     let inputs = (0..request_number)
         .map(|set_id| {
@@ -138,9 +139,9 @@ async fn serve_request(
 
     let response_body = dandelion_server::DandelionBody::new(function_output, &recorder);
 
-    debug!("finshed creating response body");
+    debug!("finished creating response body");
     let response = Ok::<_, Infallible>(Response::new(response_body));
-    debug!("finshed creating response");
+    debug!("finished creating response");
     #[cfg(feature = "archive")]
     TRACING_ARCHIVE.get().unwrap().insert_recorder(recorder);
 
@@ -371,6 +372,7 @@ async fn dispatcher_loop(
                 start_time,
                 mut callback,
             } => {
+                debug!("Handling function request for function {}", name);
                 let function_future =
                     dispatcher.queue_function_by_name(name, inputs, is_cold, start_time);
                 spawn(async {
@@ -393,6 +395,7 @@ async fn dispatcher_loop(
                 mut callback,
                 path,
             } => {
+                debug!("Handling function registration");
                 let insertion_future =
                     dispatcher.insert_func(name, engine_type, context_size, path, metadata);
                 spawn(async {

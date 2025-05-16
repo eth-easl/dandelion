@@ -123,7 +123,6 @@ fn mmu_run_static(
         .stdout(Stdio::piped())
         .spawn()
         .map_err(|_e| DandelionError::MmuWorkerError)?;
-    debug!("created a new process");
 
     // intercept worker's syscalls by ptrace
     let pid = Pid::from_raw(worker.id() as i32);
