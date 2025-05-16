@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crossbeam::channel::{TryRecvError, TrySendError};
 use dandelion_commons::{DandelionError, DandelionResult};
-use log::{debug, error};
+use log::error;
 use machine_interface::{
     function_driver::{WorkDone, WorkQueue, WorkToDo},
     promise::{Debt, PromiseBuffer},
@@ -36,7 +36,6 @@ impl WorkQueue for EngineQueue {
                 Err(TryRecvError::Disconnected) => panic!("Work queue disconnected"),
                 Err(TryRecvError::Empty) => continue,
                 Ok(recieved) => {
-                    debug!("Received work");
                     let (recieved_args, recevied_dept) = recieved;
                     if recevied_dept.is_alive() {
                         break (recieved_args, recevied_dept);

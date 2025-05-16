@@ -12,12 +12,6 @@ pub(crate) mod system_domain;
 #[cfg(feature = "wasm")]
 pub mod wasm;
 
-// Eventually use this
-// pub mod system_domain;
-
-// Eventually use this
-// pub mod system_domain;
-
 use crate::{DataItem, DataSet, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
 use std::sync::Arc;

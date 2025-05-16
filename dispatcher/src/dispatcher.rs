@@ -486,7 +486,6 @@ impl Dispatcher {
                         return Ok(composition_sets);
                     }
                     FunctionType::Composition(composition) => {
-                        debug!("Queuing type Composition");
                         return self
                             .queue_composition(composition.clone(), inputs, non_caching, recorder)
                             .await;

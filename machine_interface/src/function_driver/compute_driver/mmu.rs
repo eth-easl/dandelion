@@ -94,7 +94,6 @@ fn mmu_run_static(
     protection_flags: &[(u32, Position)],
     entry_point: usize,
 ) -> DandelionResult<()> {
-    debug!("mmu_run_static");
     // TODO: modify ELF header
     // to load mmu_worker into a safe address range
     // that will not collide with those used by user's function
@@ -124,7 +123,6 @@ fn mmu_run_static(
         .stdout(Stdio::piped())
         .spawn()
         .map_err(|_e| DandelionError::MmuWorkerError)?;
-    debug!("created a new process");
 
     // intercept worker's syscalls by ptrace
     let pid = Pid::from_raw(worker.id() as i32);
@@ -191,14 +189,12 @@ impl EngineLoop for MmuLoop {
             _ => return Err(DandelionError::ConfigMissmatch),
         };
 
-        debug!("Setting up input structs");
         setup_input_structs::<usize, usize>(
             &mut context,
             elf_config.system_data_offset,
             &output_sets,
         )?;
 
-        debug!("Matching mmu context");
         let mmu_context = match &context.context {
             ContextType::Mmu(mmu_context) => mmu_context,
             _ => return Err(DandelionError::ContextMissmatch),
@@ -215,7 +211,6 @@ impl EngineLoop for MmuLoop {
             elf_config.entry_point,
         )?;
 
-        debug!("Reading output structs");
         read_output_structs::<usize, usize>(&mut context, elf_config.system_data_offset)?;
 
         return Ok(context);
