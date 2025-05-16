@@ -97,9 +97,12 @@ impl Composition {
                     known_functions.insert(
                         fdecl.v.name.clone(),
                         (
-                            function_ids
-                                .lookup(&fdecl.v.name)
-                                .ok_or(DandelionError::CompositionContainsInvalidFunction)?,
+                            function_ids.lookup(&fdecl.v.name).ok_or(
+                                DandelionError::CompositionContainsInvalidFunction(format!(
+                                    "{}",
+                                    &fdecl.v.name
+                                )),
+                            )?,
                             fdecl,
                         ),
                     );
@@ -172,18 +175,17 @@ impl Composition {
                             dparser::Statement::FunctionApplication(function_application) => {
                                 let (function_id, function_decl) = known_functions
                                     .get(&function_application.v.name)
-                                    .ok_or(DandelionError::CompositionContainsInvalidFunction)?;
+                                    .ok_or_else(|| DandelionError::CompositionContainsInvalidFunction(function_application.v.name.clone()))?;
                                 if function_decl.v.params.len() < function_application.v.args.len()
                                     || function_decl.v.returns.len()
                                         < function_application.v.rets.len()
                                 {
-                                    return Err(DandelionError::CompositionContainsInvalidFunction);
+                                    return Err(DandelionError::CompositionContainsInvalidFunction(function_application.v.name.clone()));
                                 }
                                 // find the indeces of the sets in the function application by looking though the definition
                                 let mut input_set_ids = Vec::new();
                                 input_set_ids
-                                    .try_reserve(function_decl.v.params.len())
-                                    .or(Err(DandelionError::OutOfMemory))?;
+                                    .try_reserve(function_decl.v.params.len()).map_err(|_| DandelionError::OutOfMemory)?;
                                 input_set_ids.resize(function_decl.v.params.len(), None);
                                 for argument in function_application.v.args.iter() {
                                     if let Some(index) =
@@ -191,8 +193,8 @@ impl Composition {
                                             |param_name| argument.v.name == *param_name,
                                         )
                                     {
-                                        let set_id = set_numbers.get(&argument.v.ident).ok_or(
-                                            DandelionError::CompositionFunctionInvalidIdentifier(
+                                        let set_id = set_numbers.get(&argument.v.ident).ok_or_else(
+                                            ||DandelionError::CompositionFunctionInvalidIdentifier(
                                                 format!("Could not find compositon set for argument {} of function {}",
                                                 argument.v.ident, function_application.v.name)
                                             ),
@@ -229,7 +231,7 @@ impl Composition {
                                     for set_name in strategy.join_strategy_order.iter() {
                                         let set_index = function_decl.v.params.iter()
                                             .position(|param_name| *param_name == *set_name)
-                                            .ok_or_else(||DandelionError::CompositionFunctionInvalidIdentifier(
+                                            .ok_or_else(|| DandelionError::CompositionFunctionInvalidIdentifier(
                                                 format!("Join order for {} contains invalid set name: {}", function_application.v.name, set_name))
                                             )?;
                                         all_sets[set_index] = None;
