@@ -1,5 +1,5 @@
 use crate::{
-    composition::{Composition, FunctionDependencies, ShardingMode},
+    composition::{Composition, FunctionDependencies, InputSetDescriptor, ShardingMode},
     function_registry::{FunctionDict, Metadata},
 };
 use dandelion_commons::DandelionError;
@@ -73,11 +73,25 @@ fn check_composition(
                     match (actual_set_opt, expected_set_opt) {
                         (None, None) => (),
                         (None, Some(_)) | (Some(_), None) => return None,
-                        (Some((a_index, a_sharding)), Some((e_index, e_sharding))) => {
+                        (
+                            Some(InputSetDescriptor {
+                                composition_id: a_index,
+                                sharding: a_sharding,
+                                optional: a_optional,
+                            }),
+                            Some(InputSetDescriptor {
+                                composition_id: e_index,
+                                sharding: e_sharding,
+                                optional: e_optional,
+                            }),
+                        ) => {
                             if a_sharding != e_sharding {
                                 return None;
                             }
                             if input_set_range.contains(&e_index) && e_index != a_index {
+                                return None;
+                            }
+                            if a_optional != e_optional {
                                 return None;
                             }
                         }
@@ -250,7 +264,11 @@ fn test_from_module_minmal_composition_with_inputs() {
         Composition {
             dependencies: vec![FunctionDependencies {
                 function: function_id,
-                input_set_ids: vec![Some((0, ShardingMode::All))],
+                input_set_ids: vec![Some(InputSetDescriptor {
+                    composition_id: 0,
+                    sharding: ShardingMode::All,
+                    optional: false,
+                })],
                 join_info: (vec![], vec![]),
                 output_set_ids: vec![Some(1)],
             }],
@@ -283,7 +301,14 @@ fn test_from_module_minmal_composition_function_with_unused_input() {
         Composition {
             dependencies: vec![FunctionDependencies {
                 function: function_id,
-                input_set_ids: vec![Some((0, ShardingMode::All)), None],
+                input_set_ids: vec![
+                    Some(InputSetDescriptor {
+                        composition_id: 0,
+                        sharding: ShardingMode::All,
+                        optional: false,
+                    }),
+                    None,
+                ],
                 join_info: (vec![], vec![]),
                 output_set_ids: vec![Some(1)],
             }],
@@ -297,7 +322,7 @@ fn test_from_module_minmal_composition_function_with_unused_input() {
     check_compositions_and_metadata(compositions, expected, 0..1, 1..2);
 }
 
-#[test]
+#[test_log::test]
 fn test_from_module_minmal_composition_function_with_unused_output() {
     let composition_string = r#"
         function Function (Fin) => (Fout, Unused);
@@ -317,7 +342,11 @@ fn test_from_module_minmal_composition_function_with_unused_output() {
             dependencies: vec![FunctionDependencies {
                 function: function_id,
                 join_info: (vec![], vec![]),
-                input_set_ids: vec![Some((0, ShardingMode::All))],
+                input_set_ids: vec![Some(InputSetDescriptor {
+                    composition_id: 0,
+                    sharding: ShardingMode::All,
+                    optional: false,
+                })],
                 output_set_ids: vec![Some(1), None],
             }],
             output_map: BTreeMap::from([(1, 0)]),
@@ -330,7 +359,7 @@ fn test_from_module_minmal_composition_function_with_unused_output() {
     check_compositions_and_metadata(compositions, expected, 0..1, 1..2);
 }
 
-#[test]
+#[test_log::test]
 #[should_panic]
 fn test_from_module_minmal_composition_with_missing_input() {
     let composition_string = r#"
@@ -351,7 +380,11 @@ fn test_from_module_minmal_composition_with_missing_input() {
             dependencies: vec![FunctionDependencies {
                 function: function_id,
                 join_info: (vec![], vec![]),
-                input_set_ids: vec![Some((0, ShardingMode::All))],
+                input_set_ids: vec![Some(InputSetDescriptor {
+                    composition_id: 0,
+                    sharding: ShardingMode::All,
+                    optional: false,
+                })],
                 output_set_ids: vec![Some(1)],
             }],
             output_map: BTreeMap::from([(1, 0)]),
@@ -364,7 +397,7 @@ fn test_from_module_minmal_composition_with_missing_input() {
     check_compositions_and_metadata(compositions, expected, 0..1, 1..2);
 }
 
-#[test]
+#[test_log::test]
 #[should_panic]
 fn test_from_module_minmal_composition_missing_output() {
     let composition_string = r#"
@@ -385,7 +418,11 @@ fn test_from_module_minmal_composition_missing_output() {
             dependencies: vec![FunctionDependencies {
                 function: function_id,
                 join_info: (vec![], vec![]),
-                input_set_ids: vec![Some((0, ShardingMode::All))],
+                input_set_ids: vec![Some(InputSetDescriptor {
+                    composition_id: 0,
+                    sharding: ShardingMode::All,
+                    optional: false,
+                })],
                 output_set_ids: vec![Some(1)],
             }],
             output_map: BTreeMap::from([(1, 0)]),
