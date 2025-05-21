@@ -34,20 +34,25 @@ pub enum DomainType {
     Process,
 }
 
-pub fn get_compatibilty_table() -> BTreeMap<EngineType, DomainType> {
-    return BTreeMap::from([
-        #[cfg(feature = "reqwest_io")]
-        (EngineType::Reqwest, DomainType::System),
-        #[cfg(feature = "cheri")]
-        (EngineType::Cheri, DomainType::Cheri),
-        #[cfg(feature = "wasm")]
-        (EngineType::RWasm, DomainType::RWasm),
-        #[cfg(feature = "mmu")]
-        (EngineType::Process, DomainType::Process),
-        #[cfg(feature = "kvm")]
-        (EngineType::Kvm, DomainType::Mmap),
-    ]);
-}
+/// The entries are ordered in the same order as the enum in engine type
+/// This allows the enum to be used as indexes into the array
+pub static ENGINE_DOMAIN_TABLE: &'static [DomainType] = &[
+    // Engine type Reqwest
+    #[cfg(feature = "reqwest_io")]
+    DomainType::System,
+    // Engine type Cheri
+    #[cfg(feature = "cheri")]
+    DomainType::Cheri,
+    // Engine type RWasm
+    #[cfg(feature = "wasm")]
+    DomainType::RWasm,
+    // Engine type Process
+    #[cfg(feature = "mmu")]
+    DomainType::Process,
+    // Engine type KVM
+    #[cfg(feature = "kvm")]
+    DomainType::Mmap,
+];
 
 #[cfg(any(feature = "reqwest_io"))]
 const SYS_FUNC_DEFAULT_CONTEXT_SIZE: usize = 0x200_0000;

@@ -9,7 +9,7 @@ use machine_interface::{
         system_driver::{get_system_function_input_sets, get_system_function_output_sets},
         Driver, Function, FunctionConfig,
     },
-    machine_config::{get_system_functions, DomainType, EngineType},
+    machine_config::{get_system_functions, DomainType, EngineType, ENGINE_DOMAIN_TABLE},
     memory_domain::{Context, MemoryDomain},
 };
 use std::{
@@ -139,7 +139,6 @@ impl FunctionRegistry {
     // TODO: make sure that system functions can't be added later for other engines
     pub fn new(
         drivers: BTreeMap<EngineType, (&'static dyn Driver, Box<EngineQueue>)>,
-        type_map: &BTreeMap<EngineType, DomainType>,
         domains: &BTreeMap<DomainType, Arc<Box<dyn MemoryDomain>>>,
     ) -> Self {
         // insert all system functons
@@ -175,7 +174,9 @@ impl FunctionRegistry {
                 let function_config = driver
                     .parse_function(
                         String::from(""),
-                        domains.get(type_map.get(engine_type).unwrap()).unwrap(),
+                        domains
+                            .get(&ENGINE_DOMAIN_TABLE[*engine_type as usize])
+                            .unwrap(),
                     )
                     .unwrap();
                 match function_config.config {

@@ -21,8 +21,7 @@ use log::{debug, trace};
 use machine_interface::{
     function_driver::{Driver, FunctionConfig, WorkToDo},
     machine_config::{
-        get_available_domains, get_available_drivers, get_compatibilty_table, DomainType,
-        EngineType,
+        get_available_domains, get_available_drivers, DomainType, EngineType, ENGINE_DOMAIN_TABLE,
     },
     memory_domain::{Context, MemoryDomain, MemoryResource},
 };
@@ -44,7 +43,6 @@ pub enum DispatcherInput {
 pub struct Dispatcher {
     domains: BTreeMap<DomainType, (Arc<Box<dyn MemoryDomain>>, Box<EngineQueue>)>,
     engine_queues: BTreeMap<EngineType, Box<EngineQueue>>,
-    type_map: BTreeMap<EngineType, DomainType>,
     function_registry: FunctionRegistry,
 }
 
@@ -54,7 +52,6 @@ impl Dispatcher {
         memory_resources: BTreeMap<DomainType, MemoryResource>,
     ) -> DandelionResult<Dispatcher> {
         // get machine specific configurations
-        let type_map = get_compatibilty_table();
         let domains = get_available_domains(memory_resources);
         let drivers = get_available_drivers();
 
@@ -68,21 +65,20 @@ impl Dispatcher {
             while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(engine_type) {
                 driver.start_engine(resource, work_queue.clone())?;
             }
-            let domain_type = type_map.get(&engine_type).unwrap();
-            let domain = domains.get(domain_type).unwrap().clone();
-            domain_map.insert(*domain_type, (domain, work_queue.clone()));
+            let domain_type = ENGINE_DOMAIN_TABLE[engine_type as usize];
+            let domain = domains.get(&domain_type).unwrap().clone();
+            domain_map.insert(domain_type, (domain, work_queue.clone()));
             engine_queues.insert(engine_type, work_queue.clone());
             registry_drivers.insert(
                 engine_type,
                 (driver as &'static dyn Driver, work_queue.clone()),
             );
         }
-        let function_registry = FunctionRegistry::new(registry_drivers, &type_map, &domains);
+        let function_registry = FunctionRegistry::new(registry_drivers, &domains);
 
         return Ok(Dispatcher {
             domains: domain_map,
             engine_queues,
-            type_map,
             function_registry,
         });
     }
@@ -511,11 +507,8 @@ impl Dispatcher {
         debug!("Preparing function {} for engine", function_id);
         let metadata = self.function_registry.get_metadata(function_id).await?;
         // get context and load static data
-        let context_id = match self.type_map.get(&engine_type) {
-            Some(id) => id,
-            None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
-        };
-        let (domain, transfer_queue) = match self.domains.get(context_id) {
+        let context_id = ENGINE_DOMAIN_TABLE[engine_type as usize];
+        let (domain, transfer_queue) = match self.domains.get(&context_id) {
             Some(d) => d,
             None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
         };
