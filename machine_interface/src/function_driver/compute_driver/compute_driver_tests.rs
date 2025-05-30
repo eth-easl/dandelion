@@ -798,7 +798,7 @@ mod compute_driver_tests {
                         ident: "inputitem".to_string(),
                         data: Position {
                             offset: data_offset as usize,
-                            size: 4 * input_example.len(),
+                            size: 2 * input_example.len(),
                         },
                         key: 1,
                     },
@@ -828,7 +828,7 @@ mod compute_driver_tests {
                     let item = &dataset.buffers[0];
                     let offset = item.data.offset;
                     let size = item.data.size;
-                    assert!(size % 4 == 0);
+                    assert!(size % 2 == 0);
                     let mut result: Vec<i16> = vec![0; size / 4];
                     println!("{size:?}");
                     context
