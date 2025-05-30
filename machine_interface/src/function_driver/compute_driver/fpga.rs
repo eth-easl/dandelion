@@ -590,7 +590,7 @@ async fn tile_worker(
                         .lock()
                         .expect("couldn't lock current invocations");
                     *current_invocations -= 1; //will and should panic if below 0
-                    if (*current_invocations < fpgadata.below_start_threshold) {
+                    if (*current_invocations == fpgadata.below_start_threshold - 1) {
                         fpgadata.below_start_threshold_notify.notify_one();
                     }
                 }
