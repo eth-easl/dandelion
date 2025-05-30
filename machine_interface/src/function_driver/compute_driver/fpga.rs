@@ -190,12 +190,12 @@ we can assign our message to. else we should error out.
 
 #[derive(Debug)]
 struct Invocation {
-    id: InvocationId,
-    bitstream_id: BitstreamId,
-    send_data: Arc<Mutex<Vec<u8>>>,
+    id: InvocationId,                  //local invocation ID, for debugging purposes
+    bitstream_id: BitstreamId,         //bitstream ID for which bitstream to load
+    send_data: Arc<Mutex<Vec<u8>>>,    //just the data that needs to be sent
     receive_data: Arc<Mutex<Vec<u8>>>, //only the data parts of the messages, concatinated
-    debt: Debt,
-    context: Context,
+    debt: Debt,       // Associated Invocation Debt that needs to be fulfilled at the end
+    context: Context, // associated context, is read for sending and gets wiped and written to at the end.
 }
 
 #[derive(Debug, Clone)]
@@ -914,22 +914,19 @@ fn outer_engine(core_id: u8, queue: Box<dyn WorkQueue + Send>, fpgadata: Arc<Fpg
 
 #[derive(Debug)]
 pub struct FpgaData {
-    cpu_slot: u8, //maybe redundant if we have a runtime
     listener_runtime: Runtime,
-    send_connection: std::net::SocketAddrV4, //ip/port for normal usage
-    recv_connection: std::net::SocketAddrV4,
+    send_connection: std::net::SocketAddrV4, //ip/port for nsending messsages
+    recv_connection: std::net::SocketAddrV4, //ip/port for recceiving messages
     special_connection: std::net::SocketAddrV4, //different port for special control stuff
-    //TODO: add debt set/hashmap that keeps track of all debts
-    //TODO: debug stuff for invocations?
-    tiles: [Tile; 4], //hard coded size for now
-    current_invocations: Mutex<usize>,
-    //other stuff as well? Like some state keeping
-    invocation_counter: Mutex<u32>, //counter to have unique ids
-    max_tile_queue_length: usize,
-    // add max and start thresholds
-    max_threshold: usize,
-    below_start_threshold: usize,
-    below_start_threshold_notify: Arc<Notify>,
+
+    tiles: [Tile; 4],                  //hard coded number for now
+    current_invocations: Mutex<usize>, //counter for in-flight invocations
+    invocation_counter: Mutex<u32>,    //counter to have unique ids
+    max_tile_queue_length: usize,      //soft per-tile maximum of in-flight invocations
+
+    max_threshold: usize,         //max upper threshold for in-flight invocations
+    below_start_threshold: usize, //threshold below which sending flow resumes
+    below_start_threshold_notify: Arc<Notify>, //notifier to wake sending flow
 }
 
 pub struct FpgaDriver {}
@@ -971,7 +968,7 @@ impl Driver for FpgaDriver {
 
         let below_start_threshold_notify = Arc::new(Notify::new());
         let fpgadata = Arc::new(FpgaData {
-            cpu_slot: core_id,
+            //cpu_slot: core_id,
             listener_runtime, //where do the configs for stuff go?...
             send_connection: SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 3456),
             recv_connection: SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 3457),
