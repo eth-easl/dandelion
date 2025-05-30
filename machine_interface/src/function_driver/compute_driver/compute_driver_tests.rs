@@ -64,6 +64,69 @@ mod compute_driver_tests {
         return (function_context, function.config, queue);
     }
 
+    //VICTOR added
+    fn fpga_create_function_contexts<Dom: MemoryDomain>(
+        driver: &Box<dyn Driver>,
+        num: usize,
+    ) -> (Vec<Context>, FunctionConfig, Box<TestQueue>) {
+        //let driver: Box<dyn Driver> = Box::new(FpgaDriver {});
+        let filename = "whatever";
+        let dom_init = MemoryResource::None;
+        let drv_init = vec![ComputeResource::CPU(1)];
+
+        let queue = Box::new(TestQueue::new());
+        let domain = Box::leak(Dom::init(dom_init).expect("Should have initialized domain"));
+        let function = driver
+            .parse_function(filename.to_string(), domain)
+            .expect("Should be able to parse function");
+        driver
+            .start_engine(drv_init[0], queue.clone())
+            .expect("Should be able to start engine");
+
+        let mut results: Vec<Context> = Vec::new();
+
+        for i in 0..num {
+            let mut function_context = function
+                .load(domain, 1024 * 1024 * 8) //8MB
+                .expect("Should be able to load function");
+
+            let input_example: [i16; 900] = std::array::from_fn(|j| j as i16);
+            let bitstream_id: [u16; 1] = [i.try_into().expect("asdfd")];
+            let bitstream_id_offset = function_context
+                .get_free_space_and_write_slice(&bitstream_id)
+                .expect("should have space for bitstream id");
+            let data_offset = function_context
+                .get_free_space_and_write_slice(&input_example)
+                .expect("Should have space for a little data");
+            println!("got data offset {:?}", data_offset);
+
+            function_context.content.push(Some(DataSet {
+                ident: "inputset".to_string(),
+                buffers: vec![
+                    DataItem {
+                        ident: "bitstream_id".to_string(),
+                        data: Position {
+                            offset: bitstream_id_offset as usize,
+                            size: 2,
+                        },
+                        key: 0,
+                    },
+                    DataItem {
+                        ident: "inputitem".to_string(),
+                        data: Position {
+                            offset: data_offset as usize,
+                            size: 2 * input_example.len(),
+                        },
+                        key: 1,
+                    },
+                ],
+            }));
+            results.push(function_context);
+        }
+
+        return (results, function.config, queue);
+    }
+
     fn engine_minimal<Dom: MemoryDomain>(
         filename: &str,
         dom_init: MemoryResource,
@@ -679,7 +742,9 @@ mod compute_driver_tests {
     mod fpga {
         use super::engine_minimal;
         use super::prepare_engine_and_function;
+        use crate::function_driver::compute_driver::compute_driver_tests::compute_driver_tests::fpga_create_function_contexts;
         use crate::function_driver::WorkDone;
+        use crate::promise::Promise;
         use crate::{
             function_driver::{
                 compute_driver::fpga, compute_driver::fpga::FpgaDriver, thread_utils::EngineLoop,
@@ -696,7 +761,7 @@ mod compute_driver_tests {
         use std::sync::{Arc, Mutex};
         /*RUST_LOG=debug cargo test --package machine_interface --lib --features mmu --features fpga -- function_driver::compute_driver::compute_driver_tests::compute_driver_tests::fpga::temp_test --exact --show-output  */
         #[test]
-        fn temp_test() {
+        fn dummy_test_offline() {
             env_logger::init();
             let driver: Box<dyn Driver> = Box::new(FpgaDriver {});
             let filename = "dummy_input";
@@ -708,7 +773,7 @@ mod compute_driver_tests {
                 prepare_engine_and_function::<MmapMemoryDomain>(
                     filename, dom_init, &driver, drv_init,
                 );
-            let input_example: [i64; 5] = [2, 5, 5, 5, 5];
+            let input_example: [i16; 5] = [2, 5, 5, 5, 5];
             let bitstream_id: [u16; 1] = [1];
             let bitstream_id_offset = function_context
                 .get_free_space_and_write_slice(&bitstream_id)
@@ -725,7 +790,7 @@ mod compute_driver_tests {
                         ident: "bitstream_id".to_string(),
                         data: Position {
                             offset: bitstream_id_offset as usize,
-                            size: 4,
+                            size: 2,
                         },
                         key: 0,
                     },
@@ -733,7 +798,7 @@ mod compute_driver_tests {
                         ident: "inputitem".to_string(),
                         data: Position {
                             offset: data_offset as usize,
-                            size: 8 * input_example.len(), //without enabling some weird stuff i dont have sizeof..8 should be just fine though
+                            size: 4 * input_example.len(),
                         },
                         key: 1,
                     },
@@ -751,7 +816,6 @@ mod compute_driver_tests {
                 output_sets: Arc::new(Vec::new()),
                 recorder: recorder.get_sub_recorder().unwrap(),
             });
-            let shutdown_promise = queue.enqueu(crate::function_driver::WorkToDo::Shutdown());
 
             let workdone = tokio::runtime::Builder::new_current_thread()
                 .build()
@@ -759,10 +823,28 @@ mod compute_driver_tests {
                 .block_on(promise)
                 .expect("Engine should run ok with basic function");
 
-            if let WorkDone::Resources(_resources) = workdone {
-                println!("successfully got back garbage! :D");
+            if let WorkDone::Context(context) = workdone {
+                if let Some(dataset) = &context.content[0] {
+                    let item = &dataset.buffers[0];
+                    let offset = item.data.offset;
+                    let size = item.data.size;
+                    assert!(size % 4 == 0);
+                    let mut result: Vec<i16> = vec![0; size / 4];
+                    println!("{size:?}");
+                    context
+                        .read(offset, &mut result)
+                        .expect("couldn't read from context");
+                    println!("got result: ");
+                    for el in result {
+                        println!("{el:?}");
+                    }
+                } else {
+                    eprintln!("couldn't get content in test");
+                    panic!()
+                }
             }
 
+            let shutdown_promise = queue.enqueu(crate::function_driver::WorkToDo::Shutdown());
             let shutdown_workdone = tokio::runtime::Builder::new_current_thread()
                 .build()
                 .unwrap()
@@ -777,20 +859,20 @@ mod compute_driver_tests {
                 .expect("Should have properly advanced recorder state");
         }
 
-        //TODO VICTOR: all these test don't work right now
         #[test]
-        fn run_dummy_input_local_matrix() {
+        fn mini_test_online() {
+            env_logger::init();
             let driver: Box<dyn Driver> = Box::new(FpgaDriver {});
-            let filename = "dummy_local_matrix";
+            let filename = "mini_test";
             let dom_init = MemoryResource::None;
             let drv_init = vec![ComputeResource::CPU(1)];
 
-            let input_example: [i64; 5] = [2, 5, 5, 5, 5];
-
+            //TODO VICTOR: replace this with just a prepare engine and a separate prepare function
             let (mut function_context, config, queue) =
                 prepare_engine_and_function::<MmapMemoryDomain>(
                     filename, dom_init, &driver, drv_init,
                 );
+            let input_example: [i16; 5] = [2, 5, 5, 5, 5];
             let bitstream_id: [u16; 1] = [1];
             let bitstream_id_offset = function_context
                 .get_free_space_and_write_slice(&bitstream_id)
@@ -807,7 +889,7 @@ mod compute_driver_tests {
                         ident: "bitstream_id".to_string(),
                         data: Position {
                             offset: bitstream_id_offset as usize,
-                            size: 4,
+                            size: 2,
                         },
                         key: 0,
                     },
@@ -815,13 +897,12 @@ mod compute_driver_tests {
                         ident: "inputitem".to_string(),
                         data: Position {
                             offset: data_offset as usize,
-                            size: 8 * input_example.len(), //without enabling some weird stuff i dont have sizeof..8 should be just fine though
+                            size: 2 * input_example.len(),
                         },
                         key: 1,
                     },
                 ],
             }));
-
             let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
                 #[cfg(feature = "timestamp")]
                 timestamp_count: 1000,
@@ -835,51 +916,66 @@ mod compute_driver_tests {
                 recorder: recorder.get_sub_recorder().unwrap(),
             });
 
-            let result_context = tokio::runtime::Builder::new_current_thread()
+            let workdone = tokio::runtime::Builder::new_current_thread()
                 .build()
                 .unwrap()
                 .block_on(promise)
-                .expect("Engine should run ok with basic function")
-                .get_context();
+                .expect("Engine should run ok with basic function");
+
+            if let WorkDone::Context(context) = workdone {
+                if let Some(dataset) = &context.content[0] {
+                    let item = &dataset.buffers[0];
+                    let offset = item.data.offset;
+                    let size = item.data.size;
+                    assert!(size % 2 == 0);
+                    let mut result: Vec<i16> = vec![0; size / 4];
+                    println!("{size:?}");
+                    context
+                        .read(offset, &mut result)
+                        .expect("couldn't read from context");
+                    println!("got result: ");
+                    for el in result {
+                        println!("{el:?}");
+                    }
+                } else {
+                    eprintln!("couldn't get content in test");
+                    panic!()
+                }
+            }
+
+            let shutdown_promise = queue.enqueu(crate::function_driver::WorkToDo::Shutdown());
+            let shutdown_workdone = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap()
+                .block_on(shutdown_promise)
+                .expect("Engine should run ok with basic function");
+            if let WorkDone::Resources(_resources) = shutdown_workdone {
+                println!("successfully shut down! :D");
+            }
 
             recorder
                 .record(RecordPoint::FutureReturn)
                 .expect("Should have properly advanced recorder state");
-            // check the function exited with exit code 0
-            match result_context.state {
-                ContextState::InPreparation => {
-                    panic!("context still in preparation, never evaluated ")
-                }
-                ContextState::Run(exit_status) => assert_eq!(0, exit_status),
-            }
-
-            let output_item = result_context.content[0]
-                .as_ref()
-                .expect("Set should be present");
-
-            let position = output_item.buffers[0].data;
-            println!("got dummy context result back. position: {:?}", position);
-            let mut read_buffer = vec![0i64; position.size / 8];
-            result_context
-                .context
-                .read(position.offset, &mut read_buffer)
-                .expect("Should succeed in reading");
-            println!("result is: {:?}", read_buffer);
         }
+
         #[test]
-        fn run_dummy_input_test() {
+        fn multipacket_invocation_online() {
+            env_logger::init();
             let driver: Box<dyn Driver> = Box::new(FpgaDriver {});
-            let filename = "dummy_input";
+            let filename = "mini_test";
             let dom_init = MemoryResource::None;
             let drv_init = vec![ComputeResource::CPU(1)];
 
-            let input_example: [i64; 5] = [2, 5, 5, 5, 5];
-
+            //TODO VICTOR: replace this with just a prepare engine and a separate prepare function
             let (mut function_context, config, queue) =
                 prepare_engine_and_function::<MmapMemoryDomain>(
                     filename, dom_init, &driver, drv_init,
                 );
-
+            let input_example: [i16; 900] = std::array::from_fn(|i| i as i16);
+            let bitstream_id: [u16; 1] = [1];
+            let bitstream_id_offset = function_context
+                .get_free_space_and_write_slice(&bitstream_id)
+                .expect("should have space for bitstream id");
             let data_offset = function_context
                 .get_free_space_and_write_slice(&input_example)
                 .expect("Should have space for a little data");
@@ -887,16 +983,25 @@ mod compute_driver_tests {
 
             function_context.content.push(Some(DataSet {
                 ident: "inputset".to_string(),
-                buffers: vec![DataItem {
-                    ident: "inputitem".to_string(),
-                    data: Position {
-                        offset: data_offset as usize,
-                        size: 8 * input_example.len(), //without enabling some weird stuff i dont have sizeof..8 should be just fine though
+                buffers: vec![
+                    DataItem {
+                        ident: "bitstream_id".to_string(),
+                        data: Position {
+                            offset: bitstream_id_offset as usize,
+                            size: 2,
+                        },
+                        key: 0,
                     },
-                    key: 0,
-                }],
+                    DataItem {
+                        ident: "inputitem".to_string(),
+                        data: Position {
+                            offset: data_offset as usize,
+                            size: 2 * input_example.len(),
+                        },
+                        key: 1,
+                    },
+                ],
             }));
-
             let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
                 #[cfg(feature = "timestamp")]
                 timestamp_count: 1000,
@@ -910,37 +1015,121 @@ mod compute_driver_tests {
                 recorder: recorder.get_sub_recorder().unwrap(),
             });
 
-            let result_context = tokio::runtime::Builder::new_current_thread()
+            let workdone = tokio::runtime::Builder::new_current_thread()
                 .build()
                 .unwrap()
                 .block_on(promise)
-                .expect("Engine should run ok with basic function")
-                .get_context();
+                .expect("Engine should run ok with basic function");
+
+            if let WorkDone::Context(context) = workdone {
+                if let Some(dataset) = &context.content[0] {
+                    let item = &dataset.buffers[0];
+                    let offset = item.data.offset;
+                    let size = item.data.size;
+                    assert!(size % 2 == 0);
+                    let mut result: Vec<i16> = vec![0; size / 2];
+                    println!("{size:?}");
+                    context
+                        .read(offset, &mut result)
+                        .expect("couldn't read from context");
+                    println!("got result: ");
+                    for el in result {
+                        println!("{el:?}");
+                    }
+                } else {
+                    eprintln!("couldn't get content in test");
+                    panic!()
+                }
+            }
+
+            let shutdown_promise = queue.enqueu(crate::function_driver::WorkToDo::Shutdown());
+            let shutdown_workdone = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap()
+                .block_on(shutdown_promise)
+                .expect("Engine should run ok with basic function");
+            if let WorkDone::Resources(_resources) = shutdown_workdone {
+                println!("successfully shut down! :D");
+            }
 
             recorder
                 .record(RecordPoint::FutureReturn)
                 .expect("Should have properly advanced recorder state");
+        }
 
-            // check the function exited with exit code 0
-            match result_context.state {
-                ContextState::InPreparation => {
-                    panic!("context still in preparation, never evaluated ")
-                }
-                ContextState::Run(exit_status) => assert_eq!(0, exit_status),
+        #[test]
+        fn multi_packet_multi_invocation_online() {
+            env_logger::init();
+            let driver: Box<dyn Driver> = Box::new(FpgaDriver {});
+            //TODO VICTOR: replace this with just a prepare engine and a separate prepare function
+            let (mut function_contexts, config, queue) =
+                fpga_create_function_contexts::<MmapMemoryDomain>(&driver, 8);
+
+            let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
+                #[cfg(feature = "timestamp")]
+                timestamp_count: 1000,
+            })));
+
+            let mut recorder = archive.get_recorder().unwrap();
+            let mut promises: Vec<Promise> = Vec::new();
+            let context_len = function_contexts.len();
+            for i in 0..context_len {
+                let promise = queue.enqueu(crate::function_driver::WorkToDo::FunctionArguments {
+                    config: config.clone(),
+                    context: function_contexts.pop().expect("idk"),
+                    output_sets: Arc::new(Vec::new()),
+                    recorder: recorder.get_sub_recorder().unwrap(),
+                });
+                promises.push(promise);
             }
 
-            let output_item = result_context.content[0]
-                .as_ref()
-                .expect("Set should be present");
+            let mut workdone_vec: Vec<WorkDone> = Vec::new();
 
-            let position = output_item.buffers[0].data;
-            println!("got dummy context result back. position: {:?}", position);
-            let mut read_buffer = vec![0i64; position.size / 8];
-            result_context
-                .context
-                .read(position.offset, &mut read_buffer)
-                .expect("Should succeed in reading");
-            println!("result is: {:?}", read_buffer);
+            for i in 0..context_len {
+                let workdone = tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap()
+                    .block_on(promises.pop().expect("idk"))
+                    .expect("Engine should run ok with basic function");
+                workdone_vec.push(workdone);
+            }
+
+            for i in 0..context_len {
+                if let WorkDone::Context(context) = workdone_vec.pop().expect("idk") {
+                    if let Some(dataset) = &context.content[0] {
+                        let item = &dataset.buffers[0];
+                        let offset = item.data.offset;
+                        let size = item.data.size;
+                        assert!(size % 2 == 0);
+                        let mut result: Vec<i16> = vec![0; size / 2];
+                        println!("size: {size:?}");
+                        context
+                            .read(offset, &mut result)
+                            .expect("couldn't read from context");
+                        println!("got result: ");
+                        for el in result {
+                            print!("{el:?}, ");
+                        }
+                    } else {
+                        eprintln!("couldn't get content in test");
+                        panic!()
+                    }
+                }
+            }
+
+            let shutdown_promise = queue.enqueu(crate::function_driver::WorkToDo::Shutdown());
+            let shutdown_workdone = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap()
+                .block_on(shutdown_promise)
+                .expect("Engine should run ok with basic function");
+            if let WorkDone::Resources(_resources) = shutdown_workdone {
+                println!("successfully shut down! :D");
+            }
+
+            recorder
+                .record(RecordPoint::FutureReturn)
+                .expect("Should have properly advanced recorder state");
         }
     }
 }

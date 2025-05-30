@@ -61,7 +61,7 @@ impl futures::future::Future for Promise {
         }
     }
 }
-
+#[derive(Debug)]
 pub struct Debt {
     data: *const PromiseData,
 }

@@ -56,9 +56,7 @@ pub struct WasmConfig {
 pub struct FpgaConfig {
     #[cfg(feature = "fpga")]
     //TODO: other type of identifier?
-    soft_max_tile_queue_length: usize,
-    bitstream_id: u16,
-    dummy_func_num: u32, //exists to differentiate dummy run functions. if 0 then it uses the real function.
+    dummy_func_num: u16, //exists to differentiate dummy run functions. if 0 then it uses the real function.
 }
 
 #[derive(Clone)]
