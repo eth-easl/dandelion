@@ -1,5 +1,6 @@
 use crate::{
     function_driver::{
+        compute_driver::fpga,
         thread_utils::{start_thread, EngineLoop},
         ComputeResource, Driver, FpgaConfig, Function, FunctionConfig, WorkDone, WorkQueue,
         WorkToDo,
@@ -198,20 +199,12 @@ struct Invocation {
     context: Context, // associated context, is read for sending and gets wiped and written to at the end.
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct Tile {
     invocations: Arc<Mutex<VecDeque<Box<Invocation>>>>,
-    /*
-        simplified from before, we now just have a list of invocations.
-        we only put invocations on there when we directly want to
-        send them because we scheduled it.
-        Meaning the last one in the queue may be not fully sent yet.
-
-        This is nice, though, since the previous implementation had a bug where you couldn't
-        start receiving a response to a partially sent invocation.
-
-        push_back to add to the queue, and pop_front to remove from the queue.
-    */
+    //majorly simplified from before. just one queue instead of two.
+    last_active_bitstream: Mutex<Option<BitstreamId>>,
+    //only valid if queue empty
 }
 
 //should probably return a result
@@ -246,14 +239,27 @@ fn schedule(fpgadata: &FpgaData, bitstream_id: BitstreamId) -> Result<usize, Str
     //copy bitstream_ids
     for i in 0..tiles.len() {
         //lock everybody and store the queue in unsent_queues
-        let temp_queue_lock = tiles[i].invocations.lock().expect("locking failed badly");
-        let temp_invocation_opt = temp_queue_lock.back();
 
-        match temp_invocation_opt {
-            Some(invocation) => {
-                back_invocations[i] = Some((invocation.bitstream_id, temp_queue_lock.len()))
+        let (temp_bitstream_id, queue_len) = {
+            let temp_queue_lock = tiles[i].invocations.lock().expect("locking failed badly");
+            (
+                temp_queue_lock.back().map(|inv| inv.bitstream_id),
+                temp_queue_lock.len(),
+            )
+        };
+
+        match temp_bitstream_id {
+            Some(id) => back_invocations[i] = Some((id, queue_len)),
+            None => {
+                back_invocations[i] = {
+                    //get tile data if empty
+                    (*tiles[i]
+                        .last_active_bitstream
+                        .lock()
+                        .expect("couldn't lick last active bitstream"))
+                    .map(|id| (id, 0))
+                }
             }
-            None => back_invocations[i] = None,
         }
         //drop temp_queue_lock
     }
@@ -286,10 +292,13 @@ fn schedule(fpgadata: &FpgaData, bitstream_id: BitstreamId) -> Result<usize, Str
             }
             None => {
                 // we want to fill empty queues first
-                chosen_tile = i;
-                found = true;
-                shortest = 0;
-                break; //we can end early
+                if (shortest > 0) {
+                    //check since we added empty queues with bitstream now
+                    chosen_tile = i;
+                    found = true;
+                    shortest = 0;
+                    break; //we can end early
+                }
             }
         }
     }
@@ -650,6 +659,9 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>, fpgadata: &FpgaData) -> D
         }
         if current_invocations >= fpgadata.max_threshold {
             notifier.notified().await;
+            //continue; //add this to make sure it gets checked again
+            //if the number just sinks but had never reached the upper threshold, a notify_one gets issued and stored.
+            //multiple notify_ones will not stack, so at worst the max_threshold will be exceeded by 1.
         } //sleep until there's new work available
 
         let (args, debt) = queue.get_engine_args();
@@ -773,6 +785,14 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>, fpgadata: &FpgaData) -> D
                                     .lock()
                                     .expect("couldnt lock curr");
                                 *l_current_invocations += 1;
+                            }
+                            //update last active bitstream in case queue is empty
+                            {
+                                let mut last_active_bistream = fpgadata.tiles[tile_id]
+                                    .last_active_bitstream
+                                    .lock()
+                                    .expect("couldn't lock last active bitstream");
+                                *last_active_bistream = Some(bitstream_id);
                             }
                             //send it out:
                             if let Err(errstr) = send(fpgadata, invocation, tile_id).await {
@@ -915,8 +935,8 @@ fn outer_engine(core_id: u8, queue: Box<dyn WorkQueue + Send>, fpgadata: Arc<Fpg
 #[derive(Debug)]
 pub struct FpgaData {
     listener_runtime: Runtime,
-    send_connection: std::net::SocketAddrV4, //ip/port for nsending messsages
-    recv_connection: std::net::SocketAddrV4, //ip/port for recceiving messages
+    send_connection: std::net::SocketAddrV4, //ip/port for sending messsages
+    recv_connection: std::net::SocketAddrV4, //ip/port for receiving messages
     special_connection: std::net::SocketAddrV4, //different port for special control stuff
 
     tiles: [Tile; 4],                  //hard coded number for now
@@ -964,6 +984,7 @@ impl Driver for FpgaDriver {
 
         let tiles = std::array::from_fn(|_| Tile {
             invocations: Arc::new(Mutex::new(VecDeque::new())),
+            last_active_bitstream: Mutex::new(None),
         });
 
         let below_start_threshold_notify = Arc::new(Notify::new());

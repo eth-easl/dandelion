@@ -87,10 +87,10 @@ mod compute_driver_tests {
 
         for i in 0..num {
             let mut function_context = function
-                .load(domain, 1024 * 1024 * 8) //8MB
+                .load(domain, 1024 * 1024 * 128) //8MB
                 .expect("Should be able to load function");
 
-            let input_example: [i16; 900] = std::array::from_fn(|j| j as i16);
+            let input_example: [i16; 50285] = std::array::from_fn(|j| (j % 800) as i16); //enough to fill 50 packets and have the last one not full.
             let bitstream_id: [u16; 1] = [i.try_into().expect("asdfd")];
             let bitstream_id_offset = function_context
                 .get_free_space_and_write_slice(&bitstream_id)
@@ -122,6 +122,8 @@ mod compute_driver_tests {
                 ],
             }));
             results.push(function_context);
+            //means last is first, so if we wait on the first one to
+            //finish, all previous ones should have been at least sent
         }
 
         return (results, function.config, queue);
@@ -1063,7 +1065,7 @@ mod compute_driver_tests {
             let driver: Box<dyn Driver> = Box::new(FpgaDriver {});
             //TODO VICTOR: replace this with just a prepare engine and a separate prepare function
             let (mut function_contexts, config, queue) =
-                fpga_create_function_contexts::<MmapMemoryDomain>(&driver, 8);
+                fpga_create_function_contexts::<MmapMemoryDomain>(&driver, 100);
 
             let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
                 #[cfg(feature = "timestamp")]
@@ -1106,10 +1108,10 @@ mod compute_driver_tests {
                         context
                             .read(offset, &mut result)
                             .expect("couldn't read from context");
-                        println!("got result: ");
-                        for el in result {
-                            print!("{el:?}, ");
-                        }
+                        //println!("got result: ");
+                        //for el in result {
+                        //    print!("{el:?}, ");
+                        //}
                     } else {
                         eprintln!("couldn't get content in test");
                         panic!()
