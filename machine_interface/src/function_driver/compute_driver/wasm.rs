@@ -9,7 +9,7 @@ use crate::{
 };
 use dandelion_commons::{DandelionError, DandelionResult};
 use libloading::{Library, Symbol};
-use log::error;
+use log::{debug, error};
 use std::sync::Arc;
 
 type WasmEntryPoint = fn(&mut [u8], usize) -> Option<i32>;
@@ -74,23 +74,11 @@ impl Driver for WasmDriver {
         queue: Box<dyn WorkQueue + Send>,
     ) -> DandelionResult<()> {
         // sanity checks; extract core id
+        debug!("Starting RWasm engine with resource {:?}", resource);
         let cpu_slot = match resource {
             ComputeResource::CPU(core) => core,
             _ => return Err(DandelionError::EngineResourceError),
         };
-        // check that core is available
-        let available_cores = match core_affinity::get_core_ids() {
-            None => return Err(DandelionError::EngineResourceError),
-            Some(cores) => cores,
-        };
-        if !available_cores
-            .iter()
-            .find(|x| x.id == usize::from(cpu_slot))
-            .is_some()
-        {
-            return Err(DandelionError::EngineResourceError);
-        }
-
         // create channels and spawn threads
         start_thread::<WasmLoop>(cpu_slot, queue);
         return Ok(());

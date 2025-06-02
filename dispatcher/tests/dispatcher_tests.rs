@@ -9,14 +9,13 @@ mod dispatcher_tests {
     use dandelion_commons::FunctionId;
     use dispatcher::{
         composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
-        resource_pool::ResourcePool,
     };
     use machine_interface::{
         function_driver::ComputeResource,
         machine_config::{DomainType, EngineType},
         memory_domain::{Context, ContextTrait, MemoryDomain, MemoryResource},
     };
-    use std::{collections::BTreeMap, sync::Arc};
+    use std::sync::Arc;
 
     // using 0x802_0000 because that is what WASM specifies
     const DEFAULT_CONTEXT_SIZE: usize = 0x802_0000; // 128MiB
@@ -38,11 +37,6 @@ mod dispatcher_tests {
             input_sets: Arc::new(in_set_names),
             output_sets: Arc::new(out_set_names),
         };
-        let mut pool_map = BTreeMap::new();
-        pool_map.insert(engine_type, engine_resource);
-        let resource_pool = ResourcePool {
-            engine_pool: futures::lock::Mutex::new(pool_map),
-        };
         let memory_resources = vec![memory_resource]
             .into_iter()
             .map(|(dom, resource)| {
@@ -52,7 +46,7 @@ mod dispatcher_tests {
                 )
             })
             .collect();
-        let dispatcher = Dispatcher::init(resource_pool, memory_resources)
+        let dispatcher = Dispatcher::init(engine_resource, memory_resources)
             .expect("Should have initialized dispatcher");
         let function_id = tokio::runtime::Builder::new_current_thread()
             .build()

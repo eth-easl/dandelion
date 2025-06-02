@@ -1,11 +1,10 @@
 use crate::function_driver::WorkDone;
-
 use core::{
     cell::Cell,
     mem::ManuallyDrop,
     pin::Pin,
     ptr,
-    sync::atomic::{AtomicPtr, AtomicU8, Ordering},
+    sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering},
     task::{Poll, Waker},
 };
 use dandelion_commons::{DandelionError, DandelionResult, PromiseError};
@@ -38,6 +37,7 @@ unsafe impl Send for DataWrapper {}
 
 struct PromiseBufferInternal {
     head: AtomicPtr<DataWrapper>,
+    occupied: AtomicUsize,
     _buffer: Pin<Box<[DataWrapper]>>,
 }
 
@@ -58,11 +58,16 @@ impl PromiseBufferInternal {
         }
         return Self {
             head,
+            occupied: AtomicUsize::new(0),
             _buffer: buffer,
         };
     }
 
-    pub fn get_promise_data(&self) -> DandelionResult<*mut DataWrapper> {
+    fn get_occupied(&self) -> usize {
+        self.occupied.load(Ordering::Acquire)
+    }
+
+    fn get_promise_data(&self) -> DandelionResult<*mut DataWrapper> {
         let mut current = self.head.load(Ordering::Acquire);
         if current.is_null() {
             return Err(DandelionError::PromiseError(PromiseError::NoneAvailable));
@@ -78,6 +83,7 @@ impl PromiseBufferInternal {
             }
             new_head = unsafe { (*current).next };
         }
+        self.occupied.fetch_add(1, Ordering::AcqRel);
         return Ok(current);
     }
 
@@ -97,6 +103,7 @@ impl PromiseBufferInternal {
                 head = current_head;
                 unsafe { (*data_ptr).next = head };
             }
+            self.occupied.fetch_sub(1, Ordering::AcqRel);
         }
     }
 }
@@ -111,6 +118,10 @@ impl PromiseBuffer {
         return Self {
             internal: Arc::new(PromiseBufferInternal::init(size)),
         };
+    }
+
+    pub fn get_occupied(&self) -> usize {
+        self.internal.get_occupied()
     }
 
     pub fn get_promise(&self) -> DandelionResult<(Promise, Debt)> {

@@ -9,10 +9,10 @@ use crate::{
     util::elf_parser,
     DataItem, DataRequirement, DataRequirementList, DataSet, Position,
 };
-use core_affinity;
 use dandelion_commons::{DandelionError, DandelionResult};
 use kvm_bindings::kvm_userspace_memory_region;
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
+use log::debug;
 use std::sync::Arc;
 
 #[cfg(target_arch = "x86_64")]
@@ -151,21 +151,11 @@ impl Driver for KvmDriver {
         resource: ComputeResource,
         queue: Box<dyn WorkQueue + Send>,
     ) -> DandelionResult<()> {
+        debug!("Starting KVM engine with Resource: {:?}", resource);
         let cpu_slot = match resource {
             ComputeResource::CPU(core) => core,
             _ => return Err(DandelionError::EngineResourceError),
         };
-        let available_cores = match core_affinity::get_core_ids() {
-            None => return Err(DandelionError::EngineError),
-            Some(cores) => cores,
-        };
-        if !available_cores
-            .iter()
-            .find(|x| x.id == usize::from(cpu_slot))
-            .is_some()
-        {
-            return Err(DandelionError::EngineResourceError);
-        }
         start_thread::<KvmLoop>(cpu_slot, queue);
         return Ok(());
     }

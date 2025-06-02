@@ -588,7 +588,6 @@ mod compute_driver_tests {
                     .map(|id| ComputeResource::CPU(id.id as u8))
                     .collect())).expect("Should have at least one core");
         vec![
-            ComputeResource::CPU(255),
             ComputeResource::GPU(0)
         ]);
         #[cfg(target_arch = "aarch64")]
@@ -601,7 +600,6 @@ mod compute_driver_tests {
                     .map(|id| ComputeResource::CPU(id.id as u8))
                     .collect())).expect("Should have at least one core");
         vec![
-            ComputeResource::CPU(255),
             ComputeResource::GPU(0),
         ]);
     }
@@ -620,7 +618,6 @@ mod compute_driver_tests {
                     .map(|id| ComputeResource::CPU(id.id as u8))
                     .collect())).expect("Should have at least one core");
         vec![
-            ComputeResource::CPU(255),
             ComputeResource::GPU(0)
         ]);
         #[cfg(target_arch = "aarch64")]
@@ -633,7 +630,6 @@ mod compute_driver_tests {
                     .map(|id| ComputeResource::CPU(id.id as u8))
                     .collect())).expect("Should have at least one core");
         vec![
-            ComputeResource::CPU(255),
             ComputeResource::GPU(0),
         ]);
     }
@@ -653,7 +649,6 @@ mod compute_driver_tests {
                     .map(|id| ComputeResource::CPU(id.id as u8))
                     .collect())).expect("Should have at least one core");
         vec![
-            ComputeResource::CPU(255),
             ComputeResource::GPU(0),
         ]);
 
@@ -667,7 +662,6 @@ mod compute_driver_tests {
                     .map(|id| ComputeResource::CPU(id.id as u8))
                     .collect())).expect("Should have at least one core");
         vec![
-            ComputeResource::CPU(255),
             ComputeResource::GPU(0),
         ]);
     }

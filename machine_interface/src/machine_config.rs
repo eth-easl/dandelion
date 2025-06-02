@@ -1,6 +1,9 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, OnceLock},
+};
 
-use crate::function_driver::SystemFunction;
+use crate::function_driver::{ComputeResourceType, SystemFunction};
 #[allow(unused_imports)]
 use crate::{
     function_driver::Driver,
@@ -11,7 +14,7 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EngineType {
     #[cfg(feature = "reqwest_io")]
-    Reqwest,
+    SystemCPU,
     #[cfg(feature = "cheri")]
     Cheri,
     #[cfg(feature = "wasm")]
@@ -21,6 +24,37 @@ pub enum EngineType {
     #[cfg(feature = "kvm")]
     Kvm,
 }
+
+pub static ENGINE_TYPES: &'static [EngineType] = &[
+    #[cfg(feature = "reqwest_io")]
+    EngineType::SystemCPU,
+    #[cfg(feature = "cheri")]
+    EngineType::Cheri,
+    #[cfg(feature = "wasm")]
+    EngineType::RWasm,
+    #[cfg(feature = "mmu")]
+    EngineType::Process,
+    #[cfg(feature = "kvm")]
+    EngineType::Kvm,
+];
+
+pub static ENGINE_RESOURCE_MAP: &'static [ComputeResourceType] = &[
+    // Reqwest resource type
+    #[cfg(feature = "reqwest_io")]
+    ComputeResourceType::CPU,
+    // Cheri resource type
+    #[cfg(feature = "cheri")]
+    ComputeResourceType::CPU,
+    // RWasm resource type
+    #[cfg(feature = "wasm")]
+    ComputeResourceType::CPU,
+    // Process resource type
+    #[cfg(feature = "mmu")]
+    ComputeResourceType::CPU,
+    // KVM resource type
+    #[cfg(feature = "kvm")]
+    ComputeResourceType::CPU,
+];
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub enum DomainType {
@@ -60,7 +94,7 @@ const SYS_FUNC_DEFAULT_CONTEXT_SIZE: usize = 0x200_0000;
 pub fn get_system_functions(engine_type: EngineType) -> Vec<(SystemFunction, usize)> {
     return match engine_type {
         #[cfg(feature = "reqwest_io")]
-        EngineType::Reqwest => vec![(SystemFunction::HTTP, SYS_FUNC_DEFAULT_CONTEXT_SIZE)],
+        EngineType::SystemCPU => vec![(SystemFunction::HTTP, SYS_FUNC_DEFAULT_CONTEXT_SIZE)],
         #[allow(unreachable_patterns)]
         _ => Vec::new(),
     };
@@ -121,42 +155,35 @@ pub fn get_available_domains(
         .collect();
 }
 
-pub fn get_available_drivers() -> BTreeMap<EngineType, &'static dyn Driver> {
-    return BTreeMap::<EngineType, &'static dyn Driver>::from([
-        #[cfg(feature = "reqwest_io")]
-        (
-            EngineType::Reqwest,
-            Box::leak(Box::new(
-                crate::function_driver::system_driver::reqwest::ReqwestDriver {},
-            )) as &'static dyn Driver,
-        ),
-        #[cfg(feature = "cheri")]
-        (
-            EngineType::Cheri,
-            Box::leak(Box::new(
-                crate::function_driver::compute_driver::cheri::CheriDriver {},
-            )) as &'static dyn Driver,
-        ),
-        #[cfg(feature = "wasm")]
-        (
-            EngineType::RWasm,
-            Box::leak(Box::new(
-                crate::function_driver::compute_driver::wasm::WasmDriver {},
-            )) as &'static dyn Driver,
-        ),
-        #[cfg(feature = "mmu")]
-        (
-            EngineType::Process,
-            Box::leak(Box::new(
-                crate::function_driver::compute_driver::mmu::MmuDriver {},
-            )) as &'static dyn Driver,
-        ),
-        #[cfg(feature = "kvm")]
-        (
-            EngineType::Kvm,
-            Box::leak(Box::new(
-                crate::function_driver::compute_driver::kvm::KvmDriver {},
-            )) as &'static dyn Driver,
-        ),
-    ]);
+// TODO this should also be able to be a static table
+// The self could probably be removed from the driver, if that simplifies it
+pub fn get_available_drivers() -> &'static Vec<&'static dyn Driver> {
+    static ENGINE_MAP: OnceLock<Vec<&'static dyn Driver>> = OnceLock::new();
+    ENGINE_MAP.get_or_init(|| {
+        ENGINE_TYPES
+            .iter()
+            .map(|engine_type| match engine_type {
+                #[cfg(feature = "reqwest_io")]
+                EngineType::SystemCPU => Box::leak(Box::new(
+                    crate::function_driver::system_driver::reqwest::ReqwestDriver {},
+                )) as &'static dyn Driver,
+                #[cfg(feature = "cheri")]
+                EngineType::Cheri => Box::leak(Box::new(
+                    crate::function_driver::compute_driver::cheri::CheriDriver {},
+                )) as &'static dyn Driver,
+                #[cfg(feature = "wasm")]
+                EngineType::RWasm => Box::leak(Box::new(
+                    crate::function_driver::compute_driver::wasm::WasmDriver {},
+                )) as &'static dyn Driver,
+                #[cfg(feature = "mmu")]
+                EngineType::Process => Box::leak(Box::new(
+                    crate::function_driver::compute_driver::mmu::MmuDriver {},
+                )) as &'static dyn Driver,
+                #[cfg(feature = "kvm")]
+                EngineType::Kvm => Box::leak(Box::new(
+                    crate::function_driver::compute_driver::kvm::KvmDriver {},
+                )) as &'static dyn Driver,
+            })
+            .collect()
+    })
 }

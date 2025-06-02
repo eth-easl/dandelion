@@ -8,7 +8,6 @@ use dispatcher::{
     composition::CompositionSet,
     dispatcher::{Dispatcher, DispatcherInput},
     function_registry::Metadata,
-    resource_pool::ResourcePool,
 };
 use http_body_util::BodyExt;
 use hyper::{
@@ -494,13 +493,9 @@ fn main() -> () {
 
     let dispatcher_cores = config.get_dispatcher_cores();
     let frontend_cores = config.get_frontend_cores();
-    let communication_cores = config
-        .get_communication_cores()
-        .into_iter()
-        .map(|core| resource_conversion(core))
-        .collect();
-    let compute_cores = config
-        .get_computation_cores()
+    // all other cores go to the dispatcher
+    let cpu_vec = config
+        .get_cpu_cores()
         .into_iter()
         .map(|core| resource_conversion(core))
         .collect();
@@ -508,8 +503,7 @@ fn main() -> () {
     println!("core allocation:");
     println!("frontend cores {:?}", frontend_cores);
     println!("dispatcher cores: {:?}", dispatcher_cores);
-    println!("communication cores: {:?}", communication_cores);
-    println!("compute cores: {:?}", compute_cores);
+    println!("cpu engine cores: {:?}", cpu_vec);
 
     // make multithreaded front end runtime
     // set up tokio runtime, need io in any case
@@ -553,26 +547,6 @@ fn main() -> () {
     let (dispatcher_sender, dispatcher_recevier) = mpsc::channel(1000);
 
     // set up dispatcher configuration basics
-    let mut pool_map = BTreeMap::new();
-
-    // insert engines for the currentyl selected compute engine type
-    // todo add function to machine config to detect resources and auto generate this
-    #[cfg(feature = "wasm")]
-    let engine_type = EngineType::RWasm;
-    #[cfg(feature = "mmu")]
-    let engine_type = EngineType::Process;
-    #[cfg(feature = "kvm")]
-    let engine_type = EngineType::Kvm;
-    #[cfg(feature = "cheri")]
-    let engine_type = EngineType::Cheri;
-    #[cfg(any(feature = "cheri", feature = "wasm", feature = "mmu", feature = "kvm"))]
-    pool_map.insert(engine_type, compute_cores);
-    #[cfg(feature = "reqwest_io")]
-    pool_map.insert(EngineType::Reqwest, communication_cores);
-    let resource_pool = ResourcePool {
-        engine_pool: futures::lock::Mutex::new(pool_map),
-    };
-
     // get RAM size
     // TODO could be a configuration, open question on how to split between engines
     // or if we unify somehow and have one underlying pool
@@ -615,7 +589,7 @@ fn main() -> () {
 
     // Create an ARC pointer to the dispatcher for thread-safe access
     let dispatcher = Box::leak(Box::new(
-        Dispatcher::init(resource_pool, memory_pool).expect("Should be able to start dispatcher"),
+        Dispatcher::init(cpu_vec, memory_pool).expect("Should be able to start dispatcher"),
     ));
     // start dispatcher
     dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));

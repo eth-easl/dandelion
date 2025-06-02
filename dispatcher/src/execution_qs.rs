@@ -1,14 +1,18 @@
+use crate::controller::Controller;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crossbeam::channel::{TryRecvError, TrySendError};
 use dandelion_commons::{DandelionError, DandelionResult};
-use log::error;
+use log::{error, trace};
 use machine_interface::{
-    function_driver::{WorkDone, WorkQueue, WorkToDo},
+    function_driver::{ComputeResource, WorkDone, WorkQueue, WorkToDo},
     promise::{Debt, PromiseBuffer},
 };
-use std::{hint, sync::Arc};
+use std::{
+    hint,
+    sync::{Arc, Weak},
+};
 
-const MAX_QUEUE: usize = 4096;
+pub(crate) const MAX_QUEUE: usize = 4096;
 
 struct AtomicTickets {
     start: AtomicUsize,
@@ -21,6 +25,12 @@ pub struct EngineQueue {
     queue_out: crossbeam::channel::Receiver<(WorkToDo, Debt)>,
     worker_queue: Arc<AtomicTickets>,
     promise_buffer: PromiseBuffer,
+    /// Reference to the controller owning this queue,
+    /// the weak reference prevents circular ownership,
+    /// ensuring dropping still works as intended.
+    controller: Weak<Controller>,
+    /// Index identifying the queue to the controller
+    controller_index: usize,
 }
 
 /// This is run on the engine so it performs asyncornous access to the local state
@@ -47,6 +57,7 @@ impl WorkQueue for EngineQueue {
         return work;
     }
 
+    // TODO replace with async
     fn try_get_engine_args(&self) -> Option<(WorkToDo, Debt)> {
         let queue_head = self.worker_queue.start.load(Ordering::Acquire);
         if self
@@ -81,7 +92,7 @@ impl WorkQueue for EngineQueue {
 }
 
 impl EngineQueue {
-    pub fn new() -> Self {
+    pub fn new(controller: Weak<Controller>, controller_index: usize) -> Self {
         let (sender, receiver) = crossbeam::channel::bounded(MAX_QUEUE);
         let tickets = AtomicTickets {
             start: AtomicUsize::new(0),
@@ -93,6 +104,8 @@ impl EngineQueue {
             queue_out: receiver,
             worker_queue: queue,
             promise_buffer: PromiseBuffer::init(MAX_QUEUE),
+            controller,
+            controller_index,
         };
     }
 
@@ -105,6 +118,36 @@ impl EngineQueue {
             }
             Err(TrySendError::Full(_)) => return Err(DandelionError::WorkQueueFull),
         }
-        return promise.await;
+        self.controller
+            .upgrade()
+            .unwrap()
+            .on_work_enqueue(self.controller_index)
+            .await;
+        let ret_val = promise.await;
+        return ret_val;
+    }
+
+    /// Enqueue engine shutdown, bypassing the controller call back,
+    /// so it can be called from the controller without risk of getting stuck
+    pub(crate) async fn shutdown_engine(&self) -> Vec<ComputeResource> {
+        let (promise, debt) = self.promise_buffer.get_promise().unwrap();
+        match self.queue_in.try_send((WorkToDo::Shutdown(), debt)) {
+            Ok(()) => (),
+            Err(TrySendError::Disconnected(_)) => {
+                error!("Failed to enqueu work, workqueue has been disconnected")
+            }
+            Err(TrySendError::Full(_)) => {
+                panic!("Failed to shut down engine because queue is already full")
+            }
+        }
+        if let Ok(WorkDone::Resources(resources)) = promise.await {
+            return resources;
+        } else {
+            panic!("Engine shutdown did return WorkDone that was not resources")
+        }
+    }
+
+    pub(crate) fn get_occupied(&self) -> usize {
+        self.promise_buffer.get_occupied()
     }
 }

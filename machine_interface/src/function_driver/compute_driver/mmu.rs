@@ -9,7 +9,6 @@ use crate::{
     util::elf_parser,
     DataItem, DataRequirement, DataRequirementList, DataSet, Position,
 };
-use core_affinity;
 use dandelion_commons::{DandelionError, DandelionResult};
 use log::{debug, warn};
 use nix::{
@@ -226,22 +225,11 @@ impl Driver for MmuDriver {
         resource: ComputeResource,
         queue: Box<dyn WorkQueue + Send>,
     ) -> DandelionResult<()> {
+        debug!("Starting Process engine with resource {:?}", resource);
         let cpu_slot = match resource {
             ComputeResource::CPU(core) => core,
             _ => return Err(DandelionError::EngineResourceError),
         };
-        // check that core is available
-        let available_cores = match core_affinity::get_core_ids() {
-            None => return Err(DandelionError::EngineError),
-            Some(cores) => cores,
-        };
-        if !available_cores
-            .iter()
-            .find(|x| x.id == usize::from(cpu_slot))
-            .is_some()
-        {
-            return Err(DandelionError::EngineResourceError);
-        }
         start_thread::<MmuLoop>(cpu_slot, queue);
         return Ok(());
     }

@@ -2,9 +2,9 @@ use crate::{
     composition::{
         get_sharding, Composition, CompositionSet, InputSetDescriptor, JoinStrategy, ShardingMode,
     },
+    controller::Controller,
     execution_qs::EngineQueue,
     function_registry::{FunctionRegistry, FunctionType, Metadata},
-    resource_pool::ResourcePool,
 };
 use core::pin::Pin;
 use dandelion_commons::{
@@ -19,9 +19,10 @@ use futures::{
 use itertools::Itertools;
 use log::{debug, trace};
 use machine_interface::{
-    function_driver::{Driver, FunctionConfig, WorkToDo},
+    function_driver::{ComputeResource, Driver, FunctionConfig, WorkToDo},
     machine_config::{
         get_available_domains, get_available_drivers, DomainType, EngineType, ENGINE_DOMAIN_TABLE,
+        ENGINE_TYPES,
     },
     memory_domain::{Context, MemoryDomain, MemoryResource},
 };
@@ -44,33 +45,33 @@ pub struct Dispatcher {
     domains: BTreeMap<DomainType, (Arc<Box<dyn MemoryDomain>>, Box<EngineQueue>)>,
     engine_queues: BTreeMap<EngineType, Box<EngineQueue>>,
     function_registry: FunctionRegistry,
+    /// Mainly to hold on the controller, so it is only dropped when the dispatcher and all queues are dropped
+    _controller: Arc<Controller>,
 }
 
 impl Dispatcher {
     pub fn init(
-        mut resource_pool: ResourcePool,
+        resource_pool: Vec<ComputeResource>,
         memory_resources: BTreeMap<DomainType, MemoryResource>,
     ) -> DandelionResult<Dispatcher> {
         // get machine specific configurations
         let domains = get_available_domains(memory_resources);
         let drivers = get_available_drivers();
 
+        debug!("controller resources: {:?}", resource_pool);
+        let (controller, engine_queues) = Controller::new(resource_pool);
+        // TODO could also be a Vec
+        let mut registry_drivers = BTreeMap::new();
         // Insert a work queue for each domain and use up all engine resource available
         let mut domain_map = BTreeMap::new();
-        let mut engine_queues = BTreeMap::new();
-        let mut registry_drivers: BTreeMap<EngineType, (&'static dyn Driver, Box<EngineQueue>)> =
-            BTreeMap::new();
-        for (engine_type, driver) in drivers.into_iter() {
-            let work_queue = Box::new(EngineQueue::new());
-            while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(engine_type) {
-                driver.start_engine(resource, work_queue.clone())?;
-            }
-            let domain_type = ENGINE_DOMAIN_TABLE[engine_type as usize];
+        for engine_type in ENGINE_TYPES.into_iter() {
+            let work_queue = engine_queues.get(engine_type).unwrap();
+            let domain_type = ENGINE_DOMAIN_TABLE[*engine_type as usize];
             let domain = domains.get(&domain_type).unwrap().clone();
             domain_map.insert(domain_type, (domain, work_queue.clone()));
-            engine_queues.insert(engine_type, work_queue.clone());
+            let driver = drivers[*engine_type as usize];
             registry_drivers.insert(
-                engine_type,
+                *engine_type,
                 (driver as &'static dyn Driver, work_queue.clone()),
             );
         }
@@ -80,6 +81,7 @@ impl Dispatcher {
             domains: domain_map,
             engine_queues,
             function_registry,
+            _controller: controller,
         });
     }
 

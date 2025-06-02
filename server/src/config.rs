@@ -125,6 +125,23 @@ impl DandelionConfig {
         }
         return core_vec;
     }
+
+    pub fn get_cpu_cores(&self) -> Vec<u8> {
+        if self.single_core_mode {
+            vec![0]
+        } else {
+            let max_core = self
+                .total_cores
+                .expect("total_cores should be set after init");
+            // 1 other core for dispatcher is fixed
+            let other_cores = 1 + self.frontend_cores.unwrap_or(0);
+            if other_cores + 1 >= max_core {
+                panic!("no cores for engines left");
+            }
+            (other_cores as u8..max_core as u8).collect()
+        }
+    }
+
     /// TODO depricate as we move to dynamic allocation
     pub fn get_communication_cores(&self) -> Vec<u8> {
         let core_vec = if self.single_core_mode {

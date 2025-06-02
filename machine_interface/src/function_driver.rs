@@ -96,6 +96,25 @@ pub enum ComputeResource {
     GPU(u8),
 }
 
+impl Into<usize> for &ComputeResource {
+    fn into(self) -> usize {
+        match self {
+            ComputeResource::CPU(_) => 0,
+            ComputeResource::GPU(_) => 1,
+        }
+    }
+}
+
+/// The number of resource types that exist, is converted to isize for the enum assigment,
+/// so need to make sure is always smaller than that.
+pub const RESOURCE_TYPES: usize = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ComputeResourceType {
+    CPU,
+    GPU = RESOURCE_TYPES as isize - 1,
+}
+
 pub enum WorkToDo {
     FunctionArguments {
         config: FunctionConfig,

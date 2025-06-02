@@ -3,7 +3,6 @@ use dandelion_commons::records::Recorder;
 use dispatcher::{
     composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
 };
-use futures::lock::Mutex;
 use machine_interface::{
     function_driver::ComputeResource,
     machine_config::{DomainType, EngineType},
@@ -246,13 +245,7 @@ fn test_insert_composition_with_http_func() {
         DomainType::Mmap,
         MemoryResource::Anonymous { size: (1 << 30) },
     )]);
-    let dispatcher = Dispatcher::init(
-        dispatcher::resource_pool::ResourcePool {
-            engine_pool: Mutex::new(BTreeMap::new()),
-        },
-        memory_resources,
-    )
-    .unwrap();
+    let dispatcher = Dispatcher::init(Vec::new(), memory_resources).unwrap();
     let composition_string = r#"
         function HTTP (request, headers, body) => (status, headers, body);
         composition Composition (comp_request, req_body) => (comp_status, resp_body) {
