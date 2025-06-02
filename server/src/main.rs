@@ -337,6 +337,10 @@ async fn service(
         | "/cold/chain_scaling"
         | "/cold/middleware_app"
         | "/cold/compression_app"
+        | "/cold/text2sql_python_app"
+        | "/cold/exec_agent_code"
+        | "/cold/exec_http_agent_code"
+        | "/cold/tool_agent"
         | "/cold/python_app" => serve_request(true, req, dispatcher).await,
         "/hot/matmul"
         | "/hot/matmulstore"
@@ -345,6 +349,10 @@ async fn service(
         | "/hot/chain_scaling"
         | "/hot/middleware_app"
         | "/hot/compression_app"
+        | "/hot/text2sql_python_app"
+        | "/hot/exec_agent_code"
+        | "/hot/exec_http_agent_code"
+        | "/hot/tool_agent"
         | "/hot/python_app" => serve_request(false, req, dispatcher).await,
         "/stats" => serve_stats(req).await,
         other_uri => {
