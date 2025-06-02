@@ -51,6 +51,8 @@ Other features:
 
 `timestamp` enables timestamping, this also enables http requests to `/stat` on the running server to get timestamps information. The timestamps are preallocated at the start and thus have a limited number. Currently running out of preallocated timestamps causes errors on requests. When the stat interface is accessed the used timestamps are cleared and put back into the pool of available ones.
 
+Note: the `wasm` backend is currently based on rWasm, a reasearch project that seems to have been abandoned, so we may drop support for it in the future.
+
 # Config
 
 For the dandelion server we support configuration either via environ variables, command line arguments or a json config file.
