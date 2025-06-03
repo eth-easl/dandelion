@@ -206,7 +206,7 @@ impl Controller {
 
             // TODO maybe we want to deallocate resources from empty queues premeptively
 
-            let pid_signal = PROPORTIONAL * (max_current - min_current) as f32
+            let pid_signal = PROPORTIONAL * (max_current as f32 - min_current as f32)
                 + INTEGRAL * (max_growth - min_growth);
 
             // rebalance if it is bigger than 1,

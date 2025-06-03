@@ -824,18 +824,6 @@ impl Driver for ReqwestDriver {
             ComputeResource::CPU(core) => core,
             _ => return Err(DandelionError::EngineResourceError),
         };
-        // check that core is available
-        let available_cores = match core_affinity::get_core_ids() {
-            None => return Err(DandelionError::EngineResourceError),
-            Some(cores) => cores,
-        };
-        if !available_cores
-            .iter()
-            .find(|x| x.id == usize::from(core_id))
-            .is_some()
-        {
-            return Err(DandelionError::EngineResourceError);
-        }
         std::thread::spawn(move || outer_engine(core_id, queue));
         return Ok(());
     }
