@@ -12,7 +12,7 @@ use std::{
     sync::{Arc, Weak},
 };
 
-pub(crate) const MAX_QUEUE: usize = 4096;
+pub(crate) const MAX_QUEUE: usize = 16_384;
 
 struct AtomicTickets {
     start: AtomicUsize,

@@ -224,7 +224,7 @@ impl Controller {
                     .detach();
             }
 
-            trace!(
+            log::warn!(
                 "Engines after rebalancing: {:?}",
                 controller
                     .queues
