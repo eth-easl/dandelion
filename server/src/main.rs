@@ -15,6 +15,8 @@ use hyper::{
     body::{Body, Incoming},
     service::service_fn,
     Request, Response,
+    header,
+    StatusCode
 };
 use log::{debug, error, info, trace, warn};
 use machine_interface::{
@@ -23,7 +25,8 @@ use machine_interface::{
     memory_domain::{bytes_context::BytesContext, read_only::ReadOnlyContext, MemoryResource},
     DataItem, DataSet, Position,
 };
-use serde::Deserialize;
+use serde::{Serialize, Deserialize};
+use serde_json::json;
 use std::{
     collections::BTreeMap,
     convert::Infallible,
@@ -150,6 +153,165 @@ async fn serve_request(
 
 fn default_path() -> String {
     String::new()
+}
+
+#[derive(Debug, Deserialize)]
+struct RPCRequest {
+    jsonrpc: String,
+    id: Option<serde_json::Value>,  // Make it optional to also accept notifications
+    method: String,
+    params: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct RPCResponse {
+    jsonrpc: String,
+    id: Option<serde_json::Value>, // string or number
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<serde_json::Value>,
+}
+
+async fn serve_mcp(
+    req: Request<Incoming>,
+    _dispatcher: mpsc::Sender<DispatcherCommand>,
+) -> Result<Response<DandelionBody>, Infallible> {
+    let bytes = req.collect().await.expect("Failed to extract body").to_bytes();
+    let rpc: RPCRequest = serde_json::from_slice(&bytes).expect("Invalid JSON RPC message");
+
+    println!("Got mcp request with println");
+    match rpc.method.as_str() {
+        "initialize" => {
+            println!("Received initialize");
+            let result = json!({
+                "protocolVersion": "2025-03-26",
+                "capabilities": {
+                    "experimental": {},
+                    "prompts": { "listChanged": false },
+                    "resources": { "subscribe": false, "listChanged": false },
+                    "tools": { "listChanged": false }
+                },
+                "serverInfo": {
+                    "name": "Dandelion MCP Server",
+                    "version": "0.1"
+                }
+            });
+            let response = RPCResponse {
+                jsonrpc: "2.0".to_string(),
+                id: rpc.id,
+                result: Some(result),
+                error: None,
+            };
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(hyper::header::CONTENT_TYPE, "application/json")
+                .body(DandelionBody::from_vec(serde_json::to_vec(&response).unwrap()))
+                .unwrap())
+        }
+        "notifications/initialized" => {
+            Ok(Response::builder()
+                .status(StatusCode::ACCEPTED)
+                .body(DandelionBody::from_vec(Vec::new()))
+                .unwrap())
+        }
+        "tools/list" => {
+            println!("Received tools/list");
+            let tools = json!([
+                {
+                    "name": "add",
+                    "description": "Add two numbers",
+                    "inputSchema": {
+                        "title": "addArguments",
+                        "type": "object",
+                        "required": ["a", "b"],
+                        "properties": {
+                            "a": { "title": "A", "type": "integer" },
+                            "b": { "title": "B", "type": "integer" }
+                        }
+                    }
+                },
+                {
+                    "name": "get_secret_word",
+                    "description": "",
+                    "inputSchema": {
+                        "title": "get_secret_wordArguments",
+                        "type": "object",
+                        "properties": {}
+                    }
+                }
+            ]);
+
+            let result = json!({
+                "tools": tools
+            });
+
+            let response = RPCResponse {
+                jsonrpc: "2.0".to_string(),
+                id: rpc.id.clone(),
+                result: Some(result),
+                error: None,
+            };
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(hyper::header::CONTENT_TYPE, "application/json")
+                .body(DandelionBody::from_vec(serde_json::to_vec(&response).unwrap()))
+                .unwrap())
+        }
+        "tools/call" => {
+            println!("Received tools/call");
+            let params = rpc.params.as_ref().unwrap();
+            let tool_name = params.get("name").unwrap().as_str().unwrap();
+            let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
+
+            let result_value = match tool_name {
+                // Hardcoded for now, execute the correct composition here
+                "add" => "5",
+                "get_secret_word" => "banana",
+                _ => {
+                    let error = json!({ "message": format!("Unknown tool '{}'", tool_name) });
+                    let response = RPCResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: rpc.id.clone(),
+                        result: None,
+                        error: Some(error),
+                    };
+                    return Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .header(hyper::header::CONTENT_TYPE, "application/json")
+                        .body(DandelionBody::from_vec(serde_json::to_vec(&response).unwrap()))
+                        .unwrap());
+                }
+            };
+
+            let result = json!({
+                "content": [{ "type": "text", "text": result_value }],
+                "isError": false
+            });
+
+            let response = RPCResponse {
+                jsonrpc: "2.0".to_string(),
+                id: rpc.id.clone(),
+                result: Some(result),
+                error: None,
+            };
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(hyper::header::CONTENT_TYPE, "application/json")
+                .body(DandelionBody::from_vec(serde_json::to_vec(&response).unwrap()))
+                .unwrap())
+        }
+        _ => {
+            println!("Unknown method: {}", rpc.method);
+            let response = RPCResponse {
+                jsonrpc: "2.0".to_string(),
+                id: rpc.id.clone(),
+                result: None,
+                error: Some(json!({ "code": -32601, "message": "Method not found" })),
+            };
+            Ok(Response::new(DandelionBody::from_vec(serde_json::to_vec(&response).unwrap(),)))
+        }
+    }
 }
 
 /// Struct containing registration information for new function
@@ -330,6 +492,7 @@ async fn service(
         // TODO rename to cold func and hot func, remove matmul, compute, io
         "/register/function" => register_function(req, dispatcher).await,
         "/register/composition" => register_composition(req, dispatcher).await,
+        "/mcp/" => serve_mcp(req, dispatcher).await,
         "/cold/matmul"
         | "/cold/matmulstore"
         | "/cold/compute"
