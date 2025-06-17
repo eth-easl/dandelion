@@ -28,7 +28,7 @@ use std::{
 
 const WINDOW_SIZE: usize = 16;
 /// Number of microseconds after which a rebalancing check should be performed
-const MIN_UPDATE_INTERVAL: u128 = 30_000;
+const MIN_UPDATE_INTERVAL: u128 = 300_000;
 
 /// Controller parameter to set proportional control reaction
 const PROPORTIONAL: f32 = 0.008;
@@ -88,7 +88,7 @@ impl Controller {
         debug!("resource_pool: {:?}", resource_pool);
 
         let now = Instant::now();
-        let (rebalance_waker, rebalance_receiver) = channel(1);
+        let (rebalance_waker, rebalance_receiver) = channel(0);
         let new_controller = Arc::new_cyclic(|weak_controller| {
             let mut controller_queues = Vec::with_capacity(ENGINE_RESOURCE_MAP.len());
             let mut statistics = Vec::with_capacity(ENGINE_RESOURCE_MAP.len());
