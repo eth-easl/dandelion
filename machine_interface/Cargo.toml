@@ -45,6 +45,7 @@ log = "0.4.20"
 env_logger = "0.11.5"
 kvm-bindings = { version = "0.8", optional = true }
 kvm-ioctls = { version = "0.17", optional = true }
+openssl = { version = "0.10", features = ["vendored"] }
 
 # disable benchmarks in library, to not run all unit tests on every benchmark
 # also needs to be disabled for criterion flags to work that are not available for tests

@@ -22,7 +22,8 @@ target_link_libraries(${MEM_TEST}
     ${LIBRARY}
     unityHybridCap
 )
-target_compile_options(${MEM_TEST} PRIVATE ${NOCAP_COMPILE_FLAGS})
+target_compile_options(${MEM_TEST} PRIVATE ${NOCAP_COMPILE_FLAGS}
+ --target=${CMAKE_C_COMPILER_TARGET})
 target_link_options(${MEM_TEST} PRIVATE ${NOCAP_LINK_FLAGS})
 
 set(CPU_TEST cheri_cpu_test)
