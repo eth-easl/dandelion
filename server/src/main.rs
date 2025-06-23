@@ -568,7 +568,7 @@ fn main() -> () {
     #[cfg(any(feature = "cheri", feature = "wasm", feature = "mmu", feature = "kvm"))]
     pool_map.insert(engine_type, compute_cores);
     #[cfg(feature = "reqwest_io")]
-    pool_map.insert(EngineType::Reqwest, communication_cores);
+    pool_map.insert(EngineType::System, communication_cores);
     let resource_pool = ResourcePool {
         engine_pool: futures::lock::Mutex::new(pool_map),
     };

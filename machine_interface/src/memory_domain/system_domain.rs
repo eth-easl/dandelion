@@ -14,6 +14,8 @@ use super::transfer_memory;
 pub enum DataPosition {
     ContextStorage(Arc<Context>, usize),
     ResponseInformationStorage(Bytes),
+    File(Arc<crate::function_driver::system_driver::file_system::FileMapping>),
+    Vec(Vec<u8>),
 }
 
 #[derive(Debug)]
@@ -104,6 +106,37 @@ impl ContextTrait for SystemContext {
                                 bytes_read += reading;
                             }
                         }
+
+                        DataPosition::File(file_mapping) => {
+                            let read_memory = unsafe {
+                                core::slice::from_raw_parts_mut(
+                                    read_buffer.as_mut_ptr() as *mut u8,
+                                    read_buffer_size,
+                                )
+                            };
+                            let read_size =
+                                min(read_buffer_size - bytes_read, item_size - offset_in_item);
+                            let file_slice = &file_mapping.get_slice()
+                                [offset_in_item..offset_in_item + read_size];
+                            read_memory[bytes_read..bytes_read + read_size]
+                                .copy_from_slice(file_slice);
+                            bytes_read += read_size;
+                        }
+
+                        DataPosition::Vec(vec) => {
+                            let read_memory = unsafe {
+                                core::slice::from_raw_parts_mut(
+                                    read_buffer.as_mut_ptr() as *mut u8,
+                                    read_buffer_size,
+                                )
+                            };
+                            let slice_size = min(vec.len(), read_buffer_size - bytes_read);
+                            read_memory[total_bytes_read..total_bytes_read + vec.len()]
+                                .copy_from_slice(
+                                    &vec.as_slice()[offset_in_item..offset_in_item + slice_size],
+                                );
+                            bytes_read += slice_size;
+                        }
                     }
                 } else {
                     warn!(
@@ -150,6 +183,10 @@ impl ContextTrait for SystemContext {
                         let max_length = min(length, item_size);
                         return Ok(&body.as_ref()[offset_in_item..max_length]);
                     }
+                    DataPosition::Vec(data_vec) => {
+                        return Ok(&data_vec);
+                    }
+                    DataPosition::File(file_mapping) => return Ok(file_mapping.get_slice()),
                 }
             }
         }
@@ -250,6 +287,18 @@ pub fn system_context_transfer(
                     ),
                 );
             }
+            DataPosition::Vec(vec) => {
+                destination.local_offset_to_data_position.insert(
+                    destination_offset + transfered_bytes,
+                    (DataPosition::Vec(vec.clone()), vec.len()),
+                );
+            }
+            DataPosition::File(file_mapping) => {
+                destination.local_offset_to_data_position.insert(
+                    destination_offset + transfered_bytes,
+                    (DataPosition::File(file_mapping.clone()), *item_size),
+                );
+            }
         }
         transfered_bytes += item_size;
     }
@@ -338,6 +387,15 @@ pub fn out_of_system_context_transfer(
                     cloned_body.remaining(),
                     "Body should have non remaining as we have read the amount given as len in the beginning"
                 );
+            }
+            DataPosition::Vec(data_vec) => {
+                destination.write(destination_offset + transfered_bytes, data_vec.as_slice())?;
+            }
+            DataPosition::File(file_mapping) => {
+                destination.write(
+                    destination_offset + transfered_bytes,
+                    file_mapping.get_slice(),
+                )?;
             }
         }
         transfered_bytes += item_size;

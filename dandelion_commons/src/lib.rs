@@ -17,6 +17,8 @@ pub enum DandelionError {
     FunctionRegistryError(FunctionRegistryError),
     /// Error in the frontend receiveing requests
     RequestError(FrontendError),
+    /// System function errors
+    SysFunctionError(SysFunctionError),
     /// Failures in user code or compositions
     UserError(UserError),
     /// trying to use a feature that is not yet implemented
@@ -84,14 +86,6 @@ pub enum DandelionError {
     NoEngineAvailable,
     /// there was a non recoverable issue when spawning or running the MMU worker
     MmuWorkerError,
-    // system engine errors
-    /// The arguments in the context handed to the system function are malformed or otherwise insufissient
-    /// the string identifies the argument that was malformed or gives other information about the issue
-    MalformedSystemFuncArg(String),
-    /// Argument given to system function was not valid
-    InvalidSystemFuncArg(String),
-    /// System function did get unexpected response
-    SystemFuncResponseError,
     /// Tried to call parser for system function
     CalledSystemFuncParser,
     // Memcached errors
@@ -196,6 +190,18 @@ pub enum PromiseError {
     DroppedDebt,
     /// Promise result after taking it already
     TakenPromise,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SysFunctionError {
+    /// Opening a file failed with the contained stdio error
+    FileError(std::io::ErrorKind),
+    /// File reading did not read the entire file
+    IncompleteRead,
+    /// The argument to the system function were invalid
+    InvalidArg(String),
+    /// System function did get unexpected response
+    ResponseError,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

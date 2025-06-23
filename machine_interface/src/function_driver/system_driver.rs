@@ -1,7 +1,13 @@
 use crate::function_driver::SystemFunction;
 
+#[cfg(feature = "std")]
+pub(crate) mod file_system;
+mod memcached;
+#[cfg(any(feature = "reqwest_io"))]
+mod request_commons;
 #[cfg(feature = "reqwest_io")]
-pub mod reqwest;
+mod reqwest;
+pub mod system;
 
 /// HTTP function currently expects one set with requests formated by HTTP standard (in text).
 /// This means one line with the reqest method, a space, request url, another space and the protocol version
@@ -20,11 +26,27 @@ const HTTP_INPUT_SETS: [&str; 1] = ["request"];
 /// Additionally there is a set that only contains the bodies with the same item names as the requests.
 const HTTP_OUTPUT_SETS: [&str; 2] = ["response", "body"];
 
+/// The functions file_load and file_metadata load files or their respective metadata
+/// accoring to the paths specified in the input set.
+/// File load supports partial load, where the path needs to be terminated by a line end,
+/// followed by a `<start>-<size>` where `start` and `size` need to valid u64 numbers.
+/// This can be ommited and then the range will simply be set to the entire file.
+/// For metadata the range is always ignored.
+const FILE_INPUT_SETS: [&str; 1] = ["paths"];
+
+/// The file functions return the file data or their respective metadata as items.
+/// The items names of the returned items correspond to the item names of the paths,
+/// for which data was loaded.
+/// The metadata is currently only a 64 bit uint in , since it is unclear what other information makes sense.
+const FILE_OUTPUT_SETS: [&str; 1] = ["files"];
+
 /// Provides the input set names for a given system function
 pub fn get_system_function_input_sets(function: SystemFunction) -> Vec<String> {
     return match function {
         SystemFunction::HTTP => HTTP_INPUT_SETS,
         SystemFunction::MEMCACHED => HTTP_INPUT_SETS,
+        SystemFunction::FileLoad => FILE_INPUT_SETS,
+        SystemFunction::FileMedatada => FILE_INPUT_SETS,
     }
     .map(|name| name.to_string())
     .to_vec();
@@ -33,11 +55,14 @@ pub fn get_system_function_input_sets(function: SystemFunction) -> Vec<String> {
 /// Provies the output set names for a given system function
 pub fn get_system_function_output_sets(function: SystemFunction) -> Vec<String> {
     return match function {
-        SystemFunction::HTTP => &HTTP_OUTPUT_SETS,
-        SystemFunction::MEMCACHED => &HTTP_OUTPUT_SETS,
+        SystemFunction::HTTP => HTTP_OUTPUT_SETS.as_slice(),
+        SystemFunction::MEMCACHED => HTTP_OUTPUT_SETS.as_slice(),
+        SystemFunction::FileLoad => FILE_OUTPUT_SETS.as_slice(),
+        SystemFunction::FileMedatada => FILE_OUTPUT_SETS.as_slice(),
     }
-    .map(|name| name.to_string())
-    .to_vec();
+    .into_iter()
+    .map(|&name| name.to_string())
+    .collect();
 }
 
 #[cfg(test)]

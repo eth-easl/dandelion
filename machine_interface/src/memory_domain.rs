@@ -238,7 +238,6 @@ impl Context {
     }
 }
 
-/// TODO remove clone / copy once we have an implementation that needs an input
 #[derive(Clone, Copy)]
 pub enum MemoryResource {
     None,

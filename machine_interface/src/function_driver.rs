@@ -32,6 +32,8 @@ pub struct ElfConfig {
 pub enum SystemFunction {
     HTTP,
     MEMCACHED,
+    FileLoad,
+    FileMedatada,
 }
 
 impl core::fmt::Display for SystemFunction {
@@ -39,6 +41,8 @@ impl core::fmt::Display for SystemFunction {
         return match self {
             SystemFunction::HTTP => write!(f, "HTTP"),
             SystemFunction::MEMCACHED => write!(f, "MEMCACHED"),
+            SystemFunction::FileLoad => write!(f, "FileLoad"),
+            SystemFunction::FileMedatada => write!(f, "FileMetadata"),
         };
     }
 }

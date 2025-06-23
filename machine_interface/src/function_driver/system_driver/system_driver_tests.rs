@@ -6,8 +6,8 @@ mod system_driver_tests {
             Driver, FunctionConfig, SystemFunction, WorkToDo,
         },
         memory_domain::{
-            mmap::MmapMemoryDomain, test_resource::get_resource, transfer_memory, Context,
-            ContextTrait, MemoryDomain, MemoryResource,
+            mmap::MmapMemoryDomain, read_only::ReadOnlyContext, test_resource::get_resource,
+            transfer_memory, Context, ContextTrait, MemoryDomain, MemoryResource,
         },
         DataItem, DataSet, Position,
     };
@@ -244,8 +244,176 @@ dolore magna aliquyam erat, sed diam voluptua."#
         assert_eq!("HTTP/1.1 200 OK", status);
     }
 
+    fn file_metadata(driver: Box<dyn Driver>, drv_init: ComputeResource) {
+        let path = env!("CARGO_MANIFEST_DIR");
+        let mut name_1 = format!("{}/tests/data/test_elf_kvm_x86_64_basic", path,);
+        let name_2 = format!("{}/tests/data/test_elf_kvm_aarch64_basic", path,);
+        let item_1_length = name_1.len();
+        let item_2_length = name_2.len();
+        name_1.push_str(&name_2);
+
+        // setup queue and engine
+        let queue = Box::new(TestQueue::new());
+        let _engine = driver
+            .start_engine(drv_init, queue.clone())
+            .expect("Should be able to get engine");
+
+        // prepare all input
+        let config = FunctionConfig::SysConfig(SystemFunction::FileMedatada);
+        let mut context = ReadOnlyContext::new(name_1.into_bytes().into_boxed_slice()).unwrap();
+        context.content = vec![Some(DataSet {
+            ident: String::from("paths"),
+            buffers: vec![
+                DataItem {
+                    ident: String::from("first"),
+                    data: Position {
+                        offset: 0,
+                        size: item_1_length,
+                    },
+                    key: 1,
+                },
+                DataItem {
+                    ident: String::from("second"),
+                    data: Position {
+                        offset: item_1_length,
+                        size: item_2_length,
+                    },
+                    key: 0,
+                },
+            ],
+        })];
+        let output_sets = Arc::new(get_system_function_output_sets(
+            SystemFunction::FileMedatada,
+        ));
+        let recorder = Recorder::new(0, Instant::now());
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            config,
+            context,
+            output_sets,
+            recorder,
+        });
+        let result_context = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(promise)
+            .expect("Engine should not fail")
+            .get_context();
+
+        // evaluate results
+        assert_eq!(1, result_context.content.len());
+        let result_set = result_context.content[0].as_ref().unwrap();
+        assert_eq!("files", result_set.ident);
+        assert_eq!(2, result_set.buffers.len());
+        // evaluate buffer 0
+        assert_eq!("first", result_set.buffers[0].ident);
+        assert_eq!(1, result_set.buffers[0].key);
+        let pos_1 = result_set.buffers[0].data;
+        assert_eq!(8, pos_1.size);
+        let mut size_1_buffer = Vec::new();
+        size_1_buffer.resize(pos_1.size, 0u8);
+        result_context
+            .read(pos_1.offset, &mut size_1_buffer)
+            .unwrap();
+        assert_eq!(22832u64.to_le_bytes().as_slice(), size_1_buffer.as_slice());
+        // evaluate buffer 1
+        assert_eq!("second", result_set.buffers[1].ident);
+        assert_eq!(0, result_set.buffers[1].key);
+        let pos_2 = result_set.buffers[1].data;
+        assert_eq!(8, pos_2.size);
+        let mut size_2_buffer = Vec::new();
+        size_2_buffer.resize(pos_2.size, 0u8);
+        result_context
+            .read(pos_2.offset, &mut size_2_buffer)
+            .unwrap();
+        assert_eq!(24480u64.to_le_bytes().as_slice(), size_2_buffer.as_slice());
+    }
+
+    fn file_load(driver: Box<dyn Driver>, drv_init: ComputeResource) {
+        let path = env!("CARGO_MANIFEST_DIR");
+        let mut name_1 = format!("{}/tests/data/test_elf_kvm_x86_64_basic", path,);
+        let name_2 = format!("{}/tests/data/test_elf_kvm_aarch64_basic\n5100-50", path,);
+        let item_1_length = name_1.len();
+        let item_2_length = name_2.len();
+        name_1.push_str(&name_2);
+
+        // setup queue and engine
+        let queue = Box::new(TestQueue::new());
+        let _engine = driver
+            .start_engine(drv_init, queue.clone())
+            .expect("Should be able to get engine");
+
+        // prepare all input
+        let config = FunctionConfig::SysConfig(SystemFunction::FileLoad);
+        let mut context = ReadOnlyContext::new(name_1.into_bytes().into_boxed_slice()).unwrap();
+        context.content = vec![Some(DataSet {
+            ident: String::from("paths"),
+            buffers: vec![
+                DataItem {
+                    ident: String::from("first"),
+                    data: Position {
+                        offset: 0,
+                        size: item_1_length,
+                    },
+                    key: 1,
+                },
+                DataItem {
+                    ident: String::from("second"),
+                    data: Position {
+                        offset: item_1_length,
+                        size: item_2_length,
+                    },
+                    key: 0,
+                },
+            ],
+        })];
+        let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::FileLoad));
+        let recorder = Recorder::new(0, Instant::now());
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            config,
+            context,
+            output_sets,
+            recorder,
+        });
+        let result_context = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(promise)
+            .expect("Engine should not fail")
+            .get_context();
+
+        // evaluate results
+        assert_eq!(1, result_context.content.len());
+        let result_set = result_context.content[0].as_ref().unwrap();
+        assert_eq!("files", result_set.ident);
+        assert_eq!(2, result_set.buffers.len());
+        // evaluate buffer 0
+        assert_eq!("first", result_set.buffers[0].ident);
+        assert_eq!(1, result_set.buffers[0].key);
+        let pos_1 = result_set.buffers[0].data;
+        assert_eq!(22832, pos_1.size);
+        let mut size_1_buffer = Vec::new();
+        size_1_buffer.resize(pos_1.size, 0u8);
+        result_context
+            .read(pos_1.offset, &mut size_1_buffer)
+            .unwrap();
+        let expected_buffer = [0x45, 0xf0, 0x48, 0x89, 0x48, 0x18, 0x48, 0x8b];
+        assert_eq!(expected_buffer, size_1_buffer.as_slice()[2048..2056]);
+        // evaluate buffer 1
+        assert_eq!("second", result_set.buffers[1].ident);
+        assert_eq!(0, result_set.buffers[1].key);
+        let pos_2 = result_set.buffers[1].data;
+        assert_eq!(50, pos_2.size);
+        let mut size_2_buffer = Vec::new();
+        size_2_buffer.resize(pos_2.size, 0u8);
+        result_context
+            .read(pos_2.offset, &mut size_2_buffer)
+            .unwrap();
+        let expect_buffer = [0xe8, 0x07, 0x40, 0xf9, 0x1f, 0x20, 0x03, 0xd5];
+        assert_eq!(expect_buffer, size_2_buffer.as_slice()[..8]);
+    }
+
     // TODO change to start local http server to check against.
-    macro_rules! driverTests {
+    macro_rules! httpTests {
         ($name : ident; $domain: ty; $dom_init: expr; $driver : expr ; $drv_init : expr ) => {
             #[test_log::test]
             fn test_http_get() {
@@ -261,13 +429,33 @@ dolore magna aliquyam erat, sed diam voluptua."#
         };
     }
 
+    macro_rules! fileTests {
+        ($driver: expr; $drv_init: expr) => {
+            #[test_log::test]
+            fn test_metadata_get() {
+                let driver = Box::new($driver);
+                super::file_metadata(driver, $drv_init);
+            }
+            #[test_log::test]
+            fn test_file_load() {
+                let driver = Box::new($driver);
+                super::file_load(driver, $drv_init)
+            }
+        };
+    }
+
     #[cfg(feature = "reqwest_io")]
     mod reqwest_io {
-        use crate::function_driver::system_driver::reqwest::ReqwestDriver;
+        use crate::function_driver::system_driver::system::SystemDriver;
         use crate::function_driver::ComputeResource;
-        // use crate::memory_domain::malloc::MallocMemoryDomain as domain;
         use crate::memory_domain::system_domain::SystemMemoryDomain as domain;
-        // use crate::memory_domain::mmap::MmapMemoryDomain as domain;
-        driverTests!(reqwest_io; domain; crate::memory_domain::MemoryResource::Anonymous{size: (2<<22)}; ReqwestDriver{}; ComputeResource::CPU(1));
+        httpTests!(reqwest_io; domain; crate::memory_domain::MemoryResource::Anonymous{size: (2<<22)}; SystemDriver{}; ComputeResource::CPU(1));
+    }
+
+    #[cfg(feature = "std")]
+    mod file_system {
+        use crate::function_driver::system_driver::system::SystemDriver;
+        use crate::function_driver::ComputeResource;
+        fileTests!(SystemDriver{}; ComputeResource::CPU(1));
     }
 }
