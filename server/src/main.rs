@@ -414,6 +414,7 @@ async fn service(
         | "/cold/resnet34batch16"
         | "/cold/resnet50"
         | "/cold/resnet152"
+        | "/cold/vit_b_16"
         | "/cold/llama_kv" => serve_request(true, req, dispatcher).await,
         "/hot/matmul"
         | "/hot/matmulstore"
@@ -442,6 +443,7 @@ async fn service(
         | "/hot/resnet34batch16"
         | "/hot/resnet50"
         | "/hot/resnet152"
+        | "/hot/vit_b_16"
         | "/hot/llama_kv" => serve_request(false, req, dispatcher).await,
         "/stats" => serve_stats(req).await,
         _ => Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(

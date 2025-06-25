@@ -38,10 +38,10 @@
             {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_kernel", [{"Ptr": "b3"}, {"Ptr": "input"}, {"Ptr": "p0"}, {"Ptr": "p1"}], {
                 "grid_dim_x": {"Absolute": 1},
                 "grid_dim_y": {"Absolute": 14},
-                "grid_dim_z": {"Absolute": 48},
-                "block_dim_x": {"Absolute": 2},
+                "grid_dim_z": {"Absolute": 32},
+                "block_dim_x": {"Absolute": 14},
                 "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 16},
+                "block_dim_z": {"Absolute": 2},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
             {"ExecKernel": ["tvmgen_default_fused_reshape_transpose_concatenate_add_kernel", [{"Ptr": "b6"}, {"Ptr": "b3"}, {"Ptr": "p2"}, {"Ptr": "p3"}], {
