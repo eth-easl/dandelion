@@ -20,10 +20,6 @@ pub struct Spanned<T> {
     pub v: T,
 }
 
-fn span_at(at: usize) -> Span {
-    at..at + 1
-}
-
 fn aspanned<T>(v: T, span: Span) -> std::rc::Rc<Spanned<T>> {
     std::rc::Rc::new(Spanned { v, span })
 }
@@ -64,7 +60,17 @@ pub struct InputDescriptor {
     pub name: String,
     pub ident: String,
     pub sharding: Sharding,
+    pub optional: bool,
     // TODO pub loop_cond: LoopCond,
+}
+
+#[derive(Debug, Clone)]
+pub enum JoinFilterStrategy {
+    Cross,
+    Inner,
+    Left,
+    Right,
+    Full,
 }
 
 pub type AOutputDescriptor = Rc<Spanned<OutputDescriptor>>;
@@ -78,11 +84,18 @@ pub struct OutputDescriptor {
 
 pub type AFunctionApplication = Rc<Spanned<FunctionApplication>>;
 
+#[derive(Debug, Clone)]
+pub struct FunctionApplicationJoinStrategy {
+    pub join_strategy_order: Vec<String>,
+    pub join_strategies: Vec<JoinFilterStrategy>,
+}
+
 #[derive(Debug)]
 pub struct FunctionApplication {
     pub name: String,
     pub args: Vec<AInputDescriptor>,
     pub rets: Vec<AOutputDescriptor>,
+    pub join_strategy: Option<FunctionApplicationJoinStrategy>,
 }
 
 pub type ALoop = Rc<Spanned<Loop>>;
@@ -202,6 +215,7 @@ fn parser() -> impl Parser<char, Module, Error = Simple<char>> {
     let input_descriptor = text::ident()
         .padded()
         .then_ignore(just('=').padded())
+        .then(just("optional").padded().or_not())
         .then(
             (just("all").or(just("keyed")).or(just("each")))
                 .map(|sharding| match sharding {
@@ -213,10 +227,11 @@ fn parser() -> impl Parser<char, Module, Error = Simple<char>> {
                 .padded(),
         )
         .then(text::ident().padded())
-        .map(|((name, sharding), ident)| InputDescriptor {
+        .map(|(((name, optional), sharding), ident)| InputDescriptor {
             name,
             ident,
             sharding,
+            optional: optional.is_some(),
         })
         .map_with_span(aspanned);
 
@@ -230,6 +245,40 @@ fn parser() -> impl Parser<char, Module, Error = Simple<char>> {
             // TODO feedback: false,
         })
         .map_with_span(aspanned);
+
+    let name_followed_by_strategy = text::ident()
+        .padded()
+        .then(
+            just("cross")
+                .or(just("inner"))
+                .or(just("left"))
+                .or(just("right"))
+                .or(just("full"))
+                .map(|sharding| match sharding {
+                    "cross" => JoinFilterStrategy::Cross,
+                    "inner" => JoinFilterStrategy::Inner,
+                    "left" => JoinFilterStrategy::Left,
+                    "right" => JoinFilterStrategy::Right,
+                    "full" => JoinFilterStrategy::Full,
+                    _ => unreachable!(),
+                }),
+        )
+        .padded();
+
+    let by_join_strategy = just("by").padded().ignore_then(
+        name_followed_by_strategy
+            .repeated()
+            .padded()
+            .then(text::ident())
+            .map(|(xs, x): (Vec<(String, JoinFilterStrategy)>, String)| {
+                let (mut names, strats): (Vec<_>, Vec<_>) = xs.iter().cloned().unzip();
+                names.push(x);
+                FunctionApplicationJoinStrategy {
+                    join_strategy_order: names,
+                    join_strategies: strats,
+                }
+            }),
+    );
 
     let function_application = text::ident()
         .then(
@@ -245,7 +294,15 @@ fn parser() -> impl Parser<char, Module, Error = Simple<char>> {
                 .delimited_by(just('(').padded(), just(')').padded()),
         )
         .padded()
-        .map(|((name, args), rets)| FunctionApplication { name, args, rets })
+        .then(by_join_strategy.or_not())
+        .map(
+            |(((name, args), rets), join_strategy)| FunctionApplication {
+                name,
+                args,
+                rets,
+                join_strategy,
+            },
+        )
         .map_with_span(aspanned)
         .map(Statement::FunctionApplication);
 
@@ -362,6 +419,28 @@ fn simple_test() {
 }
 
 #[test]
+fn optional_test() {
+    let src = r#"
+    function HTTP(Request) => (Response);
+    function MakePNGGrayscaleS3 (S3GetResponse) => (S3PutRequest);
+    
+    composition MakePNGGrayscale (S3GetRequest) => () {
+        HTTP(Request = optional keyed S3GetRequest) => (ToProcess = Response);
+        MakePNGGrayscaleS3 (  S3GetResponse =optional      keyed ToProcess ) => (PutRequest = S3PutRequest) ;
+        HTTP ( Request = keyed PutRequest) => ( );
+    }
+"#;
+    let _ = match parse(src) {
+        Ok(m) => m,
+        Err(e) => {
+            print_errors(src, e);
+            panic!("parse error");
+        }
+    };
+    // TODO add checks on module
+}
+
+#[test]
 fn sharding_test() {
     let src = r#"
     function FunA (A, B) => (C);
@@ -387,6 +466,63 @@ fn sharding_test() {
         FunC
             ( D = all InterD ) =>
             ( OutputE = E);
+    }
+"#;
+    let module = match parse(src) {
+        Ok(m) => m,
+        Err(e) => {
+            print_errors(src, e);
+            panic!("parse error");
+        }
+    };
+    dbg!(&module);
+    let Module(items) = module;
+    let mut functions: Vec<AFunctionDecl> = Vec::new();
+    let mut compositions: Vec<AComposition> = Vec::new();
+    for i in items.into_iter() {
+        match i {
+            Item::FunctionDecl(d) => functions.push(d),
+            Item::Composition(c) => compositions.push(c),
+        }
+    }
+    // TODO: here and in join test, check the data structure is what we expect
+}
+
+#[test]
+fn join_test() {
+    let src = r#"
+    function FunA (A, B) => (C);
+    function FunB (A, B,C) => (D);
+    function FunC (D) => (E);
+    
+    composition Test (InputA, InputB) => (OutputE) { 
+        FunA (
+            A = keyed InputA,
+            B = keyed InputB
+        ) => 
+            (InterC = C)
+        by A right B;
+    
+        FunB (
+            A = keyed InputA,
+            B = keyed InputB,
+            C = keyed InputC
+        ) => (
+            InterD = D
+        ) by A
+          left B  full C;
+        
+        FunB (
+            A = keyed InputA,
+            B = keyed InputB,
+            C = keyed InputC
+        ) => (
+            InterD = D
+        ) by A cross B inner C; 
+
+        FunC
+            ( D = all InterD ) =>
+            ( OutputE = E) ;
     }
 "#;
     let module = match parse(src) {

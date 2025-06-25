@@ -10,14 +10,17 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
     # set to fail fast to false so all combinations are tested
     strategy:
       fail-fast: false
       # test different available compute engines with different system engines
       matrix:
-        compute_driver: [ mmu, wasm ]
+        compute_driver: [ mmu ]
         system_driver: [ reqwest_io ]
+        platform: [ubuntu-24.04, ubuntu-24.04-arm]
+
+    runs-on: ${{matrix.platform}}
+
     steps:
     # check out the code
     - uses: actions/checkout@v3

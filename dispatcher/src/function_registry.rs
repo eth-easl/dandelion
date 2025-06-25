@@ -1,6 +1,6 @@
 use dandelion_commons::{
     records::{RecordPoint, Recorder},
-    DandelionError, DandelionResult, FunctionId,
+    DandelionError, DandelionResult, DispatcherError, FunctionId,
 };
 use dparser::print_errors;
 use futures::{lock::Mutex, Future, FutureExt};
@@ -90,19 +90,19 @@ async fn load_local(
     work_queue: Box<EngineQueue>,
     path: String,
 ) -> DandelionResult<Arc<Function>> {
-    recorder.record(RecordPoint::ParsingQueue).unwrap();
+    recorder.record(RecordPoint::ParsingQueue);
     let function = work_queue
         .enqueu_work(
             machine_interface::function_driver::WorkToDo::ParsingArguments {
                 driver,
                 path,
                 static_domain,
-                recorder: recorder.get_sub_recorder().unwrap(),
+                recorder: recorder.get_sub_recorder(),
             },
         )
         .await?
         .get_function();
-    recorder.record(RecordPoint::ParsingDequeue).unwrap();
+    recorder.record(RecordPoint::ParsingDequeue);
     return Ok(Arc::new(function));
 }
 
@@ -222,7 +222,9 @@ impl FunctionRegistry {
         let alternatives = lock_guard.get(&function_id);
         return alternatives
             .and_then(|alt| Some(alt.to_vec()))
-            .ok_or(DandelionError::DispatcherUnavailableFunction);
+            .ok_or(DandelionError::Dispatcher(
+                DispatcherError::UnavailableFunction,
+            ));
     }
 
     pub async fn get_metadata(&self, function_id: FunctionId) -> DandelionResult<Metadata> {
@@ -232,7 +234,9 @@ impl FunctionRegistry {
             .await
             .get(&function_id)
             .and_then(|meta| Some(meta.clone()))
-            .ok_or(DandelionError::DispatcherUnavailableFunction);
+            .ok_or(DandelionError::Dispatcher(
+                DispatcherError::UnavailableFunction,
+            ));
     }
 
     /// TODO: find a better way to keep track of functions, so we can support updates to functions and compositions
@@ -250,7 +254,9 @@ impl FunctionRegistry {
         {
             let mut dict_lock = self.function_dict.lock().await;
             if dict_lock.lookup(&function_name).is_some() {
-                return Err(DandelionError::DispatcherDuplicateFunction);
+                return Err(DandelionError::Dispatcher(
+                    DispatcherError::DuplicateFunction,
+                ));
             }
             function_id = dict_lock.insert_or_lookup(function_name);
         }
@@ -289,7 +295,9 @@ impl FunctionRegistry {
         composition: Composition,
     ) -> DandelionResult<()> {
         if !self.metadata.lock().await.contains_key(&function_id) {
-            return Err(DandelionError::DispatcherMetaDataUnavailable);
+            return Err(DandelionError::Dispatcher(
+                DispatcherError::MetaDataUnavailable,
+            ));
         };
         self.options
             .lock()
@@ -316,7 +324,9 @@ impl FunctionRegistry {
         path: String,
     ) -> DandelionResult<()> {
         if !self.metadata.lock().await.contains_key(&function_id) {
-            return Err(DandelionError::DispatcherMetaDataUnavailable);
+            return Err(DandelionError::Dispatcher(
+                DispatcherError::MetaDataUnavailable,
+            ));
         }
         self.loadable
             .lock()
@@ -363,12 +373,7 @@ impl FunctionRegistry {
         // get loader
         let (driver, load_queue) = match self.drivers.get(&engine_id) {
             Some(l) => l,
-            None => {
-                return Err(DandelionError::DispatcherMissingLoader(format!(
-                    "{:?}",
-                    engine_id
-                )))
-            }
+            None => return Err(DandelionError::Dispatcher(DispatcherError::MissingLoader)),
         };
 
         // check if function for the engine is in registry already
@@ -383,7 +388,7 @@ impl FunctionRegistry {
                     let func_future = (Box::pin(load_local(
                         domain.clone(),
                         *driver,
-                        recorder.get_sub_recorder()?,
+                        recorder.get_sub_recorder(),
                         load_queue.clone(),
                         path.clone(),
                     ))
@@ -395,23 +400,25 @@ impl FunctionRegistry {
                     func_future
                 }
             } else {
-                return Err(DandelionError::DispatcherUnavailableFunction);
+                return Err(DandelionError::Dispatcher(
+                    DispatcherError::UnavailableFunction,
+                ));
             };
         drop(lock_guard);
         let function = function_future.await?;
         let function_config = function.config.clone();
-        recorder.record(RecordPoint::LoadQueue)?;
+        recorder.record(RecordPoint::LoadQueue);
         let context_work_done = load_queue
             .enqueu_work(
                 machine_interface::function_driver::WorkToDo::LoadingArguments {
                     function,
                     domain,
-                    recorder: recorder.get_sub_recorder()?,
+                    recorder: recorder.get_sub_recorder(),
                     ctx_size: ctx_size,
                 },
             )
             .await;
-        recorder.record(RecordPoint::LoadDequeue)?;
+        recorder.record(RecordPoint::LoadDequeue);
         let function_context = context_work_done?.get_context();
         return Ok((function_context, function_config));
     }

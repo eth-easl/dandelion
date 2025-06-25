@@ -12,11 +12,8 @@ mod system_driver_tests {
         },
         DataItem, DataSet, Position,
     };
-    use dandelion_commons::{
-        records::{Archive, ArchiveInit, RecordPoint},
-        DandelionResult,
-    };
-    use std::sync::Arc;
+    use dandelion_commons::{records::Recorder, DandelionResult};
+    use std::{sync::Arc, time::Instant};
 
     const _CONTEXT_SIZE: usize = 2048 * 1024;
 
@@ -121,17 +118,13 @@ mod system_driver_tests {
 
         write_request(&mut context, request).expect("Should be able to prepare request line");
 
-        let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
-            #[cfg(feature = "timestamp")]
-            timestamp_count: 1000,
-        })));
-        let mut recorder = archive.get_recorder().unwrap();
+        let recorder = Recorder::new(0, Instant::now());
         let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config,
             context,
             output_sets,
-            recorder: recorder.get_sub_recorder().unwrap(),
+            recorder: recorder,
         });
         let result_context = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -139,9 +132,6 @@ mod system_driver_tests {
             .block_on(promise)
             .expect("Engine should return without error")
             .get_context();
-        recorder
-            .record(RecordPoint::FutureReturn)
-            .expect("Should have advanced record");
         let response_set = result_context
             .content
             .iter()
@@ -216,17 +206,13 @@ dolore magna aliquyam erat, sed diam voluptua."#
 
         write_request(&mut context, request).unwrap();
 
-        let archive = Box::leak(Box::new(Archive::init(ArchiveInit {
-            #[cfg(feature = "timestamp")]
-            timestamp_count: 1000,
-        })));
-        let mut recorder = archive.get_recorder().unwrap();
+        let recorder = Recorder::new(0, Instant::now());
         let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config,
             context,
             output_sets,
-            recorder: recorder.get_sub_recorder().unwrap(),
+            recorder,
         });
         let result_context = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -234,9 +220,6 @@ dolore magna aliquyam erat, sed diam voluptua."#
             .block_on(promise)
             .expect("Engine should not fail")
             .get_context();
-        recorder
-            .record(RecordPoint::FutureReturn)
-            .expect("Should have advanced record");
 
         let response = result_context
             .content
@@ -265,13 +248,13 @@ dolore magna aliquyam erat, sed diam voluptua."#
     // TODO change to start local http server to check against.
     macro_rules! driverTests {
         ($name : ident; $domain: ty; $dom_init: expr; $driver : expr ; $drv_init : expr ) => {
-            #[test]
+            #[test_log::test]
             fn test_http_get() {
                 let driver = Box::new($driver);
                 super::get_http::<$domain>($dom_init, driver, $drv_init);
             }
 
-            #[test]
+            #[test_log::test]
             fn test_http_post() {
                 let driver = Box::new($driver);
                 super::post_http::<$domain>($dom_init, driver, $drv_init);

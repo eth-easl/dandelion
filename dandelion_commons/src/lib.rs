@@ -4,10 +4,21 @@ pub mod records;
 pub type FunctionId = u64;
 
 // TODO define error types, possibly better printing than debug
+// TODO make naming consistent and move groups to subtypes, e.g. DomainError -> Domain in main enum
 #[derive(Debug, Clone, PartialEq)]
 pub enum DandelionError {
+    /// errors related to the dispatcher
+    Dispatcher(DispatcherError),
     /// errors related to domains themselfs
     DomainError(DomainError),
+    /// Error from a promise
+    PromiseError(PromiseError),
+    /// registry errors
+    FunctionRegistryError(FunctionRegistryError),
+    /// Error in the frontend receiveing requests
+    RequestError(FrontendError),
+    /// Failures in user code or compositions
+    UserError(UserError),
     /// trying to use a feature that is not yet implemented
     NotImplemented,
     // errors in configurations
@@ -19,7 +30,7 @@ pub enum DandelionError {
     /// parser did not find symbol that it was searching for
     UnknownSymbol,
     /// Composition contains function that does not exist
-    CompositionContainsInvalidFunction,
+    CompositionContainsInvalidFunction(String),
     /// Function in parsing has identifier that is not defined in composition
     CompositionFunctionInvalidIdentifier(String),
     /// Set indentifier is produced by multiple functions in a composition
@@ -71,8 +82,6 @@ pub enum DandelionError {
     EngineError,
     /// asked driver for engine, but there are no more available
     NoEngineAvailable,
-    /// Error from a promise
-    PromiseError(PromiseError),
     /// there was a non recoverable issue when spawning or running the MMU worker
     MmuWorkerError,
     // system engine errors
@@ -85,27 +94,9 @@ pub enum DandelionError {
     SystemFuncResponseError,
     /// Tried to call parser for system function
     CalledSystemFuncParser,
-    // dispatcher errors
-    /// dispatcher does not find a loader for this engine type
-    DispatcherMissingLoader(String),
-    /// error from resulting from assumptions based on config passed to dispatcher
-    DispatcherConfigError,
-    /// dispatcher was asked to queue function it can't find
-    DispatcherUnavailableFunction,
-    /// dispatcher was asked to add function to registry that is already present
-    DispatcherDuplicateFunction,
-    /// function to register did not have metadata available
-    DispatcherMetaDataUnavailable,
-    /// dispatcher encountered an issue when trasmitting data between tasks
-    DispatcherChannelError,
-    /// dispatcher found set to transfer that has no registered name
-    DispatcherSetMissmatch,
-    /// dispatcher failed to combine two composition sets
-    DispatcherCompositionCombine,
-    /// dispatcher found mistake when trying to find waiting functions
-    DispatcherDependencyError,
-    /// registry errors
-    RegistryError(RegistryError),
+    // Memcached errors
+    /// General memcached error
+    MemcachedError,
     // metering errors
     /// Mutex for metering was poisoned
     RecordLockFailure,
@@ -121,14 +112,8 @@ pub enum DandelionError {
     SegmentationFault,
     /// other protection errors caused by the function
     OtherProctionError,
-    // errors from the functions
-    /// Function indicated it failed
-    FunctionError(i32),
     /// Work queue from the dispatcher to the engines is full
     WorkQueueFull,
-    // Frontend errors
-    /// Error in the frontend receiveing requests
-    RequestError(FrontendError),
     // GPU engine specfific errors
     /// error from HIP Runtime
     HipError(String),
@@ -154,6 +139,46 @@ impl std::error::Error for DandelionError {}
 pub type DandelionResult<T> = std::result::Result<T, DandelionError>;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DomainError {
+    /// Config parameter does not match any expected option
+    ConfigMissmatch,
+    /// Error opening shared memory file
+    SharedOpen,
+    /// Error truncating shared memory
+    SharedTrunc,
+    /// Error mapping the requested amount
+    Mapping,
+    /// Domain has no space left
+    ReachedCapacity,
+    /// Cleaning of memory range has failed
+    CleaningFailure,
+    /// Impossible context size for the given context type
+    InvalidMemorySize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DispatcherError {
+    /// dispatcher does not find a loader for this engine type
+    MissingLoader,
+    /// error from resulting from assumptions based on config passed to dispatcher
+    ConfigError,
+    /// dispatcher was asked to queue function it can't find
+    UnavailableFunction,
+    /// dispatcher was asked to add function to registry that is already present
+    DuplicateFunction,
+    /// function to register did not have metadata available
+    MetaDataUnavailable,
+    /// dispatcher encountered an issue when trasmitting data between tasks
+    ChannelError,
+    /// dispatcher found set to transfer that has no registered name
+    SetMissmatch,
+    /// dispatcher failed to combine two composition sets
+    CompositionCombine,
+    /// dispatcher found mistake when trying to find waiting functions
+    DependencyError,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FrontendError {
     /// Failed to get more frames from the connection
     FailledToGetFrames,
@@ -167,7 +192,7 @@ pub enum FrontendError {
 
 /// Error caused in the function registry
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum RegistryError {
+pub enum FunctionRegistryError {
     /// Failed to receive local loading result that was triggered by another function
     LocalLoadingReceive,
 }
@@ -185,19 +210,9 @@ pub enum PromiseError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum DomainError {
-    /// Config parameter does not match any expected option
-    ConfigMissmatch,
-    /// Error opening shared memory file
-    SharedOpen,
-    /// Error truncating shared memory
-    SharedTrunc,
-    /// Error mapping the requested amount
-    Mapping,
-    /// Domain has no space left
-    ReachedCapacity,
-    /// Cleaning of memory range has failed
-    CleaningFailure,
-    /// Impossible context size for the given context type
-    InvalidMemorySize,
+pub enum UserError {
+    /// Set not declared optional is empty
+    EmptyNonOptional,
+    /// Function indicated it failed
+    FunctionError(i32),
 }

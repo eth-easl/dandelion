@@ -1,11 +1,11 @@
 pub mod config;
 
-use dandelion_commons::DandelionError;
+use dandelion_commons::{records::Recorder, DandelionError};
 use dispatcher::composition::CompositionSet;
 use hyper::body::Frame;
 use machine_interface::memory_domain::{Context, ContextTrait};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, io::IoSlice, sync::Arc};
+use std::{io::IoSlice, sync::Arc};
 
 #[derive(Serialize, Deserialize)]
 pub struct DandelionRequest<'data> {
@@ -18,6 +18,8 @@ pub struct DandelionRequest<'data> {
 pub struct DandelionDeserializeResponse<'data> {
     #[serde(borrow)]
     pub sets: Vec<InputSet<'data>>,
+    #[cfg(feature = "timestamp")]
+    pub timestamps: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -101,15 +103,22 @@ fn encode_item(
 }
 
 fn encode_sets(
-    sets: BTreeMap<usize, CompositionSet>,
+    sets: Vec<Option<CompositionSet>>,
     response: &mut Vec<u8>,
     data_items: &mut Vec<ItemData>,
 ) -> usize {
     let mut all_items = 0;
     // filter out empty sets
-    let non_empty_set = sets
-        .into_values()
-        .filter(|set| !set.context_list.is_empty());
+    let non_empty_set = sets.into_iter().filter_map(|set| match set {
+        Some(s) => {
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
+        }
+        _ => None,
+    });
     // if list is empty need to push empty string
     for (index, set) in non_empty_set.enumerate() {
         // add item to array with doc type and name equal to index into the array
@@ -123,10 +132,9 @@ fn encode_sets(
         // set identifier: string type, identifier e_name and actual set name as length, string, null byte
         response.push(2);
         response.extend_from_slice("identifier\0".as_bytes());
-        let set_name = &set.context_list[0].0.content[set.set_index]
-            .as_ref()
-            .unwrap()
-            .ident;
+        let mut set_iter = set.into_iter().peekable();
+        let (set_index, _, zero_set) = set_iter.peek().unwrap();
+        let set_name = &zero_set.content[*set_index].as_ref().unwrap().ident;
         response.extend_from_slice(&((set_name.len() + 1) as i32).to_le_bytes());
         response.extend_from_slice(set_name.as_bytes());
         response.push(0);
@@ -138,7 +146,7 @@ fn encode_sets(
         response.extend_from_slice(&0i32.to_le_bytes());
 
         let mut set_items_length = 0;
-        for (array_index, (set_index, item_index, context)) in set.into_iter().enumerate() {
+        for (array_index, (set_index, item_index, context)) in set_iter.enumerate() {
             set_items_length += encode_item(
                 set_index,
                 item_index,
@@ -163,7 +171,10 @@ fn encode_sets(
     return all_items;
 }
 
-fn encode_response(sets: BTreeMap<usize, CompositionSet>) -> (usize, Vec<u8>, Vec<ItemData>) {
+fn encode_response(
+    sets: Vec<Option<CompositionSet>>,
+    _timings: &Recorder,
+) -> (usize, Vec<u8>, Vec<ItemData>) {
     // lenght of dict, list of items closing 0 byte
     let mut response = Vec::<u8>::new();
     let mut data_items = Vec::new();
@@ -184,6 +195,23 @@ fn encode_response(sets: BTreeMap<usize, CompositionSet>) -> (usize, Vec<u8>, Ve
     let set_array_length = (response.len() - set_length_offset + all_items) as i32;
     response[set_length_offset..set_length_offset + 4]
         .copy_from_slice(&set_array_length.to_le_bytes());
+
+    // if timestamp are on, add in timing information as string
+    #[cfg(feature = "timestamp")]
+    {
+        // timestamps formated as formatted string, consisting of a length, the string and a NULL byte
+        response.push(2);
+        response.extend_from_slice("timestamps\0".as_bytes());
+        let timestamp_length_offset = response.len();
+        response.extend_from_slice(&0i32.to_be_bytes());
+        let timestamp_string = format!("{}", _timings);
+        response.extend_from_slice(timestamp_string.as_bytes());
+        response.push(0);
+        // set length + 1 to account for terminating 0
+        let timestamp_string_len = (timestamp_string.len() + 1) as i32;
+        response[timestamp_length_offset..timestamp_length_offset + 4]
+            .copy_from_slice(&timestamp_string_len.to_le_bytes());
+    }
 
     // end docuemnt and set length
     response.push(0);
@@ -353,8 +381,8 @@ pub struct DandelionBody {
 }
 
 impl DandelionBody {
-    pub fn new(sets: BTreeMap<usize, CompositionSet>) -> Self {
-        let (total_item_size, serial, items) = encode_response(sets);
+    pub fn new(sets: Vec<Option<CompositionSet>>, timing: &Recorder) -> Self {
+        let (total_item_size, serial, items) = encode_response(sets, timing);
         let read_offset = if items.len() > 0 {
             if items[0].response_offset > 0 {
                 ReadMode::ToItem(0, items[0].response_offset)
@@ -442,6 +470,8 @@ fn test_dandelion_body_serialization() {
     }
     let data_box = data.clone().into_boxed_slice();
 
+    let recorder = Recorder::new(0, std::time::Instant::now());
+
     let expected_response_struct = DandelionDeserializeResponse {
         sets: vec![InputSet {
             identifier: String::from("set_ident"),
@@ -451,6 +481,8 @@ fn test_dandelion_body_serialization() {
                 data: &data_box,
             }],
         }],
+        #[cfg(feature = "timestamp")]
+        timestamps: format!("{}", recorder),
     };
     let expected_response = bson::to_vec(&expected_response_struct).unwrap();
 
@@ -466,12 +498,9 @@ fn test_dandelion_body_serialization() {
             },
         }],
     })];
-    let composition_set = CompositionSet {
-        set_index: 0,
-        context_list: vec![(Arc::new(new_context), 0..1)],
-    };
-    let context_map = BTreeMap::from([(0, composition_set)]);
-    let context_body = DandelionBody::new(context_map);
+    let composition_set = CompositionSet::from((0, vec![Arc::new(new_context)]));
+    let context_map = vec![Some(composition_set)];
+    let context_body = DandelionBody::new(context_map, &recorder);
 
     tokio::runtime::Builder::new_current_thread()
         .build()

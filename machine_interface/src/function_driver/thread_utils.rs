@@ -44,17 +44,13 @@ pub fn run_thread<E: EngineLoop>(
                 output_sets,
                 mut recorder,
             } => {
-                if let Err(err) = recorder.record(RecordPoint::EngineStart) {
-                    debt.fulfill(Err(err));
-                    continue;
-                }
+                recorder.record(RecordPoint::EngineStart);
+
                 let result = engine_state.run(config, context, output_sets);
-                if result.is_ok() {
-                    if let Err(err) = recorder.record(RecordPoint::EngineEnd) {
-                        debt.fulfill(Err(err));
-                        continue;
-                    }
-                }
+
+                recorder.record(RecordPoint::EngineEnd);
+                drop(recorder);
+
                 let results = result.and_then(|context| Ok(WorkDone::Context(context)));
                 debt.fulfill(results);
             }
@@ -69,13 +65,8 @@ pub fn run_thread<E: EngineLoop>(
                 source_item_index,
                 mut recorder,
             } => {
-                match recorder.record(RecordPoint::TransferStart) {
-                    Ok(()) => (),
-                    Err(err) => {
-                        debt.fulfill(Err(err));
-                        continue;
-                    }
-                }
+                recorder.record(RecordPoint::TransferStart);
+
                 let transfer_result = memory_domain::transfer_data_item(
                     &mut destination,
                     source,
@@ -86,13 +77,10 @@ pub fn run_thread<E: EngineLoop>(
                     source_set_index,
                     source_item_index,
                 );
-                match recorder.record(RecordPoint::TransferEnd) {
-                    Ok(()) => (),
-                    Err(err) => {
-                        debt.fulfill(Err(err));
-                        continue;
-                    }
-                }
+
+                recorder.record(RecordPoint::TransferEnd);
+                drop(recorder);
+
                 let transfer_return = transfer_result.and(Ok(WorkDone::Context(destination)));
                 debt.fulfill(transfer_return);
                 continue;
@@ -103,9 +91,10 @@ pub fn run_thread<E: EngineLoop>(
                 static_domain,
                 mut recorder,
             } => {
-                recorder.record(RecordPoint::ParsingStart).unwrap();
+                recorder.record(RecordPoint::ParsingStart);
                 let function_result = driver.parse_function(path, &static_domain);
-                recorder.record(RecordPoint::ParsingEnd).unwrap();
+                recorder.record(RecordPoint::ParsingEnd);
+                drop(recorder);
                 match function_result {
                     Ok(function) => debt.fulfill(Ok(WorkDone::Function(function))),
                     Err(err) => debt.fulfill(Err(err)),
@@ -118,9 +107,10 @@ pub fn run_thread<E: EngineLoop>(
                 ctx_size,
                 mut recorder,
             } => {
-                recorder.record(RecordPoint::LoadStart).unwrap();
+                recorder.record(RecordPoint::LoadStart);
                 let load_result = function.load(&domain, ctx_size);
-                recorder.record(RecordPoint::LoadEnd).unwrap();
+                recorder.record(RecordPoint::LoadEnd);
+                drop(recorder);
                 match load_result {
                     Ok(context) => debt.fulfill(Ok(WorkDone::Context(context))),
                     Err(err) => debt.fulfill(Err(err)),

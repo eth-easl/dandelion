@@ -4,6 +4,7 @@ use crate::{
 };
 use dandelion_commons::{DandelionError, DandelionResult};
 use libc::{c_int, size_t, uintptr_t};
+use log::trace;
 extern crate alloc;
 use std::fmt::Debug;
 
@@ -332,13 +333,26 @@ pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     assert_eq!(output_buffers.len(), output_buffer_number);
 
     for output_set in 0..output_set_number {
+        // find the number of items in the set
+        let first_buffer = usize!(output_set_info[output_set].offset);
+        let one_past_last_buffer = usize!(output_set_info[output_set + 1].offset);
+        // if no items in set, push none to shortcut
+        trace!(
+            "Output set {}, first buffer: {}, one_past_last_buffer {}",
+            output_set,
+            first_buffer,
+            one_past_last_buffer
+        );
+        if first_buffer >= one_past_last_buffer {
+            output_sets.push(None);
+            continue;
+        }
+
         let ident_offset = usize_ptr!(output_set_info[output_set].ident);
         let ident_length = usize!(output_set_info[output_set].ident_len);
         let mut set_ident = vec![0u8; ident_length];
         context.read(ident_offset, &mut set_ident)?;
         let set_ident_string = String::from_utf8(set_ident).unwrap_or("".to_string());
-        let first_buffer = usize!(output_set_info[output_set].offset);
-        let one_past_last_buffer = usize!(output_set_info[output_set + 1].offset);
         let buffer_number = one_past_last_buffer - first_buffer;
         let mut buffers = Vec::new();
         if buffers.try_reserve(buffer_number).is_err() {

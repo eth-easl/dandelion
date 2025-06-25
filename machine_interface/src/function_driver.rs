@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use crate::{
-    interface::DandelionSystemData,
     memory_domain::{transfer_memory, Context, MemoryDomain},
-    DataRequirementList, Position,
+    interface::DandelionSystemData,
+    DataRequirementList,
 };
 extern crate alloc;
 use alloc::sync::Arc;
@@ -24,29 +24,34 @@ mod test_queue;
 pub mod thread_utils;
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct ElfConfig {
     // TODO change to positions
     system_data_offset: usize,
     #[cfg(feature = "cheri")]
     return_offset: (usize, usize),
     entry_point: usize,
-    protection_flags: Arc<Vec<(u32, Position)>>,
+    #[cfg(feature = "mmu")]
+    protection_flags: Arc<Vec<(u32, crate::Position)>>,
 }
 
 #[derive(Clone, Copy)]
 pub enum SystemFunction {
     HTTP,
+    MEMCACHED,
 }
 
 impl core::fmt::Display for SystemFunction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> core::fmt::Result {
         return match self {
             SystemFunction::HTTP => write!(f, "HTTP"),
+            SystemFunction::MEMCACHED => write!(f, "MEMCACHED"),
         };
     }
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct WasmConfig {
     #[cfg(feature = "wasm")]
     lib: Arc<Library>,

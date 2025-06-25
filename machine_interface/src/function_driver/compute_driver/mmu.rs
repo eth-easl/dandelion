@@ -123,7 +123,6 @@ fn mmu_run_static(
         .stdout(Stdio::piped())
         .spawn()
         .map_err(|_e| DandelionError::MmuWorkerError)?;
-    debug!("created a new process");
 
     // intercept worker's syscalls by ptrace
     let pid = Pid::from_raw(worker.id() as i32);
@@ -280,7 +279,7 @@ impl Driver for MmuDriver {
         for position in source_layout.iter() {
             total_size += position.size;
         }
-        let mut context =  Box::new(static_domain.acquire_context(total_size)?);
+        let mut context = Box::new(static_domain.acquire_context(total_size)?);
         // copy all
         let mut write_counter = 0;
         let mut new_content = DataSet {

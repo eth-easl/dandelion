@@ -1,11 +1,13 @@
 use core_affinity::{self, CoreId};
 use dandelion_commons::{
-    records::{Archive, ArchiveInit, RecordPoint, Recorder},
+    records::{Archive, Recorder},
     DandelionResult,
 };
 use dandelion_server::DandelionBody;
 use dispatcher::{
-    composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
+    composition::CompositionSet,
+    dispatcher::{Dispatcher, DispatcherInput},
+    function_registry::Metadata,
     resource_pool::ResourcePool,
 };
 use http_body_util::BodyExt;
@@ -33,6 +35,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc, OnceLock,
     },
+    time::Instant,
 };
 use tokio::{
     net::TcpListener,
@@ -48,10 +51,10 @@ const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 enum DispatcherCommand {
     FunctionRequest {
         name: String,
-        inputs: Vec<(usize, CompositionSet)>,
+        inputs: Vec<DispatcherInput>,
         is_cold: bool,
-        recorder: Recorder,
-        callback: oneshot::Sender<DandelionResult<BTreeMap<usize, CompositionSet>>>,
+        start_time: Instant,
+        callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
     },
     FunctionRegistration {
         name: String,
@@ -73,8 +76,8 @@ async fn serve_request(
     dispatcher: mpsc::Sender<DispatcherCommand>,
 ) -> Result<Response<DandelionBody>, Infallible> {
     debug!("Starting to serve request");
-    let mut recorder = TRACING_ARCHIVE.get().unwrap().get_recorder().unwrap();
-    let _ = recorder.record(RecordPoint::Arrival);
+
+    let start_time = Instant::now();
 
     // pull all frames from the network
     let mut incomming = req.into_body();
@@ -103,47 +106,44 @@ async fn serve_request(
         warn!("request parsing failed with: {:?}", request_context_result);
     }
     let (function_name, request_context) = request_context_result.unwrap();
-    debug!("finshed creating request context");
+    debug!("finished creating request context");
+
     // TODO match set names to assign sets to composition sets
     // map sets in the order they are in the request
     let request_number = request_context.content.len();
+    debug!("Request number of request_context: {}", request_number);
     let request_arc = Arc::new(request_context);
-    let mut inputs = vec![];
-    for request_set in 0..request_number {
-        trace!(
-            "adding input set {} from request",
-            request_arc.content[request_set].as_ref().unwrap().ident
-        );
-        inputs.push((
-            request_set,
-            CompositionSet::from((request_set, vec![request_arc.clone()])),
-        ));
-    }
+    let inputs = (0..request_number)
+        .map(|set_id| {
+            DispatcherInput::Set(CompositionSet::from((set_id, vec![request_arc.clone()])))
+        })
+        .collect::<Vec<_>>();
+
     // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
-    recorder
-        .record(RecordPoint::QueueFunctionDispatcher)
-        .unwrap();
+
     let (callback, output_recevier) = tokio::sync::oneshot::channel();
     dispatcher
         .send(DispatcherCommand::FunctionRequest {
             name: function_name,
             inputs,
             is_cold,
-            recorder: recorder.get_sub_recorder().unwrap(),
+            start_time: start_time.clone(),
             callback,
         })
         .await
         .unwrap();
-    let function_output = output_recevier
+    let (function_output, recorder) = output_recevier
         .await
         .unwrap()
         .expect("Should get result from function");
-    let response_body = dandelion_server::DandelionBody::new(function_output);
-    debug!("finshed creating response body");
+
+    let response_body = dandelion_server::DandelionBody::new(function_output, &recorder);
+
+    debug!("finished creating response body");
     let response = Ok::<_, Infallible>(Response::new(response_body));
-    debug!("finshed creating response");
-    recorder.record(RecordPoint::EndService).unwrap();
-    TRACING_ARCHIVE.get().unwrap().return_recorder(recorder);
+    debug!("finished creating response");
+    #[cfg(feature = "archive")]
+    TRACING_ARCHIVE.get().unwrap().insert_recorder(recorder);
 
     return response;
 }
@@ -296,13 +296,10 @@ async fn register_function(
                                 key: 0,
                             }],
                         }));
-                        (Arc::new(new_context), 0usize..1usize)
+                        Arc::new(new_context)
                     })
                     .collect();
-                let composition_set = CompositionSet {
-                    set_index: 0,
-                    context_list: data_contexts,
-                };
+                let composition_set = CompositionSet::from((0, data_contexts));
                 (name, Some(composition_set))
             } else {
                 (name, None)
@@ -472,11 +469,12 @@ async fn dispatcher_loop(
                 name,
                 inputs,
                 is_cold,
-                recorder,
+                start_time,
                 mut callback,
             } => {
+                debug!("Handling function request for function {}", name);
                 let function_future =
-                    dispatcher.queue_function_by_name(name, inputs, None, is_cold, recorder);
+                    dispatcher.queue_function_by_name(name, inputs, is_cold, start_time);
                 spawn(async {
                     select! {
                         function_output = function_future => {
@@ -497,6 +495,7 @@ async fn dispatcher_loop(
                 mut callback,
                 path,
             } => {
+                debug!("Handling function registration");
                 let insertion_future =
                     dispatcher.insert_func(name, engine_type, context_size, path, metadata);
                 spawn(async {
@@ -576,10 +575,7 @@ fn main() -> () {
         .init();
 
     // Initilize metric collection
-    match TRACING_ARCHIVE.set(Archive::init(ArchiveInit {
-        #[cfg(feature = "timestamp")]
-        timestamp_count: config.timestamp_count,
-    })) {
+    match TRACING_ARCHIVE.set(Archive::init()) {
         Ok(_) => (),
         Err(_) => panic!("Failed to initialize tracing archive"),
     }

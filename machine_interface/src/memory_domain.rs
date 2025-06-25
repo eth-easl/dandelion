@@ -10,12 +10,9 @@ pub mod mmap;
 #[cfg(feature = "mmu")]
 pub mod mmu;
 pub mod read_only;
+pub(crate) mod system_domain;
 #[cfg(feature = "wasm")]
 pub mod wasm;
-pub(crate) mod system_domain;
-
-// Eventually use this
-// pub mod system_domain;
 
 use crate::{DataItem, DataSet, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
@@ -56,7 +53,6 @@ pub enum ContextType {
     #[cfg(feature = "gpu_process")]
     GpuProcess(Box<gpu::GpuProcessContext>),
     System(Box<system_domain::SystemContext>),
-
 }
 
 impl ContextTrait for ContextType {
@@ -360,24 +356,20 @@ pub fn transfer_memory(
                 size,
             )
         }
-        (ContextType::System(destination_ctxt), _) => {
-            system_domain::into_system_context_transfer(
-                destination_ctxt,
-                source,
-                destination_offset,
-                source_offset,
-                size,
-            )
-        }
-        (_, ContextType::System(source_ctxt)) => {
-            system_domain::out_of_system_context_transfer(
-                destination,
-                &source_ctxt,
-                destination_offset,
-                source_offset,
-                size,
-            )
-        }
+        (ContextType::System(destination_ctxt), _) => system_domain::into_system_context_transfer(
+            destination_ctxt,
+            source,
+            destination_offset,
+            source_offset,
+            size,
+        ),
+        (_, ContextType::System(source_ctxt)) => system_domain::out_of_system_context_transfer(
+            destination,
+            &source_ctxt,
+            destination_offset,
+            source_offset,
+            size,
+        ),
         #[cfg(feature = "gpu")]
         (ContextType::Gpu(destination_ctxt), ContextType::Gpu(source_ctxt)) => gpu::gpu_transfer(
             destination_ctxt,
@@ -500,6 +492,7 @@ pub fn transfer_data_item(
         destination_set.buffers[destination_item_index].data.offset = destination_offset;
         destination_set.buffers[destination_item_index].data.size = source_item.data.size;
         destination_set.buffers[destination_item_index].ident = source_item.ident.clone();
+        destination_set.buffers[destination_item_index].key = source_item.key;
     }
 
     log::trace!(
