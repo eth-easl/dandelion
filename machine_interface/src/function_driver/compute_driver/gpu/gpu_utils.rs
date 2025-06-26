@@ -14,7 +14,7 @@ use crate::{
     util::mmapmem::MmapMem,
     DataSet, Position,
 };
-use dandelion_commons::{records::RecordPoint, DandelionError, DandelionResult};
+use dandelion_commons::{records::{RecordPoint, Recorder}, DandelionError, DandelionResult};
 use libc::c_void;
 use log::{debug, error};
 use nix::{
@@ -401,8 +401,6 @@ fn manage_worker(
 
                 // Very important to add this newline, as the worker reads line by line
                 task += "\n";
-
-                recorder.record(RecordPoint::EngineStart);
 
                 // Write task description to worker process stdin
                 worker

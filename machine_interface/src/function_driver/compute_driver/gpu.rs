@@ -10,7 +10,7 @@ use crate::{
 };
 use config_parsing::SYSDATA_OFFSET;
 use core_affinity::CoreId;
-use dandelion_commons::{DandelionError, DandelionResult};
+use dandelion_commons::{records::{RecordPoint, Recorder}, DandelionError, DandelionResult};
 use libc::c_void;
 use std::{
     borrow::Borrow,
@@ -21,6 +21,7 @@ use std::{
         mpsc::{self, Receiver, Sender},
         Arc, Mutex,
     },
+    time::Instant,
     thread::{self, spawn},
 };
 
@@ -128,6 +129,7 @@ pub fn gpu_run(
     buffer_pool: Arc<Mutex<BufferPool>>,
     mut context: Context,
     output_sets: Arc<Vec<String>>,
+    mut recorder: Recorder,
 ) -> DandelionResult<Context> {
     // Set affinity of worker thread
     if !core_affinity::set_for_current(CoreId { id: cpu_slot }) {
@@ -142,15 +144,12 @@ pub fn gpu_run(
         ContextType::GpuProcess(ref gpu_process_context) => gpu_process_context.as_ptr(),
         _ => return Err(DandelionError::ConfigMissmatch),
     };
-    /*let ContextType::Gpu(ref mmu_context) = context.context else {
-        return Err(DandelionError::ConfigMissmatch);
-    };*/
     
-    // let base = mmu_context.storage.as_ptr();
     let config = config.load(base)?;
 
     let mut buffer_pool = buffer_pool.lock().unwrap();
 
+    recorder.record(RecordPoint::GPULoadStart);
     // Maps from bufname -> (index in buffer pool, size of buffer)
     let mut buffers: HashMap<String, (usize, usize)> = HashMap::new();
     for name in &config.blueprint.inputs {
@@ -166,7 +165,9 @@ pub fn gpu_run(
         let idx = buffer_pool.alloc_buffer(size)?;
         buffers.insert(name.clone(), (idx, size));
     }
+    recorder.record(RecordPoint::GPULoadEnd);
 
+    recorder.record(RecordPoint::GPUInferenceStart);
     execute(
         &config.blueprint.control_flow,
         &buffers,
@@ -174,9 +175,11 @@ pub fn gpu_run(
         &context,
         &config,
     )?;
+    recorder.record(RecordPoint::GPUInferenceEnd);
 
+    recorder.record(RecordPoint::GPUOutputStart);
     // Copy results back into host memory from device memory
-    unsafe {
+    unsafe {    
         write_gpu_outputs::<usize, usize>(
             &mut context,
             config.system_data_struct_offset,
@@ -186,6 +189,7 @@ pub fn gpu_run(
             buffer_pool.borrow(),
         )?
     };
+    recorder.record(RecordPoint::GPUOutputEnd);
 
     // Zero out buffers used by current function
     buffer_pool.dealloc_all()?;
@@ -234,12 +238,15 @@ impl EngineLoop for GpuLoop {
         config: FunctionConfig,
         mut context: Context,
         output_sets: Arc<Vec<String>>,
+        mut recorder: Recorder,
     ) -> DandelionResult<Context> {
         let FunctionConfig::GpuConfig(config) = config else {
             return Err(DandelionError::ConfigMissmatch);
         };
         let sysdata_offset = config.system_data_struct_offset;
         setup_input_structs::<usize, usize>(&mut context, sysdata_offset, &output_sets)?;
+        
+        let mut subrecorder = recorder.get_sub_recorder();
 
         // Clone for thread
         let buffer_pool = self.buffers.clone();
@@ -247,11 +254,10 @@ impl EngineLoop for GpuLoop {
         let cpu_slot = self.cpu_slot;
         let gpu_id = self.gpu_id;
         thread::spawn(move || {
-            let result = gpu_run(cpu_slot, gpu_id, config, buffer_pool, context, output_sets);
+            let result = gpu_run(cpu_slot, gpu_id, config, buffer_pool, context, output_sets, subrecorder);
             sender.send(result).unwrap();
         });
 
-        // HERE!!!
         // TODO: add proper error handling mechanisms
         // Use an mpsc to receive results. If a fault occured, the handler could be registered to put an error on the channel,
         // while the work thread wouldn't return. This means it would have to be shot down

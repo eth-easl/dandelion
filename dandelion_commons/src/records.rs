@@ -5,7 +5,7 @@ use std::time::Instant;
 /// Maximum usize to expect when converting a record point to a usize
 /// By setting the last element to this explicitly, the compiler will throw an error,
 /// if there are more than this, because it enumerates from 0 and won't allow a number to be assigned twice.
-const LAST_RECORD_POINT: usize = 17;
+const LAST_RECORD_POINT: usize = 23;
 
 #[repr(usize)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -44,6 +44,19 @@ pub enum RecordPoint {
     EngineStart,
     /// End execution of the function on the engine (sync)
     EngineEnd,
+    /// --- GPU ---
+    /// Start GPU inputs and buffers load (sync)
+    GPULoadStart,
+    /// End GPU inputs and buffers load (sync)
+    GPULoadEnd,
+    /// Start GPU kernel executions (sync)
+    GPUInferenceStart,
+    /// End GPU kernel executions (sync)
+    GPUInferenceEnd,
+    /// Start GPU output read (sync)
+    GPUOutputStart,
+    /// End GPU output read (sync)
+    GPUOutputEnd,
     /// Return from execution engine (async)
     FutureReturn = LAST_RECORD_POINT,
 }

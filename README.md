@@ -119,8 +119,10 @@ For testing the C code to interact with Cheri we are using unity which is includ
 
 The `gpu_worker` binary required by the `gpu_process` is assumed to be present in corresponding `target` directory:
 ```
-cargo build --bin gpu_worker --features gpu_process --target $(arch)-unknown-linux-gnu [--release]
+cargo build --bin gpu_worker --features $(gpu-arch),gpu_process --target $(arch)-unknown-linux-gnu [--release]
 ```
+
+Where `gpu-arch` is either `cuda` or `hip`.
 
 Also make sure that shared memory objects are executable:
 ```
