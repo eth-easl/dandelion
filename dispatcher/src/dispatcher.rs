@@ -531,6 +531,7 @@ impl Dispatcher {
                 recorder.get_sub_recorder(),
             )
             .await?;
+        recorder.record(RecordPoint::TransferQueue);
         // make sure all input sets are there at the correct index
         let mut static_sets = BTreeSet::new();
         for (function_set_index, (in_set_name, metadata_set)) in
@@ -562,9 +563,7 @@ impl Dispatcher {
                         source_item_index: item,
                         recorder: recorder.get_sub_recorder(),
                     };
-                    recorder.record(RecordPoint::TransferQueue);
                     function_context = transfer_queue.enqueu_work(args).await?.get_context();
-                    recorder.record(RecordPoint::TransferDequeue);
                     function_buffer += 1;
                 }
             }
@@ -608,12 +607,11 @@ impl Dispatcher {
                     source_item_index: item,
                     recorder: recorder.get_sub_recorder(),
                 };
-                recorder.record(RecordPoint::TransferQueue);
                 function_context = transfer_queue.enqueu_work(args).await?.get_context();
-                recorder.record(RecordPoint::TransferDequeue);
                 function_item += 1;
             }
         }
+        recorder.record(RecordPoint::TransferDequeue);
         return Ok((function_context, function_config, metadata));
     }
 

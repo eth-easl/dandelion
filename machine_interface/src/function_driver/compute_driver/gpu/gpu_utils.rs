@@ -380,8 +380,6 @@ fn manage_worker(
                 output_sets,
                 mut recorder,
             } => {
-                recorder.record(RecordPoint::EngineStart);
-
                 // transform relevant data into serialisable counterparts
                 let FunctionConfig::GpuConfig(config) = config else {
                     debt.fulfill(Err(DandelionError::ConfigMissmatch));
@@ -401,6 +399,8 @@ fn manage_worker(
 
                 // Very important to add this newline, as the worker reads line by line
                 task += "\n";
+                
+                recorder.record(RecordPoint::EngineStart);
 
                 // Write task description to worker process stdin
                 worker

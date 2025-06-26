@@ -46,9 +46,9 @@ pub enum RecordPoint {
     EngineEnd,
     /// --- GPU ---
     /// Start GPU inputs and buffers load (sync)
-    GPULoadStart,
+    GPUTransferStart,
     /// End GPU inputs and buffers load (sync)
-    GPULoadEnd,
+    GPUTransferEnd,
     /// Start GPU kernel executions (sync)
     GPUInferenceStart,
     /// End GPU kernel executions (sync)
