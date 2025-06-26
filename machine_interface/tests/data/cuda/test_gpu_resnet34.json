@@ -1,6 +1,18 @@
 {
     "modules": [{"module_name": "resnet34.cubin", "path": "cuda/resnet34.cubin"}],
     "kernels": [
+        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_1_kernel"},
+        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_1_kernel_1"},
+        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_1_kernel_2"},
+        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_2_kernel"},
+        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_2_kernel_1"},
+        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_2_kernel_2"},
+        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_3_kernel"},
+        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_3_kernel_1"},
+        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_3_kernel_2"},
+        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_kernel"},
+        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_kernel_1"},
+        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_kernel_2"},
         {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_1_kernel"},
         {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_1_kernel_1"},
         {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_1_kernel_2"},
@@ -15,23 +27,10 @@
         {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_kernel_2"},
         {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_conv2d_add_1_kernel"},
         {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_conv2d_add_2_kernel"},
-        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_conv2d_add_3_kernel"},
-        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_conv2d_add_add_nn_relu_1_kernel"},
-        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_conv2d_add_add_nn_relu_2_kernel"},
-        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_conv2d_add_add_nn_relu_3_kernel"},
-        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_conv2d_add_add_nn_relu_kernel"},
         {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_conv2d_add_kernel"},
-        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_conv2d_add_nn_relu_10_kernel"},
-        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_conv2d_add_nn_relu_11_kernel"},
         {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_conv2d_add_nn_relu_1_kernel"},
         {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_conv2d_add_nn_relu_2_kernel"},
         {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_conv2d_add_nn_relu_3_kernel"},
-        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_conv2d_add_nn_relu_4_kernel"},
-        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_conv2d_add_nn_relu_5_kernel"},
-        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_conv2d_add_nn_relu_6_kernel"},
-        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_conv2d_add_nn_relu_7_kernel"},
-        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_conv2d_add_nn_relu_8_kernel"},
-        {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_conv2d_add_nn_relu_9_kernel"},
         {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_conv2d_add_nn_relu_kernel"},
         {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_dense_add_kernel"},
         {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_global_avg_pool2d_kernel"},
@@ -39,8 +38,8 @@
         {"module_name": "resnet34.cubin", "kernel_name": "tvmgen_default_fused_nn_max_pool2d_kernel"}
     ],
     "blueprint": {
-        "inputs": ["input", "p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10", "p11", "p12", "p13", "p14", "p15", "p16", "p17", "p18", "p19", "p20", "p21", "p22", "p23", "p24", "p25", "p26", "p27", "p28", "p29", "p30", "p31", "p32", "p33", "p34", "p35", "p36", "p37", "p38", "p39", "p40", "p41", "p42", "p43", "p44", "p45", "p46", "p47", "p48", "p49", "p50", "p51", "p52", "p53", "p54", "p55", "p56", "p57", "p58", "p59", "p60", "p61", "p62", "p63", "p64", "p65", "p66", "p67", "p68", "p69", "p70", "p71", "p72", "p73", "p74", "p75", "p76", "p77", "p78", "p79", "p80", "p81", "p82", "p83", "p84", "p85", "p86", "p87", "p88", "p89", "p90", "p91", "p92", "p93", "p94", "p95", "p96", "p97", "p98", "p99", "p100", "p101", "p102", "p103", "p104", "p105", "p106", "p107"],
-        "buffers": {"output": {"Absolute": 4000}, "b3": {"Absolute": 3211264}, "b4": {"Absolute": 3211264}, "b9": {"Absolute": 3211264}, "b94": {"Absolute": 100352}, "b103": {"Absolute": 100352}, "b115": {"Absolute": 1806336}, "b116": {"Absolute": 1806336}},
+        "inputs": ["input", "p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10", "p11", "p12", "p13", "p14", "p15", "p16", "p17", "p18", "p19", "p20", "p21", "p22", "p23", "p24", "p25", "p26", "p27", "p28", "p29", "p30", "p31", "p32", "p33", "p34", "p35", "p36", "p37", "p38", "p39", "p40", "p41", "p42", "p43", "p44", "p45", "p46", "p47", "p48", "p49", "p50", "p51", "p52", "p53", "p54", "p55", "p56", "p57", "p58", "p59", "p60", "p61", "p62", "p63", "p64", "p65", "p66", "p67", "p68", "p69", "p70", "p71", "p72", "p73"],
+        "buffers": {"output": {"Absolute": 4000}, "b3": {"Absolute": 3211264}, "b4": {"Absolute": 802816}, "b9": {"Absolute": 802816}, "b68": {"Absolute": 100352}, "b77": {"Absolute": 2048}, "b81": {"Absolute": 1806336}, "b82": {"Absolute": 1806336}},
         "outputs": ["output"],
         "control_flow": [
             {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_kernel", [{"Ptr": "b3"}, {"Ptr": "input"}, {"Ptr": "p0"}, {"Ptr": "p1"}], {
@@ -61,16 +60,7 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_1_kernel", [{"Ptr": "b3"}, {"Ptr": "b4"}, {"Ptr": "p2"}, {"Ptr": "p3"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 56},
-                "grid_dim_z": {"Absolute": 1},
-                "block_dim_x": {"Absolute": 28},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 8},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_kernel", [{"Ptr": "b115"}, {"Ptr": "b3"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_kernel", [{"Ptr": "b81"}, {"Ptr": "b4"}], {
                 "grid_dim_x": {"Absolute": 98},
                 "grid_dim_y": {"Absolute": 1},
                 "grid_dim_z": {"Absolute": 1},
@@ -79,7 +69,7 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_kernel_1", [{"Ptr": "b116"}, {"Ptr": "b115"}, {"Ptr": "p4"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p2"}], {
                 "grid_dim_x": {"Absolute": 1},
                 "grid_dim_y": {"Absolute": 2},
                 "grid_dim_z": {"Absolute": 36},
@@ -88,7 +78,7 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_kernel_2", [{"Ptr": "b9"}, {"Ptr": "b116"}, {"Ptr": "p5"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_kernel_2", [{"Ptr": "b3"}, {"Ptr": "b82"}, {"Ptr": "p3"}], {
                 "grid_dim_x": {"Absolute": 98},
                 "grid_dim_y": {"Absolute": 1},
                 "grid_dim_z": {"Absolute": 1},
@@ -97,34 +87,7 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_kernel", [{"Ptr": "b3"}, {"Ptr": "b4"}, {"Ptr": "p8"}, {"Ptr": "p9"}], {
-                "grid_dim_x": {"Absolute": 2},
-                "grid_dim_y": {"Absolute": 14},
-                "grid_dim_z": {"Absolute": 4},
-                "block_dim_x": {"Absolute": 28},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 16},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_add_nn_relu_kernel", [{"Ptr": "b4"}, {"Ptr": "b9"}, {"Ptr": "p6"}, {"Ptr": "p7"}, {"Ptr": "b3"}], {
-                "grid_dim_x": {"Absolute": 2},
-                "grid_dim_y": {"Absolute": 14},
-                "grid_dim_z": {"Absolute": 4},
-                "block_dim_x": {"Absolute": 28},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 16},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_2_kernel", [{"Ptr": "b9"}, {"Ptr": "b4"}, {"Ptr": "p10"}, {"Ptr": "p11"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 56},
-                "grid_dim_z": {"Absolute": 2},
-                "block_dim_x": {"Absolute": 28},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 8},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_kernel", [{"Ptr": "b115"}, {"Ptr": "b9"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_kernel", [{"Ptr": "b81"}, {"Ptr": "b3"}], {
                 "grid_dim_x": {"Absolute": 98},
                 "grid_dim_y": {"Absolute": 1},
                 "grid_dim_z": {"Absolute": 1},
@@ -133,7 +96,7 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_kernel_1", [{"Ptr": "b116"}, {"Ptr": "b115"}, {"Ptr": "p12"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p4"}], {
                 "grid_dim_x": {"Absolute": 1},
                 "grid_dim_y": {"Absolute": 2},
                 "grid_dim_z": {"Absolute": 36},
@@ -142,7 +105,7 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_kernel_2", [{"Ptr": "b3"}, {"Ptr": "b116"}, {"Ptr": "p13"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_kernel_2", [{"Ptr": "b9"}, {"Ptr": "b82"}, {"Ptr": "p5"}, {"Ptr": "b4"}], {
                 "grid_dim_x": {"Absolute": 98},
                 "grid_dim_y": {"Absolute": 1},
                 "grid_dim_z": {"Absolute": 1},
@@ -151,25 +114,7 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_add_nn_relu_kernel", [{"Ptr": "b9"}, {"Ptr": "b3"}, {"Ptr": "p14"}, {"Ptr": "p15"}, {"Ptr": "b4"}], {
-                "grid_dim_x": {"Absolute": 2},
-                "grid_dim_y": {"Absolute": 14},
-                "grid_dim_z": {"Absolute": 4},
-                "block_dim_x": {"Absolute": 28},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 16},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_2_kernel", [{"Ptr": "b3"}, {"Ptr": "b9"}, {"Ptr": "p16"}, {"Ptr": "p17"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 56},
-                "grid_dim_z": {"Absolute": 2},
-                "block_dim_x": {"Absolute": 28},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 8},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_kernel", [{"Ptr": "b115"}, {"Ptr": "b3"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_kernel", [{"Ptr": "b81"}, {"Ptr": "b9"}], {
                 "grid_dim_x": {"Absolute": 98},
                 "grid_dim_y": {"Absolute": 1},
                 "grid_dim_z": {"Absolute": 1},
@@ -178,7 +123,7 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_kernel_1", [{"Ptr": "b116"}, {"Ptr": "b115"}, {"Ptr": "p18"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p6"}], {
                 "grid_dim_x": {"Absolute": 1},
                 "grid_dim_y": {"Absolute": 2},
                 "grid_dim_z": {"Absolute": 36},
@@ -187,7 +132,7 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_kernel_2", [{"Ptr": "b4"}, {"Ptr": "b116"}, {"Ptr": "p19"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_kernel_2", [{"Ptr": "b4"}, {"Ptr": "b82"}, {"Ptr": "p7"}], {
                 "grid_dim_x": {"Absolute": 98},
                 "grid_dim_y": {"Absolute": 1},
                 "grid_dim_z": {"Absolute": 1},
@@ -196,61 +141,106 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_add_nn_relu_kernel", [{"Ptr": "b3"}, {"Ptr": "b4"}, {"Ptr": "p20"}, {"Ptr": "p21"}, {"Ptr": "b9"}], {
-                "grid_dim_x": {"Absolute": 2},
-                "grid_dim_y": {"Absolute": 14},
-                "grid_dim_z": {"Absolute": 4},
-                "block_dim_x": {"Absolute": 28},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_kernel", [{"Ptr": "b81"}, {"Ptr": "b4"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
                 "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 16},
+                "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_3_kernel", [{"Ptr": "b4"}, {"Ptr": "b3"}, {"Ptr": "p22"}, {"Ptr": "p23"}], {
-                "grid_dim_x": {"Absolute": 2},
-                "grid_dim_y": {"Absolute": 14},
-                "grid_dim_z": {"Absolute": 4},
-                "block_dim_x": {"Absolute": 28},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 8},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_4_kernel", [{"Ptr": "b9"}, {"Ptr": "b4"}, {"Ptr": "p24"}, {"Ptr": "p25"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p8"}], {
                 "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 14},
-                "grid_dim_z": {"Absolute": 2},
-                "block_dim_x": {"Absolute": 14},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 16},
+                "grid_dim_y": {"Absolute": 2},
+                "grid_dim_z": {"Absolute": 36},
+                "block_dim_x": {"Absolute": 98},
+                "block_dim_y": {"Absolute": 2},
+                "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_1_kernel", [{"Ptr": "b4"}, {"Ptr": "b3"}, {"Ptr": "p28"}, {"Ptr": "p29"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_kernel_2", [{"Ptr": "b3"}, {"Ptr": "b82"}, {"Ptr": "p9"}, {"Ptr": "b9"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_kernel", [{"Ptr": "b81"}, {"Ptr": "b3"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p10"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 2},
+                "grid_dim_z": {"Absolute": 36},
+                "block_dim_x": {"Absolute": 98},
+                "block_dim_y": {"Absolute": 2},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_kernel_2", [{"Ptr": "b4"}, {"Ptr": "b82"}, {"Ptr": "p11"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_kernel", [{"Ptr": "b81"}, {"Ptr": "b4"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p12"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 2},
+                "grid_dim_z": {"Absolute": 36},
+                "block_dim_x": {"Absolute": 98},
+                "block_dim_y": {"Absolute": 2},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_kernel_2", [{"Ptr": "b9"}, {"Ptr": "b82"}, {"Ptr": "p13"}, {"Ptr": "b3"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_1_kernel", [{"Ptr": "b4"}, {"Ptr": "b9"}, {"Ptr": "p14"}, {"Ptr": "p15"}], {
                 "grid_dim_x": {"Absolute": 1},
                 "grid_dim_y": {"Absolute": 28},
                 "grid_dim_z": {"Absolute": 4},
-                "block_dim_x": {"Absolute": 4},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 32},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_add_nn_relu_1_kernel", [{"Ptr": "b3"}, {"Ptr": "b9"}, {"Ptr": "p26"}, {"Ptr": "p27"}, {"Ptr": "b4"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 7},
-                "grid_dim_z": {"Absolute": 4},
-                "block_dim_x": {"Absolute": 28},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 32},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_5_kernel", [{"Ptr": "b9"}, {"Ptr": "b3"}, {"Ptr": "p30"}, {"Ptr": "p31"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 14},
-                "grid_dim_z": {"Absolute": 4},
-                "block_dim_x": {"Absolute": 28},
+                "block_dim_x": {"Absolute": 14},
                 "block_dim_y": {"Absolute": 1},
                 "block_dim_z": {"Absolute": 16},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_1_kernel", [{"Ptr": "b115"}, {"Ptr": "b9"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_kernel", [{"Ptr": "b3"}, {"Ptr": "b9"}, {"Ptr": "p18"}, {"Ptr": "p19"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 28},
+                "grid_dim_z": {"Absolute": 2},
+                "block_dim_x": {"Absolute": 14},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 32},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_1_kernel", [{"Ptr": "b81"}, {"Ptr": "b4"}], {
                 "grid_dim_x": {"Absolute": 196},
                 "grid_dim_y": {"Absolute": 1},
                 "grid_dim_z": {"Absolute": 1},
@@ -259,7 +249,7 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_1_kernel_1", [{"Ptr": "b116"}, {"Ptr": "b115"}, {"Ptr": "p32"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_1_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p16"}], {
                 "grid_dim_x": {"Absolute": 2},
                 "grid_dim_y": {"Absolute": 4},
                 "grid_dim_z": {"Absolute": 16},
@@ -268,7 +258,7 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_1_kernel_2", [{"Ptr": "b4"}, {"Ptr": "b116"}, {"Ptr": "p33"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_1_kernel_2", [{"Ptr": "b9"}, {"Ptr": "b82"}, {"Ptr": "p17"}, {"Ptr": "b3"}], {
                 "grid_dim_x": {"Absolute": 196},
                 "grid_dim_y": {"Absolute": 1},
                 "grid_dim_z": {"Absolute": 1},
@@ -277,25 +267,7 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_add_nn_relu_1_kernel", [{"Ptr": "b9"}, {"Ptr": "b4"}, {"Ptr": "p34"}, {"Ptr": "p35"}, {"Ptr": "b3"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 7},
-                "grid_dim_z": {"Absolute": 4},
-                "block_dim_x": {"Absolute": 28},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 32},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_5_kernel", [{"Ptr": "b4"}, {"Ptr": "b9"}, {"Ptr": "p36"}, {"Ptr": "p37"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 14},
-                "grid_dim_z": {"Absolute": 4},
-                "block_dim_x": {"Absolute": 28},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 16},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_1_kernel", [{"Ptr": "b115"}, {"Ptr": "b4"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_1_kernel", [{"Ptr": "b81"}, {"Ptr": "b9"}], {
                 "grid_dim_x": {"Absolute": 196},
                 "grid_dim_y": {"Absolute": 1},
                 "grid_dim_z": {"Absolute": 1},
@@ -304,7 +276,7 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_1_kernel_1", [{"Ptr": "b116"}, {"Ptr": "b115"}, {"Ptr": "p38"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_1_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p20"}], {
                 "grid_dim_x": {"Absolute": 2},
                 "grid_dim_y": {"Absolute": 4},
                 "grid_dim_z": {"Absolute": 16},
@@ -313,7 +285,7 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_1_kernel_2", [{"Ptr": "b3"}, {"Ptr": "b116"}, {"Ptr": "p39"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_1_kernel_2", [{"Ptr": "b4"}, {"Ptr": "b82"}, {"Ptr": "p21"}], {
                 "grid_dim_x": {"Absolute": 196},
                 "grid_dim_y": {"Absolute": 1},
                 "grid_dim_z": {"Absolute": 1},
@@ -322,25 +294,7 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_add_nn_relu_1_kernel", [{"Ptr": "b4"}, {"Ptr": "b3"}, {"Ptr": "p40"}, {"Ptr": "p41"}, {"Ptr": "b9"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 7},
-                "grid_dim_z": {"Absolute": 4},
-                "block_dim_x": {"Absolute": 28},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 32},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_5_kernel", [{"Ptr": "b3"}, {"Ptr": "b4"}, {"Ptr": "p42"}, {"Ptr": "p43"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 14},
-                "grid_dim_z": {"Absolute": 4},
-                "block_dim_x": {"Absolute": 28},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 16},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_1_kernel", [{"Ptr": "b115"}, {"Ptr": "b3"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_1_kernel", [{"Ptr": "b81"}, {"Ptr": "b4"}], {
                 "grid_dim_x": {"Absolute": 196},
                 "grid_dim_y": {"Absolute": 1},
                 "grid_dim_z": {"Absolute": 1},
@@ -349,7 +303,7 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_1_kernel_1", [{"Ptr": "b116"}, {"Ptr": "b115"}, {"Ptr": "p44"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_1_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p22"}], {
                 "grid_dim_x": {"Absolute": 2},
                 "grid_dim_y": {"Absolute": 4},
                 "grid_dim_z": {"Absolute": 16},
@@ -358,7 +312,7 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_1_kernel_2", [{"Ptr": "b9"}, {"Ptr": "b116"}, {"Ptr": "p45"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_1_kernel_2", [{"Ptr": "b3"}, {"Ptr": "b82"}, {"Ptr": "p23"}, {"Ptr": "b9"}], {
                 "grid_dim_x": {"Absolute": 196},
                 "grid_dim_y": {"Absolute": 1},
                 "grid_dim_z": {"Absolute": 1},
@@ -367,295 +321,439 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_add_nn_relu_1_kernel", [{"Ptr": "b3"}, {"Ptr": "b9"}, {"Ptr": "p46"}, {"Ptr": "p47"}, {"Ptr": "b4"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_1_kernel", [{"Ptr": "b81"}, {"Ptr": "b3"}], {
+                "grid_dim_x": {"Absolute": 196},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_1_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p24"}], {
+                "grid_dim_x": {"Absolute": 2},
+                "grid_dim_y": {"Absolute": 4},
+                "grid_dim_z": {"Absolute": 16},
+                "block_dim_x": {"Absolute": 49},
+                "block_dim_y": {"Absolute": 4},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_1_kernel_2", [{"Ptr": "b4"}, {"Ptr": "b82"}, {"Ptr": "p25"}], {
+                "grid_dim_x": {"Absolute": 196},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_1_kernel", [{"Ptr": "b81"}, {"Ptr": "b4"}], {
+                "grid_dim_x": {"Absolute": 196},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_1_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p26"}], {
+                "grid_dim_x": {"Absolute": 2},
+                "grid_dim_y": {"Absolute": 4},
+                "grid_dim_z": {"Absolute": 16},
+                "block_dim_x": {"Absolute": 49},
+                "block_dim_y": {"Absolute": 4},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_1_kernel_2", [{"Ptr": "b9"}, {"Ptr": "b82"}, {"Ptr": "p27"}, {"Ptr": "b3"}], {
+                "grid_dim_x": {"Absolute": 196},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_1_kernel", [{"Ptr": "b81"}, {"Ptr": "b9"}], {
+                "grid_dim_x": {"Absolute": 196},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_1_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p28"}], {
+                "grid_dim_x": {"Absolute": 2},
+                "grid_dim_y": {"Absolute": 4},
+                "grid_dim_z": {"Absolute": 16},
+                "block_dim_x": {"Absolute": 49},
+                "block_dim_y": {"Absolute": 4},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_1_kernel_2", [{"Ptr": "b4"}, {"Ptr": "b82"}, {"Ptr": "p29"}], {
+                "grid_dim_x": {"Absolute": 196},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_1_kernel", [{"Ptr": "b81"}, {"Ptr": "b4"}], {
+                "grid_dim_x": {"Absolute": 196},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_1_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p30"}], {
+                "grid_dim_x": {"Absolute": 2},
+                "grid_dim_y": {"Absolute": 4},
+                "grid_dim_z": {"Absolute": 16},
+                "block_dim_x": {"Absolute": 49},
+                "block_dim_y": {"Absolute": 4},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_1_kernel_2", [{"Ptr": "b3"}, {"Ptr": "b82"}, {"Ptr": "p31"}, {"Ptr": "b9"}], {
+                "grid_dim_x": {"Absolute": 196},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_2_kernel", [{"Ptr": "b4"}, {"Ptr": "b3"}, {"Ptr": "p32"}, {"Ptr": "p33"}], {
                 "grid_dim_x": {"Absolute": 1},
                 "grid_dim_y": {"Absolute": 7},
-                "grid_dim_z": {"Absolute": 4},
-                "block_dim_x": {"Absolute": 28},
+                "grid_dim_z": {"Absolute": 8},
+                "block_dim_x": {"Absolute": 7},
+                "block_dim_y": {"Absolute": 2},
+                "block_dim_z": {"Absolute": 16},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_1_kernel", [{"Ptr": "b9"}, {"Ptr": "b3"}, {"Ptr": "p36"}, {"Ptr": "p37"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 14},
+                "grid_dim_z": {"Absolute": 8},
+                "block_dim_x": {"Absolute": 14},
                 "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 32},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_6_kernel", [{"Ptr": "b9"}, {"Ptr": "b3"}, {"Ptr": "p48"}, {"Ptr": "p49"}], {
-                "grid_dim_x": {"Absolute": 2},
-                "grid_dim_y": {"Absolute": 7},
-                "grid_dim_z": {"Absolute": 4},
-                "block_dim_x": {"Absolute": 2},
-                "block_dim_y": {"Absolute": 4},
                 "block_dim_z": {"Absolute": 16},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_7_kernel", [{"Ptr": "b4"}, {"Ptr": "b9"}, {"Ptr": "p50"}, {"Ptr": "p51"}], {
-                "grid_dim_x": {"Absolute": 2},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_2_kernel", [{"Ptr": "b81"}, {"Ptr": "b4"}], {
+                "grid_dim_x": {"Absolute": 98},
                 "grid_dim_y": {"Absolute": 1},
-                "grid_dim_z": {"Absolute": 4},
-                "block_dim_x": {"Absolute": 1},
-                "block_dim_y": {"Absolute": 7},
-                "block_dim_z": {"Absolute": 16},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_2_kernel", [{"Ptr": "b9"}, {"Ptr": "b3"}, {"Ptr": "p54"}, {"Ptr": "p55"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_2_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p34"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 16},
+                "grid_dim_z": {"Absolute": 16},
+                "block_dim_x": {"Absolute": 49},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_2_kernel_2", [{"Ptr": "b3"}, {"Ptr": "b82"}, {"Ptr": "p35"}, {"Ptr": "b9"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel", [{"Ptr": "b81"}, {"Ptr": "b3"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p38"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 16},
+                "grid_dim_z": {"Absolute": 16},
+                "block_dim_x": {"Absolute": 49},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel_2", [{"Ptr": "b4"}, {"Ptr": "b82"}, {"Ptr": "p39"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_2_kernel", [{"Ptr": "b81"}, {"Ptr": "b4"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_2_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p40"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 16},
+                "grid_dim_z": {"Absolute": 16},
+                "block_dim_x": {"Absolute": 49},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_2_kernel_2", [{"Ptr": "b9"}, {"Ptr": "b82"}, {"Ptr": "p41"}, {"Ptr": "b3"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel", [{"Ptr": "b81"}, {"Ptr": "b9"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p42"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 16},
+                "grid_dim_z": {"Absolute": 16},
+                "block_dim_x": {"Absolute": 49},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel_2", [{"Ptr": "b4"}, {"Ptr": "b82"}, {"Ptr": "p43"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_2_kernel", [{"Ptr": "b81"}, {"Ptr": "b4"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_2_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p44"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 16},
+                "grid_dim_z": {"Absolute": 16},
+                "block_dim_x": {"Absolute": 49},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_2_kernel_2", [{"Ptr": "b3"}, {"Ptr": "b82"}, {"Ptr": "p45"}, {"Ptr": "b9"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel", [{"Ptr": "b81"}, {"Ptr": "b3"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p46"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 16},
+                "grid_dim_z": {"Absolute": 16},
+                "block_dim_x": {"Absolute": 49},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel_2", [{"Ptr": "b4"}, {"Ptr": "b82"}, {"Ptr": "p47"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_2_kernel", [{"Ptr": "b81"}, {"Ptr": "b4"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_2_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p48"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 16},
+                "grid_dim_z": {"Absolute": 16},
+                "block_dim_x": {"Absolute": 49},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_2_kernel_2", [{"Ptr": "b9"}, {"Ptr": "b82"}, {"Ptr": "p49"}, {"Ptr": "b3"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel", [{"Ptr": "b81"}, {"Ptr": "b9"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p50"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 16},
+                "grid_dim_z": {"Absolute": 16},
+                "block_dim_x": {"Absolute": 49},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel_2", [{"Ptr": "b4"}, {"Ptr": "b82"}, {"Ptr": "p51"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_2_kernel", [{"Ptr": "b81"}, {"Ptr": "b4"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_2_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p52"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 16},
+                "grid_dim_z": {"Absolute": 16},
+                "block_dim_x": {"Absolute": 49},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_2_kernel_2", [{"Ptr": "b3"}, {"Ptr": "b82"}, {"Ptr": "p53"}, {"Ptr": "b9"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel", [{"Ptr": "b81"}, {"Ptr": "b3"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p54"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 16},
+                "grid_dim_z": {"Absolute": 16},
+                "block_dim_x": {"Absolute": 49},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel_2", [{"Ptr": "b4"}, {"Ptr": "b82"}, {"Ptr": "p55"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_2_kernel", [{"Ptr": "b81"}, {"Ptr": "b4"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_2_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p56"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 16},
+                "grid_dim_z": {"Absolute": 16},
+                "block_dim_x": {"Absolute": 49},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_2_kernel_2", [{"Ptr": "b9"}, {"Ptr": "b82"}, {"Ptr": "p57"}, {"Ptr": "b3"}], {
+                "grid_dim_x": {"Absolute": 98},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_3_kernel", [{"Ptr": "b4"}, {"Ptr": "b9"}, {"Ptr": "p58"}, {"Ptr": "p59"}], {
                 "grid_dim_x": {"Absolute": 1},
                 "grid_dim_y": {"Absolute": 7},
                 "grid_dim_z": {"Absolute": 32},
-                "block_dim_x": {"Absolute": 14},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 8},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_add_nn_relu_2_kernel", [{"Ptr": "b3"}, {"Ptr": "b4"}, {"Ptr": "p52"}, {"Ptr": "p53"}, {"Ptr": "b9"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 7},
-                "grid_dim_z": {"Absolute": 16},
                 "block_dim_x": {"Absolute": 7},
-                "block_dim_y": {"Absolute": 2},
+                "block_dim_y": {"Absolute": 1},
                 "block_dim_z": {"Absolute": 16},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_8_kernel", [{"Ptr": "b4"}, {"Ptr": "b3"}, {"Ptr": "p56"}, {"Ptr": "p57"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 7},
-                "grid_dim_z": {"Absolute": 8},
-                "block_dim_x": {"Absolute": 14},
-                "block_dim_y": {"Absolute": 2},
-                "block_dim_z": {"Absolute": 16},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel", [{"Ptr": "b115"}, {"Ptr": "b4"}], {
-                "grid_dim_x": {"Absolute": 98},
-                "grid_dim_y": {"Absolute": 1},
-                "grid_dim_z": {"Absolute": 1},
-                "block_dim_x": {"Absolute": 128},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 1},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel_1", [{"Ptr": "b116"}, {"Ptr": "b115"}, {"Ptr": "p58"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 16},
-                "grid_dim_z": {"Absolute": 16},
-                "block_dim_x": {"Absolute": 49},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 1},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel_2", [{"Ptr": "b9"}, {"Ptr": "b116"}, {"Ptr": "p59"}], {
-                "grid_dim_x": {"Absolute": 98},
-                "grid_dim_y": {"Absolute": 1},
-                "grid_dim_z": {"Absolute": 1},
-                "block_dim_x": {"Absolute": 128},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 1},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_add_nn_relu_2_kernel", [{"Ptr": "b4"}, {"Ptr": "b9"}, {"Ptr": "p60"}, {"Ptr": "p61"}, {"Ptr": "b3"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 7},
-                "grid_dim_z": {"Absolute": 16},
-                "block_dim_x": {"Absolute": 7},
-                "block_dim_y": {"Absolute": 2},
-                "block_dim_z": {"Absolute": 16},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_8_kernel", [{"Ptr": "b9"}, {"Ptr": "b4"}, {"Ptr": "p62"}, {"Ptr": "p63"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 7},
-                "grid_dim_z": {"Absolute": 8},
-                "block_dim_x": {"Absolute": 14},
-                "block_dim_y": {"Absolute": 2},
-                "block_dim_z": {"Absolute": 16},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel", [{"Ptr": "b115"}, {"Ptr": "b9"}], {
-                "grid_dim_x": {"Absolute": 98},
-                "grid_dim_y": {"Absolute": 1},
-                "grid_dim_z": {"Absolute": 1},
-                "block_dim_x": {"Absolute": 128},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 1},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel_1", [{"Ptr": "b116"}, {"Ptr": "b115"}, {"Ptr": "p64"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 16},
-                "grid_dim_z": {"Absolute": 16},
-                "block_dim_x": {"Absolute": 49},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 1},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel_2", [{"Ptr": "b3"}, {"Ptr": "b116"}, {"Ptr": "p65"}], {
-                "grid_dim_x": {"Absolute": 98},
-                "grid_dim_y": {"Absolute": 1},
-                "grid_dim_z": {"Absolute": 1},
-                "block_dim_x": {"Absolute": 128},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 1},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_add_nn_relu_2_kernel", [{"Ptr": "b9"}, {"Ptr": "b3"}, {"Ptr": "p66"}, {"Ptr": "p67"}, {"Ptr": "b4"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 7},
-                "grid_dim_z": {"Absolute": 16},
-                "block_dim_x": {"Absolute": 7},
-                "block_dim_y": {"Absolute": 2},
-                "block_dim_z": {"Absolute": 16},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_8_kernel", [{"Ptr": "b3"}, {"Ptr": "b9"}, {"Ptr": "p68"}, {"Ptr": "p69"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 7},
-                "grid_dim_z": {"Absolute": 8},
-                "block_dim_x": {"Absolute": 14},
-                "block_dim_y": {"Absolute": 2},
-                "block_dim_z": {"Absolute": 16},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel", [{"Ptr": "b115"}, {"Ptr": "b3"}], {
-                "grid_dim_x": {"Absolute": 98},
-                "grid_dim_y": {"Absolute": 1},
-                "grid_dim_z": {"Absolute": 1},
-                "block_dim_x": {"Absolute": 128},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 1},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel_1", [{"Ptr": "b116"}, {"Ptr": "b115"}, {"Ptr": "p70"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 16},
-                "grid_dim_z": {"Absolute": 16},
-                "block_dim_x": {"Absolute": 49},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 1},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel_2", [{"Ptr": "b4"}, {"Ptr": "b116"}, {"Ptr": "p71"}], {
-                "grid_dim_x": {"Absolute": 98},
-                "grid_dim_y": {"Absolute": 1},
-                "grid_dim_z": {"Absolute": 1},
-                "block_dim_x": {"Absolute": 128},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 1},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_add_nn_relu_2_kernel", [{"Ptr": "b3"}, {"Ptr": "b4"}, {"Ptr": "p72"}, {"Ptr": "p73"}, {"Ptr": "b9"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 7},
-                "grid_dim_z": {"Absolute": 16},
-                "block_dim_x": {"Absolute": 7},
-                "block_dim_y": {"Absolute": 2},
-                "block_dim_z": {"Absolute": 16},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_8_kernel", [{"Ptr": "b4"}, {"Ptr": "b3"}, {"Ptr": "p74"}, {"Ptr": "p75"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 7},
-                "grid_dim_z": {"Absolute": 8},
-                "block_dim_x": {"Absolute": 14},
-                "block_dim_y": {"Absolute": 2},
-                "block_dim_z": {"Absolute": 16},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel", [{"Ptr": "b115"}, {"Ptr": "b4"}], {
-                "grid_dim_x": {"Absolute": 98},
-                "grid_dim_y": {"Absolute": 1},
-                "grid_dim_z": {"Absolute": 1},
-                "block_dim_x": {"Absolute": 128},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 1},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel_1", [{"Ptr": "b116"}, {"Ptr": "b115"}, {"Ptr": "p76"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 16},
-                "grid_dim_z": {"Absolute": 16},
-                "block_dim_x": {"Absolute": 49},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 1},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel_2", [{"Ptr": "b9"}, {"Ptr": "b116"}, {"Ptr": "p77"}], {
-                "grid_dim_x": {"Absolute": 98},
-                "grid_dim_y": {"Absolute": 1},
-                "grid_dim_z": {"Absolute": 1},
-                "block_dim_x": {"Absolute": 128},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 1},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_add_nn_relu_2_kernel", [{"Ptr": "b4"}, {"Ptr": "b9"}, {"Ptr": "p78"}, {"Ptr": "p79"}, {"Ptr": "b3"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 7},
-                "grid_dim_z": {"Absolute": 16},
-                "block_dim_x": {"Absolute": 7},
-                "block_dim_y": {"Absolute": 2},
-                "block_dim_z": {"Absolute": 16},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_8_kernel", [{"Ptr": "b9"}, {"Ptr": "b4"}, {"Ptr": "p80"}, {"Ptr": "p81"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 7},
-                "grid_dim_z": {"Absolute": 8},
-                "block_dim_x": {"Absolute": 14},
-                "block_dim_y": {"Absolute": 2},
-                "block_dim_z": {"Absolute": 16},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel", [{"Ptr": "b115"}, {"Ptr": "b9"}], {
-                "grid_dim_x": {"Absolute": 98},
-                "grid_dim_y": {"Absolute": 1},
-                "grid_dim_z": {"Absolute": 1},
-                "block_dim_x": {"Absolute": 128},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 1},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel_1", [{"Ptr": "b116"}, {"Ptr": "b115"}, {"Ptr": "p82"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 16},
-                "grid_dim_z": {"Absolute": 16},
-                "block_dim_x": {"Absolute": 49},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 1},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_2_kernel_2", [{"Ptr": "b3"}, {"Ptr": "b116"}, {"Ptr": "p83"}], {
-                "grid_dim_x": {"Absolute": 98},
-                "grid_dim_y": {"Absolute": 1},
-                "grid_dim_z": {"Absolute": 1},
-                "block_dim_x": {"Absolute": 128},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 1},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_add_nn_relu_2_kernel", [{"Ptr": "b9"}, {"Ptr": "b3"}, {"Ptr": "p84"}, {"Ptr": "p85"}, {"Ptr": "b4"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 7},
-                "grid_dim_z": {"Absolute": 16},
-                "block_dim_x": {"Absolute": 7},
-                "block_dim_y": {"Absolute": 2},
-                "block_dim_z": {"Absolute": 16},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_9_kernel", [{"Ptr": "b3"}, {"Ptr": "b9"}, {"Ptr": "p86"}, {"Ptr": "p87"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 7},
-                "grid_dim_z": {"Absolute": 16},
-                "block_dim_x": {"Absolute": 14},
-                "block_dim_y": {"Absolute": 2},
-                "block_dim_z": {"Absolute": 8},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_10_kernel", [{"Ptr": "b94"}, {"Ptr": "b3"}, {"Ptr": "p88"}, {"Ptr": "p89"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 1},
-                "grid_dim_z": {"Absolute": 8},
-                "block_dim_x": {"Absolute": 1},
-                "block_dim_y": {"Absolute": 7},
-                "block_dim_z": {"Absolute": 32},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_3_kernel", [{"Ptr": "b4"}, {"Ptr": "b9"}, {"Ptr": "p92"}, {"Ptr": "p93"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_2_kernel", [{"Ptr": "b68"}, {"Ptr": "b9"}, {"Ptr": "p62"}, {"Ptr": "p63"}], {
                 "grid_dim_x": {"Absolute": 1},
                 "grid_dim_y": {"Absolute": 7},
                 "grid_dim_z": {"Absolute": 16},
@@ -664,25 +762,7 @@
                 "block_dim_z": {"Absolute": 32},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_add_nn_relu_3_kernel", [{"Ptr": "b3"}, {"Ptr": "b94"}, {"Ptr": "p90"}, {"Ptr": "p91"}, {"Ptr": "b4"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 1},
-                "grid_dim_z": {"Absolute": 64},
-                "block_dim_x": {"Absolute": 1},
-                "block_dim_y": {"Absolute": 7},
-                "block_dim_z": {"Absolute": 16},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_11_kernel", [{"Ptr": "b94"}, {"Ptr": "b3"}, {"Ptr": "p94"}, {"Ptr": "p95"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 7},
-                "grid_dim_z": {"Absolute": 16},
-                "block_dim_x": {"Absolute": 7},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 32},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_3_kernel", [{"Ptr": "b115"}, {"Ptr": "b94"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_3_kernel", [{"Ptr": "b81"}, {"Ptr": "b4"}], {
                 "grid_dim_x": {"Absolute": 64},
                 "grid_dim_y": {"Absolute": 1},
                 "grid_dim_z": {"Absolute": 1},
@@ -691,7 +771,7 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_3_kernel_1", [{"Ptr": "b116"}, {"Ptr": "b115"}, {"Ptr": "p96"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_3_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p60"}], {
                 "grid_dim_x": {"Absolute": 1},
                 "grid_dim_y": {"Absolute": 8},
                 "grid_dim_z": {"Absolute": 16},
@@ -700,7 +780,7 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_3_kernel_2", [{"Ptr": "b103"}, {"Ptr": "b116"}, {"Ptr": "p97"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_3_kernel_2", [{"Ptr": "b9"}, {"Ptr": "b82"}, {"Ptr": "p61"}, {"Ptr": "b68"}], {
                 "grid_dim_x": {"Absolute": 64},
                 "grid_dim_y": {"Absolute": 1},
                 "grid_dim_z": {"Absolute": 1},
@@ -709,25 +789,7 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_add_nn_relu_3_kernel", [{"Ptr": "b9"}, {"Ptr": "b103"}, {"Ptr": "p98"}, {"Ptr": "p99"}, {"Ptr": "b3"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 1},
-                "grid_dim_z": {"Absolute": 64},
-                "block_dim_x": {"Absolute": 1},
-                "block_dim_y": {"Absolute": 7},
-                "block_dim_z": {"Absolute": 16},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_nn_relu_11_kernel", [{"Ptr": "b94"}, {"Ptr": "b9"}, {"Ptr": "p100"}, {"Ptr": "p101"}], {
-                "grid_dim_x": {"Absolute": 1},
-                "grid_dim_y": {"Absolute": 7},
-                "grid_dim_z": {"Absolute": 16},
-                "block_dim_x": {"Absolute": 7},
-                "block_dim_y": {"Absolute": 1},
-                "block_dim_z": {"Absolute": 32},
-                "shared_mem_bytes": {"Absolute": 0}
-            }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_3_kernel", [{"Ptr": "b115"}, {"Ptr": "b94"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_3_kernel", [{"Ptr": "b81"}, {"Ptr": "b9"}], {
                 "grid_dim_x": {"Absolute": 64},
                 "grid_dim_y": {"Absolute": 1},
                 "grid_dim_z": {"Absolute": 1},
@@ -736,7 +798,7 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_3_kernel_1", [{"Ptr": "b116"}, {"Ptr": "b115"}, {"Ptr": "p102"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_3_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p64"}], {
                 "grid_dim_x": {"Absolute": 1},
                 "grid_dim_y": {"Absolute": 8},
                 "grid_dim_z": {"Absolute": 16},
@@ -745,7 +807,7 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_3_kernel_2", [{"Ptr": "b103"}, {"Ptr": "b116"}, {"Ptr": "p103"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_3_kernel_2", [{"Ptr": "b68"}, {"Ptr": "b82"}, {"Ptr": "p65"}], {
                 "grid_dim_x": {"Absolute": 64},
                 "grid_dim_y": {"Absolute": 1},
                 "grid_dim_z": {"Absolute": 1},
@@ -754,17 +816,89 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_conv2d_add_add_nn_relu_3_kernel", [{"Ptr": "b4"}, {"Ptr": "b103"}, {"Ptr": "p104"}, {"Ptr": "p105"}, {"Ptr": "b9"}], {
-                "grid_dim_x": {"Absolute": 1},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_3_kernel", [{"Ptr": "b81"}, {"Ptr": "b68"}], {
+                "grid_dim_x": {"Absolute": 64},
                 "grid_dim_y": {"Absolute": 1},
-                "grid_dim_z": {"Absolute": 64},
-                "block_dim_x": {"Absolute": 1},
-                "block_dim_y": {"Absolute": 7},
-                "block_dim_z": {"Absolute": 16},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_global_avg_pool2d_kernel", [{"Ptr": "b115"}, {"Ptr": "b4"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_3_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p66"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 8},
+                "grid_dim_z": {"Absolute": 16},
+                "block_dim_x": {"Absolute": 8},
+                "block_dim_y": {"Absolute": 16},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_3_kernel_2", [{"Ptr": "b4"}, {"Ptr": "b82"}, {"Ptr": "p67"}, {"Ptr": "b9"}], {
                 "grid_dim_x": {"Absolute": 64},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_3_kernel", [{"Ptr": "b81"}, {"Ptr": "b4"}], {
+                "grid_dim_x": {"Absolute": 64},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_3_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p68"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 8},
+                "grid_dim_z": {"Absolute": 16},
+                "block_dim_x": {"Absolute": 8},
+                "block_dim_y": {"Absolute": 16},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_nn_relu_3_kernel_2", [{"Ptr": "b68"}, {"Ptr": "b82"}, {"Ptr": "p69"}], {
+                "grid_dim_x": {"Absolute": 64},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_3_kernel", [{"Ptr": "b81"}, {"Ptr": "b68"}], {
+                "grid_dim_x": {"Absolute": 64},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_3_kernel_1", [{"Ptr": "b82"}, {"Ptr": "b81"}, {"Ptr": "p70"}], {
+                "grid_dim_x": {"Absolute": 1},
+                "grid_dim_y": {"Absolute": 8},
+                "grid_dim_z": {"Absolute": 16},
+                "block_dim_x": {"Absolute": 8},
+                "block_dim_y": {"Absolute": 16},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_contrib_conv2d_winograd_without_weight_transform_add_add_nn_relu_3_kernel_2", [{"Ptr": "b9"}, {"Ptr": "b82"}, {"Ptr": "p71"}, {"Ptr": "b4"}], {
+                "grid_dim_x": {"Absolute": 64},
+                "grid_dim_y": {"Absolute": 1},
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 128},
+                "block_dim_y": {"Absolute": 1},
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]},
+            {"ExecKernel": ["tvmgen_default_fused_nn_global_avg_pool2d_kernel", [{"Ptr": "b81"}, {"Ptr": "b9"}], {
+                "grid_dim_x": {"Absolute": 16},
                 "grid_dim_y": {"Absolute": 1},
                 "grid_dim_z": {"Absolute": 1},
                 "block_dim_x": {"Absolute": 32},
@@ -772,16 +906,16 @@
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_global_avg_pool2d_kernel_1", [{"Ptr": "b94"}, {"Ptr": "b115"}], {
-                "grid_dim_x": {"Absolute": 2},
+            {"ExecKernel": ["tvmgen_default_fused_nn_global_avg_pool2d_kernel_1", [{"Ptr": "b77"}, {"Ptr": "b81"}], {
+                "grid_dim_x": {"Absolute": 1},
                 "grid_dim_y": {"Absolute": 1},
                 "grid_dim_z": {"Absolute": 1},
-                "block_dim_x": {"Absolute": 1024},
+                "block_dim_x": {"Absolute": 512},
                 "block_dim_y": {"Absolute": 1},
                 "block_dim_z": {"Absolute": 1},
                 "shared_mem_bytes": {"Absolute": 0}
             }]},
-            {"ExecKernel": ["tvmgen_default_fused_nn_dense_add_kernel", [{"Ptr": "output"}, {"Ptr": "b94"}, {"Ptr": "p106"}, {"Ptr": "p107"}], {
+            {"ExecKernel": ["tvmgen_default_fused_nn_dense_add_kernel", [{"Ptr": "output"}, {"Ptr": "b77"}, {"Ptr": "p72"}, {"Ptr": "p73"}], {
                 "grid_dim_x": {"Absolute": 1000},
                 "grid_dim_y": {"Absolute": 1},
                 "grid_dim_z": {"Absolute": 1},

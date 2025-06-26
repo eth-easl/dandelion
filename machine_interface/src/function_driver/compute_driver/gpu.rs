@@ -119,6 +119,10 @@ fn execute(
             }
         }
     }
+    
+    #[cfg(feature = "timestamp")]
+    gpu_api::synchronize();
+
     Ok(())
 }
 
@@ -149,7 +153,7 @@ pub fn gpu_run(
 
     let mut buffer_pool = buffer_pool.lock().unwrap();
 
-    recorder.record(RecordPoint::GPULoadStart);
+    recorder.record(RecordPoint::GPUTransferStart);
     // Maps from bufname -> (index in buffer pool, size of buffer)
     let mut buffers: HashMap<String, (usize, usize)> = HashMap::new();
     for name in &config.blueprint.inputs {
@@ -165,7 +169,7 @@ pub fn gpu_run(
         let idx = buffer_pool.alloc_buffer(size)?;
         buffers.insert(name.clone(), (idx, size));
     }
-    recorder.record(RecordPoint::GPULoadEnd);
+    recorder.record(RecordPoint::GPUTransferEnd);
 
     recorder.record(RecordPoint::GPUInferenceStart);
     execute(

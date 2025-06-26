@@ -410,6 +410,7 @@ async fn service(
         | "/cold/resnet34batch8"
         | "/cold/resnet34batch16"
         | "/cold/resnet50"
+        | "/cold/resnet101"
         | "/cold/resnet152"
         | "/cold/vit_b_16"
         | "/cold/llama_kv" => serve_request(true, req, dispatcher).await,
@@ -439,6 +440,7 @@ async fn service(
         | "/hot/resnet34batch8"
         | "/hot/resnet34batch16"
         | "/hot/resnet50"
+        | "/hot/resnet101"
         | "/hot/resnet152"
         | "/hot/vit_b_16"
         | "/hot/llama_kv" => serve_request(false, req, dispatcher).await,
