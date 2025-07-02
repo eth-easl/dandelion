@@ -1453,20 +1453,6 @@ pub fn full_load_llama_kv(mut function_context: Context) -> (usize, String, Vec<
     (output_size, output_name.to_string(), expected, function_context)
 }
 
-pub fn load_double_matmul(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
-    let params_path = "/pub/scratch/alrusso/TVM-compilation/model_parameters/double_matmul/";
-
-    add_buffer("input", 16, params_path, &mut function_context);
-    add_buffer("p0", 80, params_path, &mut function_context);
-    add_buffer("p1", 60, params_path, &mut function_context);
-
-    let output_name: &str = "output";
-    let output_size: usize = 12;
-    let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
-
-    (output_size, output_name.to_string(), expected, function_context)
-}
-
 pub fn load_llama_kv(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
     let params_path = "/pub/scratch/alrusso/TVM-compilation/model_parameters/llama_kv/";
 
@@ -1820,60 +1806,6 @@ pub fn load_simple(mut function_context: Context) -> (usize, String, Vec<f32>, C
     (output_size, output_name.to_string(), expected, function_context)
 }
 
-pub fn load_resnet18(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
-    let params_path = "/pub/scratch/alrusso/TVM-compilation/model_parameters/resnet18/";
-
-    add_buffer("input", 602112, params_path, &mut function_context);
-    add_buffer("p0", 37632, params_path, &mut function_context);
-    add_buffer("p1", 256, params_path, &mut function_context);
-    add_buffer("p2", 589824, params_path, &mut function_context);
-    add_buffer("p3", 256, params_path, &mut function_context);
-    add_buffer("p4", 589824, params_path, &mut function_context);
-    add_buffer("p5", 256, params_path, &mut function_context);
-    add_buffer("p6", 589824, params_path, &mut function_context);
-    add_buffer("p7", 256, params_path, &mut function_context);
-    add_buffer("p8", 589824, params_path, &mut function_context);
-    add_buffer("p9", 256, params_path, &mut function_context);
-    add_buffer("p10", 294912, params_path, &mut function_context);
-    add_buffer("p11", 512, params_path, &mut function_context);
-    add_buffer("p12", 1048576, params_path, &mut function_context);
-    add_buffer("p13", 512, params_path, &mut function_context);
-    add_buffer("p14", 32768, params_path, &mut function_context);
-    add_buffer("p15", 512, params_path, &mut function_context);
-    add_buffer("p16", 1048576, params_path, &mut function_context);
-    add_buffer("p17", 512, params_path, &mut function_context);
-    add_buffer("p18", 1048576, params_path, &mut function_context);
-    add_buffer("p19", 512, params_path, &mut function_context);
-    add_buffer("p20", 1179648, params_path, &mut function_context);
-    add_buffer("p21", 1024, params_path, &mut function_context);
-    add_buffer("p22", 4194304, params_path, &mut function_context);
-    add_buffer("p23", 1024, params_path, &mut function_context);
-    add_buffer("p24", 131072, params_path, &mut function_context);
-    add_buffer("p25", 1024, params_path, &mut function_context);
-    add_buffer("p26", 4194304, params_path, &mut function_context);
-    add_buffer("p27", 1024, params_path, &mut function_context);
-    add_buffer("p28", 4194304, params_path, &mut function_context);
-    add_buffer("p29", 1024, params_path, &mut function_context);
-    add_buffer("p30", 4718592, params_path, &mut function_context);
-    add_buffer("p31", 2048, params_path, &mut function_context);
-    add_buffer("p32", 16777216, params_path, &mut function_context);
-    add_buffer("p33", 2048, params_path, &mut function_context);
-    add_buffer("p34", 524288, params_path, &mut function_context);
-    add_buffer("p35", 2048, params_path, &mut function_context);
-    add_buffer("p36", 16777216, params_path, &mut function_context);
-    add_buffer("p37", 2048, params_path, &mut function_context);
-    add_buffer("p38", 16777216, params_path, &mut function_context);
-    add_buffer("p39", 2048, params_path, &mut function_context);
-    add_buffer("p40", 2048000, params_path, &mut function_context);
-    add_buffer("p41", 4000, params_path, &mut function_context);
-
-    let output_name: &str = "output";
-    let output_size: usize = 4000;
-    let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
-
-    (output_size, output_name.to_string(), expected, function_context)
-}
-
 pub fn load_vit_b_16(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
     let params_path = "/pub/scratch/alrusso/TVM-compilation/model_parameters/vit_b_16/";
 
@@ -2065,6 +1997,74 @@ pub fn load_vit_b_16(mut function_context: Context) -> (usize, String, Vec<f32>,
     (output_size, output_name.to_string(), expected, function_context)
 }
 
+pub fn load_double_matmul(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
+    let params_path = "/pub/scratch/alrusso/TVM-compilation/model_parameters/double_matmul/";
+
+    add_buffer("input", 16, params_path, &mut function_context);
+    add_buffer("p0", 80, params_path, &mut function_context);
+    add_buffer("p1", 60, params_path, &mut function_context);
+
+    let output_name: &str = "output";
+    let output_size: usize = 12;
+    let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
+
+    (output_size, output_name.to_string(), expected, function_context)
+}
+
+pub fn load_resnet18(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
+    let params_path = "/pub/scratch/alrusso/TVM-compilation/model_parameters/resnet18/";
+
+    add_buffer("input", 602112, params_path, &mut function_context);
+    add_buffer("p0", 37632, params_path, &mut function_context);
+    add_buffer("p1", 256, params_path, &mut function_context);
+    add_buffer("p2", 589824, params_path, &mut function_context);
+    add_buffer("p3", 256, params_path, &mut function_context);
+    add_buffer("p4", 589824, params_path, &mut function_context);
+    add_buffer("p5", 256, params_path, &mut function_context);
+    add_buffer("p6", 589824, params_path, &mut function_context);
+    add_buffer("p7", 256, params_path, &mut function_context);
+    add_buffer("p8", 589824, params_path, &mut function_context);
+    add_buffer("p9", 256, params_path, &mut function_context);
+    add_buffer("p10", 294912, params_path, &mut function_context);
+    add_buffer("p11", 512, params_path, &mut function_context);
+    add_buffer("p12", 1048576, params_path, &mut function_context);
+    add_buffer("p13", 512, params_path, &mut function_context);
+    add_buffer("p14", 32768, params_path, &mut function_context);
+    add_buffer("p15", 512, params_path, &mut function_context);
+    add_buffer("p16", 1048576, params_path, &mut function_context);
+    add_buffer("p17", 512, params_path, &mut function_context);
+    add_buffer("p18", 1048576, params_path, &mut function_context);
+    add_buffer("p19", 512, params_path, &mut function_context);
+    add_buffer("p20", 1179648, params_path, &mut function_context);
+    add_buffer("p21", 1024, params_path, &mut function_context);
+    add_buffer("p22", 4194304, params_path, &mut function_context);
+    add_buffer("p23", 1024, params_path, &mut function_context);
+    add_buffer("p24", 131072, params_path, &mut function_context);
+    add_buffer("p25", 1024, params_path, &mut function_context);
+    add_buffer("p26", 4194304, params_path, &mut function_context);
+    add_buffer("p27", 1024, params_path, &mut function_context);
+    add_buffer("p28", 4194304, params_path, &mut function_context);
+    add_buffer("p29", 1024, params_path, &mut function_context);
+    add_buffer("p30", 4718592, params_path, &mut function_context);
+    add_buffer("p31", 2048, params_path, &mut function_context);
+    add_buffer("p32", 16777216, params_path, &mut function_context);
+    add_buffer("p33", 2048, params_path, &mut function_context);
+    add_buffer("p34", 524288, params_path, &mut function_context);
+    add_buffer("p35", 2048, params_path, &mut function_context);
+    add_buffer("p36", 16777216, params_path, &mut function_context);
+    add_buffer("p37", 2048, params_path, &mut function_context);
+    add_buffer("p38", 16777216, params_path, &mut function_context);
+    add_buffer("p39", 2048, params_path, &mut function_context);
+    add_buffer("p40", 2048000, params_path, &mut function_context);
+    add_buffer("p41", 4000, params_path, &mut function_context);
+
+    let output_name: &str = "output";
+    let output_size: usize = 4000;
+    let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
+
+    (output_size, output_name.to_string(), expected, function_context)
+}
+
 pub fn load_resnet34(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
     let params_path = "/pub/scratch/alrusso/TVM-compilation/model_parameters/resnet34/";
 
@@ -2143,6 +2143,126 @@ pub fn load_resnet34(mut function_context: Context) -> (usize, String, Vec<f32>,
     add_buffer("p71", 2048, params_path, &mut function_context);
     add_buffer("p72", 2048000, params_path, &mut function_context);
     add_buffer("p73", 4000, params_path, &mut function_context);
+
+    let output_name: &str = "output";
+    let output_size: usize = 4000;
+    let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
+
+    (output_size, output_name.to_string(), expected, function_context)
+}
+
+pub fn load_resnet50(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
+    let params_path = "/pub/scratch/alrusso/TVM-compilation/model_parameters/resnet50/";
+
+    add_buffer("input", 602112, params_path, &mut function_context);
+    add_buffer("p0", 37632, params_path, &mut function_context);
+    add_buffer("p1", 256, params_path, &mut function_context);
+    add_buffer("p2", 16384, params_path, &mut function_context);
+    add_buffer("p3", 256, params_path, &mut function_context);
+    add_buffer("p4", 589824, params_path, &mut function_context);
+    add_buffer("p5", 256, params_path, &mut function_context);
+    add_buffer("p6", 65536, params_path, &mut function_context);
+    add_buffer("p7", 1024, params_path, &mut function_context);
+    add_buffer("p8", 65536, params_path, &mut function_context);
+    add_buffer("p9", 1024, params_path, &mut function_context);
+    add_buffer("p10", 65536, params_path, &mut function_context);
+    add_buffer("p11", 256, params_path, &mut function_context);
+    add_buffer("p12", 589824, params_path, &mut function_context);
+    add_buffer("p13", 256, params_path, &mut function_context);
+    add_buffer("p14", 65536, params_path, &mut function_context);
+    add_buffer("p15", 1024, params_path, &mut function_context);
+    add_buffer("p16", 65536, params_path, &mut function_context);
+    add_buffer("p17", 256, params_path, &mut function_context);
+    add_buffer("p18", 589824, params_path, &mut function_context);
+    add_buffer("p19", 256, params_path, &mut function_context);
+    add_buffer("p20", 65536, params_path, &mut function_context);
+    add_buffer("p21", 1024, params_path, &mut function_context);
+    add_buffer("p22", 131072, params_path, &mut function_context);
+    add_buffer("p23", 512, params_path, &mut function_context);
+    add_buffer("p24", 589824, params_path, &mut function_context);
+    add_buffer("p25", 512, params_path, &mut function_context);
+    add_buffer("p26", 262144, params_path, &mut function_context);
+    add_buffer("p27", 2048, params_path, &mut function_context);
+    add_buffer("p28", 524288, params_path, &mut function_context);
+    add_buffer("p29", 2048, params_path, &mut function_context);
+    add_buffer("p30", 262144, params_path, &mut function_context);
+    add_buffer("p31", 512, params_path, &mut function_context);
+    add_buffer("p32", 1048576, params_path, &mut function_context);
+    add_buffer("p33", 512, params_path, &mut function_context);
+    add_buffer("p34", 262144, params_path, &mut function_context);
+    add_buffer("p35", 2048, params_path, &mut function_context);
+    add_buffer("p36", 262144, params_path, &mut function_context);
+    add_buffer("p37", 512, params_path, &mut function_context);
+    add_buffer("p38", 1048576, params_path, &mut function_context);
+    add_buffer("p39", 512, params_path, &mut function_context);
+    add_buffer("p40", 262144, params_path, &mut function_context);
+    add_buffer("p41", 2048, params_path, &mut function_context);
+    add_buffer("p42", 262144, params_path, &mut function_context);
+    add_buffer("p43", 512, params_path, &mut function_context);
+    add_buffer("p44", 1048576, params_path, &mut function_context);
+    add_buffer("p45", 512, params_path, &mut function_context);
+    add_buffer("p46", 262144, params_path, &mut function_context);
+    add_buffer("p47", 2048, params_path, &mut function_context);
+    add_buffer("p48", 524288, params_path, &mut function_context);
+    add_buffer("p49", 1024, params_path, &mut function_context);
+    add_buffer("p50", 2359296, params_path, &mut function_context);
+    add_buffer("p51", 1024, params_path, &mut function_context);
+    add_buffer("p52", 1048576, params_path, &mut function_context);
+    add_buffer("p53", 4096, params_path, &mut function_context);
+    add_buffer("p54", 2097152, params_path, &mut function_context);
+    add_buffer("p55", 4096, params_path, &mut function_context);
+    add_buffer("p56", 1048576, params_path, &mut function_context);
+    add_buffer("p57", 1024, params_path, &mut function_context);
+    add_buffer("p58", 4194304, params_path, &mut function_context);
+    add_buffer("p59", 1024, params_path, &mut function_context);
+    add_buffer("p60", 1048576, params_path, &mut function_context);
+    add_buffer("p61", 4096, params_path, &mut function_context);
+    add_buffer("p62", 1048576, params_path, &mut function_context);
+    add_buffer("p63", 1024, params_path, &mut function_context);
+    add_buffer("p64", 4194304, params_path, &mut function_context);
+    add_buffer("p65", 1024, params_path, &mut function_context);
+    add_buffer("p66", 1048576, params_path, &mut function_context);
+    add_buffer("p67", 4096, params_path, &mut function_context);
+    add_buffer("p68", 1048576, params_path, &mut function_context);
+    add_buffer("p69", 1024, params_path, &mut function_context);
+    add_buffer("p70", 4194304, params_path, &mut function_context);
+    add_buffer("p71", 1024, params_path, &mut function_context);
+    add_buffer("p72", 1048576, params_path, &mut function_context);
+    add_buffer("p73", 4096, params_path, &mut function_context);
+    add_buffer("p74", 1048576, params_path, &mut function_context);
+    add_buffer("p75", 1024, params_path, &mut function_context);
+    add_buffer("p76", 4194304, params_path, &mut function_context);
+    add_buffer("p77", 1024, params_path, &mut function_context);
+    add_buffer("p78", 1048576, params_path, &mut function_context);
+    add_buffer("p79", 4096, params_path, &mut function_context);
+    add_buffer("p80", 1048576, params_path, &mut function_context);
+    add_buffer("p81", 1024, params_path, &mut function_context);
+    add_buffer("p82", 4194304, params_path, &mut function_context);
+    add_buffer("p83", 1024, params_path, &mut function_context);
+    add_buffer("p84", 1048576, params_path, &mut function_context);
+    add_buffer("p85", 4096, params_path, &mut function_context);
+    add_buffer("p86", 2097152, params_path, &mut function_context);
+    add_buffer("p87", 2048, params_path, &mut function_context);
+    add_buffer("p88", 9437184, params_path, &mut function_context);
+    add_buffer("p89", 2048, params_path, &mut function_context);
+    add_buffer("p90", 4194304, params_path, &mut function_context);
+    add_buffer("p91", 8192, params_path, &mut function_context);
+    add_buffer("p92", 8388608, params_path, &mut function_context);
+    add_buffer("p93", 8192, params_path, &mut function_context);
+    add_buffer("p94", 4194304, params_path, &mut function_context);
+    add_buffer("p95", 2048, params_path, &mut function_context);
+    add_buffer("p96", 16777216, params_path, &mut function_context);
+    add_buffer("p97", 2048, params_path, &mut function_context);
+    add_buffer("p98", 4194304, params_path, &mut function_context);
+    add_buffer("p99", 8192, params_path, &mut function_context);
+    add_buffer("p100", 4194304, params_path, &mut function_context);
+    add_buffer("p101", 2048, params_path, &mut function_context);
+    add_buffer("p102", 16777216, params_path, &mut function_context);
+    add_buffer("p103", 2048, params_path, &mut function_context);
+    add_buffer("p104", 4194304, params_path, &mut function_context);
+    add_buffer("p105", 8192, params_path, &mut function_context);
+    add_buffer("p106", 8192000, params_path, &mut function_context);
+    add_buffer("p107", 4000, params_path, &mut function_context);
 
     let output_name: &str = "output";
     let output_size: usize = 4000;
@@ -2697,118 +2817,116 @@ pub fn load_resnet152(mut function_context: Context) -> (usize, String, Vec<f32>
     (output_size, output_name.to_string(), expected, function_context)
 }
 
-pub fn load_resnet50(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
-    let params_path = "/pub/scratch/alrusso/TVM-compilation/model_parameters/resnet50/";
+pub fn load_mobilenetv2(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
+    let params_path = "/pub/scratch/alrusso/TVM-compilation/model_parameters/mobilenetv2/";
 
     add_buffer("input", 602112, params_path, &mut function_context);
-    add_buffer("p0", 37632, params_path, &mut function_context);
-    add_buffer("p1", 256, params_path, &mut function_context);
-    add_buffer("p2", 16384, params_path, &mut function_context);
-    add_buffer("p3", 256, params_path, &mut function_context);
-    add_buffer("p4", 589824, params_path, &mut function_context);
-    add_buffer("p5", 256, params_path, &mut function_context);
-    add_buffer("p6", 65536, params_path, &mut function_context);
-    add_buffer("p7", 1024, params_path, &mut function_context);
-    add_buffer("p8", 65536, params_path, &mut function_context);
-    add_buffer("p9", 1024, params_path, &mut function_context);
-    add_buffer("p10", 65536, params_path, &mut function_context);
-    add_buffer("p11", 256, params_path, &mut function_context);
-    add_buffer("p12", 589824, params_path, &mut function_context);
-    add_buffer("p13", 256, params_path, &mut function_context);
-    add_buffer("p14", 65536, params_path, &mut function_context);
-    add_buffer("p15", 1024, params_path, &mut function_context);
-    add_buffer("p16", 65536, params_path, &mut function_context);
-    add_buffer("p17", 256, params_path, &mut function_context);
-    add_buffer("p18", 589824, params_path, &mut function_context);
-    add_buffer("p19", 256, params_path, &mut function_context);
-    add_buffer("p20", 65536, params_path, &mut function_context);
-    add_buffer("p21", 1024, params_path, &mut function_context);
-    add_buffer("p22", 131072, params_path, &mut function_context);
-    add_buffer("p23", 512, params_path, &mut function_context);
-    add_buffer("p24", 589824, params_path, &mut function_context);
-    add_buffer("p25", 512, params_path, &mut function_context);
-    add_buffer("p26", 262144, params_path, &mut function_context);
-    add_buffer("p27", 2048, params_path, &mut function_context);
-    add_buffer("p28", 524288, params_path, &mut function_context);
-    add_buffer("p29", 2048, params_path, &mut function_context);
-    add_buffer("p30", 262144, params_path, &mut function_context);
-    add_buffer("p31", 512, params_path, &mut function_context);
-    add_buffer("p32", 1048576, params_path, &mut function_context);
-    add_buffer("p33", 512, params_path, &mut function_context);
-    add_buffer("p34", 262144, params_path, &mut function_context);
-    add_buffer("p35", 2048, params_path, &mut function_context);
-    add_buffer("p36", 262144, params_path, &mut function_context);
-    add_buffer("p37", 512, params_path, &mut function_context);
-    add_buffer("p38", 1048576, params_path, &mut function_context);
-    add_buffer("p39", 512, params_path, &mut function_context);
-    add_buffer("p40", 262144, params_path, &mut function_context);
-    add_buffer("p41", 2048, params_path, &mut function_context);
-    add_buffer("p42", 262144, params_path, &mut function_context);
-    add_buffer("p43", 512, params_path, &mut function_context);
-    add_buffer("p44", 1048576, params_path, &mut function_context);
-    add_buffer("p45", 512, params_path, &mut function_context);
-    add_buffer("p46", 262144, params_path, &mut function_context);
-    add_buffer("p47", 2048, params_path, &mut function_context);
-    add_buffer("p48", 524288, params_path, &mut function_context);
-    add_buffer("p49", 1024, params_path, &mut function_context);
-    add_buffer("p50", 2359296, params_path, &mut function_context);
-    add_buffer("p51", 1024, params_path, &mut function_context);
-    add_buffer("p52", 1048576, params_path, &mut function_context);
-    add_buffer("p53", 4096, params_path, &mut function_context);
-    add_buffer("p54", 2097152, params_path, &mut function_context);
-    add_buffer("p55", 4096, params_path, &mut function_context);
-    add_buffer("p56", 1048576, params_path, &mut function_context);
-    add_buffer("p57", 1024, params_path, &mut function_context);
-    add_buffer("p58", 4194304, params_path, &mut function_context);
-    add_buffer("p59", 1024, params_path, &mut function_context);
-    add_buffer("p60", 1048576, params_path, &mut function_context);
-    add_buffer("p61", 4096, params_path, &mut function_context);
-    add_buffer("p62", 1048576, params_path, &mut function_context);
-    add_buffer("p63", 1024, params_path, &mut function_context);
-    add_buffer("p64", 4194304, params_path, &mut function_context);
-    add_buffer("p65", 1024, params_path, &mut function_context);
-    add_buffer("p66", 1048576, params_path, &mut function_context);
-    add_buffer("p67", 4096, params_path, &mut function_context);
-    add_buffer("p68", 1048576, params_path, &mut function_context);
-    add_buffer("p69", 1024, params_path, &mut function_context);
-    add_buffer("p70", 4194304, params_path, &mut function_context);
-    add_buffer("p71", 1024, params_path, &mut function_context);
-    add_buffer("p72", 1048576, params_path, &mut function_context);
-    add_buffer("p73", 4096, params_path, &mut function_context);
-    add_buffer("p74", 1048576, params_path, &mut function_context);
-    add_buffer("p75", 1024, params_path, &mut function_context);
-    add_buffer("p76", 4194304, params_path, &mut function_context);
-    add_buffer("p77", 1024, params_path, &mut function_context);
-    add_buffer("p78", 1048576, params_path, &mut function_context);
-    add_buffer("p79", 4096, params_path, &mut function_context);
-    add_buffer("p80", 1048576, params_path, &mut function_context);
-    add_buffer("p81", 1024, params_path, &mut function_context);
-    add_buffer("p82", 4194304, params_path, &mut function_context);
-    add_buffer("p83", 1024, params_path, &mut function_context);
-    add_buffer("p84", 1048576, params_path, &mut function_context);
-    add_buffer("p85", 4096, params_path, &mut function_context);
-    add_buffer("p86", 2097152, params_path, &mut function_context);
-    add_buffer("p87", 2048, params_path, &mut function_context);
-    add_buffer("p88", 9437184, params_path, &mut function_context);
-    add_buffer("p89", 2048, params_path, &mut function_context);
-    add_buffer("p90", 4194304, params_path, &mut function_context);
-    add_buffer("p91", 8192, params_path, &mut function_context);
-    add_buffer("p92", 8388608, params_path, &mut function_context);
-    add_buffer("p93", 8192, params_path, &mut function_context);
-    add_buffer("p94", 4194304, params_path, &mut function_context);
-    add_buffer("p95", 2048, params_path, &mut function_context);
-    add_buffer("p96", 16777216, params_path, &mut function_context);
-    add_buffer("p97", 2048, params_path, &mut function_context);
-    add_buffer("p98", 4194304, params_path, &mut function_context);
-    add_buffer("p99", 8192, params_path, &mut function_context);
-    add_buffer("p100", 4194304, params_path, &mut function_context);
-    add_buffer("p101", 2048, params_path, &mut function_context);
-    add_buffer("p102", 16777216, params_path, &mut function_context);
-    add_buffer("p103", 2048, params_path, &mut function_context);
-    add_buffer("p104", 4194304, params_path, &mut function_context);
-    add_buffer("p105", 8192, params_path, &mut function_context);
-    add_buffer("p106", 8192000, params_path, &mut function_context);
-    add_buffer("p107", 4000, params_path, &mut function_context);
+    add_buffer("p0", 3456, params_path, &mut function_context);
+    add_buffer("p1", 128, params_path, &mut function_context);
+    add_buffer("p2", 1152, params_path, &mut function_context);
+    add_buffer("p3", 128, params_path, &mut function_context);
+    add_buffer("p4", 2048, params_path, &mut function_context);
+    add_buffer("p5", 64, params_path, &mut function_context);
+    add_buffer("p6", 6144, params_path, &mut function_context);
+    add_buffer("p7", 384, params_path, &mut function_context);
+    add_buffer("p8", 3456, params_path, &mut function_context);
+    add_buffer("p9", 384, params_path, &mut function_context);
+    add_buffer("p10", 9216, params_path, &mut function_context);
+    add_buffer("p11", 96, params_path, &mut function_context);
+    add_buffer("p12", 13824, params_path, &mut function_context);
+    add_buffer("p13", 576, params_path, &mut function_context);
+    add_buffer("p14", 5184, params_path, &mut function_context);
+    add_buffer("p15", 576, params_path, &mut function_context);
+    add_buffer("p16", 13824, params_path, &mut function_context);
+    add_buffer("p17", 96, params_path, &mut function_context);
+    add_buffer("p18", 13824, params_path, &mut function_context);
+    add_buffer("p19", 576, params_path, &mut function_context);
+    add_buffer("p20", 5184, params_path, &mut function_context);
+    add_buffer("p21", 576, params_path, &mut function_context);
+    add_buffer("p22", 18432, params_path, &mut function_context);
+    add_buffer("p23", 128, params_path, &mut function_context);
+    add_buffer("p24", 24576, params_path, &mut function_context);
+    add_buffer("p25", 768, params_path, &mut function_context);
+    add_buffer("p26", 6912, params_path, &mut function_context);
+    add_buffer("p27", 768, params_path, &mut function_context);
+    add_buffer("p28", 24576, params_path, &mut function_context);
+    add_buffer("p29", 128, params_path, &mut function_context);
+    add_buffer("p30", 24576, params_path, &mut function_context);
+    add_buffer("p31", 768, params_path, &mut function_context);
+    add_buffer("p32", 6912, params_path, &mut function_context);
+    add_buffer("p33", 768, params_path, &mut function_context);
+    add_buffer("p34", 24576, params_path, &mut function_context);
+    add_buffer("p35", 128, params_path, &mut function_context);
+    add_buffer("p36", 24576, params_path, &mut function_context);
+    add_buffer("p37", 768, params_path, &mut function_context);
+    add_buffer("p38", 6912, params_path, &mut function_context);
+    add_buffer("p39", 768, params_path, &mut function_context);
+    add_buffer("p40", 49152, params_path, &mut function_context);
+    add_buffer("p41", 256, params_path, &mut function_context);
+    add_buffer("p42", 98304, params_path, &mut function_context);
+    add_buffer("p43", 1536, params_path, &mut function_context);
+    add_buffer("p44", 13824, params_path, &mut function_context);
+    add_buffer("p45", 1536, params_path, &mut function_context);
+    add_buffer("p46", 98304, params_path, &mut function_context);
+    add_buffer("p47", 256, params_path, &mut function_context);
+    add_buffer("p48", 98304, params_path, &mut function_context);
+    add_buffer("p49", 1536, params_path, &mut function_context);
+    add_buffer("p50", 13824, params_path, &mut function_context);
+    add_buffer("p51", 1536, params_path, &mut function_context);
+    add_buffer("p52", 98304, params_path, &mut function_context);
+    add_buffer("p53", 256, params_path, &mut function_context);
+    add_buffer("p54", 98304, params_path, &mut function_context);
+    add_buffer("p55", 1536, params_path, &mut function_context);
+    add_buffer("p56", 13824, params_path, &mut function_context);
+    add_buffer("p57", 1536, params_path, &mut function_context);
+    add_buffer("p58", 98304, params_path, &mut function_context);
+    add_buffer("p59", 256, params_path, &mut function_context);
+    add_buffer("p60", 98304, params_path, &mut function_context);
+    add_buffer("p61", 1536, params_path, &mut function_context);
+    add_buffer("p62", 13824, params_path, &mut function_context);
+    add_buffer("p63", 1536, params_path, &mut function_context);
+    add_buffer("p64", 147456, params_path, &mut function_context);
+    add_buffer("p65", 384, params_path, &mut function_context);
+    add_buffer("p66", 221184, params_path, &mut function_context);
+    add_buffer("p67", 2304, params_path, &mut function_context);
+    add_buffer("p68", 20736, params_path, &mut function_context);
+    add_buffer("p69", 2304, params_path, &mut function_context);
+    add_buffer("p70", 221184, params_path, &mut function_context);
+    add_buffer("p71", 384, params_path, &mut function_context);
+    add_buffer("p72", 221184, params_path, &mut function_context);
+    add_buffer("p73", 2304, params_path, &mut function_context);
+    add_buffer("p74", 20736, params_path, &mut function_context);
+    add_buffer("p75", 2304, params_path, &mut function_context);
+    add_buffer("p76", 221184, params_path, &mut function_context);
+    add_buffer("p77", 384, params_path, &mut function_context);
+    add_buffer("p78", 221184, params_path, &mut function_context);
+    add_buffer("p79", 2304, params_path, &mut function_context);
+    add_buffer("p80", 20736, params_path, &mut function_context);
+    add_buffer("p81", 2304, params_path, &mut function_context);
+    add_buffer("p82", 368640, params_path, &mut function_context);
+    add_buffer("p83", 640, params_path, &mut function_context);
+    add_buffer("p84", 614400, params_path, &mut function_context);
+    add_buffer("p85", 3840, params_path, &mut function_context);
+    add_buffer("p86", 34560, params_path, &mut function_context);
+    add_buffer("p87", 3840, params_path, &mut function_context);
+    add_buffer("p88", 614400, params_path, &mut function_context);
+    add_buffer("p89", 640, params_path, &mut function_context);
+    add_buffer("p90", 614400, params_path, &mut function_context);
+    add_buffer("p91", 3840, params_path, &mut function_context);
+    add_buffer("p92", 34560, params_path, &mut function_context);
+    add_buffer("p93", 3840, params_path, &mut function_context);
+    add_buffer("p94", 614400, params_path, &mut function_context);
+    add_buffer("p95", 640, params_path, &mut function_context);
+    add_buffer("p96", 614400, params_path, &mut function_context);
+    add_buffer("p97", 3840, params_path, &mut function_context);
+    add_buffer("p98", 34560, params_path, &mut function_context);
+    add_buffer("p99", 3840, params_path, &mut function_context);
+    add_buffer("p100", 1228800, params_path, &mut function_context);
+    add_buffer("p101", 1280, params_path, &mut function_context);
+    add_buffer("p102", 1638400, params_path, &mut function_context);
+    add_buffer("p103", 5120, params_path, &mut function_context);
+    add_buffer("p104", 5120000, params_path, &mut function_context);
+    add_buffer("p105", 4000, params_path, &mut function_context);
 
     let output_name: &str = "output";
     let output_size: usize = 4000;

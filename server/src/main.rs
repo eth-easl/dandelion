@@ -10,6 +10,7 @@ use dispatcher::{
     function_registry::Metadata,
     resource_pool::ResourcePool,
 };
+use http::request;
 use http_body_util::BodyExt;
 use hyper::{
     body::{Body, Incoming},
@@ -395,25 +396,9 @@ async fn service(
         | "/cold/compression_app"
         | "/cold/python_app" => serve_request(true, req, dispatcher).await,
         "/cold/double_matmul"
-        | "/cold/lenet5"
         | "/cold/resnet18"
-        | "/cold/resnet18onnx"
-        | "/cold/resnet18batch2"
-        | "/cold/resnet18batch4"
-        | "/cold/resnet18batch8"
-        | "/cold/resnet18batch16"
-        | "/cold/resnet18batch32"
-        | "/cold/resnet18batch64"
-        | "/cold/resnet34"
-        | "/cold/resnet34batch2"
-        | "/cold/resnet34batch4"
-        | "/cold/resnet34batch8"
-        | "/cold/resnet34batch16"
-        | "/cold/resnet50"
-        | "/cold/resnet101"
-        | "/cold/resnet152"
-        | "/cold/vit_b_16"
-        | "/cold/llama_kv" => serve_request(true, req, dispatcher).await,
+        | "/cold/test" 
+        | "/cold/model_inference"=> serve_request(true, req, dispatcher).await,
         "/hot/matmul"
         | "/hot/matmulstore"
         | "/hot/compute"
@@ -425,25 +410,9 @@ async fn service(
         | "/hot/compression_app"
         | "/hot/python_app" => serve_request(false, req, dispatcher).await,
         "/hot/double_matmul"
-        | "/hot/lenet5"
         | "/hot/resnet18"
-        | "/hot/resnet18onnx"
-        | "/hot/resnet18batch2"
-        | "/hot/resnet18batch4"
-        | "/hot/resnet18batch8"
-        | "/hot/resnet18batch16"
-        | "/hot/resnet18batch32"
-        | "/hot/resnet18batch64"
-        | "/hot/resnet34"
-        | "/hot/resnet34batch2"
-        | "/hot/resnet34batch4"
-        | "/hot/resnet34batch8"
-        | "/hot/resnet34batch16"
-        | "/hot/resnet50"
-        | "/hot/resnet101"
-        | "/hot/resnet152"
-        | "/hot/vit_b_16"
-        | "/hot/llama_kv" => serve_request(false, req, dispatcher).await,
+        | "/hot/test" 
+        | "/hot/model_inference" => serve_request(false, req, dispatcher).await,
         "/stats" => serve_stats(req).await,
         _ => Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
             format!("Hello, Wor\n").into_bytes(),
