@@ -503,7 +503,10 @@ async fn service(
         | "/cold/text2sql_python_app"
         | "/cold/exec_agent_code"
         | "/cold/exec_http_agent_code"
+        | "/cold/dummy_tool_agent"
         | "/cold/tool_agent"
+        | "/cold/web_search"
+        | "/cold/looping_agent"
         | "/cold/python_app" => serve_request(true, req, dispatcher).await,
         "/hot/matmul"
         | "/hot/matmulstore"
@@ -515,7 +518,10 @@ async fn service(
         | "/hot/text2sql_python_app"
         | "/hot/exec_agent_code"
         | "/hot/exec_http_agent_code"
+        | "/hot/dummy_tool_agent"
         | "/hot/tool_agent"
+        | "/hot/web_search"
+        | "/hot/looping_agent"
         | "/hot/python_app" => serve_request(false, req, dispatcher).await,
         "/stats" => serve_stats(req).await,
         other_uri => {
