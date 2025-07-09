@@ -29,6 +29,7 @@ pub type StreamT = *const c_void;
 pub const DEFAULT_STREAM: StreamT = null();
 
 // has to be pub to allow address-getting when preparing args
+#[derive(Debug)]
 pub struct DeviceAllocation {
     pub ptr: *const c_void,
     pub size: usize,

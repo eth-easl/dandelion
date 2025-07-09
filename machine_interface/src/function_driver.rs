@@ -106,6 +106,7 @@ impl Function {
             }
             // no need to occupy space or anything like that as long as context is only inputs/outputs
             FunctionConfig::GpuConfig(cfg) => {
+                // TODO : change here. 
                 let mut ctxt = domain.acquire_context(ctx_size)?;
                 // Make sure sysdata struct isn't overwritten, 0 = system_data_offset
                 ctxt.occupy_space(

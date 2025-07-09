@@ -10,6 +10,20 @@ use super::gpu_api::{self, Function, Module};
 pub const SYSDATA_OFFSET: usize = 0usize;
 
 #[derive(Deserialize, Serialize, Debug)]
+pub enum Sizing {
+    Sizeof(String),
+    Absolute(u64),
+    FromInput { bufname: String, idx: usize },
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+pub enum Argument {
+    Ptr(String),
+    Sizeof(String),
+    Constant(i64),
+}
+
+#[derive(Deserialize, Serialize, Debug)]
 pub struct LaunchConfig {
     pub grid_dim_x: Sizing,
     pub grid_dim_y: Sizing,
@@ -21,31 +35,17 @@ pub struct LaunchConfig {
 }
 
 #[derive(Deserialize, Serialize, Debug)]
-pub enum Argument {
-    Ptr(String),
-    Sizeof(String),
-    Constant(i64),
-}
-
-#[derive(Deserialize, Serialize, Debug)]
 pub enum Action {
     ExecKernel(String, Vec<Argument>, Box<LaunchConfig>),
     Repeat(Sizing, Vec<Action>),
 }
 
 #[derive(Deserialize, Serialize, Debug)]
-pub enum Sizing {
-    Sizeof(String),
-    Absolute(u64),
-    FromInput { bufname: String, idx: usize },
-}
-
-#[derive(Deserialize, Serialize, Debug)]
 pub struct ExecutionBlueprint {
     pub inputs: Vec<String>,
-    /// buffer names to sizes
+    pub weights: Vec<String>,
     pub buffers: HashMap<String, Sizing>,
-    pub outputs: Vec<String>, // might not be required
+    pub outputs: Vec<String>,
     pub control_flow: Vec<Action>,
 }
 
@@ -76,7 +76,7 @@ pub struct RuntimeGpuConfig {
     pub blueprint: Arc<ExecutionBlueprint>,
 }
 
-impl GpuConfig {
+/*impl GpuConfig {
     pub fn load(self, base: *const u8) -> DandelionResult<RuntimeGpuConfig> {
         let base = base.wrapping_add(self.code_object_offset);
 
@@ -114,7 +114,7 @@ impl GpuConfig {
             blueprint: self.blueprint,
         })
     }
-}
+}*/
 
 pub fn parse_config(path: &str) -> DandelionResult<(GpuConfig, Vec<HashMap<String, String>>)> {
     let file = File::open(path).map_err(|_| DandelionError::FileError)?;

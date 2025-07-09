@@ -1997,20 +1997,6 @@ pub fn load_vit_b_16(mut function_context: Context) -> (usize, String, Vec<f32>,
     (output_size, output_name.to_string(), expected, function_context)
 }
 
-pub fn load_double_matmul(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
-    let params_path = "/pub/scratch/alrusso/TVM-compilation/model_parameters/double_matmul/";
-
-    add_buffer("input", 16, params_path, &mut function_context);
-    add_buffer("p0", 80, params_path, &mut function_context);
-    add_buffer("p1", 60, params_path, &mut function_context);
-
-    let output_name: &str = "output";
-    let output_size: usize = 12;
-    let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
-
-    (output_size, output_name.to_string(), expected, function_context)
-}
-
 pub fn load_resnet18(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
     let params_path = "/pub/scratch/alrusso/TVM-compilation/model_parameters/resnet18/";
 
@@ -2930,6 +2916,20 @@ pub fn load_mobilenetv2(mut function_context: Context) -> (usize, String, Vec<f3
 
     let output_name: &str = "output";
     let output_size: usize = 4000;
+    let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
+
+    (output_size, output_name.to_string(), expected, function_context)
+}
+
+pub fn load_double_matmul(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
+    let params_path = "/pub/scratch/alrusso/TVM-compilation/model_parameters/double_matmul/";
+
+    add_buffer("input", 16, params_path, &mut function_context);
+    add_buffer("p0", 80, params_path, &mut function_context);
+    add_buffer("p1", 60, params_path, &mut function_context);
+
+    let output_name: &str = "output";
+    let output_size: usize = 12;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
     (output_size, output_name.to_string(), expected, function_context)

@@ -6,22 +6,31 @@ use dandelion_commons::{DandelionError, DandelionResult};
 use log::error;
 use nix::sys::mman::ProtFlags;
 
+use crate::memory_domain::system_domain::SystemContext;
+use std::collections::BTreeMap;
+
 #[derive(Debug)]
 pub struct GpuContext {
     pub storage: MmapMem,
+    pub function_context: SystemContext,
 }
 
 impl ContextTrait for GpuContext {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
+        println!("HERE - write, {offset}");
         self.storage.write(offset, data)
     }
 
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
+        println!("HERE - read, {offset}");
         self.storage.read(offset, read_buffer)
+        // self.function_context.read(offset, read_buffer)
     }
 
     fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
+        println!("HERE - ref, {offset} - {length}");
         self.storage.get_chunk_ref(offset, length)
+        // self.function_context.get_chunk_ref(offset, length)
     }
 }
 
@@ -160,6 +169,10 @@ pub struct GpuMemoryDomain {
     memory_pool: MmapMemPool,
 }
 
+/*use crate::memory_domain::system_domain::SystemContext;
+use crate::memory_domain::system_domain::SystemMemoryDomain;
+use std::collections::BTreeMap;*/
+
 impl MemoryDomain for GpuMemoryDomain {
     fn init(config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
         let (id, size) = match config {
@@ -181,9 +194,28 @@ impl MemoryDomain for GpuMemoryDomain {
             .memory_pool
             .get_allocation(size, nix::sys::mman::MmapAdvise::MADV_DONTNEED)?;
 
-        let new_context = Box::new(GpuContext { storage: mem_space });
-        Ok(Context::new(ContextType::Gpu(new_context), actual_size))
+        let function_context = SystemContext {
+            local_offset_to_data_position: BTreeMap::new(),
+            size, // TODO : change this size
+        };
+
+        let cum_size = actual_size + size;
+
+        let new_context = Box::new(GpuContext { storage: mem_space, function_context });
+        Ok(Context::new(ContextType::Gpu(new_context), cum_size))
     }
+
+    /*fn init(_config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
+        Ok(Box::new(SystemMemoryDomain {}))
+    }
+
+    fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
+        let new_context = Box::new(SystemContext {
+            local_offset_to_data_position: BTreeMap::new(),
+            size,
+        });
+        Ok(Context::new(ContextType::System(new_context), size))
+    }*/
 }
 
 pub fn gpu_transfer(

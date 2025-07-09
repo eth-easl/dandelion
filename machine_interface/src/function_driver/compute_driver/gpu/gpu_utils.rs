@@ -37,6 +37,8 @@ use std::{
     thread::spawn,
 };
 
+use crate::memory_domain::system_domain::SystemContext;
+
 pub fn get_data_length(ident: &str, context: &Context) -> DandelionResult<usize> {
     let dataset = context
         .content
@@ -59,10 +61,10 @@ pub fn get_data_length(ident: &str, context: &Context) -> DandelionResult<usize>
 
 /// # Safety
 /// Requires *base* to point to the stat of *context*
-pub unsafe fn copy_data_to_device(
+pub fn copy_data_to_device(
     ident: &str,
     context: &Context,
-    base: *mut u8,
+    function_context: &SystemContext,
     dev_ptr: &DevicePointer,
 ) -> DandelionResult<()> {
     let dataset = context
@@ -78,11 +80,20 @@ pub unsafe fn copy_data_to_device(
 
     let mut total = 0isize;
     for item in &dataset.buffers {
-        let length = item.data.size;
+        let size = item.data.size;
         let offset = item.data.offset;
-        let src = base.byte_offset((offset) as isize) as *const c_void;
-        gpu_api::memcpy_h_to_d(dev_ptr, total, src, length)?;
-        total += length as isize;
+        let src = context.get_chunk_ref(offset, size).unwrap().as_ptr() as *const c_void;
+
+        /*use std::slice;
+        let x = function_context.get_chunk_ref(offset, size).unwrap();
+        let floats: Vec<f32> = x
+            .chunks(4)
+            .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+            .collect();*/
+        println!("{:?} - {:?}", ident, &context.get_chunk_ref(offset, size).unwrap()[0..5]);
+
+        gpu_api::memcpy_h_to_d(dev_ptr, total, src, size)?;
+        total += size as isize;
     }
     Ok(())
 }
@@ -90,14 +101,92 @@ pub unsafe fn copy_data_to_device(
 #[cfg(feature = "gpu")]
 /// # Safety
 /// Requires *base* to point to the stat of *context*
-pub unsafe fn write_gpu_outputs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
-    context: &mut Context,
-    system_data_offset: usize,
-    base: *mut u8,
+pub unsafe fn write_gpu_outputs(
+    output_context: &mut Context,
+    // base: *mut u8,
     output_set_names: &[String],
     device_buffers: &HashMap<String, (usize, usize)>,
     buffer_pool: &BufferPool,
 ) -> DandelionResult<()> {
+    use crate::DataItem;
+    use crate::memory_domain::MemoryResource;
+    use crate::memory_domain::MemoryDomain;
+    use crate::memory_domain::gpu::GpuMemoryDomain;
+
+    // println!("{:?}", output_context.content);
+
+    /*let mut context_size = 0;
+    let mut output_ptrs = vec![];
+    for output_name in output_set_names {
+        let (dev_ptr_idx, size) = device_buffers
+            .get(output_name)
+            .ok_or(DandelionError::ConfigMissmatch)?;
+        
+        context_size += size + 8;
+        output_ptrs.push(dev_ptr_idx);
+    }
+
+    let dom_init = MemoryResource::Shared {
+        id: 13,
+        size: 1 << 8,
+    };
+    let mem_domain = GpuMemoryDomain::init(dom_init)?;
+    let mut output_context = mem_domain.acquire_context(context_size)?;*/
+    let base = match &output_context.context {
+        ContextType::Gpu(ref mmu_context) => mmu_context.storage.as_ptr(),
+        #[cfg(feature = "gpu_process")]
+        ContextType::GpuProcess(ref gpu_process_context) => gpu_process_context.as_ptr(),
+        _ => return Err(DandelionError::ConfigMissmatch),
+    };
+
+    let mut output_sets = vec![];
+    let mut buffers = vec![];
+    for output_name in output_set_names {
+        let (dev_ptr_idx, size) = device_buffers
+            .get(output_name)
+            .ok_or(DandelionError::ConfigMissmatch)?;
+        let buf_offset = output_context.get_free_space(*size, 8)?;
+
+        let dst = unsafe { base.byte_offset(buf_offset as isize) } as *const c_void;
+        let dev_ptr = buffer_pool.get(*dev_ptr_idx)?;
+        gpu_api::memcpy_d_to_h(dst, &dev_ptr, *size)?;
+
+        /*use std::slice;
+        let x = unsafe { slice::from_raw_parts(base.byte_offset(buf_offset as isize), *size) } ;
+        let floats: Vec<f32> = x
+            .chunks(4)
+            .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+            .collect();
+        println!("{:#?}", &floats);*/
+        use std::slice;
+        let x = unsafe { slice::from_raw_parts(base.byte_offset(buf_offset as isize), *size) } ;
+        println!("{:?} - {:?}", output_name, &x[0..10]);
+
+        buffers.push(DataItem {
+            ident: output_name.clone(),
+            data: Position {
+                offset: buf_offset,
+                size: *size,
+            },
+            key: 0u32,
+        });
+        output_context.occupy_space(buf_offset, *size)?;
+    }
+    
+    output_sets.push(Some(DataSet {
+        ident: "outputs".to_string(),
+        buffers: buffers,
+    }));
+    output_context.content = output_sets;
+
+    // println!("{:?}", output_context);
+    println!("{:?}", output_context.content);
+
+    // *context = output_context;
+
+    Ok(())
+
+    /*
     // read the system buffer
 
     use crate::{
@@ -160,7 +249,7 @@ pub unsafe fn write_gpu_outputs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     system_struct.output_bufs = output_buffers_offset;
 
     context.write(system_data_offset, core::slice::from_ref(&system_struct))?;
-    Ok(())
+    Ok(())*/
 }
 
 pub fn get_size(

@@ -17,6 +17,7 @@ impl Buffer {
         }
     }
 }
+#[derive(Debug)]
 pub struct BufferPool {
     // (ptr, ptr in use)
     allocation: DeviceAllocation,

@@ -371,13 +371,15 @@ pub fn transfer_memory(
             size,
         ),
         #[cfg(feature = "gpu")]
-        (ContextType::Gpu(destination_ctxt), ContextType::Gpu(source_ctxt)) => gpu::gpu_transfer(
-            destination_ctxt,
-            source_ctxt,
-            destination_offset,
-            source_offset,
-            size,
-        ),
+        (ContextType::Gpu(destination_ctxt), ContextType::Gpu(source_ctxt)) => {
+            gpu::gpu_transfer(
+                destination_ctxt,
+                source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+            )
+        },
         #[cfg(all(feature = "gpu", feature = "bytes_context"))]
         (ContextType::Gpu(destination_ctxt), ContextType::Bytes(source_ctxt)) => {
             gpu::bytest_to_gpu_transfer(
@@ -388,6 +390,40 @@ pub fn transfer_memory(
                 size,
             )
         }
+        /*#[cfg(all(feature = "gpu", feature = "bytes_context"))]
+        (ContextType::Gpu(destination_ctxt), ContextType::Bytes(source_ctxt)) => {
+            /*gpu::bytest_to_gpu_transfer(
+                destination_ctxt,
+                source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+            )*/
+            system_domain::into_system_context_transfer(
+                &mut destination_ctxt.function_context,
+                source,
+                destination_offset,
+                source_offset,
+                size,
+            )
+        }
+        #[cfg(feature = "gpu")]
+        (ContextType::Gpu(destination_ctxt), _) => {
+            /*gpu::gpu_transfer(
+                destination_ctxt,
+                source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+            )*/
+            system_domain::into_system_context_transfer(
+                &mut destination_ctxt.function_context,
+                source,
+                destination_offset,
+                source_offset,
+                size,
+            )
+        },*/
         // default implementation using reads and writes
         (destination, source) => {
             let mut read_buffer: Vec<u8> = vec![0; size];
