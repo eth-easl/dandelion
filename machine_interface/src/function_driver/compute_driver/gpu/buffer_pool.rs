@@ -1,7 +1,6 @@
+use super::gpu_api::{self, DeviceAllocation, DevicePointer};
 use dandelion_commons::{DandelionError, DandelionResult};
 use log::debug;
-
-use super::gpu_api::{self, DeviceAllocation, DevicePointer};
 
 #[derive(Debug)]
 struct Buffer {

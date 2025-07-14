@@ -5,30 +5,17 @@ use super::{
 };
 use crate::{
     function_driver::{ComputeResource, FunctionConfig, GpuConfig, WorkDone, WorkQueue, WorkToDo},
-    interface::{read_output_structs, DandelionSystemData, SizedIntTrait},
-    memory_domain::{
-        self,
-        gpu::{GpuContext, GpuProcessContext},
-        Context, ContextState, ContextTrait, ContextType,
-    },
-    util::mmapmem::MmapMem,
-    DataSet, Position,
+    interface::read_output_structs,
+    memory_domain::{self, Context, ContextState, ContextTrait, ContextType},
+    DataItem, DataSet, Position,
 };
-use dandelion_commons::{records::{RecordPoint, Recorder}, DandelionError, DandelionResult};
+use dandelion_commons::{records::RecordPoint, DandelionError, DandelionResult};
 use libc::c_void;
 use log::{debug, error};
-use nix::{
-    fcntl::OFlag,
-    sys::{
-        mman::{mmap, shm_open, MapFlags, ProtFlags},
-        stat::{fstat, Mode},
-    },
-};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Write},
-    num::NonZeroUsize,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -37,7 +24,14 @@ use std::{
     thread::spawn,
 };
 
-use crate::memory_domain::system_domain::SystemContext;
+#[cfg(feature = "gpu_process")]
+use nix::{
+    fcntl::OFlag,
+    sys::{
+        mman::{mmap, shm_open, MapFlags, ProtFlags},
+        stat::{fstat, Mode},
+    },
+};
 
 pub fn get_data_length(ident: &str, context: &Context) -> DandelionResult<usize> {
     let dataset = context
@@ -59,12 +53,9 @@ pub fn get_data_length(ident: &str, context: &Context) -> DandelionResult<usize>
     Ok(length)
 }
 
-/// # Safety
-/// Requires *base* to point to the stat of *context*
 pub fn copy_data_to_device(
     ident: &str,
     context: &Context,
-    function_context: &SystemContext,
     dev_ptr: &DevicePointer,
 ) -> DandelionResult<()> {
     let dataset = context
@@ -83,55 +74,18 @@ pub fn copy_data_to_device(
         let size = item.data.size;
         let offset = item.data.offset;
         let src = context.get_chunk_ref(offset, size).unwrap().as_ptr() as *const c_void;
-
-        /*use std::slice;
-        let x = function_context.get_chunk_ref(offset, size).unwrap();
-        let floats: Vec<f32> = x
-            .chunks(4)
-            .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
-            .collect();*/
-        println!("{:?} - {:?}", ident, &context.get_chunk_ref(offset, size).unwrap()[0..5]);
-
         gpu_api::memcpy_h_to_d(dev_ptr, total, src, size)?;
         total += size as isize;
     }
     Ok(())
 }
 
-#[cfg(feature = "gpu")]
-/// # Safety
-/// Requires *base* to point to the stat of *context*
-pub unsafe fn write_gpu_outputs(
+pub fn write_gpu_outputs(
     output_context: &mut Context,
-    // base: *mut u8,
     output_set_names: &[String],
     device_buffers: &HashMap<String, (usize, usize)>,
     buffer_pool: &BufferPool,
 ) -> DandelionResult<()> {
-    use crate::DataItem;
-    use crate::memory_domain::MemoryResource;
-    use crate::memory_domain::MemoryDomain;
-    use crate::memory_domain::gpu::GpuMemoryDomain;
-
-    // println!("{:?}", output_context.content);
-
-    /*let mut context_size = 0;
-    let mut output_ptrs = vec![];
-    for output_name in output_set_names {
-        let (dev_ptr_idx, size) = device_buffers
-            .get(output_name)
-            .ok_or(DandelionError::ConfigMissmatch)?;
-        
-        context_size += size + 8;
-        output_ptrs.push(dev_ptr_idx);
-    }
-
-    let dom_init = MemoryResource::Shared {
-        id: 13,
-        size: 1 << 8,
-    };
-    let mem_domain = GpuMemoryDomain::init(dom_init)?;
-    let mut output_context = mem_domain.acquire_context(context_size)?;*/
     let base = match &output_context.context {
         ContextType::Gpu(ref mmu_context) => mmu_context.storage.as_ptr(),
         #[cfg(feature = "gpu_process")]
@@ -151,17 +105,6 @@ pub unsafe fn write_gpu_outputs(
         let dev_ptr = buffer_pool.get(*dev_ptr_idx)?;
         gpu_api::memcpy_d_to_h(dst, &dev_ptr, *size)?;
 
-        /*use std::slice;
-        let x = unsafe { slice::from_raw_parts(base.byte_offset(buf_offset as isize), *size) } ;
-        let floats: Vec<f32> = x
-            .chunks(4)
-            .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
-            .collect();
-        println!("{:#?}", &floats);*/
-        use std::slice;
-        let x = unsafe { slice::from_raw_parts(base.byte_offset(buf_offset as isize), *size) } ;
-        println!("{:?} - {:?}", output_name, &x[0..10]);
-
         buffers.push(DataItem {
             ident: output_name.clone(),
             data: Position {
@@ -172,84 +115,14 @@ pub unsafe fn write_gpu_outputs(
         });
         output_context.occupy_space(buf_offset, *size)?;
     }
-    
+
     output_sets.push(Some(DataSet {
         ident: "outputs".to_string(),
         buffers: buffers,
     }));
     output_context.content = output_sets;
 
-    // println!("{:?}", output_context);
-    println!("{:?}", output_context.content);
-
-    // *context = output_context;
-
     Ok(())
-
-    /*
-    // read the system buffer
-
-    use crate::{
-        interface::{IoBufferDescriptor, IoSetInfo},
-        ptr_t, size_t, usize, usize_ptr,
-    };
-    let mut system_struct = DandelionSystemData::<PtrT, SizeT>::default();
-    context.read(
-        system_data_offset,
-        core::slice::from_mut(&mut system_struct),
-    )?;
-
-    let output_set_number = usize!(system_struct.output_sets_len);
-    let mut output_set_info = vec![];
-    if output_set_info.try_reserve(output_set_number + 1).is_err() {
-        return Err(DandelionError::OutOfMemory);
-    }
-    let empty_output_set = IoSetInfo::<PtrT, SizeT> {
-        ident: ptr_t!(0),
-        ident_len: size_t!(0),
-        offset: size_t!(0),
-    };
-    output_set_info.resize_with(output_set_number + 1, || empty_output_set.clone());
-    context.read(usize_ptr!(system_struct.output_sets), &mut output_set_info)?;
-
-    let mut output_buffers: Vec<IoBufferDescriptor<PtrT, SizeT>> = Vec::new();
-    if output_buffers
-        .try_reserve_exact(output_set_names.len())
-        .is_err()
-    {
-        return Err(DandelionError::OutOfMemory);
-    }
-    for (i, output_name) in output_set_names.iter().enumerate() {
-        // alignment shouldn't really make a huge difference
-        let (dev_ptr_idx, size) = device_buffers
-            .get(output_name)
-            .ok_or(DandelionError::ConfigMissmatch)?;
-        let buf_offset = context.get_free_space(*size, 8)?;
-
-        let dst = unsafe { base.byte_offset(buf_offset as isize) } as *const c_void;
-        let dev_ptr = buffer_pool.get(*dev_ptr_idx)?;
-        gpu_api::memcpy_d_to_h(dst, &dev_ptr, *size)?;
-
-        output_buffers.push(IoBufferDescriptor {
-            ident: ptr_t!(0),
-            ident_len: size_t!(0),
-            data: ptr_t!(buf_offset),
-            data_len: size_t!(*size),
-            key: size_t!(0),
-        });
-        output_set_info[i].offset = size_t!(i);
-    }
-    output_set_info[output_set_number].offset = size_t!(output_set_number);
-
-    context.write(usize_ptr!(system_struct.output_sets), &output_set_info)?;
-
-    let output_buffers_offset: PtrT =
-        ptr_t!(context.get_free_space_and_write_slice(&output_buffers[..])? as usize);
-
-    system_struct.output_bufs = output_buffers_offset;
-
-    context.write(system_data_offset, core::slice::from_ref(&system_struct))?;
-    Ok(())*/
 }
 
 pub fn get_size(
@@ -488,7 +361,7 @@ fn manage_worker(
 
                 // Very important to add this newline, as the worker reads line by line
                 task += "\n";
-                
+
                 recorder.record(RecordPoint::EngineStart);
 
                 // Write task description to worker process stdin

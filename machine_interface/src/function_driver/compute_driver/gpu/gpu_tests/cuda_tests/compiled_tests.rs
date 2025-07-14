@@ -2,7 +2,9 @@ use crate::{
     function_driver::compute_driver::gpu::gpu_tests::{
         cuda_tests::load_models::*,
         get_driver,
-        tests_utils::{compare_result, execute_test, get_result, get_resulti32, get_resulti64, setup_test},
+        tests_utils::{
+            compare_result, execute_test, get_result, get_resulti32, get_resulti64, setup_test,
+        },
         GPU_LOCK,
     },
     memory_domain::Context,
@@ -44,8 +46,9 @@ fn test_model(model_name: &str, asserts: bool) {
         model_name
     );
     let (function_context, config, queue) = setup_test(&filename);
-    let load_function = get_function(model_name)
-        .unwrap_or_else(|| panic!("Model name \"{model_name}\" not recognized. Add it to the methods hash map."));
+    let load_function = get_function(model_name).unwrap_or_else(|| {
+        panic!("Model name \"{model_name}\" not recognized. Add it to the methods hash map.")
+    });
     let (output_size, output_name, expected, function_context) = load_function(function_context);
     let result_context = execute_test(function_context, config, queue, &output_name);
     let read_buffer = get_result(result_context, output_size, asserts);
@@ -101,10 +104,11 @@ fn full_llama() {
         env!("CARGO_MANIFEST_DIR")
     );
     let (function_context, config, queue) = setup_test(&filename);
-    let (mut output_size, mut output_name, expected, function_context) = load_llama(function_context);
+    let (mut output_size, mut output_name, expected, function_context) =
+        load_llama(function_context);
     output_size = 1024;
     output_name = "token_ids".to_string();
-    
+
     let result_context = execute_test(function_context, config, queue, &output_name);
 
     let read_buffer = get_resulti64(result_context, output_size, false);
@@ -126,10 +130,11 @@ fn hand_kv_llama() {
         env!("CARGO_MANIFEST_DIR")
     );
     let (function_context, config, queue) = setup_test(&filename);
-    let (mut output_size, mut output_name, expected, function_context) = load_llama_kv(function_context);
+    let (mut output_size, mut output_name, expected, function_context) =
+        load_llama_kv(function_context);
     output_size = 16777216; // 1024;
     output_name = "b41".to_string(); // "token_ids".to_string();
-    
+
     let result_context = execute_test(function_context, config, queue, &output_name);
 
     // let read_buffer = get_resulti64(result_context, output_size, false);
@@ -151,10 +156,11 @@ fn full_kv_llama() {
         env!("CARGO_MANIFEST_DIR")
     );
     let (function_context, config, queue) = setup_test(&filename);
-    let (mut output_size, mut output_name, expected, function_context) = full_load_llama_kv(function_context);
+    let (mut output_size, mut output_name, expected, function_context) =
+        full_load_llama_kv(function_context);
     output_size = 1024;
     output_name = "token_ids".to_string();
-    
+
     let result_context = execute_test(function_context, config, queue, &output_name);
 
     let read_buffer = get_resulti64(result_context, output_size, false);

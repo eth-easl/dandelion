@@ -329,8 +329,6 @@ impl Drop for DeviceAllocation {
     }
 }
 
-/// # Safety
-/// Requires *src* to point to valid memory
 pub fn memcpy_h_to_d(
     dst: &DevicePointer,
     dev_offset: isize,
@@ -346,8 +344,6 @@ pub fn memcpy_h_to_d(
     Ok(())
 }
 
-/// # Safety
-/// Requires *dst* to point to valid memory
 pub fn memcpy_d_to_h(
     dst: *const c_void,
     src: &DevicePointer,

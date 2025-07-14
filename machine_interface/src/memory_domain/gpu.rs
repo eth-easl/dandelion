@@ -1,50 +1,45 @@
 use crate::{
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource},
     util::mmapmem::{MmapMem, MmapMemPool},
+    Position,
 };
-use dandelion_commons::{DandelionError, DandelionResult};
-use log::error;
+use dandelion_commons::{
+    DandelionError,
+    DandelionResult,
+};
+use log::{debug, error};
 use nix::sys::mman::ProtFlags;
+use std::{
+    collections::HashMap,
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
 
-use crate::memory_domain::system_domain::SystemContext;
-use std::collections::BTreeMap;
+#[derive(Debug)]
+pub struct SubReadOnly {
+    pub context: Arc<Context>,
+    pub position: Position,
+}
 
 #[derive(Debug)]
 pub struct GpuContext {
     pub storage: MmapMem,
-    pub function_context: SystemContext,
+    pub read_only: HashMap<String, SubReadOnly>,
 }
 
 impl ContextTrait for GpuContext {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
-        println!("HERE - write, {offset}");
         self.storage.write(offset, data)
     }
 
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
-        println!("HERE - read, {offset}");
         self.storage.read(offset, read_buffer)
-        // self.function_context.read(offset, read_buffer)
     }
 
     fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
-        println!("HERE - ref, {offset} - {length}");
         self.storage.get_chunk_ref(offset, length)
-        // self.function_context.get_chunk_ref(offset, length)
     }
 }
-
-use log::debug;
-use nix::sys::mman::shm_open;
-use nix::sys::stat::Mode;
-use nix::sys::stat::fstat;
-use nix::sys::mman::mmap;
-use nix::fcntl::OFlag;
-use std::num::NonZeroUsize;
-use nix::sys::mman::MapFlags;
-use dandelion_commons::DandelionError::NotImplemented;
-use std::ops::Deref;
-use std::ops::DerefMut;
 
 #[derive(Debug)]
 pub struct GpuProcessContext {
@@ -163,15 +158,10 @@ impl Drop for GpuProcessContext {
     }
 }*/
 
-
 #[derive(Debug)]
 pub struct GpuMemoryDomain {
     memory_pool: MmapMemPool,
 }
-
-/*use crate::memory_domain::system_domain::SystemContext;
-use crate::memory_domain::system_domain::SystemMemoryDomain;
-use std::collections::BTreeMap;*/
 
 impl MemoryDomain for GpuMemoryDomain {
     fn init(config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
@@ -194,28 +184,12 @@ impl MemoryDomain for GpuMemoryDomain {
             .memory_pool
             .get_allocation(size, nix::sys::mman::MmapAdvise::MADV_DONTNEED)?;
 
-        let function_context = SystemContext {
-            local_offset_to_data_position: BTreeMap::new(),
-            size, // TODO : change this size
-        };
-
-        let cum_size = actual_size + size;
-
-        let new_context = Box::new(GpuContext { storage: mem_space, function_context });
-        Ok(Context::new(ContextType::Gpu(new_context), cum_size))
-    }
-
-    /*fn init(_config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
-        Ok(Box::new(SystemMemoryDomain {}))
-    }
-
-    fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
-        let new_context = Box::new(SystemContext {
-            local_offset_to_data_position: BTreeMap::new(),
-            size,
+        let new_context = Box::new(GpuContext {
+            storage: mem_space,
+            read_only: HashMap::new(),
         });
-        Ok(Context::new(ContextType::System(new_context), size))
-    }*/
+        Ok(Context::new(ContextType::Gpu(new_context), actual_size))
+    }
 }
 
 pub fn gpu_transfer(

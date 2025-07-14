@@ -241,7 +241,12 @@ pub fn load_bert(mut function_context: Context) -> (usize, String, Vec<f32>, Con
     let output_size: usize = 15627264;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_rnn(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -280,7 +285,12 @@ pub fn load_rnn(mut function_context: Context) -> (usize, String, Vec<f32>, Cont
     let output_size: usize = 512;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_lstm(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -584,7 +594,12 @@ pub fn load_lstm(mut function_context: Context) -> (usize, String, Vec<f32>, Con
     let output_size: usize = 512;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_test(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -603,7 +618,12 @@ pub fn load_test(mut function_context: Context) -> (usize, String, Vec<f32>, Con
     let output_size: usize = 28;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_llm(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -867,7 +887,12 @@ pub fn load_llm(mut function_context: Context) -> (usize, String, Vec<f32>, Cont
     let output_size: usize = 1024;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_llama(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -1108,7 +1133,12 @@ pub fn load_llama(mut function_context: Context) -> (usize, String, Vec<f32>, Co
     let output_size: usize = 65667072;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn full_load_llama_kv(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -1450,7 +1480,12 @@ pub fn full_load_llama_kv(mut function_context: Context) -> (usize, String, Vec<
     let output_size: usize = 1048576;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_llama_kv(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -1790,7 +1825,12 @@ pub fn load_llama_kv(mut function_context: Context) -> (usize, String, Vec<f32>,
     let output_size: usize = 1048576;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_simple(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -1803,7 +1843,12 @@ pub fn load_simple(mut function_context: Context) -> (usize, String, Vec<f32>, C
     let output_size: usize = 8;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_vit_b_16(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -1994,7 +2039,12 @@ pub fn load_vit_b_16(mut function_context: Context) -> (usize, String, Vec<f32>,
     let output_size: usize = 4000;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_resnet18(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -2048,7 +2098,12 @@ pub fn load_resnet18(mut function_context: Context) -> (usize, String, Vec<f32>,
     let output_size: usize = 4000;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_resnet34(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -2134,7 +2189,12 @@ pub fn load_resnet34(mut function_context: Context) -> (usize, String, Vec<f32>,
     let output_size: usize = 4000;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_resnet50(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -2254,7 +2314,12 @@ pub fn load_resnet50(mut function_context: Context) -> (usize, String, Vec<f32>,
     let output_size: usize = 4000;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_resnet101(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -2476,7 +2541,12 @@ pub fn load_resnet101(mut function_context: Context) -> (usize, String, Vec<f32>
     let output_size: usize = 4000;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_resnet152(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -2800,7 +2870,12 @@ pub fn load_resnet152(mut function_context: Context) -> (usize, String, Vec<f32>
     let output_size: usize = 4000;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_mobilenetv2(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -2918,7 +2993,12 @@ pub fn load_mobilenetv2(mut function_context: Context) -> (usize, String, Vec<f3
     let output_size: usize = 4000;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_double_matmul(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -2932,5 +3012,10 @@ pub fn load_double_matmul(mut function_context: Context) -> (usize, String, Vec<
     let output_size: usize = 12;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }

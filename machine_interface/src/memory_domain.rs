@@ -19,6 +19,9 @@ use dandelion_commons::{DandelionError, DandelionResult};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+#[cfg(feature = "gpu")]
+use crate::memory_domain::gpu::SubReadOnly;
+
 pub trait ContextTrait: Send + Sync {
     /// Write data at the given offset into the context
     /// May fail if the range offset..offset+data lenght in bytes is not completely within the context size
@@ -371,7 +374,27 @@ pub fn transfer_memory(
             size,
         ),
         #[cfg(feature = "gpu")]
+        (ContextType::Gpu(destination_ctxt), ContextType::ReadOnly(source_ctxt)) => {
+            // Transfer function registering buffers: weights + .cubin
+            let Some(ref data_set) = source.content[0] else { todo!() };
+            let ident = &data_set.ident;
+
+            destination_ctxt.read_only.insert(
+                ident.to_string(),
+                SubReadOnly {
+                    context: source,
+                    position: Position {
+                        offset: source_offset,
+                        size
+                    }
+                }
+            );
+            
+            Ok(())
+        },
+        #[cfg(feature = "gpu")]
         (ContextType::Gpu(destination_ctxt), ContextType::Gpu(source_ctxt)) => {
+            // Transfer nothing really...
             gpu::gpu_transfer(
                 destination_ctxt,
                 source_ctxt,
@@ -382,6 +405,7 @@ pub fn transfer_memory(
         },
         #[cfg(all(feature = "gpu", feature = "bytes_context"))]
         (ContextType::Gpu(destination_ctxt), ContextType::Bytes(source_ctxt)) => {
+            // Transfer request inputs
             gpu::bytest_to_gpu_transfer(
                 destination_ctxt,
                 source_ctxt,
@@ -390,40 +414,6 @@ pub fn transfer_memory(
                 size,
             )
         }
-        /*#[cfg(all(feature = "gpu", feature = "bytes_context"))]
-        (ContextType::Gpu(destination_ctxt), ContextType::Bytes(source_ctxt)) => {
-            /*gpu::bytest_to_gpu_transfer(
-                destination_ctxt,
-                source_ctxt,
-                destination_offset,
-                source_offset,
-                size,
-            )*/
-            system_domain::into_system_context_transfer(
-                &mut destination_ctxt.function_context,
-                source,
-                destination_offset,
-                source_offset,
-                size,
-            )
-        }
-        #[cfg(feature = "gpu")]
-        (ContextType::Gpu(destination_ctxt), _) => {
-            /*gpu::gpu_transfer(
-                destination_ctxt,
-                source_ctxt,
-                destination_offset,
-                source_offset,
-                size,
-            )*/
-            system_domain::into_system_context_transfer(
-                &mut destination_ctxt.function_context,
-                source,
-                destination_offset,
-                source_offset,
-                size,
-            )
-        },*/
         // default implementation using reads and writes
         (destination, source) => {
             let mut read_buffer: Vec<u8> = vec![0; size];

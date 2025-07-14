@@ -1,44 +1,40 @@
+use self::{
+    buffer_pool::BufferPool,
+    config_parsing::{Action, Argument, RuntimeGpuConfig, SYSDATA_OFFSET},
+    gpu_utils::{
+        copy_data_to_device, get_data_length, get_size, start_gpu_process_pool, write_gpu_outputs,
+    },
+};
 use crate::{
     function_driver::{
-        load_utils::load_u8_from_file,
         thread_utils::{run_thread, EngineLoop},
         ComputeResource, Driver, Function, FunctionConfig, GpuConfig, WorkQueue,
     },
-    interface::{read_output_structs, setup_input_structs, DandelionSystemData},
+    interface::DandelionSystemData,
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
-    DataItem, DataRequirementList, DataSet, Position,
+    DataRequirementList,
 };
-use config_parsing::SYSDATA_OFFSET;
 use core_affinity::CoreId;
-use dandelion_commons::{records::{RecordPoint, Recorder}, DandelionError, DandelionResult};
+use dandelion_commons::{
+    records::{RecordPoint, Recorder},
+    DandelionError, DandelionResult,
+};
 use libc::c_void;
 use std::{
     borrow::Borrow,
     collections::HashMap,
-    mem::size_of,
     ptr::null,
     sync::{
         mpsc::{self, Receiver, Sender},
         Arc, Mutex,
     },
-    time::Instant,
     thread::{self, spawn},
-};
-
-use crate::memory_domain::gpu::GpuContext;
-
-use self::{
-    buffer_pool::BufferPool,
-    config_parsing::{Action, Argument, RuntimeGpuConfig},
-    gpu_utils::{
-        copy_data_to_device, get_data_length, get_size, start_gpu_process_pool, write_gpu_outputs,
-    },
 };
 
 pub(crate) mod buffer_pool;
 pub(crate) mod config_parsing;
-pub mod gpu_utils;
 mod gpu_api;
+pub mod gpu_utils;
 
 #[cfg(test)]
 mod gpu_tests;
@@ -121,9 +117,9 @@ fn execute(
             }
         }
     }
-    
+
     #[cfg(feature = "timestamp")]
-    gpu_api::synchronize();
+    let _ = gpu_api::synchronize();
 
     Ok(())
 }
@@ -144,8 +140,8 @@ pub fn gpu_run(
 
     gpu_api::set_device(gpu_id)?;
 
-    let function_context = match context.context {
-        ContextType::Gpu(ref gpu_context) => &gpu_context.function_context,
+    let read_only_data = match context.context {
+        ContextType::Gpu(ref gpu_context) => &gpu_context.read_only,
         _ => return Err(DandelionError::ContextMissmatch),
     };
 
@@ -158,19 +154,13 @@ pub fn gpu_run(
         let kernel_name = &kernel["kernel_name"];
 
         if !loaded_modules_map.contains_key(&module_name) {
-            let module = context.content.iter().find(|&elem| match elem {
-                    Some(set) => set.ident == module_name,
-                    _ => false,
-                })
-                .ok_or(DandelionError::UndeclaredIdentifier(module_name.to_owned()))?
-                .as_ref()
-                .unwrap();
+            let sub_read_only = read_only_data.get(&module_name).unwrap();
+            let data_pointer = sub_read_only
+                .context
+                .get_chunk_ref(sub_read_only.position.offset, sub_read_only.position.size)
+                .unwrap()
+                .as_ptr() as *const c_void;
 
-            assert_eq!(module.buffers.len(), 1);
-            let size = module.buffers[0].data.size;
-            let offset = module.buffers[0].data.offset;
-            
-            let data_pointer = context.get_chunk_ref(offset, size).unwrap().as_ptr() as *const c_void;
             let loaded_module = gpu_api::module_load_data(data_pointer)?;
             loaded_modules_map.insert(module_name.clone(), loaded_modules.len());
             loaded_modules.push(loaded_module);
@@ -178,10 +168,11 @@ pub fn gpu_run(
 
         let module = &loaded_modules[loaded_modules_map[&module_name]];
         let loaded_kernel = gpu_api::module_get_function(&module, kernel_name)?;
-        let _ = loaded_kernels.insert(kernel_name.to_string(), loaded_kernel).ok_or(DandelionError::UnknownSymbol);
+        let _ = loaded_kernels
+            .insert(kernel_name.to_string(), loaded_kernel)
+            .ok_or(DandelionError::UnknownSymbol);
     }
-    
-    // let config = config.load(base)?;
+
     let config = RuntimeGpuConfig {
         system_data_struct_offset: 0,
         modules: Arc::new(loaded_modules),
@@ -197,13 +188,23 @@ pub fn gpu_run(
     for name in &config.blueprint.inputs {
         let size = get_data_length(name, &context)?;
         let idx = buffer_pool.alloc_buffer(size)?;
-        copy_data_to_device(name, &context, &function_context, &buffer_pool.get(idx)?)?;
+        copy_data_to_device(name, &context, &buffer_pool.get(idx)?)?;
         buffers.insert(name.clone(), (idx, size));
     }
     for name in &config.blueprint.weights {
-        let size = get_data_length(name, &context)?;
+        let sub_read_only = read_only_data.get(name.as_str()).unwrap();
+        let data_pointer = sub_read_only
+            .context
+            .get_chunk_ref(sub_read_only.position.offset, sub_read_only.position.size)
+            .unwrap()
+            .as_ptr() as *const c_void;
+        let size = sub_read_only.position.size;
         let idx = buffer_pool.alloc_buffer(size)?;
-        copy_data_to_device(name, &context, &function_context, &buffer_pool.get(idx)?)?;
+
+        let dev_ptr = &buffer_pool.get(idx)?;
+
+        gpu_api::memcpy_h_to_d(dev_ptr, 0, data_pointer, size)?;
+
         buffers.insert(name.clone(), (idx, size));
     }
     for (name, sizing) in &config.blueprint.buffers {
@@ -223,25 +224,9 @@ pub fn gpu_run(
     )?;
     recorder.record(RecordPoint::GPUInferenceEnd);
 
-    /*let base = match &context.context {
-        ContextType::Gpu(ref mmu_context) => mmu_context.storage.as_ptr(),
-        #[cfg(feature = "gpu_process")]
-        ContextType::GpuProcess(ref gpu_process_context) => gpu_process_context.as_ptr(),
-        _ => return Err(DandelionError::ConfigMissmatch),
-    };*/
-
     recorder.record(RecordPoint::GPUOutputStart);
     // Copy results back into host memory from device memory
-    unsafe {
-        write_gpu_outputs(
-            &mut context,
-            // config.system_data_struct_offset,
-            // base,
-            &output_sets,
-            &buffers,
-            buffer_pool.borrow(),
-        )?
-    };
+    write_gpu_outputs(&mut context, &output_sets, &buffers, buffer_pool.borrow())?;
     recorder.record(RecordPoint::GPUOutputEnd);
 
     // Zero out buffers used by current function
@@ -289,17 +274,14 @@ impl EngineLoop for GpuLoop {
     fn run(
         &mut self,
         config: FunctionConfig,
-        mut context: Context,
+        context: Context,
         output_sets: Arc<Vec<String>>,
-        mut recorder: Recorder,
+        recorder: Recorder,
     ) -> DandelionResult<Context> {
         let FunctionConfig::GpuConfig(config) = config else {
             return Err(DandelionError::ConfigMissmatch);
         };
-        // let sysdata_offset = config.system_data_struct_offset;
-        // setup_input_structs::<usize, usize>(&mut context, sysdata_offset, &output_sets)?;
-        
-        let mut subrecorder = recorder.get_sub_recorder();
+        let subrecorder = recorder.get_sub_recorder();
 
         // Clone for thread
         let buffer_pool = self.buffers.clone();
@@ -307,20 +289,26 @@ impl EngineLoop for GpuLoop {
         let cpu_slot = self.cpu_slot;
         let gpu_id = self.gpu_id;
         thread::spawn(move || {
-            let result = gpu_run(cpu_slot, gpu_id, config, buffer_pool, context, output_sets, subrecorder);
+            let result = gpu_run(
+                cpu_slot,
+                gpu_id,
+                config,
+                buffer_pool,
+                context,
+                output_sets,
+                subrecorder,
+            );
             sender.send(result).unwrap();
         });
 
         // TODO: add proper error handling mechanisms
         // Use an mpsc to receive results. If a fault occured, the handler could be registered to put an error on the channel,
         // while the work thread wouldn't return. This means it would have to be shot down
-        let mut context = self
+        let context = self
             .receiver
             .recv()
             .map_err(|_| DandelionError::EngineError)
             .and_then(|inner| inner)?;
-
-        // read_output_structs::<usize, usize>(&mut context, sysdata_offset)?;
 
         Ok(context)
     }
@@ -331,62 +319,17 @@ fn common_parse(
     function_path: String,
     static_domain: &Box<dyn MemoryDomain>,
 ) -> DandelionResult<crate::function_driver::Function> {
-    // Deserialise user provided config JSON, extract module suffix
-    let (mut gpu_config, modules_info) = config_parsing::parse_config(&function_path)?;
-
-    gpu_config.code_object_offset =
-            SYSDATA_OFFSET + std::mem::size_of::<DandelionSystemData<usize, usize>>();
-
-    let path = std::env::var("DANDELION_LIBRARY_PATH")
-        .unwrap_or(format!("{}/tests/libs/", env!("CARGO_MANIFEST_DIR")));
-
-    // let mut code_objects = Vec::new();
-    // let mut sizes = Vec::new();
-    let mut cumulative_size: usize = 0;
-    let mut modules_offsets = HashMap::new();
-
-    /*for module_info in modules_info.iter() {
-        let module_name = module_info.get("module_name").ok_or(DandelionError::UnknownSymbol)?;
-        let module_path = module_info.get("path").ok_or(DandelionError::UnknownSymbol)?;
-        let full_path = format!("{path}{module_path}");
-
-        let code_object = load_u8_from_file(full_path)?;
-        let size = code_object.len() * size_of::<u8>();
-        
-        code_objects.push(code_object);
-        sizes.push(size);
-        modules_offsets.insert(module_name.clone(), cumulative_size);
-
-        cumulative_size += size;
-    }*/
-
-    let mut context = Box::new(static_domain.acquire_context(0)?);
-    
-    /*let mut offset: usize = 0;
-    for i in 0..code_objects.len() {
-        // Not including SYSDATA_OFFSET here because SystemData is not in static context
-        context.write(offset, &code_objects[i])?;
-        // Location of code object
-        context.content = vec![Some(DataSet {
-            ident: String::from("static"),
-            buffers: vec![DataItem {
-                ident: String::from(""),
-                data: Position { offset: offset, size: sizes[i] },
-                key: 0,
-            }],
-        })];
-
-        offset += sizes[i];
-    }*/
-
-    gpu_config.modules_offsets = Arc::new(modules_offsets);
-
-    let config = FunctionConfig::GpuConfig(gpu_config);
-
     let requirements = DataRequirementList {
         static_requirements: vec![],
         input_requirements: vec![],
     };
+
+    let context = Box::new(static_domain.acquire_context(0)?);
+    
+    let mut gpu_config = config_parsing::parse_config(&function_path)?;
+    gpu_config.code_object_offset =
+        SYSDATA_OFFSET + std::mem::size_of::<DandelionSystemData<usize, usize>>();
+    let config = FunctionConfig::GpuConfig(gpu_config);
 
     Ok(Function {
         requirements,
