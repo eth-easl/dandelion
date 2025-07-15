@@ -377,18 +377,56 @@ pub fn transfer_memory(
         (ContextType::Gpu(destination_ctxt), ContextType::ReadOnly(source_ctxt)) => {
             // Transfer function registering buffers: weights + .cubin
             let Some(ref data_set) = source.content[0] else { todo!() };
-            let ident = &data_set.ident;
-
-            destination_ctxt.read_only.insert(
-                ident.to_string(),
-                SubReadOnly {
-                    context: source,
-                    position: Position {
-                        offset: source_offset,
-                        size
+            let ident = &data_set.ident.to_string();
+            
+            #[cfg(feature = "weights_from_disk")]
+            {
+                use crate::memory_domain::read_only::ReadOnlyContext;
+                let disk_path = source_ctxt.disk_path.clone().unwrap();
+                let split_path = disk_path.split("/").collect::<Vec<&str>>();
+                let name = split_path[split_path.len() - 1].to_string();
+                let data_vec = std::fs::read(&disk_path).unwrap();
+                let item_size = data_vec.len();
+                let mut new_context =
+                    ReadOnlyContext::new(data_vec.into_boxed_slice()).unwrap();
+                new_context.content.push(Some(DataSet {
+                    ident: ident.clone(),
+                    buffers: vec![DataItem {
+                        ident: ident.clone(),
+                        data: Position {
+                            offset: 0,
+                            size: item_size,
+                        },
+                        key: 0,
+                    }],
+                }));
+                let new_source = Arc::new(new_context);
+    
+                destination_ctxt.read_only.insert(
+                    ident.clone(),
+                    SubReadOnly {
+                        context: new_source,
+                        position: Position {
+                            offset: source_offset,
+                            size
+                        }
                     }
-                }
-            );
+                );
+            }
+
+            #[cfg(not(feature = "weights_from_disk"))]
+            {
+                destination_ctxt.read_only.insert(
+                    ident.clone(),
+                    SubReadOnly {
+                        context: source,
+                        position: Position {
+                            offset: source_offset,
+                            size
+                        }
+                    }
+                );
+            }
             
             Ok(())
         },

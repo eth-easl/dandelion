@@ -20,6 +20,7 @@ hip = ["gpu"]
 gpu_process = ["gpu"]
 gpu_thread = ["gpu"]
 test_export = []
+weights_from_disk = ["gpu"]
 
 [build-dependencies]
 cmake = "0.1"

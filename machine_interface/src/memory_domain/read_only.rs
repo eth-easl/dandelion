@@ -8,6 +8,8 @@ use log::error;
 pub struct ReadOnlyContext {
     storage: &'static mut [u8],
     layout: Option<Layout>,
+    #[cfg(feature = "weights_from_disk")]
+    pub disk_path: Option<String>,
 }
 
 impl ContextTrait for ReadOnlyContext {
@@ -61,10 +63,31 @@ impl ReadOnlyContext {
             super::ContextType::ReadOnly(Box::new(ReadOnlyContext {
                 storage: new_ref,
                 layout: Some(layout),
+                #[cfg(feature = "weights_from_disk")]
+                disk_path: None,
             })),
             ref_len,
         ));
     }
+
+    #[cfg(feature = "weights_from_disk")]
+    pub fn new_disk<T>(reference: Box<[T]>, disk_path: &str) -> DandelionResult<Context> {
+        let ref_len = core::mem::size_of::<T>() * reference.len();
+        let layout = core::alloc::Layout::from_size_align(ref_len, core::mem::align_of::<T>())
+            .or(Err(DandelionError::ContextReadOnlyLayout))?;
+        let new_ref = unsafe {
+            core::slice::from_raw_parts_mut(Box::leak(reference).as_mut_ptr() as *mut u8, ref_len)
+        };
+        return Ok(Context::new(
+            super::ContextType::ReadOnly(Box::new(ReadOnlyContext {
+                storage: new_ref,
+                layout: Some(layout),
+                disk_path: Some(disk_path.to_string()),
+            })),
+            ref_len,
+        ));
+    }
+
     pub fn new_static<T>(reference: &'static mut [T]) -> Context {
         let ref_len = core::mem::size_of::<T>() * reference.len();
         let new_ref =
@@ -73,6 +96,8 @@ impl ReadOnlyContext {
             super::ContextType::ReadOnly(Box::new(ReadOnlyContext {
                 storage: new_ref,
                 layout: None,
+                #[cfg(feature = "weights_from_disk")]
+                disk_path: None,
             })),
             ref_len,
         );

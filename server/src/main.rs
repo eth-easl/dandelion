@@ -271,6 +271,10 @@ async fn register_function(
         "GpuProcess" => EngineType::GpuProcess,
         unkown => panic!("Unkown engine type string {}", unkown),
     };
+
+    let inputs_folder = format!("{}/{}_weights", FUNCTION_FOLDER_PATH, &request_map.name);
+    std::fs::create_dir_all(&inputs_folder).unwrap();
+
     let input_sets = request_map
         .input_sets
         .into_iter()
@@ -284,8 +288,23 @@ async fn register_function(
                             data_vec.append(&mut chunk.chunk);
                         }
                         let item_size = data_vec.len();
-                        let mut new_context =
-                            ReadOnlyContext::new(data_vec.into_boxed_slice()).unwrap();
+
+                        #[cfg(not(feature = "weights_from_disk"))]
+                        let mut new_context = ReadOnlyContext::new(data_vec.into_boxed_slice()).unwrap();
+
+                        #[cfg(feature = "weights_from_disk")]
+                        let mut new_context = {
+                            // write weight to file
+                            let mut path_buff = format!("{}/{}", inputs_folder.clone(), name.clone());
+                            let mut function_file = std::fs::File::create(&path_buff)
+                                .expect("Failed to create file for registering function weight");
+                            function_file
+                                .write_all(&data_vec)
+                                .expect("Failed to write file with content for registering function weight");
+                            
+                            ReadOnlyContext::new_disk(data_vec.into_boxed_slice(), &path_buff).unwrap()
+                        };
+
                         new_context.content.push(Some(DataSet {
                             ident: name.clone(),
                             buffers: vec![DataItem {
@@ -742,6 +761,8 @@ fn main() -> () {
     print!(" request_io");
     #[cfg(feature = "timestamp")]
     print!(" timestamp");
+    #[cfg(feature = "weights_from_disk")]
+    print!(" weights_from_disk");
     print!("\n");
 
     // Run this server for... forever... unless I receive a signal!
