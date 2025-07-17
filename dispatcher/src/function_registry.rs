@@ -20,7 +20,7 @@ use std::{
 
 use crate::{
     composition::{Composition, CompositionSet},
-    execution_qs::EngineQueue,
+    dispatcher::FullQueue
 };
 
 #[derive(Clone, Debug)]
@@ -87,19 +87,19 @@ async fn load_local(
     static_domain: Arc<Box<dyn MemoryDomain>>,
     driver: &'static dyn Driver,
     mut recorder: Recorder,
-    work_queue: Box<EngineQueue>,
+    work_queue: Box<dyn FullQueue>,
     path: String,
 ) -> DandelionResult<Arc<Function>> {
     recorder.record(RecordPoint::ParsingQueue);
     let function = work_queue
-        .enqueu_work(
+        .enqueue_work(
             machine_interface::function_driver::WorkToDo::ParsingArguments {
                 driver,
                 path,
                 static_domain,
                 recorder: recorder.get_sub_recorder(),
             },
-        )
+        )?
         .await?
         .get_function();
     recorder.record(RecordPoint::ParsingDequeue);
@@ -110,7 +110,7 @@ pub struct FunctionRegistry {
     /// List of engines available for each function
     engine_map: Mutex<BTreeMap<FunctionId, BTreeSet<EngineType>>>,
     /// Drivers for the engines to prepare function (get them from available to ready)
-    pub(crate) drivers: BTreeMap<EngineType, (&'static dyn Driver, Box<EngineQueue>)>,
+    pub(crate) drivers: BTreeMap<EngineType, (&'static dyn Driver, Box<dyn FullQueue>)>,
     /// map with list of all options for each function
     /// TODO: change structure to avoid copy on get_options
     options: Mutex<BTreeMap<FunctionId, Vec<Alternative>>>,
@@ -138,7 +138,7 @@ pub struct FunctionRegistry {
 impl FunctionRegistry {
     // TODO: make sure that system functions can't be added later for other engines
     pub fn new(
-        drivers: BTreeMap<EngineType, (&'static dyn Driver, Box<EngineQueue>)>,
+        drivers: BTreeMap<EngineType, (&'static dyn Driver, Box<dyn FullQueue>)>,
         type_map: &BTreeMap<EngineType, DomainType>,
         domains: &BTreeMap<DomainType, Arc<Box<dyn MemoryDomain>>>,
     ) -> Self {
@@ -409,14 +409,14 @@ impl FunctionRegistry {
         let function_config = function.config.clone();
         recorder.record(RecordPoint::LoadQueue);
         let context_work_done = load_queue
-            .enqueu_work(
+            .enqueue_work(
                 machine_interface::function_driver::WorkToDo::LoadingArguments {
                     function,
                     domain,
                     recorder: recorder.get_sub_recorder(),
                     ctx_size: ctx_size,
                 },
-            )
+            )?
             .await;
         recorder.record(RecordPoint::LoadDequeue);
         let function_context = context_work_done?.get_context();

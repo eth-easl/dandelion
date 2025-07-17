@@ -2,7 +2,7 @@ use crate::{
     composition::{
         get_sharding, Composition, CompositionSet, InputSetDescriptor, JoinStrategy, ShardingMode,
     },
-    execution_qs::EngineQueue,
+    execution_qs::{EngineQueue, EngineQueueGPU},
     function_registry::{FunctionRegistry, FunctionType, Metadata},
     resource_pool::ResourcePool,
 };
@@ -19,12 +19,12 @@ use futures::{
 use itertools::Itertools;
 use log::{debug, trace};
 use machine_interface::{
-    function_driver::{Driver, FunctionConfig, WorkToDo},
+    function_driver::{Driver, FunctionConfig, WorkQueue, WorkToDo},
     machine_config::{
-        get_available_domains, get_available_drivers, get_compatibilty_table, DomainType,
-        EngineType,
+        get_available_domains, get_available_drivers, get_compatibilty_table, DomainType, EngineType
     },
     memory_domain::{Context, MemoryDomain, MemoryResource},
+    promise::Promise,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -37,15 +37,56 @@ pub enum DispatcherInput {
     Set(CompositionSet),
 }
 
+pub trait EnqueueWork: Send + Sync {
+    fn enqueue_work(&self, args: WorkToDo) -> DandelionResult<Promise>;
+}
+
+pub trait FullQueue: EnqueueWork + WorkQueue {
+    fn clone_full_queue(&self) -> Box<dyn FullQueue>;
+    fn upcast_work_queue(&self) -> Box<(dyn WorkQueue + Send + Sync)>;
+    fn upcast_enqueue_work(&self) -> Box<(dyn EnqueueWork)>;
+}
+
+impl Clone for Box<dyn FullQueue> {
+    fn clone(&self) -> Box<dyn FullQueue> {
+        self.clone_full_queue()
+    }
+}
+
+impl<T> FullQueue for T
+where
+    T: EnqueueWork + WorkQueue + Send + Sync + Clone + 'static,
+{
+    fn clone_full_queue(&self) -> Box<dyn FullQueue> {
+        Box::new(self.clone())
+    }
+
+    fn upcast_work_queue(&self) -> Box<(dyn WorkQueue + Send + Sync)> {
+        Box::new(self.clone())
+    }
+
+    fn upcast_enqueue_work(&self) -> Box<(dyn EnqueueWork)> {
+        Box::new(self.clone())
+    }
+}
+
 // TODO here and in registry can probably replace driver and loader function maps with fixed size arrays
 // That have compile time size and static indexing
 // TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
 // the entire execution time anyway
 pub struct Dispatcher {
-    domains: BTreeMap<DomainType, (Arc<Box<dyn MemoryDomain>>, Box<EngineQueue>)>,
-    engine_queues: BTreeMap<EngineType, Box<EngineQueue>>,
+    domains: BTreeMap<DomainType, (Arc<Box<dyn MemoryDomain>>, Box<dyn EnqueueWork>)>,
+    engine_queues: BTreeMap<EngineType, Box<dyn EnqueueWork>>,
     type_map: BTreeMap<EngineType, DomainType>,
     function_registry: FunctionRegistry,
+}
+
+fn get_queue_from_engine(engine_type: EngineType) -> Box<dyn FullQueue> {
+    return match engine_type {
+        #[cfg(feature = "gpu")]
+        EngineType::GpuThread => Box::new(EngineQueueGPU::new()),
+        _ => Box::new(EngineQueue::new()),
+    };
 }
 
 impl Dispatcher {
@@ -61,17 +102,17 @@ impl Dispatcher {
         // Insert a work queue for each domain and use up all engine resource available
         let mut domain_map = BTreeMap::new();
         let mut engine_queues = BTreeMap::new();
-        let mut registry_drivers: BTreeMap<EngineType, (&'static dyn Driver, Box<EngineQueue>)> =
+        let mut registry_drivers: BTreeMap<EngineType, (&'static dyn Driver, Box<dyn FullQueue>)> =
             BTreeMap::new();
         for (engine_type, driver) in drivers.into_iter() {
-            let work_queue = Box::new(EngineQueue::new());
+            let work_queue = get_queue_from_engine(engine_type);
             while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(engine_type) {
-                driver.start_engine(resource, work_queue.clone())?;
+                driver.start_engine(resource, work_queue.upcast_work_queue())?;
             }
             let domain_type = type_map.get(&engine_type).unwrap();
             let domain = domains.get(domain_type).unwrap().clone();
-            domain_map.insert(*domain_type, (domain, work_queue.clone()));
-            engine_queues.insert(engine_type, work_queue.clone());
+            domain_map.insert(*domain_type, (domain, work_queue.upcast_enqueue_work()));
+            engine_queues.insert(engine_type, work_queue.upcast_enqueue_work());
             registry_drivers.insert(
                 engine_type,
                 (driver as &'static dyn Driver, work_queue.clone()),
@@ -563,7 +604,7 @@ impl Dispatcher {
                         source_item_index: item,
                         recorder: recorder.get_sub_recorder(),
                     };
-                    function_context = transfer_queue.enqueu_work(args).await?.get_context();
+                    function_context = transfer_queue.enqueue_work(args)?.await?.get_context();
                     function_buffer += 1;
                 }
             }
@@ -607,7 +648,7 @@ impl Dispatcher {
                     source_item_index: item,
                     recorder: recorder.get_sub_recorder(),
                 };
-                function_context = transfer_queue.enqueu_work(args).await?.get_context();
+                function_context = transfer_queue.enqueue_work(args)?.await?.get_context();
                 function_item += 1;
             }
         }
@@ -640,7 +681,7 @@ impl Dispatcher {
             recorder: subrecoder,
         };
         recorder.record(RecordPoint::ExecutionQueue);
-        let result = engine_queue.enqueu_work(args).await?.get_context();
+        let result = engine_queue.enqueue_work(args)?.await?.get_context();
         recorder.record(RecordPoint::FutureReturn);
         return Ok(result);
     }
