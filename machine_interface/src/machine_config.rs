@@ -52,7 +52,10 @@ const SYS_FUNC_DEFAULT_CONTEXT_SIZE: usize = 0x200_0000;
 pub fn get_system_functions(engine_type: EngineType) -> Vec<(SystemFunction, usize)> {
     return match engine_type {
         #[cfg(feature = "reqwest_io")]
-        EngineType::System => vec![(SystemFunction::HTTP, SYS_FUNC_DEFAULT_CONTEXT_SIZE)],
+        EngineType::System => vec![
+            (SystemFunction::HTTP, SYS_FUNC_DEFAULT_CONTEXT_SIZE),
+            (SystemFunction::FileLoad, SYS_FUNC_DEFAULT_CONTEXT_SIZE),
+        ],
         #[allow(unreachable_patterns)]
         _ => Vec::new(),
     };
