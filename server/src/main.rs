@@ -1,3 +1,4 @@
+use bytes::Buf;
 use core_affinity::{self, CoreId};
 use dandelion_commons::{
     records::{Archive, Recorder},
@@ -165,7 +166,7 @@ struct RegisterFunction {
     #[serde(default = "default_path")]
     local_path: String,
     /// Binary representation of the function, ignored if a local path is given
-    binary: Vec<u8>,
+    binary: u64,
     /// Metadata for the sets and optionally static items to pass into the function for that set
     input_sets: Vec<(String, Option<Vec<(String, Vec<u8>)>>)>,
     /// output set names
@@ -176,14 +177,16 @@ async fn register_function(
     req: Request<Incoming>,
     dispatcher: mpsc::Sender<DispatcherCommand>,
 ) -> Result<Response<DandelionBody>, Infallible> {
-    let bytes = req
+    let mut bytes = req
         .collect()
         .await
         .expect("Failed to extract body from function registration")
         .to_bytes();
+    let meta_length = usize::try_from(bytes.get_u64_le()).unwrap();
     // find first line end character
     let request_map: RegisterFunction =
-        bson::from_slice(&bytes).expect("Should be able to deserialize request");
+        bson::from_slice(&bytes[..meta_length]).expect("Should be able to deserialize request");
+
     // if local is present ignore the binary
     let path_string = if !request_map.local_path.is_empty() {
         // check that file exists
@@ -205,7 +208,7 @@ async fn register_function(
         let mut function_file = std::fs::File::create(path_buff.clone())
             .expect("Failed to create file for registering function");
         function_file
-            .write_all(&request_map.binary)
+            .write_all(&bytes[meta_length..])
             .expect("Failed to write file with content for registering");
         path_buff.to_str().unwrap().to_string()
     };
