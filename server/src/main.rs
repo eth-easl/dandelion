@@ -29,9 +29,7 @@ use std::{
     collections::BTreeMap,
     convert::Infallible,
     fs::read_to_string,
-    io::Write,
     net::SocketAddr,
-    path::PathBuf,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, OnceLock,
@@ -61,7 +59,7 @@ enum DispatcherCommand {
         name: String,
         engine_type: EngineType,
         context_size: usize,
-        path: String,
+        static_data: Vec<u8>,
         metadata: Metadata,
         callback: oneshot::Sender<DandelionResult<u64>>,
     },
@@ -188,30 +186,26 @@ async fn register_function(
         bson::from_slice(&bytes[..meta_length]).expect("Should be able to deserialize request");
 
     // if local is present ignore the binary
-    let path_string = if !request_map.local_path.is_empty() {
+    let static_data = if !request_map.local_path.is_empty() {
         // check that file exists
-        if let Err(err) = std::fs::File::open(&request_map.local_path) {
-            let err_message = format!(
-                "Tried to register function with local path, but failed to open file with error {}",
-                err
-            );
-            return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
-                err_message.as_bytes().to_vec(),
-            )));
-        };
-        request_map.local_path
+        match std::fs::read(&request_map.local_path) {
+            Err(err) => {
+                let err_message = format!(
+                    "Tried to register function with local path, but failed to read file with error {}",
+                    err
+                );
+                debug!("Error when trying to make file: {}", err_message);
+                return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
+                    err_message.as_bytes().to_vec(),
+                )));
+            }
+            Ok(file_vec) => file_vec,
+        }
     } else {
-        // write function to file
-        std::fs::create_dir_all(FUNCTION_FOLDER_PATH).unwrap();
-        let mut path_buff = PathBuf::from(FUNCTION_FOLDER_PATH);
-        path_buff.push(request_map.name.clone());
-        let mut function_file = std::fs::File::create(path_buff.clone())
-            .expect("Failed to create file for registering function");
-        function_file
-            .write_all(&bytes[meta_length..])
-            .expect("Failed to write file with content for registering");
-        path_buff.to_str().unwrap().to_string()
+        bytes[meta_length..].to_vec()
     };
+
+    debug!("File was written to file");
 
     let engine_type = match request_map.engine_type.as_str() {
         #[cfg(feature = "wasm")]
@@ -266,7 +260,7 @@ async fn register_function(
             name: request_map.name,
             engine_type,
             context_size: request_map.context_size as usize,
-            path: path_string,
+            static_data,
             metadata,
             callback,
         })
@@ -276,6 +270,9 @@ async fn register_function(
         .await
         .unwrap()
         .expect("Should be able to insert function");
+
+    debug!("Finished registration");
+
     return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
         "Function registered".as_bytes().to_vec(),
     )));
@@ -396,11 +393,11 @@ async fn dispatcher_loop(
                 context_size,
                 metadata,
                 mut callback,
-                path,
+                static_data,
             } => {
                 debug!("Handling function registration");
                 let insertion_future =
-                    dispatcher.insert_func(name, engine_type, context_size, path, metadata);
+                    dispatcher.insert_func(name, engine_type, context_size, static_data, metadata);
                 spawn(async {
                     select! {
                         result = insertion_future => {
@@ -482,6 +479,9 @@ fn main() -> () {
         Ok(_) => (),
         Err(_) => panic!("Failed to initialize tracing archive"),
     }
+
+    // Create folder for function registry
+    std::fs::create_dir_all(FUNCTION_FOLDER_PATH).unwrap();
 
     // find available resources
     let num_phyiscal_cores = u8::try_from(num_cpus::get_physical()).unwrap();
@@ -618,7 +618,8 @@ fn main() -> () {
 
     // Create an ARC pointer to the dispatcher for thread-safe access
     let dispatcher = Box::leak(Box::new(
-        Dispatcher::init(resource_pool, memory_pool).expect("Should be able to start dispatcher"),
+        Dispatcher::init(resource_pool, memory_pool, FUNCTION_FOLDER_PATH.to_string())
+            .expect("Should be able to start dispatcher"),
     ));
     // start dispatcher
     dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));

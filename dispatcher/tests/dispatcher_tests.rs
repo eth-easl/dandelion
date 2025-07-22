@@ -22,7 +22,8 @@ mod dispatcher_tests {
     const DEFAULT_CONTEXT_SIZE: usize = 0x802_0000; // 128MiB
 
     fn setup_dispatcher<Dom: MemoryDomain>(
-        name: &str,
+        test_name: &str,
+        function_name: &str,
         in_set_names: Vec<(String, Option<CompositionSet>)>,
         out_set_names: Vec<String>,
         engine_type: EngineType,
@@ -32,8 +33,8 @@ mod dispatcher_tests {
         let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         path.pop();
         path.push("machine_interface/tests/data");
-        path.push(name);
-        let path_string = path.to_str().expect("Path should be string").to_string();
+        path.push(function_name);
+        let binary_data = std::fs::read(path).unwrap();
         let metadata = Metadata {
             input_sets: Arc::new(in_set_names),
             output_sets: Arc::new(out_set_names),
@@ -52,16 +53,16 @@ mod dispatcher_tests {
                 )
             })
             .collect();
-        let dispatcher = Dispatcher::init(resource_pool, memory_resources)
+        let dispatcher = Dispatcher::init(resource_pool, memory_resources, String::from("/tmp"))
             .expect("Should have initialized dispatcher");
         let function_id = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(dispatcher.insert_func(
-                String::from("test_function"),
+                format!("{}_{}", test_name, function_name),
                 engine_type,
                 DEFAULT_CONTEXT_SIZE,
-                path_string,
+                binary_data,
                 metadata,
             ))
             .expect("Should be able to insert function in new dispatcher");

@@ -1,6 +1,5 @@
 use crate::{
     function_driver::{
-        load_utils::load_u8_from_file,
         thread_utils::{start_thread, EngineLoop},
         ComputeResource, Driver, ElfConfig, Function, FunctionConfig, WorkQueue,
     },
@@ -99,12 +98,7 @@ impl Driver for CheriDriver {
     // parses an executable,
     // returns the layout requirements and a context containing static data,
     //  and a layout description for it
-    fn parse_function(
-        &self,
-        function_path: String,
-        static_domain: &Box<dyn MemoryDomain>,
-    ) -> DandelionResult<Function> {
-        let function = load_u8_from_file(function_path)?;
+    fn parse_function(&self, function: Vec<u8>) -> DandelionResult<Function> {
         let elf = elf_parser::ParsedElf::new(&function)?;
         let system_data = elf.get_symbol_by_name(&function, "__dandelion_system_data")?;
         let return_offset = elf.get_symbol_by_name(&function, "__dandelion_return_address")?;
@@ -114,43 +108,28 @@ impl Driver for CheriDriver {
             return_offset: return_offset,
             entry_point: entry,
         });
-        let (static_requirements, source_layout) = elf.get_layout_pair();
-        let requirements = DataRequirementList {
-            input_requirements: Vec::<DataRequirement>::new(),
-            static_requirements: static_requirements,
-        };
+
+        let layout = elf.get_layout_pair();
         // sum up all sizes
         let mut total_size = 0;
-        for position in source_layout.iter() {
+        for (_, elf_position) in layout.iter() {
             total_size += position.size;
         }
-        let mut context = static_domain.acquire_context(total_size)?;
-        // copy all
-        let mut write_counter = 0;
-        let mut new_content = DataSet {
-            ident: String::from("static"),
-            buffers: vec![],
-        };
-        let buffers = &mut new_content.buffers;
-        for position in source_layout.iter() {
-            context.write(
-                write_counter,
-                &function[position.offset..position.offset + position.size],
-            )?;
-            buffers.push(DataItem {
-                ident: String::from(""),
-                data: Position {
-                    offset: write_counter,
-                    size: position.size,
-                },
-                key: 0,
-            });
-            write_counter += position.size;
+        let mut static_data = Vec::with_capacity(total_size);
+        for (_, position) in layout.iter_mut() {
+            let binary_start = static_data.len();
+            let elf_start = position.offset;
+            let elf_end = elf_start + position.size;
+            static_data.extend_from_slice(&binary_data[elf_start..elf_end]);
+            position.offset = binary_start;
         }
-        context.content = vec![Some(new_content)];
+
         return Ok(Function {
-            requirements,
-            context: Arc::new(context),
+            requirements: DataRequirementList {
+                input_requirements: Vec::new(),
+                static_requirements: layout,
+            },
+            static_data,
             config,
         });
     }

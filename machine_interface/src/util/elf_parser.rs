@@ -283,25 +283,29 @@ impl ParsedElf {
             symbol_table: sym_table,
         });
     }
-    pub fn get_layout_pair(&self) -> (Vec<Position>, Vec<Position>) {
-        let mut items = Vec::<Position>::new();
-        let mut requirements = Vec::<Position>::new();
+
+    /// Returns a vector of pairs of positions.
+    /// The first position gives the location of the data should have in the function address space.
+    /// The second position gives the location of the data in the elf file.
+    pub fn get_layout_pair(&self) -> Vec<(Position, Position)> {
+        let mut layout = Vec::new();
         // go through sections and find the ones that need to be loaded
         for program_header in &self.program_header_table {
             // check if section occupies memory during execution
             if program_header.p_type == 0x1 {
-                items.push(Position {
-                    offset: program_header.p_offset as usize,
-                    size: program_header.p_filesz as usize,
-                });
-                requirements.push(Position {
-                    offset: program_header.p_vaddr as usize,
-                    size: program_header.p_memsz as usize,
-                });
+                layout.push((
+                    Position {
+                        offset: program_header.p_vaddr as usize,
+                        size: program_header.p_memsz as usize,
+                    },
+                    Position {
+                        offset: program_header.p_offset as usize,
+                        size: program_header.p_filesz as usize,
+                    },
+                ));
             }
         }
-
-        return (requirements, items);
+        return layout;
     }
 
     pub fn get_memory_protection_layout(&self) -> Vec<(u32, Position)> {

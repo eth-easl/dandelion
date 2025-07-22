@@ -52,6 +52,7 @@ impl Dispatcher {
     pub fn init(
         mut resource_pool: ResourcePool,
         memory_resources: BTreeMap<DomainType, MemoryResource>,
+        binary_dir: String,
     ) -> DandelionResult<Dispatcher> {
         // get machine specific configurations
         let type_map = get_compatibilty_table();
@@ -77,7 +78,7 @@ impl Dispatcher {
                 (driver as &'static dyn Driver, work_queue.clone()),
             );
         }
-        let function_registry = FunctionRegistry::new(registry_drivers, &type_map, &domains);
+        let function_registry = FunctionRegistry::new(registry_drivers, binary_dir);
 
         return Ok(Dispatcher {
             domains: domain_map,
@@ -92,12 +93,12 @@ impl Dispatcher {
         function_name: String,
         engine_type: EngineType,
         ctx_size: usize,
-        path: String,
+        binary_data: Vec<u8>,
         metadata: Metadata,
     ) -> DandelionResult<FunctionId> {
         return self
             .function_registry
-            .insert_function(function_name, engine_type, ctx_size, path, metadata)
+            .insert_function(function_name, engine_type, ctx_size, binary_data, metadata)
             .await;
     }
 

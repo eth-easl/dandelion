@@ -16,12 +16,12 @@ mod compute_driver_tests {
     use dandelion_commons::{records::Recorder, DandelionError};
     use std::{sync::Arc, time::Instant};
 
-    fn loader_empty<Dom: MemoryDomain>(dom_init: MemoryResource, driver: Box<dyn Driver>) {
+    fn loader_empty(driver: Box<dyn Driver>) {
         // load elf file
         let elf_path = String::new();
-        let domain = Dom::init(get_resource(dom_init)).expect("Should be able to get domain");
+        let binary_data = std::fs::read(elf_path).unwrap();
         driver
-            .parse_function(elf_path, &domain)
+            .parse_function(&binary_data)
             .expect("Empty string should return error");
     }
 
@@ -54,8 +54,9 @@ mod compute_driver_tests {
     ) -> (Context, FunctionConfig, Box<TestQueue>) {
         let queue = Box::new(TestQueue::new());
         let domain = Dom::init(get_resource(dom_init)).expect("Should have initialized domain");
+        let function_binary = std::fs::read(filename).unwrap();
         let function = driver
-            .parse_function(filename.to_string(), &domain)
+            .parse_function(&function_binary)
             .expect("Should be able to parse function");
         driver
             .start_engine(drv_init[0], queue.clone())
@@ -488,7 +489,7 @@ mod compute_driver_tests {
             #[should_panic]
             fn test_loader_empty() {
                 let driver = Box::new($driver);
-                super::loader_empty::<$domain>($dom_init, driver);
+                super::loader_empty(driver);
             }
 
             #[test_log::test]

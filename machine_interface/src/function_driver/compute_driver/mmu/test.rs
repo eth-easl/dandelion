@@ -1,6 +1,5 @@
 use crate::{
     function_driver::{compute_driver::mmu::MmuDriver, Driver, Function, FunctionConfig},
-    memory_domain::{mmu::MmuMemoryDomain, MemoryDomain},
     Position,
 };
 
@@ -12,19 +11,13 @@ fn test_loader_basic() {
         std::env::consts::ARCH
     );
     let driver = MmuDriver {};
-    let mmu_domain = MmuMemoryDomain::init(crate::memory_domain::test_resource::get_resource(
-        crate::memory_domain::MemoryResource::Shared {
-            id: 0,
-            size: (1 << 30),
-        },
-    ))
-    .expect("Should be able to get mmu domain");
+    let binary_data = std::fs::read(elf_path).unwrap();
     let Function {
         requirements,
-        context,
+        static_data: _,
         config,
     } = driver
-        .parse_function(elf_path, &mmu_domain)
+        .parse_function(&binary_data)
         .expect("Should correctly parse elf file");
     // check requirement list
     #[cfg(target_arch = "x86_64")]
@@ -75,43 +68,36 @@ fn test_loader_basic() {
         requirements.static_requirements.len(),
         "Requirements list lengths don't match"
     );
-    for (index, (expected, actual)) in requirements
+    let mut expected_offset = 0;
+    for (index, ((actual_requirement, actual_position), expected_requirement)) in requirements
         .static_requirements
         .iter()
         .zip(expected_requirements.iter())
         .enumerate()
     {
         assert_eq!(
-            expected.size, actual.size,
+            expected_requirement.size, actual_requirement.size,
             "Static requirement size missmatch for index: {}",
             index
         );
         assert_eq!(
-            expected.offset, actual.offset,
+            expected_requirement.offset, actual_requirement.offset,
             "Static requirement offset missmatch for index: {}",
             index
         );
-    }
-    // check layout
-    let mut expected_offset = 0;
-    assert_eq!(1, context.content.len());
-    let layout = &context.content[0]
-        .as_ref()
-        .expect("Set should be present")
-        .buffers;
-    for (index, item) in layout.into_iter().enumerate() {
         assert_eq!(
-            expected_offset, item.data.offset,
+            expected_offset, actual_position.offset,
             "Offset missmatch for item {}",
             index
         );
         assert_eq!(
-            expected_sizes[index], item.data.size,
+            expected_sizes[index], actual_position.size,
             "Size missmatch for item {}",
             index
         );
         expected_offset += expected_sizes[index];
     }
+
     // checks for config
     let function_config = match config {
         FunctionConfig::ElfConfig(conf_struct) => conf_struct,

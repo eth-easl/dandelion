@@ -24,7 +24,7 @@ mod server_tests {
         name: String,
         context_size: u64,
         engine_type: String,
-        binary: Vec<u8>,
+        binary: u64,
         input_sets: Vec<(String, Option<Vec<(String, Vec<u8>)>>)>,
         output_sets: Vec<String>,
     }
@@ -35,7 +35,7 @@ mod server_tests {
         context_size: u64,
         engine_type: String,
         local_path: String,
-        binary: Vec<u8>,
+        binary: u64,
         input_sets: Vec<(String, Option<Vec<(String, Vec<u8>)>>)>,
         output_sets: Vec<String>,
     }
@@ -162,12 +162,12 @@ mod server_tests {
         };
 
         let function_name = format!("matmul_{}", version_string);
-        let register_request = if local {
+        let register_meta = if local {
             bson::to_vec(&RegisterFunctionLocal {
                 name: function_name.clone(),
                 context_size: 0x802_0000,
-                local_path: matmul_path,
-                binary: Vec::new(),
+                local_path: matmul_path.clone(),
+                binary: 0,
                 engine_type,
                 input_sets: vec![(String::from(""), None)],
                 output_sets: vec![String::from("")],
@@ -177,13 +177,21 @@ mod server_tests {
             bson::to_vec(&RegisterFunction {
                 name: function_name.clone(),
                 context_size: 0x802_0000,
-                binary: std::fs::read(matmul_path).unwrap(),
+                binary: 0,
                 engine_type,
                 input_sets: vec![(String::from(""), None)],
                 output_sets: vec![String::from("")],
             })
             .unwrap()
         };
+        let mut register_request = u64::try_from(register_meta.len())
+            .unwrap()
+            .to_le_bytes()
+            .to_vec();
+        register_request.extend_from_slice(&register_meta);
+        let binary_data = std::fs::read(matmul_path).unwrap();
+        register_request.extend(binary_data);
+
         let registration_resp = client
             .post("http://localhost:8080/register/function")
             .version(http_version)

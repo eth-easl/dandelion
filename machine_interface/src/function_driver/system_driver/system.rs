@@ -47,6 +47,7 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
                         continue;
                     }
                 };
+                log::trace!("Handling system function for type: {}", function);
                 match function {
                     #[cfg(feature = "reqwest_io")]
                     SystemFunction::HTTP => {
@@ -113,14 +114,9 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
             }
             WorkToDo::ParsingArguments {
                 driver,
-                path,
-                static_domain,
-                mut recorder,
+                binary_data,
             } => {
-                recorder.record(RecordPoint::ParsingStart);
-                let function_result = driver.parse_function(path, &static_domain);
-                recorder.record(RecordPoint::ParsingEnd);
-                drop(recorder);
+                let function_result = driver.parse_function(&binary_data);
                 match function_result {
                     Ok(function) => debt.fulfill(Ok(WorkDone::Function(function))),
                     Err(err) => debt.fulfill(Err(err)),
@@ -202,21 +198,7 @@ impl Driver for SystemDriver {
         return Ok(());
     }
 
-    fn parse_function(
-        &self,
-        function_path: String,
-        static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
-    ) -> DandelionResult<Function> {
-        if function_path.len() != 0 {
-            return Err(DandelionError::CalledSystemFuncParser);
-        }
-        return Ok(Function {
-            requirements: crate::DataRequirementList {
-                input_requirements: vec![],
-                static_requirements: vec![],
-            },
-            context: Arc::new(static_domain.acquire_context(0)?),
-            config: FunctionConfig::SysConfig(SystemFunction::HTTP),
-        });
+    fn parse_function(&self, _binary_data: &Vec<u8>) -> DandelionResult<Function> {
+        return Err(DandelionError::CalledSystemFuncParser);
     }
 }

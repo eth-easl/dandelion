@@ -10,15 +10,14 @@ fn test_loader_basic() {
         "{}/tests/data/test_elf_cheri_basic",
         env!("CARGO_MANIFEST_DIR")
     );
-    let malloc_domain = MallocMemoryDomain::init(crate::memory_domain::MemoryResource::None)
-        .expect("Should be able to get malloc domain");
+    let binary_data = std::fs::read(elf_path).unwrap();
     let driver = CheriDriver {};
     let Function {
         requirements,
-        context,
+        static_data,
         config,
     } = driver
-        .parse_function(elf_path, &malloc_domain)
+        .parse_function(binary_data)
         .expect("Parsing should work");
     // check requirement list to be list of programm header info for after load
     // meaning addresses and sizes in virtual address space
@@ -47,31 +46,25 @@ fn test_loader_basic() {
         requirements.static_requirements.len(),
         "Requirements list lengths don't match"
     );
-    for (index, (expected, actual)) in requirements
-        .static_requirements
-        .iter()
-        .zip(expected_requirements.iter())
-        .enumerate()
+    // check layout
+    let mut expected_offset = 0;
+    for (index, ((actual_requirement, actual_position), expected_requirement, actual)) in
+        requirements
+            .static_requirements
+            .iter()
+            .zip(expected_requirements.iter())
+            .enumerate()
     {
         assert_eq!(
-            expected.size, actual.size,
+            expected_requirement.size, actual_requirement.size,
             "Static requirement size missmatch for index: {}",
             index
         );
         assert_eq!(
-            expected.offset, actual.offset,
+            expected_requirement.offset, actual_requirement.offset,
             "Static requirement offset missmatch for index: {}",
             index
         );
-    }
-    // check layout
-    let mut expected_offset = 0;
-    assert_eq!(1, context.content.len());
-    let layout = &context.content[0]
-        .as_ref()
-        .expect("Set should be present")
-        .buffers;
-    for (index, item) in layout.into_iter().enumerate() {
         assert_eq!(
             expected_offset, item.data.offset,
             "Offset missmatch for item {}",
@@ -84,6 +77,7 @@ fn test_loader_basic() {
         );
         expected_offset += expected_sizes[index];
     }
+
     // checks for config
     let function_config = match config {
         FunctionConfig::ElfConfig(conf_struct) => conf_struct,

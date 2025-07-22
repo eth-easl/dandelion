@@ -9,7 +9,7 @@ use crate::{
 use core::slice;
 use dandelion_commons::{records::Recorder, DandelionError, DandelionResult, SysFunctionError};
 use libc::{c_void, mmap, munmap};
-use log::debug;
+use log::{debug, trace};
 use std::{collections::BTreeMap, fs::File, os::fd::AsRawFd, ptr};
 
 #[derive(Debug)]
@@ -58,6 +58,7 @@ fn get_paths(mut context: Context) -> DandelionResult<Vec<(String, u32, (String,
             ))
         }
     };
+    trace!("Starting to parse paths");
     path_set
         .buffers
         .into_iter()
@@ -65,6 +66,7 @@ fn get_paths(mut context: Context) -> DandelionResult<Vec<(String, u32, (String,
             let mut path_buffer = Vec::with_capacity(path_item.data.size);
             path_buffer.resize(path_item.data.size, 0u8);
             context.read(path_item.data.offset, &mut path_buffer)?;
+            trace!("paring path from path buffer: {:?}", path_buffer);
             let path_str = std::str::from_utf8(&path_buffer)
                 .and_then(|path_string| Ok(path_string))
                 .or(Err(DandelionError::SysFunctionError(

@@ -78,14 +78,9 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
             }
             WorkToDo::ParsingArguments {
                 driver,
-                path,
-                static_domain,
-                mut recorder,
+                binary_data,
             } => {
-                recorder.record(RecordPoint::ParsingStart);
-                let function_result = driver.parse_function(path, &static_domain);
-                recorder.record(RecordPoint::ParsingEnd);
-                drop(recorder);
+                let function_result = driver.parse_function(&binary_data);
                 match function_result {
                     Ok(function) => debt.fulfill(Ok(WorkDone::Function(function))),
                     Err(err) => debt.fulfill(Err(err)),

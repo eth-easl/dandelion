@@ -23,20 +23,17 @@ fn load_file(name: &str, fsize: usize) -> Vec<u8> {
 fn check_layout_le_64() -> () {
     let elf_buffer = load_file("test_elf_le_64", 10400);
     let parsed_elf = ParsedElf::new(&elf_buffer).expect("Should be able to create parsed elf");
-    let (requirements, items) = parsed_elf.get_layout_pair();
-    assert_eq!(4, requirements.len());
-    // checks on the requirements
+    // let (requirements, items) = parsed_elf.get_layout_pair();
+    let layout = parsed_elf.get_layout_pair();
+    assert_eq!(4, layout.len());
+    // checks on the requirements and binary positions
     let virt_offset_list = vec![0x400000, 0x401000, 0x402000, 0x404000];
     let virt_size_list = vec![0x244, 0x325, 0x184, 0x10];
-    for (index, requirement) in requirements.iter().enumerate() {
-        assert_eq!(virt_offset_list[index], requirement.offset);
-        assert_eq!(virt_size_list[index], requirement.size);
-    }
-    // checks on the data items
-    assert_eq!(4, items.len());
     let file_offset_list = vec![0x0, 0x1000, 0x2000, 0x0];
     let file_size_list = vec![0x244, 0x325, 0x184, 0x0];
-    for (index, position) in items.iter().enumerate() {
+    for (index, (requirement, position)) in layout.iter().enumerate() {
+        assert_eq!(virt_offset_list[index], requirement.offset);
+        assert_eq!(virt_size_list[index], requirement.size);
         assert_eq!(file_offset_list[index], position.offset);
         assert_eq!(file_size_list[index], position.size);
     }

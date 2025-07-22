@@ -3,18 +3,20 @@ use dandelion_commons::{
     DandelionError, DandelionResult, DispatcherError, FunctionId,
 };
 use dparser::print_errors;
-use futures::{lock::Mutex, Future, FutureExt};
+use futures::lock::Mutex;
+use log::trace;
 use machine_interface::{
     function_driver::{
         system_driver::{get_system_function_input_sets, get_system_function_output_sets},
         Driver, Function, FunctionConfig,
     },
-    machine_config::{get_system_functions, DomainType, EngineType},
+    machine_config::{get_system_functions, EngineType},
     memory_domain::{Context, MemoryDomain},
+    DataRequirementList,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
-    pin::Pin,
+    io::Write,
     sync::Arc,
 };
 
@@ -82,28 +84,11 @@ impl FunctionDict {
     }
 }
 
-/// Function to create a future that returns the loaded function
-async fn load_local(
-    static_domain: Arc<Box<dyn MemoryDomain>>,
-    driver: &'static dyn Driver,
-    mut recorder: Recorder,
-    work_queue: Box<EngineQueue>,
+#[derive(Clone)]
+struct Loadable {
     path: String,
-) -> DandelionResult<Arc<Function>> {
-    recorder.record(RecordPoint::ParsingQueue);
-    let function = work_queue
-        .enqueu_work(
-            machine_interface::function_driver::WorkToDo::ParsingArguments {
-                driver,
-                path,
-                static_domain,
-                recorder: recorder.get_sub_recorder(),
-            },
-        )
-        .await?
-        .get_function();
-    recorder.record(RecordPoint::ParsingDequeue);
-    return Ok(Arc::new(function));
+    requirements: DataRequirementList,
+    config: FunctionConfig,
 }
 
 pub struct FunctionRegistry {
@@ -115,32 +100,23 @@ pub struct FunctionRegistry {
     /// TODO: change structure to avoid copy on get_options
     options: Mutex<BTreeMap<FunctionId, Vec<Alternative>>>,
     /// Map with path to disk where function is located and an option to a in memory loaded version
-    /// TOOD: decide if want to bake into alternative type
-    loadable: Mutex<
-        BTreeMap<
-            (FunctionId, EngineType),
-            (
-                String,
-                Option<
-                    futures::future::Shared<
-                        Pin<Box<dyn Future<Output = DandelionResult<Arc<Function>>> + Send>>,
-                    >,
-                >,
-            ),
-        >,
-    >,
+    /// TODO: decide if want to bake into alternative type.
+    /// TODO: loading currently synchornous, as it is only mapping the file from disk, may want to make into shared future,
+    ///         so multiple functions can wait on it and the loading can be async, if it becomes a bottleneck.
+    loadable: Mutex<BTreeMap<(FunctionId, EngineType), (Loadable, Option<Arc<Function>>)>>,
     /// map with input and output set names for functions
     metadata: Mutex<BTreeMap<FunctionId, Metadata>>,
     /// map name to function id
     function_dict: Mutex<FunctionDict>,
+    /// Directory where to store the binaries for the functions that are registered
+    binary_dir: String,
 }
 
 impl FunctionRegistry {
     // TODO: make sure that system functions can't be added later for other engines
     pub fn new(
         drivers: BTreeMap<EngineType, (&'static dyn Driver, Box<EngineQueue>)>,
-        type_map: &BTreeMap<EngineType, DomainType>,
-        domains: &BTreeMap<DomainType, Arc<Box<dyn MemoryDomain>>>,
+        binary_dir: String,
     ) -> Self {
         // insert all system functons
         let mut engine_map = BTreeMap::new();
@@ -148,10 +124,15 @@ impl FunctionRegistry {
         let mut loadable = BTreeMap::new();
         let mut metadata = BTreeMap::new();
         let mut function_dict = FunctionDict::new();
-        for (engine_type, (driver, _)) in drivers.iter() {
+        for engine_type in drivers.keys() {
             let system_functions = get_system_functions(*engine_type);
             for (system_function, context_size) in system_functions {
                 let function_id = function_dict.insert_or_lookup(system_function.to_string());
+                trace!(
+                    "Inserted system function: {} at index {}",
+                    system_function.to_string(),
+                    function_id
+                );
                 // register engine for the function id of the system function
                 engine_map
                     .entry(function_id)
@@ -171,26 +152,27 @@ impl FunctionRegistry {
                         function_type: FunctionType::Function(*engine_type, context_size),
                         in_memory: true,
                     }]);
-                // get the config from the parser
-                let function_config = driver
-                    .parse_function(
-                        String::from(""),
-                        domains.get(type_map.get(engine_type).unwrap()).unwrap(),
-                    )
-                    .unwrap();
-                match function_config.config {
-                    FunctionConfig::SysConfig(_) => (),
-                    _ => panic!("parsing system function did not return system config"),
+                // create function config
+                let function_config = Function {
+                    requirements: machine_interface::DataRequirementList {
+                        input_requirements: Vec::new(),
+                        static_requirements: Vec::new(),
+                    },
+                    static_data: Vec::new(),
+                    config: FunctionConfig::SysConfig(system_function),
                 };
                 loadable.insert(
                     (function_id, *engine_type),
                     (
-                        String::new(),
-                        Some(
-                            (Box::pin(futures::future::ready(Ok(Arc::new(function_config))))
-                                as Pin<Box<dyn Future<Output = DandelionResult<_>> + Send>>)
-                                .shared(),
-                        ),
+                        Loadable {
+                            config: FunctionConfig::SysConfig(system_function),
+                            path: String::from(""),
+                            requirements: machine_interface::DataRequirementList {
+                                input_requirements: Vec::new(),
+                                static_requirements: Vec::new(),
+                            },
+                        },
+                        Some(Arc::new(function_config)),
                     ),
                 );
                 let function_metadata = Metadata {
@@ -213,6 +195,7 @@ impl FunctionRegistry {
             loadable: Mutex::new(loadable),
             metadata: Mutex::new(metadata),
             function_dict: Mutex::new(function_dict),
+            binary_dir,
         };
     }
 
@@ -246,7 +229,7 @@ impl FunctionRegistry {
         function_name: String,
         engine_id: EngineType,
         ctx_size: usize,
-        path: String,
+        binary_data: Vec<u8>,
         metadata: Metadata,
     ) -> DandelionResult<FunctionId> {
         // check if function is already present, get ID if not
@@ -258,10 +241,20 @@ impl FunctionRegistry {
                     DispatcherError::DuplicateFunction,
                 ));
             }
-            function_id = dict_lock.insert_or_lookup(function_name);
+            function_id = dict_lock.insert_or_lookup(function_name.clone());
         }
         self.metadata.lock().await.insert(function_id, metadata);
-        self.add_local(function_id, engine_id, ctx_size, path)
+        let (driver, work_queue) = self.drivers.get(&engine_id).unwrap();
+        let function = work_queue
+            .enqueu_work(
+                machine_interface::function_driver::WorkToDo::ParsingArguments {
+                    driver: *driver,
+                    binary_data,
+                },
+            )
+            .await?
+            .get_function();
+        self.add_local(&function_name, function_id, engine_id, ctx_size, function)
             .await?;
         return Ok(function_id);
     }
@@ -318,20 +311,44 @@ impl FunctionRegistry {
 
     pub async fn add_local(
         &self,
+        function_name: &str,
         function_id: FunctionId,
         engine_id: EngineType,
         ctx_size: usize,
-        path: String,
+        function: Function,
     ) -> DandelionResult<()> {
         if !self.metadata.lock().await.contains_key(&function_id) {
             return Err(DandelionError::Dispatcher(
                 DispatcherError::MetaDataUnavailable,
             ));
         }
+
+        let Function {
+            requirements,
+            static_data,
+            config,
+        } = function;
+
+        let mut path_buf = std::path::PathBuf::from(self.binary_dir.clone());
+        path_buf.push(format!(
+            "function_{}_id_{}_engine_{:?}",
+            function_name, function_id, engine_id
+        ));
+        let mut function_file = std::fs::File::create(path_buf.clone())
+            .expect("Should be able to create file to store function binary");
+        function_file
+            .write_all(&static_data)
+            .expect("Should be able to read binary from file");
+        let loadable = Loadable {
+            requirements,
+            config,
+            path: path_buf.as_path().to_str().unwrap().to_string(),
+        };
+
         self.loadable
             .lock()
             .await
-            .insert((function_id, engine_id), (path, None));
+            .insert((function_id, engine_id), (loadable, None));
         self.engine_map
             .lock()
             .await
@@ -371,7 +388,7 @@ impl FunctionRegistry {
         mut recorder: Recorder,
     ) -> DandelionResult<(Context, FunctionConfig)> {
         // get loader
-        let (driver, load_queue) = match self.drivers.get(&engine_id) {
+        let (_, load_queue) = match self.drivers.get(&engine_id) {
             Some(l) => l,
             None => return Err(DandelionError::Dispatcher(DispatcherError::MissingLoader)),
         };
@@ -380,32 +397,33 @@ impl FunctionRegistry {
         // if it is not there enqueue the parsing
         // if it is cached insert a shared future
         let mut lock_guard = self.loadable.lock().await;
-        let function_future =
-            if let Some((path, future_option)) = lock_guard.get_mut(&(function_id, engine_id)) {
-                if let Some(func_future) = future_option {
-                    func_future.clone()
-                } else {
-                    let func_future = (Box::pin(load_local(
-                        domain.clone(),
-                        *driver,
-                        recorder.get_sub_recorder(),
-                        load_queue.clone(),
-                        path.clone(),
-                    ))
-                        as Pin<Box<dyn Future<Output = DandelionResult<_>> + Send>>)
-                        .shared();
-                    if !non_caching {
-                        let _ = future_option.insert(func_future.clone());
-                    }
-                    func_future
-                }
+        let function = if let Some((funtion_loadable, future_option)) =
+            lock_guard.get_mut(&(function_id, engine_id))
+        {
+            if let Some(function) = future_option {
+                function.clone()
             } else {
-                return Err(DandelionError::Dispatcher(
-                    DispatcherError::UnavailableFunction,
-                ));
-            };
+                let Loadable {
+                    path,
+                    requirements,
+                    config,
+                } = funtion_loadable.clone();
+                let function_arc = Arc::new(Function {
+                    static_data: std::fs::read(path).unwrap(),
+                    requirements,
+                    config,
+                });
+                if !non_caching {
+                    let _ = future_option.insert(function_arc.clone());
+                }
+                function_arc
+            }
+        } else {
+            return Err(DandelionError::Dispatcher(
+                DispatcherError::UnavailableFunction,
+            ));
+        };
         drop(lock_guard);
-        let function = function_future.await?;
         let function_config = function.config.clone();
         recorder.record(RecordPoint::LoadQueue);
         let context_work_done = load_queue

@@ -39,7 +39,7 @@ fn create_context(matrix: Box<[u64]>) -> Context {
 /// and once for correct behavior if there is a set provided for the fixed one
 pub fn single_input_fixed<Domain: MemoryDomain>(
     memory_resource: (DomainType, MemoryResource),
-    relative_path: &str,
+    function_name: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
@@ -60,7 +60,8 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
     ];
     let out_set_names = vec![String::from("")];
     let (dispatcher, _) = setup_dispatcher::<Domain>(
-        relative_path,
+        "single_input_fixed",
+        function_name,
         in_set_names.clone(),
         out_set_names.clone(),
         engine_type,
@@ -70,7 +71,8 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
     let mut absolute_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     absolute_path.pop();
     absolute_path.push("machine_interface/tests/data");
-    absolute_path.push(relative_path);
+    absolute_path.push(function_name);
+    let function_binary = std::fs::read(absolute_path).unwrap();
     for i in 0..=2 {
         let mut local_names = in_set_names.clone();
         local_names[i].1 = Some(CompositionSet::from((0, vec![mat_con_a.clone()])));
@@ -78,21 +80,16 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         let function_id = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(
-                dispatcher.insert_func(
-                    format!("local_name_{}", i),
-                    engine_type,
-                    DEFAULT_CONTEXT_SIZE,
-                    absolute_path
-                        .to_str()
-                        .expect("Path should be valid string")
-                        .to_string(),
-                    Metadata {
-                        input_sets: Arc::new(local_names),
-                        output_sets: Arc::new(out_set_names.clone()),
-                    },
-                ),
-            )
+            .block_on(dispatcher.insert_func(
+                format!("local_name_{}", i),
+                engine_type,
+                DEFAULT_CONTEXT_SIZE,
+                function_binary.clone(),
+                Metadata {
+                    input_sets: Arc::new(local_names),
+                    output_sets: Arc::new(out_set_names.clone()),
+                },
+            ))
             .expect("should be able to update function");
 
         // prepare inputs
@@ -140,7 +137,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
 /// check functionallity with multiple fixed inputs with and without input provided for the fixed sets
 pub fn multiple_input_fixed<Domain: MemoryDomain>(
     memory_resource: (DomainType, MemoryResource),
-    relative_path: &str,
+    function_name: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
@@ -161,7 +158,8 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
     ];
     let out_set_names = vec![String::from("")];
     let (dispatcher, _) = setup_dispatcher::<Domain>(
-        relative_path,
+        "multiple_input_fixed",
+        function_name,
         in_set_names.clone(),
         out_set_names.clone(),
         engine_type,
@@ -171,7 +169,8 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
     let mut absolute_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     absolute_path.pop();
     absolute_path.push("machine_interface/tests/data");
-    absolute_path.push(relative_path);
+    absolute_path.push(function_name);
+    let function_binary = std::fs::read(absolute_path).unwrap();
     for i in 0..=2 {
         let fixed_sets = (0..=2)
             .into_iter()
@@ -184,21 +183,16 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         let function_id = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(
-                dispatcher.insert_func(
-                    format!("insert_function_{}", i),
-                    engine_type,
-                    DEFAULT_CONTEXT_SIZE,
-                    absolute_path
-                        .to_str()
-                        .expect("Path should be valid string")
-                        .to_string(),
-                    Metadata {
-                        input_sets: Arc::new(local_names),
-                        output_sets: Arc::new(out_set_names.clone()),
-                    },
-                ),
-            )
+            .block_on(dispatcher.insert_func(
+                format!("multple_input_fixed_insert_function_{}", i),
+                engine_type,
+                DEFAULT_CONTEXT_SIZE,
+                function_binary.clone(),
+                Metadata {
+                    input_sets: Arc::new(local_names),
+                    output_sets: Arc::new(out_set_names.clone()),
+                },
+            ))
             .expect("should be able to update function");
 
         // prepare inputs
@@ -251,6 +245,7 @@ fn test_insert_composition_with_http_func() {
             engine_pool: Mutex::new(BTreeMap::new()),
         },
         memory_resources,
+        String::from("/tmp"),
     )
     .unwrap();
     let composition_string = r#"

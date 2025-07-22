@@ -12,30 +12,32 @@ pub mod util;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone, Copy)]
 pub enum OffsetOrAlignment {
     Offset(usize),
     Allignment(usize),
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone, Copy)]
 pub enum SizeRequirement {
     Range(usize, usize),
     ModResidual(usize, usize),
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone, Copy)]
 pub struct DataRequirement {
     pub id: u32,
     pub position: Option<OffsetOrAlignment>,
     pub size: Option<SizeRequirement>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DataRequirementList {
     // domain_id: i32,
     pub input_requirements: Vec<DataRequirement>,
-    pub static_requirements: Vec<Position>,
+    /// Mapping of the positions in the Vec<u8> that is returned from parsing,
+    /// to where the data needs to go in the function context.
+    pub static_requirements: Vec<(Position, Position)>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]

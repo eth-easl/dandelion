@@ -172,6 +172,14 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
             ident_len: size_t!(name_length),
             offset: size_t!(input_buffers.len()),
         });
+
+        trace!(
+            "Input set {}, set number {}, buffers {}",
+            name,
+            c,
+            buffer_len
+        );
+
         // find buffers
         for b in 0..buffer_len {
             let (name, offset, size, key) = context.content[c]
@@ -198,6 +206,8 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
                 data_len: size_t!(size),
                 key: size_t!(key as usize),
             });
+
+            trace!("Input item {}, key: {}, size: {}", name, key, size);
         }
     }
     // write input sentinel set
@@ -332,13 +342,8 @@ pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
         let first_buffer = usize!(output_set_info[output_set].offset);
         let one_past_last_buffer = usize!(output_set_info[output_set + 1].offset);
         // if no items in set, push none to shortcut
-        trace!(
-            "Output set {}, first buffer: {}, one_past_last_buffer {}",
-            output_set,
-            first_buffer,
-            one_past_last_buffer
-        );
         if first_buffer >= one_past_last_buffer {
+            trace!("Skipping set {} because it has no items", output_set);
             output_sets.push(None);
             continue;
         }
@@ -350,6 +355,14 @@ pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
         let set_ident_string = String::from_utf8(set_ident).unwrap_or("".to_string());
         let buffer_number = one_past_last_buffer - first_buffer;
         let mut buffers = Vec::new();
+
+        trace!(
+            "Output set {}, set number {}, with {} sets",
+            set_ident_string,
+            output_set,
+            buffer_number,
+        );
+
         if buffers.try_reserve(buffer_number).is_err() {
             return Err(DandelionError::OutOfMemory);
         }
@@ -362,6 +375,14 @@ pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
             let data_length = usize!(output_buffers[buffer_index].data_len);
             let key = usize!(output_buffers[buffer_index].key);
             let ident_string = String::from_utf8(buffer_ident).unwrap_or("".to_string());
+
+            trace!(
+                "Output item {}, key: {}, size: {}",
+                ident_string,
+                key,
+                data_length,
+            );
+
             buffers.push(DataItem {
                 ident: ident_string,
                 data: Position {

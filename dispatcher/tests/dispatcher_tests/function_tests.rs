@@ -22,6 +22,7 @@ pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
     engine_resource: Vec<ComputeResource>,
 ) {
     let (dispatcher, function_id) = setup_dispatcher::<Domain>(
+        "single_domain_and_engine_basic",
         relative_path,
         vec![],
         vec![],
@@ -48,6 +49,7 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
     engine_resource: Vec<ComputeResource>,
 ) {
     let (dispatcher, function_id) = setup_dispatcher::<Domain>(
+        "single_domain_and_engine_matmul",
         relative_path,
         vec![(String::from(""), None)],
         vec![String::from("")],
@@ -104,6 +106,7 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
     engine_resource: Vec<ComputeResource>,
 ) {
     let (dispatcher, function_id) = setup_dispatcher::<Domain>(
+        "composition_single_matmul",
         relative_path,
         vec![(String::from(""), None)],
         vec![String::from("")],
@@ -192,6 +195,7 @@ pub fn composition_optional<Domain: MemoryDomain>(
     engine_resource: Vec<ComputeResource>,
 ) {
     let (mut dispatcher, function_id) = setup_dispatcher::<Domain>(
+        "composition_optional",
         relative_path,
         vec![(String::from(""), None)],
         vec![String::from(""), String::from("")],
@@ -338,6 +342,7 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
     engine_resource: Vec<ComputeResource>,
 ) {
     let (dispatcher, function_id) = setup_dispatcher::<Domain>(
+        "composition_parallel_matmul",
         relative_path,
         vec![(String::from(""), None)],
         vec![String::from("")],
@@ -429,6 +434,7 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
     engine_resource: Vec<ComputeResource>,
 ) {
     let (dispatcher, function_id) = setup_dispatcher::<Domain>(
+        "composition_chain_matmul",
         relative_path,
         vec![(String::from(""), None)],
         vec![String::from("")],
@@ -502,12 +508,13 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
 
 pub fn composition_diamond_matmac<Domain: MemoryDomain>(
     memory_resource: (DomainType, MemoryResource),
-    relative_path: &str,
+    function_name: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
     let (dispatcher, function_id) = self::setup_dispatcher::<Domain>(
-        relative_path,
+        "composition_diamond_matmac",
+        function_name,
         vec![
             (String::from(""), None),
             (String::from(""), None),
