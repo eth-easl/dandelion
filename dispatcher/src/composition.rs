@@ -324,6 +324,12 @@ pub struct CompositionSet {
 }
 
 impl CompositionSet {
+
+    // Needed to add this to get access in main to return output set contents for mcp
+    pub fn get_item_list_ref(&self) -> &[(u32, usize, Arc<Context>)] {
+        &self.item_list
+    }
+    
     pub fn is_empty(&self) -> bool {
         self.item_list.is_empty()
     }

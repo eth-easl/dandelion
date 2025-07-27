@@ -49,6 +49,9 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 
+use machine_interface::memory_domain::ContextTrait;
+
+
 const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
 enum DispatcherCommand {
@@ -173,17 +176,34 @@ struct RPCResponse {
     error: Option<serde_json::Value>,
 }
 
+// Extract the content of a file in an output set of a CompositionSet
+fn extract_output_set_content(set: &CompositionSet, file_name: &str, set_name: &str) -> Option<String> {
+    for (_, _, ctx) in set.get_item_list_ref() {
+        for maybe_set in &ctx.content {
+            let ds = maybe_set.as_ref()?;
+            if ds.ident == set_name {
+                for buf in &ds.buffers {
+                    if buf.ident == file_name {
+                        let data = ctx.get_chunk_ref(buf.data.offset, buf.data.size).ok()?;
+                        return Some(String::from_utf8_lossy(data).to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 async fn serve_mcp(
     req: Request<Incoming>,
-    _dispatcher: mpsc::Sender<DispatcherCommand>,
+    dispatcher: mpsc::Sender<DispatcherCommand>,
 ) -> Result<Response<DandelionBody>, Infallible> {
     let bytes = req.collect().await.expect("Failed to extract body").to_bytes();
     let rpc: RPCRequest = serde_json::from_slice(&bytes).expect("Invalid JSON RPC message");
 
-    println!("Got mcp request with println");
     match rpc.method.as_str() {
         "initialize" => {
-            println!("Received initialize");
+            println!("Received mcp msg: initialize");
             let result = json!({
                 "protocolVersion": "2025-03-26",
                 "capabilities": {
@@ -210,13 +230,14 @@ async fn serve_mcp(
                 .unwrap())
         }
         "notifications/initialized" => {
+            println!("Received mcp msg: /notifications/initialized");
             Ok(Response::builder()
                 .status(StatusCode::ACCEPTED)
                 .body(DandelionBody::from_vec(Vec::new()))
                 .unwrap())
         }
         "tools/list" => {
-            println!("Received tools/list");
+            println!("Received mcp msg: tools/list");
             let tools = json!([
                 {
                     "name": "add",
@@ -232,12 +253,14 @@ async fn serve_mcp(
                     }
                 },
                 {
-                    "name": "get_secret_word",
+                    "name": "web_search",
                     "description": "",
                     "inputSchema": {
-                        "title": "get_secret_wordArguments",
+                        "title": "WebSearchArguments",
                         "type": "object",
-                        "properties": {}
+                        "properties": {
+                            "searchTerms": { "title": "Search Terms", "type": "string" }
+                        }
                     }
                 }
             ]);
@@ -259,15 +282,69 @@ async fn serve_mcp(
                 .unwrap())
         }
         "tools/call" => {
-            println!("Received tools/call");
             let params = rpc.params.as_ref().unwrap();
             let tool_name = params.get("name").unwrap().as_str().unwrap();
             let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
+            println!("Received mcp msg: tools/call: name = '{}', args = {}", tool_name, arguments);
 
-            let result_value = match tool_name {
-                // Hardcoded for now, execute the correct composition here
-                "add" => "5",
-                "get_secret_word" => "banana",
+            let tool_result_value = match tool_name {
+                // Random tool for testing
+                "add" => {
+                    let a = arguments["a"].as_i64().unwrap_or(0);
+                    let b = arguments["b"].as_i64().unwrap_or(0);
+                    let sum = a + b;
+                    sum.to_string()
+                },
+                // Tool as composition
+                "web_search" => {
+                    let search_query_str = arguments["searchTerms"].as_str().unwrap_or_default();
+                    let search_query_bytes = search_query_str.as_bytes().to_vec();
+
+                    // Need a ReadOnlyContext to hold the data
+                    let mut context = ReadOnlyContext::new(search_query_bytes.into_boxed_slice()).unwrap();
+
+                    // Create a input set
+                    context.content = vec![Some(DataSet {
+                        ident: "comp_inputs".to_string(),
+                        buffers: vec![
+                            DataItem {
+                                ident: "search_query".to_string(),
+                                key: 0,
+                                data: Position { offset: 0, size: search_query_str.len() },
+                            }
+                        ],
+                    })];
+                    let arc_ctx = Arc::new(context);
+                    let set = CompositionSet::from((0, vec![arc_ctx]));
+                    let inputs = vec![DispatcherInput::Set(set)];
+                    let (callback, confirmation) = oneshot::channel();
+                    
+                    // The default composition name. Need to register the web search tool composition first!
+                    let composition_name = "composition".to_string();
+
+                    dispatcher
+                        .send(DispatcherCommand::FunctionRequest {
+                            name: composition_name,
+                            inputs,
+                            is_cold: false,
+                            start_time: Instant::now(),
+                            callback,
+                        })
+                        .await
+                        .unwrap();
+
+                    let (outputs, _) = confirmation.await.unwrap().expect("Composition execution failed");
+                    
+                    // Get the final output out of the output sets (results.txt file in requests set)
+                    let web_search_result = outputs
+                        .get(3)
+                        .and_then(Option::as_ref)
+                        .and_then(|set| extract_output_set_content(set, "results.txt", "requests"))
+                        .unwrap_or_else(|| "failed to get result".to_string());
+
+                    web_search_result
+                },
+
                 _ => {
                     let error = json!({ "message": format!("Unknown tool '{}'", tool_name) });
                     let response = RPCResponse {
@@ -283,9 +360,9 @@ async fn serve_mcp(
                         .unwrap());
                 }
             };
-
+            println!("Final tool call result: {}", tool_result_value);
             let result = json!({
-                "content": [{ "type": "text", "text": result_value }],
+                "content": [{ "type": "text", "text": tool_result_value }],
                 "isError": false
             });
 
@@ -338,6 +415,7 @@ async fn register_function(
     req: Request<Incoming>,
     dispatcher: mpsc::Sender<DispatcherCommand>,
 ) -> Result<Response<DandelionBody>, Infallible> {
+    println!("Registering function");
     let bytes = req
         .collect()
         .await
@@ -449,6 +527,7 @@ async fn register_composition(
     req: Request<Incoming>,
     dispatcher: mpsc::Sender<DispatcherCommand>,
 ) -> Result<Response<DandelionBody>, Infallible> {
+    println!("Registering composition");
     let bytes = req
         .collect()
         .await
@@ -457,6 +536,7 @@ async fn register_composition(
     // find first line end character
     let request_map: RegisterChain =
         bson::from_slice(&bytes).expect("Should be able to deserialize request");
+    println!("Registering composition: {}", request_map.composition);
     let (callback, confirmation) = oneshot::channel();
     dispatcher
         .send(DispatcherCommand::CompositionRegistration {
@@ -505,10 +585,11 @@ async fn service(
         | "/cold/arbitrary_code_execution"
         | "/cold/http_for_agent_as_code_execution"
         | "/cold/http_for_agent_as_tool"
+        | "/cold/multi_agent"
         | "/cold/text2sql_python_app"
-        | "/cold/tool_agent"
         | "/cold/web_search"
-        | "/cold/looping_agent"
+        | "/cold/web_search_tool"
+        | "/cold/tool_agent"
         | "/cold/code_fixer_agent"
         | "/cold/python_app" => serve_request(true, req, dispatcher).await,
         "/hot/matmul"
@@ -523,10 +604,11 @@ async fn service(
         | "/hot/arbitrary_code_execution"
         | "/hot/http_for_agent_as_code_execution"
         | "/hot/http_for_agent_as_tool"
+        | "/hot/multi_agent"
         | "/hot/text2sql_python_app"
-        | "/hot/tool_agent"
         | "/hot/web_search"
-        | "/hot/looping_agent"
+        | "/hot/web_search_tool"
+        | "/hot/tool_agent"
         | "/hot/code_fixer_agent"
         | "/hot/python_app" => serve_request(false, req, dispatcher).await,
         "/stats" => serve_stats(req).await,
