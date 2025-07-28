@@ -1,20 +1,27 @@
+use std::collections::HashMap;
 use crate::{
-    memory_domain::{Context, MemoryDomain},
+    memory_domain::{transfer_memory, Context, MemoryDomain},
+    interface::DandelionSystemData,
     DataRequirementList,
 };
 extern crate alloc;
 use alloc::sync::Arc;
-use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
+use dandelion_commons::{records::Recorder, DandelionError, DandelionResult, FunctionId};
+use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "wasm")]
 use libloading::Library;
 
+#[cfg(feature = "gpu")]
+use self::compute_driver::gpu::config_parsing::ExecutionBlueprint;
+
 pub mod compute_driver;
 mod load_utils;
 pub mod system_driver;
+
 #[cfg(test)]
 mod test_queue;
-mod thread_utils;
+pub mod thread_utils;
 
 #[derive(Clone)]
 #[allow(dead_code)]
@@ -54,11 +61,22 @@ pub struct WasmConfig {
     system_data_struct_offset: usize,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct GpuConfig {
+    pub function_id: FunctionId,
+    pub system_data_struct_offset: usize,
+    pub code_object_offset: usize,
+    pub kernels: Arc<Vec<HashMap<String, String>>>,
+    #[cfg(feature = "gpu")]
+    pub blueprint: Arc<ExecutionBlueprint>,
+}
+
 #[derive(Clone)]
 pub enum FunctionConfig {
     ElfConfig(ElfConfig),
     SysConfig(SystemFunction),
     WasmConfig(WasmConfig),
+    GpuConfig(GpuConfig),
 }
 
 pub struct Function {
@@ -73,7 +91,7 @@ impl Function {
         domain: &Box<dyn MemoryDomain>,
         ctx_size: usize,
     ) -> DandelionResult<Context> {
-        return match &self.config {
+        match &self.config {
             FunctionConfig::ElfConfig(_) => {
                 load_utils::load_static(domain, self.context.clone(), &self.requirements, ctx_size)
             }
@@ -86,14 +104,35 @@ impl Function {
                 context.occupy_space(0, c.sdk_heap_base)?;
                 Ok(context)
             }
-        };
+            // no need to occupy space or anything like that as long as context is only inputs/outputs
+            FunctionConfig::GpuConfig(cfg) => {
+                // TODO : change here. 
+                let mut ctxt = domain.acquire_context(ctx_size)?;
+                // Make sure sysdata struct isn't overwritten, 0 = system_data_offset
+                ctxt.occupy_space(
+                    cfg.system_data_struct_offset,
+                    std::mem::size_of::<DandelionSystemData<usize, usize>>(),
+                )?;
+                // Transfer code object
+                transfer_memory(
+                    &mut ctxt,
+                    self.context.clone(),
+                    cfg.code_object_offset,
+                    0,
+                    self.context.size,
+                )?;
+                // Mark code object storage as occupied
+                ctxt.occupy_space(cfg.code_object_offset, self.context.size)?;
+                Ok(ctxt)
+            }
+        }
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub enum ComputeResource {
     CPU(u8),
-    GPU(u8),
+    GPU(u8, u8, u8), // CPU core, GPU id, number of workers per GPU (only relevant for gpu_process). Eventually the CPU and GPU parts should be split
 }
 
 pub enum WorkToDo {
@@ -180,7 +219,7 @@ pub trait Driver: Send + Sync {
         &self,
         resource: ComputeResource,
         // TODO check out why this can't be impl instead of Box<dyn
-        queue: Box<dyn WorkQueue + Send>,
+        queue: Box<dyn WorkQueue + Send + Sync>,
     ) -> DandelionResult<()>;
 
     // parses an executable,

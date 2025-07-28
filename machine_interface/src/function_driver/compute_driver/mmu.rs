@@ -175,7 +175,10 @@ struct MmuLoop {
 }
 
 impl EngineLoop for MmuLoop {
-    fn init(core_id: u8) -> DandelionResult<Box<Self>> {
+    fn init(resource: ComputeResource) -> DandelionResult<Box<Self>> {
+        let ComputeResource::CPU(core_id) = resource else {
+            return Err(DandelionError::EngineResourceError);
+        };
         return Ok(Box::new(MmuLoop { cpu_slot: core_id }));
     }
     fn run(
@@ -224,7 +227,7 @@ impl Driver for MmuDriver {
     fn start_engine(
         &self,
         resource: ComputeResource,
-        queue: Box<dyn WorkQueue + Send>,
+        queue: Box<dyn WorkQueue + Send + Sync>,
     ) -> DandelionResult<()> {
         let cpu_slot = match resource {
             ComputeResource::CPU(core) => core,

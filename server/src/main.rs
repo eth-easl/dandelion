@@ -10,6 +10,7 @@ use dispatcher::{
     function_registry::Metadata,
     resource_pool::ResourcePool,
 };
+use http::request;
 use http_body_util::BodyExt;
 use hyper::{
     body::{Body, Incoming},
@@ -154,6 +155,44 @@ fn default_path() -> String {
 
 /// Struct containing registration information for new function
 #[derive(Debug, Deserialize)]
+struct RegisterLibrary {
+    name: String,
+    library: Vec<u8>,
+}
+
+async fn register_library(req: Request<Incoming>) -> Result<Response<DandelionBody>, Infallible> {
+    let bytes = req
+        .collect()
+        .await
+        .expect("Failed to extract bytes from library registration")
+        .to_bytes();
+
+    let request_map: RegisterLibrary =
+        bson::from_slice(&bytes).expect("Should be able to deserialise request");
+
+    // write library to file
+    let lib_path = FUNCTION_FOLDER_PATH.to_owned() + "/libs/";
+    std::fs::create_dir_all(&lib_path).unwrap();
+    let mut path_buff = PathBuf::from(&lib_path);
+    path_buff.push(request_map.name.clone());
+    let mut function_file = std::fs::File::create(path_buff.clone())
+        .expect("Failed to create file for registering library");
+    function_file
+        .write_all(&request_map.library)
+        .expect("Failed to write file with content for registering");
+
+    return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
+        "Library registered".as_bytes().to_vec(),
+    )));
+}
+
+#[derive(Debug, Deserialize)]
+pub struct InputChunk {
+    #[serde(with = "serde_bytes")]
+    pub chunk: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
 struct RegisterFunction {
     /// String name of the function
     name: String,
@@ -167,7 +206,7 @@ struct RegisterFunction {
     /// Binary representation of the function, ignored if a local path is given
     binary: Vec<u8>,
     /// Metadata for the sets and optionally static items to pass into the function for that set
-    input_sets: Vec<(String, Option<Vec<(String, Vec<u8>)>>)>,
+    input_sets: Vec<(String, Option<Vec<(String, Vec<InputChunk>)>>)>,
     /// output set names
     output_sets: Vec<String>,
 }
@@ -181,9 +220,16 @@ async fn register_function(
         .await
         .expect("Failed to extract body from function registration")
         .to_bytes();
+    info!("Size received: {:?}", bytes.len());
     // find first line end character
-    let request_map: RegisterFunction =
-        bson::from_slice(&bytes).expect("Should be able to deserialize request");
+    /*let request_map: RegisterFunction =
+        bson::from_slice(&bytes).expect("Should be able to deserialize request");*/
+    
+    use flexbuffers;
+    let slice: &[u8] = &bytes;
+    let deserializer = flexbuffers::Reader::get_root(slice).unwrap();
+    let request_map: RegisterFunction = RegisterFunction::deserialize(deserializer).unwrap();
+    
     // if local is present ignore the binary
     let path_string = if !request_map.local_path.is_empty() {
         // check that file exists
@@ -219,8 +265,19 @@ async fn register_function(
         "Kvm" => EngineType::Kvm,
         #[cfg(feature = "cheri")]
         "Cheri" => EngineType::Cheri,
+        #[cfg(feature = "gpu_thread")]
+        "GpuThread" => EngineType::GpuThread,
+        #[cfg(feature = "gpu_process")]
+        "GpuProcess" => EngineType::GpuProcess,
         unkown => panic!("Unkown engine type string {}", unkown),
     };
+
+    #[cfg(feature = "weights_from_disk")]
+    {
+        let inputs_folder = format!("{}/{}_weights", FUNCTION_FOLDER_PATH, &request_map.name);
+        std::fs::create_dir_all(&inputs_folder).unwrap();
+    }
+
     let input_sets = request_map
         .input_sets
         .into_iter()
@@ -228,10 +285,29 @@ async fn register_function(
             if let Some(static_data) = data {
                 let data_contexts = static_data
                     .into_iter()
-                    .map(|(item_name, data_vec)| {
+                    .map(|(item_name, data_chunks)| {
+                        let mut data_vec: Vec<u8> = Vec::new();
+                        for mut chunk in data_chunks {
+                            data_vec.append(&mut chunk.chunk);
+                        }
                         let item_size = data_vec.len();
-                        let mut new_context =
-                            ReadOnlyContext::new(data_vec.into_boxed_slice()).unwrap();
+
+                        #[cfg(not(feature = "weights_from_disk"))]
+                        let mut new_context = ReadOnlyContext::new(data_vec.into_boxed_slice()).unwrap();
+
+                        #[cfg(feature = "weights_from_disk")]
+                        let mut new_context = {
+                            // write weight to file
+                            let mut path_buff = format!("{}/{}", inputs_folder.clone(), name.clone());
+                            let mut function_file = std::fs::File::create(&path_buff)
+                                .expect("Failed to create file for registering function weight");
+                            function_file
+                                .write_all(&data_vec)
+                                .expect("Failed to write file with content for registering function weight");
+                            
+                            ReadOnlyContext::new_disk(data_vec.into_boxed_slice(), &path_buff).unwrap()
+                        };
+
                         new_context.content.push(Some(DataSet {
                             ident: name.clone(),
                             buffers: vec![DataItem {
@@ -330,22 +406,39 @@ async fn service(
         // TODO rename to cold func and hot func, remove matmul, compute, io
         "/register/function" => register_function(req, dispatcher).await,
         "/register/composition" => register_composition(req, dispatcher).await,
+        "/register/library" => register_library(req).await,
         "/cold/matmul"
         | "/cold/matmulstore"
         | "/cold/compute"
         | "/cold/io"
+        | "/cold/inference"
+        | "/cold/inference-batched"
         | "/cold/chain_scaling"
         | "/cold/middleware_app"
         | "/cold/compression_app"
         | "/cold/python_app" => serve_request(true, req, dispatcher).await,
+        "/cold/double_matmul"
+        | "/cold/resnet18"
+        | "/cold/test" 
+        | "/cold/model_inference"=> serve_request(true, req, dispatcher).await,
         "/hot/matmul"
         | "/hot/matmulstore"
         | "/hot/compute"
         | "/hot/io"
+        | "/hot/inference"
+        | "/hot/inference-batched"
         | "/hot/chain_scaling"
         | "/hot/middleware_app"
         | "/hot/compression_app"
         | "/hot/python_app" => serve_request(false, req, dispatcher).await,
+        "/hot/double_matmul"
+        | "/hot/resnet18"
+        | "/hot/test" 
+        | "/hot/model_inference" => serve_request(false, req, dispatcher).await,
+        "/stats" => serve_stats(req).await,
+        _ => Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
+            format!("Hello, Wor\n").into_bytes(),
+        ))),
         "/stats" => serve_stats(req).await,
         other_uri => {
             trace!("Received request on {}", other_uri);
@@ -490,16 +583,16 @@ fn main() -> () {
         );
     }
 
-    let resource_conversion = |core_index| ComputeResource::CPU(core_index);
+    let resource_conversion = |core_index| ComputeResource::CPU(core_index as u8);
 
     let dispatcher_cores = config.get_dispatcher_cores();
     let frontend_cores = config.get_frontend_cores();
-    let communication_cores = config
+    let communication_cores: Vec<ComputeResource> = config
         .get_communication_cores()
         .into_iter()
         .map(|core| resource_conversion(core))
         .collect();
-    let compute_cores = config
+    let compute_cores: Vec<ComputeResource> = config
         .get_computation_cores()
         .into_iter()
         .map(|core| resource_conversion(core))
@@ -565,8 +658,31 @@ fn main() -> () {
     let engine_type = EngineType::Kvm;
     #[cfg(feature = "cheri")]
     let engine_type = EngineType::Cheri;
+    #[cfg(feature = "gpu_thread")]
+    let engine_type = EngineType::GpuThread;
+    #[cfg(feature = "gpu_process")]
+    let engine_type = EngineType::GpuProcess;
     #[cfg(any(feature = "cheri", feature = "wasm", feature = "mmu", feature = "kvm"))]
     pool_map.insert(engine_type, compute_cores);
+    #[cfg(any(feature = "gpu_thread", feature = "gpu_process"))]
+    {
+        let gpu_count: u8 = config.gpu_count as u8;
+        pool_map.insert(
+            engine_type,
+            config
+                .get_computation_cores()
+                .iter()
+                // The gpu_process engine relies on having such a contiguous region of CPU cores available -- one core
+                // goes to the Dandelion process thread of each worker and then another to the actual worker process.
+                // Once the system moves to giving Vecs of ComputeResources this needs to be changed
+                .step_by(config.gpu_worker_count * 2)
+                .zip(0..gpu_count)
+                .map(|(cpu_id, gpu_id)| {
+                    ComputeResource::GPU(*cpu_id, gpu_id, config.gpu_worker_count as u8)
+                })
+                .collect(),
+        );
+    }
     #[cfg(feature = "reqwest_io")]
     pool_map.insert(EngineType::Reqwest, communication_cores);
     let resource_pool = ResourcePool {
@@ -606,6 +722,14 @@ fn main() -> () {
                 size: max_ram,
             },
         ),
+        #[cfg(feature = "gpu")]
+        (
+            DomainType::Gpu,
+            MemoryResource::Shared {
+                id: 0,
+                size: max_ram,
+            },
+        ),
         #[cfg(feature = "wasm")]
         (
             DomainType::RWasm,
@@ -632,10 +756,18 @@ fn main() -> () {
     print!(" kvm");
     #[cfg(feature = "wasm")]
     print!(" wasm");
+    #[cfg(feature = "gpu_thread")]
+    print!(" gpu_thread");
+    #[cfg(feature = "gpu_process")]
+    print!(" gpu_process");
     #[cfg(feature = "reqwest_io")]
     print!(" request_io");
     #[cfg(feature = "timestamp")]
     print!(" timestamp");
+    #[cfg(feature = "reuse_weights")]
+    print!(" reuse_weights");
+    #[cfg(feature = "weights_from_disk")]
+    print!(" weights_from_disk");
     print!("\n");
 
     // Run this server for... forever... unless I receive a signal!

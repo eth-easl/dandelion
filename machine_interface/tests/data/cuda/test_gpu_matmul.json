@@ -1,0 +1,24 @@
+{
+    "modules": [
+        { "module_name": "kernelCheck.cubin", "path": "kernelCheck.cubin" }
+    ],
+    "kernels": [
+        { "module_name": "kernelCheck.cubin", "kernel_name": "matmul" }
+    ],
+    "blueprint": {
+        "inputs": ["A", "B"],
+        "buffers": {"C": {"Absolute": 64}},
+        "outputs": ["C"],
+        "control_flow": [
+            {"ExecKernel": ["matmul", [{"Ptr": "A"}, {"Ptr": "B"}, {"Ptr": "C"}], {
+                "grid_dim_x": {"Absolute": 1}, 
+                "grid_dim_y": {"Absolute": 1}, 
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 4}, 
+                "block_dim_y": {"Absolute": 4}, 
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]}
+        ]
+    }
+}

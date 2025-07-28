@@ -1,0 +1,20 @@
+{
+    "modules": [ { "module_name": "mlops.hsaco", "path": "mlops.hsaco" } ],
+    "kernels": [ { "module_name": "mlops.hsaco", "kernel_name": "matmul_loop" } ],
+    "blueprint": {
+        "inputs": ["A"],
+        "buffers": {"B": {"Sizeof": "A"}},
+        "outputs": ["B"],
+        "control_flow": [
+            {"ExecKernel": ["matmul_loop", [{"Ptr": "A"}, {"Sizeof": "A"}, {"Ptr": "B"}], {
+                "grid_dim_x": {"Absolute": 1}, 
+                "grid_dim_y": {"Absolute": 1}, 
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 1}, 
+                "block_dim_y": {"Absolute": 1}, 
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 0}
+            }]}
+        ]
+    } 
+}

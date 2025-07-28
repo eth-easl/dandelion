@@ -817,7 +817,7 @@ impl Driver for ReqwestDriver {
     fn start_engine(
         &self,
         resource: ComputeResource,
-        queue: Box<dyn WorkQueue + Send>,
+        queue: Box<dyn WorkQueue + Send + Sync>,
     ) -> DandelionResult<()> {
         log::debug!("Starting hyper engine");
         let core_id = match resource {

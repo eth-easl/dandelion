@@ -1,0 +1,24 @@
+{
+    "modules": [
+        { "module_name": "tem_fused_linear_0.hsaco", "path": "hip/double_matmul/tem_fused_linear_0.hsaco" }
+    ],
+    "kernels": [
+        { "module_name": "tem_fused_linear_0.hsaco", "kernel_name": "kern000" }
+    ],
+    "blueprint": {
+        "inputs": ["A", "W"],
+        "buffers": {"B": {"Absolute": 80}},
+        "outputs": ["B"],
+        "control_flow": [
+            {"ExecKernel": ["kern000", [{"Ptr": "A"}, {"Ptr": "W"}, {"Ptr": "B"}], {
+                "grid_dim_x": {"Absolute": 1}, 
+                "grid_dim_y": {"Absolute": 1}, 
+                "grid_dim_z": {"Absolute": 1},
+                "block_dim_x": {"Absolute": 64}, 
+                "block_dim_y": {"Absolute": 1}, 
+                "block_dim_z": {"Absolute": 1},
+                "shared_mem_bytes": {"Absolute": 1024}
+            }]}
+        ]
+    }
+}

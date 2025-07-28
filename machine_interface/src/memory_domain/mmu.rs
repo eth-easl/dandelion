@@ -3,7 +3,7 @@ use crate::{
     util::mmapmem::{MmapMem, MmapMemPool},
 };
 use dandelion_commons::{DandelionError, DandelionResult};
-use log::debug;
+use log::{error, warn, debug};
 use nix::sys::mman::ProtFlags;
 
 // TODO: decide this value in a system dependent way
@@ -80,6 +80,12 @@ pub fn mmu_transfer(
 ) -> DandelionResult<()> {
     // check if there is space in both contexts
     if source.storage.size() < source_offset + size {
+        error!(
+            "Out of bounds: storage_size {}, source_offset {}, size {}",
+            source.storage.size(),
+            source_offset,
+            size
+        );
         return Err(DandelionError::InvalidRead);
     }
     if destination.storage.size() < destination_offset + size {

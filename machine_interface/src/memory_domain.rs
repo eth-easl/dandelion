@@ -3,6 +3,8 @@
 pub mod bytes_context;
 #[cfg(feature = "cheri")]
 pub mod cheri;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod malloc;
 pub mod mmap;
 #[cfg(feature = "mmu")]
@@ -14,7 +16,11 @@ pub mod wasm;
 
 use crate::{DataItem, DataSet, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+
+#[cfg(feature = "gpu")]
+use crate::memory_domain::gpu::SubReadOnly;
 
 pub trait ContextTrait: Send + Sync {
     /// Write data at the given offset into the context
@@ -45,6 +51,10 @@ pub enum ContextType {
     Mmu(Box<mmu::MmuContext>),
     #[cfg(feature = "wasm")]
     Wasm(Box<wasm::WasmContext>),
+    #[cfg(feature = "gpu")]
+    Gpu(Box<gpu::GpuContext>),
+    #[cfg(feature = "gpu_process")]
+    GpuProcess(Box<gpu::GpuProcessContext>),
     System(Box<system_domain::SystemContext>),
 }
 
@@ -60,6 +70,10 @@ impl ContextTrait for ContextType {
             ContextType::Mmu(context) => context.write(offset, data),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.write(offset, data),
+            #[cfg(feature = "gpu")]
+            ContextType::Gpu(context) => context.write(offset, data),
+            #[cfg(feature = "gpu_process")]
+            ContextType::GpuProcess(context) => context.write(offset, data),
             #[cfg(feature = "bytes_context")]
             ContextType::Bytes(context) => context.write(offset, data),
             ContextType::System(context) => context.write(offset, data),
@@ -76,6 +90,10 @@ impl ContextTrait for ContextType {
             ContextType::Mmu(context) => context.read(offset, read_buffer),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.read(offset, read_buffer),
+            #[cfg(feature = "gpu")]
+            ContextType::Gpu(context) => context.read(offset, read_buffer),
+            #[cfg(feature = "gpu_process")]
+            ContextType::GpuProcess(context) => context.read(offset, read_buffer),
             #[cfg(feature = "bytes_context")]
             ContextType::Bytes(context) => context.read(offset, read_buffer),
             ContextType::System(context) => context.read(offset, read_buffer),
@@ -92,6 +110,10 @@ impl ContextTrait for ContextType {
             ContextType::Mmu(context) => context.get_chunk_ref(offset, length),
             #[cfg(feature = "wasm")]
             ContextType::Wasm(context) => context.get_chunk_ref(offset, length),
+            #[cfg(feature = "gpu")]
+            ContextType::Gpu(context) => context.get_chunk_ref(offset, length),
+            #[cfg(feature = "gpu_process")]
+            ContextType::GpuProcess(context) => context.get_chunk_ref(offset, length),
             #[cfg(feature = "bytes_context")]
             ContextType::Bytes(context) => context.get_chunk_ref(offset, length),
             ContextType::System(context) => context.get_chunk_ref(offset, length),
@@ -99,7 +121,7 @@ impl ContextTrait for ContextType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum ContextState {
     InPreparation,
     Run(i32),
@@ -111,7 +133,7 @@ pub struct Context {
     pub content: Vec<Option<DataSet>>,
     pub size: usize,
     pub state: ContextState,
-    occupation: Vec<Position>,
+    pub occupation: Vec<Position>,
 }
 
 impl ContextTrait for Context {
@@ -262,6 +284,7 @@ pub fn transfer_memory(
     source_offset: usize,
     size: usize,
 ) -> DandelionResult<()> {
+    #[allow(clippy::needless_return)]
     return match (&mut destination.context, &source.context) {
         (ContextType::Malloc(destination_ctxt), ContextType::Malloc(source_ctxt)) => {
             malloc::malloc_transfer(
@@ -350,6 +373,85 @@ pub fn transfer_memory(
             source_offset,
             size,
         ),
+        #[cfg(feature = "gpu")]
+        (ContextType::Gpu(destination_ctxt), ContextType::ReadOnly(source_ctxt)) => {
+            // Transfer function registering buffers: weights + .cubin
+            let Some(ref data_set) = source.content[0] else { todo!() };
+            let ident = &data_set.ident.to_string();
+            
+            #[cfg(feature = "weights_from_disk")]
+            {
+                use crate::memory_domain::read_only::ReadOnlyContext;
+                let disk_path = source_ctxt.disk_path.clone().unwrap();
+                let split_path = disk_path.split("/").collect::<Vec<&str>>();
+                let name = split_path[split_path.len() - 1].to_string();
+                let data_vec = std::fs::read(&disk_path).unwrap();
+                let item_size = data_vec.len();
+                let mut new_context =
+                    ReadOnlyContext::new(data_vec.into_boxed_slice()).unwrap();
+                new_context.content.push(Some(DataSet {
+                    ident: ident.clone(),
+                    buffers: vec![DataItem {
+                        ident: ident.clone(),
+                        data: Position {
+                            offset: 0,
+                            size: item_size,
+                        },
+                        key: 0,
+                    }],
+                }));
+                let new_source = Arc::new(new_context);
+    
+                destination_ctxt.read_only.insert(
+                    ident.clone(),
+                    SubReadOnly {
+                        context: new_source,
+                        position: Position {
+                            offset: source_offset,
+                            size
+                        }
+                    }
+                );
+            }
+
+            #[cfg(not(feature = "weights_from_disk"))]
+            {
+                destination_ctxt.read_only.insert(
+                    ident.clone(),
+                    SubReadOnly {
+                        context: source,
+                        position: Position {
+                            offset: source_offset,
+                            size
+                        }
+                    }
+                );
+            }
+            
+            Ok(())
+        },
+        #[cfg(feature = "gpu")]
+        (ContextType::Gpu(destination_ctxt), ContextType::Gpu(source_ctxt)) => {
+            // Transfer nothing really...
+            gpu::gpu_transfer(
+                destination_ctxt,
+                source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+            )
+        },
+        #[cfg(all(feature = "gpu", feature = "bytes_context"))]
+        (ContextType::Gpu(destination_ctxt), ContextType::Bytes(source_ctxt)) => {
+            // Transfer request inputs
+            gpu::bytest_to_gpu_transfer(
+                destination_ctxt,
+                source_ctxt,
+                destination_offset,
+                source_offset,
+                size,
+            )
+        }
         // default implementation using reads and writes
         (destination, source) => {
             let mut read_buffer: Vec<u8> = vec![0; size];

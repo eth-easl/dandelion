@@ -246,6 +246,12 @@ impl MmapMem {
 
         let read_size = core::mem::size_of::<T>() * read_buffer.len();
         if offset + read_size > self.size() {
+            eprintln!(
+                "InvalidRead in MMM: len {}, offset {}, size {}",
+                self.size(),
+                offset,
+                read_size
+            );
             debug!("Read out of bounds at offset {}", offset);
             return Err(DandelionError::InvalidRead);
         }

@@ -114,3 +114,27 @@ If you use Dandelion, please cite our paper:
 # C Dependencies
 
 For testing the C code to interact with Cheri we are using unity which is included directly in the project.
+
+## GPU worker build
+
+The `gpu_worker` binary required by the `gpu_process` is assumed to be present in corresponding `target` directory:
+```
+cargo build --bin gpu_worker --features $(gpu-arch),gpu_process --target $(arch)-unknown-linux-gnu [--release]
+```
+
+Where `gpu-arch` is either `cuda` or `hip`.
+
+Also make sure that shared memory objects are executable:
+```
+sudo mount -o remount,exec /dev/shm
+```
+
+### GPU worker path
+
+To use a `gpu_worker` that is not at the original location it was built in, set the `GPU_WORKER_PATH` environment variable to point to the desired binary
+
+## GPU engine library path
+`DANDELION_LIBRARY_PATH` overwrites the directory where the GPU engines will look for kernel libraries. If the variable is unset the engines will look in `machine_interface/tests/libs/`.
+
+## GPU Allocations
+To prevent memory leakage, GPU kernels are disallowed from calling `malloc()`. All the memory a kernel requires should be specified in the respective config file.

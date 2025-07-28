@@ -6,6 +6,7 @@ use dandelion_commons::{DandelionError, DandelionResult};
 use libc::{c_int, size_t, uintptr_t};
 use log::trace;
 extern crate alloc;
+use std::fmt::Debug;
 
 pub trait SizedIntTrait
 where
@@ -15,24 +16,28 @@ where
     fn to_native(self) -> DandelionResult<usize>;
 }
 
+#[macro_export]
 /// macro to convert usize to SizeT
 macro_rules! size_t {
     ($val:expr) => {
         SizeT::from_native($val)?
     };
 }
+#[macro_export]
 /// macro to convert SizeT to usize
 macro_rules! usize {
     ($val:expr) => {
         SizeT::to_native($val)?
     };
 }
+#[macro_export]
 /// macro to convert usize to PtrT
 macro_rules! ptr_t {
     ($val:expr) => {
         PtrT::from_native($val)?
     };
 }
+#[macro_export]
 /// macro to convert PtrT to usize
 macro_rules! usize_ptr {
     ($val:expr) => {
@@ -91,33 +96,33 @@ pub mod _native {
 #[derive(Debug, Clone, Default)]
 #[repr(C)]
 pub struct DandelionSystemData<PtrT: SizedIntTrait, SizeT: SizedIntTrait> {
-    exit_code: c_int,
-    heap_begin: PtrT,       // uintptr_t,
-    heap_end: PtrT,         // uintptr_t,
-    input_sets_len: SizeT,  // size_t,
-    input_sets: PtrT,       // *const IoSetInfo,
-    output_sets_len: SizeT, // size_t,
-    output_sets: PtrT,      // *const IoSetInfo,
-    input_bufs: PtrT,       // *const IoBufferDescriptor,
-    output_bufs: PtrT,      // *const IoBufferDescriptor,
+    pub exit_code: c_int,
+    pub heap_begin: PtrT,       // uintptr_t,
+    pub heap_end: PtrT,         // uintptr_t,
+    pub input_sets_len: SizeT,  // size_t,
+    pub input_sets: PtrT,       // *const IoSetInfo,
+    pub output_sets_len: SizeT, // size_t,
+    pub output_sets: PtrT,      // *const IoSetInfo,
+    pub input_bufs: PtrT,       // *const IoBufferDescriptor,
+    pub output_bufs: PtrT,      // *const IoBufferDescriptor,
+}
+
+#[derive(Clone, Debug)]
+#[repr(C)]
+pub struct IoSetInfo<PtrT: SizedIntTrait, SizeT: SizedIntTrait> {
+    pub ident: PtrT,      // uintptr_t,
+    pub ident_len: SizeT, // size_t,
+    pub offset: SizeT,    // size_t,
 }
 
 #[derive(Clone)]
 #[repr(C)]
-struct IoSetInfo<PtrT: SizedIntTrait, SizeT: SizedIntTrait> {
-    ident: PtrT,      // uintptr_t,
-    ident_len: SizeT, // size_t,
-    offset: SizeT,    // size_t,
-}
-
-#[derive(Clone)]
-#[repr(C)]
-struct IoBufferDescriptor<PtrT: SizedIntTrait, SizeT: SizedIntTrait> {
-    ident: PtrT,      // uintptr_t,
-    ident_len: SizeT, // size_t,
-    data: PtrT,       // uintptr_t,
-    data_len: SizeT,  // size_t,
-    key: SizeT,       // size_t,
+pub struct IoBufferDescriptor<PtrT: SizedIntTrait, SizeT: SizedIntTrait> {
+    pub ident: PtrT,      // uintptr_t,
+    pub ident_len: SizeT, // size_t,
+    pub data: PtrT,       // uintptr_t,
+    pub data_len: SizeT,  // size_t,
+    pub key: SizeT,       // size_t,
 }
 
 pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(

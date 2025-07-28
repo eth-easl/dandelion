@@ -1,4 +1,5 @@
 #[cfg(all(test, any(feature = "reqwest_io")))]
+#[allow(clippy::module_inception)]
 mod system_driver_tests {
     use crate::{
         function_driver::{

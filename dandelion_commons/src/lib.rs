@@ -114,6 +114,17 @@ pub enum DandelionError {
     OtherProctionError,
     /// Work queue from the dispatcher to the engines is full
     WorkQueueFull,
+    // GPU engine specfific errors
+    /// error from HIP Runtime
+    HipError(String),
+    /// error from HIP Runtime
+    CudaError(String),
+    /// identifier used in config file was not declared before
+    UndeclaredIdentifier(String),
+    /// argument given to the FromInput sizing was out of bounds
+    FromInputOutOfBounds,
+    /// could not deserialise JSON for config
+    ParsingJSONError(String),
 }
 
 // Implement display to be compliant with core::error::Error
