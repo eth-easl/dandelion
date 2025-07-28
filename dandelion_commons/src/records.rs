@@ -1,6 +1,7 @@
 use crate::FunctionId;
 use core::fmt;
 use std::time::Instant;
+use std::sync::{Arc, Mutex};
 
 /// Maximum usize to expect when converting a record point to a usize
 /// By setting the last element to this explicitly, the compiler will throw an error,
@@ -178,10 +179,57 @@ impl TimestampArchive {
     }
 }
 
+#[cfg(feature = "reuse_weights")]
+struct ReuseWeightsArchive {
+    collected_gpu_cache_hit: std::sync::Mutex<Vec<bool>>,
+}
+
+#[cfg(feature = "reuse_weights")]
+impl ReuseWeightsArchive {
+    fn init() -> Self {
+        return Self {
+            collected_gpu_cache_hit: std::sync::Mutex::new(Vec::new()),
+        };
+    }
+
+    fn insert(&self, new_gpu_cache_hit: bool) {
+        let mut guard = self.collected_gpu_cache_hit.lock().unwrap();
+        guard.push(new_gpu_cache_hit);
+    }
+
+    fn reset(&self) {
+        let mut guard = self.collected_gpu_cache_hit.lock().unwrap();
+        *guard = Vec::new();
+    }
+
+    fn append_gpu_cache_hit(
+        &self,
+        gpu_cache_hit: bool,
+        summary: &mut String,
+        indent: usize,
+    ) {
+        // push self
+        summary.push_str(&format!(
+            "{}gpu_cache_hit:{}",
+            "-".repeat(indent),
+            gpu_cache_hit
+        ));
+    }
+
+    fn get_summary(&self, summary: &mut String) {
+        for recorder in self.collected_gpu_cache_hit.lock().unwrap().iter() {
+            self.append_gpu_cache_hit(*recorder, summary, 0);
+            summary.push_str("\n");
+        }
+    }
+}
+
 /// General implementation of recorder struct, additional functionality enabled by flags
 pub struct Recorder {
     #[cfg(feature = "timestamp")]
     timestamps: std::sync::Arc<FunctionTimestamp>,
+    #[cfg(feature = "reuse_weights")]
+    gpu_cache_hit: Arc<Mutex<bool>>,
 }
 
 impl Recorder {
@@ -189,6 +237,8 @@ impl Recorder {
         return Self {
             #[cfg(feature = "timestamp")]
             timestamps: FunctionTimestamp::new(_function_id, _start),
+            #[cfg(feature = "reuse_weights")]
+            gpu_cache_hit: Arc::new(Mutex::new(false)),
         };
     }
 
@@ -196,12 +246,22 @@ impl Recorder {
         return Self {
             #[cfg(feature = "timestamp")]
             timestamps: FunctionTimestamp::new(_function_id, _parent.timestamps.creation),
+            #[cfg(feature = "reuse_weights")]
+            gpu_cache_hit: Arc::new(Mutex::new(false)),
         };
     }
 
     pub fn record(&mut self, _current_point: RecordPoint) {
         #[cfg(feature = "timestamp")]
         self.timestamps.record(_current_point);
+    }
+
+    pub fn set_gpu_cache_hit(&mut self, _gpu_cache_hit: bool) {
+        #[cfg(feature = "reuse_weights")]
+        {
+            let mut gpu_cache_hit = self.gpu_cache_hit.lock().unwrap();
+            *gpu_cache_hit = _gpu_cache_hit;
+        }
     }
 
     pub fn add_children(&mut self, _new_children: Vec<Recorder>) {
@@ -215,6 +275,8 @@ impl Recorder {
         let recorder = Recorder {
             #[cfg(feature = "timestamp")]
             timestamps: self.timestamps.clone(),
+            #[cfg(feature = "reuse_weights")]
+            gpu_cache_hit: self.gpu_cache_hit.clone(),
         };
         return recorder;
     }
@@ -231,6 +293,17 @@ impl fmt::Display for Recorder {
             }
             self.timestamps.fmt(_f)?;
         }
+        #[cfg(feature = "reuse_weights")]
+        {
+            if std::sync::Arc::strong_count(&self.gpu_cache_hit) != 1
+                && std::sync::Arc::weak_count(&self.gpu_cache_hit) != 0
+            {
+                panic!("Trying to format recorder that still has more than one reference");
+            }
+            #[cfg(feature = "timestamp")]
+            write!(_f, ",")?;
+            write!(_f, "gpu_cache_hit: {}", self.gpu_cache_hit.lock().unwrap())?;
+        }
         Ok(())
     }
 }
@@ -238,6 +311,8 @@ impl fmt::Display for Recorder {
 pub struct Archive {
     #[cfg(feature = "timestamp")]
     timestamp_archive: TimestampArchive,
+    #[cfg(feature = "reuse_weights")]
+    gpu_cache_hit_archive: ReuseWeightsArchive,
 }
 
 pub struct ArchiveInit {
@@ -250,6 +325,8 @@ impl Archive {
         return Archive {
             #[cfg(feature = "timestamp")]
             timestamp_archive: TimestampArchive::init(),
+            #[cfg(feature = "reuse_weights")]
+            gpu_cache_hit_archive: ReuseWeightsArchive::init(),
         };
     }
 
@@ -257,6 +334,9 @@ impl Archive {
         #[cfg(feature = "timestamp")]
         self.timestamp_archive
             .insert(std::sync::Arc::into_inner(_recorder.timestamps).unwrap());
+        #[cfg(feature = "reuse_weights")]
+        self.gpu_cache_hit_archive
+            .insert(std::sync::Arc::into_inner((*_recorder.gpu_cache_hit.lock().unwrap()).into()).unwrap());
     }
 
     pub fn get_summary(&self) -> String {
@@ -265,11 +345,16 @@ impl Archive {
         let mut summary = String::new();
         #[cfg(feature = "timestamp")]
         self.timestamp_archive.get_summary(&mut summary);
+        #[cfg(feature = "reuse_weights")]
+        self.gpu_cache_hit_archive.get_summary(&mut summary);
+        println!("{}", summary);
         return summary;
     }
 
     pub fn reset(&self) {
         #[cfg(feature = "timestamp")]
         self.timestamp_archive.reset();
+        #[cfg(feature = "reuse_weights")]
+        self.gpu_cache_hit_archive.reset();
     }
 }

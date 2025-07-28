@@ -213,6 +213,23 @@ fn encode_response(
             .copy_from_slice(&timestamp_string_len.to_le_bytes());
     }
 
+    // if reuse_weights is on, add in gpu cache hit information as string
+    #[cfg(feature = "reuse_weights")]
+    {
+        // timestamps formated as formatted string, consisting of a length, the string and a NULL byte
+        response.push(2);
+        response.extend_from_slice("gpu_cache_hit\0".as_bytes());
+        let recorder_length_offset = response.len();
+        response.extend_from_slice(&0i32.to_be_bytes());
+        let recorder_string = format!("{}", _timings);
+        response.extend_from_slice(recorder_string.as_bytes());
+        response.push(0);
+        // set length + 1 to account for terminating 0
+        let recorder_string_len = (recorder_string.len() + 1) as i32;
+        response[recorder_length_offset..recorder_length_offset + 4]
+            .copy_from_slice(&recorder_string_len.to_le_bytes());
+    }
+
     // end docuemnt and set length
     response.push(0);
     let doc_length = (response.len() + all_items) as i32;
