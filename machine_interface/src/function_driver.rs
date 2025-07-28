@@ -6,7 +6,7 @@ use crate::{
 };
 extern crate alloc;
 use alloc::sync::Arc;
-use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
+use dandelion_commons::{records::Recorder, DandelionError, DandelionResult, FunctionId};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "wasm")]
@@ -63,6 +63,7 @@ pub struct WasmConfig {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct GpuConfig {
+    pub function_id: FunctionId,
     pub system_data_struct_offset: usize,
     pub code_object_offset: usize,
     pub kernels: Arc<Vec<HashMap<String, String>>>,

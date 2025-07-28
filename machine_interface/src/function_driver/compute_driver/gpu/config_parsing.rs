@@ -56,6 +56,7 @@ struct GpuConfigIR {
 impl From<GpuConfigIR> for GpuConfig {
     fn from(value: GpuConfigIR) -> Self {
         Self {
+            function_id: u64::MAX,
             system_data_struct_offset: SYSDATA_OFFSET,
             code_object_offset: 0,
             kernels: Arc::new(value.kernels),

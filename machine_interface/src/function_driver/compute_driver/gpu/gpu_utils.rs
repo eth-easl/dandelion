@@ -83,7 +83,7 @@ pub fn copy_data_to_device(
 pub fn write_gpu_outputs(
     output_context: &mut Context,
     output_set_names: &[String],
-    device_buffers: &HashMap<String, (usize, usize)>,
+    // device_buffers: &HashMap<String, (usize, usize)>,
     buffer_pool: &BufferPool,
 ) -> DandelionResult<()> {
     let base = match &output_context.context {
@@ -96,24 +96,23 @@ pub fn write_gpu_outputs(
     let mut output_sets = vec![];
     let mut buffers = vec![];
     for output_name in output_set_names {
-        let (dev_ptr_idx, size) = device_buffers
-            .get(output_name)
-            .ok_or(DandelionError::ConfigMissmatch)?;
-        let buf_offset = output_context.get_free_space(*size, 8)?;
+        let dev_ptr = buffer_pool.get_pointer(output_name)?;
+        let size = buffer_pool.get_size(output_name)?;
 
+        let buf_offset = output_context.get_free_space(size, 8)?;
         let dst = unsafe { base.byte_offset(buf_offset as isize) } as *const c_void;
-        let dev_ptr = buffer_pool.get(*dev_ptr_idx)?;
-        gpu_api::memcpy_d_to_h(dst, &dev_ptr, *size)?;
+        
+        gpu_api::memcpy_d_to_h(dst, &dev_ptr, size)?;
 
         buffers.push(DataItem {
             ident: output_name.clone(),
             data: Position {
                 offset: buf_offset,
-                size: *size,
+                size: size,
             },
             key: 0u32,
         });
-        output_context.occupy_space(buf_offset, *size)?;
+        output_context.occupy_space(buf_offset, size)?;
     }
 
     output_sets.push(Some(DataSet {
@@ -127,7 +126,7 @@ pub fn write_gpu_outputs(
 
 pub fn get_size(
     sizing: &Sizing,
-    buffers: &HashMap<String, (usize, usize)>,
+    buffer_pool: &BufferPool,
     context: &Context,
 ) -> DandelionResult<u64> {
     match sizing {
@@ -159,10 +158,7 @@ pub fn get_size(
 
             Ok(buf[0])
         }
-        Sizing::Sizeof(bufname) => Ok(buffers
-            .get(bufname)
-            .ok_or(DandelionError::UndeclaredIdentifier(bufname.to_owned()))?
-            .1 as u64),
+        Sizing::Sizeof(bufname) => Ok(buffer_pool.get_size(bufname)? as u64),
     }
 }
 
@@ -313,6 +309,7 @@ pub struct SendFunctionArgs {
     pub output_sets: Arc<Vec<String>>,
 }
 
+/*
 fn manage_worker(
     resources: (u8, u8, u8),
     core_id: u8,
@@ -489,3 +486,4 @@ pub fn start_gpu_process_pool(
         });
     }
 }
+*/

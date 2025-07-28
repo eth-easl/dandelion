@@ -317,6 +317,11 @@ impl DeviceAllocation {
     pub fn zero_size(&mut self, size: usize) -> DandelionResult<()> {
         gpu_zero_mem(self.ptr, size)
     }
+
+    pub fn zero_from_to(&mut self, from: usize, to: usize) -> DandelionResult<()> {
+        let size = to - from;
+        gpu_zero_mem(self.ptr.wrapping_add(from), size)
+    }
 }
 
 impl Drop for DeviceAllocation {

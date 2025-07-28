@@ -764,6 +764,8 @@ fn main() -> () {
     print!(" request_io");
     #[cfg(feature = "timestamp")]
     print!(" timestamp");
+    #[cfg(feature = "reuse_weights")]
+    print!(" reuse_weights");
     #[cfg(feature = "weights_from_disk")]
     print!(" weights_from_disk");
     print!("\n");

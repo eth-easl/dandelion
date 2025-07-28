@@ -2,9 +2,11 @@ use self::{
     buffer_pool::BufferPool,
     config_parsing::{Action, Argument, RuntimeGpuConfig, SYSDATA_OFFSET},
     gpu_utils::{
-        copy_data_to_device, get_data_length, get_size, start_gpu_process_pool, write_gpu_outputs,
+        copy_data_to_device, get_data_length, get_size, write_gpu_outputs,
     },
 };
+#[cfg(feature = "gpu_process")]
+use self::gpu_utils::start_gpu_process_pool;
 use crate::{
     function_driver::{
         thread_utils::{run_thread, EngineLoop},
@@ -41,7 +43,6 @@ mod gpu_tests;
 
 fn execute(
     actions: &Vec<Action>,
-    buffers: &HashMap<String, (usize, usize)>,
     buffer_pool: &BufferPool,
     context: &Context,
     config: &RuntimeGpuConfig,
@@ -62,20 +63,13 @@ fn execute(
                 for arg in args {
                     match arg {
                         Argument::Ptr(id) => {
-                            let idx = buffers
-                                .get(id)
-                                .ok_or(DandelionError::UndeclaredIdentifier(id.to_owned()))?
-                                .0;
-                            let dev_ptr = buffer_pool.get(idx)?;
+                            let dev_ptr = buffer_pool.get_pointer(id)?;
                             dev_ptrs.push(Box::into_raw(Box::new(dev_ptr)));
                             params.push(*dev_ptrs.last().unwrap() as *const c_void);
                         }
                         Argument::Sizeof(id) => {
                             params.push(
-                                &buffers
-                                    .get(id)
-                                    .ok_or(DandelionError::UndeclaredIdentifier(id.to_owned()))?
-                                    .1 as *const _ as *const c_void,
+                                &buffer_pool.get_size(id) as *const _ as *const c_void,
                             );
                         }
                         Argument::Constant(constant) => {
@@ -89,13 +83,13 @@ fn execute(
                         .kernels
                         .get(name)
                         .ok_or(DandelionError::UndeclaredIdentifier(name.to_owned()))?,
-                    get_size(&launch_config.grid_dim_x, buffers, context)? as u32,
-                    get_size(&launch_config.grid_dim_y, buffers, context)? as u32,
-                    get_size(&launch_config.grid_dim_z, buffers, context)? as u32,
-                    get_size(&launch_config.block_dim_x, buffers, context)? as u32,
-                    get_size(&launch_config.block_dim_y, buffers, context)? as u32,
-                    get_size(&launch_config.block_dim_z, buffers, context)? as u32,
-                    get_size(&launch_config.shared_mem_bytes, buffers, context)? as u32,
+                    get_size(&launch_config.grid_dim_x, buffer_pool, context)? as u32,
+                    get_size(&launch_config.grid_dim_y, buffer_pool, context)? as u32,
+                    get_size(&launch_config.grid_dim_z, buffer_pool, context)? as u32,
+                    get_size(&launch_config.block_dim_x, buffer_pool, context)? as u32,
+                    get_size(&launch_config.block_dim_y, buffer_pool, context)? as u32,
+                    get_size(&launch_config.block_dim_z, buffer_pool, context)? as u32,
+                    get_size(&launch_config.shared_mem_bytes, buffer_pool, context)? as u32,
                     gpu_api::DEFAULT_STREAM,
                     params.as_ptr(),
                     null(),
@@ -110,9 +104,9 @@ fn execute(
                 }
             }
             Action::Repeat(times, actions) => {
-                let repetitions = get_size(times, buffers, context)?;
+                let repetitions = get_size(times, buffer_pool, context)?;
                 for _ in 0..repetitions {
-                    execute(actions, buffers, buffer_pool, context, config)?;
+                    execute(actions, buffer_pool, context, config)?;
                 }
             }
         }
@@ -173,6 +167,9 @@ pub fn gpu_run(
             .ok_or(DandelionError::UnknownSymbol);
     }
 
+    let function_id = config.function_id;
+    let mut buffer_pool = buffer_pool.lock().unwrap();
+
     let config = RuntimeGpuConfig {
         system_data_struct_offset: 0,
         modules: Arc::new(loaded_modules),
@@ -180,44 +177,49 @@ pub fn gpu_run(
         blueprint: config.blueprint,
     };
 
-    let mut buffer_pool = buffer_pool.lock().unwrap();
-
     recorder.record(RecordPoint::GPUTransferStart);
-    // Maps from bufname -> (index in buffer pool, size of buffer)
-    let mut buffers: HashMap<String, (usize, usize)> = HashMap::new();
+    let mut reload_weights = true;
+    #[cfg(feature = "reuse_weights")]
+    {
+        reload_weights = buffer_pool.prev_function_id != function_id;
+    }
+    recorder.set_gpu_cache_hit(!reload_weights);
+
+    if reload_weights {
+        buffer_pool.prev_function_id = function_id;
+        buffer_pool.dealloc_all()?;
+
+        for name in &config.blueprint.weights {
+            let sub_read_only = read_only_data.get(name.as_str()).unwrap();
+            let data_pointer = sub_read_only
+                .context
+                .get_chunk_ref(sub_read_only.position.offset, sub_read_only.position.size)
+                .unwrap()
+                .as_ptr() as *const c_void;
+            let size = sub_read_only.position.size;
+            
+            let _ = buffer_pool.alloc_buffer(name, size, true)?;
+            let dev_ptr = buffer_pool.get_pointer(name)?;
+
+            gpu_api::memcpy_h_to_d(&dev_ptr, 0, data_pointer, size)?;
+        }
+    }
+
     for name in &config.blueprint.inputs {
         let size = get_data_length(name, &context)?;
-        let idx = buffer_pool.alloc_buffer(size)?;
-        copy_data_to_device(name, &context, &buffer_pool.get(idx)?)?;
-        buffers.insert(name.clone(), (idx, size));
-    }
-    for name in &config.blueprint.weights {
-        let sub_read_only = read_only_data.get(name.as_str()).unwrap();
-        let data_pointer = sub_read_only
-            .context
-            .get_chunk_ref(sub_read_only.position.offset, sub_read_only.position.size)
-            .unwrap()
-            .as_ptr() as *const c_void;
-        let size = sub_read_only.position.size;
-        let idx = buffer_pool.alloc_buffer(size)?;
-
-        let dev_ptr = &buffer_pool.get(idx)?;
-
-        gpu_api::memcpy_h_to_d(dev_ptr, 0, data_pointer, size)?;
-
-        buffers.insert(name.clone(), (idx, size));
+        let _ = buffer_pool.alloc_buffer(name, size, false)?;
+        let dev_ptr = buffer_pool.get_pointer(name)?;
+        copy_data_to_device(name, &context, &dev_ptr)?;
     }
     for (name, sizing) in &config.blueprint.buffers {
-        let size = get_size(sizing, &buffers, &context)? as usize;
-        let idx = buffer_pool.alloc_buffer(size)?;
-        buffers.insert(name.clone(), (idx, size));
+        let size = get_size(sizing, &buffer_pool, &context)? as usize;
+        let _ = buffer_pool.alloc_buffer(name, size, false)?;
     }
     recorder.record(RecordPoint::GPUTransferEnd);
 
     recorder.record(RecordPoint::GPUInferenceStart);
     execute(
         &config.blueprint.control_flow,
-        &buffers,
         buffer_pool.borrow(),
         &context,
         &config,
@@ -226,11 +228,11 @@ pub fn gpu_run(
 
     recorder.record(RecordPoint::GPUOutputStart);
     // Copy results back into host memory from device memory
-    write_gpu_outputs(&mut context, &output_sets, &buffers, buffer_pool.borrow())?;
+    write_gpu_outputs(&mut context, &output_sets, buffer_pool.borrow())?;
     recorder.record(RecordPoint::GPUOutputEnd);
 
-    // Zero out buffers used by current function
-    buffer_pool.dealloc_all()?;
+    // Zero out input, temporary buffers, and output buffers
+    buffer_pool.dealloc_tmp_buffers()?;
 
     Ok(context)
 }
@@ -399,6 +401,7 @@ impl Driver for GpuProcessDriver {
     ) -> dandelion_commons::DandelionResult<()> {
         let (cpu_slot, gpu_id, worker_count) = common_start(resource)?;
 
+        #[cfg(feature = "gpu_process")]
         start_gpu_process_pool(cpu_slot, gpu_id, worker_count, queue);
         Ok(())
     }
