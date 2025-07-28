@@ -38,7 +38,12 @@ pub enum DispatcherInput {
 }
 
 pub trait EnqueueWork: Send + Sync {
-    fn enqueue_work(&self, args: WorkToDo) -> DandelionResult<Promise>;
+    /// Enqueued work:
+    /// - ParsingArguments (only on registration)
+    /// - LoadingArguments
+    /// - (multiple) TransferArguments
+    /// - FunctionArguments
+    fn enqueue_work(&self, args: WorkToDo, function_id: FunctionId) -> DandelionResult<Promise>;
 }
 
 pub trait FullQueue: EnqueueWork + WorkQueue {
@@ -83,7 +88,7 @@ pub struct Dispatcher {
 
 fn get_queue_from_engine(engine_type: EngineType) -> Box<dyn FullQueue> {
     return match engine_type {
-        #[cfg(feature = "gpu")]
+        #[cfg(all(feature = "gpu", feature = "gpu_queue"))]
         EngineType::GpuThread => Box::new(EngineQueueGPU::new()),
         _ => Box::new(EngineQueue::new()),
     };
@@ -482,6 +487,7 @@ impl Dispatcher {
             let options = self.function_registry.get_options(function_id).await?;
             if let Some(alternative) = options.iter().next() {
                 match &alternative.function_type {
+                    // look here
                     FunctionType::Function(engine_id, ctx_size) => {
                         recorder.record(RecordPoint::PrepareEnvQueue);
                         let (context, config, metadata) = self
@@ -502,6 +508,7 @@ impl Dispatcher {
                             metadata.output_sets);
                         let context = self
                             .run_on_engine(
+                                function_id,
                                 *engine_id,
                                 config,
                                 metadata.output_sets,
@@ -604,7 +611,7 @@ impl Dispatcher {
                         source_item_index: item,
                         recorder: recorder.get_sub_recorder(),
                     };
-                    function_context = transfer_queue.enqueue_work(args)?.await?.get_context();
+                    function_context = transfer_queue.enqueue_work(args, function_id)?.await?.get_context();
                     function_buffer += 1;
                 }
             }
@@ -648,7 +655,7 @@ impl Dispatcher {
                     source_item_index: item,
                     recorder: recorder.get_sub_recorder(),
                 };
-                function_context = transfer_queue.enqueue_work(args)?.await?.get_context();
+                function_context = transfer_queue.enqueue_work(args, function_id)?.await?.get_context();
                 function_item += 1;
             }
         }
@@ -658,6 +665,7 @@ impl Dispatcher {
 
     async fn run_on_engine(
         &self,
+        function_id: FunctionId,
         engine_type: EngineType,
         function_config: FunctionConfig,
         output_sets: Arc<Vec<String>>,
@@ -681,7 +689,7 @@ impl Dispatcher {
             recorder: subrecoder,
         };
         recorder.record(RecordPoint::ExecutionQueue);
-        let result = engine_queue.enqueue_work(args)?.await?.get_context();
+        let result = engine_queue.enqueue_work(args, function_id)?.await?.get_context();
         recorder.record(RecordPoint::FutureReturn);
         return Ok(result);
     }

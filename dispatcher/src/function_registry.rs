@@ -84,6 +84,7 @@ impl FunctionDict {
 
 /// Function to create a future that returns the loaded function
 async fn load_local(
+    function_id: FunctionId,
     static_domain: Arc<Box<dyn MemoryDomain>>,
     driver: &'static dyn Driver,
     mut recorder: Recorder,
@@ -99,6 +100,7 @@ async fn load_local(
                 static_domain,
                 recorder: recorder.get_sub_recorder(),
             },
+            function_id
         )?
         .await?
         .get_function();
@@ -386,6 +388,7 @@ impl FunctionRegistry {
                     func_future.clone()
                 } else {
                     let func_future = (Box::pin(load_local(
+                        function_id,
                         domain.clone(),
                         *driver,
                         recorder.get_sub_recorder(),
@@ -406,7 +409,11 @@ impl FunctionRegistry {
             };
         drop(lock_guard);
         let function = function_future.await?;
-        let function_config = function.config.clone();
+        let mut function_config = function.config.clone();
+        if let FunctionConfig::GpuConfig(ref mut config) = function_config {
+            config.function_id = function_id;
+        }
+
         recorder.record(RecordPoint::LoadQueue);
         let context_work_done = load_queue
             .enqueue_work(
@@ -416,6 +423,7 @@ impl FunctionRegistry {
                     recorder: recorder.get_sub_recorder(),
                     ctx_size: ctx_size,
                 },
+                function_id
             )?
             .await;
         recorder.record(RecordPoint::LoadDequeue);
