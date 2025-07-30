@@ -15,7 +15,6 @@ use hyper::{
     body::{Body, Incoming},
     service::service_fn,
     Request, Response,
-    header,
     StatusCode
 };
 use log::{debug, error, info, trace, warn};
@@ -321,7 +320,8 @@ async fn serve_mcp(
                     
                     // The default composition name. Need to register the web search tool composition first!
                     let composition_name = "composition".to_string();
-
+                    
+                    println!("Before execution...");
                     dispatcher
                         .send(DispatcherCommand::FunctionRequest {
                             name: composition_name,
@@ -536,7 +536,6 @@ async fn register_composition(
     // find first line end character
     let request_map: RegisterChain =
         bson::from_slice(&bytes).expect("Should be able to deserialize request");
-    println!("Registering composition: {}", request_map.composition);
     let (callback, confirmation) = oneshot::channel();
     dispatcher
         .send(DispatcherCommand::CompositionRegistration {
@@ -586,6 +585,7 @@ async fn service(
         | "/cold/http_for_agent_as_code_execution"
         | "/cold/http_for_agent_as_tool"
         | "/cold/multi_agent"
+        | "/cold/mcp_client"
         | "/cold/text2sql_python_app"
         | "/cold/web_search"
         | "/cold/web_search_tool"
@@ -605,6 +605,7 @@ async fn service(
         | "/hot/http_for_agent_as_code_execution"
         | "/hot/http_for_agent_as_tool"
         | "/hot/multi_agent"
+        | "/hot/mcp_client"
         | "/hot/text2sql_python_app"
         | "/hot/web_search"
         | "/hot/web_search_tool"
