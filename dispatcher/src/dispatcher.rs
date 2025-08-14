@@ -1,3 +1,5 @@
+#[cfg(feature = "output_cache")]
+use crate::output_cache::{self, OutputCache};
 use crate::{
     composition::{
         get_sharding, Composition, CompositionSet, InputSetDescriptor, JoinStrategy, ShardingMode,
@@ -46,6 +48,8 @@ pub struct Dispatcher {
     engine_queues: BTreeMap<EngineType, Box<EngineQueue>>,
     type_map: BTreeMap<EngineType, DomainType>,
     function_registry: FunctionRegistry,
+    #[cfg(feature = "output_cache")]
+    output_cache: OutputCache,
 }
 
 impl Dispatcher {
@@ -85,6 +89,8 @@ impl Dispatcher {
             engine_queues,
             type_map,
             function_registry,
+            #[cfg(feature = "output_cache")]
+            output_cache: OutputCache::new(),
         });
     }
 
@@ -339,6 +345,24 @@ impl Dispatcher {
             function_id,
             input_sets
         );
+
+        #[cfg(feature = "output_cache")]
+        let output_hash_id = output_cache::get_output_hash_id(function_id, &input_sets);
+        #[cfg(feature = "output_cache")]
+        if let Some(cached_output_sets) = self.output_cache.get(output_hash_id).await {
+            trace!("Got cached output for function {}", function_id);
+            return Ok((
+                output_mapping
+                    .into_iter()
+                    .zip(cached_output_sets.into_iter())
+                    .filter_map(|(index_option, set_option)| {
+                        index_option.and_then(|index| Some((index, set_option)))
+                    })
+                    .collect(),
+                vec![],
+            ));
+        }
+
         let mut recorders;
 
         // check if there are no input sets or all of them are none, then don't need sharding,
@@ -410,6 +434,20 @@ impl Dispatcher {
                 new_vec.resize(output_lenght, None);
                 new_vec
             });
+
+        #[cfg(feature = "output_cache")]
+        let composition_set_vecs = composition_set_vecs
+            .into_iter()
+            .enumerate()
+            .map(|(set_index, option)| {
+                option.map(|set| set.with_recursive_hash(output_hash_id, set_index))
+            })
+            .collect::<Vec<_>>();
+        #[cfg(feature = "output_cache")]
+        self.output_cache
+            .insert(output_hash_id, composition_set_vecs.clone())
+            .await;
+        trace!("Inserted cached output for function {}", function_id);
 
         // assiociated sets with composition ids
         Ok((

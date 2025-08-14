@@ -114,7 +114,10 @@ async fn serve_request(
     let request_arc = Arc::new(request_context);
     let inputs = (0..request_number)
         .map(|set_id| {
-            DispatcherInput::Set(CompositionSet::from((set_id, vec![request_arc.clone()])))
+            let set = CompositionSet::from((set_id, vec![request_arc.clone()]));
+            #[cfg(feature = "output_cache")]
+            let set = set.with_content_hash();
+            DispatcherInput::Set(set)
         })
         .collect::<Vec<_>>();
 
@@ -640,6 +643,8 @@ fn main() -> () {
     print!(" request_io");
     #[cfg(feature = "timestamp")]
     print!(" timestamp");
+    #[cfg(feature = "output_cache")]
+    print!(" output_cache");
     print!("\n");
 
     // Run this server for... forever... unless I receive a signal!

@@ -2,9 +2,11 @@ use crate::function_registry::{FunctionDict, Metadata};
 use dandelion_commons::{DandelionError, DandelionResult, DispatcherError, FunctionId};
 use dparser;
 use itertools::Itertools;
-use machine_interface::memory_domain::Context;
+use log::trace;
+use machine_interface::memory_domain::{Context, ContextTrait};
 use std::{
     collections::{btree_map::Entry, BTreeMap},
+    hash::{DefaultHasher, Hash, Hasher},
     sync::Arc,
 };
 
@@ -19,7 +21,7 @@ pub struct Composition {
 }
 
 /// Modes for the composition set iteratior to return sharding
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Hash)]
 pub enum ShardingMode {
     All,
     Each,
@@ -321,6 +323,9 @@ pub struct CompositionSet {
     item_list: Vec<(u32, usize, Arc<Context>)>,
     /// the set side inside the contexts the composition set represents
     set_index: usize,
+    /// only for unsharded sets: derived by hashing the content (for user input sets)
+    /// or by hashing the ids of the function and input sets that produce this set
+    hash_id: Option<u64>,
 }
 
 impl CompositionSet {
@@ -337,6 +342,7 @@ impl CompositionSet {
                 let CompositionSet {
                     mut item_list,
                     set_index,
+                    hash_id: _,
                 } = self;
                 let mut keyed_vec = Vec::new();
                 while !item_list.is_empty() {
@@ -349,6 +355,7 @@ impl CompositionSet {
                     let new_composition = CompositionSet {
                         item_list: new_list,
                         set_index,
+                        hash_id: None,
                     };
                     keyed_vec.push(new_composition);
                 }
@@ -360,6 +367,7 @@ impl CompositionSet {
                 .map(|item| CompositionSet {
                     item_list: vec![item],
                     set_index: self.set_index,
+                    hash_id: None,
                 })
                 .collect(),
         };
@@ -369,6 +377,7 @@ impl CompositionSet {
         let CompositionSet {
             item_list,
             set_index,
+            hash_id: _,
         } = additional;
         if self.set_index != set_index {
             return Err(DandelionError::Dispatcher(
@@ -396,6 +405,7 @@ impl From<(usize, Vec<Arc<Context>>)> for CompositionSet {
         return CompositionSet {
             item_list,
             set_index,
+            hash_id: None,
         };
     }
 }
@@ -721,5 +731,57 @@ impl JoinIterator {
                 panic!("Should never have join iterator with left or inner that has None for the left value");
             }
         }
+    }
+}
+
+fn hash_data_item<H: Hasher>(
+    context: Arc<Context>,
+    set_index: usize,
+    item_index: usize,
+    state: &mut H,
+) -> DandelionResult<()> {
+    // check if source has item
+    if context.content.len() <= set_index {
+        return Err(DandelionError::TransferInputNoSetAvailable);
+    }
+    let set = context.content[set_index]
+        .as_ref()
+        .ok_or(DandelionError::EmptyDataSet)?;
+    if set.buffers.len() <= item_index {
+        return Err(DandelionError::TransferInputNoSetAvailable);
+    }
+
+    let item = &set.buffers[item_index];
+    let data = context
+        .context
+        .get_chunk_ref(item.data.offset, item.data.size)?;
+    data.hash(state);
+
+    Ok(())
+}
+
+impl CompositionSet {
+    pub fn with_content_hash(mut self) -> Self {
+        trace!("Calculating content hash");
+        let mut state = DefaultHasher::new();
+        for (set_index, item_index, context) in &self {
+            hash_data_item(context, set_index, item_index, &mut state).unwrap();
+        }
+        self.hash_id = Some(state.finish());
+        self
+    }
+
+    pub fn with_recursive_hash(mut self, output_hash_id: u64, set_index: usize) -> Self {
+        trace!("Calculating recursive hash");
+        let mut state = DefaultHasher::new();
+        (output_hash_id, set_index).hash(&mut state);
+        self.hash_id = Some(state.finish());
+        self
+    }
+}
+
+impl Hash for CompositionSet {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.hash_id.expect("Should have hash_id").hash(state);
     }
 }
