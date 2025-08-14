@@ -91,7 +91,7 @@ impl ResetState {
         // https://developer.arm.com/documentation/101811/0103/Translation-granule/The-starting-level-of-address-translation
         // TODO: support larger guest memory (context) size
         // TODO: store the page table in another guest memory slot (outside the context)
-        assert!(guest_mem.len() <= 2 << 30);
+        assert!(guest_mem.len() <= 1 << 30);
         let l1 = u8_slice_to_u64_slice(&mut guest_mem[L1_ADDR..L1_ADDR + 0x1000]);
         l1[0] = PDE_VALID | PDE_AF;
     }

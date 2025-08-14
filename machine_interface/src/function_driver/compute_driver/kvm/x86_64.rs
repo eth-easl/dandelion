@@ -89,7 +89,7 @@ impl ResetState {
         // use identity mapping of 1GB huge page
         // TODO: support larger guest memory (context) size
         // TODO: store the page table in another guest memory slot (outside the context)
-        assert!(guest_mem.len() <= 2 << 30);
+        assert!(guest_mem.len() <= 1 << 30);
         let p4 = u8_slice_to_u64_slice(&mut guest_mem[P4_ADDR..P4_ADDR + 0x1000]);
         p4[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | P3_ADDR as u64;
         let p3 = u8_slice_to_u64_slice(&mut guest_mem[P3_ADDR..P3_ADDR + 0x1000]);
