@@ -376,62 +376,17 @@ pub fn transfer_memory(
         #[cfg(feature = "gpu")]
         (ContextType::Gpu(destination_ctxt), ContextType::ReadOnly(source_ctxt)) => {
             // Transfer function registering buffers: weights + .cubin
-            let Some(ref data_set) = source.content[0] else { todo!() };
-            let ident = &data_set.ident.to_string();
-            
-            #[cfg(feature = "weights_from_disk")]
-            {
-                use crate::memory_domain::read_only::ReadOnlyContext;
-                let disk_path = source_ctxt.disk_path.clone().unwrap();
-                let split_path = disk_path.split("/").collect::<Vec<&str>>();
-                let name = split_path[split_path.len() - 1].to_string();
-                let data_vec = std::fs::read(&disk_path).unwrap();
-                let item_size = data_vec.len();
-                let mut new_context =
-                    ReadOnlyContext::new(data_vec.into_boxed_slice()).unwrap();
-                new_context.content.push(Some(DataSet {
-                    ident: ident.clone(),
-                    buffers: vec![DataItem {
-                        ident: ident.clone(),
-                        data: Position {
-                            offset: 0,
-                            size: item_size,
-                        },
-                        key: 0,
-                    }],
-                }));
-                let new_source = Arc::new(new_context);
-    
-                destination_ctxt.read_only.insert(
-                    ident.clone(),
-                    SubReadOnly {
-                        context: new_source,
-                        position: Position {
-                            offset: source_offset,
-                            size
-                        }
-                    }
-                );
-            }
-
-            #[cfg(not(feature = "weights_from_disk"))]
-            {
-                destination_ctxt.read_only.insert(
-                    ident.clone(),
-                    SubReadOnly {
-                        context: source,
-                        position: Position {
-                            offset: source_offset,
-                            size
-                        }
-                    }
-                );
-            }
-            
-            Ok(())
+            gpu::read_only_to_gpu_transfer(
+                destination_ctxt,
+                source,
+                destination_offset,
+                source_offset,
+                size,
+            )
         },
         #[cfg(feature = "gpu")]
         (ContextType::Gpu(destination_ctxt), ContextType::Gpu(source_ctxt)) => {
+            // Never called
             // Transfer nothing really...
             gpu::gpu_transfer(
                 destination_ctxt,
@@ -444,9 +399,9 @@ pub fn transfer_memory(
         #[cfg(all(feature = "gpu", feature = "bytes_context"))]
         (ContextType::Gpu(destination_ctxt), ContextType::Bytes(source_ctxt)) => {
             // Transfer request inputs
-            gpu::bytest_to_gpu_transfer(
+            gpu::bytes_to_gpu_transfer(
                 destination_ctxt,
-                source_ctxt,
+                source,
                 destination_offset,
                 source_offset,
                 size,

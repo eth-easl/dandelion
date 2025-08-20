@@ -22,9 +22,16 @@ pub struct SubReadOnly {
 }
 
 #[derive(Debug)]
+pub struct SubBytes {
+    pub context: Arc<Context>,
+    pub position: Position,
+}
+
+#[derive(Debug)]
 pub struct GpuContext {
     pub storage: MmapMem,
     pub read_only: HashMap<String, SubReadOnly>,
+    pub inputs: HashMap<String, SubBytes>,
 }
 
 impl ContextTrait for GpuContext {
@@ -187,9 +194,74 @@ impl MemoryDomain for GpuMemoryDomain {
         let new_context = Box::new(GpuContext {
             storage: mem_space,
             read_only: HashMap::new(),
+            inputs: HashMap::new(),
         });
         Ok(Context::new(ContextType::Gpu(new_context), actual_size))
     }
+}
+
+pub fn read_only_to_gpu_transfer(
+    destination_ctxt: &mut GpuContext,
+    source: Arc<Context>,
+    destination_offset: usize,
+    source_offset: usize,
+    size: usize,
+) -> DandelionResult<()> {
+    let Some(ref data_set) = source.content[0] else { todo!() };
+    let ident = &data_set.ident.to_string();
+    
+    #[cfg(feature = "weights_from_disk")]
+    {
+        use crate::{DataSet, DataItem};
+        use crate::memory_domain::read_only::ReadOnlyContext;
+        let ContextType::ReadOnly(source_ctxt) = &source.context else { todo!() };
+        let disk_path = source_ctxt.disk_path.clone().unwrap();
+        let split_path = disk_path.split("/").collect::<Vec<&str>>();
+        let name = split_path[split_path.len() - 1].to_string();
+        let data_vec = std::fs::read(&disk_path).unwrap();
+        let item_size = data_vec.len();
+        let mut new_context =
+            ReadOnlyContext::new(data_vec.into_boxed_slice()).unwrap();
+        new_context.content.push(Some(DataSet {
+            ident: ident.clone(),
+            buffers: vec![DataItem {
+                ident: ident.clone(),
+                data: Position {
+                    offset: 0,
+                    size: item_size,
+                },
+                key: 0,
+            }],
+        }));
+        let new_source = Arc::new(new_context);
+
+        destination_ctxt.read_only.insert(
+            ident.clone(),
+            SubReadOnly {
+                context: new_source,
+                position: Position {
+                    offset: source_offset,
+                    size
+                }
+            }
+        );
+    }
+
+    #[cfg(not(feature = "weights_from_disk"))]
+    {
+        destination_ctxt.read_only.insert(
+            ident.clone(),
+            SubReadOnly {
+                context: source,
+                position: Position {
+                    offset: source_offset,
+                    size
+                }
+            }
+        );
+    }
+    
+    Ok(())
 }
 
 pub fn gpu_transfer(
@@ -220,18 +292,25 @@ pub fn gpu_transfer(
 }
 
 #[cfg(feature = "bytes_context")]
-pub fn bytest_to_gpu_transfer(
-    destination: &mut GpuContext,
-    source: &crate::memory_domain::bytes_context::BytesContext,
+pub fn bytes_to_gpu_transfer(
+    destination_ctxt: &mut GpuContext,
+    source: Arc<Context>,
     destination_offset: usize,
     source_offset: usize,
     size: usize,
 ) -> DandelionResult<()> {
-    // check if bounds for gpu context
-    if destination.storage.size() < destination_offset + size {
-        return Err(DandelionError::InvalidWrite);
-    }
-    let mmu_slice = &mut destination.storage[destination_offset..destination_offset + size];
-    source.read(source_offset, mmu_slice)?;
+    let Some(ref data_set) = source.content[0] else { todo!() };
+    let ident = &data_set.ident.to_string();
+
+    destination_ctxt.inputs.insert(
+        ident.clone(),
+        SubBytes {
+            context: source,
+            position: Position {
+                offset: source_offset,
+                size
+            }
+        }
+    );
     Ok(())
 }

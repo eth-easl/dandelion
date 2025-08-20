@@ -138,6 +138,10 @@ pub fn gpu_run(
         ContextType::Gpu(ref gpu_context) => &gpu_context.read_only,
         _ => return Err(DandelionError::ContextMissmatch),
     };
+    let inputs_data = match context.context {
+        ContextType::Gpu(ref gpu_context) => &gpu_context.inputs,
+        _ => return Err(DandelionError::ContextMissmatch),
+    };
 
     // Load modules and kernels
     let mut loaded_modules_map: HashMap<String, usize> = HashMap::new();
@@ -206,10 +210,26 @@ pub fn gpu_run(
     }
 
     for name in &config.blueprint.inputs {
-        let size = get_data_length(name, &context)?;
+        // TODO : don't use read but read chunks separately and allocate memory with memcpy with specific offests
+        let input = inputs_data.get(name.as_str()).unwrap();
+        let size = input.position.size;
+
         let _ = buffer_pool.alloc_buffer(name, size, false)?;
         let dev_ptr = buffer_pool.get_pointer(name)?;
-        copy_data_to_device(name, &context, &dev_ptr)?;
+
+        let mut data_read = 0;
+        while data_read < size {
+            let data = input
+                .context
+                .get_chunk_ref(input.position.offset + data_read, input.position.size - data_read)
+                .unwrap();
+            let size_read = data.len();
+            let data_pointer = data.as_ptr() as *const c_void;
+
+            gpu_api::memcpy_h_to_d(&dev_ptr, data_read.try_into().unwrap(), data_pointer, size_read)?;
+
+            data_read += size_read + 1;
+        }
     }
     for (name, sizing) in &config.blueprint.buffers {
         let size = get_size(sizing, &buffer_pool, &context)? as usize;
