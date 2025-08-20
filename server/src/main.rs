@@ -273,10 +273,9 @@ async fn register_function(
     };
 
     #[cfg(feature = "weights_from_disk")]
-    {
-        let inputs_folder = format!("{}/{}_weights", FUNCTION_FOLDER_PATH, &request_map.name);
-        std::fs::create_dir_all(&inputs_folder).unwrap();
-    }
+    let inputs_folder = format!("{}/{}_weights", FUNCTION_FOLDER_PATH, &request_map.name);
+    #[cfg(feature = "weights_from_disk")]
+    std::fs::create_dir_all(&inputs_folder).unwrap();
 
     let input_sets = request_map
         .input_sets
