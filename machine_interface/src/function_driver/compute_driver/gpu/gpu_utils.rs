@@ -83,8 +83,8 @@ pub fn copy_data_to_device(
 pub fn write_gpu_outputs(
     output_context: &mut Context,
     output_set_names: &[String],
-    // device_buffers: &HashMap<String, (usize, usize)>,
     buffer_pool: &BufferPool,
+    #[cfg(feature = "auto_batching")] batch_size: usize,
 ) -> DandelionResult<()> {
     let base = match &output_context.context {
         ContextType::Gpu(ref mmu_context) => mmu_context.storage.as_ptr(),
@@ -94,31 +94,74 @@ pub fn write_gpu_outputs(
     };
 
     let mut output_sets = vec![];
-    let mut buffers = vec![];
-    for output_name in output_set_names {
-        let dev_ptr = buffer_pool.get_pointer(output_name)?;
-        let size = buffer_pool.get_size(output_name)?;
 
-        let buf_offset = output_context.get_free_space(size, 8)?;
-        let dst = unsafe { base.byte_offset(buf_offset as isize) } as *const c_void;
-        
-        gpu_api::memcpy_d_to_h(dst, &dev_ptr, size)?;
+    #[cfg(not(feature = "auto_batching"))]
+    {
+        let mut buffers = vec![];
 
-        buffers.push(DataItem {
-            ident: output_name.clone(),
-            data: Position {
-                offset: buf_offset,
-                size: size,
-            },
-            key: 0u32,
-        });
-        output_context.occupy_space(buf_offset, size)?;
+        for output_name in output_set_names {
+            let dev_ptr = buffer_pool.get_pointer(output_name)?;
+            let size = buffer_pool.get_size(output_name)?;
+
+            let buf_offset = output_context.get_free_space(size, 8)?;
+            let dst = unsafe { base.byte_offset(buf_offset as isize) } as *const c_void;
+
+            gpu_api::memcpy_d_to_h(dst, &dev_ptr, size)?;
+
+            buffers.push(DataItem {
+                ident: output_name.clone(),
+                data: Position {
+                    offset: buf_offset,
+                    size: size,
+                },
+                key: 0u32,
+            });
+            output_context.occupy_space(buf_offset, size)?;
+        }
+
+        output_sets.push(Some(DataSet {
+            ident: "outputs".to_string(),
+            buffers: buffers,
+        }));
     }
 
-    output_sets.push(Some(DataSet {
-        ident: "outputs".to_string(),
-        buffers: buffers,
-    }));
+    #[cfg(feature = "auto_batching")]
+    for i in 0..batch_size {
+        let mut buffers = vec![];
+
+        for output_name in output_set_names {
+            // Output-related variables:
+            let dev_ptr = buffer_pool.get_pointer(output_name)?;
+            let size_batch = buffer_pool.get_size(output_name)?;
+            let size_single = size_batch / batch_size;
+
+            // Batch_idx-related variables:
+            let buf_offset = output_context.get_free_space(size_single, 8)?;
+            let dst = unsafe { base.byte_offset(buf_offset as isize) } as *const c_void;
+            let dev_ptr_idx = DevicePointer {
+                ptr: unsafe { (dev_ptr.ptr as *const u8).add(size_single) } as *const c_void,
+            };
+
+            gpu_api::memcpy_d_to_h(dst, &dev_ptr_idx, size_single)?;
+
+            buffers.push(DataItem {
+                ident: output_name.clone(),
+                data: Position {
+                    offset: buf_offset,
+                    size: size_single,
+                },
+                key: 0u32,
+            });
+            output_context.occupy_space(buf_offset, size_single)?;
+        }
+
+        let outputs_name_idx = format!("outputs{}", i);
+        output_sets.push(Some(DataSet {
+            ident: outputs_name_idx,
+            buffers: buffers,
+        }));
+    }
+
     output_context.content = output_sets;
 
     Ok(())
@@ -128,9 +171,22 @@ pub fn get_size(
     sizing: &Sizing,
     buffer_pool: &BufferPool,
     context: &Context,
+    #[cfg(feature = "auto_batching")] batch_size: usize,
 ) -> DandelionResult<u64> {
     match sizing {
         Sizing::Absolute(size) => Ok(*size),
+        #[cfg(feature = "auto_batching")]
+        Sizing::AbsoluteByBatch(size) => Ok(*size * batch_size as u64),
+        #[cfg(feature = "auto_batching")]
+        Sizing::AbsoluteByBatchEven(size) => {
+            let mut tmp = if batch_size % 2 == 0 {
+                batch_size
+            } else {
+                batch_size + 1
+            };
+            tmp /= 2;
+            Ok(*size * tmp as u64)
+        }
         Sizing::FromInput { bufname, idx } => {
             let dataset = context
                 .content

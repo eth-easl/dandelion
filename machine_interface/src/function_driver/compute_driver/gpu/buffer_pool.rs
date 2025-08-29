@@ -40,9 +40,14 @@ impl BufferPool {
         })
     }
 
-    pub fn alloc_buffer(&mut self, name: &str, size: usize, is_weight: bool) -> DandelionResult<()> {
+    pub fn alloc_buffer(
+        &mut self,
+        name: &str,
+        size: usize,
+        is_weight: bool,
+    ) -> DandelionResult<()> {
         let dev_ptr = self.last_offset_global;
-        
+
         macro_rules! align {
             ($e: expr) => {
                 ($e + 255) / 256 * 256
@@ -68,8 +73,8 @@ impl BufferPool {
 
         self.buffers.insert(
             name.to_string(),
-            Buffer { 
-                offset: dev_ptr, 
+            Buffer {
+                offset: dev_ptr,
                 size: size,
             },
         );
@@ -90,7 +95,8 @@ impl BufferPool {
     }
 
     pub fn dealloc_tmp_buffers(&mut self) -> DandelionResult<()> {
-        self.allocation.zero_from_to(self.last_offset_weights, self.last_offset_global)?;
+        self.allocation
+            .zero_from_to(self.last_offset_weights, self.last_offset_global)?;
         for name in &self.tmp_names {
             self.buffers.remove(name);
         }

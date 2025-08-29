@@ -3,8 +3,14 @@ use crate::{
     memory_domain::{self, Context},
 };
 use core::marker::Send;
-use dandelion_commons::{records::{RecordPoint, Recorder}, DandelionResult};
+use dandelion_commons::{
+    records::{RecordPoint, Recorder},
+    DandelionResult,
+};
 use std::thread::spawn;
+
+#[cfg(feature = "auto_batching")]
+use crate::function_driver::BatchInfo;
 
 extern crate alloc;
 
@@ -117,6 +123,22 @@ pub fn run_thread<E: EngineLoop>(
                     Ok(context) => debt.fulfill(Ok(WorkDone::Context(context))),
                     Err(err) => debt.fulfill(Err(err)),
                 }
+                continue;
+            }
+            #[cfg(feature = "auto_batching")]
+            WorkToDo::BatchAtom {
+                function_id,
+                inputs,
+                recorder,
+                inputs_vec,
+                children_debts,
+            } => {
+                debt.fulfill(Ok(WorkDone::SharedContext(BatchInfo {
+                    batch_pos: 0,
+                    inputs_vec,
+                    context_arc: None,
+                    children_debts,
+                })));
                 continue;
             }
             WorkToDo::Shutdown() => {

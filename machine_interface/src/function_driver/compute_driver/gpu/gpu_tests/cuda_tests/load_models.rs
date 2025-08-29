@@ -2924,114 +2924,6 @@ pub fn load_mobilenetv2(mut function_context: Context) -> (usize, String, Vec<f3
     )
 }
 
-pub fn load_resnet18-batch2(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
-    let params_path = "/pub/scratch/alrusso/TVM-compilation/model_parameters/resnet18-batch2/";
-
-    add_buffer("input", 1204224, params_path, &mut function_context);
-    add_buffer("p0", 37632, params_path, &mut function_context);
-    add_buffer("p1", 256, params_path, &mut function_context);
-    add_buffer("p2", 147456, params_path, &mut function_context);
-    add_buffer("p3", 256, params_path, &mut function_context);
-    add_buffer("p4", 147456, params_path, &mut function_context);
-    add_buffer("p5", 256, params_path, &mut function_context);
-    add_buffer("p6", 147456, params_path, &mut function_context);
-    add_buffer("p7", 256, params_path, &mut function_context);
-    add_buffer("p8", 147456, params_path, &mut function_context);
-    add_buffer("p9", 256, params_path, &mut function_context);
-    add_buffer("p10", 294912, params_path, &mut function_context);
-    add_buffer("p11", 512, params_path, &mut function_context);
-    add_buffer("p12", 589824, params_path, &mut function_context);
-    add_buffer("p13", 512, params_path, &mut function_context);
-    add_buffer("p14", 32768, params_path, &mut function_context);
-    add_buffer("p15", 512, params_path, &mut function_context);
-    add_buffer("p16", 589824, params_path, &mut function_context);
-    add_buffer("p17", 512, params_path, &mut function_context);
-    add_buffer("p18", 589824, params_path, &mut function_context);
-    add_buffer("p19", 512, params_path, &mut function_context);
-    add_buffer("p20", 1179648, params_path, &mut function_context);
-    add_buffer("p21", 1024, params_path, &mut function_context);
-    add_buffer("p22", 2359296, params_path, &mut function_context);
-    add_buffer("p23", 1024, params_path, &mut function_context);
-    add_buffer("p24", 131072, params_path, &mut function_context);
-    add_buffer("p25", 1024, params_path, &mut function_context);
-    add_buffer("p26", 2359296, params_path, &mut function_context);
-    add_buffer("p27", 1024, params_path, &mut function_context);
-    add_buffer("p28", 2359296, params_path, &mut function_context);
-    add_buffer("p29", 1024, params_path, &mut function_context);
-    add_buffer("p30", 4718592, params_path, &mut function_context);
-    add_buffer("p31", 2048, params_path, &mut function_context);
-    add_buffer("p32", 9437184, params_path, &mut function_context);
-    add_buffer("p33", 2048, params_path, &mut function_context);
-    add_buffer("p34", 524288, params_path, &mut function_context);
-    add_buffer("p35", 2048, params_path, &mut function_context);
-    add_buffer("p36", 9437184, params_path, &mut function_context);
-    add_buffer("p37", 2048, params_path, &mut function_context);
-    add_buffer("p38", 9437184, params_path, &mut function_context);
-    add_buffer("p39", 2048, params_path, &mut function_context);
-    add_buffer("p40", 2048000, params_path, &mut function_context);
-    add_buffer("p41", 4000, params_path, &mut function_context);
-
-    let output_name: &str = "output";
-    let output_size: usize = 8000;
-    let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
-
-    (output_size, output_name.to_string(), expected, function_context)
-}
-
-pub fn load_resnet18-batch4(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
-    let params_path = "/pub/scratch/alrusso/TVM-compilation/model_parameters/resnet18-batch4/";
-
-    add_buffer("input", 2408448, params_path, &mut function_context);
-    add_buffer("p0", 37632, params_path, &mut function_context);
-    add_buffer("p1", 256, params_path, &mut function_context);
-    add_buffer("p2", 147456, params_path, &mut function_context);
-    add_buffer("p3", 256, params_path, &mut function_context);
-    add_buffer("p4", 147456, params_path, &mut function_context);
-    add_buffer("p5", 256, params_path, &mut function_context);
-    add_buffer("p6", 147456, params_path, &mut function_context);
-    add_buffer("p7", 256, params_path, &mut function_context);
-    add_buffer("p8", 147456, params_path, &mut function_context);
-    add_buffer("p9", 256, params_path, &mut function_context);
-    add_buffer("p10", 294912, params_path, &mut function_context);
-    add_buffer("p11", 512, params_path, &mut function_context);
-    add_buffer("p12", 589824, params_path, &mut function_context);
-    add_buffer("p13", 512, params_path, &mut function_context);
-    add_buffer("p14", 32768, params_path, &mut function_context);
-    add_buffer("p15", 512, params_path, &mut function_context);
-    add_buffer("p16", 589824, params_path, &mut function_context);
-    add_buffer("p17", 512, params_path, &mut function_context);
-    add_buffer("p18", 589824, params_path, &mut function_context);
-    add_buffer("p19", 512, params_path, &mut function_context);
-    add_buffer("p20", 1179648, params_path, &mut function_context);
-    add_buffer("p21", 1024, params_path, &mut function_context);
-    add_buffer("p22", 2359296, params_path, &mut function_context);
-    add_buffer("p23", 1024, params_path, &mut function_context);
-    add_buffer("p24", 131072, params_path, &mut function_context);
-    add_buffer("p25", 1024, params_path, &mut function_context);
-    add_buffer("p26", 2359296, params_path, &mut function_context);
-    add_buffer("p27", 1024, params_path, &mut function_context);
-    add_buffer("p28", 2359296, params_path, &mut function_context);
-    add_buffer("p29", 1024, params_path, &mut function_context);
-    add_buffer("p30", 4718592, params_path, &mut function_context);
-    add_buffer("p31", 2048, params_path, &mut function_context);
-    add_buffer("p32", 9437184, params_path, &mut function_context);
-    add_buffer("p33", 2048, params_path, &mut function_context);
-    add_buffer("p34", 524288, params_path, &mut function_context);
-    add_buffer("p35", 2048, params_path, &mut function_context);
-    add_buffer("p36", 9437184, params_path, &mut function_context);
-    add_buffer("p37", 2048, params_path, &mut function_context);
-    add_buffer("p38", 9437184, params_path, &mut function_context);
-    add_buffer("p39", 2048, params_path, &mut function_context);
-    add_buffer("p40", 2048000, params_path, &mut function_context);
-    add_buffer("p41", 4000, params_path, &mut function_context);
-
-    let output_name: &str = "output";
-    let output_size: usize = 16000;
-    let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
-
-    (output_size, output_name.to_string(), expected, function_context)
-}
-
 pub fn load_simple(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
     let params_path = "/pub/scratch/alrusso/TVM-compilation/model_parameters/simple/";
 
@@ -3042,7 +2934,12 @@ pub fn load_simple(mut function_context: Context) -> (usize, String, Vec<f32>, C
     let output_size: usize = 8;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_double_matmul(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -3056,7 +2953,12 @@ pub fn load_double_matmul(mut function_context: Context) -> (usize, String, Vec<
     let output_size: usize = 12;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_resnet18(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -3110,7 +3012,12 @@ pub fn load_resnet18(mut function_context: Context) -> (usize, String, Vec<f32>,
     let output_size: usize = 4000;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_resnet18_batch2(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -3164,7 +3071,12 @@ pub fn load_resnet18_batch2(mut function_context: Context) -> (usize, String, Ve
     let output_size: usize = 8000;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_resnet18_batch4(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -3218,7 +3130,12 @@ pub fn load_resnet18_batch4(mut function_context: Context) -> (usize, String, Ve
     let output_size: usize = 16000;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_resnet18_batch8(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -3272,7 +3189,12 @@ pub fn load_resnet18_batch8(mut function_context: Context) -> (usize, String, Ve
     let output_size: usize = 32000;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_resnet18_batch16(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -3326,7 +3248,12 @@ pub fn load_resnet18_batch16(mut function_context: Context) -> (usize, String, V
     let output_size: usize = 64000;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_resnet18_batch32(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -3380,7 +3307,12 @@ pub fn load_resnet18_batch32(mut function_context: Context) -> (usize, String, V
     let output_size: usize = 128000;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_resnet18_batch64(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -3434,7 +3366,12 @@ pub fn load_resnet18_batch64(mut function_context: Context) -> (usize, String, V
     let output_size: usize = 256000;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }
 
 pub fn load_resnet18_batch3(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
@@ -3488,5 +3425,69 @@ pub fn load_resnet18_batch3(mut function_context: Context) -> (usize, String, Ve
     let output_size: usize = 12000;
     let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
 
-    (output_size, output_name.to_string(), expected, function_context)
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
+}
+
+pub fn load_resnet18_batch5(mut function_context: Context) -> (usize, String, Vec<f32>, Context) {
+    let params_path = "/pub/scratch/alrusso/TVM-compilation/model_parameters/resnet18_batch5/";
+
+    add_buffer("input", 3010560, params_path, &mut function_context);
+    add_buffer("p0", 37632, params_path, &mut function_context);
+    add_buffer("p1", 256, params_path, &mut function_context);
+    add_buffer("p2", 147456, params_path, &mut function_context);
+    add_buffer("p3", 256, params_path, &mut function_context);
+    add_buffer("p4", 147456, params_path, &mut function_context);
+    add_buffer("p5", 256, params_path, &mut function_context);
+    add_buffer("p6", 147456, params_path, &mut function_context);
+    add_buffer("p7", 256, params_path, &mut function_context);
+    add_buffer("p8", 147456, params_path, &mut function_context);
+    add_buffer("p9", 256, params_path, &mut function_context);
+    add_buffer("p10", 294912, params_path, &mut function_context);
+    add_buffer("p11", 512, params_path, &mut function_context);
+    add_buffer("p12", 589824, params_path, &mut function_context);
+    add_buffer("p13", 512, params_path, &mut function_context);
+    add_buffer("p14", 32768, params_path, &mut function_context);
+    add_buffer("p15", 512, params_path, &mut function_context);
+    add_buffer("p16", 589824, params_path, &mut function_context);
+    add_buffer("p17", 512, params_path, &mut function_context);
+    add_buffer("p18", 589824, params_path, &mut function_context);
+    add_buffer("p19", 512, params_path, &mut function_context);
+    add_buffer("p20", 1179648, params_path, &mut function_context);
+    add_buffer("p21", 1024, params_path, &mut function_context);
+    add_buffer("p22", 2359296, params_path, &mut function_context);
+    add_buffer("p23", 1024, params_path, &mut function_context);
+    add_buffer("p24", 131072, params_path, &mut function_context);
+    add_buffer("p25", 1024, params_path, &mut function_context);
+    add_buffer("p26", 2359296, params_path, &mut function_context);
+    add_buffer("p27", 1024, params_path, &mut function_context);
+    add_buffer("p28", 2359296, params_path, &mut function_context);
+    add_buffer("p29", 1024, params_path, &mut function_context);
+    add_buffer("p30", 4718592, params_path, &mut function_context);
+    add_buffer("p31", 2048, params_path, &mut function_context);
+    add_buffer("p32", 9437184, params_path, &mut function_context);
+    add_buffer("p33", 2048, params_path, &mut function_context);
+    add_buffer("p34", 524288, params_path, &mut function_context);
+    add_buffer("p35", 2048, params_path, &mut function_context);
+    add_buffer("p36", 9437184, params_path, &mut function_context);
+    add_buffer("p37", 2048, params_path, &mut function_context);
+    add_buffer("p38", 9437184, params_path, &mut function_context);
+    add_buffer("p39", 2048, params_path, &mut function_context);
+    add_buffer("p40", 2048000, params_path, &mut function_context);
+    add_buffer("p41", 4000, params_path, &mut function_context);
+
+    let output_name: &str = "output";
+    let output_size: usize = 20000;
+    let expected: Vec<f32> = read_tensor_from_file(output_name, params_path).unwrap();
+
+    (
+        output_size,
+        output_name.to_string(),
+        expected,
+        function_context,
+    )
 }

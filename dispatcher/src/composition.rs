@@ -400,6 +400,28 @@ impl From<(usize, Vec<Arc<Context>>)> for CompositionSet {
     }
 }
 
+// TODO : is there a better way?
+#[cfg(feature = "auto_batching")]
+use machine_interface::function_driver::AtomInputs;
+#[cfg(feature = "auto_batching")]
+impl Into<AtomInputs> for CompositionSet {
+    fn into(self) -> AtomInputs {
+        AtomInputs {
+            item_list: self.item_list.clone(),
+            set_index: self.set_index.clone(),
+        }
+    }
+}
+#[cfg(feature = "auto_batching")]
+impl From<AtomInputs> for CompositionSet {
+    fn from(atom_inputs: AtomInputs) -> CompositionSet {
+        CompositionSet {
+            item_list: atom_inputs.item_list.clone(),
+            set_index: atom_inputs.set_index.clone(),
+        }
+    }
+}
+
 pub struct CompositionSetTransferIterator<'origin> {
     /// set for which this iterator is implemented
     set_iterator: std::slice::Iter<'origin, (u32, usize, Arc<Context>)>,

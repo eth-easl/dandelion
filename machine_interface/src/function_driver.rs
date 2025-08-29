@@ -135,6 +135,15 @@ pub enum ComputeResource {
     GPU(u8, u8, u8), // CPU core, GPU id, number of workers per GPU (only relevant for gpu_process). Eventually the CPU and GPU parts should be split
 }
 
+#[cfg(feature = "auto_batching")]
+#[derive(Clone, Debug)]
+pub struct AtomInputs {
+    /// items identfied by tuple of key, item index and the context reference
+    pub item_list: Vec<(u32, usize, Arc<Context>)>,
+    /// the set side inside the contexts the composition set represents
+    pub set_index: usize,
+}
+
 pub enum WorkToDo {
     FunctionArguments {
         config: FunctionConfig,
@@ -165,13 +174,31 @@ pub enum WorkToDo {
         ctx_size: usize,
         recorder: Recorder,
     },
+    #[cfg(feature = "auto_batching")]
+    BatchAtom {
+        function_id: FunctionId,
+        inputs: Vec<Option<AtomInputs>>,
+        recorder: Recorder,
+        inputs_vec: Option<Vec<Option<AtomInputs>>>,
+        children_debts: Option<Vec<crate::promise::Debt>>,
+    },
     Shutdown(),
+}
+
+#[cfg(feature = "auto_batching")]
+pub struct BatchInfo {
+    pub batch_pos: usize,
+    pub inputs_vec: Option<Vec<Option<AtomInputs>>>,
+    pub context_arc: Option<Arc<Context>>,
+    pub children_debts: Option<Vec<crate::promise::Debt>>,
 }
 
 pub enum WorkDone {
     Context(Context),
     Function(Function),
     Resources(Vec<ComputeResource>),
+    #[cfg(feature = "auto_batching")]
+    SharedContext(BatchInfo),
 }
 
 impl WorkDone {
@@ -185,6 +212,13 @@ impl WorkDone {
         return match self {
             WorkDone::Function(function) => function,
             _ => panic!("WorkDone is not function when function was expected"),
+        };
+    }
+    #[cfg(feature = "auto_batching")]
+    pub fn get_shared_context(self) -> BatchInfo {
+        return match self {
+            WorkDone::SharedContext(batched_info) => batched_info,
+            _ => panic!("WorkDone is not SharedContext when SharedContext was expected"),
         };
     }
 }

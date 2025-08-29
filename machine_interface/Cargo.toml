@@ -22,6 +22,7 @@ gpu_thread = ["gpu"]
 test_export = []
 reuse_weights = ["gpu"]
 weights_from_disk = ["gpu"]
+auto_batching = ["gpu"]
 
 [build-dependencies]
 cmake = "0.1"

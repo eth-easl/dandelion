@@ -31,6 +31,11 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(feature = "auto_batching")]
+use crate::execution_qs::BatchingQueue;
+#[cfg(feature = "auto_batching")]
+use machine_interface::function_driver::{AtomInputs, BatchInfo, WorkDone};
+
 #[derive(Debug, Clone)]
 pub enum DispatcherInput {
     None,
@@ -88,6 +93,8 @@ pub struct Dispatcher {
 
 fn get_queue_from_engine(engine_type: EngineType) -> Box<dyn FullQueue> {
     return match engine_type {
+        #[cfg(all(feature = "gpu", feature = "auto_batching"))]
+        EngineType::GpuThread => Box::new(BatchingQueue::new()),
         #[cfg(all(feature = "gpu", feature = "gpu_queue"))]
         EngineType::GpuThread => Box::new(EngineQueueGPU::new()),
         _ => Box::new(EngineQueue::new()),
@@ -487,51 +494,168 @@ impl Dispatcher {
             let options = self.function_registry.get_options(function_id).await?;
             if let Some(alternative) = options.iter().next() {
                 match &alternative.function_type {
-                    // look here
                     FunctionType::Function(engine_id, ctx_size) => {
-                        recorder.record(RecordPoint::PrepareEnvQueue);
-                        let (context, config, metadata) = self
-                            .prepare_for_engine(
-                                function_id,
-                                *engine_id,
-                                inputs,
-                                *ctx_size,
-                                non_caching,
-                                recorder.get_sub_recorder(),
-                            )
-                            .await?;
-                        recorder.record(RecordPoint::GetEngineQueue);
-                        trace!("running function {} on {:?} type engine with input sets {:?} and output sets {:?}",
-                            function_id,
-                            *engine_id,
-                            metadata.input_sets.iter().map(|(name, _)| name).collect_vec(),
-                            metadata.output_sets);
-                        let context = self
-                            .run_on_engine(
-                                function_id,
-                                *engine_id,
-                                config,
-                                metadata.output_sets,
-                                context,
-                                recorder.get_sub_recorder(),
-                            )
-                            .await?;
-                        let context_arc = Arc::new(context);
+                        match engine_id {
+                            #[cfg(feature = "auto_batching")]
+                            EngineType::GpuThread => {
+                                let context_id = match self.type_map.get(engine_id) {
+                                    Some(id) => id,
+                                    None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
+                                };
+                                let (domain, transfer_queue) = match self.domains.get(context_id) {
+                                    Some(d) => d,
+                                    None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
+                                };
 
-                        let composition_sets = context_arc
-                            .content
-                            .iter()
-                            .enumerate()
-                            .map(|(function_set_id, data_option)| {
-                                data_option.as_ref().and_then(|_| {
-                                    Some(CompositionSet::from((
-                                        function_set_id,
-                                        vec![context_arc.clone()],
-                                    )))
-                                })
-                            })
-                            .collect();
-                        return Ok(composition_sets);
+                                let tmp = inputs.clone();
+
+                                let mut atom_inputs = Vec::new();
+                                for input in inputs.clone() {
+                                    if input.is_some() {
+                                        let atom_input: AtomInputs = input.unwrap().into();
+                                        atom_inputs.push(Some(atom_input));
+                                    } else {
+                                        atom_inputs.push(None);
+                                    }
+                                }
+
+                                // TODO : recorder.record(...) : measure time in queue
+                                let args = WorkToDo::BatchAtom {
+                                    function_id,
+                                    inputs: atom_inputs,
+                                    recorder: recorder.get_sub_recorder(),
+                                    inputs_vec: None,
+                                    children_debts: None,
+                                };
+                                let batch_info = transfer_queue.enqueue_work(args, function_id)?.await?.get_shared_context();
+                                // TODO : recorder.record(...)
+
+                                let batch_pos = batch_info.batch_pos;
+                                
+                                let context_arc = if batch_pos == 0 {
+                                    let inputs_vec = batch_info.inputs_vec.unwrap();
+
+                                    // variable inputs needs to contain ALL INPUTS, with indexed names: input0, input1, ...
+                                    let mut compositions_vec = Vec::new();
+                                    for input in inputs_vec {
+                                        if input.is_some() {
+                                            let composition_set = CompositionSet::from(input.unwrap());
+                                            compositions_vec.push(Some(composition_set));
+                                        } else {
+                                            compositions_vec.push(None);
+                                        }
+                                    }
+
+                                    recorder.record(RecordPoint::PrepareEnvQueue);
+                                    let (context, config, metadata) = self
+                                        .prepare_for_engine(
+                                            function_id,
+                                            *engine_id,
+                                            compositions_vec,
+                                            *ctx_size,
+                                            non_caching,
+                                            recorder.get_sub_recorder(),
+                                        )
+                                        .await?;
+                                    recorder.record(RecordPoint::GetEngineQueue);
+
+                                    trace!("running function {} on {:?} type engine with input sets {:?} and output sets {:?}",
+                                        function_id,
+                                        *engine_id,
+                                        metadata.input_sets.iter().map(|(name, _)| name).collect_vec(),
+                                        metadata.output_sets);
+                                    
+                                    let context = self
+                                        .run_on_engine(
+                                            function_id,
+                                            *engine_id,
+                                            config,
+                                            metadata.output_sets,
+                                            context,
+                                            recorder.get_sub_recorder(),
+                                        )
+                                        .await?;
+                                    let context_arc = Arc::new(context);
+
+                                    let mut debts = batch_info.children_debts.unwrap();
+                                    for i in (1..=debts.len()).rev() {
+                                        let debt = debts.pop().unwrap();
+                                        debt.fulfill(Ok(WorkDone::SharedContext(BatchInfo {
+                                            batch_pos: i,
+                                            inputs_vec: None,
+                                            context_arc: Some(context_arc.clone()),
+                                            children_debts: None,
+                                        })));
+                                    }
+
+                                    context_arc
+                                } else {
+                                    batch_info.context_arc.unwrap()
+                                };
+                                
+                                let composition_sets = context_arc
+                                    .content
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(function_set_id, _)| *function_set_id == batch_pos)
+                                    .map(|(function_set_id, data_option)| {
+                                        data_option.as_ref().and_then(|_| {
+                                            Some(CompositionSet::from((
+                                                function_set_id,
+                                                vec![context_arc.clone()],
+                                            )))
+                                        })
+                                    })
+                                    .collect();
+                                
+                                return Ok(composition_sets);
+                            },
+                            _ => {
+                                recorder.record(RecordPoint::PrepareEnvQueue);
+                                let (context, config, metadata) = self
+                                    .prepare_for_engine(
+                                        function_id,
+                                        *engine_id,
+                                        inputs,
+                                        *ctx_size,
+                                        non_caching,
+                                        recorder.get_sub_recorder(),
+                                    )
+                                    .await?;
+                                recorder.record(RecordPoint::GetEngineQueue);
+                                trace!("running function {} on {:?} type engine with input sets {:?} and output sets {:?}",
+                                    function_id,
+                                    *engine_id,
+                                    metadata.input_sets.iter().map(|(name, _)| name).collect_vec(),
+                                    metadata.output_sets);
+                                let context = self
+                                    .run_on_engine(
+                                        function_id,
+                                        *engine_id,
+                                        config,
+                                        metadata.output_sets,
+                                        context,
+                                        recorder.get_sub_recorder(),
+                                    )
+                                    .await?;
+                                let context_arc = Arc::new(context);
+        
+                                let composition_sets = context_arc
+                                    .content
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(function_set_id, data_option)| {
+                                        data_option.as_ref().and_then(|_| {
+                                            Some(CompositionSet::from((
+                                                function_set_id,
+                                                vec![context_arc.clone()],
+                                            )))
+                                        })
+                                    })
+                                    .collect();
+                                return Ok(composition_sets);
+                            }
+                        }
                     }
                     FunctionType::Composition(composition) => {
                         return self

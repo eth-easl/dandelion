@@ -1,12 +1,10 @@
+#[cfg(feature = "gpu_process")]
+use self::gpu_utils::start_gpu_process_pool;
 use self::{
     buffer_pool::BufferPool,
     config_parsing::{Action, Argument, RuntimeGpuConfig, SYSDATA_OFFSET},
-    gpu_utils::{
-        copy_data_to_device, get_data_length, get_size, write_gpu_outputs,
-    },
+    gpu_utils::{copy_data_to_device, get_data_length, get_size, write_gpu_outputs},
 };
-#[cfg(feature = "gpu_process")]
-use self::gpu_utils::start_gpu_process_pool;
 use crate::{
     function_driver::{
         thread_utils::{run_thread, EngineLoop},
@@ -46,6 +44,7 @@ fn execute(
     buffer_pool: &BufferPool,
     context: &Context,
     config: &RuntimeGpuConfig,
+    #[cfg(feature = "auto_batching")] batch_size: usize,
 ) -> DandelionResult<()> {
     for action in actions {
         match action {
@@ -68,9 +67,7 @@ fn execute(
                             params.push(*dev_ptrs.last().unwrap() as *const c_void);
                         }
                         Argument::Sizeof(id) => {
-                            params.push(
-                                &buffer_pool.get_size(id) as *const _ as *const c_void,
-                            );
+                            params.push(&buffer_pool.get_size(id) as *const _ as *const c_void);
                         }
                         Argument::Constant(constant) => {
                             params.push(constant as *const _ as *const c_void);
@@ -83,13 +80,55 @@ fn execute(
                         .kernels
                         .get(name)
                         .ok_or(DandelionError::UndeclaredIdentifier(name.to_owned()))?,
-                    get_size(&launch_config.grid_dim_x, buffer_pool, context)? as u32,
-                    get_size(&launch_config.grid_dim_y, buffer_pool, context)? as u32,
-                    get_size(&launch_config.grid_dim_z, buffer_pool, context)? as u32,
-                    get_size(&launch_config.block_dim_x, buffer_pool, context)? as u32,
-                    get_size(&launch_config.block_dim_y, buffer_pool, context)? as u32,
-                    get_size(&launch_config.block_dim_z, buffer_pool, context)? as u32,
-                    get_size(&launch_config.shared_mem_bytes, buffer_pool, context)? as u32,
+                    get_size(
+                        &launch_config.grid_dim_x,
+                        buffer_pool,
+                        context,
+                        #[cfg(feature = "auto_batching")]
+                        batch_size,
+                    )? as u32,
+                    get_size(
+                        &launch_config.grid_dim_y,
+                        buffer_pool,
+                        context,
+                        #[cfg(feature = "auto_batching")]
+                        batch_size,
+                    )? as u32,
+                    get_size(
+                        &launch_config.grid_dim_z,
+                        buffer_pool,
+                        context,
+                        #[cfg(feature = "auto_batching")]
+                        batch_size,
+                    )? as u32,
+                    get_size(
+                        &launch_config.block_dim_x,
+                        buffer_pool,
+                        context,
+                        #[cfg(feature = "auto_batching")]
+                        batch_size,
+                    )? as u32,
+                    get_size(
+                        &launch_config.block_dim_y,
+                        buffer_pool,
+                        context,
+                        #[cfg(feature = "auto_batching")]
+                        batch_size,
+                    )? as u32,
+                    get_size(
+                        &launch_config.block_dim_z,
+                        buffer_pool,
+                        context,
+                        #[cfg(feature = "auto_batching")]
+                        batch_size,
+                    )? as u32,
+                    get_size(
+                        &launch_config.shared_mem_bytes,
+                        buffer_pool,
+                        context,
+                        #[cfg(feature = "auto_batching")]
+                        batch_size,
+                    )? as u32,
                     gpu_api::DEFAULT_STREAM,
                     params.as_ptr(),
                     null(),
@@ -104,9 +143,22 @@ fn execute(
                 }
             }
             Action::Repeat(times, actions) => {
-                let repetitions = get_size(times, buffer_pool, context)?;
+                let repetitions = get_size(
+                    times,
+                    buffer_pool,
+                    context,
+                    #[cfg(feature = "auto_batching")]
+                    batch_size,
+                )?;
                 for _ in 0..repetitions {
-                    execute(actions, buffer_pool, context, config)?;
+                    execute(
+                        actions,
+                        buffer_pool,
+                        context,
+                        config,
+                        #[cfg(feature = "auto_batching")]
+                        batch_size,
+                    )?;
                 }
             }
         }
@@ -134,12 +186,13 @@ pub fn gpu_run(
 
     gpu_api::set_device(gpu_id)?;
 
-    let read_only_data = match context.context {
-        ContextType::Gpu(ref gpu_context) => &gpu_context.read_only,
+    let (read_only_data, inputs_data) = match context.context {
+        ContextType::Gpu(ref gpu_context) => (&gpu_context.read_only, &gpu_context.inputs),
         _ => return Err(DandelionError::ContextMissmatch),
     };
-    let inputs_data = match context.context {
-        ContextType::Gpu(ref gpu_context) => &gpu_context.inputs,
+    #[cfg(feature = "auto_batching")]
+    let batch_size = match context.context {
+        ContextType::Gpu(ref gpu_context) => gpu_context.batch_size,
         _ => return Err(DandelionError::ContextMissmatch),
     };
 
@@ -201,7 +254,7 @@ pub fn gpu_run(
                 .unwrap()
                 .as_ptr() as *const c_void;
             let size = sub_read_only.position.size;
-            
+
             let _ = buffer_pool.alloc_buffer(name, size, true)?;
             let dev_ptr = buffer_pool.get_pointer(name)?;
 
@@ -209,8 +262,8 @@ pub fn gpu_run(
         }
     }
 
+    #[cfg(not(feature = "auto_batching"))]
     for name in &config.blueprint.inputs {
-        // TODO : don't use read but read chunks separately and allocate memory with memcpy with specific offests
         let input = inputs_data.get(name.as_str()).unwrap();
         let size = input.position.size;
 
@@ -221,18 +274,72 @@ pub fn gpu_run(
         while data_read < size {
             let data = input
                 .context
-                .get_chunk_ref(input.position.offset + data_read, input.position.size - data_read)
+                .get_chunk_ref(
+                    input.position.offset + data_read,
+                    input.position.size - data_read,
+                )
                 .unwrap();
             let size_read = data.len();
             let data_pointer = data.as_ptr() as *const c_void;
 
-            gpu_api::memcpy_h_to_d(&dev_ptr, data_read.try_into().unwrap(), data_pointer, size_read)?;
+            gpu_api::memcpy_h_to_d(
+                &dev_ptr,
+                data_read.try_into().unwrap(),
+                data_pointer,
+                size_read,
+            )?;
 
             data_read += size_read + 1;
         }
     }
+    #[cfg(feature = "auto_batching")]
+    for name in &config.blueprint.inputs {
+        let name0 = format!("{}0", name);
+        let input0 = inputs_data.get(name0.as_str()).unwrap();
+        let size_single = input0.position.size;
+        let size_batch = size_single * batch_size;
+
+        let _ = buffer_pool.alloc_buffer(name, size_batch, false)?;
+        let dev_ptr = buffer_pool.get_pointer(name)?;
+
+        let mut input_offset = 0;
+        for i in 0..batch_size {
+            let name_idx = format!("{}{}", name.clone(), i);
+            let input = inputs_data.get(name_idx.as_str()).unwrap();
+
+            let mut data_read = 0;
+            while data_read < size_single {
+                let data = input
+                    .context
+                    .get_chunk_ref(
+                        input.position.offset + data_read,
+                        input.position.size - data_read,
+                    )
+                    .unwrap();
+                let size_read = data.len();
+                let data_pointer = data.as_ptr() as *const c_void;
+
+                gpu_api::memcpy_h_to_d(
+                    &dev_ptr,
+                    (input_offset + data_read).try_into().unwrap(),
+                    data_pointer,
+                    size_read,
+                )?;
+
+                data_read += size_read + 1;
+            }
+            input_offset += size_single;
+        }
+    }
+
     for (name, sizing) in &config.blueprint.buffers {
-        let size = get_size(sizing, &buffer_pool, &context)? as usize;
+        let size = get_size(
+            sizing,
+            &buffer_pool,
+            &context,
+            #[cfg(feature = "auto_batching")]
+            batch_size,
+        )? as usize;
         let _ = buffer_pool.alloc_buffer(name, size, false)?;
     }
     recorder.record(RecordPoint::GPUTransferEnd);
@@ -243,12 +350,20 @@ pub fn gpu_run(
         buffer_pool.borrow(),
         &context,
         &config,
+        #[cfg(feature = "auto_batching")]
+        batch_size,
     )?;
     recorder.record(RecordPoint::GPUInferenceEnd);
 
     recorder.record(RecordPoint::GPUOutputStart);
     // Copy results back into host memory from device memory
-    write_gpu_outputs(&mut context, &output_sets, buffer_pool.borrow())?;
+    write_gpu_outputs(
+        &mut context,
+        &output_sets,
+        buffer_pool.borrow(),
+        #[cfg(feature = "auto_batching")]
+        batch_size,
+    )?;
     recorder.record(RecordPoint::GPUOutputEnd);
 
     // Zero out input, temporary buffers, and output buffers
@@ -347,7 +462,7 @@ fn common_parse(
     };
 
     let context = Box::new(static_domain.acquire_context(0)?);
-    
+
     let mut gpu_config = config_parsing::parse_config(&function_path)?;
     gpu_config.code_object_offset =
         SYSDATA_OFFSET + std::mem::size_of::<DandelionSystemData<usize, usize>>();

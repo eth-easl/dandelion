@@ -10,7 +10,14 @@ pub const SYSDATA_OFFSET: usize = 0usize;
 pub enum Sizing {
     Sizeof(String),
     Absolute(u64),
-    FromInput { bufname: String, idx: usize },
+    #[cfg(feature = "auto_batching")]
+    AbsoluteByBatch(u64),
+    #[cfg(feature = "auto_batching")]
+    AbsoluteByBatchEven(u64),
+    FromInput {
+        bufname: String,
+        idx: usize,
+    },
 }
 
 #[derive(Deserialize, Serialize, Debug)]

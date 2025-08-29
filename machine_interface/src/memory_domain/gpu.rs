@@ -10,6 +10,7 @@ use dandelion_commons::{
 use log::{debug, error};
 use nix::sys::mman::ProtFlags;
 use std::{
+    cmp,
     collections::HashMap,
     ops::{Deref, DerefMut},
     sync::Arc,
@@ -32,6 +33,8 @@ pub struct GpuContext {
     pub storage: MmapMem,
     pub read_only: HashMap<String, SubReadOnly>,
     pub inputs: HashMap<String, SubBytes>,
+    #[cfg(feature = "auto_batching")]
+    pub batch_size: usize,
 }
 
 impl ContextTrait for GpuContext {
@@ -195,6 +198,8 @@ impl MemoryDomain for GpuMemoryDomain {
             storage: mem_space,
             read_only: HashMap::new(),
             inputs: HashMap::new(),
+            #[cfg(feature = "auto_batching")]
+            batch_size: 0,
         });
         Ok(Context::new(ContextType::Gpu(new_context), actual_size))
     }
@@ -299,11 +304,31 @@ pub fn bytes_to_gpu_transfer(
     source_offset: usize,
     size: usize,
 ) -> DandelionResult<()> {
+    // TODO : generalize to multiple sets
     let Some(ref data_set) = source.content[0] else { todo!() };
-    let ident = &data_set.ident.to_string();
+
+    #[cfg(not(feature = "auto_batching"))]
+    let ident = (&data_set.ident).clone().to_string();
+    #[cfg(feature = "auto_batching")]
+    let ident = {
+        let mut max_present = -1;
+        for key in destination_ctxt.inputs.keys() {
+            let key_split = key.split(&data_set.ident).collect::<Vec<_>>();
+            if key_split.len() > 1 {
+                let found_idx = key_split.last();
+                if let Some(idx) = found_idx {
+                    max_present = cmp::max(max_present, idx.parse().unwrap());
+                }
+            }
+        }
+
+        destination_ctxt.batch_size = cmp::max(destination_ctxt.batch_size, (max_present + 2) as usize);
+
+        format!("{}{}", &data_set.ident, (max_present + 1).to_string())
+    };
 
     destination_ctxt.inputs.insert(
-        ident.clone(),
+        ident,
         SubBytes {
             context: source,
             position: Position {

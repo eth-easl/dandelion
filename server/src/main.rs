@@ -767,6 +767,8 @@ fn main() -> () {
     print!(" reuse_weights");
     #[cfg(feature = "weights_from_disk")]
     print!(" weights_from_disk");
+    #[cfg(feature = "auto_batching")]
+    print!(" auto_batching");
     print!("\n");
 
     // Run this server for... forever... unless I receive a signal!
