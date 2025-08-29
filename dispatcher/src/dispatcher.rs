@@ -502,12 +502,10 @@ impl Dispatcher {
                                     Some(id) => id,
                                     None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
                                 };
-                                let (domain, transfer_queue) = match self.domains.get(context_id) {
+                                let (_, transfer_queue) = match self.domains.get(context_id) {
                                     Some(d) => d,
                                     None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
                                 };
-
-                                let tmp = inputs.clone();
 
                                 let mut atom_inputs = Vec::new();
                                 for input in inputs.clone() {
@@ -519,7 +517,6 @@ impl Dispatcher {
                                     }
                                 }
 
-                                // TODO : recorder.record(...) : measure time in queue
                                 let args = WorkToDo::BatchAtom {
                                     function_id,
                                     inputs: atom_inputs,
@@ -527,8 +524,10 @@ impl Dispatcher {
                                     inputs_vec: None,
                                     children_debts: None,
                                 };
+
+                                recorder.record(RecordPoint::BatchAtomStart);
                                 let batch_info = transfer_queue.enqueue_work(args, function_id)?.await?.get_shared_context();
-                                // TODO : recorder.record(...)
+                                recorder.record(RecordPoint::BatchAtomEnd);
 
                                 let batch_pos = batch_info.batch_pos;
                                 
