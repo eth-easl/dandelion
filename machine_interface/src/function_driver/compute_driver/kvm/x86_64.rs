@@ -87,13 +87,15 @@ impl ResetState {
 
     pub fn set_page_table(&self, guest_mem: &mut [u8]) {
         // use identity mapping of 1GB huge page
-        // TODO: support larger guest memory (context) size
         // TODO: store the page table in another guest memory slot (outside the context)
-        assert!(guest_mem.len() <= 2 << 30);
+        let mem_size_gb = (guest_mem.len() + (1 << 30) - 1) / (1 << 30);
+        assert!(mem_size_gb <= 512); // number of PTE entries in a single PD
         let p4 = u8_slice_to_u64_slice(&mut guest_mem[P4_ADDR..P4_ADDR + 0x1000]);
         p4[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | P3_ADDR as u64;
         let p3 = u8_slice_to_u64_slice(&mut guest_mem[P3_ADDR..P3_ADDR + 0x1000]);
-        p3[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS; // 1GB huge page
+        for i in 0..mem_size_gb {
+            p3[i] = PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS | (i as u64) << 30;
+        }
     }
 }
 
