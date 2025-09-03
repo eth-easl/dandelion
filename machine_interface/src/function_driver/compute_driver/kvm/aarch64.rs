@@ -89,11 +89,13 @@ impl ResetState {
         // use identity mapping of 1GB huge page
         // 39-bit (512GB) address space is configured in TCR_EL1.T0SZ, so the starting level of translation is level 1:
         // https://developer.arm.com/documentation/101811/0103/Translation-granule/The-starting-level-of-address-translation
-        // TODO: support larger guest memory (context) size
         // TODO: store the page table in another guest memory slot (outside the context)
-        assert!(guest_mem.len() <= 1 << 30);
+        let mem_size_gb = (guest_mem.len() + (1 << 30) - 1) / (1 << 30);
+        assert!(mem_size_gb <= 512); // number of PTE entries in a single PD
         let l1 = u8_slice_to_u64_slice(&mut guest_mem[L1_ADDR..L1_ADDR + 0x1000]);
-        l1[0] = PDE_VALID | PDE_AF;
+        for i in 0..mem_size_gb {
+            l1[i] = PDE_VALID | PDE_AF | (i as u64) << 30;
+        }
     }
 }
 
