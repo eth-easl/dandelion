@@ -29,6 +29,12 @@ clap = {version = "4.5", features = ["env","derive"]}
 # to make sure server can cross compile (removes dependecy on installed openssl
 # requires C compiler, perl (and perl-core) and make
 openssl = { version = "0.10", features = ["vendored"] }
+prost = "0.14.1"
+tonic = "0.14.2"
+tonic-prost = "0.14.2"
+
+[build-dependencies]
+tonic-prost-build = "0.14.2"
 
 [dev-dependencies]
 assert_cmd = "2.0"

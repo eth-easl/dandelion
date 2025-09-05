@@ -1,0 +1,35 @@
+syntax = "proto3";
+package multinode_proto;
+
+// the interface implemented by the main node which receives the 
+// user requests
+service MainNodeInterface {
+    rpc RegisterWorker (NodeInfo) returns (ActionStatus);
+    rpc RegisterTaskResult (TaskResult) returns (ActionStatus);
+}
+
+// the interface implemented by a worker node which only executes
+// the tasks sent to it by the main node
+service WorkerInterface {
+    rpc EnqueueTask (Task) returns (ActionStatus);
+}
+
+message ActionStatus {
+    bool success = 1;
+    string message = 2;
+}
+
+message NodeInfo {
+    // TODO: implement this
+    string name = 1;
+}
+
+message Task {
+    // TODO: implement this
+    string name = 1;
+}
+
+message TaskResult {
+    // TODO: implement this
+    string name = 1;
+}

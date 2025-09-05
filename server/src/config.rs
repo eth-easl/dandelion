@@ -6,6 +6,8 @@ const DEFAULT_CONFIG_PATH: &str = "./dandelion.config";
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_SINGLE_CORE: bool = false;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
+const DEFAULT_MULTINODE_STATE: u8 = 0; // 0 -> off, 1 -> leader, 2 -> worker
+const DEFAULT_MULTINODE_PORT: u16 = 8081;
 
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
@@ -29,6 +31,12 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = DEFAULT_TIMESTAMP_COUNT)]
     #[serde(default)]
     pub timestamp_count: usize,
+    #[arg(long, env, default_value_t = DEFAULT_MULTINODE_STATE)]
+    #[serde(default)]
+    pub multinode_state: u8,
+    #[arg(long, env, default_value_t = DEFAULT_MULTINODE_PORT)]
+    #[serde(default)]
+    pub multinode_port: u16,
 }
 
 impl DandelionConfig {
@@ -84,6 +92,16 @@ impl DandelionConfig {
             .total_cores
             .get_or_insert(num_cpus::get_physical());
         return cli_config;
+    }
+
+    pub fn multinode_enabled(&self) -> bool {
+        return self.multinode_state != 0;
+    }
+    pub fn is_multinode_leader(&self) -> bool {
+        return self.multinode_state == 1;
+    }
+    pub fn is_multinode_worker(&self) -> bool {
+        return self.multinode_state == 2;
     }
 
     /// TODO depricate, and move as we move to single dispatcher core

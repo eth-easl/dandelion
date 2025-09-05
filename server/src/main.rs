@@ -3,7 +3,7 @@ use dandelion_commons::{
     records::{Archive, Recorder},
     DandelionResult,
 };
-use dandelion_server::DandelionBody;
+use dandelion_server::{config::DandelionConfig, DandelionBody};
 use dispatcher::{
     composition::CompositionSet,
     dispatcher::{Dispatcher, DispatcherInput},
@@ -39,12 +39,14 @@ use std::{
 };
 use tokio::{
     net::TcpListener,
-    runtime::Builder,
+    runtime::{Builder, Runtime},
     select,
     signal::unix::SignalKind,
     spawn,
     sync::{mpsc, oneshot},
 };
+
+mod multinode;
 
 const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
@@ -459,6 +461,49 @@ async fn service_loop(request_sender: mpsc::Sender<DispatcherCommand>, port: u16
     }
 }
 
+fn start_multinode_server(config: &DandelionConfig) -> Option<Runtime> {
+    if config.multinode_enabled() {
+        let multinode_server = if config.is_multinode_leader() {
+            multinode::build_leader_server()
+        } else {
+            assert!(config.is_multinode_worker());
+            multinode::build_worker_server()
+        };
+
+        let multinode_cores = config.get_frontend_cores(); // TODO: currently using same cores as frontend
+        let multinode_runtime = Builder::new_multi_thread()
+            .enable_io()
+            .worker_threads(multinode_cores.len())
+            .on_thread_start(move || {
+                static ATOMIC_INDEX: AtomicUsize = AtomicUsize::new(0);
+                let core_index = ATOMIC_INDEX.fetch_add(1, Ordering::SeqCst);
+                if !core_affinity::set_for_current(CoreId {
+                    id: multinode_cores[core_index].into(),
+                }) {
+                    return;
+                }
+                info!(
+                    "gRPC server thread running on core {}",
+                    multinode_cores[core_index]
+                );
+            })
+            .build()
+            .unwrap();
+
+        let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], config.multinode_port));
+        info!("Starting multinode gRPC server on {:?}", addr);
+        multinode_runtime.spawn(async move {
+            multinode_server
+                .serve(addr)
+                .await
+                .expect("Serving of multinode grpc server failed!");
+        });
+        Some(multinode_runtime)
+    } else {
+        None
+    }
+}
+
 fn main() -> () {
     // check if there is a configuration file
     let config = dandelion_server::config::DandelionConfig::get_config();
@@ -620,6 +665,9 @@ fn main() -> () {
     // start dispatcher
     dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
 
+    // start multinode server
+    let multinode_runtime = start_multinode_server(&config);
+
     let _guard = runtime.enter();
 
     // TODO would be nice to just print server ready with all enabled features if that would be possible
@@ -637,6 +685,19 @@ fn main() -> () {
     #[cfg(feature = "timestamp")]
     print!(" timestamp");
     print!("\n");
+
+    // TODO: remove
+    if config.is_multinode_worker() {
+        Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let mut client =
+                    multinode::MultinodeLeaderClient::new("https://0.0.0.0:8081").await;
+                client.register_worker("Test".into());
+            });
+    }
 
     // Run this server for... forever... unless I receive a signal!
     runtime.block_on(service_loop(dispatcher_sender, config.port));
