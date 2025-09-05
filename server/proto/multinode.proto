@@ -5,7 +5,7 @@ package multinode_proto;
 // user requests
 service MainNodeInterface {
     rpc RegisterWorker (NodeInfo) returns (ActionStatus);
-    rpc RegisterTaskResult (TaskResult) returns (ActionStatus);
+    rpc ReturnTaskResult (TaskResult) returns (ActionStatus);
 }
 
 // the interface implemented by a worker node which only executes

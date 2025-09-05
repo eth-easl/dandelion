@@ -44,13 +44,16 @@ use tokio::{
     signal::unix::SignalKind,
     spawn,
     sync::{mpsc, oneshot},
+    time::{sleep, Duration},
 };
+
+use crate::multinode::{MultinodeLeaderClient, MultinodeLeaderServer};
 
 mod multinode;
 
 const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
-enum DispatcherCommand {
+pub enum DispatcherCommand {
     FunctionRequest {
         name: String,
         inputs: Vec<DispatcherInput>,
@@ -69,6 +72,15 @@ enum DispatcherCommand {
     CompositionRegistration {
         composition: String,
         callback: oneshot::Sender<DandelionResult<()>>,
+    },
+    WorkerRegistration {
+        name: String,
+    },
+    RemoteTask {
+        name: String,
+    },
+    RemoteTaskResult {
+        name: String,
     },
 }
 
@@ -423,6 +435,18 @@ async fn dispatcher_loop(
                     }
                 });
             }
+            DispatcherCommand::WorkerRegistration { name } => {
+                println!(
+                    "Dispatcher received worker registration with name: {}",
+                    name
+                );
+            }
+            DispatcherCommand::RemoteTask { name } => {
+                println!("Dispatcher received remote task with name: {}", name);
+            }
+            DispatcherCommand::RemoteTaskResult { name } => {
+                println!("Dispatcher received remote task result with name: {}", name);
+            }
         };
     }
 }
@@ -461,13 +485,16 @@ async fn service_loop(request_sender: mpsc::Sender<DispatcherCommand>, port: u16
     }
 }
 
-fn start_multinode_server(config: &DandelionConfig) -> Option<Runtime> {
+fn start_multinode_server(
+    config: &DandelionConfig,
+    dispatcher_sender: mpsc::Sender<DispatcherCommand>,
+) -> Option<Runtime> {
     if config.multinode_enabled() {
         let multinode_server = if config.is_multinode_leader() {
-            multinode::build_leader_server()
+            multinode::build_leader_server(dispatcher_sender)
         } else {
             assert!(config.is_multinode_worker());
-            multinode::build_worker_server()
+            multinode::build_worker_server(dispatcher_sender)
         };
 
         let multinode_cores = config.get_frontend_cores(); // TODO: currently using same cores as frontend
@@ -490,7 +517,10 @@ fn start_multinode_server(config: &DandelionConfig) -> Option<Runtime> {
             .build()
             .unwrap();
 
-        let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], config.multinode_port));
+        let addr: SocketAddr = format!("{}:{}", config.multinode_local_ip, config.multinode_port)
+            .parse()
+            .expect("Failed to parse socket address for multinode gRPC server!");
+
         info!("Starting multinode gRPC server on {:?}", addr);
         multinode_runtime.spawn(async move {
             multinode_server
@@ -666,7 +696,37 @@ fn main() -> () {
     dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
 
     // start multinode server
-    let multinode_runtime = start_multinode_server(&config);
+    let multinode_runtime = start_multinode_server(&config, dispatcher_sender.clone());
+
+    // announce itself to leader
+    if config.is_multinode_worker() {
+        Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                // retry every second until a connection to leader is established
+                let mut client: MultinodeLeaderClient;
+                loop {
+                    let res =  multinode::MultinodeLeaderClient::new(format!(
+                        "https://{}:{}",
+                        config.multinode_leader_ip, config.multinode_port
+                    ))
+                    .await;
+                    match res {
+                        Ok(c) => {
+                            client = c;
+                            break
+                        },
+                        Err(err) => {
+                            warn!("Failed to connect with leader node! Retrying in 1 sec... (Error: {:?})", err);
+                            sleep(Duration::from_millis(1000)).await;
+                        }
+                    }
+                }
+                let res = client.register_worker("Test".into()).await.expect("Failed to register worker!");
+            });
+    }
 
     let _guard = runtime.enter();
 
@@ -685,19 +745,6 @@ fn main() -> () {
     #[cfg(feature = "timestamp")]
     print!(" timestamp");
     print!("\n");
-
-    // TODO: remove
-    if config.is_multinode_worker() {
-        Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async {
-                let mut client =
-                    multinode::MultinodeLeaderClient::new("https://0.0.0.0:8081").await;
-                client.register_worker("Test".into());
-            });
-    }
 
     // Run this server for... forever... unless I receive a signal!
     runtime.block_on(service_loop(dispatcher_sender, config.port));

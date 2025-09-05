@@ -37,6 +37,12 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = DEFAULT_MULTINODE_PORT)]
     #[serde(default)]
     pub multinode_port: u16,
+    #[arg(long, env)]
+    #[serde(default)]
+    pub multinode_local_ip: String,
+    #[arg(long, env)]
+    #[serde(default)]
+    pub multinode_leader_ip: String,
 }
 
 impl DandelionConfig {
