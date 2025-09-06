@@ -11,6 +11,7 @@ use std::{
     cell::Cell,
     cmp,
     collections::{HashMap, VecDeque},
+    env,
     hint,
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -20,8 +21,9 @@ const MAX_QUEUE: usize = 16384;
 const FRONT_QUEUE: usize = 10; // Specify how many requests can be looked at each polling iteration; limit it to lower polling time
 const MAX_QUEUE_TIME: Duration = Duration::new(0, 30_000_000); // 30 ms
 const MAX_IDLE_TIME: Duration = Duration::new(0, 5_000_000); // 5 ms
-const SOFT_MIN_BATCHED: usize = 16;
-const MAX_BATCHED: usize = 128;
+const IDLE_BEFORE_BATCH_FORCED: Duration = Duration::new(0, 5_000_000); // 5 ms
+const SOFT_MIN_BATCHED: usize = 32;
+const MAX_BATCHED: usize = 512;
 
 struct AtomicTickets {
     start: AtomicUsize,
@@ -352,6 +354,11 @@ pub struct BatchingQueue {
 #[cfg(feature = "auto_batching")]
 impl WorkQueue for BatchingQueue {
     fn get_engine_args(&self) -> (WorkToDo, Debt) {
+        let FIXED_BATCH_SIZE: usize = match env::var("BATCH_SIZE") {
+            Ok(value) => value.parse::<usize>().unwrap(),
+            Err(e) => 2,
+        };
+
         self.idle_since.set(Instant::now());
         let work = loop {
             // Make sure that engines acquire the lock in a round-robin fashion
@@ -379,6 +386,8 @@ impl WorkQueue for BatchingQueue {
 
             let mut last_function = self.last_function.lock().unwrap();
             let last_function_id = last_function.get(&self.engine_id).unwrap();
+
+            let mut atoms_map = self.atoms_map.lock().unwrap();
 
             if !atoms_times.is_empty() {
                 let (first_timestamp, first_function_id) = &atoms_times[0];
@@ -439,21 +448,15 @@ impl WorkQueue for BatchingQueue {
 
                 // Skip if batch would be too small:
                 if send_function_id != u64::MAX {
-                    let mut atoms_map = self.atoms_map.lock().unwrap();
                     let mut requests_list = atoms_map.get_mut(&send_function_id).unwrap();
-                    // if requests_list.len() < SOFT_MIN_BATCHED {
-                    if self.idle_since.get().elapsed() < Duration::from_millis(10)
-                        && requests_list.len() < SOFT_MIN_BATCHED
-                    {
+                    if self.idle_since.get().elapsed() < IDLE_BEFORE_BATCH_FORCED && requests_list.len() < SOFT_MIN_BATCHED {
                         send_function_id = u64::MAX;
                     }
                 }
 
                 // Actual send, if:
                 if send_function_id != u64::MAX {
-                    let mut atoms_map = self.atoms_map.lock().unwrap();
                     let mut requests_list = atoms_map.get_mut(&send_function_id).unwrap();
-
                     let (mut head_args, head_debt) = requests_list.pop_front().unwrap();
 
                     if head_debt.is_alive() {
@@ -495,12 +498,12 @@ impl WorkQueue for BatchingQueue {
                             }
                         }
                         batched += inner_loop_max;
-                        println!("{} requests batched", batched);
+                        // println!("{} requests batched", batched);
 
                         // Workaround to support batch size 1
                         if batched == 1 {
-                            let copy_first_input = tmp_inputs_vec[0].item_list.clone();
-                            tmp_inputs_vec[0].item_list.extend(copy_first_input);
+                            let copy_first_input = tmp_inputs_vec[0].item_list[0].clone();
+                            tmp_inputs_vec[0].item_list = vec![copy_first_input; FIXED_BATCH_SIZE];
                         }
 
                         // Remove the batched requests from the time-based queue

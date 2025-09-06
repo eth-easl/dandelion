@@ -186,6 +186,7 @@ impl TimestampArchive {
 #[cfg(feature = "reuse_weights")]
 struct ReuseWeightsArchive {
     collected_gpu_cache_hit: std::sync::Mutex<Vec<bool>>,
+    collected_gpu_id: std::sync::Mutex<Vec<u8>>,
 }
 
 #[cfg(feature = "reuse_weights")]
@@ -193,31 +194,40 @@ impl ReuseWeightsArchive {
     fn init() -> Self {
         return Self {
             collected_gpu_cache_hit: std::sync::Mutex::new(Vec::new()),
+            collected_gpu_id: std::sync::Mutex::new(Vec::new()),
         };
     }
 
-    fn insert(&self, new_gpu_cache_hit: bool) {
-        let mut guard = self.collected_gpu_cache_hit.lock().unwrap();
-        guard.push(new_gpu_cache_hit);
+    fn insert(&self, new_gpu_cache_hit: bool, new_gpu_id: u8) {
+        let mut guard_cache = self.collected_gpu_cache_hit.lock().unwrap();
+        guard_cache.push(new_gpu_cache_hit);
+
+        let mut guard_gpu = self.collected_gpu_id.lock().unwrap();
+        guard_gpu.push(new_gpu_id);
     }
 
     fn reset(&self) {
-        let mut guard = self.collected_gpu_cache_hit.lock().unwrap();
-        *guard = Vec::new();
+        let mut guard_cache = self.collected_gpu_cache_hit.lock().unwrap();
+        *guard_cache = Vec::new();
+
+        let mut guard_gpu = self.collected_gpu_id.lock().unwrap();
+        *guard_gpu = Vec::new();
     }
 
-    fn append_gpu_cache_hit(&self, gpu_cache_hit: bool, summary: &mut String, indent: usize) {
+    fn append_gpu_info(&self, gpu_info: (bool, u8), summary: &mut String, indent: usize) {
         // push self
         summary.push_str(&format!(
-            "{}gpu_cache_hit:{}",
+            "{}gpu_cache_hit:{}, gpu_id:{}",
             "-".repeat(indent),
-            gpu_cache_hit
+            gpu_info.0,
+            gpu_info.1,
         ));
     }
 
     fn get_summary(&self, summary: &mut String) {
-        for recorder in self.collected_gpu_cache_hit.lock().unwrap().iter() {
-            self.append_gpu_cache_hit(*recorder, summary, 0);
+        for (gpu_cache_hit, gpu_id) in self.collected_gpu_cache_hit.lock().unwrap().iter().zip(self.collected_gpu_id.lock().unwrap().iter()) {
+            let gpu_info = (*gpu_cache_hit, *gpu_id);
+            self.append_gpu_info(gpu_info, summary, 0);
             summary.push_str("\n");
         }
     }
@@ -265,6 +275,8 @@ pub struct Recorder {
     timestamps: std::sync::Arc<FunctionTimestamp>,
     #[cfg(feature = "reuse_weights")]
     gpu_cache_hit: Arc<Mutex<bool>>,
+    #[cfg(feature = "reuse_weights")]
+    gpu_id: Arc<Mutex<u8>>,
     #[cfg(feature = "auto_batching")]
     batch_size: Arc<Mutex<usize>>,
 }
@@ -276,6 +288,8 @@ impl Recorder {
             timestamps: FunctionTimestamp::new(_function_id, _start),
             #[cfg(feature = "reuse_weights")]
             gpu_cache_hit: Arc::new(Mutex::new(false)),
+            #[cfg(feature = "reuse_weights")]
+            gpu_id: Arc::new(Mutex::new(u8::MAX)),
             #[cfg(feature = "auto_batching")]
             batch_size: Arc::new(Mutex::new(0)),
         };
@@ -287,6 +301,8 @@ impl Recorder {
             timestamps: FunctionTimestamp::new(_function_id, _parent.timestamps.creation),
             #[cfg(feature = "reuse_weights")]
             gpu_cache_hit: Arc::new(Mutex::new(false)),
+            #[cfg(feature = "reuse_weights")]
+            gpu_id: Arc::new(Mutex::new(u8::MAX)),
             #[cfg(feature = "auto_batching")]
             batch_size: Arc::new(Mutex::new(0)),
         };
@@ -297,11 +313,13 @@ impl Recorder {
         self.timestamps.record(_current_point);
     }
 
-    pub fn set_gpu_cache_hit(&mut self, _gpu_cache_hit: bool) {
+    pub fn set_gpu_info(&mut self, _gpu_cache_hit: bool, _gpu_id: u8) {
         #[cfg(feature = "reuse_weights")]
         {
             let mut gpu_cache_hit = self.gpu_cache_hit.lock().unwrap();
             *gpu_cache_hit = _gpu_cache_hit;
+            let mut gpu_id = self.gpu_id.lock().unwrap();
+            *gpu_id = _gpu_id;
         }
     }
 
@@ -326,6 +344,8 @@ impl Recorder {
             timestamps: self.timestamps.clone(),
             #[cfg(feature = "reuse_weights")]
             gpu_cache_hit: self.gpu_cache_hit.clone(),
+            #[cfg(feature = "reuse_weights")]
+            gpu_id: self.gpu_id.clone(),
             #[cfg(feature = "auto_batching")]
             batch_size: self.batch_size.clone(),
         };
@@ -353,7 +373,7 @@ impl fmt::Display for Recorder {
             }
             #[cfg(feature = "timestamp")]
             write!(_f, ",")?;
-            write!(_f, " gpu_cache_hit: {}", self.gpu_cache_hit.lock().unwrap())?;
+            write!(_f, " gpu_cache_hit: {}, gpu_id: {}", self.gpu_cache_hit.lock().unwrap(), self.gpu_id.lock().unwrap())?;
         }
         #[cfg(feature = "auto_batching")]
         {
@@ -374,7 +394,7 @@ pub struct Archive {
     #[cfg(feature = "timestamp")]
     timestamp_archive: TimestampArchive,
     #[cfg(feature = "reuse_weights")]
-    gpu_cache_hit_archive: ReuseWeightsArchive,
+    gpu_info_archive: ReuseWeightsArchive,
     #[cfg(feature = "auto_batching")]
     batch_archive: BatchArchive,
 }
@@ -390,7 +410,7 @@ impl Archive {
             #[cfg(feature = "timestamp")]
             timestamp_archive: TimestampArchive::init(),
             #[cfg(feature = "reuse_weights")]
-            gpu_cache_hit_archive: ReuseWeightsArchive::init(),
+            gpu_info_archive: ReuseWeightsArchive::init(),
             #[cfg(feature = "auto_batching")]
             batch_archive: BatchArchive::init(),
         };
@@ -401,8 +421,9 @@ impl Archive {
         self.timestamp_archive
             .insert(std::sync::Arc::into_inner(_recorder.timestamps).unwrap());
         #[cfg(feature = "reuse_weights")]
-        self.gpu_cache_hit_archive.insert(
+        self.gpu_info_archive.insert(
             std::sync::Arc::into_inner((*_recorder.gpu_cache_hit.lock().unwrap()).into()).unwrap(),
+            std::sync::Arc::into_inner((*_recorder.gpu_id.lock().unwrap()).into()).unwrap(),
         );
         #[cfg(feature = "auto_batching")]
         self.batch_archive.insert(
@@ -417,7 +438,7 @@ impl Archive {
         #[cfg(feature = "timestamp")]
         self.timestamp_archive.get_summary(&mut summary);
         #[cfg(feature = "reuse_weights")]
-        self.gpu_cache_hit_archive.get_summary(&mut summary);
+        self.gpu_info_archive.get_summary(&mut summary);
         #[cfg(feature = "auto_batching")]
         self.batch_archive.get_summary(&mut summary);
         println!("{}", summary);
@@ -428,7 +449,7 @@ impl Archive {
         #[cfg(feature = "timestamp")]
         self.timestamp_archive.reset();
         #[cfg(feature = "reuse_weights")]
-        self.gpu_cache_hit_archive.reset();
+        self.gpu_info_archive.reset();
         #[cfg(feature = "auto_batching")]
         self.batch_archive.reset();
     }
