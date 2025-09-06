@@ -242,7 +242,7 @@ pub fn gpu_run(
     {
         reload_weights = buffer_pool.prev_function_id != function_id;
     }
-    recorder.set_gpu_cache_hit(!reload_weights);
+    recorder.set_gpu_info(!reload_weights, gpu_id);
 
     if reload_weights {
         buffer_pool.prev_function_id = function_id;
