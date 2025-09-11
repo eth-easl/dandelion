@@ -195,8 +195,6 @@ pub fn gpu_run(
         ContextType::Gpu(ref gpu_context) => gpu_context.batch_size,
         _ => return Err(DandelionError::ContextMissmatch),
     };
-    #[cfg(feature = "auto_batching")]
-    recorder.set_batch_size(batch_size);
 
     // Load modules and kernels
     let mut loaded_modules_map: HashMap<String, usize> = HashMap::new();

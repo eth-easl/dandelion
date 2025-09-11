@@ -481,12 +481,13 @@ impl WorkQueue for BatchingQueue {
 
                         // Copy inputs of other requests
                         let inner_loop_max = cmp::min(requests_list.len(), MAX_BATCHED - 1);
+                        batched += inner_loop_max;
                         for i in 1..=inner_loop_max {
-                            let (child_args, child_debt) = requests_list.pop_front().unwrap();
+                            let (mut child_args, child_debt) = requests_list.pop_front().unwrap();
                             if let WorkToDo::BatchAtom {
                                 inputs,
                                 function_id: _,
-                                recorder: _,
+                                ref mut recorder,
                                 inputs_vec: _,
                                 children_debts: _,
                             } = child_args
@@ -495,10 +496,24 @@ impl WorkQueue for BatchingQueue {
                                     tmp_inputs_vec[i].item_list.extend(input.unwrap().item_list);
                                 }
                                 call_children_debts.push(child_debt);
+                                
+                                // Record the size of the batch
+                                recorder.set_batch_size(batched);
                             }
                         }
-                        batched += inner_loop_max;
                         // println!("{} requests batched", batched);
+
+                        // Record the size of the batch
+                        if let WorkToDo::BatchAtom {
+                            inputs: _,
+                            function_id: _,
+                            ref mut recorder,
+                            inputs_vec: _,
+                            children_debts: _,
+                        } = head_args
+                        {
+                            recorder.set_batch_size(batched);
+                        }
 
                         // Workaround to support batch size 1
                         if batched == 1 {
