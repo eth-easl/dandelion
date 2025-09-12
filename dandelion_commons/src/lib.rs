@@ -114,6 +114,8 @@ pub enum DandelionError {
     OtherProctionError,
     /// Work queue from the dispatcher to the engines is full
     WorkQueueFull,
+    /// Errors related to remote resources
+    MultinodeError(MultinodeError),
 }
 
 // Implement display to be compliant with core::error::Error
@@ -167,8 +169,12 @@ pub enum DispatcherError {
     DependencyError,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FrontendError {
+    /// The fontend request failed due to invalid request
+    InvalidRequest(String),
+    /// The frontend request failed due to internal error
+    InternalError(String),
     /// Failed to get more frames from the connection
     FailledToGetFrames,
     /// Attemped to read bytes form stream to desiarialize but stream ran out
@@ -204,4 +210,14 @@ pub enum UserError {
     EmptyNonOptional,
     /// Function indicated it failed
     FunctionError(i32),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MultinodeError {
+    /// Failed to deserialize buffer
+    DeserializationError(String),
+    /// Failed to find remote resource
+    ResourceNotFound,
+    /// Resource is already registered
+    ResourceDuplicate,
 }

@@ -96,7 +96,7 @@ impl EngineQueue {
         };
     }
 
-    pub async fn enqueu_work(&self, args: WorkToDo) -> DandelionResult<WorkDone> {
+    pub async fn enqueue_work(&self, args: WorkToDo) -> DandelionResult<WorkDone> {
         let (promise, debt) = self.promise_buffer.get_promise()?;
         match self.queue_in.try_send((args, debt)) {
             Ok(()) => (),

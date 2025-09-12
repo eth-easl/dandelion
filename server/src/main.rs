@@ -3,53 +3,39 @@ use dandelion_commons::{
     records::{Archive, Recorder},
     DandelionResult,
 };
-use dandelion_server::{config::DandelionConfig, DandelionBody};
 use dispatcher::{
     composition::CompositionSet,
     dispatcher::{Dispatcher, DispatcherInput},
     function_registry::Metadata,
     resource_pool::ResourcePool,
 };
-use http_body_util::BodyExt;
-use hyper::{
-    body::{Body, Incoming},
-    service::service_fn,
-    Request, Response,
-};
-use log::{debug, error, info, trace, warn};
+use hyper::service::service_fn;
+use log::{debug, error, info, warn};
 use machine_interface::{
     function_driver::ComputeResource,
-    machine_config::{DomainType, EngineType},
-    memory_domain::{bytes_context::BytesContext, read_only::ReadOnlyContext, MemoryResource},
-    DataItem, DataSet, Position,
+    machine_config::{engine_type_to_i32, DomainType, EngineType},
+    memory_domain::MemoryResource,
 };
-use serde::Deserialize;
 use std::{
     collections::BTreeMap,
-    convert::Infallible,
     fs::read_to_string,
-    io::Write,
     net::SocketAddr,
-    path::PathBuf,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc, OnceLock,
+        OnceLock,
     },
     time::Instant,
 };
 use tokio::{
     net::TcpListener,
-    runtime::{Builder, Runtime},
+    runtime::Builder,
     select,
     signal::unix::SignalKind,
     spawn,
     sync::{mpsc, oneshot},
-    time::{sleep, Duration},
 };
 
-use crate::multinode::{MultinodeLeaderClient, MultinodeLeaderServer};
-
-mod multinode;
+mod frontend;
 
 const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
@@ -73,7 +59,14 @@ pub enum DispatcherCommand {
         composition: String,
         callback: oneshot::Sender<DandelionResult<()>>,
     },
-    WorkerRegistration {
+    RemoteRegistration {
+        name: String,
+        host: String,
+        port: u16,
+        engine_type: EngineType,
+        engine_cap: u32,
+    },
+    RemoteDeregistration {
         name: String,
     },
     RemoteTask {
@@ -82,292 +75,6 @@ pub enum DispatcherCommand {
     RemoteTaskResult {
         name: String,
     },
-}
-
-async fn serve_request(
-    is_cold: bool,
-    req: Request<Incoming>,
-    dispatcher: mpsc::Sender<DispatcherCommand>,
-) -> Result<Response<DandelionBody>, Infallible> {
-    debug!("Starting to serve request");
-
-    let start_time = Instant::now();
-
-    // pull all frames from the network
-    let mut incomming = req.into_body();
-    let mut body_pin = std::pin::Pin::new(&mut incomming);
-    let mut frame_data = Vec::new();
-    let mut total_size = 0usize;
-    loop {
-        if let Some(frame_result) =
-            futures::future::poll_fn(|cx| body_pin.as_mut().poll_frame(cx)).await
-        {
-            let data_frame = frame_result.unwrap().into_data().unwrap();
-            total_size += data_frame.len();
-            frame_data.push(data_frame);
-        } else {
-            if body_pin.is_end_stream() {
-                break;
-            } else {
-                continue;
-            }
-        }
-    }
-
-    // from context from frame bytes
-    let request_context_result = BytesContext::from_bytes_vec(frame_data, total_size).await;
-    if request_context_result.is_err() {
-        warn!("request parsing failed with: {:?}", request_context_result);
-    }
-    let (function_name, request_context) = request_context_result.unwrap();
-    debug!("finished creating request context");
-
-    // TODO match set names to assign sets to composition sets
-    // map sets in the order they are in the request
-    let request_number = request_context.content.len();
-    debug!("Request number of request_context: {}", request_number);
-    let request_arc = Arc::new(request_context);
-    let inputs = (0..request_number)
-        .map(|set_id| {
-            DispatcherInput::Set(CompositionSet::from((set_id, vec![request_arc.clone()])))
-        })
-        .collect::<Vec<_>>();
-
-    // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
-
-    let (callback, output_recevier) = tokio::sync::oneshot::channel();
-    dispatcher
-        .send(DispatcherCommand::FunctionRequest {
-            name: function_name,
-            inputs,
-            is_cold,
-            start_time: start_time.clone(),
-            callback,
-        })
-        .await
-        .unwrap();
-    let (function_output, recorder) = output_recevier
-        .await
-        .unwrap()
-        .expect("Should get result from function");
-
-    let response_body = dandelion_server::DandelionBody::new(function_output, &recorder);
-
-    debug!("finished creating response body");
-    let response = Ok::<_, Infallible>(Response::new(response_body));
-    debug!("finished creating response");
-    #[cfg(feature = "archive")]
-    TRACING_ARCHIVE.get().unwrap().insert_recorder(recorder);
-
-    return response;
-}
-
-fn default_path() -> String {
-    String::new()
-}
-
-/// Struct containing registration information for new function
-#[derive(Debug, Deserialize)]
-struct RegisterFunction {
-    /// String name of the function
-    name: String,
-    /// Default size for context to allocate to execute function
-    context_size: u64,
-    /// Which engine the function should be executed on
-    engine_type: String,
-    /// Optional local path to the binary if it is already on local disc
-    #[serde(default = "default_path")]
-    local_path: String,
-    /// Binary representation of the function, ignored if a local path is given
-    binary: Vec<u8>,
-    /// Metadata for the sets and optionally static items to pass into the function for that set
-    input_sets: Vec<(String, Option<Vec<(String, Vec<u8>)>>)>,
-    /// output set names
-    output_sets: Vec<String>,
-}
-
-async fn register_function(
-    req: Request<Incoming>,
-    dispatcher: mpsc::Sender<DispatcherCommand>,
-) -> Result<Response<DandelionBody>, Infallible> {
-    let bytes = req
-        .collect()
-        .await
-        .expect("Failed to extract body from function registration")
-        .to_bytes();
-    // find first line end character
-    let request_map: RegisterFunction =
-        bson::from_slice(&bytes).expect("Should be able to deserialize request");
-    // if local is present ignore the binary
-    let path_string = if !request_map.local_path.is_empty() {
-        // check that file exists
-        if let Err(err) = std::fs::File::open(&request_map.local_path) {
-            let err_message = format!(
-                "Tried to register function with local path, but failed to open file with error {}",
-                err
-            );
-            return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
-                err_message.as_bytes().to_vec(),
-            )));
-        };
-        request_map.local_path
-    } else {
-        // write function to file
-        std::fs::create_dir_all(FUNCTION_FOLDER_PATH).unwrap();
-        let mut path_buff = PathBuf::from(FUNCTION_FOLDER_PATH);
-        path_buff.push(request_map.name.clone());
-        let mut function_file = std::fs::File::create(path_buff.clone())
-            .expect("Failed to create file for registering function");
-        function_file
-            .write_all(&request_map.binary)
-            .expect("Failed to write file with content for registering");
-        path_buff.to_str().unwrap().to_string()
-    };
-
-    let engine_type = match request_map.engine_type.as_str() {
-        #[cfg(feature = "wasm")]
-        "RWasm" => EngineType::RWasm,
-        #[cfg(feature = "mmu")]
-        "Process" => EngineType::Process,
-        #[cfg(feature = "kvm")]
-        "Kvm" => EngineType::Kvm,
-        #[cfg(feature = "cheri")]
-        "Cheri" => EngineType::Cheri,
-        unkown => panic!("Unkown engine type string {}", unkown),
-    };
-    let input_sets = request_map
-        .input_sets
-        .into_iter()
-        .map(|(name, data)| {
-            if let Some(static_data) = data {
-                let data_contexts = static_data
-                    .into_iter()
-                    .map(|(item_name, data_vec)| {
-                        let item_size = data_vec.len();
-                        let mut new_context =
-                            ReadOnlyContext::new(data_vec.into_boxed_slice()).unwrap();
-                        new_context.content.push(Some(DataSet {
-                            ident: name.clone(),
-                            buffers: vec![DataItem {
-                                ident: item_name,
-                                data: Position {
-                                    offset: 0,
-                                    size: item_size,
-                                },
-                                key: 0,
-                            }],
-                        }));
-                        Arc::new(new_context)
-                    })
-                    .collect();
-                let composition_set = CompositionSet::from((0, data_contexts));
-                (name, Some(composition_set))
-            } else {
-                (name, None)
-            }
-        })
-        .collect();
-    let (callback, confirmation) = oneshot::channel();
-    let metadata = Metadata {
-        input_sets: Arc::new(input_sets),
-        output_sets: Arc::new(request_map.output_sets),
-    };
-    dispatcher
-        .send(DispatcherCommand::FunctionRegistration {
-            name: request_map.name,
-            engine_type,
-            context_size: request_map.context_size as usize,
-            path: path_string,
-            metadata,
-            callback,
-        })
-        .await
-        .unwrap();
-    confirmation
-        .await
-        .unwrap()
-        .expect("Should be able to insert function");
-    return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
-        "Function registered".as_bytes().to_vec(),
-    )));
-}
-
-#[derive(Debug, Deserialize)]
-struct RegisterChain {
-    composition: String,
-}
-
-async fn register_composition(
-    req: Request<Incoming>,
-    dispatcher: mpsc::Sender<DispatcherCommand>,
-) -> Result<Response<DandelionBody>, Infallible> {
-    let bytes = req
-        .collect()
-        .await
-        .expect("Failed to extract body from function registration")
-        .to_bytes();
-    // find first line end character
-    let request_map: RegisterChain =
-        bson::from_slice(&bytes).expect("Should be able to deserialize request");
-    let (callback, confirmation) = oneshot::channel();
-    dispatcher
-        .send(DispatcherCommand::CompositionRegistration {
-            composition: request_map.composition,
-            callback,
-        })
-        .await
-        .unwrap();
-    confirmation
-        .await
-        .unwrap()
-        .expect("Should be able to insert composition");
-    return Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
-        "Function registered".as_bytes().to_vec(),
-    )));
-}
-
-async fn serve_stats(_req: Request<Incoming>) -> Result<Response<DandelionBody>, Infallible> {
-    let archive_ref = TRACING_ARCHIVE.get().unwrap();
-    let response = Response::new(DandelionBody::from_vec(
-        archive_ref.get_summary().into_bytes(),
-    ));
-    archive_ref.reset();
-    return Ok::<_, Infallible>(response);
-}
-
-async fn service(
-    req: Request<Incoming>,
-    dispatcher: mpsc::Sender<DispatcherCommand>,
-) -> Result<Response<DandelionBody>, Infallible> {
-    let uri = req.uri().path();
-    match uri {
-        // TODO rename to cold func and hot func, remove matmul, compute, io
-        "/register/function" => register_function(req, dispatcher).await,
-        "/register/composition" => register_composition(req, dispatcher).await,
-        "/cold/matmul"
-        | "/cold/matmulstore"
-        | "/cold/compute"
-        | "/cold/io"
-        | "/cold/chain_scaling"
-        | "/cold/middleware_app"
-        | "/cold/compression_app"
-        | "/cold/python_app" => serve_request(true, req, dispatcher).await,
-        "/hot/matmul"
-        | "/hot/matmulstore"
-        | "/hot/compute"
-        | "/hot/io"
-        | "/hot/chain_scaling"
-        | "/hot/middleware_app"
-        | "/hot/compression_app"
-        | "/hot/python_app" => serve_request(false, req, dispatcher).await,
-        "/stats" => serve_stats(req).await,
-        other_uri => {
-            trace!("Received request on {}", other_uri);
-            Ok::<_, Infallible>(Response::new(DandelionBody::from_vec(
-                format!("Hello, Wor\n").into_bytes(),
-            )))
-        }
-    }
 }
 
 /// Recording setup
@@ -435,11 +142,24 @@ async fn dispatcher_loop(
                     }
                 });
             }
-            DispatcherCommand::WorkerRegistration { name } => {
-                println!(
-                    "Dispatcher received worker registration with name: {}",
-                    name
-                );
+            DispatcherCommand::RemoteRegistration {
+                name,
+                host,
+                port,
+                engine_type,
+                engine_cap,
+            } => {
+                if let Err(err) = dispatcher
+                    .register_remote_node(name, host, port, &engine_type, engine_cap)
+                    .await
+                {
+                    warn!("Failed to register worker: {:?}", err);
+                };
+            }
+            DispatcherCommand::RemoteDeregistration { name } => {
+                if let Err(err) = dispatcher.deregister_remote_node(&name) {
+                    warn!("Failed to deregister worker: {:?}", err);
+                };
             }
             DispatcherCommand::RemoteTask { name } => {
                 println!("Dispatcher received remote task with name: {}", name);
@@ -470,7 +190,7 @@ async fn service_loop(request_sender: mpsc::Sender<DispatcherCommand>, port: u16
                     if let Err(err) = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
                         .serve_connection_with_upgrades(
                             io,
-                            service_fn(|req| service(req, service_dispatcher_ptr.clone())),
+                            service_fn(|req| frontend::service(req, service_dispatcher_ptr.clone())),
                         )
                         .await
                     {
@@ -482,55 +202,6 @@ async fn service_loop(request_sender: mpsc::Sender<DispatcherCommand>, port: u16
             _ = sigint_stream.recv() => return,
             _ = sigquit_stream.recv() => return,
         }
-    }
-}
-
-fn start_multinode_server(
-    config: &DandelionConfig,
-    dispatcher_sender: mpsc::Sender<DispatcherCommand>,
-) -> Option<Runtime> {
-    if config.multinode_enabled() {
-        let multinode_server = if config.is_multinode_leader() {
-            multinode::build_leader_server(dispatcher_sender)
-        } else {
-            assert!(config.is_multinode_worker());
-            multinode::build_worker_server(dispatcher_sender)
-        };
-
-        let multinode_cores = config.get_frontend_cores(); // TODO: currently using same cores as frontend
-        let multinode_runtime = Builder::new_multi_thread()
-            .enable_io()
-            .worker_threads(multinode_cores.len())
-            .on_thread_start(move || {
-                static ATOMIC_INDEX: AtomicUsize = AtomicUsize::new(0);
-                let core_index = ATOMIC_INDEX.fetch_add(1, Ordering::SeqCst);
-                if !core_affinity::set_for_current(CoreId {
-                    id: multinode_cores[core_index].into(),
-                }) {
-                    return;
-                }
-                info!(
-                    "gRPC server thread running on core {}",
-                    multinode_cores[core_index]
-                );
-            })
-            .build()
-            .unwrap();
-
-        let addr: SocketAddr = format!("{}:{}", config.multinode_local_ip, config.multinode_port)
-            .parse()
-            .expect("Failed to parse socket address for multinode gRPC server!");
-
-        info!("Starting multinode gRPC server on {:?}", addr);
-        multinode_runtime.spawn(async move {
-            multinode_server
-                .serve(addr)
-                .await
-                .expect("Serving of multinode grpc server failed!");
-        });
-        Some(multinode_runtime)
-    } else {
-        None
     }
 }
 
@@ -609,6 +280,8 @@ fn main() -> () {
     let runtime = runtime_builder.build().unwrap();
 
     let dispatcher_runtime = Builder::new_multi_thread()
+        .enable_io()
+        .enable_time()
         .worker_threads(dispatcher_cores.len())
         .on_thread_start(move || {
             static ATOMIC_INDEX: AtomicUsize = AtomicUsize::new(0);
@@ -695,36 +368,33 @@ fn main() -> () {
     // start dispatcher
     dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
 
-    // start multinode server
-    let multinode_runtime = start_multinode_server(&config, dispatcher_sender.clone());
-
-    // announce itself to leader
+    // TODO: announce itself to leader
     if config.is_multinode_worker() {
         Builder::new_multi_thread()
             .enable_all()
             .build()
             .unwrap()
             .block_on(async {
+                println!(
+                    "trying to establish connection with {}...",
+                    config.multinode_leader_ip
+                );
                 // retry every second until a connection to leader is established
-                let mut client: MultinodeLeaderClient;
-                loop {
-                    let res =  multinode::MultinodeLeaderClient::new(format!(
-                        "https://{}:{}",
-                        config.multinode_leader_ip, config.multinode_port
-                    ))
+                let mut client =
+                    multinode::client::create_client(config.multinode_leader_ip, config.port, 1000)
+                        .await;
+                println!("connection established");
+
+                let res = client
+                    .register_at_remote(
+                        "Test".to_string(),
+                        config.multinode_local_ip,
+                        config.port,
+                        engine_type_to_i32(&EngineType::Process),
+                        2,
+                    )
                     .await;
-                    match res {
-                        Ok(c) => {
-                            client = c;
-                            break
-                        },
-                        Err(err) => {
-                            warn!("Failed to connect with leader node! Retrying in 1 sec... (Error: {:?})", err);
-                            sleep(Duration::from_millis(1000)).await;
-                        }
-                    }
-                }
-                let res = client.register_worker("Test".into()).await.expect("Failed to register worker!");
+                println!("Registration at client returned result: {:?}", res);
             });
     }
 

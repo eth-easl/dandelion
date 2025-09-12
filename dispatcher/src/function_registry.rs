@@ -92,7 +92,7 @@ async fn load_local(
 ) -> DandelionResult<Arc<Function>> {
     recorder.record(RecordPoint::ParsingQueue);
     let function = work_queue
-        .enqueu_work(
+        .enqueue_work(
             machine_interface::function_driver::WorkToDo::ParsingArguments {
                 driver,
                 path,
@@ -409,7 +409,7 @@ impl FunctionRegistry {
         let function_config = function.config.clone();
         recorder.record(RecordPoint::LoadQueue);
         let context_work_done = load_queue
-            .enqueu_work(
+            .enqueue_work(
                 machine_interface::function_driver::WorkToDo::LoadingArguments {
                     function,
                     domain,

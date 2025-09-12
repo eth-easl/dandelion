@@ -22,6 +22,45 @@ pub enum EngineType {
     Kvm,
 }
 
+// EngineType conversion functions used by grpc (protobuf)
+pub fn engine_type_to_i32(engine_type: &EngineType) -> i32 {
+    match engine_type {
+        #[cfg(feature = "reqwest_io")]
+        EngineType::Reqwest => 0,
+        #[cfg(feature = "cheri")]
+        EngineType::Cheri => 1,
+        #[cfg(feature = "wasm")]
+        EngineType::RWasm => 2,
+        #[cfg(feature = "mmu")]
+        EngineType::Process => 3,
+        #[cfg(feature = "kvm")]
+        EngineType::Kvm => 4,
+        #[cfg(not(any(
+            feature = "reqwest_io",
+            feature = "cheri",
+            feature = "wasm",
+            feature = "mmu",
+            feature = "kvm"
+        )))]
+        _ => -1,
+    }
+}
+pub fn i32_to_engine_type(val: i32) -> Option<EngineType> {
+    match val {
+        #[cfg(feature = "reqwest_io")]
+        0 => Some(EngineType::Reqwest),
+        #[cfg(feature = "cheri")]
+        1 => Some(EngineType::Cheri),
+        #[cfg(feature = "wasm")]
+        2 => Some(EngineType::RWasm),
+        #[cfg(feature = "mmu")]
+        3 => Some(EngineType::Process),
+        #[cfg(feature = "kvm")]
+        4 => Some(EngineType::Kvm),
+        _ => None,
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub enum DomainType {
     System,

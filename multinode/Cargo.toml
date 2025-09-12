@@ -1,0 +1,14 @@
+[package]
+name = "multinode"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+dandelion_commons = { path = "../dandelion_commons" }
+tokio = { version = "1", features = ["time"] }
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+prost = "0.14.1"
+log = "0.4.20"
+
+[build-dependencies]
+prost-build = { version = "0.14.1"}

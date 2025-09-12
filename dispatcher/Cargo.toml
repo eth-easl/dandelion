@@ -10,6 +10,7 @@ test-log = "0.2.16"
 [dependencies]
 dandelion_commons = {path = "../dandelion_commons"}
 machine_interface = {path = "../machine_interface", features = ["test_export"]}
+multinode = {path = "../multinode"}
 futures = {version = "0.3.28", default-features = false}
 log = "0.4.21"
 itertools = {version = "0.11", default-features = false, features = ["use_alloc"]}

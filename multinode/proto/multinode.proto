@@ -1,0 +1,33 @@
+syntax = "proto3";
+package multinode_proto;
+
+message ActionStatus {
+    bool success = 1;
+    string message = 2;
+}
+
+enum EngineType {
+    Reqwest = 0;
+    Cheri = 1;
+    RWasm = 2;
+    Process = 3;
+    Kvm = 4;
+}
+
+message NodeInfo {
+    string name = 1;
+    string host = 2;
+    uint32 port = 3;
+    EngineType engine_type = 4;
+    uint32 engine_capacity = 5;
+}
+
+message Task {
+    // TODO: implement this
+    string name = 1;
+}
+
+message TaskResult {
+    // TODO: implement this
+    string name = 1;
+}

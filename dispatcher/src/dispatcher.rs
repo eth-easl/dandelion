@@ -563,7 +563,7 @@ impl Dispatcher {
                         recorder: recorder.get_sub_recorder(),
                     };
                     recorder.record(RecordPoint::TransferQueue);
-                    function_context = transfer_queue.enqueu_work(args).await?.get_context();
+                    function_context = transfer_queue.enqueue_work(args).await?.get_context();
                     recorder.record(RecordPoint::TransferDequeue);
                     function_buffer += 1;
                 }
@@ -609,7 +609,7 @@ impl Dispatcher {
                     recorder: recorder.get_sub_recorder(),
                 };
                 recorder.record(RecordPoint::TransferQueue);
-                function_context = transfer_queue.enqueu_work(args).await?.get_context();
+                function_context = transfer_queue.enqueue_work(args).await?.get_context();
                 recorder.record(RecordPoint::TransferDequeue);
                 function_item += 1;
             }
@@ -642,8 +642,48 @@ impl Dispatcher {
             recorder: subrecoder,
         };
         recorder.record(RecordPoint::ExecutionQueue);
-        let result = engine_queue.enqueu_work(args).await?.get_context();
+        let result = engine_queue.enqueue_work(args).await?.get_context();
         recorder.record(RecordPoint::FutureReturn);
         return Ok(result);
+    }
+
+    pub async fn register_remote_node(
+        &self,
+        remote_key: String,
+        remote_host: String,
+        remote_port: u16,
+        engine_type: &EngineType,
+        engine_cap: u32,
+    ) -> DandelionResult<()> {
+        let engine_queue = match self.engine_queues.get(engine_type) {
+            Some(q) => q,
+            None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
+        };
+        // engine_queue
+        //     .add_remote(remote_key, remote_host, remote_port, engine_cap)
+        //     .await
+        // TODO: 1) find or create remote engine
+        //       2) create and add remote client
+        Ok(())
+    }
+
+    pub fn deregister_remote_node(&self, remote_key: &String) -> DandelionResult<()> {
+        // let mut success = false;
+        // for (_, queue) in self.engine_queues.iter() {
+        //     success = match queue.remove_remote(remote_key) {
+        //         Ok(_) => true,
+        //         Err(_) => success,
+        //     };
+        // }
+        // if success {
+        //     Ok(())
+        // } else {
+        //     Err(DandelionError::MultinodeError(
+        //         MultinodeError::ResourceNotFound,
+        //     ))
+        // }
+        // TODO: 1) find remote engine
+        //       2) remove remote client
+        Ok(())
     }
 }
