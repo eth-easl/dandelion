@@ -18,6 +18,7 @@ use std::{
 };
 
 const MAX_QUEUE: usize = 16384;
+const GPU_NUMBER: usize = 4;
 const FRONT_QUEUE: usize = 10; // Specify how many requests can be looked at each polling iteration; limit it to lower polling time
 const MAX_QUEUE_TIME: Duration = Duration::new(0, 30_000_000); // 30 ms
 const MAX_IDLE_TIME: Duration = Duration::new(0, 5_000_000); // 5 ms
@@ -96,7 +97,12 @@ impl WorkQueue for EngineQueue {
 }
 
 impl EnqueueWork for EngineQueue {
-    fn enqueue_work(&self, args: WorkToDo, function_id: FunctionId) -> DandelionResult<Promise> {
+    fn enqueue_work(
+        &self, 
+        args: WorkToDo, 
+        function_id: FunctionId,
+        #[cfg(feature = "auto_batching")] gpu_id: u8,
+    ) -> DandelionResult<Promise> {
         let (promise, debt) = self.promise_buffer.get_promise()?;
         match self.queue_in.try_send((args, debt)) {
             Ok(()) => (),
@@ -253,7 +259,12 @@ impl WorkQueue for EngineQueueGPU {
 }
 
 impl EnqueueWork for EngineQueueGPU {
-    fn enqueue_work(&self, args: WorkToDo, function_id: FunctionId) -> DandelionResult<Promise> {
+    fn enqueue_work(
+        &self, 
+        args: WorkToDo, 
+        function_id: FunctionId,
+        #[cfg(feature = "auto_batching")] gpu_id: u8,
+    ) -> DandelionResult<Promise> {
         let (promise, debt) = self.promise_buffer.get_promise()?;
 
         match args {
@@ -341,8 +352,8 @@ impl Clone for EngineQueueGPU {
 pub struct BatchingQueue {
     engine_counter: Cell<u8>,
     engine_id: u8,
-    general_queue_in: crossbeam::channel::Sender<(WorkToDo, Debt)>,
-    general_queue_out: crossbeam::channel::Receiver<(WorkToDo, Debt)>,
+    general_queue_in: Vec<crossbeam::channel::Sender<(WorkToDo, Debt)>>,
+    general_queue_out: Vec<crossbeam::channel::Receiver<(WorkToDo, Debt)>>,
     atoms_times: Arc<Mutex<VecDeque<(Instant, FunctionId)>>>,
     atoms_map: Arc<Mutex<HashMap<FunctionId, VecDeque<(WorkToDo, Debt)>>>>,
     last_function: Arc<Mutex<HashMap<u8, FunctionId>>>,
@@ -368,7 +379,7 @@ impl WorkQueue for BatchingQueue {
             }
 
             // If some non-FunctionArguments is ready, run it
-            let _ = match self.general_queue_out.try_recv() {
+            let _ = match self.general_queue_out[self.engine_id as usize].try_recv() {
                 Err(TryRecvError::Disconnected) => panic!("Work queue disconnected"),
                 Ok(recieved) => {
                     let (recieved_args, recevied_dept) = recieved;
@@ -472,6 +483,7 @@ impl WorkQueue for BatchingQueue {
                             recorder: _,
                             inputs_vec: _,
                             children_debts: _,
+                            gpu_id: _,
                         } = head_args
                         {
                             for input in inputs {
@@ -490,6 +502,7 @@ impl WorkQueue for BatchingQueue {
                                 ref mut recorder,
                                 inputs_vec: _,
                                 children_debts: _,
+                                gpu_id: _,
                             } = child_args
                             {
                                 for (i, input) in inputs.into_iter().enumerate() {
@@ -501,7 +514,6 @@ impl WorkQueue for BatchingQueue {
                                 recorder.set_batch_size(batched);
                             }
                         }
-                        // println!("{} requests batched", batched);
 
                         // Record the size of the batch
                         if let WorkToDo::BatchAtom {
@@ -510,6 +522,7 @@ impl WorkQueue for BatchingQueue {
                             ref mut recorder,
                             inputs_vec: _,
                             children_debts: _,
+                            gpu_id: _,
                         } = head_args
                         {
                             recorder.set_batch_size(batched);
@@ -546,12 +559,15 @@ impl WorkQueue for BatchingQueue {
                             function_id: _,
                             inputs: _,
                             recorder: _,
+                            ref mut gpu_id,
                         } = head_args
                         {
                             *inputs_vec = Some(call_inputs_vec);
                             *children_debts = Some(call_children_debts);
+                            *gpu_id = Some(self.engine_id);
                         }
 
+                        // last_function.insert(self.engine_id, send_function_id);
                         break (head_args, head_debt);
                     }
                 }
@@ -574,7 +590,12 @@ impl WorkQueue for BatchingQueue {
 
 #[cfg(feature = "auto_batching")]
 impl EnqueueWork for BatchingQueue {
-    fn enqueue_work(&self, args: WorkToDo, function_id: FunctionId) -> DandelionResult<Promise> {
+    fn enqueue_work(
+        &self, 
+        args: WorkToDo, 
+        function_id: FunctionId,
+        gpu_id: u8,
+    ) -> DandelionResult<Promise> {
         let (promise, debt) = self.promise_buffer.get_promise()?;
 
         match args {
@@ -594,7 +615,7 @@ impl EnqueueWork for BatchingQueue {
                     .unwrap()
                     .push_back((args, debt));
             }
-            _ => match self.general_queue_in.try_send((args, debt)) {
+            _ => match self.general_queue_in[gpu_id as usize].try_send((args, debt)) {
                 Ok(()) => (),
                 Err(TrySendError::Disconnected(_)) => {
                     error!("Failed to enqueu work, workqueue has been disconnected")
@@ -618,7 +639,17 @@ impl BatchingQueue {
         let engine_counter = Cell::new(0);
         let engine_id = 0;
 
-        let (sender, receiver) = crossbeam::channel::bounded(MAX_QUEUE);
+        let mut general_queue_in = Vec::new();
+        let mut general_queue_out = Vec::new();
+        
+        // Each engine gets its own general_queue.
+        // This ensures that once a batch is defined to run on a GPU,
+        // it will be run on that GPU.
+        for i in 0..=GPU_NUMBER {
+            let (sender, receiver) = crossbeam::channel::bounded(MAX_QUEUE);
+            general_queue_in.push(sender);
+            general_queue_out.push(receiver);
+        }
 
         let atoms_times = Arc::new(Mutex::new(VecDeque::with_capacity(MAX_QUEUE)));
         let atoms_map = Arc::new(Mutex::new(HashMap::new()));
@@ -638,8 +669,8 @@ impl BatchingQueue {
         return BatchingQueue {
             engine_counter,
             engine_id,
-            general_queue_in: sender,
-            general_queue_out: receiver,
+            general_queue_in,
+            general_queue_out,
             atoms_times,
             atoms_map,
             last_function,

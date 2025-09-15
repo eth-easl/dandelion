@@ -132,12 +132,14 @@ pub fn run_thread<E: EngineLoop>(
                 recorder,
                 inputs_vec,
                 children_debts,
+                gpu_id,
             } => {
                 debt.fulfill(Ok(WorkDone::SharedContext(BatchInfo {
                     batch_pos: 0,
                     inputs_vec,
                     context_arc: None,
                     children_debts,
+                    gpu_id,
                 })));
                 continue;
             }

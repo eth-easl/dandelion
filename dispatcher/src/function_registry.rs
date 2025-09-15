@@ -90,6 +90,7 @@ async fn load_local(
     mut recorder: Recorder,
     work_queue: Box<dyn FullQueue>,
     path: String,
+    #[cfg(feature = "auto_batching")] gpu_id: u8,
 ) -> DandelionResult<Arc<Function>> {
     recorder.record(RecordPoint::ParsingQueue);
     let function = work_queue
@@ -100,7 +101,8 @@ async fn load_local(
                 static_domain,
                 recorder: recorder.get_sub_recorder(),
             },
-            function_id
+            function_id,
+            #[cfg(feature = "auto_batching")] gpu_id,
         )?
         .await?
         .get_function();
@@ -371,6 +373,7 @@ impl FunctionRegistry {
         ctx_size: usize,
         non_caching: bool,
         mut recorder: Recorder,
+        #[cfg(feature = "auto_batching")] gpu_id: u8,
     ) -> DandelionResult<(Context, FunctionConfig)> {
         // get loader
         let (driver, load_queue) = match self.drivers.get(&engine_id) {
@@ -394,6 +397,7 @@ impl FunctionRegistry {
                         recorder.get_sub_recorder(),
                         load_queue.clone(),
                         path.clone(),
+                        #[cfg(feature = "auto_batching")] gpu_id,
                     ))
                         as Pin<Box<dyn Future<Output = DandelionResult<_>> + Send>>)
                         .shared();
@@ -423,7 +427,8 @@ impl FunctionRegistry {
                     recorder: recorder.get_sub_recorder(),
                     ctx_size: ctx_size,
                 },
-                function_id
+                function_id,
+                #[cfg(feature = "auto_batching")] gpu_id,
             )?
             .await;
         recorder.record(RecordPoint::LoadDequeue);

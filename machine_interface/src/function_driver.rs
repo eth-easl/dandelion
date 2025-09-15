@@ -181,6 +181,7 @@ pub enum WorkToDo {
         recorder: Recorder,
         inputs_vec: Option<Vec<Option<AtomInputs>>>,
         children_debts: Option<Vec<crate::promise::Debt>>,
+        gpu_id: Option<u8>,
     },
     Shutdown(),
 }
@@ -191,6 +192,7 @@ pub struct BatchInfo {
     pub inputs_vec: Option<Vec<Option<AtomInputs>>>,
     pub context_arc: Option<Arc<Context>>,
     pub children_debts: Option<Vec<crate::promise::Debt>>,
+    pub gpu_id: Option<u8>,
 }
 
 pub enum WorkDone {

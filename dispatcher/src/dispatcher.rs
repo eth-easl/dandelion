@@ -48,7 +48,12 @@ pub trait EnqueueWork: Send + Sync {
     /// - LoadingArguments
     /// - (multiple) TransferArguments
     /// - FunctionArguments
-    fn enqueue_work(&self, args: WorkToDo, function_id: FunctionId) -> DandelionResult<Promise>;
+    fn enqueue_work(
+        &self, 
+        args: WorkToDo, 
+        function_id: FunctionId,
+        #[cfg(feature = "auto_batching")] gpu_id: u8,
+    ) -> DandelionResult<Promise>;
 }
 
 pub trait FullQueue: EnqueueWork + WorkQueue {
@@ -523,16 +528,18 @@ impl Dispatcher {
                                     recorder: recorder.get_sub_recorder(),
                                     inputs_vec: None,
                                     children_debts: None,
+                                    gpu_id: None,
                                 };
 
                                 recorder.record(RecordPoint::BatchAtomStart);
-                                let batch_info = transfer_queue.enqueue_work(args, function_id)?.await?.get_shared_context();
+                                let batch_info = transfer_queue.enqueue_work(args, function_id, u8::MAX)?.await?.get_shared_context();
                                 recorder.record(RecordPoint::BatchAtomEnd);
 
                                 let batch_pos = batch_info.batch_pos;
                                 
                                 let context_arc = if batch_pos == 0 {
                                     let inputs_vec = batch_info.inputs_vec.unwrap();
+                                    let gpu_id = batch_info.gpu_id.unwrap();
 
                                     // variable inputs needs to contain ALL INPUTS, with indexed names: input0, input1, ...
                                     let mut compositions_vec = Vec::new();
@@ -554,6 +561,7 @@ impl Dispatcher {
                                             *ctx_size,
                                             non_caching,
                                             recorder.get_sub_recorder(),
+                                            gpu_id,
                                         )
                                         .await?;
                                     recorder.record(RecordPoint::GetEngineQueue);
@@ -572,6 +580,7 @@ impl Dispatcher {
                                             metadata.output_sets,
                                             context,
                                             recorder.get_sub_recorder(),
+                                            gpu_id,
                                         )
                                         .await?;
                                     let context_arc = Arc::new(context);
@@ -584,6 +593,7 @@ impl Dispatcher {
                                             inputs_vec: None,
                                             context_arc: Some(context_arc.clone()),
                                             children_debts: None,
+                                            gpu_id: None,
                                         })));
                                     }
 
@@ -619,6 +629,7 @@ impl Dispatcher {
                                         *ctx_size,
                                         non_caching,
                                         recorder.get_sub_recorder(),
+                                        #[cfg(feature = "auto_batching")] u8::MAX,
                                     )
                                     .await?;
                                 recorder.record(RecordPoint::GetEngineQueue);
@@ -635,6 +646,7 @@ impl Dispatcher {
                                         metadata.output_sets,
                                         context,
                                         recorder.get_sub_recorder(),
+                                        #[cfg(feature = "auto_batching")] u8::MAX,
                                     )
                                     .await?;
                                 let context_arc = Arc::new(context);
@@ -678,6 +690,7 @@ impl Dispatcher {
         ctx_size: usize,
         non_caching: bool,
         mut recorder: Recorder,
+        #[cfg(feature = "auto_batching")] gpu_id: u8,
     ) -> DandelionResult<(Context, FunctionConfig, Metadata)> {
         debug!("Preparing function {} for engine", function_id);
         let metadata = self.function_registry.get_metadata(function_id).await?;
@@ -700,6 +713,7 @@ impl Dispatcher {
                 ctx_size,
                 non_caching,
                 recorder.get_sub_recorder(),
+                #[cfg(feature = "auto_batching")] gpu_id,
             )
             .await?;
         recorder.record(RecordPoint::TransferQueue);
@@ -734,7 +748,11 @@ impl Dispatcher {
                         source_item_index: item,
                         recorder: recorder.get_sub_recorder(),
                     };
-                    function_context = transfer_queue.enqueue_work(args, function_id)?.await?.get_context();
+                    function_context = transfer_queue.enqueue_work(
+                        args,
+                        function_id,
+                        #[cfg(feature = "auto_batching")] gpu_id,
+                    )?.await?.get_context();
                     function_buffer += 1;
                 }
             }
@@ -778,7 +796,11 @@ impl Dispatcher {
                     source_item_index: item,
                     recorder: recorder.get_sub_recorder(),
                 };
-                function_context = transfer_queue.enqueue_work(args, function_id)?.await?.get_context();
+                function_context = transfer_queue.enqueue_work(
+                    args, 
+                    function_id,
+                    #[cfg(feature = "auto_batching")] gpu_id,
+                )?.await?.get_context();
                 function_item += 1;
             }
         }
@@ -794,6 +816,7 @@ impl Dispatcher {
         output_sets: Arc<Vec<String>>,
         function_context: Context,
         mut recorder: Recorder,
+        #[cfg(feature = "auto_batching")] gpu_id: u8,
     ) -> DandelionResult<Context> {
         // preparation is done, get engine to receive engine
         debug!(
@@ -812,7 +835,11 @@ impl Dispatcher {
             recorder: subrecoder,
         };
         recorder.record(RecordPoint::ExecutionQueue);
-        let result = engine_queue.enqueue_work(args, function_id)?.await?.get_context();
+        let result = engine_queue.enqueue_work(
+            args, 
+            function_id,
+            #[cfg(feature = "auto_batching")] gpu_id,
+        )?.await?.get_context();
         recorder.record(RecordPoint::FutureReturn);
         return Ok(result);
     }
