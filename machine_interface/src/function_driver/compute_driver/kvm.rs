@@ -57,6 +57,10 @@ impl EngineLoop for KvmLoop {
         assert_eq!(kvm.get_api_version(), 12);
 
         let vm = kvm.create_vm().unwrap();
+
+        let extension = vm.check_extension(kvm_ioctls::Cap::SyncMmu);
+        println!("have sync mmu: {}", extension);
+
         let vcpu = vm.create_vcpu(0).unwrap();
         let state = ResetState::new(&vm, &vcpu);
 
@@ -90,6 +94,8 @@ impl EngineLoop for KvmLoop {
         // attach VM memory
         let mut region = kvm_userspace_memory_region {
             slot: 0,
+            // flags: kvm_bindings::KVM_MEM_LOG_DIRTY_PAGES,
+            // flags: kvm_bindings::KVM_MEM_READONLY,
             flags: 0,
             guest_phys_addr: 0x0,
             memory_size: guest_mem.len() as u64,
@@ -99,13 +105,17 @@ impl EngineLoop for KvmLoop {
             self.vm.set_user_memory_region(region).unwrap();
         }
 
+        println!("before init vcpu");
+
         // initialize vCPU
+        // self.state.set_page_table(guest_mem);
+        // self.state.set_interrupt_table(guest_mem);
         self.state.init_vcpu(
             &self.vcpu,
             elf_config.entry_point as u64,
+            guest_mem,
             guest_mem.len() as u64 - 32,
         );
-        self.state.set_page_table(guest_mem);
 
         #[cfg(feature = "backend_debug")]
         {
@@ -114,12 +124,26 @@ impl EngineLoop for KvmLoop {
             dump_regs(&self.vcpu);
         }
 
+        // let mprotect_return = unsafe {
+        //     nix::sys::mman::mprotect(
+        //         guest_mem.as_ptr() as *mut core::ffi::c_void,
+        //         guest_mem.len(),
+        //         nix::sys::mman::ProtFlags::PROT_READ | nix::sys::mman::ProtFlags::PROT_EXEC,
+        //     )
+        // };
+        // println!("mprotect return: {:?}", mprotect_return);
+        println!("going into loop");
+
         // start running the function
         loop {
+            println!("loop iteration");
             let reason = self.vcpu.run().unwrap();
             match reason {
                 VcpuExit::Hlt => break,
-                VcpuExit::SystemEvent(_type, _data) => break,
+                VcpuExit::SystemEvent(_type, _data) => {
+                    println!("System Event, type: {}", _type);
+                    break;
+                }
                 VcpuExit::Debug(info) => {
                     println!("Debug stop: {:?}", info);
                     dump_regs(&self.vcpu);
@@ -131,6 +155,8 @@ impl EngineLoop for KvmLoop {
                 }
             }
         }
+
+        println!("left loop");
 
         // detach VM memory
         region.memory_size = 0;
