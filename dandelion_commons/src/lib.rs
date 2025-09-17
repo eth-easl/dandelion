@@ -220,4 +220,8 @@ pub enum MultinodeError {
     ResourceNotFound,
     /// Resource is already registered
     ResourceDuplicate,
+    /// Failed to reach remote client
+    ResourceNotReached,
+    /// Multinode function call returned client error
+    ClientError(String),
 }

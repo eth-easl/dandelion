@@ -1,5 +1,3 @@
-use std::io::Empty;
-
 use log::warn;
 use reqwest::Response;
 use tokio::time::{sleep, Duration};
@@ -21,6 +19,7 @@ impl core::fmt::Display for ClientError {
 }
 impl std::error::Error for ClientError {}
 
+#[derive(Debug)]
 pub struct Client {
     host: String,
     port: u16,

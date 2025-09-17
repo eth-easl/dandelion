@@ -20,7 +20,7 @@ use std::{
 
 use crate::{
     composition::{Composition, CompositionSet},
-    execution_qs::EngineQueue,
+    queue::exec::LocalEngineQueue,
 };
 
 #[derive(Clone, Debug)]
@@ -87,7 +87,7 @@ async fn load_local(
     static_domain: Arc<Box<dyn MemoryDomain>>,
     driver: &'static dyn Driver,
     mut recorder: Recorder,
-    work_queue: Box<EngineQueue>,
+    work_queue: Box<LocalEngineQueue>,
     path: String,
 ) -> DandelionResult<Arc<Function>> {
     recorder.record(RecordPoint::ParsingQueue);
@@ -110,7 +110,7 @@ pub struct FunctionRegistry {
     /// List of engines available for each function
     engine_map: Mutex<BTreeMap<FunctionId, BTreeSet<EngineType>>>,
     /// Drivers for the engines to prepare function (get them from available to ready)
-    pub(crate) drivers: BTreeMap<EngineType, (&'static dyn Driver, Box<EngineQueue>)>,
+    pub(crate) drivers: BTreeMap<EngineType, (&'static dyn Driver, Box<LocalEngineQueue>)>,
     /// map with list of all options for each function
     /// TODO: change structure to avoid copy on get_options
     options: Mutex<BTreeMap<FunctionId, Vec<Alternative>>>,
@@ -138,7 +138,7 @@ pub struct FunctionRegistry {
 impl FunctionRegistry {
     // TODO: make sure that system functions can't be added later for other engines
     pub fn new(
-        drivers: BTreeMap<EngineType, (&'static dyn Driver, Box<EngineQueue>)>,
+        drivers: BTreeMap<EngineType, (&'static dyn Driver, Box<LocalEngineQueue>)>,
         type_map: &BTreeMap<EngineType, DomainType>,
         domains: &BTreeMap<DomainType, Arc<Box<dyn MemoryDomain>>>,
     ) -> Self {

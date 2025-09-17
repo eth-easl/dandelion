@@ -2,14 +2,14 @@ use crate::{
     composition::{
         get_sharding, Composition, CompositionSet, InputSetDescriptor, JoinStrategy, ShardingMode,
     },
-    execution_qs::EngineQueue,
     function_registry::{FunctionRegistry, FunctionType, Metadata},
+    queue::{exec::LocalEngineQueue, remote::RemoteEngineQueue},
     resource_pool::ResourcePool,
 };
 use core::pin::Pin;
 use dandelion_commons::{
     records::{RecordPoint, Recorder},
-    DandelionError, DandelionResult, DispatcherError, FunctionId,
+    DandelionError, DandelionResult, DispatcherError, FunctionId, MultinodeError,
 };
 use futures::{
     future::{join_all, ready, Either},
@@ -42,8 +42,9 @@ pub enum DispatcherInput {
 // TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
 // the entire execution time anyway
 pub struct Dispatcher {
-    domains: BTreeMap<DomainType, (Arc<Box<dyn MemoryDomain>>, Box<EngineQueue>)>,
-    engine_queues: BTreeMap<EngineType, Box<EngineQueue>>,
+    domains: BTreeMap<DomainType, (Arc<Box<dyn MemoryDomain>>, Box<LocalEngineQueue>)>,
+    local_engine_queues: BTreeMap<EngineType, Box<LocalEngineQueue>>,
+    remote_engine_queues: BTreeMap<EngineType, Box<RemoteEngineQueue>>,
     type_map: BTreeMap<EngineType, DomainType>,
     function_registry: FunctionRegistry,
 }
@@ -60,18 +61,22 @@ impl Dispatcher {
 
         // Insert a work queue for each domain and use up all engine resource available
         let mut domain_map = BTreeMap::new();
-        let mut engine_queues = BTreeMap::new();
-        let mut registry_drivers: BTreeMap<EngineType, (&'static dyn Driver, Box<EngineQueue>)> =
-            BTreeMap::new();
+        let mut local_engine_queues = BTreeMap::new();
+        let mut remote_engine_queues = BTreeMap::new();
+        let mut registry_drivers: BTreeMap<
+            EngineType,
+            (&'static dyn Driver, Box<LocalEngineQueue>),
+        > = BTreeMap::new();
         for (engine_type, driver) in drivers.into_iter() {
-            let work_queue = Box::new(EngineQueue::new());
+            let work_queue = Box::new(LocalEngineQueue::new());
             while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(engine_type) {
                 driver.start_engine(resource, work_queue.clone())?;
             }
             let domain_type = type_map.get(&engine_type).unwrap();
             let domain = domains.get(domain_type).unwrap().clone();
             domain_map.insert(*domain_type, (domain, work_queue.clone()));
-            engine_queues.insert(engine_type, work_queue.clone());
+            local_engine_queues.insert(engine_type, work_queue.clone());
+            remote_engine_queues.insert(engine_type, Box::new(RemoteEngineQueue::new()));
             registry_drivers.insert(
                 engine_type,
                 (driver as &'static dyn Driver, work_queue.clone()),
@@ -81,7 +86,8 @@ impl Dispatcher {
 
         return Ok(Dispatcher {
             domains: domain_map,
-            engine_queues,
+            local_engine_queues,
+            remote_engine_queues,
             type_map,
             function_registry,
         });
@@ -630,21 +636,39 @@ impl Dispatcher {
             "Running function on engine. Context content size: {}",
             function_context.content.len()
         );
-        let engine_queue = match self.engine_queues.get(&engine_type) {
+        let remote_queue = match self.remote_engine_queues.get(&engine_type) {
             Some(q) => q,
             None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
         };
-        let subrecoder = recorder.get_sub_recorder();
-        let args = WorkToDo::FunctionArguments {
-            config: function_config,
-            context: function_context,
-            output_sets,
-            recorder: subrecoder,
-        };
-        recorder.record(RecordPoint::ExecutionQueue);
-        let result = engine_queue.enqueue_work(args).await?.get_context();
-        recorder.record(RecordPoint::FutureReturn);
-        return Ok(result);
+        if remote_queue.available() {
+            let subrecoder = recorder.get_sub_recorder();
+            let args = WorkToDo::FunctionArguments {
+                config: function_config,
+                context: function_context,
+                output_sets,
+                recorder: subrecoder,
+            };
+            recorder.record(RecordPoint::ExecutionQueue);
+            let result = remote_queue.enqueue_work(args).await?.get_context();
+            recorder.record(RecordPoint::FutureReturn);
+            Ok(result)
+        } else {
+            let engine_queue = match self.local_engine_queues.get(&engine_type) {
+                Some(q) => q,
+                None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
+            };
+            let subrecoder = recorder.get_sub_recorder();
+            let args = WorkToDo::FunctionArguments {
+                config: function_config,
+                context: function_context,
+                output_sets,
+                recorder: subrecoder,
+            };
+            recorder.record(RecordPoint::ExecutionQueue);
+            let result = engine_queue.enqueue_work(args).await?.get_context();
+            recorder.record(RecordPoint::FutureReturn);
+            Ok(result)
+        }
     }
 
     pub async fn register_remote_node(
@@ -655,35 +679,34 @@ impl Dispatcher {
         engine_type: &EngineType,
         engine_cap: u32,
     ) -> DandelionResult<()> {
-        let engine_queue = match self.engine_queues.get(engine_type) {
+        let engine_queue = match self.remote_engine_queues.get(engine_type) {
             Some(q) => q,
             None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
         };
-        // engine_queue
-        //     .add_remote(remote_key, remote_host, remote_port, engine_cap)
-        //     .await
-        // TODO: 1) find or create remote engine
-        //       2) create and add remote client
-        Ok(())
+
+        engine_queue
+            .add_remote(remote_key, remote_host, remote_port, engine_cap)
+            .await
     }
 
     pub fn deregister_remote_node(&self, remote_key: &String) -> DandelionResult<()> {
-        // let mut success = false;
-        // for (_, queue) in self.engine_queues.iter() {
-        //     success = match queue.remove_remote(remote_key) {
-        //         Ok(_) => true,
-        //         Err(_) => success,
-        //     };
-        // }
-        // if success {
-        //     Ok(())
-        // } else {
-        //     Err(DandelionError::MultinodeError(
-        //         MultinodeError::ResourceNotFound,
-        //     ))
-        // }
-        // TODO: 1) find remote engine
-        //       2) remove remote client
-        Ok(())
+        let mut success = false;
+        for (_, queue) in self.remote_engine_queues.iter() {
+            success = match queue.remove_remote(remote_key) {
+                Ok(_) => true,
+                Err(_) => success,
+            };
+        }
+        if success {
+            Ok(())
+        } else {
+            Err(DandelionError::MultinodeError(
+                MultinodeError::ResourceNotFound,
+            ))
+        }
+    }
+
+    pub fn return_remote_result() {
+        todo!("implement returning results")
     }
 }
