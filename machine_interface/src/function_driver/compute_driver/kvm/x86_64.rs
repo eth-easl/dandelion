@@ -73,9 +73,32 @@ pub struct ResetState {
 
 global_asm!(include_str!("x86_64.asm"));
 extern "C" {
-    fn page_fault_handler();
-    fn page_fault_handler_end();
-    fn asm_entry();
+    // symbols for first and last
+    fn asm_start();
+    fn fault_handlers_end();
+    // interrupt vector handlers
+    fn default_handler();
+    fn divide_error_exception_handler();
+    fn debug_interrupt_handler();
+    fn nmi_interrupt_handler();
+    fn breakpoint_exception_handler();
+    fn overflow_exception_handler();
+    fn bound_range_excepion_handler();
+    fn invalid_opcode_exception_handler();
+    fn device_not_available_exception_handler();
+    fn double_fault_exception_handler();
+    fn coprocessor_segment_overrun_handler();
+    fn invalid_tss_exception_handler();
+    fn segment_not_present_handler();
+    fn stack_fault_exception_handler();
+    fn general_protection_exception_handler();
+    fn page_fault_exception_handler();
+    fn floating_point_error_handler();
+    fn alignment_check_exception_handler();
+    fn machine_check_exception_handler();
+    fn simd_fp_exception_handler();
+    fn virtualization_exception_handler();
+    fn control_protection_exception();
 }
 
 impl ResetState {
@@ -134,6 +157,8 @@ fn setup_interrupt_gate(mem_location: &mut [u8], selector: u16, address: u64) {
     mem_location[6..12].copy_from_slice(&address_array[2..8]);
     // set the segment selector
     mem_location[2..4].copy_from_slice(&selector.to_le_bytes());
+    // set interrupt stack table entry to use to load the stack when transitioning to the handler
+    mem_location[4] = 1;
     // set the gate the present bit, priviledge level and gate type
     let priviledge_level = 3; // 2 bit number from 0 to 3
     let gate_type = 0xF; // in 64 bit mode 0xE is a trap gate
@@ -154,73 +179,88 @@ fn setup_interrupt_gate(mem_location: &mut [u8], selector: u16, address: u64) {
 ///
 /// Each descriptor is built as follows
 pub fn set_interrupt_table(sregs: &mut kvm_sregs, guest_mem: &mut [u8]) {
+    // constants given by the manuals or how we set it up
+    const GDT_SIZE: u16 = 80;
+    const GDT_END: usize = GDT + (GDT_SIZE as usize);
+    const TSS_START: usize = GDT_END;
+    const TSS_SIZE: u16 = 104;
+    const TSS_END: usize = TSS_START + (TSS_SIZE as usize);
+
     // setup global descriptor table
     // kernel code segment
-    // setup_segement(&mut guest_mem[GDT + 16..GDT + 32], 0, 10);
-    setup_segement(&mut guest_mem[GDT + 8..GDT + 16], 0, 10);
+    setup_segement(&mut guest_mem[GDT + 16..GDT + 32], 0, 10);
+    // setup_segement(&mut guest_mem[GDT + 8..GDT + 16], 0, 10);
     // kernel data segment
-    // setup_segement(&mut guest_mem[GDT + 32..GDT + 48], 0, 2);
-    setup_segement(&mut guest_mem[GDT + 16..GDT + 24], 0, 2);
+    setup_segement(&mut guest_mem[GDT + 32..GDT + 48], 0, 2);
+    // setup_segement(&mut guest_mem[GDT + 16..GDT + 24], 0, 2);
     // user code segment
-    // setup_segement(&mut guest_mem[GDT + 64..GDT + 80], 3, 10);
-    setup_segement(&mut guest_mem[GDT + 24..GDT + 32], 3, 10);
+    setup_segement(&mut guest_mem[GDT + 48..GDT + 64], 3, 10);
+    // setup_segement(&mut guest_mem[GDT + 24..GDT + 32], 3, 10);
     // user data segment
+    setup_segement(&mut guest_mem[GDT + 64..GDT + 80], 3, 2);
+    // setup_segement(&mut guest_mem[GDT + 32..GDT + 40], 3, 2);
+    // // task state segment
     // setup_segement(&mut guest_mem[GDT + 80..GDT + 96], 3, 2);
-    setup_segement(&mut guest_mem[GDT + 32..GDT + 40], 3, 2);
-    // task state segment
-    // const TSS_SIZE: u32 = 101;
-    // let tss_location = &mut guest_mem[GDT + 96..GDT + 112];
-    // let tss_location = &mut guest_mem[GDT + 96..GDT + 112];
-    // // 0 for system, 1 for code or data
-    // let descriptor_type = 1;
+    // let tss_segment_descriptor = &mut guest_mem[GDT + 80..GDT + 96];
+    // //  (&mut guest_mem[GDT + 96..GDT + 112]);
+    // // setup limit to TSS size
+    // let tss_bytes = (TSS_SIZE - 1).to_le_bytes();
+    // tss_segment_descriptor[0..2].copy_from_slice(&tss_bytes);
+    // // set address
+    // let tss_address = (TSS_START as u64).to_le_bytes();
+    // tss_segment_descriptor[2..5].copy_from_slice(&tss_address[0..3]);
+    // tss_segment_descriptor[7..12].copy_from_slice(&tss_address[3..8]);
+    // set present, descriptor type and type
+    // 0 for system, 1 for code or data
+    // let descriptor_type = 0;
     // // 0 for read only segement
-    // let segment_type = 0;
-    // // 0 for code in segment is 32 bit, 1 for native 64 bit
-    // let code_64_bit = 1;
-    // // setup limit to max
-    // tss_location[0] = TSS_SIZE.to_le_bytes()[0];
-    // tss_location[1] = TSS_SIZE.to_le_bytes()[1];
-    // // tss_location[2] =
-    // // set present, descriptor type and type
-    // tss_location[5] = (1 << 7) | (descriptor_type << 4) | segment_type;
-    // // set granularity, if it is 64 bit code and upper 4 bits of segment limit
-    // tss_location[6] = (1 << 7) | ((code_64_bit as u8) << 5) | 0xF;
+    // let segment_type = 11;
+    // tss_segment_descriptor[5] = (1 << 7) | (descriptor_type << 4) | segment_type;
+    // tss_segment_descriptor[5] = (1 << 7);
+    // tss_segment_descriptor[5] = (1 << 7) | (0 << 5) | (0 << 4) | 9;
+    // set granularity, 4 bits of segment limit
+    // tss_segment_descriptor[6] = 0x0;
 
-    let gdt_size = 112;
-    let gdt_size = 48;
-    let gdt_end = GDT + (gdt_size as usize);
     sregs.gdt = kvm_bindings::kvm_dtable {
         base: GDT as u64,
-        limit: gdt_size - 1,
+        limit: GDT_SIZE - 1,
         ..Default::default()
     };
 
-    // set up task state structure
-    let tss_start = gdt_end;
-    // sregs.tr = kvm_segment {
-    //     base: tss_start as u64,
-    //     limit: TSS_SIZE,
-    //     selector: 5 << 3,
-    //     type_: 10,
-    //     present: 1,
-    //     dpl: 0,
-    //     db: 0,
-    //     s: 1,
-    //     l: 1,
-    //     g: 1,
-    //     ..Default::default()
-    // };
-    let tss_end = tss_start;
+    // set up task state segement
+    sregs.tr = kvm_segment {
+        base: TSS_START as u64,
+        limit: (TSS_SIZE - 1) as u32,
+        selector: 10 << 3,
+        type_: 11,
+        present: 1,
+        dpl: 0,
+        db: 0,
+        s: 0,
+        l: 0,
+        g: 0,
+        avl: 0,
+        ..Default::default()
+    };
+
+    // set the revevant parts of the TSS
+    let tss = &mut guest_mem[TSS_START..TSS_END];
+    // set the interrupt stack address
+    tss[36..44].copy_from_slice(&(0x6000u64).to_le_bytes());
+
+    // let end_address = ((fault_handlers_end as *const c_void).addr()
+    //     - (asm_start as *const () as *const c_void).addr()) as u64;
+    // guest_mem[0x6008..0x6010].copy_from_slice(&end_address.to_le_bytes());
 
     // setup interup handler table
 
     // let handler_length = (page_fault_handler_end as *const c_void).addr()
     // - (page_fault_handler as *const () as *const c_void).addr();
-    let handler_length = (page_fault_handler_end as *const c_void).addr()
-        - (asm_entry as *const () as *const c_void).addr();
+    let handler_length = (fault_handlers_end as *const c_void).addr()
+        - (asm_start as *const () as *const c_void).addr();
     println!(
         "start:\t{:#x?}\nend:\t{:#x?}\nlength: {}",
-        page_fault_handler as *const (), page_fault_handler_end as *const (), handler_length
+        page_fault_exception_handler as *const (), fault_handlers_end as *const (), handler_length
     );
     let destination = unsafe {
         slice::from_raw_parts_mut(
@@ -229,12 +269,12 @@ pub fn set_interrupt_table(sregs: &mut kvm_sregs, guest_mem: &mut [u8]) {
         )
     };
     // let source = unsafe { slice::from_raw_parts(page_fault_handler as *const u8, handler_length) };
-    let source = unsafe { slice::from_raw_parts(asm_entry as *const u8, handler_length) };
+    let source = unsafe { slice::from_raw_parts(asm_start as *const u8, handler_length) };
     destination.copy_from_slice(source);
 
-    // let handler_address = INTERRUPT_HANDLER as u64;
-    let handler_address = (INTERRUPT_HANDLER + (page_fault_handler as *const c_void).addr()
-        - (asm_entry as *const () as *const c_void).addr()) as u64;
+    // let page_handler_address = (INTERRUPT_HANDLER
+    // + (page_fault_exception_handler as *const c_void).addr()
+    // - (asm_start as *const () as *const c_void).addr()) as u64;
 
     // set the general protection handler (also fall back for when others are not initialized)
     // two consequitive u64 are the descriptor for one entry
@@ -242,7 +282,10 @@ pub fn set_interrupt_table(sregs: &mut kvm_sregs, guest_mem: &mut [u8]) {
     // the segmenet selector uses bits 0 and 1 for the requested priviledge level (0 for us)
     // then bit 2 to the table indicator (0 for GDT, 1 for LDT)
     // let idt_general_protection = &mut guest_mem[GDT + 13 * 16..GDT + 14 * 16];
-    let segment_selector: u16 = 1 << 3 | 0;
+
+    // use selector 2, as in 64 bit mode, all the entries in the GDT use two entries (because entry size is determined by 32 bit mode)
+    let segment_selector: u16 = 2 << 3 | 0;
+
     // let segment_selector: u16 = 1;
     // idt[26] = segment_selector << 16;
     // // set the lowest 16 bit of the interrupt handler offset in the segment in the lowest 16 bit of the gate
@@ -275,13 +318,44 @@ pub fn set_interrupt_table(sregs: &mut kvm_sregs, guest_mem: &mut [u8]) {
     // test_location[8] = segment_selector.to_be_bytes()[0];
     // test_location[9] = segment_selector.to_le_bytes()[1];
 
-    let idt_base = tss_end;
-    for i in 0..50 {
+    // let general_handler_address =
+    //     (INTERRUPT_HANDLER + (general_fault_handler as *const c_void).addr()
+    //         - (asm_entry as *const () as *const c_void).addr()) as u64;
+
+    let idt_base = TSS_END;
+    for i in 0..21 {
+        let handler_address = (match i {
+            0 => divide_error_exception_handler,
+            1 => debug_interrupt_handler,
+            2 => nmi_interrupt_handler,
+            3 => breakpoint_exception_handler,
+            4 => overflow_exception_handler,
+            5 => bound_range_excepion_handler,
+            6 => invalid_opcode_exception_handler,
+            7 => device_not_available_exception_handler,
+            8 => double_fault_exception_handler,
+            9 => coprocessor_segment_overrun_handler,
+            10 => invalid_tss_exception_handler,
+            11 => segment_not_present_handler,
+            12 => stack_fault_exception_handler,
+            13 => general_protection_exception_handler,
+            14 => page_fault_exception_handler,
+            16 => floating_point_error_handler,
+            17 => alignment_check_exception_handler,
+            18 => machine_check_exception_handler,
+            19 => simd_fp_exception_handler,
+            20 => virtualization_exception_handler,
+            21 => control_protection_exception,
+            _ => default_handler,
+        } as *const u8)
+            .addr();
+        let handler_offset = (INTERRUPT_HANDLER + handler_address
+            - (asm_start as *const () as *const c_void).addr()) as u64;
+
         setup_interrupt_gate(
             &mut guest_mem[idt_base + i * 16..idt_base + (i + 1) * 16],
             segment_selector,
-            handler_address,
-            // INTERRUPT_HANDLER as u64,
+            handler_offset,
         );
     }
     // limit is the number to add to the base to address the last byte in the table
@@ -311,7 +385,7 @@ pub fn set_page_table(sregs: &mut kvm_sregs, guest_mem: &mut [u8]) {
         if i < 8 {
             p2[i] = PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS | (i as u64);
         } else {
-            p2[i] = PDE64_PRESENT | PDE64_RW | PDE64_PS | (i as u64);
+            p2[i] = PDE64_PRESENT | PDE64_USER | PDE64_PS | (i as u64);
         }
     }
     sregs.cr3 = P4_ADDR as u64;
@@ -322,9 +396,9 @@ fn setup_long_mode(sregs: &mut kvm_sregs) {
     sregs.cr0 = CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_WP | CR0_AM | CR0_PG;
     sregs.efer = EFER_LME | EFER_LMA;
     // set dpl on both code and stack segment to make sure it is user level
-    let priviledge_level = 0u8;
-    // let priviledge_level = 3u8;
-    let code_selector = 1 + (priviledge_level as u16) * 2;
+    // let priviledge_level = 0u8;
+    let priviledge_level = 3u8;
+    let code_selector = if priviledge_level == 0 { 2 } else { 6 };
     sregs.cs = kvm_segment {
         base: 0,
         limit: 0xFFFF_FFFF,
@@ -341,7 +415,7 @@ fn setup_long_mode(sregs: &mut kvm_sregs) {
     sregs.ss = kvm_segment {
         base: 0,
         limit: 0xFFFF_FFFF,
-        selector: (code_selector + 1) << 3 | (priviledge_level as u16),
+        selector: (code_selector + 2) << 3 | (priviledge_level as u16),
         type_: 3,
         present: 1,
         dpl: priviledge_level,

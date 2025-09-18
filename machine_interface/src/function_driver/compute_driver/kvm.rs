@@ -133,10 +133,15 @@ impl EngineLoop for KvmLoop {
         // };
         // println!("mprotect return: {:?}", mprotect_return);
         println!("going into loop");
-
+        let mut counter = 0;
         // start running the function
         loop {
             println!("loop iteration");
+            counter += 1;
+            if counter > 40 {
+                println!("Reached counter end");
+                break;
+            }
             let reason = self.vcpu.run().unwrap();
             match reason {
                 VcpuExit::Hlt => break,
