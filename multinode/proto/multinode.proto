@@ -22,12 +22,27 @@ message NodeInfo {
     uint32 engine_capacity = 5;
 }
 
+message DataItem {
+    string ident = 1;
+    uint32 key = 2;
+    bytes data = 3;
+}
+
+message DataSet {
+    string ident = 1;
+    repeated DataItem items = 2;
+}
+
 message Task {
-    // TODO: implement this
-    string name = 1;
+    string client_name = 1;
+    string worker_name = 2;
+    uint64 function_id = 3;
+    uint64 client_promise_idx = 4;
+    repeated DataSet data_sets = 5;
 }
 
 message TaskResult {
-    // TODO: implement this
-    string name = 1;
+    string worker_name = 1;
+    uint64 promise_idx = 2;
+    repeated DataSet data_sets = 3;
 }

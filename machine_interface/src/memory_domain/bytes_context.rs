@@ -11,6 +11,12 @@ pub struct BytesContext {
     frames: Vec<Bytes>,
 }
 
+impl BytesContext {
+    pub fn new(frames: Vec<Bytes>) -> Self {
+        BytesContext { frames }
+    }
+}
+
 impl core::fmt::Debug for BytesContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!("BytesContext {{frames: ["))?;

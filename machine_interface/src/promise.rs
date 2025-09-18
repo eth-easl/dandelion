@@ -134,6 +134,41 @@ impl PromiseBuffer {
         };
         return Ok((promise, debt));
     }
+
+    pub fn get_promise_idx(&self, promise: &Promise) -> Option<usize> {
+        let data_ptr = promise.data.cast_const();
+        let start_ptr = self.internal._buffer.as_ptr();
+        let end_ptr = unsafe { start_ptr.add(self.internal._buffer.len()) };
+        if data_ptr >= start_ptr && data_ptr < end_ptr {
+            let idx = unsafe { data_ptr.offset_from(start_ptr) };
+            Some(idx as usize)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_debt_idx(&self, debt: &Debt) -> Option<usize> {
+        let data_ptr = debt.data.cast_const();
+        let start_ptr = self.internal._buffer.as_ptr();
+        let end_ptr = unsafe { start_ptr.add(self.internal._buffer.len()) };
+        if data_ptr >= start_ptr && data_ptr < end_ptr {
+            let idx = unsafe { data_ptr.offset_from(start_ptr) };
+            Some(idx as usize)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_promise_from_idx(&self, idx: usize) -> Option<Promise> {
+        if idx >= self.internal._buffer.len() {
+            return None;
+        }
+        let data_ptr = unsafe { self.internal._buffer.as_ptr().add(idx).cast_mut() };
+        Some(Promise {
+            data: data_ptr,
+            origin: self.internal.clone(),
+        })
+    }
 }
 
 pub struct Promise {

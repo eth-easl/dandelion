@@ -2,7 +2,7 @@ use log::warn;
 use reqwest::Response;
 use tokio::time::{sleep, Duration};
 
-use crate::proto::{NodeInfo, Task, TaskResult};
+use crate::proto::{DataSet, NodeInfo, Task, TaskResult};
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -21,22 +21,35 @@ impl std::error::Error for ClientError {}
 
 #[derive(Debug)]
 pub struct Client {
-    host: String,
-    port: u16,
+    local_name: String,
+    remote_name: String,
+    remote_host: String,
+    remote_port: u16,
     client: reqwest::Client,
 }
 
-pub async fn try_create_client(host: String, port: u16) -> Result<Client, ClientError> {
+pub async fn try_create_client(
+    local_name: String,
+    remote_name: String,
+    remote_host: String,
+    remote_port: u16,
+) -> Result<Client, ClientError> {
     let client = reqwest::Client::new();
     match client
-        .post(format!("http://{}:{}/multinode/", host, port))
+        .post(format!("http://{}:{}/multinode/", remote_host, remote_port))
         .body("")
         .send()
         .await
     {
         Ok(resp) => {
             if resp.status().is_success() {
-                return Ok(Client { host, port, client });
+                return Ok(Client {
+                    local_name,
+                    remote_name,
+                    remote_host,
+                    remote_port,
+                    client,
+                });
             } else {
                 return Err(ClientError::ConnectionFailed(format!(
                     "Probe returned status code {}",
@@ -51,9 +64,23 @@ pub async fn try_create_client(host: String, port: u16) -> Result<Client, Client
     }
 }
 
-pub async fn create_client(host: String, port: u16, retry_timout_ms: u64) -> Client {
+pub async fn create_client(
+    local_name: String,
+    remote_name: String,
+    remote_host: String,
+    remote_port: u16,
+    retry_timout_ms: u64,
+) -> Client {
     loop {
-        match try_create_client(host.clone(), port).await {
+        // TODO: better handle this cloning below
+        match try_create_client(
+            local_name.clone(),
+            remote_name.clone(),
+            remote_host.clone(),
+            remote_port,
+        )
+        .await
+        {
             Ok(client) => return client,
             Err(err) => {
                 warn!(
@@ -109,7 +136,7 @@ impl Client {
             .client
             .post(format!(
                 "http://{}:{}/multinode/register",
-                self.host, self.port
+                self.remote_host, self.remote_port
             ))
             .body(request)
             .send()
@@ -128,7 +155,7 @@ impl Client {
             .client
             .post(format!(
                 "http://{}:{}/multinode/deregister",
-                self.host, self.port
+                self.remote_host, self.remote_port
             ))
             .body(request)
             .send()
@@ -139,13 +166,24 @@ impl Client {
         }
     }
 
-    pub async fn enqueue_task(&self, task_name: String) -> Result<(), ClientError> {
-        let request = super::serialize_task(Task { name: task_name });
+    pub async fn enqueue_task(
+        &self,
+        function_id: u64,
+        promise_index: usize,
+        data_sets: Vec<DataSet>,
+    ) -> Result<(), ClientError> {
+        let request = super::serialize_task(Task {
+            client_name: self.local_name.clone(),
+            worker_name: self.remote_name.clone(),
+            function_id,
+            client_promise_idx: promise_index as u64,
+            data_sets,
+        });
         match self
             .client
             .post(format!(
                 "http://{}:{}/multinode/schedule",
-                self.host, self.port
+                self.remote_host, self.remote_port
             ))
             .body(request)
             .send()
@@ -156,13 +194,21 @@ impl Client {
         }
     }
 
-    pub async fn return_task_result(&self, name: String) -> Result<(), ClientError> {
-        let request = super::serialize_task_result(TaskResult { name });
+    pub async fn return_task_result(
+        &self,
+        promise_index: usize,
+        data_sets: Vec<DataSet>,
+    ) -> Result<(), ClientError> {
+        let request = super::serialize_task_result(TaskResult {
+            worker_name: self.remote_name.clone(),
+            promise_idx: promise_index as u64,
+            data_sets,
+        });
         match self
             .client
             .post(format!(
                 "http://{}:{}/multinode/result",
-                self.host, self.port
+                self.remote_host, self.remote_port
             ))
             .body(request)
             .send()

@@ -70,10 +70,15 @@ pub enum DispatcherCommand {
         name: String,
     },
     RemoteTask {
-        name: String,
+        client_name: String,
+        function_id: usize,
+        promise_idx: usize,
+        inputs: Vec<DispatcherInput>,
     },
     RemoteTaskResult {
-        name: String,
+        worker_name: String,
+        promise_idx: usize,
+        results: Vec<DispatcherInput>,
     },
 }
 
@@ -161,11 +166,20 @@ async fn dispatcher_loop(
                     warn!("Failed to deregister worker: {:?}", err);
                 };
             }
-            DispatcherCommand::RemoteTask { name } => {
-                println!("Dispatcher received remote task with name: {}", name);
+            DispatcherCommand::RemoteTask {
+                client_name,
+                function_id,
+                promise_idx,
+                inputs,
+            } => {
+                println!("Dispatcher received remote task from node {} for function with id: {}, remote_promise_idx: {}, {} sets", client_name, function_id, promise_idx, inputs.len());
             }
-            DispatcherCommand::RemoteTaskResult { name } => {
-                println!("Dispatcher received remote task result with name: {}", name);
+            DispatcherCommand::RemoteTaskResult {
+                worker_name,
+                promise_idx,
+                results,
+            } => {
+                println!("Dispatcher received remote task result from remote worker: {}, local_promise_idx: {}, {} result sets", worker_name, promise_idx, results.len());
             }
         };
     }
@@ -380,9 +394,14 @@ fn main() -> () {
                     config.multinode_leader_ip
                 );
                 // retry every second until a connection to leader is established
-                let mut client =
-                    multinode::client::create_client(config.multinode_leader_ip, config.port, 1000)
-                        .await;
+                let client = multinode::client::create_client(
+                    format!("worker_{}", config.multinode_local_ip),
+                    "leader".to_string(),
+                    config.multinode_leader_ip,
+                    config.port,
+                    1000,
+                )
+                .await;
                 println!("connection established");
 
                 let res = client

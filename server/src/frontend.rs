@@ -1,9 +1,11 @@
+use bytes::Bytes;
 use http_body_util::BodyExt;
 use hyper::{
     body::{Body, Incoming},
     Request, Response, StatusCode,
 };
 use log::{debug, trace, warn};
+use multinode::proto;
 use serde::Deserialize;
 use std::{convert::Infallible, io::Write, path::PathBuf, sync::Arc, time::Instant};
 use tokio::sync::{mpsc, oneshot};
@@ -16,7 +18,9 @@ use dispatcher::{
 };
 use machine_interface::{
     machine_config::{i32_to_engine_type, EngineType},
-    memory_domain::{bytes_context::BytesContext, read_only::ReadOnlyContext},
+    memory_domain::{
+        bytes_context::BytesContext, read_only::ReadOnlyContext, Context, ContextType,
+    },
     DataItem, DataSet, Position,
 };
 
@@ -368,6 +372,49 @@ async fn handle_remote_node_deregistration(
     Ok(DandelionBody::from_vec(response.to_vec()))
 }
 
+fn convert_to_dispatcher_input(
+    protobuf_sets: Vec<proto::DataSet>,
+    buf: Bytes,
+) -> Vec<DispatcherInput> {
+    // create context sets with correct offsets to the buffer
+    let buf_base_ptr = buf.as_ptr();
+    let buf_size = buf.len();
+    let mut sets = Vec::with_capacity(protobuf_sets.len());
+    for protobuf_set in protobuf_sets.iter() {
+        let mut items = Vec::with_capacity(protobuf_set.items.len());
+        for protobuf_itm in protobuf_set.items.iter() {
+            let data_ptr = protobuf_itm.data.as_ptr();
+            items.push(DataItem {
+                ident: protobuf_itm.ident.clone(),
+                data: Position {
+                    offset: unsafe { data_ptr.offset_from(buf_base_ptr) as usize },
+                    size: protobuf_itm.data.len(),
+                },
+                key: protobuf_itm.key,
+            });
+        }
+        sets.push(Some(DataSet {
+            ident: protobuf_set.ident.clone(),
+            buffers: items,
+        }));
+    }
+
+    // create context over the protobuf
+    let mut context = Context::new(
+        ContextType::Bytes(Box::new(BytesContext::new(vec![buf]))),
+        buf_size,
+    );
+    context.content = sets;
+    let context_arc = Arc::new(context);
+
+    // create dispatcher input set vector
+    (0..protobuf_sets.len())
+        .map(|set_id| {
+            DispatcherInput::Set(CompositionSet::from((set_id, vec![context_arc.clone()])))
+        })
+        .collect::<Vec<_>>()
+}
+
 async fn handle_remote_node_request(
     req: Request<Incoming>,
     dispatcher: mpsc::Sender<DispatcherCommand>,
@@ -378,18 +425,22 @@ async fn handle_remote_node_request(
         .expect("Failed to extract body from task request")
         .to_bytes();
 
-    let task_info = match multinode::deserialize_task(req_bytes) {
+    let task_info = match multinode::deserialize_task(req_bytes.clone()) {
         Ok(task_info) => task_info,
         Err(err) => {
             return Err(DandelionError::RequestError(FrontendError::InvalidRequest(
-                format!("Failed to handle task request: {:?}", err),
+                format!("Failed to deserialize task request: {:?}", err),
             )));
         }
     };
 
+    let input_sets = convert_to_dispatcher_input(task_info.data_sets, req_bytes);
     dispatcher
         .send(DispatcherCommand::RemoteTask {
-            name: task_info.name,
+            client_name: task_info.client_name,
+            function_id: task_info.function_id as usize,
+            promise_idx: task_info.client_promise_idx as usize,
+            inputs: input_sets,
         })
         .await
         .unwrap();
@@ -411,18 +462,21 @@ async fn handle_remote_node_result(
         .expect("Failed to extract body from task result")
         .to_bytes();
 
-    let result_info = match multinode::deserialize_task_result(req_bytes) {
+    let result_info = match multinode::deserialize_task_result(req_bytes.clone()) {
         Ok(result_info) => result_info,
         Err(err) => {
             return Err(DandelionError::RequestError(FrontendError::InvalidRequest(
-                format!("Failed to handle task result: {:?}", err),
+                format!("Failed to deserialize task result: {:?}", err),
             )));
         }
     };
 
+    let result_sets = convert_to_dispatcher_input(result_info.data_sets, req_bytes);
     dispatcher
         .send(DispatcherCommand::RemoteTaskResult {
-            name: result_info.name,
+            worker_name: result_info.worker_name,
+            promise_idx: result_info.promise_idx as usize,
+            results: result_sets,
         })
         .await
         .unwrap();

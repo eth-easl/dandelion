@@ -448,33 +448,52 @@ impl Dispatcher {
             if let Some(alternative) = options.iter().next() {
                 match &alternative.function_type {
                     FunctionType::Function(engine_id, ctx_size) => {
-                        recorder.record(RecordPoint::PrepareEnvQueue);
-                        let (context, config, metadata) = self
-                            .prepare_for_engine(
+                        let remote_queue = match self.remote_engine_queues.get(engine_id) {
+                            Some(q) => q,
+                            None => {
+                                return Err(DandelionError::Dispatcher(
+                                    DispatcherError::ConfigError,
+                                ))
+                            }
+                        };
+                        // try running on some remote node (TODO: refactor and allow for custom policies)
+                        let result_context = if remote_queue.available() {
+                            recorder.record(RecordPoint::ExecutionQueue);
+                            let result_context = remote_queue
+                                .enqueue_work(function_id, inputs)
+                                .await?
+                                .get_context();
+                            recorder.record(RecordPoint::FutureReturn);
+                            result_context
+                        } else {
+                            // run on local engine
+                            recorder.record(RecordPoint::PrepareEnvQueue);
+                            let (context, config, metadata) = self
+                                .prepare_for_engine(
+                                    function_id,
+                                    *engine_id,
+                                    inputs,
+                                    *ctx_size,
+                                    non_caching,
+                                    recorder.get_sub_recorder(),
+                                )
+                                .await?;
+                            recorder.record(RecordPoint::GetEngineQueue);
+                            trace!("running function {} on {:?} type engine with input sets {:?} and output sets {:?}",
                                 function_id,
                                 *engine_id,
-                                inputs,
-                                *ctx_size,
-                                non_caching,
-                                recorder.get_sub_recorder(),
-                            )
-                            .await?;
-                        recorder.record(RecordPoint::GetEngineQueue);
-                        trace!("running function {} on {:?} type engine with input sets {:?} and output sets {:?}",
-                            function_id,
-                            *engine_id,
-                            metadata.input_sets.iter().map(|(name, _)| name).collect_vec(),
-                            metadata.output_sets);
-                        let context = self
-                            .run_on_engine(
+                                metadata.input_sets.iter().map(|(name, _)| name).collect_vec(),
+                                metadata.output_sets);
+                            self.run_on_engine(
                                 *engine_id,
                                 config,
                                 metadata.output_sets,
                                 context,
                                 recorder.get_sub_recorder(),
                             )
-                            .await?;
-                        let context_arc = Arc::new(context);
+                            .await?
+                        };
+                        let context_arc = Arc::new(result_context);
 
                         let composition_sets = context_arc
                             .content
@@ -636,39 +655,21 @@ impl Dispatcher {
             "Running function on engine. Context content size: {}",
             function_context.content.len()
         );
-        let remote_queue = match self.remote_engine_queues.get(&engine_type) {
+        let engine_queue = match self.local_engine_queues.get(&engine_type) {
             Some(q) => q,
             None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
         };
-        if remote_queue.available() {
-            let subrecoder = recorder.get_sub_recorder();
-            let args = WorkToDo::FunctionArguments {
-                config: function_config,
-                context: function_context,
-                output_sets,
-                recorder: subrecoder,
-            };
-            recorder.record(RecordPoint::ExecutionQueue);
-            let result = remote_queue.enqueue_work(args).await?.get_context();
-            recorder.record(RecordPoint::FutureReturn);
-            Ok(result)
-        } else {
-            let engine_queue = match self.local_engine_queues.get(&engine_type) {
-                Some(q) => q,
-                None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
-            };
-            let subrecoder = recorder.get_sub_recorder();
-            let args = WorkToDo::FunctionArguments {
-                config: function_config,
-                context: function_context,
-                output_sets,
-                recorder: subrecoder,
-            };
-            recorder.record(RecordPoint::ExecutionQueue);
-            let result = engine_queue.enqueue_work(args).await?.get_context();
-            recorder.record(RecordPoint::FutureReturn);
-            Ok(result)
-        }
+        let subrecoder = recorder.get_sub_recorder();
+        let args = WorkToDo::FunctionArguments {
+            config: function_config,
+            context: function_context,
+            output_sets,
+            recorder: subrecoder,
+        };
+        recorder.record(RecordPoint::ExecutionQueue);
+        let result = engine_queue.enqueue_work(args).await?.get_context();
+        recorder.record(RecordPoint::FutureReturn);
+        Ok(result)
     }
 
     pub async fn register_remote_node(

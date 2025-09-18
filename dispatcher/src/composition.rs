@@ -2,7 +2,8 @@ use crate::function_registry::{FunctionDict, Metadata};
 use dandelion_commons::{DandelionError, DandelionResult, DispatcherError, FunctionId};
 use dparser;
 use itertools::Itertools;
-use machine_interface::memory_domain::Context;
+use machine_interface::memory_domain::{Context, ContextTrait};
+use multinode::proto;
 use std::{
     collections::{btree_map::Entry, BTreeMap},
     sync::Arc,
@@ -378,6 +379,26 @@ impl CompositionSet {
         self.item_list.extend(item_list.into_iter());
         self.item_list.sort_unstable_by_key(|a| a.0);
         return Ok(());
+    }
+
+    pub fn serialize(&self) -> proto::DataSet {
+        let mut items = Vec::with_capacity(self.item_list.len());
+        for (_, itm_idx, context) in self.item_list.iter() {
+            let context_item = &context.content[self.set_index].as_ref().unwrap().buffers[*itm_idx];
+            let mut data_bytes = Vec::<u8>::with_capacity(context_item.data.size);
+            context
+                .read(context_item.data.offset, data_bytes.as_mut_slice())
+                .expect("Failed to read item!");
+            items.push(proto::DataItem {
+                ident: context_item.ident.clone(),
+                key: context_item.key,
+                data: data_bytes,
+            });
+        }
+        proto::DataSet {
+            ident: format!("set_{}", self.set_index),
+            items,
+        }
     }
 }
 
