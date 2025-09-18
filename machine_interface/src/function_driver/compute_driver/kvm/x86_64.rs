@@ -98,7 +98,8 @@ extern "C" {
     fn machine_check_exception_handler();
     fn simd_fp_exception_handler();
     fn virtualization_exception_handler();
-    fn control_protection_exception();
+    fn control_protection_exception(); 
+    fn user_exit_handler();
 }
 
 impl ResetState {
@@ -323,7 +324,7 @@ pub fn set_interrupt_table(sregs: &mut kvm_sregs, guest_mem: &mut [u8]) {
     //         - (asm_entry as *const () as *const c_void).addr()) as u64;
 
     let idt_base = TSS_END;
-    for i in 0..21 {
+    for i in 0..33 {
         let handler_address = (match i {
             0 => divide_error_exception_handler,
             1 => debug_interrupt_handler,
@@ -346,6 +347,7 @@ pub fn set_interrupt_table(sregs: &mut kvm_sregs, guest_mem: &mut [u8]) {
             19 => simd_fp_exception_handler,
             20 => virtualization_exception_handler,
             21 => control_protection_exception,
+            32 => user_exit_handler,
             _ => default_handler,
         } as *const u8)
             .addr();
@@ -362,7 +364,7 @@ pub fn set_interrupt_table(sregs: &mut kvm_sregs, guest_mem: &mut [u8]) {
     // 16 bytes per entry, need to cover up to and including entry 14
     sregs.idt = kvm_bindings::kvm_dtable {
         base: idt_base as u64,
-        limit: 50 * 16 - 1,
+        limit: 33 * 16 - 1,
         ..Default::default()
     };
 }
@@ -383,9 +385,9 @@ pub fn set_page_table(sregs: &mut kvm_sregs, guest_mem: &mut [u8]) {
     let p2 = u8_slice_to_u64_slice(&mut guest_mem[P2_ADDR..P2_ADDR + 0x1000]);
     for i in 0..512 {
         if i < 8 {
-            p2[i] = PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS | (i as u64);
+            p2[i] = PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS | (i as u64) << 21;
         } else {
-            p2[i] = PDE64_PRESENT | PDE64_USER | PDE64_PS | (i as u64);
+            p2[i] = PDE64_PRESENT | PDE64_USER | PDE64_PS | (i as u64) << 21;
         }
     }
     sregs.cr3 = P4_ADDR as u64;
