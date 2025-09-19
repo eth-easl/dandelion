@@ -706,8 +706,4 @@ impl Dispatcher {
             ))
         }
     }
-
-    pub fn return_remote_result() {
-        todo!("implement returning results")
-    }
 }

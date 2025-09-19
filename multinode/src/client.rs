@@ -1,15 +1,16 @@
 use log::warn;
+use prost::bytes::Bytes;
 use reqwest::Response;
 use tokio::time::{sleep, Duration};
 
-use crate::proto::{DataSet, NodeInfo, Task, TaskResult};
+use crate::proto::{DataSet, NodeInfo, Task};
 
 #[derive(Debug)]
 pub enum ClientError {
     ConnectionFailed(String),
     RequestFailed(String),
     InvalidResponse(String),
-    ActionFailed,
+    ActionFailed(String),
     BufferGone,
 }
 impl core::fmt::Display for ClientError {
@@ -21,16 +22,12 @@ impl std::error::Error for ClientError {}
 
 #[derive(Debug)]
 pub struct Client {
-    local_name: String,
-    remote_name: String,
     remote_host: String,
     remote_port: u16,
     client: reqwest::Client,
 }
 
 pub async fn try_create_client(
-    local_name: String,
-    remote_name: String,
     remote_host: String,
     remote_port: u16,
 ) -> Result<Client, ClientError> {
@@ -44,8 +41,6 @@ pub async fn try_create_client(
         Ok(resp) => {
             if resp.status().is_success() {
                 return Ok(Client {
-                    local_name,
-                    remote_name,
                     remote_host,
                     remote_port,
                     client,
@@ -64,27 +59,13 @@ pub async fn try_create_client(
     }
 }
 
-pub async fn create_client(
-    local_name: String,
-    remote_name: String,
-    remote_host: String,
-    remote_port: u16,
-    retry_timout_ms: u64,
-) -> Client {
+pub async fn create_client(remote_host: String, remote_port: u16, retry_timout_ms: u64) -> Client {
     loop {
-        // TODO: better handle this cloning below
-        match try_create_client(
-            local_name.clone(),
-            remote_name.clone(),
-            remote_host.clone(),
-            remote_port,
-        )
-        .await
-        {
+        match try_create_client(remote_host.clone(), remote_port).await {
             Ok(client) => return client,
             Err(err) => {
                 warn!(
-                    "Failed to probe remote node! Retrying in {} ms... (Error: {:?})",
+                    "Failed to probe remote node! Retrying in {} ms... (Error: {})",
                     retry_timout_ms, err
                 );
                 sleep(Duration::from_millis(retry_timout_ms)).await;
@@ -105,14 +86,11 @@ async fn handle_response_action_status(response: Response) -> Result<(), ClientE
         .await
         .expect("Failed to collect response body");
     match super::deserialize_action_status(body) {
-        Ok(action_status) => {
-            if action_status.success {
-                Ok(())
-            } else {
-                Err(ClientError::ActionFailed)
-            }
-        }
-        Err(err) => return Err(ClientError::InvalidResponse(format!("{:?}", err))),
+        Ok(action_status) => match action_status.success {
+            true => Ok(()),
+            false => Err(ClientError::ActionFailed(action_status.message)),
+        },
+        Err(err) => return Err(ClientError::InvalidResponse(format!("{}", err))),
     }
 }
 
@@ -166,20 +144,17 @@ impl Client {
         }
     }
 
-    pub async fn enqueue_task(
+    pub async fn execute_task(
         &self,
         function_id: u64,
-        promise_index: usize,
         data_sets: Vec<DataSet>,
-    ) -> Result<(), ClientError> {
+    ) -> Result<(Vec<DataSet>, Bytes), ClientError> {
         let request = super::serialize_task(Task {
-            client_name: self.local_name.clone(),
-            worker_name: self.remote_name.clone(),
             function_id,
-            client_promise_idx: promise_index as u64,
             data_sets,
         });
-        match self
+
+        let response = match self
             .client
             .post(format!(
                 "http://{}:{}/multinode/schedule",
@@ -189,33 +164,27 @@ impl Client {
             .send()
             .await
         {
-            Ok(response) => handle_response_action_status(response).await,
-            Err(err) => return Err(ClientError::RequestFailed(format!("{:?}", err))),
-        }
-    }
+            Ok(resp) => resp,
+            Err(err) => return Err(ClientError::RequestFailed(format!("{}", err))),
+        };
 
-    pub async fn return_task_result(
-        &self,
-        promise_index: usize,
-        data_sets: Vec<DataSet>,
-    ) -> Result<(), ClientError> {
-        let request = super::serialize_task_result(TaskResult {
-            worker_name: self.remote_name.clone(),
-            promise_idx: promise_index as u64,
-            data_sets,
-        });
-        match self
-            .client
-            .post(format!(
-                "http://{}:{}/multinode/result",
-                self.remote_host, self.remote_port
-            ))
-            .body(request)
-            .send()
+        // handle TaskResult response
+        if !response.status().is_success() {
+            return Err(ClientError::RequestFailed(format!(
+                "Response status {:?}",
+                response.status()
+            )));
+        }
+        let body = response
+            .bytes()
             .await
-        {
-            Ok(response) => handle_response_action_status(response).await,
-            Err(err) => return Err(ClientError::RequestFailed(format!("{:?}", err))),
+            .expect("Failed to collect response body");
+        match super::deserialize_task_result(body.clone()) {
+            Ok(task_result) => match task_result.success {
+                true => Ok((task_result.data_sets, body)),
+                false => Err(ClientError::ActionFailed(task_result.error_msg)),
+            },
+            Err(err) => return Err(ClientError::InvalidResponse(format!("{}", err))),
         }
     }
 }

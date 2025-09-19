@@ -70,15 +70,10 @@ pub enum DispatcherCommand {
         name: String,
     },
     RemoteTask {
-        client_name: String,
-        function_id: usize,
-        promise_idx: usize,
-        inputs: Vec<DispatcherInput>,
-    },
-    RemoteTaskResult {
-        worker_name: String,
-        promise_idx: usize,
-        results: Vec<DispatcherInput>,
+        function_id: u64,
+        inputs: Vec<Option<CompositionSet>>,
+        start_time: Instant,
+        callback: oneshot::Sender<DandelionResult<Vec<Option<CompositionSet>>>>,
     },
 }
 
@@ -167,19 +162,25 @@ async fn dispatcher_loop(
                 };
             }
             DispatcherCommand::RemoteTask {
-                client_name,
                 function_id,
-                promise_idx,
                 inputs,
+                start_time,
+                mut callback,
             } => {
-                println!("Dispatcher received remote task from node {} for function with id: {}, remote_promise_idx: {}, {} sets", client_name, function_id, promise_idx, inputs.len());
-            }
-            DispatcherCommand::RemoteTaskResult {
-                worker_name,
-                promise_idx,
-                results,
-            } => {
-                println!("Dispatcher received remote task result from remote worker: {}, local_promise_idx: {}, {} result sets", worker_name, promise_idx, results.len());
+                let recorder = Recorder::new(function_id, start_time);
+                let function_future =
+                    dispatcher.queue_function(function_id, inputs, true, recorder);
+                spawn(async {
+                    select! {
+                        function_output = function_future => {
+                            // either get an ok, meaning the data was sent, or get the data back
+                            // no need to handle ok, and nothing useful to do with data if we get it back
+                            // drop it here to release resources
+                            let _ = callback.send(function_output);
+                        }
+                        _ = callback.closed() => ()
+                    }
+                });
             }
         };
     }
@@ -394,14 +395,9 @@ fn main() -> () {
                     config.multinode_leader_ip
                 );
                 // retry every second until a connection to leader is established
-                let client = multinode::client::create_client(
-                    format!("worker_{}", config.multinode_local_ip),
-                    "leader".to_string(),
-                    config.multinode_leader_ip,
-                    config.port,
-                    1000,
-                )
-                .await;
+                let client =
+                    multinode::client::create_client(config.multinode_leader_ip, config.port, 1000)
+                        .await;
                 println!("connection established");
 
                 let res = client

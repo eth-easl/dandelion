@@ -34,15 +34,12 @@ message DataSet {
 }
 
 message Task {
-    string client_name = 1;
-    string worker_name = 2;
-    uint64 function_id = 3;
-    uint64 client_promise_idx = 4;
-    repeated DataSet data_sets = 5;
+    uint64 function_id = 1;
+    repeated DataSet data_sets = 2;
 }
 
 message TaskResult {
-    string worker_name = 1;
-    uint64 promise_idx = 2;
+    bool success = 1;
+    string error_msg = 2;
     repeated DataSet data_sets = 3;
 }

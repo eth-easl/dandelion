@@ -13,9 +13,11 @@ use machine_interface::{
     function_driver::WorkDone,
     promise::{Debt, PromiseBuffer},
 };
-use multinode::{client::Client, proto::DataSet};
+use multinode::client::Client;
 
-use crate::composition::CompositionSet;
+use crate::composition::{
+    convert_composition_sets_to_protobuf, convert_protobuf_to_context, CompositionSet,
+};
 
 const MAX_QUEUE: usize = 4096;
 
@@ -25,16 +27,6 @@ pub struct RemoteEngineQueue {
     promise_buffer: PromiseBuffer,
     remote_clients: RwLock<HashMap<String, (u32, Arc<Client>)>>,
     remote_capacity: AtomicU32,
-}
-
-fn serialize_data_sets(sets: Vec<Option<CompositionSet>>) -> Vec<DataSet> {
-    let mut out_vector = Vec::with_capacity(sets.len());
-    for set_opt in sets.iter() {
-        if let Some(set) = set_opt {
-            out_vector.push(set.serialize());
-        }
-    }
-    out_vector
 }
 
 impl RemoteEngineQueue {
@@ -57,7 +49,6 @@ impl RemoteEngineQueue {
         clients.len() > 0
     }
 
-    // TODO: refactor arg names
     pub async fn add_remote(
         &self,
         key: String,
@@ -66,16 +57,14 @@ impl RemoteEngineQueue {
         cap: u32,
     ) -> DandelionResult<()> {
         // client creation also checks if the remote resource can be reached
-        let local_name = "leader".to_string(); // TODO
-        let client =
-            match multinode::client::try_create_client(local_name, key.clone(), host, port).await {
-                Ok(c) => c,
-                Err(_) => {
-                    return Err(DandelionError::MultinodeError(
-                        MultinodeError::ResourceNotReached,
-                    ))
-                }
-            };
+        let client = match multinode::client::try_create_client(host, port).await {
+            Ok(c) => c,
+            Err(_) => {
+                return Err(DandelionError::MultinodeError(
+                    MultinodeError::ResourceNotReached,
+                ))
+            }
+        };
 
         let mut clients = self
             .remote_clients
@@ -128,10 +117,6 @@ impl RemoteEngineQueue {
                     )
                     .is_ok()
             {
-                let promise_idx = self
-                    .promise_buffer
-                    .get_promise_idx(&promise)
-                    .expect("Promise is somehow out of bounds!");
                 let mut selected_client = None;
                 {
                     // select a client that has capacity and release lock afterwards
@@ -149,16 +134,23 @@ impl RemoteEngineQueue {
                 }
 
                 // send task to remote node
-                let data_sets = serialize_data_sets(f_inputs);
-                if let Err(err) = selected_client
+                let data_sets = convert_composition_sets_to_protobuf(f_inputs);
+                let result_context = match selected_client
                     .expect("Did not find a client with capacity even though there should be one!")
-                    .enqueue_task(f_id, promise_idx, data_sets)
+                    .execute_task(f_id, data_sets)
                     .await
                 {
-                    return Err(DandelionError::MultinodeError(MultinodeError::ClientError(
-                        format!("{:?}", err),
-                    )));
-                }
+                    Err(err) => {
+                        // TODO: handle fails -> potentially retry
+                        return Err(DandelionError::MultinodeError(MultinodeError::ClientError(
+                            format!("{}", err),
+                        )));
+                    }
+                    Ok((proto_sets, buf)) => convert_protobuf_to_context(proto_sets, buf),
+                };
+
+                // update promise
+                debt.fulfill(Ok(WorkDone::Context(result_context)));
                 return promise.await;
             }
         }
@@ -174,66 +166,66 @@ impl RemoteEngineQueue {
         promise.await
     }
 
-    pub async fn return_work_result(
-        &self,
-        remote_key: &String,
-    ) -> DandelionResult<Option<multinode::proto::Task>> {
-        // if there is work in the queue take work and return it
-        if !self.queue_out.is_empty() {
-            // make sure worker client is still here
-            let mut worker_client = None;
-            {
-                // get the client and release lock afterwards
-                let clients = self
-                    .remote_clients
-                    .read()
-                    .expect("Failed to get read lock for remote_clients (lock is poisoned)!");
-                if let Some((_, client)) = clients.get(remote_key) {
-                    worker_client = Some((*client).clone());
-                }
-            };
+    //     pub async fn return_work_result(
+    //         &self,
+    //         remote_key: &String,
+    //     ) -> DandelionResult<Option<multinode::proto::Task>> {
+    //         // if there is work in the queue take work and return it
+    //         if !self.queue_out.is_empty() {
+    //             // make sure worker client is still here
+    //             let mut worker_client = None;
+    //             {
+    //                 // get the client and release lock afterwards
+    //                 let clients = self
+    //                     .remote_clients
+    //                     .read()
+    //                     .expect("Failed to get read lock for remote_clients (lock is poisoned)!");
+    //                 if let Some((_, client)) = clients.get(remote_key) {
+    //                     worker_client = Some((*client).clone());
+    //                 }
+    //             };
 
-            // get next task and send it to remote
-            if worker_client.is_some() {
-                match self.queue_out.try_recv() {
-                    Err(TryRecvError::Disconnected) => panic!("Remote workqueue disconnected!"),
-                    Err(TryRecvError::Empty) => (), // possible due to concurrency -> just continue
-                    Ok((next_f_id, next_f_inputs, debt)) => {
-                        if debt.is_alive() {
-                            let debt_idx = self
-                                .promise_buffer
-                                .get_debt_idx(&debt)
-                                .expect("Debt is somehow out of bounds!");
-                            let data_sets = serialize_data_sets(next_f_inputs);
-                            if let Err(err) = worker_client
-                                .expect("Did not find a client with capacity even though there should be one!")
-                                .enqueue_task(next_f_id, debt_idx, data_sets)
-                                .await
-                            {
-                                return Err(DandelionError::MultinodeError(MultinodeError::ClientError(
-                                    format!("{:?}", err),
-                                )));
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    //             // get next task and send it to remote
+    //             if worker_client.is_some() {
+    //                 match self.queue_out.try_recv() {
+    //                     Err(TryRecvError::Disconnected) => panic!("Remote workqueue disconnected!"),
+    //                     Err(TryRecvError::Empty) => (), // possible due to concurrency -> just continue
+    //                     Ok((next_f_id, next_f_inputs, debt)) => {
+    //                         if debt.is_alive() {
+    //                             let debt_idx = self
+    //                                 .promise_buffer
+    //                                 .get_debt_idx(&debt)
+    //                                 .expect("Debt is somehow out of bounds!");
+    //                             let data_sets = serialize_data_sets(next_f_inputs);
+    //                             if let Err(err) = worker_client
+    //                                 .expect("Did not find a client with capacity even though there should be one!")
+    //                                 .enqueue_task(next_f_id, debt_idx, data_sets)
+    //                                 .await
+    //                             {
+    //                                 return Err(DandelionError::MultinodeError(MultinodeError::ClientError(
+    //                                     format!("{:?}", err),
+    //                                 )));
+    //                             }
+    //                         }
+    //                     }
+    //                 }
+    //             }
+    //         }
 
-        // otherwise return the capacity of the remote resource
-        let mut clients = self
-            .remote_clients
-            .write()
-            .expect("Failed to get write lock for remote_clients (lock is poisoned)!");
-        match clients.get_mut(remote_key) {
-            Some((cap, _)) => {
-                *cap += 1;
-                Ok(None)
-                // FIXME: it's possible that the queue has gotten work in the meantime
-            }
-            None => Err(DandelionError::MultinodeError(
-                MultinodeError::ResourceNotFound,
-            )),
-        }
-    }
+    //         // otherwise return the capacity of the remote resource
+    //         let mut clients = self
+    //             .remote_clients
+    //             .write()
+    //             .expect("Failed to get write lock for remote_clients (lock is poisoned)!");
+    //         match clients.get_mut(remote_key) {
+    //             Some((cap, _)) => {
+    //                 *cap += 1;
+    //                 Ok(None)
+    //                 // FIXME: it's possible that the queue has gotten work in the meantime
+    //             }
+    //             None => Err(DandelionError::MultinodeError(
+    //                 MultinodeError::ResourceNotFound,
+    //             )),
+    //         }
+    //     }
 }

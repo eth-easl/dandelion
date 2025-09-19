@@ -1,8 +1,12 @@
 use crate::function_registry::{FunctionDict, Metadata};
+use bytes::Bytes;
 use dandelion_commons::{DandelionError, DandelionResult, DispatcherError, FunctionId};
 use dparser;
 use itertools::Itertools;
-use machine_interface::memory_domain::{Context, ContextTrait};
+use machine_interface::{
+    memory_domain::{bytes_context::BytesContext, Context, ContextTrait, ContextType},
+    DataItem, DataSet, Position,
+};
 use multinode::proto;
 use std::{
     collections::{btree_map::Entry, BTreeMap},
@@ -322,6 +326,62 @@ pub struct CompositionSet {
     item_list: Vec<(u32, usize, Arc<Context>)>,
     /// the set side inside the contexts the composition set represents
     set_index: usize,
+}
+
+pub fn convert_protobuf_to_context(protobuf_sets: Vec<proto::DataSet>, buf: Bytes) -> Context {
+    // create context sets with correct offsets to the buffer
+    let buf_base_ptr = buf.as_ptr();
+    let buf_size = buf.len();
+    let mut sets = Vec::with_capacity(protobuf_sets.len());
+    for protobuf_set in protobuf_sets.iter() {
+        let mut items = Vec::with_capacity(protobuf_set.items.len());
+        for protobuf_itm in protobuf_set.items.iter() {
+            let data_ptr = protobuf_itm.data.as_ptr();
+            items.push(DataItem {
+                ident: protobuf_itm.ident.clone(),
+                data: Position {
+                    offset: unsafe { data_ptr.offset_from(buf_base_ptr) as usize },
+                    size: protobuf_itm.data.len(),
+                },
+                key: protobuf_itm.key,
+            });
+        }
+        sets.push(Some(DataSet {
+            ident: protobuf_set.ident.clone(),
+            buffers: items,
+        }));
+    }
+
+    // create context over the protobuf
+    let mut context = Context::new(
+        ContextType::Bytes(Box::new(BytesContext::new(vec![buf]))),
+        buf_size,
+    );
+    context.content = sets;
+    context
+}
+
+pub fn convert_protobuf_to_composition_sets(
+    protobuf_sets: Vec<proto::DataSet>,
+    buf: Bytes,
+) -> Vec<Option<CompositionSet>> {
+    let num_sets = protobuf_sets.len();
+    let context = convert_protobuf_to_context(protobuf_sets, buf);
+    let context_arc = Arc::new(context);
+    (0..num_sets)
+        .map(|set_id| Some(CompositionSet::from((set_id, vec![context_arc.clone()]))))
+        .collect::<Vec<_>>()
+}
+
+pub fn convert_composition_sets_to_protobuf(
+    sets: Vec<Option<CompositionSet>>,
+) -> Vec<proto::DataSet> {
+    let mut out_vector = Vec::with_capacity(sets.len());
+    let _ = sets
+        .iter()
+        .flatten()
+        .map(|set| out_vector.push(set.serialize()));
+    out_vector
 }
 
 impl CompositionSet {

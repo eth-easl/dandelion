@@ -1,11 +1,10 @@
-use bytes::Bytes;
 use http_body_util::BodyExt;
 use hyper::{
     body::{Body, Incoming},
     Request, Response, StatusCode,
 };
 use log::{debug, trace, warn};
-use multinode::proto;
+use multinode::proto::TaskResult;
 use serde::Deserialize;
 use std::{convert::Infallible, io::Write, path::PathBuf, sync::Arc, time::Instant};
 use tokio::sync::{mpsc, oneshot};
@@ -14,13 +13,15 @@ use super::{DispatcherCommand, FUNCTION_FOLDER_PATH, TRACING_ARCHIVE};
 use dandelion_commons::{DandelionError, DandelionResult, FrontendError};
 use dandelion_server::DandelionBody;
 use dispatcher::{
-    composition::CompositionSet, dispatcher::DispatcherInput, function_registry::Metadata,
+    composition::{
+        convert_composition_sets_to_protobuf, convert_protobuf_to_composition_sets, CompositionSet,
+    },
+    dispatcher::DispatcherInput,
+    function_registry::Metadata,
 };
 use machine_interface::{
     machine_config::{i32_to_engine_type, EngineType},
-    memory_domain::{
-        bytes_context::BytesContext, read_only::ReadOnlyContext, Context, ContextType,
-    },
+    memory_domain::{bytes_context::BytesContext, read_only::ReadOnlyContext},
     DataItem, DataSet, Position,
 };
 
@@ -275,7 +276,7 @@ async fn handle_request(
         Ok(x) => x,
         Err(err) => {
             return Err(DandelionError::RequestError(FrontendError::InternalError(
-                format!("Failed to get result from function: {:?}", err),
+                format!("Failed to get result from function: {}", err),
             )))
         }
     };
@@ -372,53 +373,12 @@ async fn handle_remote_node_deregistration(
     Ok(DandelionBody::from_vec(response.to_vec()))
 }
 
-fn convert_to_dispatcher_input(
-    protobuf_sets: Vec<proto::DataSet>,
-    buf: Bytes,
-) -> Vec<DispatcherInput> {
-    // create context sets with correct offsets to the buffer
-    let buf_base_ptr = buf.as_ptr();
-    let buf_size = buf.len();
-    let mut sets = Vec::with_capacity(protobuf_sets.len());
-    for protobuf_set in protobuf_sets.iter() {
-        let mut items = Vec::with_capacity(protobuf_set.items.len());
-        for protobuf_itm in protobuf_set.items.iter() {
-            let data_ptr = protobuf_itm.data.as_ptr();
-            items.push(DataItem {
-                ident: protobuf_itm.ident.clone(),
-                data: Position {
-                    offset: unsafe { data_ptr.offset_from(buf_base_ptr) as usize },
-                    size: protobuf_itm.data.len(),
-                },
-                key: protobuf_itm.key,
-            });
-        }
-        sets.push(Some(DataSet {
-            ident: protobuf_set.ident.clone(),
-            buffers: items,
-        }));
-    }
-
-    // create context over the protobuf
-    let mut context = Context::new(
-        ContextType::Bytes(Box::new(BytesContext::new(vec![buf]))),
-        buf_size,
-    );
-    context.content = sets;
-    let context_arc = Arc::new(context);
-
-    // create dispatcher input set vector
-    (0..protobuf_sets.len())
-        .map(|set_id| {
-            DispatcherInput::Set(CompositionSet::from((set_id, vec![context_arc.clone()])))
-        })
-        .collect::<Vec<_>>()
-}
-
 async fn handle_remote_node_request(
     req: Request<Incoming>,
     dispatcher: mpsc::Sender<DispatcherCommand>,
 ) -> DandelionResult<DandelionBody> {
+    let start_time = Instant::now();
+
     let req_bytes = req
         .collect()
         .await
@@ -434,57 +394,30 @@ async fn handle_remote_node_request(
         }
     };
 
-    let input_sets = convert_to_dispatcher_input(task_info.data_sets, req_bytes);
+    let input_sets = convert_protobuf_to_composition_sets(task_info.data_sets, req_bytes);
+    let (callback, output_recevier) = tokio::sync::oneshot::channel();
     dispatcher
         .send(DispatcherCommand::RemoteTask {
-            client_name: task_info.client_name,
-            function_id: task_info.function_id as usize,
-            promise_idx: task_info.client_promise_idx as usize,
+            function_id: task_info.function_id,
             inputs: input_sets,
+            start_time,
+            callback,
         })
         .await
         .unwrap();
 
-    let response = multinode::serialize_action_status(multinode::proto::ActionStatus {
-        success: true,
-        message: "".to_string(),
-    });
-    Ok(DandelionBody::from_vec(response.to_vec()))
-}
-
-async fn handle_remote_node_result(
-    req: Request<Incoming>,
-    dispatcher: mpsc::Sender<DispatcherCommand>,
-) -> DandelionResult<DandelionBody> {
-    let req_bytes = req
-        .collect()
-        .await
-        .expect("Failed to extract body from task result")
-        .to_bytes();
-
-    let result_info = match multinode::deserialize_task_result(req_bytes.clone()) {
-        Ok(result_info) => result_info,
-        Err(err) => {
-            return Err(DandelionError::RequestError(FrontendError::InvalidRequest(
-                format!("Failed to deserialize task result: {:?}", err),
-            )));
-        }
+    let response = match output_recevier.await.unwrap() {
+        Ok(out_sets) => multinode::serialize_task_result(TaskResult {
+            success: true,
+            error_msg: String::new(),
+            data_sets: convert_composition_sets_to_protobuf(out_sets),
+        }),
+        Err(err) => multinode::serialize_task_result(TaskResult {
+            success: false,
+            error_msg: format!("Failed to get result from function: {:?}", err),
+            data_sets: vec![],
+        }),
     };
-
-    let result_sets = convert_to_dispatcher_input(result_info.data_sets, req_bytes);
-    dispatcher
-        .send(DispatcherCommand::RemoteTaskResult {
-            worker_name: result_info.worker_name,
-            promise_idx: result_info.promise_idx as usize,
-            results: result_sets,
-        })
-        .await
-        .unwrap();
-
-    let response = multinode::serialize_action_status(multinode::proto::ActionStatus {
-        success: true,
-        message: "".to_string(),
-    });
     Ok(DandelionBody::from_vec(response.to_vec()))
 }
 
@@ -520,10 +453,6 @@ pub async fn service(
             is_multinode_request = true;
             handle_remote_node_request(req, dispatcher).await
         }
-        "/multinode/return" => {
-            is_multinode_request = true;
-            handle_remote_node_result(req, dispatcher).await
-        }
         // TODO: rename to cold func and hot func, remove matmul, compute, io
         "/cold/matmul"
         | "/cold/matmulstore"
@@ -554,12 +483,12 @@ pub async fn service(
     match res {
         Ok(body) => Ok::<_, Infallible>(Response::new(body)),
         Err(err) => {
-            warn!("Failed to serve request: {:?}", err);
+            warn!("Failed to serve request: {}", err);
             let response = if is_multinode_request {
                 // for multinode requests return ActionStatus
                 let response = multinode::serialize_action_status(multinode::proto::ActionStatus {
                     success: false,
-                    message: format!("{:?}", err),
+                    message: format!("{}", err),
                 });
                 Response::new(DandelionBody::from_vec(response.to_vec()))
             } else {
