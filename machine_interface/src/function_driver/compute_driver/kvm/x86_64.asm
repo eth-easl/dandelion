@@ -111,12 +111,12 @@ page_fault_exception_handler:
    mov [rsp - 24], rcx
    mov [rsp - 32], rdx
    # for debugging, enable debug interrupts
-   push rbp
-   pushf
-   mov rbp, rsp
-   or word ptr[rbp], 0x100
-   popf
-   pop rbp 
+   #push rbp
+   #pushf
+   #mov rbp, rsp
+   #or word ptr[rbp], 0x100
+   #popf
+   #pop rbp 
    # ensure the reentry flag is set to 0 after returning
    mov rax, [rsp + 24]
    and rax, 0xFFFFFFFFFFFEFFFF

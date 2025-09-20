@@ -98,7 +98,7 @@ extern "C" {
     fn machine_check_exception_handler();
     fn simd_fp_exception_handler();
     fn virtualization_exception_handler();
-    fn control_protection_exception(); 
+    fn control_protection_exception();
     fn user_exit_handler();
 }
 
@@ -121,8 +121,7 @@ impl ResetState {
         set_interrupt_table(&mut sregs, guest_mem);
         vcpu.set_sregs(&sregs).unwrap();
         vcpu.set_regs(&kvm_regs {
-            rip: INTERRUPT_HANDLER as u64,
-            // rip: entry_point,
+            rip: entry_point,
             rsp: stack_pointer,
             rflags: 2,
             ..Default::default()

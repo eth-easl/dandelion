@@ -590,8 +590,11 @@ fn main() -> () {
 
     let memory_pool = BTreeMap::from([
         (
-            DomainType::Mmap,
-            MemoryResource::Anonymous { size: max_ram },
+            DomainType::Kvm,
+            MemoryResource::Shared {
+                id: 0,
+                size: max_ram,
+            },
         ),
         #[cfg(feature = "cheri")]
         (

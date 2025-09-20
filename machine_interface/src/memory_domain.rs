@@ -3,8 +3,9 @@
 pub mod bytes_context;
 #[cfg(feature = "cheri")]
 pub mod cheri;
+#[cfg(feature = "kvm")]
+pub mod kvm;
 pub mod malloc;
-pub mod mmap;
 #[cfg(feature = "mmu")]
 pub mod mmu;
 pub mod read_only;
@@ -35,12 +36,13 @@ pub trait ContextTrait: Send + Sync {
 #[derive(Debug)]
 pub enum ContextType {
     Malloc(Box<malloc::MallocContext>),
-    Mmap(Box<mmap::MmapContext>),
     ReadOnly(Box<read_only::ReadOnlyContext>),
     #[cfg(feature = "bytes_context")]
     Bytes(Box<bytes_context::BytesContext>),
     #[cfg(feature = "cheri")]
     Cheri(Box<cheri::CheriContext>),
+    #[cfg(feature = "kvm")]
+    Kvm(Box<kvm::KvmContext>),
     #[cfg(feature = "mmu")]
     Mmu(Box<mmu::MmuContext>),
     #[cfg(feature = "wasm")]
@@ -52,10 +54,11 @@ impl ContextTrait for ContextType {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
         match self {
             ContextType::Malloc(context) => context.write(offset, data),
-            ContextType::Mmap(context) => context.write(offset, data),
             ContextType::ReadOnly(context) => context.write(offset, data),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.write(offset, data),
+            #[cfg(feature = "kvm")]
+            ContextType::Kvm(context) => context.write(offset, data),
             #[cfg(feature = "mmu")]
             ContextType::Mmu(context) => context.write(offset, data),
             #[cfg(feature = "wasm")]
@@ -68,10 +71,11 @@ impl ContextTrait for ContextType {
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         match self {
             ContextType::Malloc(context) => context.read(offset, read_buffer),
-            ContextType::Mmap(context) => context.read(offset, read_buffer),
             ContextType::ReadOnly(context) => context.read(offset, read_buffer),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.read(offset, read_buffer),
+            #[cfg(feature = "kvm")]
+            ContextType::Kvm(context) => context.read(offset, read_buffer),
             #[cfg(feature = "mmu")]
             ContextType::Mmu(context) => context.read(offset, read_buffer),
             #[cfg(feature = "wasm")]
@@ -84,10 +88,11 @@ impl ContextTrait for ContextType {
     fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
         match self {
             ContextType::Malloc(context) => context.get_chunk_ref(offset, length),
-            ContextType::Mmap(context) => context.get_chunk_ref(offset, length),
             ContextType::ReadOnly(context) => context.get_chunk_ref(offset, length),
             #[cfg(feature = "cheri")]
             ContextType::Cheri(context) => context.get_chunk_ref(offset, length),
+            #[cfg(feature = "kvm")]
+            ContextType::Kvm(context) => context.get_chunk_ref(offset, length),
             #[cfg(feature = "mmu")]
             ContextType::Mmu(context) => context.get_chunk_ref(offset, length),
             #[cfg(feature = "wasm")]
@@ -272,13 +277,6 @@ pub fn transfer_memory(
                 size,
             )
         }
-        (ContextType::Mmap(destination_ctxt), ContextType::Mmap(source_ctxt)) => mmap::io_transfer(
-            destination_ctxt,
-            &source_ctxt,
-            destination_offset,
-            source_offset,
-            size,
-        ),
         #[cfg(feature = "cheri")]
         (ContextType::Cheri(destination_ctxt), ContextType::Cheri(source_ctxt)) => {
             cheri::cheri_transfer(
@@ -357,49 +355,6 @@ pub fn transfer_memory(
             destination.write(destination_offset, &read_buffer)
         }
     };
-}
-
-/// Transfer a complete dataset from one context to another.
-/// If there is already a dataset with the given desintation set index present,
-/// the items from the source set will be added to that set, keeping the identifier of the previous set.
-/// TODO consider removing destination set name and require the set be present instead
-pub fn transfer_data_set(
-    destination: &mut Context,
-    source: Arc<Context>,
-    destionation_set_index: usize,
-    destination_allignment: usize,
-    destination_set_name: &str,
-    source_set_index: usize,
-) -> DandelionResult<()> {
-    // check if source has set
-    if source.content.len() <= source_set_index {
-        return Err(DandelionError::TransferInputNoSetAvailable);
-    }
-    let source_set = source.content[source_set_index]
-        .as_ref()
-        .ok_or(DandelionError::EmptyDataSet)?;
-    if destination.content.len() <= destionation_set_index {
-        destination
-            .content
-            .resize_with(destionation_set_index + 1, || None);
-    }
-    let destination_index_offset = destination.content[destionation_set_index]
-        .as_ref()
-        .and_then(|set| Some(set.buffers.len()))
-        .unwrap_or(0);
-    for index in 0..source_set.buffers.len() {
-        transfer_data_item(
-            destination,
-            source.clone(),
-            destionation_set_index,
-            destination_allignment,
-            destination_index_offset + index,
-            destination_set_name,
-            source_set_index,
-            index,
-        )?;
-    }
-    return Ok(());
 }
 
 /// Transfer a data item from one context to another.

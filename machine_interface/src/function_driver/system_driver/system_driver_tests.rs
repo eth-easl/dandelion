@@ -6,7 +6,7 @@ mod system_driver_tests {
             Driver, FunctionConfig, SystemFunction, WorkToDo,
         },
         memory_domain::{
-            mmap::MmapMemoryDomain, test_resource::get_resource, transfer_memory, Context,
+            malloc::MallocMemoryDomain, test_resource::get_resource, transfer_memory, Context,
             ContextTrait, MemoryDomain, MemoryResource,
         },
         DataItem, DataSet, Position,
@@ -42,23 +42,23 @@ mod system_driver_tests {
     }
 
     fn write_request(context: &mut Context, request: Vec<u8>) -> DandelionResult<()> {
-        let mmap_domain = MmapMemoryDomain::init(MemoryResource::Anonymous { size: (1 << 22) })
+        let malloc_domain = MallocMemoryDomain::init(MemoryResource::None)
             .expect("Failed to initialize MmapMemoryDomain: Domain Error");
-        let mut mmap_context = mmap_domain
+        let mut malloc_context = malloc_domain
             .acquire_context(_CONTEXT_SIZE)
             .expect("Should be able to get context");
 
         let request_length = request.len();
-        let request_offset_mmap = mmap_context.get_free_space_and_write_slice(&request)? as usize;
+        let request_offset_mmap = malloc_context.get_free_space_and_write_slice(&request)? as usize;
 
         let mut response_buffer_mmap = Vec::<u8>::new();
         response_buffer_mmap.resize(request_length, 0);
-        mmap_context
+        malloc_context
             .read(request_offset_mmap, &mut response_buffer_mmap)
             .expect("Should be able to read");
         let status_mmap = read_status(&response_buffer_mmap);
 
-        let source_ctxt = Arc::new(mmap_context);
+        let source_ctxt = Arc::new(malloc_context);
         let request_offset_ok = context.get_free_space(request_length, 128);
 
         let request_offset = if let Ok(req) = request_offset_ok {

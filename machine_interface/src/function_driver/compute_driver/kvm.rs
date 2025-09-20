@@ -79,7 +79,7 @@ impl EngineLoop for KvmLoop {
         };
         setup_input_structs::<u64, u64>(&mut context, elf_config.system_data_offset, &output_sets)?;
         let kvm_context = match &mut context.context {
-            ContextType::Mmap(mmap_context) => mmap_context,
+            ContextType::Kvm(kvm_context) => kvm_context,
             _ => return Err(DandelionError::ContextMissmatch),
         };
         let guest_mem = unsafe { kvm_context.storage.as_slice_mut() };
@@ -105,11 +105,7 @@ impl EngineLoop for KvmLoop {
             self.vm.set_user_memory_region(region).unwrap();
         }
 
-        println!("before init vcpu");
-
         // initialize vCPU
-        // self.state.set_page_table(guest_mem);
-        // self.state.set_interrupt_table(guest_mem);
         self.state.init_vcpu(
             &self.vcpu,
             elf_config.entry_point as u64,
@@ -124,24 +120,8 @@ impl EngineLoop for KvmLoop {
             dump_regs(&self.vcpu);
         }
 
-        // let mprotect_return = unsafe {
-        //     nix::sys::mman::mprotect(
-        //         guest_mem.as_ptr() as *mut core::ffi::c_void,
-        //         guest_mem.len(),
-        //         nix::sys::mman::ProtFlags::PROT_READ | nix::sys::mman::ProtFlags::PROT_EXEC,
-        //     )
-        // };
-        // println!("mprotect return: {:?}", mprotect_return);
-        println!("going into loop");
-        let mut counter = 0;
         // start running the function
         loop {
-            println!("loop iteration");
-            counter += 1;
-            if counter > 40 {
-                println!("Reached counter end");
-                break;
-            }
             let reason = self.vcpu.run().unwrap();
             match reason {
                 VcpuExit::Hlt => break,
@@ -160,8 +140,6 @@ impl EngineLoop for KvmLoop {
                 }
             }
         }
-
-        println!("left loop");
 
         // detach VM memory
         region.memory_size = 0;

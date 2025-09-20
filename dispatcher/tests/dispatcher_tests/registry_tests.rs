@@ -242,15 +242,11 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
 #[test_log::test]
 #[cfg(any(feature = "reqwest_io"))]
 fn test_insert_composition_with_http_func() {
-    let memory_resources = BTreeMap::from([(
-        DomainType::Mmap,
-        MemoryResource::Anonymous { size: (1 << 30) },
-    )]);
     let dispatcher = Dispatcher::init(
         dispatcher::resource_pool::ResourcePool {
             engine_pool: Mutex::new(BTreeMap::new()),
         },
-        memory_resources,
+        BTreeMap::new(),
     )
     .unwrap();
     let composition_string = r#"
