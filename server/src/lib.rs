@@ -1,11 +1,22 @@
 pub mod config;
 
+use bytes::Bytes;
 use dandelion_commons::{records::Recorder, DandelionError};
 use dispatcher::composition::CompositionSet;
+use h2::server::{self, SendResponse};
+use h2::RecvStream;
+use http::{HeaderValue, Request, StatusCode};
 use hyper::body::Frame;
+use log::{debug, error};
 use machine_interface::memory_domain::{Context, ContextTrait};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::hash::Hash;
+use std::net::SocketAddr;
+use std::sync::Mutex;
 use std::{io::IoSlice, sync::Arc};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::signal::unix::SignalKind;
 
 #[derive(Serialize, Deserialize)]
 pub struct DandelionRequest<'data> {
@@ -510,3 +521,174 @@ fn test_dandelion_body_serialization() {
             expected_response,
         ));
 }
+
+#[tokio::main]
+pub async fn dirigent_metadata_handler(port: u16) {
+    let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = TcpListener::bind(addr).await.unwrap();
+    println!("listen on {}", port);
+
+    let mut sigterm_stream = tokio::signal::unix::signal(SignalKind::terminate()).unwrap();
+    let mut sigint_stream = tokio::signal::unix::signal(SignalKind::interrupt()).unwrap();
+    let mut sigquit_stream = tokio::signal::unix::signal(SignalKind::quit()).unwrap();
+
+    let mutex = Arc::new(Mutex::new(0));
+    let hm: HashMap<String, ExternalSandbox> = HashMap::new();
+
+    loop {
+        tokio::select! {
+            connection_pair = listener.accept() => {
+                let (stream,_) = connection_pair.unwrap();
+
+                tokio::spawn(async move {
+                    if let Err(e) = serve(stream, &mutex, &hm).await {
+                        error!("  -> err={:?}", e);
+                    }
+                });
+            }
+            _ = sigterm_stream.recv() => return,
+            _ = sigint_stream.recv() => return,
+            _ = sigquit_stream.recv() => return,
+        }
+    }
+}
+
+async fn serve(
+    socket: TcpStream,
+    mutex: &Arc<Mutex<i32>>,
+    hm: &HashMap<String, ExternalSandbox>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut connection = server::handshake(socket).await?;
+
+    while let Some(result) = connection.accept().await {
+        let (request, respond) = result?;
+
+        tokio::spawn(async move {
+            if let Err(e) = handle_request(request, respond, mutex, hm).await {
+                println!("error while handling request: {}", e);
+            }
+        });
+    }
+
+    Ok(())
+}
+
+struct ExternalSandbox {
+    sandbox_id: String,
+    function: String,
+    url: String,
+}
+
+async fn handle_request(
+    request: Request<RecvStream>,
+    mut respond: SendResponse<Bytes>,
+    mutex: &Arc<Mutex<i32>>,
+    hm: &mut HashMap<String, ExternalSandbox>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    debug!("GOT Dirigent endpoint update request: {:?}", request);
+
+    let header = request.headers();
+
+    let op_action = header.get("action");
+    let op_sandbox_id = header.get("sandbox_id");
+
+    let response = http::Response::new(());
+    let mut send = respond.send_response(response, false)?;
+
+    match op_action {
+        Some(action) => {
+            let action = action.to_str().unwrap();
+
+            match op_sandbox_id {
+                Some(sandbox_id) => {
+                    let sandbox_id = sandbox_id.to_str().unwrap().to_string();
+
+                    if action == "ADD" {
+                        let _ = mutex.lock().unwrap();
+                        process_add_action(
+                            hm,
+                            sandbox_id,
+                            header.get("function"),
+                            header.get("url"),
+                        );
+                    } else if action == "REMOVE" {
+                        let _ = mutex.lock().unwrap();
+                        process_remove_action(hm, &sandbox_id);
+                    } else {
+                        error!("Action not recognized");
+                    }
+                }
+                None => {
+                    error!("Sandbox ID not provided.")
+                }
+            }
+
+            send.send_data(Bytes::from_static(b"OK"), true)?;
+        }
+        None => {
+            send.send_data(Bytes::from_static(b"Action not specified."), true)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn process_add_action(
+    hm: &mut HashMap<String, ExternalSandbox>,
+    sandbox_id: String,
+    op_function: Option<&HeaderValue>,
+    op_url: Option<&HeaderValue>,
+) {
+    match op_function {
+        Some(function) => match op_url {
+            Some(url) => {
+                let new_sandbox = ExternalSandbox {
+                    sandbox_id: sandbox_id.clone(),
+                    function: function.to_str().unwrap().to_string(),
+                    url: url.to_str().unwrap().to_string(),
+                };
+
+                hm.insert(sandbox_id, new_sandbox);
+            }
+            None => {}
+        },
+        None => {}
+    }
+}
+
+fn process_remove_action(hm: &mut HashMap<String, ExternalSandbox>, sandbox_id: &String) {
+    match hm.remove(sandbox_id) {
+        Some(..) => {
+            debug!("Successful REMOVE action for {}", sandbox_id.clone());
+        }
+        None => {
+            debug!("Invalid REMOVE action received for {}", sandbox_id.clone());
+        }
+    }
+}
+
+/*async fn dirigent_request_handler(port: u16) {
+    let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = TcpListener::bind(addr).await.unwrap();
+
+    let mut sigterm_stream = tokio::signal::unix::signal(SignalKind::terminate()).unwrap();
+    let mut sigint_stream = tokio::signal::unix::signal(SignalKind::interrupt()).unwrap();
+    let mut sigquit_stream = tokio::signal::unix::signal(SignalKind::quit()).unwrap();
+
+    loop {
+        tokio::select! {
+            connection_pair = listener.accept() => {
+                let (stream,_) = connection_pair.unwrap();
+                //let loop_dispatcher = request_sender.clone();
+                let io = hyper_util::rt::TokioIo::new(stream);
+
+                tokio::task::spawn(async move {
+
+                });
+            }
+            _ = sigterm_stream.recv() => return,
+            _ = sigint_stream.recv() => return,
+            _ = sigquit_stream.recv() => return,
+        }
+    }
+}*/
