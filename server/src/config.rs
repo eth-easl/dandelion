@@ -3,9 +3,12 @@ use core::panic;
 use clap::Parser;
 
 const DEFAULT_CONFIG_PATH: &str = "./dandelion.config";
-const DEFAULT_PORT: u16 = 8080;
+const DEFAULT_PORT: u16 = 8082;
 const DEFAULT_SINGLE_CORE: bool = false;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
+// TODO: add default ports here
+//const DEFAULT_REQUEST_ACCEPT_PORTS: &'static Vec<u16> = &vec![1u16];
+const DEFAULT_DIRIGENT_SYNC_PORT: u16 = 8083;
 
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
@@ -29,6 +32,11 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = DEFAULT_TIMESTAMP_COUNT)]
     #[serde(default)]
     pub timestamp_count: usize,
+    #[arg(long, env)]
+    //, default_value_t = DEFAULT_REQUEST_ACCEPT_PORTS)] // TODO: add support for default ports
+    pub dirigent_request_ports: Vec<u16>,
+    #[arg(long, env, default_value_t = DEFAULT_DIRIGENT_SYNC_PORT)]
+    pub dirigent_sync_port: u16,
 }
 
 impl DandelionConfig {
@@ -41,6 +49,10 @@ impl DandelionConfig {
         // handle port
         if self.port != DEFAULT_PORT && other.port != default.port {
             self.port = other.port;
+        }
+        // TODO: request ports
+        if self.dirigent_sync_port != DEFAULT_DIRIGENT_SYNC_PORT && other.dirigent_sync_port != default.dirigent_sync_port {
+            self.dirigent_sync_port = other.dirigent_sync_port;
         }
         // handle single core mode
         if self.single_core_mode != DEFAULT_SINGLE_CORE

@@ -28,3 +28,4 @@ Cargo.lock
 # misc ignores
 misc/
 .vscode/
+.idea

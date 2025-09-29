@@ -3,6 +3,7 @@ use dandelion_commons::{
     records::{Archive, Recorder},
     DandelionResult,
 };
+use dandelion_server::dirigent_metadata_handler;
 use dandelion_server::DandelionBody;
 use dispatcher::{
     composition::CompositionSet,
@@ -35,6 +36,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc, OnceLock,
     },
+    thread,
     time::Instant,
 };
 use tokio::{
@@ -219,7 +221,7 @@ async fn register_function(
         "Kvm" => EngineType::Kvm,
         #[cfg(feature = "cheri")]
         "Cheri" => EngineType::Cheri,
-        unkown => panic!("Unkown engine type string {}", unkown),
+        unknown => panic!("Unknown engine type string {}", unknown),
     };
     let input_sets = request_map
         .input_sets
@@ -637,6 +639,13 @@ fn main() -> () {
     #[cfg(feature = "timestamp")]
     print!(" timestamp");
     print!("\n");
+
+    thread::spawn(move || {
+        dirigent_metadata_handler(config.dirigent_sync_port);
+    });
+    /*for service_port in config.request_ports.iter() {
+        //thread::spawn(move || dirigent_request_handler(service_port));
+    }*/
 
     // Run this server for... forever... unless I receive a signal!
     runtime.block_on(service_loop(dispatcher_sender, config.port));
