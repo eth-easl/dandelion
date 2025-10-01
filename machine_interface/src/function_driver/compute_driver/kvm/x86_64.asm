@@ -23,6 +23,8 @@
 .global fault_handlers_end
 
 asm_start:
+   mov rax, [0x31b90]
+   int 32
    #mov ax, 0x50
    #mov ds, ax 
    #ltr ax
@@ -60,6 +62,12 @@ bound_range_excepion_handler:
    mov eax, [rsp]
    out 5, eax
 invalid_opcode_exception_handler:
+   mov r8, [rsp]
+   mov r9, [rsp + 8]
+   mov r10, [rsp + 16]
+   mov r11, [rsp + 24]
+   mov r12, [rsp + 32]
+   mov r13, [rsp + 40]
    mov eax, [rsp]
    out 6, eax
 device_not_available_exception_handler:
@@ -96,6 +104,13 @@ general_protection_exception_handler:
    mov rax, [rsp]
    out 13, eax
 page_fault_exception_handler:
+   mov r8, [rsp]
+   mov r9, [rsp + 8]
+   mov r10, [rsp + 16]
+   mov r11, [rsp + 24]
+   mov r12, [rsp + 32]
+   mov r13, [rsp + 40]
+   out 14, eax
    # this handler assumes 4 level paging
    # each linera address consists of the following
    # 47 .. 39  | 38 .. 30        | 29 .. 21  | 20 .. 12  | 11 .. 0
@@ -123,6 +138,7 @@ page_fault_exception_handler:
    mov [rsp + 24], rax
    # cr2 holds the offending address, cr3 the root table address, [rsp] holds the error code 
    # TODO: might want to do some check on the error code
+   # TODO: Make sure it is a error because of write permissions, not because of user permissions
    # find the entry in the PML4 table by looking at bits 47..39 of the offending pointer
    mov rax, cr3 # rax holds the table pointer
    mov rbx, cr2

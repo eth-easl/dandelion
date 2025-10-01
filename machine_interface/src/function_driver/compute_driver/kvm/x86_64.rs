@@ -1,5 +1,6 @@
 use kvm_bindings::{kvm_fpu, kvm_regs, kvm_segment, kvm_sregs};
 use kvm_ioctls::{VcpuFd, VmFd};
+use log::trace;
 use std::{arch::global_asm, os::raw::c_void, slice};
 
 // CR0 bits
@@ -41,15 +42,19 @@ const PDE64_PRESENT: u64 = 1 << 0;
 const PDE64_RW: u64 = 1 << 1;
 /// User accessible
 const PDE64_USER: u64 = 1 << 2;
-/// Page size
+/// Page size, for p3 and lower, this indicates the entry address is the mapping, not another table
 const PDE64_PS: u64 = 1 << 7;
 
 /// PML4 address (guest virtual)
-const P4_ADDR: usize = 0x1000;
+// const P4_ADDR: usize = 0x1000;
 /// First PDP address (guest virtual)
-const P3_ADDR: usize = 0x2000;
+// const P3_ADDR: usize = 0x2000;
+// const P2_ADDR: usize = 0x3000;
 
-const P2_ADDR: usize = 0x3000;
+const PAGE_SIZE: usize = 1 << 12;
+pub const LARGE_PAGE: usize = 1 << 21;
+const HUGE_PAGE: usize = 1 << 30;
+
 const INTERRUPT_HANDLER: usize = 0x4000;
 const GDT: usize = 0x5000;
 // const TEST_CS: usize = 0x5800;
@@ -57,11 +62,13 @@ const GDT: usize = 0x5000;
 fn u8_slice_to_u64_slice(input: &mut [u8]) -> &mut [u64] {
     assert!(
         input.len() % 8 == 0,
-        "Input slice length must be a multiple of 8"
+        "Input slice length must be a multiple of 8, but has length: {}",
+        input.len()
     );
     assert!(
         input.as_ptr() as usize % 8 == 0,
-        "Input slice must be 8-byte aligned"
+        "Input slice must be 8-byte aligned, but got {:?}",
+        input.as_ptr()
     );
     let u64_len = input.len() / 8;
     unsafe { std::slice::from_raw_parts_mut(input.as_mut_ptr() as *mut u64, u64_len) }
@@ -109,20 +116,35 @@ impl ResetState {
         return Self { sregs };
     }
 
+    /// copy_on_write_pages: mappings that need to be copy on write,
+    /// each list entry contains the guest virtual, guest physical and size
+    /// last_address: the total size of the address space attached to the vm, including additional read only segments after stack
     pub fn init_vcpu(
         &self,
         vcpu: &VcpuFd,
         entry_point: u64,
         guest_mem: &mut [u8],
-        stack_pointer: u64,
+        copy_on_write_pages: Vec<(usize, usize, usize)>,
+        mut stack_pointer: usize,
+        last_address: usize,
     ) {
         let mut sregs = self.sregs.clone();
-        set_page_table(&mut sregs, guest_mem);
+        stack_pointer = set_page_table(
+            &mut sregs,
+            guest_mem,
+            copy_on_write_pages,
+            stack_pointer,
+            last_address,
+        );
+        println!("stack_pointer: {}", stack_pointer);
         set_interrupt_table(&mut sregs, guest_mem);
         vcpu.set_sregs(&sregs).unwrap();
         vcpu.set_regs(&kvm_regs {
-            rip: entry_point,
-            rsp: stack_pointer,
+            // rip: entry_point,
+            // rip: 0x31b90,
+            rip: INTERRUPT_HANDLER as u64,
+            rsp: stack_pointer as u64 - 32,
+            rbp: stack_pointer as u64 - 32,
             rflags: 2,
             ..Default::default()
         })
@@ -258,10 +280,10 @@ pub fn set_interrupt_table(sregs: &mut kvm_sregs, guest_mem: &mut [u8]) {
     // - (page_fault_handler as *const () as *const c_void).addr();
     let handler_length = (fault_handlers_end as *const c_void).addr()
         - (asm_start as *const () as *const c_void).addr();
-    println!(
-        "start:\t{:#x?}\nend:\t{:#x?}\nlength: {}",
-        page_fault_exception_handler as *const (), fault_handlers_end as *const (), handler_length
-    );
+    // println!(
+    //     "start:\t{:#x?}\nend:\t{:#x?}\nlength: {}",
+    //     page_fault_exception_handler as *const (), fault_handlers_end as *const (), handler_length
+    // );
     let destination = unsafe {
         slice::from_raw_parts_mut(
             guest_mem.as_mut_ptr().add(INTERRUPT_HANDLER),
@@ -368,28 +390,223 @@ pub fn set_interrupt_table(sregs: &mut kvm_sregs, guest_mem: &mut [u8]) {
     };
 }
 
-pub fn set_page_table(sregs: &mut kvm_sregs, guest_mem: &mut [u8]) {
-    // use identity mapping of 1GB huge page
-    // TODO: store the page table in another guest memory slot (outside the context)
-    let mem_size_gb = (guest_mem.len() + (1 << 30) - 1) / (1 << 30);
-    assert!(mem_size_gb <= 512); // number of PTE entries in a single PD
-    let p4 = u8_slice_to_u64_slice(&mut guest_mem[P4_ADDR..P4_ADDR + 0x1000]);
-    p4[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | P3_ADDR as u64;
-    // p4[0] = PDE64_PRESENT | PDE64_RW | P3_ADDR as u64;
-    let p3 = u8_slice_to_u64_slice(&mut guest_mem[P3_ADDR..P3_ADDR + 0x1000]);
-    for i in 0..mem_size_gb {
-        p3[i] = PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS | (i as u64) << 30;
-    }
-    p3[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | P2_ADDR as u64;
-    let p2 = u8_slice_to_u64_slice(&mut guest_mem[P2_ADDR..P2_ADDR + 0x1000]);
-    for i in 0..512 {
-        if i < 8 {
-            p2[i] = PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS | (i as u64) << 21;
+/// Assumes virtual and physical are page alligned, size is multiple of page size
+fn set_p2_table(
+    mut virtual_start: usize,
+    mut physical: usize,
+    mut size: usize,
+    flags: u64,
+    p2_offset: usize,
+    memory: &mut [u8],
+    stack_start: &mut usize,
+) {
+    // check if there is any header before the first large page
+    let first_large_page = virtual_start.next_multiple_of(LARGE_PAGE);
+    if virtual_start < first_large_page {
+        let p2_table = u8_slice_to_u64_slice(&mut memory[p2_offset..p2_offset + PAGE_SIZE]);
+        let sub_size = std::cmp::min(first_large_page - virtual_start, size);
+        let p2_entry = (virtual_start >> 21) & 0x1FF;
+        // check if there is already a table for that entry or if it was directly mapped so far
+        let (p1_offset, new_table) = if p2_table[p2_entry] & PDE64_PS != 0 {
+            *stack_start -= PAGE_SIZE;
+            (*stack_start, true)
         } else {
-            p2[i] = PDE64_PRESENT | PDE64_USER | PDE64_PS | (i as u64) << 21;
+            ((p2_table[p2_entry] & !0xFFF) as usize, false)
+        };
+        let p1_table = u8_slice_to_u64_slice(&mut memory[p1_offset..p1_offset + PAGE_SIZE]);
+        set_p1_table(
+            virtual_start,
+            physical,
+            sub_size,
+            flags,
+            p1_table,
+            new_table,
+        );
+        size -= sub_size;
+        if size == 0 {
+            return;
+        }
+        physical += sub_size;
+        virtual_start += sub_size;
+    }
+
+    let p2_table = u8_slice_to_u64_slice(&mut memory[p2_offset..p2_offset + PAGE_SIZE]);
+
+    // virtual start is now set to large page boundry, iterate over and set all pages until last full 2MB page
+    // need to add 1, in case size is exactly large page size
+    let first_large_entry = first_large_page / LARGE_PAGE;
+    // want to set it to the large page past the last one that is fully covered by size
+    let large_pages = ((size + 1).next_multiple_of(LARGE_PAGE) / LARGE_PAGE).saturating_sub(1);
+    let last_large_entry = first_large_entry + large_pages;
+    for entry in first_large_entry..last_large_entry {
+        println!("mapping {} to {}", physical, entry * LARGE_PAGE);
+        p2_table[entry] = flags | physical as u64;
+        physical += LARGE_PAGE;
+    }
+    size -= LARGE_PAGE * large_pages;
+    virtual_start += LARGE_PAGE * large_pages;
+    // set all pages after the large pages
+    if size > 0 {
+        let (p1_offset, new_table) = if p2_table[last_large_entry] & PDE64_PS != 0 {
+            *stack_start -= PAGE_SIZE;
+            (*stack_start, true)
+        } else {
+            ((p2_table[last_large_entry] & !0xFFF) as usize, false)
+        };
+        let p1_table = u8_slice_to_u64_slice(&mut memory[p1_offset..p1_offset + PAGE_SIZE]);
+        set_p1_table(virtual_start, physical, size, flags, p1_table, new_table);
+    }
+}
+
+/// Assumes virtual and physical are page alligned, size is a mutliple of page size.
+fn set_p1_table(
+    virtual_start: usize,
+    physical: usize,
+    size: usize,
+    flags: u64,
+    table: &mut [u64],
+    new_table: bool,
+) {
+    println!(
+        "set p1 table for virtual start: {}, physical start: {}",
+        virtual_start, physical
+    );
+    let first_entry = (virtual_start >> 12) & 0x1FF;
+    // base address of the 2 MB this page table is responsible for
+    let virtual_table_base = virtual_start & !0xF_FFFF;
+    let entry_number = size / PAGE_SIZE;
+    if new_table {
+        for entry in 0..first_entry {
+            table[entry] = PDE64_PRESENT
+                | PDE64_PS
+                | PDE64_RW
+                | PDE64_USER
+                | (virtual_table_base + entry * PAGE_SIZE) as u64;
         }
     }
-    sregs.cr3 = P4_ADDR as u64;
+    for entry in first_entry..first_entry + entry_number {
+        println!(
+            "mapping {} to {}, for entry {}",
+            physical + (entry - first_entry) * PAGE_SIZE,
+            virtual_table_base + entry * PAGE_SIZE,
+            entry
+        );
+        table[entry] = flags | (physical + (entry - first_entry) * PAGE_SIZE) as u64;
+    }
+    if new_table {
+        for entry in first_entry + entry_number..512 {
+            table[entry] = PDE64_PRESENT
+                | PDE64_PS
+                | PDE64_RW
+                | PDE64_USER
+                | (virtual_table_base + entry * PAGE_SIZE) as u64;
+        }
+    }
+}
+
+/// Vec contains a list of all copy on write mappings, with their guest virtual, guest physical and size
+pub fn set_page_table(
+    sregs: &mut kvm_sregs,
+    guest_mem: &mut [u8],
+    mappings: Vec<(usize, usize, usize)>,
+    mut stack_start: usize,
+    last_address: usize,
+) -> usize {
+    // have multiple special regions we care about, everything else should be user accessable and  writeable
+    // (everything should is per default marked as executable)
+    // for all of the bellow want to mark not usser accessable, some could also be marked not writable
+    // but are left as is for simplicty
+    // - the page tables
+    // - the space with the gdt, idt, handler code
+    // - the read only segments
+    // all these regions are at the top of the address space, so we can install all mappings, marking everything as default user access and writable
+    // remembering the lowest non user addess and then just add no user access from there on out (that basically being the stack start)
+
+    // allocate top level table containing 512 entries for 512 GB ranges
+    stack_start -= PAGE_SIZE;
+    println!(
+        "guest_mem: {:?}, stack start: {}",
+        guest_mem.as_mut_ptr(),
+        stack_start
+    );
+    println!("value at offset {}: {}", 0x31b90, guest_mem[130_227_088]);
+    let p4_address = stack_start;
+    // allocate table with 512 entries for 1 GB ranges
+    let p3_address = stack_start;
+    stack_start -= PAGE_SIZE;
+
+    let p4 = u8_slice_to_u64_slice(&mut guest_mem[p4_address..p4_address + PAGE_SIZE]);
+    // everything should be zero, so we only need to set first entry, for a page table with 512 entries with 1GB pages eachp4[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | p3_address as u64;
+    assert!(last_address < (1 << 39));
+    p4[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | p3_address as u64;
+
+    // install default entries for 1 GB pages
+    let entries = last_address.next_multiple_of(HUGE_PAGE) / HUGE_PAGE;
+    for p3_entry in 0..entries {
+        let p3_table = u8_slice_to_u64_slice(&mut guest_mem[p3_address..p3_address + PAGE_SIZE]);
+        stack_start -= PAGE_SIZE;
+        p3_table[p3_entry] = PDE64_PRESENT | PDE64_RW | PDE64_USER | stack_start as u64;
+        let p2_table = u8_slice_to_u64_slice(&mut guest_mem[stack_start..stack_start + PAGE_SIZE]);
+        let p3_virtual_start = p3_entry * HUGE_PAGE;
+        for p2_entry in 0..512 {
+            p2_table[p2_entry] = PDE64_PRESENT
+                | PDE64_RW
+                | PDE64_USER
+                | PDE64_PS
+                | (p3_virtual_start + p2_entry * LARGE_PAGE) as u64;
+        }
+    }
+
+    // start installing cow entries
+    for (guest_virtual, guest_physical, size) in mappings {
+        // go through all p2 entries and call the correct setup
+        let first_p3 = ((guest_virtual + 1).next_multiple_of(HUGE_PAGE) / HUGE_PAGE) - 1;
+        let past_last_p3 = (guest_virtual + size).next_multiple_of(HUGE_PAGE) / HUGE_PAGE;
+        for p3_entry in first_p3..past_last_p3 {
+            let p3_base = p3_entry * HUGE_PAGE;
+            // adjust guest virtual and physical to the subrange of the p3 entry
+            let local_virtual = std::cmp::max(guest_virtual, p3_base);
+            let virtual_end = std::cmp::min(guest_virtual + size, p3_base + HUGE_PAGE);
+            let local_size = virtual_end - local_virtual;
+            let local_physical = guest_physical + (local_virtual - guest_virtual);
+            let p3_table =
+                u8_slice_to_u64_slice(&mut guest_mem[p3_address..p3_address + PAGE_SIZE]);
+            println!(
+                "mapping virtual: {}, to physical: {} with size: {}, at p3 entry: {:x}",
+                guest_virtual, guest_physical, size, p3_table[p3_entry]
+            );
+            let p2_offset = (p3_table[p3_entry] & !0xFFF) as usize;
+            set_p2_table(
+                local_virtual,
+                local_physical,
+                local_size,
+                PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS,
+                p2_offset,
+                guest_mem,
+                &mut stack_start,
+            );
+        }
+    }
+    // protect high address space from user
+
+    // // setup default mappings for guest mem
+    // // TODO: store the page table in another guest memory slot (outside the context)
+    // for i in 0..mem_size_gb {
+    //     p3[i] = PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS | (i as u64) << 30;
+    // }
+    // p3[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | P2_ADDR as u64;
+    // let p2 = u8_slice_to_u64_slice(&mut guest_mem[P2_ADDR..P2_ADDR + 0x1000]);
+    // for i in 0..512 {
+    //     if i < 8 {
+    //         p2[i] = PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS | (i as u64) << 21;
+    //     } else {
+    //         p2[i] = PDE64_PRESENT | PDE64_USER | PDE64_PS | (i as u64) << 21;
+    //     }
+    // }
+
+    println!("stack_start at end of table setup: {}", stack_start);
+    sregs.cr3 = p4_address as u64;
+    return stack_start;
 }
 
 fn setup_long_mode(sregs: &mut kvm_sregs) {
@@ -430,47 +647,64 @@ fn setup_long_mode(sregs: &mut kvm_sregs) {
 
 pub fn dump_regs(vcpu: &VcpuFd) {
     let regs = vcpu.get_regs().unwrap();
-    println!("Register state: ");
-    println!(
+    trace!("Register state: ");
+    trace!(
         "rax:\t{:>#10x}, rbx:\t{:>#10x}, rcx:\t{:>#10x}, rdx:\t{:>#10x}",
-        regs.rax, regs.rbx, regs.rcx, regs.rdx
+        regs.rax,
+        regs.rbx,
+        regs.rcx,
+        regs.rdx
     );
-    println!(
+    trace!(
         "rsi:\t{:>#10x}, rdi:\t{:>#10x}, rsp:\t{:>#10x}, rbp:\t{:>#10x}",
-        regs.rsi, regs.rdi, regs.rsp, regs.rbp
+        regs.rsi,
+        regs.rdi,
+        regs.rsp,
+        regs.rbp
     );
-    println!(
+    trace!(
         "r8: \t{:>#10x}, r9: \t{:>#10x}, r10:\t{:>#10x}, r11:\t{:>#10x}",
-        regs.r8, regs.r9, regs.r10, regs.r11
+        regs.r8,
+        regs.r9,
+        regs.r10,
+        regs.r11
     );
-    println!(
+    trace!(
         "r12:\t{:>#10x}, r13:\t{:>#10x}, r14:\t{:>#10x}, r15:\t{:>#10x}",
-        regs.r12, regs.r13, regs.r14, regs.r15
+        regs.r12,
+        regs.r13,
+        regs.r14,
+        regs.r15
     );
-    println!("rip:\t{:>#10x}, rflags:\t{:>#10x}", regs.rip, regs.rflags,);
+    trace!("rip:\t{:>#10x}, rflags:\t{:>#10x}", regs.rip, regs.rflags,);
 
     let sregs = vcpu.get_sregs().unwrap();
-    println!("System registers");
-    println!("cs:\t{:?}", sregs.cs);
-    println!("ss:\t{:?}", sregs.ss);
-    println!("ds:\t{:?}", sregs.ds);
-    println!("es:\t{:?}", sregs.es);
-    println!("fs:\t{:?}", sregs.fs);
-    println!("gs:\t{:?}", sregs.gs);
-    println!("tr:\t{:?}", sregs.tr);
-    println!("ldt:\t{:?}", sregs.ldt);
-    println!("gdt:\t{:?}", sregs.gdt);
-    println!("idt:\t{:?}", sregs.idt);
-    println!(
+    trace!("System registers");
+    trace!("cs:\t{:?}", sregs.cs);
+    trace!("ss:\t{:?}", sregs.ss);
+    trace!("ds:\t{:?}", sregs.ds);
+    trace!("es:\t{:?}", sregs.es);
+    trace!("fs:\t{:?}", sregs.fs);
+    trace!("gs:\t{:?}", sregs.gs);
+    trace!("tr:\t{:?}", sregs.tr);
+    trace!("ldt:\t{:?}", sregs.ldt);
+    trace!("gdt:\t{:?}", sregs.gdt);
+    trace!("idt:\t{:?}", sregs.idt);
+    trace!(
         "cr0: \t{:>#10x}, cr2: \t{:>#10x}, cr3:\t{:>#10x}, cr4:\t{:>#10x}",
-        sregs.cr0, sregs.cr2, sregs.cr3, sregs.cr4
+        sregs.cr0,
+        sregs.cr2,
+        sregs.cr3,
+        sregs.cr4
     );
-    println!(
+    trace!(
         "cr8:\t{:>#10x}, efer:\t{:>#10x}, apci_base:\t{:>#10x}",
-        sregs.cr8, sregs.efer, sregs.apic_base
+        sregs.cr8,
+        sregs.efer,
+        sregs.apic_base
     );
-    println!("interrupt_bitmap: {:?}", sregs.interrupt_bitmap);
+    trace!("interrupt_bitmap: {:?}", sregs.interrupt_bitmap);
 
     let events = vcpu.get_vcpu_events().unwrap();
-    println!("events: {:?}\n", events);
+    trace!("events: {:?}\n", events);
 }

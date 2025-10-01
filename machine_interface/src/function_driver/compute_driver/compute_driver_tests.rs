@@ -611,7 +611,7 @@ mod compute_driver_tests {
         use crate::function_driver::{compute_driver::kvm::KvmDriver, ComputeResource};
         use crate::memory_domain::{kvm::KvmMemoryDomain, MemoryResource};
         #[cfg(target_arch = "x86_64")]
-        driverTests!(elf_kvm_x86_64; KvmMemoryDomain; MemoryResource::Shared { id: 0, size: (1<<30) }; KvmDriver {};
+        driverTests!(elf_kvm_x86_64; KvmMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; KvmDriver {};
         core_affinity::get_core_ids()
            .and_then(
                 |core_vec|
@@ -624,7 +624,7 @@ mod compute_driver_tests {
             ComputeResource::GPU(0)
         ]);
         #[cfg(target_arch = "aarch64")]
-        driverTests!(elf_kvm_aarch64; KvmMemoryDomain; MemoryResource::Shared { id: 0, size: (1<<30) }; KvmDriver {};
+        driverTests!(elf_kvm_aarch64; KvmMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; KvmDriver {};
         core_affinity::get_core_ids()
             .and_then(
                 |core_vec|

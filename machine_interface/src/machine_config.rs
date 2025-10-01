@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc, u64};
+use std::{collections::BTreeMap, sync::Arc};
 
 use crate::function_driver::SystemFunction;
 #[allow(unused_imports)]
@@ -70,13 +70,7 @@ pub fn get_available_domains(
         #[cfg(feature = "cheri")]
         (DomainType::Cheri, MemoryResource::Anonymous { size: 0 }),
         #[cfg(feature = "kvm")]
-        (
-            DomainType::Kvm,
-            MemoryResource::Shared {
-                id: u64::MAX,
-                size: 0,
-            },
-        ),
+        (DomainType::Kvm, MemoryResource::Anonymous { size: 0 }),
         #[cfg(feature = "mmu")]
         (
             DomainType::Process,

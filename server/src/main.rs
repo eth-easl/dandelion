@@ -589,13 +589,7 @@ fn main() -> () {
         * 1024;
 
     let memory_pool = BTreeMap::from([
-        (
-            DomainType::Kvm,
-            MemoryResource::Shared {
-                id: 0,
-                size: max_ram,
-            },
-        ),
+        (DomainType::Kvm, MemoryResource::Anonymous { size: max_ram }),
         #[cfg(feature = "cheri")]
         (
             DomainType::Cheri,

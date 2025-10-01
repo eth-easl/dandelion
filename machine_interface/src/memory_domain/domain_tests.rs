@@ -177,7 +177,13 @@ fn transfer(source: Box<Context>, destination: Box<Context>) {
     destination_context
         .read(0, &mut read_buffer)
         .expect("Context should return single value vector in range");
-    assert_eq!(vec![BYTEPATTERN; size], read_buffer);
+    for index in 0..size {
+        assert_eq!(
+            BYTEPATTERN, read_buffer[index],
+            "Read not equal for first time at {}, expected: {}, actual: {}",
+            index, BYTEPATTERN, read_buffer[index]
+        );
+    }
 }
 
 fn transfer_item(
@@ -464,7 +470,7 @@ macro_rules! systemsDomainTests {
                 }
             }
             #[test]
-            fn test_transfer_mulitple_bytes() {
+            fn test_transfer_multiple_bytes() {
                 // Tests how transfers over multiple Bytes are handled
                 let mut preamble = "Start\n".to_string();
                 let preamble_bytes = bytes::Bytes::from(preamble.clone().into_bytes());
@@ -502,17 +508,17 @@ macro_rules! systemsDomainTests {
                     pre_len + body_len,
                 )
                 .expect("Transfer expected to be valid");
-                let chunk_ref_result = second_ctx.get_chunk_ref(0, pre_len + body_len);
-
-                fn bytes_to_string(input: &[u8]) -> Result<String, std::str::Utf8Error> {
-                    std::str::from_utf8(input).map(|s| s.to_string())
+                // read entire range
+                let mut return_string = String::new();
+                let mut read_bytes = 0;
+                while read_bytes < pre_len + body_len {
+                    let chunk_ref_result = second_ctx
+                        .get_chunk_ref(read_bytes, pre_len + body_len)
+                        .unwrap();
+                    read_bytes += chunk_ref_result.len();
+                    return_string.push_str(std::str::from_utf8(chunk_ref_result).unwrap());
                 }
-                let return_string = match bytes_to_string(chunk_ref_result.unwrap()) {
-                    Ok(ret_str) => ret_str,
-                    _ => {
-                        panic!("Error");
-                    }
-                };
+                // assemble one complete string
                 preamble.push_str(&body);
                 assert_eq!(preamble, return_string, "Not full string was returned");
             }
@@ -533,9 +539,9 @@ systemsDomainTests!(cheri_system; cheriType; MemoryResource::Anonymous { size: (
 #[cfg(feature = "kvm")]
 use super::kvm::KvmMemoryDomain as kvmType;
 #[cfg(feature = "kvm")]
-domainTests!(kvm; kvmType; MemoryResource::Shared { id: 0, size: (2<<22) });
+domainTests!(kvm; kvmType; MemoryResource::Anonymous { size: (2<<22) });
 #[cfg(feature = "kvm")]
-systemsDomainTests!(kvm_system; kvmType; MemoryResource::Shared { id: 0, size: (2<<22) });
+systemsDomainTests!(kvm_system; kvmType; MemoryResource::Anonymous { size: (2<<22) });
 
 #[cfg(feature = "mmu")]
 use super::mmu::MmuMemoryDomain as mmuType;

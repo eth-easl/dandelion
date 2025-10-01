@@ -205,8 +205,7 @@ impl Context {
         let mut start_address = 0;
         for (window_index, occupied) in self.occupation.windows(2).enumerate() {
             let lower_end = occupied[0].offset + occupied[0].size;
-            // TODO use next multiple of when stabilized
-            let start = ((lower_end + alignment - 1) / alignment) * alignment;
+            let start = lower_end.next_multiple_of(alignment);
             let end = occupied[1].offset;
             let available = end - start;
             if available >= size && available < space_size {
@@ -334,6 +333,13 @@ pub fn transfer_memory(
                 size,
             )
         }
+        (ContextType::Kvm(destination_context), _) => kvm::transfer_into(
+            destination_context,
+            source,
+            destination_offset,
+            source_offset,
+            size,
+        ),
         (ContextType::System(destination_ctxt), _) => system_domain::into_system_context_transfer(
             destination_ctxt,
             source,
