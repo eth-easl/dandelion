@@ -100,17 +100,24 @@ sudo mount -o remount,exec /dev/shm
 ## Paper
 If you use Dandelion, please cite our paper:
 ```bibtex
-@misc{kuchler2025unlockingtrueelasticitycloudnative,
-      title={Unlocking True Elasticity for the Cloud-Native Era with Dandelion}, 
-      author={Tom Kuchler and Pinghe Li and Yazhuo Zhang and Lazar Cvetković and Boris Goranov and Tobias Stocker and Leon Thomm and Simone Kalbermatter and Tim Notter and Andrea Lattuada and Ana Klimovic},
-      year={2025},
-      eprint={2505.01603},
-      archivePrefix={arXiv},
-      primaryClass={cs.DC},
-      url={https://arxiv.org/abs/2505.01603}, 
+@inproceedings{10.1145/3731569.3764803,
+author = {Kuchler, Tom and Li, Pinghe and Zhang, Yazhuo and Cvetkovi\'{c}, Lazar and Goranov, Boris and Stocker, Tobias and Thomm, Leon and Kalbermatter, Simone and Notter, Tim and Lattuada, Andrea and Klimovic, Ana},
+title = {Unlocking True Elasticity for the Cloud-Native Era with Dandelion},
+year = {2025},
+isbn = {9798400718700},
+publisher = {Association for Computing Machinery},
+address = {New York, NY, USA},
+url = {https://doi.org/10.1145/3731569.3764803},
+doi = {10.1145/3731569.3764803},
+booktitle = {Proceedings of the ACM SIGOPS 31st Symposium on Operating Systems Principles},
+pages = {944–961},
+numpages = {18},
+location = {Lotte Hotel World, Seoul, Republic of Korea},
+series = {SOSP '25}
 }
 ```
 
 # C Dependencies
 
 For testing the C code to interact with Cheri we are using unity which is included directly in the project.
+
