@@ -409,6 +409,7 @@ fn set_p2_table(
         // check if there is already a table for that entry or if it was directly mapped so far
         let (p1_offset, new_table) = if p2_table[p2_entry] & PDE64_PS != 0 {
             *stack_start -= PAGE_SIZE;
+            p2_table[p2_entry] = (*stack_start as u64) | PDE64_PRESENT | PDE64_RW | PDE64_USER;
             (*stack_start, true)
         } else {
             ((p2_table[p2_entry] & !0xFFF) as usize, false)
@@ -449,6 +450,8 @@ fn set_p2_table(
     if size > 0 {
         let (p1_offset, new_table) = if p2_table[last_large_entry] & PDE64_PS != 0 {
             *stack_start -= PAGE_SIZE;
+            p2_table[last_large_entry] =
+                (*stack_start as u64) | PDE64_PRESENT | PDE64_RW | PDE64_USER;
             (*stack_start, true)
         } else {
             ((p2_table[last_large_entry] & !0xFFF) as usize, false)
@@ -468,8 +471,10 @@ fn set_p1_table(
     new_table: bool,
 ) {
     println!(
-        "set p1 table for virtual start: {}, physical start: {}",
-        virtual_start, physical
+        "set p1 table ({:?}) for virtual start: {}, physical start: {}",
+        table.as_ptr(),
+        virtual_start,
+        physical
     );
     let first_entry = (virtual_start >> 12) & 0x1FF;
     // base address of the 2 MB this page table is responsible for
@@ -477,6 +482,11 @@ fn set_p1_table(
     let entry_number = size / PAGE_SIZE;
     if new_table {
         for entry in 0..first_entry {
+            println!(
+                "installing default mapping at {}, for entry {}",
+                virtual_table_base + entry * PAGE_SIZE,
+                entry
+            );
             table[entry] = PDE64_PRESENT
                 | PDE64_PS
                 | PDE64_RW
@@ -487,14 +497,19 @@ fn set_p1_table(
     for entry in first_entry..first_entry + entry_number {
         println!(
             "mapping {} to {}, for entry {}",
-            physical + (entry - first_entry) * PAGE_SIZE,
             virtual_table_base + entry * PAGE_SIZE,
+            physical + (entry - first_entry) * PAGE_SIZE,
             entry
         );
         table[entry] = flags | (physical + (entry - first_entry) * PAGE_SIZE) as u64;
     }
     if new_table {
         for entry in first_entry + entry_number..512 {
+            println!(
+                "installing default mapping at {}, for entry {}",
+                virtual_table_base + entry * PAGE_SIZE,
+                entry
+            );
             table[entry] = PDE64_PRESENT
                 | PDE64_PS
                 | PDE64_RW
@@ -529,7 +544,8 @@ pub fn set_page_table(
         guest_mem.as_mut_ptr(),
         stack_start
     );
-    println!("value at offset {}: {}", 0x31b90, guest_mem[130_227_088]);
+    println!("value at offset {}: {}", 0x31b90, guest_mem[0x7C31b90]);
+    guest_mem[0x31b90] = 12;
     let p4_address = stack_start;
     // allocate table with 512 entries for 1 GB ranges
     let p3_address = stack_start;
@@ -580,7 +596,7 @@ pub fn set_page_table(
                 local_virtual,
                 local_physical,
                 local_size,
-                PDE64_PRESENT | PDE64_RW | PDE64_USER | PDE64_PS,
+                PDE64_PRESENT | PDE64_RW | PDE64_PS,
                 p2_offset,
                 guest_mem,
                 &mut stack_start,
