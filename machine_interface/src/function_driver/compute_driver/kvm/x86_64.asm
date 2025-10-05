@@ -23,8 +23,13 @@
 .global fault_handlers_end
 
 asm_start:
-   mov rax, [0x31b90]
-   mov rax, [0x7C31b90]
+   # mov rax, [0x31b90]
+   # mov rax, [0x7A9A000]
+   # 0x7a9f000 = cr3 = p4 address
+   # 0x7a9e000 = p3 table addres, first entry in p4 table
+   # 0x7a9d000 = p2 table address, first entry in p3 table
+   # 0x7a9c000 = p1 table address, first endty in the p2 table
+   mov rax, [0x7a9c000 + 16*8]
    int 32
    #mov ax, 0x50
    #mov ds, ax 

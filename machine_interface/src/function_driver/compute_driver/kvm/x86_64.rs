@@ -140,9 +140,9 @@ impl ResetState {
         set_interrupt_table(&mut sregs, guest_mem);
         vcpu.set_sregs(&sregs).unwrap();
         vcpu.set_regs(&kvm_regs {
-            // rip: entry_point,
+            rip: entry_point,
             // rip: 0x31b90,
-            rip: INTERRUPT_HANDLER as u64,
+            // rip: INTERRUPT_HANDLER as u64,
             rsp: stack_pointer as u64 - 32,
             rbp: stack_pointer as u64 - 32,
             rflags: 2,
@@ -409,6 +409,7 @@ fn set_p2_table(
         // check if there is already a table for that entry or if it was directly mapped so far
         let (p1_offset, new_table) = if p2_table[p2_entry] & PDE64_PS != 0 {
             *stack_start -= PAGE_SIZE;
+            println!("p1 page table at: {}", *stack_start);
             p2_table[p2_entry] = (*stack_start as u64) | PDE64_PRESENT | PDE64_RW | PDE64_USER;
             (*stack_start, true)
         } else {
@@ -441,7 +442,7 @@ fn set_p2_table(
     let last_large_entry = first_large_entry + large_pages;
     for entry in first_large_entry..last_large_entry {
         println!("mapping {} to {}", physical, entry * LARGE_PAGE);
-        p2_table[entry] = flags | physical as u64;
+        // p2_table[entry] = flags | physical as u64;
         physical += LARGE_PAGE;
     }
     size -= LARGE_PAGE * large_pages;
@@ -450,8 +451,8 @@ fn set_p2_table(
     if size > 0 {
         let (p1_offset, new_table) = if p2_table[last_large_entry] & PDE64_PS != 0 {
             *stack_start -= PAGE_SIZE;
-            p2_table[last_large_entry] =
-                (*stack_start as u64) | PDE64_PRESENT | PDE64_RW | PDE64_USER;
+            // p2_table[last_large_entry] =
+            // (*stack_start as u64) | PDE64_PRESENT | PDE64_RW | PDE64_USER;
             (*stack_start, true)
         } else {
             ((p2_table[last_large_entry] & !0xFFF) as usize, false)
@@ -482,11 +483,11 @@ fn set_p1_table(
     let entry_number = size / PAGE_SIZE;
     if new_table {
         for entry in 0..first_entry {
-            println!(
-                "installing default mapping at {}, for entry {}",
-                virtual_table_base + entry * PAGE_SIZE,
-                entry
-            );
+            // println!(
+            //     "installing default mapping at {}, for entry {}",
+            //     virtual_table_base + entry * PAGE_SIZE,
+            //     entry
+            // );
             table[entry] = PDE64_PRESENT
                 | PDE64_PS
                 | PDE64_RW
@@ -501,15 +502,20 @@ fn set_p1_table(
             physical + (entry - first_entry) * PAGE_SIZE,
             entry
         );
+        // table[entry] = PDE64_PRESENT
+        //     | PDE64_PS
+        //     | PDE64_RW
+        //     | PDE64_USER
+        //     | (virtual_table_base + entry * PAGE_SIZE) as u64;
         table[entry] = flags | (physical + (entry - first_entry) * PAGE_SIZE) as u64;
     }
     if new_table {
         for entry in first_entry + entry_number..512 {
-            println!(
-                "installing default mapping at {}, for entry {}",
-                virtual_table_base + entry * PAGE_SIZE,
-                entry
-            );
+            // println!(
+            //     "installing default mapping at {}, for entry {}",
+            //     virtual_table_base + entry * PAGE_SIZE,
+            //     entry
+            // );
             table[entry] = PDE64_PRESENT
                 | PDE64_PS
                 | PDE64_RW
@@ -548,8 +554,8 @@ pub fn set_page_table(
     guest_mem[0x31b90] = 12;
     let p4_address = stack_start;
     // allocate table with 512 entries for 1 GB ranges
-    let p3_address = stack_start;
     stack_start -= PAGE_SIZE;
+    let p3_address = stack_start;
 
     let p4 = u8_slice_to_u64_slice(&mut guest_mem[p4_address..p4_address + PAGE_SIZE]);
     // everything should be zero, so we only need to set first entry, for a page table with 512 entries with 1GB pages eachp4[0] = PDE64_PRESENT | PDE64_RW | PDE64_USER | p3_address as u64;
@@ -596,7 +602,7 @@ pub fn set_page_table(
                 local_virtual,
                 local_physical,
                 local_size,
-                PDE64_PRESENT | PDE64_RW | PDE64_PS,
+                PDE64_PRESENT | PDE64_RW | PDE64_PS | PDE64_USER,
                 p2_offset,
                 guest_mem,
                 &mut stack_start,

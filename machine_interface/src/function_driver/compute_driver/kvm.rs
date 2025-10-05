@@ -82,6 +82,7 @@ impl EngineLoop for KvmLoop {
             FunctionConfig::ElfConfig(conf) => conf,
             _ => return Err(DandelionError::ConfigMissmatch),
         };
+        TODO: make this work with zero copy
         setup_input_structs::<u64, u64>(&mut context, elf_config.system_data_offset, &output_sets)?;
         let kvm_context = match &mut context.context {
             ContextType::Kvm(kvm_context) => kvm_context,
