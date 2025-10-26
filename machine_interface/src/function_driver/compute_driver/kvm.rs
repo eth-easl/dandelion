@@ -14,7 +14,7 @@ use crate::{
 };
 use core_affinity;
 use dandelion_commons::{DandelionError, DandelionResult};
-use kvm_bindings::kvm_userspace_memory_region;
+use kvm_bindings::{kvm_cpuid2, kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES};
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::debug;
 use nix::sys::{
@@ -67,6 +67,10 @@ impl EngineLoop for KvmLoop {
         let vm = kvm.create_vm().unwrap();
 
         let vcpu = vm.create_vcpu(0).unwrap();
+        // enable all features the real cpu has on the vcpu
+        let cpuid = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).unwrap();
+        vcpu.set_cpuid2(&cpuid).unwrap();
+
         let state = ResetState::new(&vm, &vcpu);
 
         return Ok(Box::new(KvmLoop { vm, vcpu, state }));
@@ -82,7 +86,6 @@ impl EngineLoop for KvmLoop {
             FunctionConfig::ElfConfig(conf) => conf,
             _ => return Err(DandelionError::ConfigMissmatch),
         };
-        TODO: make this work with zero copy
         setup_input_structs::<u64, u64>(&mut context, elf_config.system_data_offset, &output_sets)?;
         let kvm_context = match &mut context.context {
             ContextType::Kvm(kvm_context) => kvm_context,
@@ -215,11 +218,15 @@ impl EngineLoop for KvmLoop {
         // start running the function
         loop {
             let reason = self.vcpu.run().unwrap();
-            if loop_number > 30 {
-                break;
-            }
+            // if loop_number > 30 {
+            //     break;
+            // }
             loop_number += 1;
             match reason {
+                VcpuExit::IoOut(14, _) => {
+                    // handle page fault in guest
+                    let page_offset = handle_page_fault(&self.vcpu, kvm_context.storage)?;
+                }
                 VcpuExit::Hlt => break,
                 VcpuExit::SystemEvent(_type, _data) => {
                     debug!("System Event, type: {}", _type);
@@ -235,6 +242,10 @@ impl EngineLoop for KvmLoop {
                     break;
                 }
             }
+            // println!(
+            //     "CPUDI after: {:#?}",
+            //     self.vcpu.get_cpuid2(KVM_MAX_CPUID_ENTRIES).unwrap()
+            // );
         }
 
         // detach VM memory

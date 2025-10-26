@@ -49,7 +49,7 @@ pub struct KvmContext {
 /// TODO handle overwriting
 impl ContextTrait for KvmContext {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
-        debug!("Write to offset: {}, size: {}", offset, data.len());
+        println!("Write to offset: {}, size: {}", offset, data.len());
         // check alignment
         if offset % core::mem::align_of::<T>() != 0 {
             debug!("Misaligned write at offset {}", offset);
