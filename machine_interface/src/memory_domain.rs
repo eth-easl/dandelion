@@ -333,6 +333,7 @@ pub fn transfer_memory(
                 size,
             )
         }
+        #[cfg(feature = "kvm")]
         (ContextType::Kvm(destination_context), _) => kvm::transfer_into(
             destination_context,
             source,
