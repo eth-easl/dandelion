@@ -5,26 +5,22 @@ use crate::{
         ComputeResource, Driver, ElfConfig, Function, FunctionConfig, WorkQueue,
     },
     interface::{read_output_structs, setup_input_structs},
-    memory_domain::{
-        kvm::{KvmContext, SLAB_SIZE},
-        Context, ContextTrait, ContextType, MemoryDomain,
-    },
+    memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
     DataItem, DataRequirement, DataRequirementList, DataSet, Position,
 };
 use core_affinity;
 use dandelion_commons::{DandelionError, DandelionResult};
-use kvm_bindings::{kvm_cpuid2, kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES};
+use kvm_bindings::{kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES};
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::debug;
-use nix::sys::{
-    mman::{mmap, MapFlags, ProtFlags},
-    stat::fstat,
-};
-use std::{num::NonZeroUsize, ptr::slice_from_raw_parts, sync::Arc};
+use nix::sys::mman::{mmap, MapFlags, ProtFlags};
+use std::{num::NonZeroUsize, sync::Arc};
 
 #[cfg(target_arch = "x86_64")]
 mod x86_64;
+#[cfg(target_arch = "x86_64")]
+pub use x86_64::PAGE_SIZE;
 #[cfg(target_arch = "x86_64")]
 use x86_64::*;
 
@@ -102,9 +98,10 @@ impl EngineLoop for KvmLoop {
 
         let mut stack_start = kvm_context.storage.len();
         // vector containing the mapping where something should be, where it
-        let mut max_address = kvm_context.storage.len();
         let mut mappings = Vec::new();
+        let mut removed_overlay = Vec::new();
         // go through things that are overlayed and map, it was made sure in the transfer function, that it is full pages
+        // TODO: when cursor is stabilized use that, so mappings can be removed if they were copied
         for (&overlay_end, (overlay_size, overlay_context)) in kvm_context.overlay.iter() {
             // map from back if it is a kvm context
             if let ContextType::Kvm(overlay_kvm_context) = &overlay_context.context.context {
@@ -124,23 +121,9 @@ impl EngineLoop for KvmLoop {
                 mappig_start -= additional_offset;
                 stack_start = mappig_start;
                 let start_address = kvm_context.storage.as_ptr().addr() + stack_start;
-                println!(
-                    "host addr: {}, size: {}, guest addr: {}",
-                    start_address, *overlay_size, stack_start
-                );
-                println!(
-                    "value at offset {}: {}",
-                    2960,
-                    overlay_kvm_context.storage[overlay_context.offset + 2960]
-                );
-                let file_offset = (overlay_kvm_context.rangepool_start as usize) * SLAB_SIZE
+                let file_offset = (overlay_kvm_context.rangepool_start as usize) * PAGE_SIZE
                     + overlay_context.offset;
-                let mapping_fd = fstat(overlay_kvm_context.fd).unwrap();
-                println!(
-                    "fd size: {}, offset requested {}",
-                    mapping_fd.st_size, file_offset
-                );
-                let map_addr = unsafe {
+                unsafe {
                     mmap(
                         NonZeroUsize::new(start_address),
                         NonZeroUsize::new_unchecked(*overlay_size),
@@ -151,16 +134,6 @@ impl EngineLoop for KvmLoop {
                     )
                     .unwrap()
                 };
-                let mapped =
-                    unsafe { core::slice::from_raw_parts(map_addr as *const u8, *overlay_size) };
-                println!(
-                    "After mapping at addr {} (asked for {}): {} at addr:{}, direct read: {}",
-                    map_addr.addr(),
-                    start_address,
-                    kvm_context.storage[stack_start + 2960],
-                    kvm_context.storage.as_ptr().addr(),
-                    mapped[2960]
-                );
                 mappings.push((overlay_end - overlay_size, mappig_start, *overlay_size));
             } else {
                 let overlay_start = overlay_end - *overlay_size;
@@ -169,22 +142,19 @@ impl EngineLoop for KvmLoop {
                     let chunk = overlay_context
                         .context
                         .get_chunk_ref(overlay_context.offset, *overlay_size)?;
-                    println!(
-                        "overlay size: {}, chunk size {}",
-                        overlay_start,
-                        chunk.len()
-                    );
                     kvm_context.storage[overlay_start..overlay_end].copy_from_slice(chunk);
                     read_bytes += chunk.len();
                 }
+                removed_overlay.push(overlay_end);
             }
+        }
+        for key in removed_overlay {
+            kvm_context.overlay.remove(&key);
         }
 
         // attach VM memory
         let mut region = kvm_userspace_memory_region {
             slot: 0,
-            // flags: kvm_bindings::KVM_MEM_LOG_DIRTY_PAGES,
-            // flags: kvm_bindings::KVM_MEM_READONLY,
             flags: 0,
             guest_phys_addr: 0x0,
             memory_size: kvm_context.storage.len() as u64,
@@ -193,8 +163,6 @@ impl EngineLoop for KvmLoop {
         unsafe {
             self.vm.set_user_memory_region(region).unwrap();
         }
-
-        println!("entry point: {}", elf_config.entry_point);
 
         // initialize vCPU
         self.state.init_vcpu(
@@ -213,19 +181,15 @@ impl EngineLoop for KvmLoop {
             dump_regs(&self.vcpu);
         }
 
-        let mut loop_number = 0;
-
+        let mut copied_pages = Vec::new();
         // start running the function
         loop {
             let reason = self.vcpu.run().unwrap();
-            // if loop_number > 30 {
-            //     break;
-            // }
-            loop_number += 1;
             match reason {
                 VcpuExit::IoOut(14, _) => {
                     // handle page fault in guest
                     let page_offset = handle_page_fault(&self.vcpu, kvm_context.storage)?;
+                    copied_pages.push(page_offset);
                 }
                 VcpuExit::Hlt => break,
                 VcpuExit::SystemEvent(_type, _data) => {
@@ -242,16 +206,53 @@ impl EngineLoop for KvmLoop {
                     break;
                 }
             }
-            // println!(
-            //     "CPUDI after: {:#?}",
-            //     self.vcpu.get_cpuid2(KVM_MAX_CPUID_ENTRIES).unwrap()
-            // );
         }
 
         // detach VM memory
         region.memory_size = 0;
         unsafe {
             self.vm.set_user_memory_region(region).unwrap();
+        }
+
+        // fix context overlay
+        copied_pages.sort();
+
+        // punching holes in the overlay, since there are only holes to be punched
+        // where there was overlay, panic if there is no overlap
+        for start in copied_pages {
+            // TODO: use cursor once it stabilizes
+            let to_insert_opt = if let Some((&overlay_end, (overlay_size, overlay_item))) =
+                kvm_context.overlay.range_mut(start..).next()
+            {
+                let end = start + PAGE_SIZE;
+                // know that start < overlay_end, so for overlap need to check that start is not too early
+                let overlay_start = overlay_end - *overlay_size;
+                if start < overlay_start {
+                    panic!(
+                        "Trying to punch hole at {} in overlay that starts only later {}",
+                        start, overlay_start
+                    );
+                // page is at start of overlay, so can just shrink it
+                } else if start == overlay_start {
+                    *overlay_size -= PAGE_SIZE;
+                    None
+                // page is in middle, so need to cut it in two
+                } else {
+                    let new_overlay = (end, (end - overlay_start, overlay_item.clone()));
+                    *overlay_size = overlay_end - end;
+                    overlay_item.offset += end - overlay_start;
+                    Some(new_overlay)
+                }
+            } else {
+                // there is no overlay ending after the current one starting, which means something went wrong.
+                panic!(
+                    "trying to punch hole in non existent overlay: page {}",
+                    start
+                );
+            };
+            if let Some((key, value)) = to_insert_opt {
+                kvm_context.overlay.insert(key, value);
+            }
         }
 
         read_output_structs::<u64, u64>(&mut context, elf_config.system_data_offset)?;

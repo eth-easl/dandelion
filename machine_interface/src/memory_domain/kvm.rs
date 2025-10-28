@@ -1,4 +1,8 @@
-use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
+use crate::{
+    function_driver::compute_driver::kvm::PAGE_SIZE,
+    memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
+};
+
 use dandelion_commons::{range_pool::RangePool, DandelionError, DandelionResult};
 use log::debug;
 use nix::{
@@ -20,10 +24,7 @@ use std::{
 
 use super::MemoryResource;
 
-// Minimum allocation granularity
-pub const SLAB_SIZE: usize = 1 << 12;
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OverlayItem {
     pub context: Arc<Context>,
     pub offset: usize,
@@ -38,7 +39,8 @@ pub struct KvmContext {
     /// The condition to check for no overlap is, that either is strictly before the other,
     /// meaning overlay_start >= check_end || check_start >= overlay_end, so checking for
     /// overlap is equivalent to the negation of that, which can be expressed as:
-    /// overlay_start < check_end && check_start < overlay_end
+    /// overlay_start < check_end && check_start < overlay_end.
+    /// Additionally overlay should only contain whole pages.
     pub overlay: BTreeMap<usize, (usize, OverlayItem)>,
     pub storage: &'static mut [u8],
     pub fd: RawFd,
@@ -49,7 +51,6 @@ pub struct KvmContext {
 /// TODO handle overwriting
 impl ContextTrait for KvmContext {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
-        println!("Write to offset: {}, size: {}", offset, data.len());
         // check alignment
         if offset % core::mem::align_of::<T>() != 0 {
             debug!("Misaligned write at offset {}", offset);
@@ -107,7 +108,6 @@ impl ContextTrait for KvmContext {
             if overlay_start > offset {
                 // read until we hit either end of read request or the overlay
                 let additional_bytes = min(overlay_start - offset, read_memory.len());
-                println!("additional_bytes: {}", additional_bytes);
                 read_memory[..additional_bytes]
                     .copy_from_slice(&self.storage[offset..offset + additional_bytes]);
                 read_memory = &mut read_memory[additional_bytes..];
@@ -171,7 +171,7 @@ impl ContextTrait for KvmContext {
 
 impl Drop for KvmContext {
     fn drop(&mut self) {
-        let size = u32::try_from(self.storage.len() / SLAB_SIZE).unwrap();
+        let size = u32::try_from(self.storage.len() / PAGE_SIZE).unwrap();
         self.domain
             .lock()
             .unwrap()
@@ -191,7 +191,6 @@ impl Drop for KvmContext {
 
 #[derive(Debug)]
 pub struct KvmMemoryDomain {
-    // memory_pool: MmapMemPool,
     occupation: Arc<Mutex<RangePool<u32>>>,
     fd: RawFd,
 }
@@ -208,7 +207,7 @@ impl MemoryDomain for KvmMemoryDomain {
         };
 
         // create memfd for anonymous memory file
-        let upper_end = u32::try_from(size / SLAB_SIZE)
+        let upper_end = u32::try_from(size / PAGE_SIZE)
             .expect("Total memory pool should be smaller for current u32 setup");
         let occupation = Arc::new(Mutex::new(RangePool::new(0..upper_end)));
         let fd = memfd_create(
@@ -221,24 +220,24 @@ impl MemoryDomain for KvmMemoryDomain {
     }
 
     fn acquire_context(&self, mut size: usize) -> DandelionResult<Context> {
-        // round up to next slab size
-        if size > (u32::MAX as usize) * SLAB_SIZE {
+        // round up to next page size
+        if size > (u32::MAX as usize) * PAGE_SIZE {
             return Err(DandelionError::DomainError(
                 dandelion_commons::DomainError::InvalidMemorySize,
             ));
         }
 
-        let number_of_slabs = u32::try_from((size + SLAB_SIZE - 1) / SLAB_SIZE).unwrap();
-        size = (number_of_slabs as usize) * SLAB_SIZE;
-        let slab = self
+        let number_of_pages = u32::try_from((size + PAGE_SIZE - 1) / PAGE_SIZE).unwrap();
+        size = (number_of_pages as usize) * PAGE_SIZE;
+        let page = self
             .occupation
             .lock()
             .unwrap()
-            .get(number_of_slabs, u32::MIN)
+            .get(number_of_pages, u32::MIN)
             .ok_or(DandelionError::DomainError(
                 dandelion_commons::DomainError::ReachedCapacity,
             ))?;
-        let file_offset = (slab as usize) * SLAB_SIZE;
+        let file_offset = (page as usize) * PAGE_SIZE;
         let mapping_pointer = unsafe {
             nix::sys::mman::mmap(
                 None,
@@ -259,7 +258,7 @@ impl MemoryDomain for KvmMemoryDomain {
             storage,
             fd: self.fd,
             domain: self.occupation.clone(),
-            rangepool_start: slab,
+            rangepool_start: page,
         });
         Ok(Context::new(ContextType::Kvm(new_context), size))
     }
@@ -292,7 +291,7 @@ pub fn transfer_into(
             return Err(DandelionError::InvalidWrite);
         }
     }
-    if size < SLAB_SIZE {
+    if size < PAGE_SIZE {
         let mut bytes_written = 0;
         while bytes_written < size {
             let chunk =
@@ -301,17 +300,17 @@ pub fn transfer_into(
             bytes_written += chunk.len();
         }
     } else {
-        // check if not both have the same distance to the next slab, if so, need to copy regularly
+        // check if not both have the same distance to the next page, if so, need to copy regularly
         // TODO remove interface for exact control on transfer item, so location can be controlled by transfer function
-        if source_offset % SLAB_SIZE != destination_offset % SLAB_SIZE {
+        if source_offset % PAGE_SIZE != destination_offset % PAGE_SIZE {
             return Err(DandelionError::NotImplemented);
         }
 
         // insert the parts that can be remapped and copy the rest
-        let rounded_start = destination_offset.next_multiple_of(SLAB_SIZE);
-        let rounded_size = ((size - (rounded_start - destination_offset)) / SLAB_SIZE) * SLAB_SIZE;
+        let rounded_start = destination_offset.next_multiple_of(PAGE_SIZE);
+        let rounded_size = ((size - (rounded_start - destination_offset)) / PAGE_SIZE) * PAGE_SIZE;
         let rounded_end = rounded_start + rounded_size;
-        let source_rounded_start = source_offset.next_multiple_of(SLAB_SIZE);
+        let source_rounded_start = source_offset.next_multiple_of(PAGE_SIZE);
         let source_rounded_end = source_rounded_start + rounded_size;
 
         // copy front and back parts
