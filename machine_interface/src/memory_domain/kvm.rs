@@ -299,13 +299,18 @@ pub fn transfer_into(
             destination.write(destination_offset + bytes_written, chunk)?;
             bytes_written += chunk.len();
         }
-    } else {
+    } else if source_offset % PAGE_SIZE != destination_offset % PAGE_SIZE {
         // check if not both have the same distance to the next page, if so, need to copy regularly
         // TODO remove interface for exact control on transfer item, so location can be controlled by transfer function
-        if source_offset % PAGE_SIZE != destination_offset % PAGE_SIZE {
-            return Err(DandelionError::NotImplemented);
+        // if that is true, can force destination_offset to be same allignment
+        let mut bytes_written = 0;
+        while bytes_written < size {
+            let chunk =
+                source.get_chunk_ref(source_offset + bytes_written, size - bytes_written)?;
+            destination.write(destination_offset + bytes_written, chunk)?;
+            bytes_written += chunk.len();
         }
-
+    } else {
         // insert the parts that can be remapped and copy the rest
         let rounded_start = destination_offset.next_multiple_of(PAGE_SIZE);
         let rounded_size = ((size - (rounded_start - destination_offset)) / PAGE_SIZE) * PAGE_SIZE;
