@@ -92,7 +92,7 @@ impl Composition {
     pub fn from_module(
         module: &dparser::Module,
         function_ids: &mut FunctionDict,
-    ) -> DandelionResult<Vec<(FunctionId, Self, Metadata)>> {
+    ) -> DandelionResult<Vec<(String, Self, Metadata)>> {
         // TODO: do we need module somewhere else outside? Otherwise take ownership to safe a lot of clones
         let mut known_functions = BTreeMap::new();
         let mut compositions = Vec::new();
@@ -113,7 +113,6 @@ impl Composition {
                     );
                 }
                 dparser::Item::Composition(comp) => {
-                    let composition_id = function_ids.insert_or_lookup(comp.v.name.clone());
                     let mut set_counter = 0usize;
                     let mut set_numbers = BTreeMap::new();
                     // add composition input sets
@@ -304,7 +303,7 @@ impl Composition {
                             .into(),
                     };
                     compositions.push((
-                        composition_id,
+                        comp.v.name.clone(),
                         Composition {
                             dependencies,
                             output_map,

@@ -121,7 +121,7 @@ impl Dispatcher {
         non_caching: bool,
         start_time: std::time::Instant,
     ) -> DandelionResult<(Vec<Option<CompositionSet>>, Recorder)> {
-        trace!("Queuing function {}", function_name);
+        debug!("Queuing function {}", function_name);
         let function_id = self
             .function_registry
             .get_function_id(&function_name)
@@ -147,6 +147,55 @@ impl Dispatcher {
         let results = self
             .queue_function(
                 function_id,
+                input_vec,
+                non_caching,
+                recorder.get_sub_recorder(),
+            )
+            .await?;
+
+        return Ok((results, recorder));
+    }
+
+    pub async fn queue_composition_description(
+        &self,
+        composition_desc: String,
+        inputs: Vec<DispatcherInput>,
+        non_caching: bool,
+        start_time: std::time::Instant,
+    ) -> DandelionResult<(Vec<Option<CompositionSet>>, Recorder)> {
+        debug!("Parsing single use composition");
+        let composition_meta_pairs = self
+            .function_registry
+            .parse_compositions(&composition_desc.as_str())
+            .await?;
+        if composition_meta_pairs.len() != 1 {
+            debug!(
+                "Expected exactly one composition got {}",
+                composition_meta_pairs.len()
+            );
+            return Err(DandelionError::Dispatcher(
+                DispatcherError::InvalidComposition,
+            ));
+        }
+
+        debug!(
+            "Queuing single use composition {}",
+            composition_meta_pairs[0].0
+        );
+        let recorder = Recorder::new(0, start_time);
+        let mut input_vec = Vec::with_capacity(inputs.len());
+        input_vec.resize(inputs.len(), None);
+        for (index, input) in inputs.into_iter().enumerate() {
+            match input {
+                DispatcherInput::None => (),
+                DispatcherInput::Set(set) => {
+                    input_vec[index] = Some(set);
+                }
+            }
+        }
+        let results = self
+            .queue_composition(
+                composition_meta_pairs[0].1.clone(),
                 input_vec,
                 non_caching,
                 recorder.get_sub_recorder(),

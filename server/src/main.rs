@@ -47,6 +47,12 @@ pub enum DispatcherCommand {
         start_time: Instant,
         callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
     },
+    CompositionRequest {
+        composition: String,
+        inputs: Vec<DispatcherInput>,
+        start_time: Instant,
+        callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
+    },
     FunctionRegistration {
         name: String,
         engine_type: EngineType,
@@ -103,6 +109,28 @@ async fn dispatcher_loop(
                             // no need to handle ok, and nothing useful to do with data if we get it back
                             // drop it here to release resources
                             let _ = callback.send(function_output);
+                        }
+                        _ = callback.closed() => ()
+                    }
+                });
+            }
+            DispatcherCommand::CompositionRequest {
+                composition,
+                inputs,
+                start_time,
+                mut callback,
+            } => {
+                debug!("Handling composition request");
+                let future = dispatcher.queue_composition_description(
+                    composition,
+                    inputs,
+                    false, // TODO
+                    start_time,
+                );
+                spawn(async {
+                    select! {
+                        output = future => {
+                            let _ = callback.send(output);
                         }
                         _ = callback.closed() => ()
                     }

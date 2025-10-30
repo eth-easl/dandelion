@@ -266,6 +266,18 @@ impl FunctionRegistry {
         return Ok(function_id);
     }
 
+    pub async fn parse_compositions(
+        &self,
+        comp_desc: &str,
+    ) -> DandelionResult<Vec<(String, Composition, Metadata)>> {
+        let mut dictlock = self.function_dict.lock().await;
+        let module = dparser::parse(comp_desc).map_err(|parse_error| {
+            print_errors(comp_desc, parse_error);
+            DandelionError::CompositionParsingError
+        })?;
+        Composition::from_module(&module, &mut dictlock)
+    }
+
     /// TODO: for compositions that are already present the metadata is not overwritten
     pub async fn insert_compositions(&self, module: &str) -> DandelionResult<()> {
         // TODO actually handle the error in some sensible way
@@ -278,7 +290,8 @@ impl FunctionRegistry {
             })?;
             Composition::from_module(&module, &mut dictlock)?
         };
-        for (function_id, composition, metadata) in composition_meta_pairs {
+        for (function_name, composition, metadata) in composition_meta_pairs {
+            let function_id = dictlock.insert_or_lookup(function_name);
             self.metadata.lock().await.insert(function_id, metadata);
             self.add_composition(function_id, composition).await?;
         }

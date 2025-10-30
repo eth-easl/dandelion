@@ -129,7 +129,7 @@ fn check_composition(
 }
 
 fn check_compositions_and_metadata(
-    actual: Vec<(u64, Composition, Metadata)>,
+    actual: Vec<(String, Composition, Metadata)>,
     expected: Vec<(Composition, Metadata)>,
     input_set_range: Range<usize>,
     output_set_range: Range<usize>,
