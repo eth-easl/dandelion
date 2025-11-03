@@ -17,7 +17,11 @@ use futures::{
     Future,
 };
 use itertools::Itertools;
+#[cfg(feature = "log_function_stderr")]
+use log::warn;
 use log::{debug, trace};
+#[cfg(feature = "log_function_stderr")]
+use machine_interface::memory_domain::ContextTrait;
 use machine_interface::{
     function_driver::{Driver, FunctionConfig, WorkToDo},
     machine_config::{
@@ -718,6 +722,23 @@ impl Dispatcher {
         recorder.record(RecordPoint::ExecutionQueue);
         let result = engine_queue.enqueue_work(args).await?.get_context();
         recorder.record(RecordPoint::FutureReturn);
+
+        #[cfg(feature = "log_function_stderr")]
+        for opt in result.content.iter() {
+            if opt.as_ref().is_some_and(|s| s.ident == "stdio") {
+                for itm in opt.as_ref().unwrap().buffers.iter() {
+                    if itm.ident == "stderr" {
+                        let mut stderr_output: Vec<u8> = vec![0; itm.data.size];
+                        result.context.read(itm.data.offset, &mut stderr_output)?;
+                        warn!(
+                            "Function result contains stderr output:\n{}",
+                            std::str::from_utf8(stderr_output.as_slice()).expect("Invalid stderr buffer");
+                        );
+                    }
+                }
+            }
+        }
+
         Ok(result)
     }
 

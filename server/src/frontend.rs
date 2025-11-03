@@ -62,7 +62,8 @@ async fn handle_function_registration(
         .to_bytes(); // TODO: return error
 
     // find first line end character
-    let request_map: RegisterFunction =
+    #[allow(unused_mut)]
+    let mut request_map: RegisterFunction =
         bson::from_slice(&bytes).expect("Should be able to deserialize request"); // TODO: return error
 
     // if local is present ignore the binary
@@ -132,6 +133,11 @@ async fn handle_function_registration(
             }
         })
         .collect();
+
+    #[cfg(feature = "log_function_stderr")]
+    if !request_map.output_sets.iter().any(|s| s == "stdio") {
+        request_map.output_sets.push("stdio".to_string());
+    };
 
     let (callback, confirmation) = oneshot::channel();
     let metadata = Metadata {
