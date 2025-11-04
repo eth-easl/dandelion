@@ -5,9 +5,12 @@ use clap::Parser;
 use log::{error, warn};
 
 const DEFAULT_CONFIG_PATH: &str = "./dandelion.config";
-const DEFAULT_PORT: u16 = 8080;
+const DEFAULT_PORT: u16 = 8082;
 const DEFAULT_SINGLE_CORE: bool = false;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
+// TODO: add default ports here
+//const DEFAULT_REQUEST_ACCEPT_PORTS: &'static Vec<u16> = &vec![1u16];
+const DEFAULT_DIRIGENT_SYNC_PORT: u16 = 8083;
 
 #[derive(serde::Deserialize, Debug)]
 pub struct PreloadFunc {
@@ -55,11 +58,15 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = DEFAULT_TIMESTAMP_COUNT)]
     #[serde(default)]
     pub timestamp_count: usize,
-
     // (optional) preload config
     #[arg(long, env, default_value = "")]
     #[serde(default)]
     pub bin_preload_path: String,
+    #[arg(long, env)]
+    //, default_value_t = DEFAULT_REQUEST_ACCEPT_PORTS)] // TODO: add support for default ports
+    pub dirigent_request_ports: Vec<u16>,
+    #[arg(long, env, default_value_t = DEFAULT_DIRIGENT_SYNC_PORT)]
+    pub dirigent_sync_port: u16,
 }
 
 impl DandelionConfig {
@@ -103,6 +110,7 @@ impl DandelionConfig {
         merge_option!(io_cores);
         merge!(timestamp_count, DEFAULT_TIMESTAMP_COUNT);
         merge_clone!(bin_preload_path, String::from(""));
+        merge!(dirigent_sync_port, DEFAULT_DIRIGENT_SYNC_PORT)
     }
 
     /// Get the config from the arguments, environment and possibly config file
