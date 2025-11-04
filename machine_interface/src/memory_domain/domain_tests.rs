@@ -1,11 +1,11 @@
 use crate::memory_domain::{
-    test_resource::get_resource, transfer_data_set, transfer_memory, Context, ContextTrait,
+    test_resource::get_resource, transfer_data_item, transfer_memory, Context, ContextTrait,
     ContextType, MemoryDomain, MemoryResource,
 };
 use dandelion_commons::{DandelionError, DandelionResult, DomainError};
 use std::sync::Arc;
 
-#[cfg(any(feature = "cheri", feature = "mmu", feature = "wasm"))]
+#[cfg(any(feature = "cheri", feature = "kvm", feature = "mmu", feature = "wasm"))]
 use crate::memory_domain::system_domain::SystemMemoryDomain;
 
 // produces binary pattern 0b0101_01010 or 0x55
@@ -80,7 +80,7 @@ fn read(ctx: &mut Context, offset: usize, size: usize, expect_success: bool) {
     }
 }
 
-#[cfg(any(feature = "cheri", feature = "mmu", feature = "wasm"))]
+#[cfg(any(feature = "cheri", feature = "kvm", feature = "mmu", feature = "wasm"))]
 fn read_system_context(
     system_ctx: &mut Context,
     base_ctx: Context,
@@ -120,7 +120,7 @@ fn get_chunks(ctx: &mut Context, offset: usize, size: usize, expect_success: boo
     }
 }
 
-#[cfg(any(feature = "cheri", feature = "mmu", feature = "wasm"))]
+#[cfg(any(feature = "cheri", feature = "kvm", feature = "mmu", feature = "wasm"))]
 fn get_chunks_system_context(
     system_ctx: &mut Context,
     base_ctx: Context,
@@ -177,7 +177,13 @@ fn transfer(source: Box<Context>, destination: Box<Context>) {
     destination_context
         .read(0, &mut read_buffer)
         .expect("Context should return single value vector in range");
-    assert_eq!(vec![BYTEPATTERN; size], read_buffer);
+    for index in 0..size {
+        assert_eq!(
+            BYTEPATTERN, read_buffer[index],
+            "Read not equal for first time at {}, expected: {}, actual: {}",
+            index, BYTEPATTERN, read_buffer[index]
+        );
+    }
 }
 
 fn transfer_item(
@@ -210,14 +216,19 @@ fn transfer_item(
             key: 0,
         }],
     });
-    let set_name = "";
-    let transfer_error = transfer_data_set(
+    destination_context.content.push(Some(crate::DataSet {
+        ident: String::from(""),
+        buffers: vec![],
+    }));
+    let transfer_error = transfer_data_item(
         &mut destination_context,
         Arc::new(source_context),
         destination_index,
         8,
-        &set_name,
+        0,
+        "",
         source_index,
+        0,
     );
     assert_eq!(transfer_error, expect_result);
     if expect_result.is_err() {
@@ -329,27 +340,11 @@ macro_rules! domainTests {
                 let destination = Box::new(acquire::<$domain>($init, 4096));
                 transfer_item(source, destination, 0, 128, 1, 2, Ok(()));
             }
-
-            // TODO
-            // #[test]
-            // fn test_transfer_dataitem_set() {
-            //     transfer_set::<$domain>($init, 4096, 128, 256, 1, 2, Ok(()));
-            // }
         }
     };
 }
 
-// #[cfg(feature = "wasm")]
-// use super::wasm::WasmMemoryDomain as wasmType;
-// #[cfg(feature = "wasm")]
-// #[test]
-// fn testing_transfer_system_context(){
-//     let source = Box::new(acquire::<wasmType>(MemoryResource::None, 4096));
-//     let destination = Box::new(acquire::<super::system_domain::SystemMemoryDomain>(MemoryResource::None, 4096));
-//     transfer_item(source, destination, 0, 128, 1, 2, Ok(()));
-// }
-
-#[cfg(any(feature = "cheri", feature = "mmu", feature = "wasm"))]
+#[cfg(any(feature = "cheri", feature = "kvm", feature = "mmu", feature = "wasm"))]
 macro_rules! systemsDomainTests {
     ($name : ident ; $domain : ty ; $init : expr) => {
         mod $name {
@@ -475,7 +470,7 @@ macro_rules! systemsDomainTests {
                 }
             }
             #[test]
-            fn test_transfer_mulitple_bytes() {
+            fn test_transfer_multiple_bytes() {
                 // Tests how transfers over multiple Bytes are handled
                 let mut preamble = "Start\n".to_string();
                 let preamble_bytes = bytes::Bytes::from(preamble.clone().into_bytes());
@@ -513,17 +508,17 @@ macro_rules! systemsDomainTests {
                     pre_len + body_len,
                 )
                 .expect("Transfer expected to be valid");
-                let chunk_ref_result = second_ctx.get_chunk_ref(0, pre_len + body_len);
-
-                fn bytes_to_string(input: &[u8]) -> Result<String, std::str::Utf8Error> {
-                    std::str::from_utf8(input).map(|s| s.to_string())
+                // read entire range
+                let mut return_string = String::new();
+                let mut read_bytes = 0;
+                while read_bytes < pre_len + body_len {
+                    let chunk_ref_result = second_ctx
+                        .get_chunk_ref(read_bytes, pre_len + body_len)
+                        .unwrap();
+                    read_bytes += chunk_ref_result.len();
+                    return_string.push_str(std::str::from_utf8(chunk_ref_result).unwrap());
                 }
-                let return_string = match bytes_to_string(chunk_ref_result.unwrap()) {
-                    Ok(ret_str) => ret_str,
-                    _ => {
-                        panic!("Error");
-                    }
-                };
+                // assemble one complete string
                 preamble.push_str(&body);
                 assert_eq!(preamble, return_string, "Not full string was returned");
             }
@@ -534,15 +529,19 @@ macro_rules! systemsDomainTests {
 use super::malloc::MallocMemoryDomain as mallocType;
 domainTests!(malloc; mallocType; MemoryResource::None);
 
-use super::mmap::MmapMemoryDomain as mmapType;
-domainTests!(mmap; mmapType; MemoryResource::Anonymous { size: (2<<22) });
-
 #[cfg(feature = "cheri")]
 use super::cheri::CheriMemoryDomain as cheriType;
 #[cfg(feature = "cheri")]
 domainTests!(cheri; cheriType; MemoryResource::Anonymous { size: (2<<22) });
 #[cfg(feature = "cheri")]
 systemsDomainTests!(cheri_system; cheriType; MemoryResource::Anonymous { size: (2<<22) });
+
+#[cfg(feature = "kvm")]
+use super::kvm::KvmMemoryDomain as kvmType;
+#[cfg(feature = "kvm")]
+domainTests!(kvm; kvmType; MemoryResource::Anonymous { size: (2<<22) });
+#[cfg(feature = "kvm")]
+systemsDomainTests!(kvm_system; kvmType; MemoryResource::Anonymous { size: (2<<22) });
 
 #[cfg(feature = "mmu")]
 use super::mmu::MmuMemoryDomain as mmuType;

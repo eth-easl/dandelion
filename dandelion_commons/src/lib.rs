@@ -212,6 +212,8 @@ pub enum UserError {
     EmptyNonOptional,
     /// Function indicated it failed
     FunctionError(i32),
+    /// Function corrupted page tables stored inside function in KVM backend
+    ManupulatedPageTables,
 }
 
 #[derive(Debug, Clone, PartialEq)]

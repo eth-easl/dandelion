@@ -64,9 +64,10 @@ pub fn i32_to_engine_type(val: i32) -> Option<EngineType> {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub enum DomainType {
     System,
-    Mmap,
     #[cfg(feature = "cheri")]
     Cheri,
+    #[cfg(feature = "kvm")]
+    Kvm,
     #[cfg(feature = "wasm")]
     RWasm,
     #[cfg(feature = "mmu")]
@@ -84,7 +85,7 @@ pub fn get_compatibilty_table() -> BTreeMap<EngineType, DomainType> {
         #[cfg(feature = "mmu")]
         (EngineType::Process, DomainType::Process),
         #[cfg(feature = "kvm")]
-        (EngineType::Kvm, DomainType::Mmap),
+        (EngineType::Kvm, DomainType::Kvm),
     ]);
 }
 
@@ -105,9 +106,10 @@ pub fn get_available_domains(
 ) -> BTreeMap<DomainType, Arc<Box<dyn MemoryDomain>>> {
     let mut default_resources = BTreeMap::from([
         (DomainType::System, MemoryResource::None),
-        (DomainType::Mmap, MemoryResource::Anonymous { size: 0 }),
         #[cfg(feature = "cheri")]
         (DomainType::Cheri, MemoryResource::Anonymous { size: 0 }),
+        #[cfg(feature = "kvm")]
+        (DomainType::Kvm, MemoryResource::Anonymous { size: 0 }),
         #[cfg(feature = "mmu")]
         (
             DomainType::Process,
@@ -132,14 +134,15 @@ pub fn get_available_domains(
                         .unwrap(),
                 ),
             ),
-            DomainType::Mmap => (
-                dom_type,
-                Arc::new(crate::memory_domain::mmap::MmapMemoryDomain::init(resource).unwrap()),
-            ),
             #[cfg(feature = "cheri")]
             DomainType::Cheri => (
                 dom_type,
                 Arc::new(crate::memory_domain::cheri::CheriMemoryDomain::init(resource).unwrap()),
+            ),
+            #[cfg(feature = "kvm")]
+            DomainType::Kvm => (
+                dom_type,
+                Arc::new(crate::memory_domain::kvm::KvmMemoryDomain::init(resource).unwrap()),
             ),
             #[cfg(feature = "mmu")]
             DomainType::Process => (

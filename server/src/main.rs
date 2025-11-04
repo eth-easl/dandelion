@@ -209,19 +209,18 @@ async fn dispatcher_loop(
                         _ = callback.closed() => ()
                     }
                 });
-            }
-            DispatcherCommand::RemoteFunctionInfoRequest { name, mut callback } => {
-                let func_vec_future =
-                    Box::pin(async move { dispatcher.get_function_from_registry(&name).await });
-                spawn(async {
-                    select! {
-                        func_vec = func_vec_future => {
-                            let _ = callback.send(func_vec);
-                        }
-                        _ = callback.closed() => ()
-                    }
-                });
-            }
+            } // DispatcherCommand::RemoteFunctionInfoRequest { name, mut callback } => {
+              //     let func_vec_future =
+              //         Box::pin(async move { dispatcher.get_function_from_registry(&name).await });
+              //     spawn(async {
+              //         select! {
+              //             func_vec = func_vec_future => {
+              //                 let _ = callback.send(func_vec);
+              //             }
+              //             _ = callback.closed() => ()
+              //         }
+              //     });
+              // }
         };
     }
 }
@@ -391,15 +390,13 @@ fn main() -> () {
         * 1024;
 
     let memory_pool = BTreeMap::from([
-        (
-            DomainType::Mmap,
-            MemoryResource::Anonymous { size: max_ram },
-        ),
         #[cfg(feature = "cheri")]
         (
             DomainType::Cheri,
             MemoryResource::Anonymous { size: max_ram },
         ),
+        #[cfg(feature = "kvm")]
+        (DomainType::Kvm, MemoryResource::Anonymous { size: max_ram }),
         #[cfg(feature = "mmu")]
         (
             DomainType::Process,
@@ -492,12 +489,16 @@ fn main() -> () {
                         .await;
                 println!("connection established");
 
+                #[cfg(feature = "mmu")]
+                let remote_engine_type = engine_type_to_i32(&EngineType::Process);
+                #[cfg(feature = "kvm")]
+                let remote_engine_type = engine_type_to_i32(&EngineType::Kvm);
                 let res = client
                     .register_at_remote(
                         "Test".to_string(),
                         config.multinode_local_ip,
                         config.port,
-                        engine_type_to_i32(&EngineType::Process),
+                        remote_engine_type,
                         2,
                     )
                     .await;

@@ -260,7 +260,11 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
         input_bufs: input_buffers_offset,
         output_bufs: PtrT::default(),
     };
-
+    log::trace!(
+        "System data: {},{}",
+        system_data_offset,
+        size_of::<DandelionSystemData<PtrT, SizeT>>(),
+    );
     context.write(system_data_offset, core::slice::from_ref(&system_buffer))?;
     Ok(())
 }
