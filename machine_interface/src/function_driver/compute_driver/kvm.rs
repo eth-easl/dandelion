@@ -221,35 +221,47 @@ impl EngineLoop for KvmLoop {
         // where there was overlay, panic if there is no overlap
         for start in copied_pages {
             // TODO: use cursor once it stabilizes
-            let to_insert_opt = if let Some((&overlay_end, (overlay_size, overlay_item))) =
-                kvm_context.overlay.range_mut(start..).next()
-            {
-                let end = start + PAGE_SIZE;
-                // know that start < overlay_end, so for overlap need to check that start is not too early
-                let overlay_start = overlay_end - *overlay_size;
-                if start < overlay_start {
-                    panic!(
-                        "Trying to punch hole at {} in overlay that starts only later {}",
-                        start, overlay_start
-                    );
-                // page is at start of overlay, so can just shrink it
-                } else if start == overlay_start {
-                    *overlay_size -= PAGE_SIZE;
-                    None
-                // page is in middle, so need to cut it in two
+            let (to_insert_opt, to_remove_opt) =
+                if let Some((&overlay_end, (overlay_size, overlay_item))) =
+                    kvm_context.overlay.range_mut(start..).next()
+                {
+                    let end = start + PAGE_SIZE;
+                    // know that start < overlay_end, so for overlap need to check that start is not too early
+                    let overlay_start = overlay_end - *overlay_size;
+                    if start < overlay_start {
+                        panic!(
+                            "Trying to punch hole at {} in overlay that starts only later {}",
+                            start, overlay_start
+                        );
+                    // page is at start of overlay, so can just shrink it
+                    } else if start == overlay_start {
+                        *overlay_size -= PAGE_SIZE;
+                        if *overlay_size == 0 {
+                            (None, Some(overlay_end))
+                        } else {
+                            (None, None)
+                        }
+                    // page is in middle, so need to cut it in two
+                    } else {
+                        let new_overlay = (end, (end - overlay_start, overlay_item.clone()));
+                        *overlay_size = overlay_end - end;
+                        overlay_item.offset += end - overlay_start;
+                        if *overlay_size == 0 {
+                            (Some(new_overlay), Some(overlay_end))
+                        } else {
+                            (Some(new_overlay), None)
+                        }
+                    }
                 } else {
-                    let new_overlay = (end, (end - overlay_start, overlay_item.clone()));
-                    *overlay_size = overlay_end - end;
-                    overlay_item.offset += end - overlay_start;
-                    Some(new_overlay)
-                }
-            } else {
-                // there is no overlay ending after the current one starting, which means something went wrong.
-                panic!(
-                    "trying to punch hole in non existent overlay: page {}",
-                    start
-                );
-            };
+                    // there is no overlay ending after the current one starting, which means something went wrong.
+                    panic!(
+                        "trying to punch hole in non existent overlay: page {}",
+                        start
+                    );
+                };
+            if let Some(end) = to_remove_opt {
+                kvm_context.overlay.remove(&end);
+            }
             if let Some((key, value)) = to_insert_opt {
                 kvm_context.overlay.insert(key, value);
             }

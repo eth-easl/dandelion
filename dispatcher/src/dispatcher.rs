@@ -167,12 +167,15 @@ impl Dispatcher {
         // build up ready sets
         trace!("queue composition");
         // local state of functions that still need to run
+        // TODO: make nicer data structure to hold there and the compositions
+        // Can use ? Sized, to create structs with fixed arrays where the size is known at runtime.
+        // And potentially Rc / RefCell to make a proper graph
         struct FunctionArgs {
             function_id: FunctionId,
             inptut_sets: Vec<Option<(ShardingMode, CompositionSet)>>,
             join_info: (Vec<usize>, Vec<JoinStrategy>),
             output_mapping: Vec<Option<usize>>,
-            missing_sets: BTreeMap<usize, (usize, ShardingMode, bool)>,
+            missing_sets: BTreeMap<(usize, usize), (ShardingMode, bool)>,
         }
 
         // prepare output sets, that are also input sets
@@ -222,7 +225,7 @@ impl Dispatcher {
                             }
                         } else {
                             missing_map
-                                .insert(*composition_id, (function_index, *sharding, *optional));
+                                .insert((*composition_id, function_index), (*sharding, *optional));
                         }
                     }
                 }
@@ -270,27 +273,42 @@ impl Dispatcher {
                 non_ready_functions = non_ready_functions
                     .into_iter()
                     .filter_map(|mut args| {
-                        if let Some((index, mode, optional)) =
-                            args.missing_sets.remove(&composition_set_index)
-                        {
-                            // if it was not optional skip executing and push all output sets
-                            if !optional
-                                && (composition_set_option.is_none()
-                                    || composition_set_option.as_ref().unwrap().is_empty())
-                            {
-                                let new_sets = args
-                                    .output_mapping
-                                    .iter()
-                                    .filter_map(|index_opt| {
-                                        index_opt.and_then(|index| Some((index, None)))
-                                    })
-                                    .collect();
-                                awaited_sets.push(Either::Left(ready(Ok((new_sets, Vec::new())))));
+                        let to_remove = args
+                            .missing_sets
+                            .range(
+                                (*composition_set_index, 0)..(*composition_set_index, (usize::MAX)),
+                            )
+                            .map(|((comp_index, function_index), (mode, optional))| {
+                                // if it was not optional skip executing and push all output sets
+                                if !optional
+                                    && (composition_set_option.is_none()
+                                        || composition_set_option.as_ref().unwrap().is_empty())
+                                {
+                                    let new_sets = args
+                                        .output_mapping
+                                        .iter()
+                                        .filter_map(|index_opt| {
+                                            index_opt.and_then(|index| Some((index, None)))
+                                        })
+                                        .collect();
+                                    awaited_sets
+                                        .push(Either::Left(ready(Ok((new_sets, Vec::new())))));
+                                    None
+                                } else {
+                                    args.inptut_sets[*function_index] = composition_set_option
+                                        .clone()
+                                        .and_then(|set| Some((*mode, set)));
+                                    Some((*comp_index, *function_index))
+                                }
+                            })
+                            .collect::<Vec<_>>();
+                        // need to cancel the function if one of the non optional sets is empty
+                        for key_opt in to_remove {
+                            if let Some(key) = key_opt {
+                                args.missing_sets.remove(&key);
+                            } else {
                                 return None;
                             }
-                            args.inptut_sets[index] = composition_set_option
-                                .clone()
-                                .and_then(|set| Some((mode, set)));
                         }
                         if args.missing_sets.is_empty() {
                             awaited_sets.push(Either::Right(self.queue_function_sharded(

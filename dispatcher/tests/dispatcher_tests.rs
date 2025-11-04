@@ -92,7 +92,14 @@ mod dispatcher_tests {
             .expect("Should read output matrix");
         assert_eq!(rows, out_mat[0]);
         for i in 0..expected.len() {
-            assert_eq!(expected[i], out_mat[1 + i]);
+            assert_eq!(
+                expected[i],
+                out_mat[1 + i],
+                "at index {}, one before: {:?}, one after {:?}",
+                i,
+                out_mat.get(i),
+                out_mat.get(2 + i)
+            );
         }
     }
 
@@ -100,9 +107,10 @@ mod dispatcher_tests {
         ($name: ident; $domain : ty; $init : expr; $engine_type : expr; $engine_resource: expr) => {
             use crate::dispatcher_tests::{
                 function_tests::{
-                    composition_chain_matmul, composition_diamond_matmac, composition_optional,
-                    composition_parallel_matmul, composition_single_matmul,
-                    single_domain_and_engine_basic, single_domain_and_engine_matmul,
+                    composition_chain_large_matmac, composition_chain_matmul,
+                    composition_diamond_matmac, composition_optional, composition_parallel_matmul,
+                    composition_single_matmul, single_domain_and_engine_basic,
+                    single_domain_and_engine_matmul,
                 },
                 registry_tests::{multiple_input_fixed, single_input_fixed},
             };
@@ -157,6 +165,17 @@ mod dispatcher_tests {
             fn test_composition_diamond() {
                 let name = format!("test_{}_matmac", stringify!($name));
                 composition_diamond_matmac::<$domain>($init, &name, $engine_type, $engine_resource)
+            }
+
+            #[test_log::test]
+            fn test_composition_chain_large_matmac() {
+                let name = format!("test_{}_matmac", stringify!($name));
+                composition_chain_large_matmac::<$domain>(
+                    $init,
+                    &name,
+                    $engine_type,
+                    $engine_resource,
+                )
             }
 
             #[test_log::test]

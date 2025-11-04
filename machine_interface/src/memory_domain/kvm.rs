@@ -16,6 +16,7 @@ use std::{
     cmp::min,
     collections::BTreeMap,
     ffi::{c_void, CString},
+    fmt::Debug,
     num::NonZeroUsize,
     os::fd::RawFd,
     str::FromStr,
@@ -30,7 +31,6 @@ pub struct OverlayItem {
     pub offset: usize,
 }
 
-#[derive(Debug)]
 pub struct KvmContext {
     /// overlay data structure recording where overlay items END and how big they are.
     /// The end is recorded as start + size (so it is the index 1 past the last byte.
@@ -46,6 +46,24 @@ pub struct KvmContext {
     pub fd: RawFd,
     domain: Arc<Mutex<RangePool<u32>>>,
     pub rangepool_start: u32,
+}
+
+impl Debug for KvmContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KvmContext")
+            .field("overlay", &self.overlay)
+            .field(
+                "storage",
+                &format_args!(
+                    "addr: {:?}, len: {}",
+                    self.storage.as_ptr(),
+                    self.storage.len()
+                ),
+            )
+            .field("fd", &self.fd)
+            .field("rangepool_start", &self.rangepool_start)
+            .finish()
+    }
 }
 
 /// TODO handle overwriting
@@ -171,21 +189,15 @@ impl ContextTrait for KvmContext {
 
 impl Drop for KvmContext {
     fn drop(&mut self) {
+        unsafe {
+            nix::sys::mman::munmap(self.storage.as_mut_ptr() as *mut c_void, self.storage.len())
+                .unwrap();
+        };
         let size = u32::try_from(self.storage.len() / PAGE_SIZE).unwrap();
         self.domain
             .lock()
             .unwrap()
             .insert(self.rangepool_start, self.rangepool_start + size);
-        unsafe {
-            nix::sys::mman::madvise(
-                self.storage.as_mut_ptr() as *mut c_void,
-                self.storage.len(),
-                nix::sys::mman::MmapAdvise::MADV_DONTNEED,
-            )
-            .unwrap();
-            nix::sys::mman::munmap(self.storage.as_mut_ptr() as *mut c_void, self.storage.len())
-                .unwrap();
-        };
     }
 }
 
@@ -239,7 +251,7 @@ impl MemoryDomain for KvmMemoryDomain {
             ))?;
         let file_offset = (page as usize) * PAGE_SIZE;
         let mapping_pointer = unsafe {
-            nix::sys::mman::mmap(
+            let new_mapping = nix::sys::mman::mmap(
                 None,
                 NonZeroUsize::new(size).unwrap(),
                 ProtFlags::all(),
@@ -249,7 +261,10 @@ impl MemoryDomain for KvmMemoryDomain {
             )
             .or(Err(DandelionError::DomainError(
                 dandelion_commons::DomainError::Mapping,
-            )))?
+            )))?;
+            nix::sys::mman::madvise(new_mapping, size, nix::sys::mman::MmapAdvise::MADV_REMOVE)
+                .unwrap();
+            new_mapping
         } as *mut u8;
         let storage = unsafe { core::slice::from_raw_parts_mut(mapping_pointer, size) };
 
@@ -300,21 +315,28 @@ pub fn transfer_into(
             bytes_written += chunk.len();
         }
     } else if source_offset % PAGE_SIZE != destination_offset % PAGE_SIZE {
+        log::trace!("starting to transfer large item with non equal offset");
         // check if not both have the same distance to the next page, if so, need to copy regularly
         // TODO remove interface for exact control on transfer item, so location can be controlled by transfer function
         // if that is true, can force destination_offset to be same allignment
         let mut bytes_written = 0;
         while bytes_written < size {
+            log::trace!(
+                "asking for another chunk at {} of size {}",
+                source_offset + bytes_written,
+                size - bytes_written
+            );
             let chunk =
                 source.get_chunk_ref(source_offset + bytes_written, size - bytes_written)?;
             destination.write(destination_offset + bytes_written, chunk)?;
             bytes_written += chunk.len();
         }
+        log::trace!("finish to transfer large item with non equal offset");
     } else {
         // insert the parts that can be remapped and copy the rest
         let rounded_start = destination_offset.next_multiple_of(PAGE_SIZE);
-        let rounded_size = ((size - (rounded_start - destination_offset)) / PAGE_SIZE) * PAGE_SIZE;
-        let rounded_end = rounded_start + rounded_size;
+        let rounded_end = ((destination_offset + size) / PAGE_SIZE) * PAGE_SIZE;
+        let rounded_size = rounded_end - rounded_start;
         let source_rounded_start = source_offset.next_multiple_of(PAGE_SIZE);
         let source_rounded_end = source_rounded_start + rounded_size;
 

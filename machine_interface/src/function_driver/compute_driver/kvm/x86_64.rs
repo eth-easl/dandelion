@@ -264,7 +264,8 @@ fn set_interrupt_table(sregs: &mut kvm_sregs, guest_mem: &mut [u8], stack_start:
     // set the revevant parts of the TSS
     let tss = &mut guest_mem[tss_start..tss_end];
     // set the interrupt stack address
-    tss[36..44].copy_from_slice(&(0x6000u64).to_le_bytes());
+    *stack_start -= PAGE_SIZE;
+    tss[36..44].copy_from_slice(&(*stack_start).to_le_bytes());
 
     // setup interupt handler table
     let destination = unsafe {
@@ -430,7 +431,6 @@ pub fn set_page_table(
 
     // allocate top level table containing 512 entries for 512 GB ranges
     stack_start -= PAGE_SIZE;
-    guest_mem[0x31b90] = 12;
     let p4_address = stack_start;
     // allocate table with 512 entries for 1 GB ranges
     stack_start -= PAGE_SIZE;
@@ -623,66 +623,69 @@ fn setup_long_mode(sregs: &mut kvm_sregs) {
     };
 }
 
-pub fn dump_regs(vcpu: &VcpuFd) {
-    let regs = vcpu.get_regs().unwrap();
-    trace!("Register state: ");
-    trace!(
-        "rax:\t{:>#10x}, rbx:\t{:>#10x}, rcx:\t{:>#10x}, rdx:\t{:>#10x}",
-        regs.rax,
-        regs.rbx,
-        regs.rcx,
-        regs.rdx
-    );
-    trace!(
-        "rsi:\t{:>#10x}, rdi:\t{:>#10x}, rsp:\t{:>#10x}, rbp:\t{:>#10x}",
-        regs.rsi,
-        regs.rdi,
-        regs.rsp,
-        regs.rbp
-    );
-    trace!(
-        "r8: \t{:>#10x}, r9: \t{:>#10x}, r10:\t{:>#10x}, r11:\t{:>#10x}",
-        regs.r8,
-        regs.r9,
-        regs.r10,
-        regs.r11
-    );
-    trace!(
-        "r12:\t{:>#10x}, r13:\t{:>#10x}, r14:\t{:>#10x}, r15:\t{:>#10x}",
-        regs.r12,
-        regs.r13,
-        regs.r14,
-        regs.r15
-    );
-    trace!("rip:\t{:>#10x}, rflags:\t{:>#10x}", regs.rip, regs.rflags,);
+pub fn dump_regs(_vcpu: &VcpuFd) {
+    #[cfg(feature = "backend_debug")]
+    {
+        let regs = _vcpu.get_regs().unwrap();
+        trace!("Register state: ");
+        trace!(
+            "rax:\t{:>#10x}, rbx:\t{:>#10x}, rcx:\t{:>#10x}, rdx:\t{:>#10x}",
+            regs.rax,
+            regs.rbx,
+            regs.rcx,
+            regs.rdx
+        );
+        trace!(
+            "rsi:\t{:>#10x}, rdi:\t{:>#10x}, rsp:\t{:>#10x}, rbp:\t{:>#10x}",
+            regs.rsi,
+            regs.rdi,
+            regs.rsp,
+            regs.rbp
+        );
+        trace!(
+            "r8: \t{:>#10x}, r9: \t{:>#10x}, r10:\t{:>#10x}, r11:\t{:>#10x}",
+            regs.r8,
+            regs.r9,
+            regs.r10,
+            regs.r11
+        );
+        trace!(
+            "r12:\t{:>#10x}, r13:\t{:>#10x}, r14:\t{:>#10x}, r15:\t{:>#10x}",
+            regs.r12,
+            regs.r13,
+            regs.r14,
+            regs.r15
+        );
+        trace!("rip:\t{:>#10x}, rflags:\t{:>#10x}", regs.rip, regs.rflags,);
 
-    let sregs = vcpu.get_sregs().unwrap();
-    trace!("System registers");
-    trace!("cs:\t{:?}", sregs.cs);
-    trace!("ss:\t{:?}", sregs.ss);
-    trace!("ds:\t{:?}", sregs.ds);
-    trace!("es:\t{:?}", sregs.es);
-    trace!("fs:\t{:?}", sregs.fs);
-    trace!("gs:\t{:?}", sregs.gs);
-    trace!("tr:\t{:?}", sregs.tr);
-    trace!("ldt:\t{:?}", sregs.ldt);
-    trace!("gdt:\t{:?}", sregs.gdt);
-    trace!("idt:\t{:?}", sregs.idt);
-    trace!(
-        "cr0: \t{:>#10x}, cr2: \t{:>#10x}, cr3:\t{:>#10x}, cr4:\t{:>#10x}",
-        sregs.cr0,
-        sregs.cr2,
-        sregs.cr3,
-        sregs.cr4
-    );
-    trace!(
-        "cr8:\t{:>#10x}, efer:\t{:>#10x}, apci_base:\t{:>#10x}",
-        sregs.cr8,
-        sregs.efer,
-        sregs.apic_base
-    );
-    trace!("interrupt_bitmap: {:?}", sregs.interrupt_bitmap);
+        let sregs = vcpu.get_sregs().unwrap();
+        trace!("System registers");
+        trace!("cs:\t{:?}", sregs.cs);
+        trace!("ss:\t{:?}", sregs.ss);
+        trace!("ds:\t{:?}", sregs.ds);
+        trace!("es:\t{:?}", sregs.es);
+        trace!("fs:\t{:?}", sregs.fs);
+        trace!("gs:\t{:?}", sregs.gs);
+        trace!("tr:\t{:?}", sregs.tr);
+        trace!("ldt:\t{:?}", sregs.ldt);
+        trace!("gdt:\t{:?}", sregs.gdt);
+        trace!("idt:\t{:?}", sregs.idt);
+        trace!(
+            "cr0: \t{:>#10x}, cr2: \t{:>#10x}, cr3:\t{:>#10x}, cr4:\t{:>#10x}",
+            sregs.cr0,
+            sregs.cr2,
+            sregs.cr3,
+            sregs.cr4
+        );
+        trace!(
+            "cr8:\t{:>#10x}, efer:\t{:>#10x}, apci_base:\t{:>#10x}",
+            sregs.cr8,
+            sregs.efer,
+            sregs.apic_base
+        );
+        trace!("interrupt_bitmap: {:?}", sregs.interrupt_bitmap);
 
-    let events = vcpu.get_vcpu_events().unwrap();
-    trace!("events: {:?}\n", events);
+        let events = vcpu.get_vcpu_events().unwrap();
+        trace!("events: {:?}\n", events);
+    }
 }
