@@ -105,11 +105,11 @@ impl EngineLoop for KvmLoop {
         for (&overlay_end, (overlay_start, overlay_context)) in kvm_context.overlay.iter() {
             // map from back if it is a kvm context
             if let ContextType::Kvm(overlay_kvm_context) = &overlay_context.context.context {
+                let overlay_size = overlay_end - *overlay_start + 1;
                 // map to end of context
                 let mut mappig_start = stack_start - overlay_size;
                 // make sure that the virtual and physical address have the same allignment with regards to large pages
                 // for this mapping start needs to have the same distance to the next large page boundry as the virtual
-                let overlay_size = overlay_end - *overlay_start + 1;
                 let virtual_large_offset =
                     overlay_start.next_multiple_of(LARGE_PAGE) - *overlay_start;
                 let mapping_large_offset = mappig_start.next_multiple_of(LARGE_PAGE) - mappig_start;
@@ -234,7 +234,7 @@ impl EngineLoop for KvmLoop {
                     // page is at start of overlay, so can just shrink it
                     } else if start == *overlay_start {
                         *overlay_start += PAGE_SIZE;
-                        if *overlay_start == overlay_end {
+                        if *overlay_start > overlay_end {
                             (None, Some(overlay_end))
                         } else {
                             (None, None)
@@ -244,7 +244,7 @@ impl EngineLoop for KvmLoop {
                         let new_overlay = (start - 1, (*overlay_start, overlay_item.clone()));
                         *overlay_start = start + PAGE_SIZE;
                         overlay_item.offset += start + PAGE_SIZE - *overlay_start;
-                        if *overlay_start == overlay_end {
+                        if *overlay_start > overlay_end {
                             (Some(new_overlay), Some(overlay_end))
                         } else {
                             (Some(new_overlay), None)
