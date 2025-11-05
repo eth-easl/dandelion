@@ -13,6 +13,9 @@ use std::thread;
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 
+const STATUS_OK: u16 = 200;
+const STATUS_BAD_REQUEST: u16 = 400;
+
 #[derive(Debug, Clone)]
 struct ExternalSandbox {
     sandbox_id: String,
@@ -37,50 +40,67 @@ impl Service<Request<hyper::body::Incoming>> for DirigentService {
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn call(&self, req: Request<hyper::body::Incoming>) -> Self::Future {
-        fn mk_response(s: String) -> Result<Response<Full<Bytes>>, hyper::Error> {
-            Ok(Response::builder().body(Full::new(Bytes::from(s))).unwrap())
+        fn mk_response(s: String, code: u16) -> Result<Response<Full<Bytes>>, hyper::Error> {
+            Ok(Response::builder()
+                .status(code)
+                .body(Full::new(Bytes::from(s)))
+                .unwrap())
         }
 
         let cpy = Arc::clone(&self.data);
 
         let res = match (req.method(), req.uri().path()) {
             (&Method::GET, "/add") => {
-                let sandbox_id = req.headers().get("sandbox_id").unwrap().to_str().unwrap();
-                let function = req.headers().get("function").unwrap().to_str().unwrap();
-                let url = req.headers().get("url").unwrap().to_str().unwrap();
-
-                if !process_add_action(
-                    cpy,
-                    sandbox_id.to_string(),
-                    function.to_string(),
-                    url.to_string(),
-                ) {
-                    mk_response("Successful ADD operation".parse().unwrap())
+                if req.headers().get("sandbox_id").is_none()
+                    || req.headers().get("function").is_none()
+                    || req.headers().get("url").is_none()
+                {
+                    mk_response("Invalid arguments".parse().unwrap(), 400)
                 } else {
-                    mk_response("Successful UPDATE operation".parse().unwrap())
+                    let sandbox_id = req.headers().get("sandbox_id").unwrap().to_str().unwrap();
+                    let function = req.headers().get("function").unwrap().to_str().unwrap();
+                    let url = req.headers().get("url").unwrap().to_str().unwrap();
+
+                    if !process_add_action(
+                        cpy,
+                        sandbox_id.to_string(),
+                        function.to_string(),
+                        url.to_string(),
+                    ) {
+                        mk_response("Successful ADD operation".parse().unwrap(), STATUS_OK)
+                    } else {
+                        mk_response("Successful UPDATE operation".parse().unwrap(), STATUS_OK)
+                    }
                 }
             }
             (&Method::GET, "/remove") => {
-                let sandbox_id = req
-                    .headers()
-                    .get("sandbox_id")
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .to_string();
-
-                if process_remove_action(cpy, &*sandbox_id) {
-                    mk_response("Successful REMOVE operation".parse().unwrap())
+                if req.headers().get("sandbox_id").is_none() {
+                    mk_response("Invalid arguments".parse().unwrap(), 400)
                 } else {
-                    mk_response("REMOVE operation failed - no key found".parse().unwrap())
+                    let sandbox_id = req
+                        .headers()
+                        .get("sandbox_id")
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_string();
+
+                    if process_remove_action(cpy, &*sandbox_id) {
+                        mk_response("Successful REMOVE operation".parse().unwrap(), STATUS_OK)
+                    } else {
+                        mk_response(
+                            "REMOVE operation failed - no key found".parse().unwrap(),
+                            STATUS_OK,
+                        )
+                    }
                 }
             }
             (&Method::GET, "/list_sandboxes") => {
                 let res = process_list_action(cpy);
 
-                mk_response(format!("{:?}", res))
+                mk_response(format!("{:?}", res), STATUS_OK)
             }
-            _ => mk_response("Invalid request type/method".into()),
+            _ => mk_response("Invalid request type/method".into(), STATUS_BAD_REQUEST),
         };
 
         Box::pin(async { res })
@@ -131,10 +151,7 @@ fn process_list_action(hm: Arc<Mutex<HashMap<String, ExternalSandbox>>>) -> Stri
     let mut builder = String::new();
 
     for (_key, val) in hm.lock().unwrap().iter().clone() {
-        builder.push_str(format!(
-            "{}, {}, {}\n",
-            val.function, val.sandbox_id, val.url
-        ).as_str());
+        builder.push_str(format!("{}, {}, {}\n", val.function, val.sandbox_id, val.url).as_str());
     }
 
     debug!("Successful LIST action for");
