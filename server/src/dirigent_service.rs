@@ -50,7 +50,7 @@ impl Service<Request<hyper::body::Incoming>> for DirigentService {
         let cpy = Arc::clone(&self.data);
 
         let res = match (req.method(), req.uri().path()) {
-            (&Method::GET, "/add") => {
+            (&Method::POST, "/add_external_sandbox") => {
                 if req.headers().get("sandbox_id").is_none()
                     || req.headers().get("function").is_none()
                     || req.headers().get("url").is_none()
@@ -73,7 +73,7 @@ impl Service<Request<hyper::body::Incoming>> for DirigentService {
                     }
                 }
             }
-            (&Method::GET, "/remove") => {
+            (&Method::POST, "/remove_external_sandbox") => {
                 if req.headers().get("sandbox_id").is_none() {
                     mk_response("Invalid arguments".parse().unwrap(), 400)
                 } else {
@@ -95,7 +95,7 @@ impl Service<Request<hyper::body::Incoming>> for DirigentService {
                     }
                 }
             }
-            (&Method::GET, "/list_sandboxes") => {
+            (&Method::POST, "/list_external_sandboxes") => {
                 let res = process_list_action(cpy);
 
                 mk_response(format!("{:?}", res), STATUS_OK)
@@ -123,10 +123,18 @@ fn process_add_action(
     let exists = cpy.contains_key(&sandbox_id.clone());
 
     cpy.insert(sandbox_id.clone(), new_sandbox);
-    debug!(
-        "Successful ADD/UPDATE action for sandbox_id: {}, function: {}, url: {}",
-        sandbox_id, function, url
-    );
+
+    if !exists {
+        debug!(
+            "Successful ADD action for sandbox_id: {}, function: {}, url: {}",
+            sandbox_id, function, url
+        );
+    } else {
+        debug!(
+            "Successful UPDATE action for sandbox_id: {}, function: {}, url: {}",
+            sandbox_id, function, url
+        );
+    }
 
     exists
 }
