@@ -32,9 +32,6 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = DEFAULT_TIMESTAMP_COUNT)]
     #[serde(default)]
     pub timestamp_count: usize,
-    #[arg(long, env)]
-    //, default_value_t = DEFAULT_REQUEST_ACCEPT_PORTS)] // TODO: add support for default ports
-    pub dirigent_request_ports: Vec<u16>,
     #[arg(long, env, default_value_t = DEFAULT_DIRIGENT_SYNC_PORT)]
     pub dirigent_sync_port: u16,
 }
@@ -45,12 +42,11 @@ impl DandelionConfig {
     fn merge_serde_into_args(&mut self, other: &Self) {
         let default: Self = serde_json::from_slice(&[])
             .expect("Should have default values for all values in config");
-        // config path can be ignored, as it is not meaning full afterwards
+        // config path can be ignored, as it is not meaning full afterward
         // handle port
         if self.port != DEFAULT_PORT && other.port != default.port {
             self.port = other.port;
         }
-        // TODO: request ports
         if self.dirigent_sync_port != DEFAULT_DIRIGENT_SYNC_PORT && other.dirigent_sync_port != default.dirigent_sync_port {
             self.dirigent_sync_port = other.dirigent_sync_port;
         }
