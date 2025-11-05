@@ -145,7 +145,7 @@ fn get_chunks_system_context(
     }
 }
 
-fn transfer(source: Box<Context>, destination: Box<Context>) {
+fn transfer(mut source: Context, mut destination: Context) {
     // If destination is a context, we assume that they are both
     // initialised to the same size. This is because context may be larger
     // than their requested size
@@ -165,16 +165,14 @@ fn transfer(source: Box<Context>, destination: Box<Context>) {
         }
     }
 
-    let mut source_context = *source;
-    let mut destination_context = *destination;
-    source_context
+    source
         .write(0, &vec![BYTEPATTERN; size])
         .expect("Writing should succeed");
-    let source_ctxt_arc = Arc::new(source_context);
-    transfer_memory(&mut destination_context, source_ctxt_arc, 0, 0, size)
+    let source_ctxt_arc = Arc::new(source);
+    transfer_memory(&mut destination, source_ctxt_arc, 0, 0, size)
         .expect("Should successfully transfer");
     let mut read_buffer = vec![0; size];
-    destination_context
+    destination
         .read(0, &mut read_buffer)
         .expect("Context should return single value vector in range");
     for index in 0..size {
@@ -187,25 +185,21 @@ fn transfer(source: Box<Context>, destination: Box<Context>) {
 }
 
 fn transfer_item(
-    source: Box<Context>,
-    destination: Box<Context>,
+    mut source: Context,
+    mut destination: Context,
     offset: usize,
     item_size: usize,
     source_index: usize,
     destination_index: usize,
     expect_result: DandelionResult<()>,
 ) {
-    let mut source_context = *source;
-    let mut destination_context = *destination;
-    source_context
+    source
         .write(offset, &vec![BYTEPATTERN; item_size])
         .expect("Writing should succeed");
-    if source_context.content.len() <= source_index {
-        source_context
-            .content
-            .resize_with(source_index + 1, || None);
+    if source.content.len() <= source_index {
+        source.content.resize_with(source_index + 1, || None);
     }
-    source_context.content[source_index] = Some(crate::DataSet {
+    source.content[source_index] = Some(crate::DataSet {
         ident: String::from(""),
         buffers: vec![crate::DataItem {
             ident: String::from(""),
@@ -216,13 +210,13 @@ fn transfer_item(
             key: 0,
         }],
     });
-    destination_context.content.push(Some(crate::DataSet {
+    destination.content.push(Some(crate::DataSet {
         ident: String::from(""),
         buffers: vec![],
     }));
     let transfer_error = transfer_data_item(
-        &mut destination_context,
-        Arc::new(source_context),
+        &mut destination,
+        Arc::new(source),
         destination_index,
         8,
         0,
@@ -235,8 +229,8 @@ fn transfer_item(
         return;
     }
     // check transfer success
-    assert!(destination_index < destination_context.content.len());
-    let destination_item = destination_context.content[destination_index]
+    assert!(destination_index < destination.content.len());
+    let destination_item = destination.content[destination_index]
         .as_ref()
         .expect("Set should be present");
     assert_eq!("", destination_item.ident);
@@ -245,100 +239,234 @@ fn transfer_item(
     assert_eq!(item_size, destination_item.buffers[0].data.size);
     let read_offset = destination_item.buffers[0].data.offset;
     let mut read_buffer = vec![0; item_size];
-    destination_context
+    destination
         .read(read_offset, &mut read_buffer)
         .expect("Context should be readable at item position");
     assert_eq!(vec![BYTEPATTERN; item_size], read_buffer);
 }
 
+fn write_after_transfer(mut source: Context, mut destination: Context, chunck_size: usize) {
+    // If destination is a context, we assume that they are both
+    // initialised to the same size. This is because context may be larger
+    // than their requested size
+
+    assert_eq!(source.size, destination.size);
+    let mut size = source.size;
+    assert!(source.size >= 9 * chunck_size);
+    assert_ne!(chunck_size, 0);
+    assert_eq!(chunck_size % 4, 0);
+
+    match &destination.context {
+        ContextType::System(_) => {
+            // If destination is a systems context, we could have transfer from
+            // different type of contexts, which may have different sizes for
+            // the same initialisation parameter.
+            // Thus, the assertion does not have to hold, even for correct initialisation
+            size = destination.size;
+        }
+        _ => {
+            assert!(size == destination.size);
+        }
+    }
+
+    source
+        .write(0, &vec![BYTEPATTERN; size])
+        .expect("Writing should succeed");
+    let source_ctxt_arc = Arc::new(source);
+
+    // transfer two chuncks and write overlapping with the start of the the fist one
+    transfer_memory(
+        &mut destination,
+        source_ctxt_arc.clone(),
+        chunck_size,
+        chunck_size,
+        2 * chunck_size,
+    )
+    .expect("Should successfully transfer");
+    destination
+        .write(chunck_size / 2, &vec![!BYTEPATTERN; chunck_size])
+        .unwrap();
+    let mut read_buffer = vec![0; 3 * chunck_size];
+    destination
+        .read(0, &mut read_buffer)
+        .expect("Context should return single value vector in range");
+    for index in 0..3 * chunck_size {
+        let expected = if index < chunck_size / 2 {
+            0
+        } else if index < chunck_size + chunck_size / 2 {
+            !BYTEPATTERN
+        } else {
+            BYTEPATTERN
+        };
+        assert_eq!(
+            expected, read_buffer[index],
+            "Read not equal for first time at {}, expected: {}, actual: {}",
+            index, BYTEPATTERN, read_buffer[index]
+        );
+    }
+
+    let mut test_offset = 3 * chunck_size;
+    // write into and over the end of the of the second chunck
+    transfer_memory(
+        &mut destination,
+        source_ctxt_arc.clone(),
+        test_offset,
+        test_offset,
+        2 * chunck_size,
+    )
+    .expect("Should successfully transfer");
+    let write_offset = test_offset + chunck_size + chunck_size / 2;
+    destination
+        .write(write_offset, &vec![!BYTEPATTERN; chunck_size])
+        .unwrap();
+    let mut read_buffer = vec![0; 3 * chunck_size];
+    destination
+        .read(test_offset, &mut read_buffer)
+        .expect("Context should return single value vector in range");
+    for index in 0..3 * chunck_size {
+        let expected = if index < chunck_size + chunck_size / 2 {
+            BYTEPATTERN
+        } else if index < 2 * chunck_size + chunck_size / 2 {
+            !BYTEPATTERN
+        } else {
+            0
+        };
+        assert_eq!(
+            expected, read_buffer[index],
+            "Read not equal for first time at {}, expected: {}, actual: {}",
+            index, BYTEPATTERN, read_buffer[index]
+        );
+    }
+    test_offset += 3 * chunck_size;
+
+    // transfer 3 chuncks, write into the middle of the middle one
+    transfer_memory(
+        &mut destination,
+        source_ctxt_arc.clone(),
+        test_offset,
+        test_offset,
+        3 * chunck_size,
+    )
+    .expect("Should successfully transfer");
+    let write_offset = test_offset + chunck_size + chunck_size / 4;
+    destination
+        .write(write_offset, &vec![!BYTEPATTERN; chunck_size / 2])
+        .unwrap();
+    let mut read_buffer = vec![0; 3 * chunck_size];
+    destination
+        .read(test_offset, &mut read_buffer)
+        .expect("Context should return single value vector in range");
+    for index in 0..3 * chunck_size {
+        let expected = if chunck_size + chunck_size / 4 - 1 < index
+            && index < chunck_size + 3 * chunck_size / 4
+        {
+            !BYTEPATTERN
+        } else {
+            BYTEPATTERN
+        };
+        assert_eq!(
+            expected, read_buffer[index],
+            "Read not equal for first time at {}, expected: {}, actual: {}",
+            index, BYTEPATTERN, read_buffer[index]
+        );
+    }
+}
+
 // TODO make tests sweep ranges
 macro_rules! domainTests {
-    ($name : ident ; $domain : ty ; $init : expr) => {
+    ($name : ident ; $domain : ty ; $init : expr; $chunk : expr) => {
         mod $name {
             use super::*;
             // domain tests
-            #[test]
+            #[test_log::test]
             fn test_aquire_success() {
                 try_acquire::<$domain>($init, 1, true);
             }
-            #[test]
+            #[test_log::test]
             fn test_aquire_failure() {
                 try_acquire::<$domain>($init, usize::MAX, false);
             }
             // context tests
-            #[test]
+            #[test_log::test]
             fn test_read_single_success() {
                 let mut ctx = acquire::<$domain>($init, 1);
                 read(&mut ctx, 0, 1, true);
             }
-            #[test]
+            #[test_log::test]
             fn test_read_large_success() {
                 let mut ctx = acquire::<$domain>($init, 12288);
                 read(&mut ctx, 2048, 8192, true);
             }
-            #[test]
+            #[test_log::test]
             fn test_read_single_oob_offset() {
                 let mut ctx = acquire::<$domain>($init, 1);
                 let offset = ctx.size;
                 read(&mut ctx, offset, 1, false);
             }
-            #[test]
+            #[test_log::test]
             fn test_read_single_oob_size() {
                 let mut ctx = acquire::<$domain>($init, 1);
                 let size = ctx.size + 1;
                 read(&mut ctx, 0, size, false);
             }
-            #[test]
+            #[test_log::test]
             fn test_chunk_ref_single_success() {
                 let mut ctx = acquire::<$domain>($init, 1);
                 get_chunks(&mut ctx, 0, 1, true);
             }
-            #[test]
+            #[test_log::test]
             fn test_chunk_ref_single_oob_offset() {
                 let mut ctx = acquire::<$domain>($init, 1);
                 let size = ctx.size + 1;
                 get_chunks(&mut ctx, size, 1, false);
             }
-            #[test]
+            #[test_log::test]
             fn test_chunk_ref_single_oob_size() {
                 let mut ctx = acquire::<$domain>($init, 1);
                 let size = ctx.size + 1;
                 get_chunks(&mut ctx, 0, size, false);
             }
-            #[test]
+            #[test_log::test]
             fn test_chunk_ref_large_success() {
                 let mut ctx = acquire::<$domain>($init, 12288);
                 get_chunks(&mut ctx, 2048, 8192, true);
             }
-            #[test]
+            #[test_log::test]
             fn test_write_single_oob_offset() {
                 let mut ctx = acquire::<$domain>($init, 1);
                 let offset = ctx.size;
                 write(&mut ctx, offset, 1, false);
             }
-            #[test]
+            #[test_log::test]
             fn test_write_single_oob_size() {
                 let mut ctx = acquire::<$domain>($init, 1);
                 let size = ctx.size + 1;
                 write(&mut ctx, 0, size, false);
             }
-            #[test]
+            #[test_log::test]
             fn test_transfer_single() {
-                let source = Box::new(acquire::<$domain>($init, 1));
-                let destination = Box::new(acquire::<$domain>($init, 1));
+                let source = acquire::<$domain>($init, 1);
+                let destination = acquire::<$domain>($init, 1);
                 transfer(source, destination);
             }
-            #[test]
+            #[test_log::test]
             fn test_transfer_page() {
-                let source = Box::new(acquire::<$domain>($init, 4096));
-                let destination = Box::new(acquire::<$domain>($init, 4096));
+                let source = acquire::<$domain>($init, 4096);
+                let destination = acquire::<$domain>($init, 4096);
                 transfer(source, destination);
             }
-            #[test]
+            #[test_log::test]
             fn test_transfer_dataitem_item() {
-                let source = Box::new(acquire::<$domain>($init, 4096));
-                let destination = Box::new(acquire::<$domain>($init, 4096));
+                let source = acquire::<$domain>($init, 4096);
+                let destination = acquire::<$domain>($init, 4096);
                 transfer_item(source, destination, 0, 128, 1, 2, Ok(()));
+            }
+            #[test_log::test]
+            fn test_write_after_transfer() {
+                let context_size = 9 * $chunk;
+                let source = acquire::<$domain>($init, context_size);
+                let destination = acquire::<$domain>($init, context_size);
+                write_after_transfer(source, destination, $chunk);
             }
         }
     };
@@ -350,40 +478,40 @@ macro_rules! systemsDomainTests {
         mod $name {
             use super::*;
 
-            #[test]
+            #[test_log::test]
             fn testing_transfer_system_context() {
-                let source = Box::new(acquire::<$domain>($init, 4096));
-                let destination = Box::new(acquire::<SystemMemoryDomain>($init, 4096));
+                let source = acquire::<$domain>($init, 4096);
+                let destination = acquire::<SystemMemoryDomain>($init, 4096);
                 transfer_item(source, destination, 0, 128, 1, 2, Ok(()));
             }
-            #[test]
+            #[test_log::test]
             fn test_small_transfer_success() {
-                let source = Box::new(acquire::<$domain>($init, 1));
-                let destination = Box::new(acquire::<SystemMemoryDomain>($init, 1));
+                let source = acquire::<$domain>($init, 1);
+                let destination = acquire::<SystemMemoryDomain>($init, 1);
                 transfer(source, destination)
             }
-            #[test]
+            #[test_log::test]
             fn test_page_transfer_success() {
                 let size = 4096;
-                let source = Box::new(acquire::<$domain>($init, size));
-                let destination = Box::new(acquire::<SystemMemoryDomain>($init, size));
+                let source = acquire::<$domain>($init, size);
+                let destination = acquire::<SystemMemoryDomain>($init, size);
                 transfer(source, destination)
             }
-            #[test]
+            #[test_log::test]
             fn test_large_transfer_success() {
                 let size = 12288;
-                let source = Box::new(acquire::<$domain>($init, size));
-                let destination = Box::new(acquire::<SystemMemoryDomain>($init, size));
+                let source = acquire::<$domain>($init, size);
+                let destination = acquire::<SystemMemoryDomain>($init, size);
                 transfer(source, destination)
             }
-            #[test]
+            #[test_log::test]
             fn test_larger_transfer_success() {
                 let size = 65536;
-                let source = Box::new(acquire::<$domain>($init, size));
-                let destination = Box::new(acquire::<SystemMemoryDomain>($init, size));
+                let source = acquire::<$domain>($init, size);
+                let destination = acquire::<SystemMemoryDomain>($init, size);
                 transfer(source, destination)
             }
-            #[test]
+            #[test_log::test]
             fn test_read_single_oob_offset() {
                 let size = 1;
                 let mut source = acquire::<$domain>($init, size);
@@ -393,7 +521,7 @@ macro_rules! systemsDomainTests {
                     .expect("Writing should succeed");
                 read_system_context(&mut destination, source, size, 1, false);
             }
-            #[test]
+            #[test_log::test]
             fn test_read_single_oob_size() {
                 let size = 1;
                 let mut source = acquire::<$domain>($init, size);
@@ -403,7 +531,7 @@ macro_rules! systemsDomainTests {
                     .expect("Writing should succeed");
                 read_system_context(&mut destination, source, 0, size + 1, false);
             }
-            #[test]
+            #[test_log::test]
             fn test_chunk_ref_single_success() {
                 let size = 1;
                 let mut source = acquire::<$domain>($init, size);
@@ -413,7 +541,7 @@ macro_rules! systemsDomainTests {
                     .expect("Writing should succeed");
                 get_chunks_system_context(&mut destination, source, 0, 1, true);
             }
-            #[test]
+            #[test_log::test]
             fn test_chunk_ref_single_oob_offset() {
                 let size = 1;
                 let mut source = acquire::<$domain>($init, size);
@@ -423,7 +551,7 @@ macro_rules! systemsDomainTests {
                     .expect("Writing should succeed");
                 get_chunks_system_context(&mut destination, source, size, 1, false);
             }
-            #[test]
+            #[test_log::test]
             fn test_chunk_ref_single_oob_size() {
                 let size = 1;
                 let mut source = acquire::<$domain>($init, size);
@@ -433,7 +561,7 @@ macro_rules! systemsDomainTests {
                     .expect("Writing should succeed");
                 get_chunks_system_context(&mut destination, source, 0, size + 1, false);
             }
-            #[test]
+            #[test_log::test]
             fn test_chunk_ref_large_success() {
                 let size = 12288;
                 let mut source = acquire::<$domain>($init, size);
@@ -443,7 +571,7 @@ macro_rules! systemsDomainTests {
                     .expect("Writing should succeed");
                 get_chunks_system_context(&mut destination, source, 2048, 8192, true);
             }
-            #[test]
+            #[test_log::test]
             fn test_fragmented_items_get_chunk_success() {
                 // Here we test how the get_chunk function handles fractured memory
                 let size = 1024;
@@ -469,7 +597,7 @@ macro_rules! systemsDomainTests {
                     Err(err) => panic!("Unexpected error from get_chunk_ref {:?}", err),
                 }
             }
-            #[test]
+            #[test_log::test]
             fn test_transfer_multiple_bytes() {
                 // Tests how transfers over multiple Bytes are handled
                 let mut preamble = "Start\n".to_string();
@@ -526,33 +654,37 @@ macro_rules! systemsDomainTests {
     };
 }
 
+const DEFAULT_CHUNK_SIZE: usize = 4096;
+
 use super::malloc::MallocMemoryDomain as mallocType;
-domainTests!(malloc; mallocType; MemoryResource::None);
+domainTests!(malloc; mallocType; MemoryResource::None; DEFAULT_CHUNK_SIZE);
 
 #[cfg(feature = "cheri")]
 use super::cheri::CheriMemoryDomain as cheriType;
 #[cfg(feature = "cheri")]
-domainTests!(cheri; cheriType; MemoryResource::Anonymous { size: (2<<22) });
+domainTests!(cheri; cheriType; MemoryResource::Anonymous { size: (2<<22) }; DEFAULT_CHUNK_SIZE);
 #[cfg(feature = "cheri")]
 systemsDomainTests!(cheri_system; cheriType; MemoryResource::Anonymous { size: (2<<22) });
 
 #[cfg(feature = "kvm")]
 use super::kvm::KvmMemoryDomain as kvmType;
 #[cfg(feature = "kvm")]
-domainTests!(kvm; kvmType; MemoryResource::Anonymous { size: (2<<22) });
+use super::kvm::PAGE_SIZE as page_size;
+#[cfg(feature = "kvm")]
+domainTests!(kvm; kvmType; MemoryResource::Anonymous { size: (2<<22) }; page_size);
 #[cfg(feature = "kvm")]
 systemsDomainTests!(kvm_system; kvmType; MemoryResource::Anonymous { size: (2<<22) });
 
 #[cfg(feature = "mmu")]
 use super::mmu::MmuMemoryDomain as mmuType;
 #[cfg(feature = "mmu")]
-domainTests!(mmu; mmuType; MemoryResource::Shared { id: 0, size: (2<<22) });
+domainTests!(mmu; mmuType; MemoryResource::Shared { id: 0, size: (2<<22) }; DEFAULT_CHUNK_SIZE);
 #[cfg(feature = "mmu")]
 systemsDomainTests!(mmu_system; mmuType; MemoryResource::Shared {id: 0, size: (2<<22)});
 
 #[cfg(feature = "wasm")]
 use super::wasm::WasmMemoryDomain as wasmType;
 #[cfg(feature = "wasm")]
-domainTests!(wasm; wasmType; MemoryResource::Anonymous { size: (2<<22) });
+domainTests!(wasm; wasmType; MemoryResource::Anonymous { size: (2<<22) }; 4096);
 #[cfg(feature = "wasm")]
 systemsDomainTests!(wasm_system; wasmType; MemoryResource::Anonymous{size: (2<<22)});

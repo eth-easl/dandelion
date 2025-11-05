@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
+# TODO remove as default feature and check everyting also works with no default feature
 default = ["bytes_context"]
 std = []
 cheri = ["std"]
