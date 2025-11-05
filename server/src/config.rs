@@ -8,8 +8,6 @@ const DEFAULT_CONFIG_PATH: &str = "./dandelion.config";
 const DEFAULT_PORT: u16 = 8082;
 const DEFAULT_SINGLE_CORE: bool = false;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
-// TODO: add default ports here
-//const DEFAULT_REQUEST_ACCEPT_PORTS: &'static Vec<u16> = &vec![1u16];
 const DEFAULT_DIRIGENT_SYNC_PORT: u16 = 8083;
 
 #[derive(serde::Deserialize, Debug)]
