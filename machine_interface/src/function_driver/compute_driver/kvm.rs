@@ -102,16 +102,16 @@ impl EngineLoop for KvmLoop {
         let mut removed_overlay = Vec::new();
         // go through things that are overlayed and map, it was made sure in the transfer function, that it is full pages
         // TODO: when cursor is stabilized use that, so mappings can be removed if they were copied
-        for (&overlay_end, (overlay_size, overlay_context)) in kvm_context.overlay.iter() {
+        for (&overlay_end, (overlay_start, overlay_context)) in kvm_context.overlay.iter() {
             // map from back if it is a kvm context
             if let ContextType::Kvm(overlay_kvm_context) = &overlay_context.context.context {
                 // map to end of context
                 let mut mappig_start = stack_start - overlay_size;
                 // make sure that the virtual and physical address have the same allignment with regards to large pages
                 // for this mapping start needs to have the same distance to the next large page boundry as the virtual
-                let virtual_start = overlay_end - overlay_size;
+                let overlay_size = overlay_end - *overlay_start + 1;
                 let virtual_large_offset =
-                    virtual_start.next_multiple_of(LARGE_PAGE) - virtual_start;
+                    overlay_start.next_multiple_of(LARGE_PAGE) - *overlay_start;
                 let mapping_large_offset = mappig_start.next_multiple_of(LARGE_PAGE) - mappig_start;
                 let additional_offset = if virtual_large_offset >= mapping_large_offset {
                     virtual_large_offset - mapping_large_offset
@@ -126,7 +126,7 @@ impl EngineLoop for KvmLoop {
                 unsafe {
                     mmap(
                         NonZeroUsize::new(start_address),
-                        NonZeroUsize::new_unchecked(*overlay_size),
+                        NonZeroUsize::new_unchecked(overlay_size),
                         ProtFlags::all(),
                         MapFlags::MAP_PRIVATE | MapFlags::MAP_FIXED,
                         overlay_kvm_context.fd,
@@ -134,15 +134,15 @@ impl EngineLoop for KvmLoop {
                     )
                     .unwrap()
                 };
-                mappings.push((overlay_end - overlay_size, mappig_start, *overlay_size));
+                mappings.push((*overlay_start, mappig_start, overlay_size));
             } else {
-                let overlay_start = overlay_end - *overlay_size;
+                let overlay_size = overlay_end - *overlay_start + 1;
                 let mut read_bytes = 0;
-                while read_bytes < *overlay_size {
+                while read_bytes < overlay_size {
                     let chunk = overlay_context
                         .context
-                        .get_chunk_ref(overlay_context.offset, *overlay_size)?;
-                    kvm_context.storage[overlay_start..overlay_end].copy_from_slice(chunk);
+                        .get_chunk_ref(overlay_context.offset, overlay_size)?;
+                    kvm_context.storage[*overlay_start..=overlay_end].copy_from_slice(chunk);
                     read_bytes += chunk.len();
                 }
                 removed_overlay.push(overlay_end);
@@ -222,31 +222,29 @@ impl EngineLoop for KvmLoop {
         for start in copied_pages {
             // TODO: use cursor once it stabilizes
             let (to_insert_opt, to_remove_opt) =
-                if let Some((&overlay_end, (overlay_size, overlay_item))) =
+                if let Some((&overlay_end, (overlay_start, overlay_item))) =
                     kvm_context.overlay.range_mut(start..).next()
                 {
-                    let end = start + PAGE_SIZE;
                     // know that start < overlay_end, so for overlap need to check that start is not too early
-                    let overlay_start = overlay_end - *overlay_size;
-                    if start < overlay_start {
+                    if start < *overlay_start {
                         panic!(
                             "Trying to punch hole at {} in overlay that starts only later {}",
                             start, overlay_start
                         );
                     // page is at start of overlay, so can just shrink it
-                    } else if start == overlay_start {
-                        *overlay_size -= PAGE_SIZE;
-                        if *overlay_size == 0 {
+                    } else if start == *overlay_start {
+                        *overlay_start += PAGE_SIZE;
+                        if *overlay_start == overlay_end {
                             (None, Some(overlay_end))
                         } else {
                             (None, None)
                         }
                     // page is in middle, so need to cut it in two
                     } else {
-                        let new_overlay = (end, (end - overlay_start, overlay_item.clone()));
-                        *overlay_size = overlay_end - end;
-                        overlay_item.offset += end - overlay_start;
-                        if *overlay_size == 0 {
+                        let new_overlay = (start - 1, (*overlay_start, overlay_item.clone()));
+                        *overlay_start = start + PAGE_SIZE;
+                        overlay_item.offset += start + PAGE_SIZE - *overlay_start;
+                        if *overlay_start == overlay_end {
                             (Some(new_overlay), Some(overlay_end))
                         } else {
                             (Some(new_overlay), None)

@@ -1,7 +1,5 @@
-use crate::{
-    function_driver::compute_driver::kvm::PAGE_SIZE,
-    memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
-};
+pub(super) use crate::function_driver::compute_driver::kvm::PAGE_SIZE;
+use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain};
 
 use dandelion_commons::{range_pool::RangePool, DandelionError, DandelionResult};
 use log::debug;
@@ -33,14 +31,16 @@ pub struct OverlayItem {
 
 pub struct KvmContext {
     /// overlay data structure recording where overlay items END and how big they are.
-    /// The end is recorded as start + size (so it is the index 1 past the last byte.
+    /// The end is recorded as start + size - 1 (so it is the index of the last byte).
     /// We are using the end, as it makes overlap checks easier, since we can be sure,
     /// there is no overlap if the offset we are looking for is bigger than the end.
     /// The condition to check for no overlap is, that either is strictly before the other,
-    /// meaning overlay_start >= check_end || check_start >= overlay_end, so checking for
+    /// meaning overlay_start >= check_end || check_start > overlay_end, so checking for
     /// overlap is equivalent to the negation of that, which can be expressed as:
-    /// overlay_start < check_end && check_start < overlay_end.
+    /// overlay_start < check_end && check_start =< overlay_end.
     /// Additionally overlay should only contain whole pages.
+    /// The values are tuples of the overlay starts and items containing the context,
+    /// that is overlayed with the offset into those contexts.
     pub overlay: BTreeMap<usize, (usize, OverlayItem)>,
     pub storage: &'static mut [u8],
     pub fd: RawFd,
@@ -66,7 +66,6 @@ impl Debug for KvmContext {
     }
 }
 
-/// TODO handle overwriting
 impl ContextTrait for KvmContext {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
         // check alignment
@@ -76,30 +75,66 @@ impl ContextTrait for KvmContext {
         }
 
         // check if the write is within bounds
-        let write_length = data.len() * core::mem::size_of::<T>();
-        if offset + write_length > self.storage.len() {
+        let bytes_to_write = data.len() * size_of::<T>();
+        if offset + bytes_to_write > self.storage.len() {
             debug!("Write out of bounds at offset {}", offset);
             return Err(DandelionError::InvalidWrite);
         }
 
-        // make sure we are not trying to write into overlay space
-        // TODO: when upper_bound / lower bound stabilizise use that
-        let write_size = data.len() * size_of::<T>();
-        let write_end = offset + write_size;
-        let write_memory =
-            unsafe { core::slice::from_raw_parts(data.as_ptr() as *const u8, write_size) };
-        // all overlays that end after the offset starts
-        let mut check_rage = self.overlay.range(offset..);
-        if let Some((end, (size, _))) = check_rage.next_back() {
-            // there is an overlay that ends after the write starts
-            // there is overlap if the overlay also starts before the write ends
-            let start = end - size;
-            if start < write_end {
-                debug!("Trying to write at offset: {}, with size: {}, but overlaps with overlay: {},{}", offset, write_size, start, size);
-                return Err(DandelionError::InvalidWrite);
+        // need to round to the pages that get touched
+        let rounded_start = (offset / PAGE_SIZE) * PAGE_SIZE;
+        let rounded_end = (offset + bytes_to_write).next_multiple_of(PAGE_SIZE);
+        // find all overlays that end after the offset starts
+        // if there is overlap, need remove all the overlapping pages, and copy the parts that are not overwritten
+        let mut to_remove = Vec::new();
+        let mut new_insert_opt = None;
+        // TODO replace with cursor for easy removal / insert, as soon as it stabilizes
+        for (overlay_end, (overlay_start, item)) in self.overlay.range_mut(rounded_start..) {
+            // if the overlay starts after the write ends, there is nothing left to do for this range
+            if *overlay_start >= rounded_end {
+                break;
+            }
+            // check if we need to keep part of the overlay before the write, that is at least one page
+            if *overlay_start < rounded_start {
+                let new_front = (rounded_start - 1, (*overlay_start, item.clone()));
+                assert!(new_insert_opt.replace(new_front).is_none(), "Should never find a second overlay item, that overlays past the start of the write");
+            }
+            // check if we need to copy parts of a page for a partially overwritten page at the start of the write
+            // can be the first page in the overlay
+            if *overlay_start <= rounded_start && rounded_start < offset {
+                let read_offset = item.offset + (rounded_start - *overlay_start);
+                item.context
+                    .read(read_offset, &mut self.storage[rounded_start..offset])?;
+            }
+            // check if we need to shorten copy parts of the page for partially overwritten page at the end of the write
+            let write_end = offset + bytes_to_write;
+            if rounded_end - 1 <= *overlay_end && write_end < rounded_end {
+                let read_offset = item.offset + (write_end - *overlay_start);
+                item.context
+                    .read(read_offset, &mut self.storage[write_end..rounded_end])?;
+            }
+            // check if we need to shorten or remove the current part of the overlay
+            if rounded_end - 1 < *overlay_end {
+                // shorten the current overlay
+                item.offset += rounded_end - *overlay_start;
+                *overlay_start = rounded_end;
+                // if it ends before this overlay end, then this was the last one that was relevant
+                break;
+            } else {
+                // remove the current overlay
+                to_remove.push(*overlay_end);
             }
         }
-        self.storage[offset..offset + write_size].copy_from_slice(write_memory);
+        for remove_key in to_remove {
+            self.overlay.remove(&remove_key);
+        }
+        if let Some((key, value)) = new_insert_opt {
+            self.overlay.insert(key, value);
+        }
+
+        let write_memory =
+            unsafe { core::slice::from_raw_parts(data.as_ptr() as *const u8, bytes_to_write) };
+        self.storage[offset..offset + bytes_to_write].copy_from_slice(write_memory);
         Ok(())
     }
 
@@ -120,12 +155,11 @@ impl ContextTrait for KvmContext {
         };
 
         let mut overlay_range = self.overlay.range(offset..);
-        while let Some((overlay_end, (overlay_size, overlay_context))) = overlay_range.next() {
+        while let Some((overlay_end, (overlay_start, overlay_context))) = overlay_range.next() {
             // check if there is any space before the overlay item that needs to be read first
-            let overlay_start = overlay_end - overlay_size;
-            if overlay_start > offset {
+            if *overlay_start > offset {
                 // read until we hit either end of read request or the overlay
-                let additional_bytes = min(overlay_start - offset, read_memory.len());
+                let additional_bytes = min(*overlay_start - offset, read_memory.len());
                 read_memory[..additional_bytes]
                     .copy_from_slice(&self.storage[offset..offset + additional_bytes]);
                 read_memory = &mut read_memory[additional_bytes..];
@@ -136,7 +170,7 @@ impl ContextTrait for KvmContext {
             if !read_memory.is_empty() {
                 // get offset into the overlay
                 let overlay_offset = offset - overlay_start;
-                let additional_bytes = min(*overlay_size - overlay_offset, read_buffer.len());
+                let additional_bytes = min(*overlay_end - offset + 1, read_buffer.len());
                 overlay_context.context.read(
                     overlay_context.offset + overlay_offset,
                     &mut read_memory[..additional_bytes],
@@ -164,22 +198,21 @@ impl ContextTrait for KvmContext {
         }
 
         // check if the offset is into an overlayed object
-        if let Some((overlay_end, (overlay_size, overlay_context))) =
+        if let Some((overlay_end, (overlay_start, overlay_context))) =
             self.overlay.range(offset..).next()
         {
-            let overlay_start = overlay_end - overlay_size;
             // overlay object ends after offset, so if overlay start is smaller than offset,
             // it reads from inside the overlay, otherise it is from in front of the overlay
-            if overlay_start <= offset {
+            if *overlay_start <= offset {
                 let overlay_offset = offset - overlay_start;
-                let chunk_size = min(overlay_size - overlay_offset, length);
+                let chunk_size = min(*overlay_end - offset + 1, length);
                 overlay_context
                     .context
                     .get_chunk_ref(overlay_context.offset + overlay_offset, chunk_size)
             } else {
                 // offset is before overlay start, so can read at most up to overlay start
-                let chunk_size = min(length, overlay_start - offset);
-                Ok(&self.storage[offset..offset + chunk_size])
+                let chunk_end = min(offset + length, *overlay_start);
+                Ok(&self.storage[offset..chunk_end])
             }
         } else {
             Ok(&self.storage[offset..offset + length])
@@ -363,9 +396,9 @@ pub fn transfer_into(
 
         if rounded_size != 0 {
             destination.overlay.insert(
-                rounded_end,
+                rounded_end - 1,
                 (
-                    rounded_size,
+                    rounded_start,
                     OverlayItem {
                         context: source,
                         offset: source_rounded_start,
