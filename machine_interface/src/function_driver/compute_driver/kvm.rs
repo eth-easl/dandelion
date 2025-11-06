@@ -135,17 +135,33 @@ impl EngineLoop for KvmLoop {
                     .unwrap()
                 };
                 mappings.push((*overlay_start, mappig_start, overlay_size));
+
+                log::debug!(
+                    "zero copy pages at physical: {}, virtual {}, with size {}",
+                    mappig_start,
+                    *overlay_start,
+                    overlay_size
+                );
             } else {
                 let overlay_size = overlay_end - *overlay_start + 1;
                 let mut read_bytes = 0;
                 while read_bytes < overlay_size {
-                    let chunk = overlay_context
-                        .context
-                        .get_chunk_ref(overlay_context.offset, overlay_size)?;
-                    kvm_context.storage[*overlay_start..=overlay_end].copy_from_slice(chunk);
+                    let chunk = overlay_context.context.get_chunk_ref(
+                        overlay_context.offset + read_bytes,
+                        overlay_size - read_bytes,
+                    )?;
+                    kvm_context.storage
+                        [*overlay_start + read_bytes..*overlay_start + read_bytes + chunk.len()]
+                        .copy_from_slice(chunk);
                     read_bytes += chunk.len();
                 }
                 removed_overlay.push(overlay_end);
+
+                log::debug!(
+                    "manually copied overlayed context into virtual {} with size {}",
+                    *overlay_start,
+                    overlay_size
+                );
             }
         }
         for key in removed_overlay {
