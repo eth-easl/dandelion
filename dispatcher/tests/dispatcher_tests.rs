@@ -91,16 +91,24 @@ mod dispatcher_tests {
             .read(out_mat_position.data.offset, &mut out_mat)
             .expect("Should read output matrix");
         assert_eq!(rows, out_mat[0]);
+        let mut found_error = false;
         for i in 0..expected.len() {
-            assert_eq!(
-                expected[i],
-                out_mat[1 + i],
-                "at index {}, one before: {:?}, one after {:?}",
-                i,
-                out_mat.get(i),
-                out_mat.get(2 + i)
-            );
+            if expected[i] != out_mat[1 + i] {
+                println!(
+                    "expected {}, actual {}, at index {}, one before {:?}, one after {:?}",
+                    expected[i],
+                    out_mat[1 + i],
+                    i,
+                    out_mat.get(i),
+                    out_mat.get(2 + i)
+                );
+                found_error = true;
+            }
         }
+        assert!(
+            !found_error,
+            "There was an error in the matrix, check stdout for logs"
+        );
     }
 
     macro_rules! dispatcherTests {

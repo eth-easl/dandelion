@@ -312,6 +312,47 @@ impl MemoryDomain for KvmMemoryDomain {
     }
 }
 
+/// Function to find a destination offset, which allows to zero copy pages in the transfer
+/// Return the index after which to insert the new occupation and the destination address
+pub fn get_transfer_offset(
+    occupation: &Vec<crate::Position>,
+    source_offset: usize,
+    context_size: usize,
+    size: usize,
+) -> DandelionResult<(usize, usize)> {
+    // search for smallest space that is bigger than size
+    // space start holds previous start
+    // check how far the source is offset from the next page boundry and try to get a spot that has the same
+    let page_offset = source_offset % PAGE_SIZE;
+    let mut space_size = context_size + 1;
+    let mut index = 0;
+    let mut start_address = 0;
+    for (window_index, occupied) in occupation.windows(2).enumerate() {
+        let lower_end = occupied[0].offset + occupied[0].size;
+        // find next address that has the same page alignment
+        let on_next_page = usize::from(lower_end % PAGE_SIZE > page_offset);
+        let start = ((lower_end / PAGE_SIZE) + on_next_page) * PAGE_SIZE + page_offset;
+        let end = occupied[1].offset;
+        let available = end.saturating_sub(start);
+        if available >= size && available < space_size {
+            space_size = available;
+            index = window_index;
+            start_address = start;
+        }
+    }
+    log::trace!(
+        "found a place to insert index {}, start address: {}, space_size {}, context size {}",
+        index,
+        start_address,
+        space_size,
+        context_size
+    );
+    if context_size + 1 == space_size {
+        return Err(DandelionError::ContextFull);
+    }
+    return Ok((index, start_address));
+}
+
 pub fn transfer_into(
     destination: &mut KvmContext,
     source: Arc<Context>,
@@ -364,7 +405,6 @@ pub fn transfer_into(
             destination.write(destination_offset + bytes_written, chunk)?;
             bytes_written += chunk.len();
         }
-        log::trace!("finish to transfer large item with non equal offset");
     } else {
         // insert the parts that can be remapped and copy the rest
         let rounded_start = destination_offset.next_multiple_of(PAGE_SIZE);

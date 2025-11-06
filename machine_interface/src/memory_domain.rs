@@ -207,7 +207,7 @@ impl Context {
             let lower_end = occupied[0].offset + occupied[0].size;
             let start = lower_end.next_multiple_of(alignment);
             let end = occupied[1].offset;
-            let available = end - start;
+            let available = end.saturating_sub(start);
             if available >= size && available < space_size {
                 space_size = available;
                 index = window_index;
@@ -394,8 +394,35 @@ pub fn transfer_data_item(
             .resize_with(destination_set_index + 1, || None)
     }
     let source_item = &source_set.buffers[source_item_index];
-    let destination_offset =
-        destination.get_free_space(source_item.data.size, destination_allignment)?;
+
+    log::debug!(
+        "Transfering data item from {:?} into context with occupation: {:?}",
+        source_item.data,
+        destination.occupation,
+    );
+    if source_item.data.offset % destination_allignment != 0 {
+        log::debug!("source item offset is not aligned with destination alignment requirement");
+    }
+
+    // allow overwrites for contexts to provide a better method to find the destination offset
+    let destination_offset = match destination.context {
+        #[cfg(feature = "kvm")]
+        // if we have more than 2 PAGE sizes, there is a least one page that can be zero copied
+        ContextType::Kvm(_)
+            if source_item.data.size > 2 * kvm::PAGE_SIZE
+                && source_item.data.offset % destination_allignment == 0 =>
+        {
+            let (index, start_address) = kvm::get_transfer_offset(
+                &destination.occupation,
+                source_item.data.offset,
+                destination.size,
+                source_item.data.size,
+            )?;
+            destination.insert(index, start_address, source_item.data.size);
+            start_address
+        }
+        _ => destination.get_free_space(source_item.data.size, destination_allignment)?,
+    };
     {
         let destination_set =
             &mut destination.content[destination_set_index].get_or_insert(DataSet {
