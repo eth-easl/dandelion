@@ -372,11 +372,9 @@ pub fn transfer_into(
     if destination_offset + size > destination.storage.len() {
         return Err(DandelionError::InvalidWrite);
     }
-    if let Some((overlay_end, (overlay_size, _))) =
-        destination.overlay.range(destination_offset..).next()
-    {
+    if let Some((_, (overlay_start, _))) = destination.overlay.range(destination_offset..).next() {
         // check if there is overlap, throw error if there is
-        if overlay_end - overlay_size < destination_offset + size {
+        if *overlay_start < destination_offset + size {
             return Err(DandelionError::InvalidWrite);
         }
     }
