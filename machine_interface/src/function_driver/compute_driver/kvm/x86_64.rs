@@ -548,7 +548,11 @@ pub fn handle_page_fault(vcpu: &VcpuFd, guest_mem: &mut [u8]) -> DandelionResult
     // check the directory table has the correct flags
     // should have all the default flags, as they are applied to all memory in scope
     if p3_flags & !PDE64_ACCESSED != PDE64_DEFAULT_FLAGS {
-        trace!("p3 flags not as expected: {}", p3_flags);
+        trace!(
+            "p3 flags not as expected: {}, for offset: {}",
+            p3_flags,
+            p3_offset
+        );
         return Err(DandelionError::UserError(UserError::ManupulatedPageTables));
     }
 
@@ -556,20 +560,32 @@ pub fn handle_page_fault(vcpu: &VcpuFd, guest_mem: &mut [u8]) -> DandelionResult
     let (p2_offset, p2_flags) = get_offset_flags(p3_offset, p3_entry);
 
     if p2_flags & !PDE64_ACCESSED != PDE64_DEFAULT_FLAGS {
-        trace!("p2 flags not as expected: {}", p2_flags);
+        trace!(
+            "p2 flags not as expected: {}, for p2 offset: {}",
+            p2_flags,
+            p2_offset
+        );
         return Err(DandelionError::UserError(UserError::ManupulatedPageTables));
     }
 
     // let p2_table = &guest_mem_u64[p2_offset..p2_offset + TABLE_SIZE];
     let (p1_offset, p1_flags) = get_offset_flags(p2_offset, p2_entry);
     if p1_flags & !PDE64_ACCESSED != PDE64_DEFAULT_FLAGS {
-        trace!("p1 flags not as expected: {}", p1_flags);
+        trace!(
+            "p1 flags not as expected: {}, for p1 offset: {}",
+            p1_flags,
+            p1_offset
+        );
         return Err(DandelionError::UserError(UserError::ManupulatedPageTables));
     }
 
     let (old_address, old_flags) = get_offset_flags(p1_offset, p1_entry);
     if old_flags & !PDE64_ACCESSED != PDE64_PRESENT | PDE64_USER {
-        trace!("page flags not as expected: {}", old_flags);
+        trace!(
+            "page flags not as expected: {}, for old address {}",
+            old_flags,
+            old_address
+        );
         return Err(DandelionError::UserError(UserError::ManupulatedPageTables));
     }
     let new_address = faulting_address as usize & !(PAGE_SIZE - 1);
