@@ -200,6 +200,9 @@ pub enum PromiseError {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UserError {
+    /// Configured context is too small for execution,
+    /// can happen in KVM zero copy, since each item takes up 2 as much virtual space
+    SmallContext,
     /// Set not declared optional is empty
     EmptyNonOptional,
     /// Function indicated it failed

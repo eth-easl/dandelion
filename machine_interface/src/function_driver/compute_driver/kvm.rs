@@ -10,7 +10,7 @@ use crate::{
     DataItem, DataRequirement, DataRequirementList, DataSet, Position,
 };
 use core_affinity;
-use dandelion_commons::{DandelionError, DandelionResult};
+use dandelion_commons::{DandelionError, DandelionResult, UserError};
 use kvm_bindings::{kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES};
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::debug;
@@ -83,6 +83,7 @@ impl EngineLoop for KvmLoop {
             _ => return Err(DandelionError::ConfigMissmatch),
         };
         setup_input_structs::<u64, u64>(&mut context, elf_config.system_data_offset, &output_sets)?;
+        let min_stack_start = context.get_last_item_end();
         let kvm_context = match &mut context.context {
             ContextType::Kvm(kvm_context) => kvm_context,
             _ => return Err(DandelionError::ContextMissmatch),
@@ -189,6 +190,11 @@ impl EngineLoop for KvmLoop {
             stack_start,
             kvm_context.storage.len(),
         );
+
+        // make sure that the stack start has not moved into the occupied territory
+        if min_stack_start >= stack_start {
+            return Err(DandelionError::UserError(UserError::SmallContext));
+        }
 
         #[cfg(feature = "backend_debug")]
         {
