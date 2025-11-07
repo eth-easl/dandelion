@@ -148,7 +148,7 @@ impl ContextTrait for SystemContext {
                         // We calculate the amount of bytes that are definitely contiguous, namely
                         // at max the whole Bytes representing this item
                         let max_length = min(length, item_size);
-                        return Ok(&body.as_ref()[offset_in_item..max_length]);
+                        return Ok(&body.as_ref()[offset_in_item..offset_in_item + max_length]);
                     }
                 }
             }
