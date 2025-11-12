@@ -7,6 +7,7 @@ const DEFAULT_PORT: u16 = 8082;
 const DEFAULT_SINGLE_CORE: bool = false;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
 const DEFAULT_DIRIGENT_SYNC_PORT: u16 = 8083;
+const DEFAULT_DIRIGENT_PROXY_PORT: u16 = 8084;
 
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
@@ -32,6 +33,8 @@ pub struct DandelionConfig {
     pub timestamp_count: usize,
     #[arg(long, env, default_value_t = DEFAULT_DIRIGENT_SYNC_PORT)]
     pub dirigent_sync_port: u16,
+    #[arg(long, env, default_value_t = DEFAULT_DIRIGENT_PROXY_PORT)]
+    pub dirigent_proxy_port: u16,
 }
 
 impl DandelionConfig {
@@ -47,6 +50,9 @@ impl DandelionConfig {
         }
         if self.dirigent_sync_port != DEFAULT_DIRIGENT_SYNC_PORT && other.dirigent_sync_port != default.dirigent_sync_port {
             self.dirigent_sync_port = other.dirigent_sync_port;
+        }
+        if self.dirigent_proxy_port != DEFAULT_DIRIGENT_PROXY_PORT && other.dirigent_proxy_port != default.dirigent_proxy_port {
+            self.dirigent_proxy_port = other.dirigent_proxy_port;
         }
         // handle single core mode
         if self.single_core_mode != DEFAULT_SINGLE_CORE
