@@ -48,6 +48,12 @@ use tokio::{
 mod dirigent_service;
 use dirigent_service::start_dirigent_server;
 
+mod dirigent_proxy;
+mod request_parser;
+
+use crate::dirigent_proxy::start_proxy_server;
+use dirigent_proxy::proxy_to_uc;
+
 const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
 enum DispatcherCommand {
@@ -82,8 +88,8 @@ async fn serve_request(
     let start_time = Instant::now();
 
     // pull all frames from the network
-    let mut incomming = req.into_body();
-    let mut body_pin = std::pin::Pin::new(&mut incomming);
+    let mut incoming = req.into_body();
+    let mut body_pin = std::pin::Pin::new(&mut incoming);
     let mut frame_data = Vec::new();
     let mut total_size = 0usize;
     loop {
@@ -421,18 +427,22 @@ async fn service_loop(request_sender: mpsc::Sender<DispatcherCommand>, port: u16
     // socket to listen to
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await.unwrap();
+
     // signal handlers for gracefull shutdown
     let mut sigterm_stream = tokio::signal::unix::signal(SignalKind::terminate()).unwrap();
     let mut sigint_stream = tokio::signal::unix::signal(SignalKind::interrupt()).unwrap();
     let mut sigquit_stream = tokio::signal::unix::signal(SignalKind::quit()).unwrap();
+
     loop {
         tokio::select! {
             connection_pair = listener.accept() => {
                 let (stream,_) = connection_pair.unwrap();
                 let loop_dispatcher = request_sender.clone();
                 let io = hyper_util::rt::TokioIo::new(stream);
+
                 tokio::task::spawn(async move {
                     let service_dispatcher_ptr = loop_dispatcher.clone();
+
                     if let Err(err) = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
                         .serve_connection_with_upgrades(
                             io,
@@ -667,7 +677,8 @@ fn main() -> () {
     print!(" timestamp");
     print!("\n");
 
-    start_dirigent_server(config.dirigent_sync_port);
+    let dg_svc = start_dirigent_server(config.dirigent_sync_port);
+    start_proxy_server(config.dirigent_proxy_port, dg_svc);
 
     // Run this server for... forever... unless I receive a signal!
     runtime.block_on(service_loop(dispatcher_sender, config.port));

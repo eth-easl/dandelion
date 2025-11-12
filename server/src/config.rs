@@ -9,6 +9,7 @@ const DEFAULT_PORT: u16 = 8082;
 const DEFAULT_SINGLE_CORE: bool = false;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
 const DEFAULT_DIRIGENT_SYNC_PORT: u16 = 8083;
+const DEFAULT_DIRIGENT_PROXY_PORT: u16 = 8084;
 
 #[derive(serde::Deserialize, Debug)]
 pub struct PreloadFunc {
@@ -65,6 +66,8 @@ pub struct DandelionConfig {
     pub dirigent_request_ports: Vec<u16>,
     #[arg(long, env, default_value_t = DEFAULT_DIRIGENT_SYNC_PORT)]
     pub dirigent_sync_port: u16,
+    #[arg(long, env, default_value_t = DEFAULT_DIRIGENT_PROXY_PORT)]
+    pub dirigent_proxy_port: u16,
 }
 
 impl DandelionConfig {
@@ -108,7 +111,8 @@ impl DandelionConfig {
         merge_option!(io_cores);
         merge!(timestamp_count, DEFAULT_TIMESTAMP_COUNT);
         merge_clone!(bin_preload_path, String::from(""));
-        merge!(dirigent_sync_port, DEFAULT_DIRIGENT_SYNC_PORT)
+        merge!(dirigent_sync_port, DEFAULT_DIRIGENT_SYNC_PORT);
+        merge!(dirigent_proxy_port, DEFAULT_DIRIGENT_PROXY_PORT);
     }
 
     /// Get the config from the arguments, environment and possibly config file
