@@ -451,9 +451,15 @@ fn main() -> () {
                         .iter()
                         .map(|s| (s.clone(), None))
                         .collect();
+                    #[allow(unused_mut)]
+                    let mut output_sets = pf.metadata.output_sets.clone();
+                    #[cfg(feature = "log_function_stderr")]
+                    if !output_sets.iter().any(|s| s == "stdio") {
+                        output_sets.push("stdio".to_string());
+                    };
                     let metadata = Metadata {
                         input_sets: Arc::new(input_sets),
-                        output_sets: Arc::new(pf.metadata.output_sets.clone()),
+                        output_sets: Arc::new(output_sets),
                     };
                     match dispatcher
                         .insert_func(

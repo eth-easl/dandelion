@@ -2,8 +2,8 @@
     "io_cores": 3,
 
     "multinode_state": 1,
-    "multinode_local_ip": "10.233.0.18",
-    "multinode_leader_ip": "10.233.0.18",
+    "multinode_local_ip": "10.233.0.19",
+    "multinode_leader_ip": "10.233.0.19",
 
     "bin_preload_path": "config/preload_config_data_processing.json"
 }

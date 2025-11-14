@@ -13,7 +13,7 @@ use core_affinity;
 use dandelion_commons::{DandelionError, DandelionResult, UserError};
 use kvm_bindings::{kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES};
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
-use log::debug;
+use log::{debug, error};
 use nix::sys::mman::{mmap, MapFlags, ProtFlags};
 use std::{num::NonZeroUsize, sync::Arc};
 
@@ -57,7 +57,13 @@ struct KvmLoop {
 
 impl EngineLoop for KvmLoop {
     fn init(_core_id: u8) -> DandelionResult<Box<Self>> {
-        let kvm = Kvm::new().unwrap();
+        let kvm = match Kvm::new() {
+            Err(err) => {
+                error!("Failed to create Kvm instance: {}", err);
+                panic!();
+            }
+            Ok(kvm) => kvm,
+        };
         assert_eq!(kvm.get_api_version(), 12);
 
         let vm = kvm.create_vm().unwrap();
