@@ -209,4 +209,6 @@ pub enum UserError {
     FunctionError(i32),
     /// Function corrupted page tables stored inside function in KVM backend
     ManupulatedPageTables,
+    /// Function tried to access memory it should not try to access
+    SegmentationFault,
 }
