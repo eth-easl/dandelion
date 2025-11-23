@@ -385,7 +385,7 @@ impl Driver for KvmDriver {
             // make sure to write 0s to fill in for the difference between the source and required position
             if source_position.size < required_position.size {
                 // TODO there should be a better way to do this
-                let zeros = vec![0; required_position.size - source_position.size];
+                let zeros = vec![0u8; required_position.size - source_position.size];
                 context.write(required_position.offset + source_position.size, &zeros)?
             }
             buffers.push(DataItem {

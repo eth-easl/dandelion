@@ -84,7 +84,12 @@ impl ContextTrait for KvmContext {
         let bytes_to_write = data.len() * size_of::<T>();
         let write_end = offset + bytes_to_write;
         if write_end > self.storage.len() {
-            debug!("Write out of bounds at offset {}", offset);
+            debug!(
+                "Write out of bounds at offset {} with size: {} for context size: {}",
+                offset,
+                bytes_to_write,
+                self.storage.len()
+            );
             return Err(DandelionError::InvalidWrite);
         }
         trace!(
