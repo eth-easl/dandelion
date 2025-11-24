@@ -111,6 +111,7 @@ fn get_chunks(ctx: &mut Context, offset: usize, size: usize, expect_success: boo
         match (expect_success, chunk_ref_result) {
             (true, Ok(chunk_ref)) => {
                 assert_eq!(&vec![BYTEPATTERN; chunk_ref.len()], chunk_ref);
+                assert_ne!(0, chunk_ref.len(), "Should not get zero size chunks");
                 total_read += chunk_ref.len()
             }
             (false, Ok(_)) => panic!("Unexpected ok from get_chunk_ref"),
@@ -136,6 +137,7 @@ fn get_chunks_system_context(
         match (expect_success, chunk_ref_result) {
             (true, Ok(chunk_ref)) => {
                 assert_eq!(&vec![BYTEPATTERN; chunk_ref.len()], chunk_ref);
+                assert_ne!(0, chunk_ref.len(), "Should not get zero size chunks");
                 total_read += chunk_ref.len()
             }
             (false, Ok(_)) => panic!("Unexpected ok from get_chunk_ref"),
