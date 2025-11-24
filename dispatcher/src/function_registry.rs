@@ -435,4 +435,16 @@ impl FunctionRegistry {
         let function_context = context_work_done?.get_context();
         return Ok((function_context, function_config));
     }
+
+    pub async fn get_func_path(
+        &self,
+        function_id: FunctionId,
+        engine_id: EngineType,
+    ) -> Option<String> {
+        let lock_guard = self.loadable.lock().await;
+        match lock_guard.get(&(function_id, engine_id)) {
+            Some((path, _)) => Some((*path).clone()),
+            None => None,
+        }
+    }
 }

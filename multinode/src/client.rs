@@ -3,7 +3,7 @@ use prost::bytes::Bytes;
 use reqwest::Response;
 use tokio::time::{sleep, Duration};
 
-use crate::proto::{DataSet, NodeInfo, Task};
+use crate::proto::{DataSet, FunctionInfo, FunctionRequest, NodeInfo, Task};
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -168,7 +168,6 @@ impl Client {
             Err(err) => return Err(ClientError::RequestFailed(format!("{}", err))),
         };
 
-        // handle TaskResult response
         if !response.status().is_success() {
             return Err(ClientError::RequestFailed(format!(
                 "Response status {:?}",
@@ -184,6 +183,44 @@ impl Client {
                 true => Ok((task_result.data_sets, body)),
                 false => Err(ClientError::ActionFailed(task_result.error_msg)),
             },
+            Err(err) => return Err(ClientError::InvalidResponse(format!("{}", err))),
+        }
+    }
+
+    pub async fn request_function(
+        &self,
+        function_name: String,
+    ) -> Result<Vec<FunctionInfo>, ClientError> {
+        let request = super::serialize_function_request(FunctionRequest {
+            name: function_name,
+        });
+
+        let response = match self
+            .client
+            .post(format!(
+                "http://{}:{}/multinode/functions",
+                self.remote_host, self.remote_port
+            ))
+            .body(request)
+            .send()
+            .await
+        {
+            Ok(resp) => resp,
+            Err(err) => return Err(ClientError::RequestFailed(format!("{}", err))),
+        };
+
+        if !response.status().is_success() {
+            return Err(ClientError::RequestFailed(format!(
+                "Response status {:?}",
+                response.status()
+            )));
+        }
+        let body = response
+            .bytes()
+            .await
+            .expect("Failed to collect response body");
+        match super::deserialize_function_response(body.clone()) {
+            Ok(func_resp) => Ok(func_resp.functions),
             Err(err) => return Err(ClientError::InvalidResponse(format!("{}", err))),
         }
     }

@@ -17,19 +17,18 @@ use futures::{
     Future,
 };
 use itertools::Itertools;
-#[cfg(feature = "log_function_stderr")]
-use log::warn;
-use log::{debug, trace};
+use log::{debug, trace, warn};
 #[cfg(feature = "log_function_stderr")]
 use machine_interface::memory_domain::ContextTrait;
 use machine_interface::{
     function_driver::{Driver, FunctionConfig, WorkToDo},
     machine_config::{
-        get_available_domains, get_available_drivers, get_compatibilty_table, DomainType,
-        EngineType,
+        engine_type_to_i32, get_available_domains, get_available_drivers, get_compatibilty_table,
+        DomainType, EngineType,
     },
     memory_domain::{Context, MemoryDomain, MemoryResource},
 };
+use multinode::proto;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -803,5 +802,51 @@ impl Dispatcher {
                 MultinodeError::ResourceNotFound,
             ))
         }
+    }
+
+    pub async fn get_function_from_registry(&self, name: &String) -> Vec<proto::FunctionInfo> {
+        let function_id = match self.function_registry.get_function_id(name).await {
+            Some(id) => id,
+            None => return vec![],
+        };
+
+        let alternatives = match self.function_registry.get_options(function_id).await {
+            Ok(alts) => alts,
+            Err(_) => return vec![],
+        };
+        let mut out_vec = Vec::with_capacity(alternatives.len());
+        for alt in alternatives.iter() {
+            match alt.function_type {
+                FunctionType::Function(etype, _) => {
+                    let path = self
+                        .function_registry
+                        .get_func_path(function_id, etype)
+                        .await
+                        .unwrap();
+                    let mut file = match std::fs::File::open(path) {
+                        Ok(f) => f,
+                        Err(err) => {
+                            warn!("Failed to load function binary: {}", err);
+                            continue;
+                        }
+                    };
+                    let mut buffer = Vec::<u8>::new();
+                    use std::io::Read;
+                    let _file_size = match file.read_to_end(&mut buffer) {
+                        Ok(s) => s,
+                        Err(err) => {
+                            warn!("Failed to load function binary: {}", err);
+                            continue;
+                        }
+                    };
+                    out_vec.push(proto::FunctionInfo {
+                        engine_type: engine_type_to_i32(&etype),
+                        binary: buffer,
+                    })
+                }
+                FunctionType::Composition(_) => (), // TODO
+            }
+        }
+        out_vec
     }
 }

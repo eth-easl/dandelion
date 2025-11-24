@@ -7,7 +7,7 @@ use std::{
     },
 };
 
-use crossbeam::channel::{TryRecvError, TrySendError};
+use crossbeam::channel::TrySendError;
 use dandelion_commons::{DandelionError, DandelionResult, MultinodeError};
 use machine_interface::{
     function_driver::WorkDone,

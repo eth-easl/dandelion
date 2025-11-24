@@ -4,7 +4,7 @@ use hyper::{
     Request, Response, StatusCode,
 };
 use log::{debug, trace, warn};
-use multinode::proto::TaskResult;
+use multinode::proto::{self, TaskResult};
 use serde::Deserialize;
 use std::{convert::Infallible, io::Write, path::PathBuf, sync::Arc, time::Instant};
 use tokio::sync::{mpsc, oneshot};
@@ -269,16 +269,16 @@ async fn handle_request(
 
     let (callback, output_recevier) = tokio::sync::oneshot::channel();
     if let Some(name) = function_name {
-    dispatcher
-        .send(DispatcherCommand::FunctionRequest {
+        dispatcher
+            .send(DispatcherCommand::FunctionRequest {
                 name,
-            inputs,
-            is_cold,
-            start_time: start_time.clone(),
-            callback,
-        })
-        .await
-        .unwrap();
+                inputs,
+                is_cold,
+                start_time: start_time.clone(),
+                callback,
+            })
+            .await
+            .unwrap();
     } else {
         dispatcher
             .send(DispatcherCommand::CompositionRequest {
@@ -396,6 +396,7 @@ async fn handle_remote_node_request(
     req: Request<Incoming>,
     dispatcher: mpsc::Sender<DispatcherCommand>,
 ) -> DandelionResult<DandelionBody> {
+    println!("Got remote execution request");
     let start_time = Instant::now();
 
     let req_bytes = req
@@ -440,6 +441,41 @@ async fn handle_remote_node_request(
     Ok(DandelionBody::from_vec(response.to_vec()))
 }
 
+async fn handle_remote_function_info_request(
+    req: Request<Incoming>,
+    dispatcher: mpsc::Sender<DispatcherCommand>,
+) -> DandelionResult<DandelionBody> {
+    let req_bytes = req
+        .collect()
+        .await
+        .expect("Failed to extract body from task request")
+        .to_bytes();
+
+    let func_name = match multinode::deserialize_function_request(req_bytes) {
+        Ok(func_req) => func_req.name,
+        Err(err) => {
+            return Err(DandelionError::RequestError(FrontendError::InvalidRequest(
+                format!("Failed to deserialize task request: {:?}", err),
+            )));
+        }
+    };
+
+    let (callback, output_recevier) = tokio::sync::oneshot::channel();
+    dispatcher
+        .send(DispatcherCommand::RemoteFunctionInfoRequest {
+            name: func_name,
+            callback,
+        })
+        .await
+        .unwrap();
+
+    let func_vec = output_recevier.await.unwrap();
+    let response = multinode::serialize_function_response(proto::FunctionResponse {
+        functions: func_vec,
+    });
+    Ok(DandelionBody::from_vec(response.to_vec()))
+}
+
 // stats
 
 async fn handle_stats_collection(_req: Request<Incoming>) -> DandelionResult<DandelionBody> {
@@ -471,6 +507,10 @@ pub async fn service(
         "/multinode/schedule" => {
             is_multinode_request = true;
             handle_remote_node_request(req, dispatcher).await
+        }
+        "/multinode/functions" => {
+            is_multinode_request = true;
+            handle_remote_function_info_request(req, dispatcher).await
         }
         // TODO: rename to cold func and hot func, remove matmul, compute, io
         "/cold/matmul"

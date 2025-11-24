@@ -43,3 +43,16 @@ message TaskResult {
     string error_msg = 2;
     repeated DataSet data_sets = 3;
 }
+
+message FunctionRequest {
+    string name = 1;
+}
+
+message FunctionInfo {
+    EngineType engine_type = 1;
+    bytes binary = 2;
+}
+
+message FunctionResponse {
+    repeated FunctionInfo functions = 1;
+}

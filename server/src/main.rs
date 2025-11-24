@@ -16,6 +16,7 @@ use machine_interface::{
     machine_config::{engine_type_to_i32, DomainType, EngineType},
     memory_domain::MemoryResource,
 };
+use multinode::proto;
 use std::{
     collections::BTreeMap,
     fs::read_to_string,
@@ -80,6 +81,10 @@ pub enum DispatcherCommand {
         inputs: Vec<Option<CompositionSet>>,
         start_time: Instant,
         callback: oneshot::Sender<DandelionResult<Vec<Option<CompositionSet>>>>,
+    },
+    RemoteFunctionInfoRequest {
+        name: String,
+        callback: oneshot::Sender<Vec<proto::FunctionInfo>>,
     },
 }
 
@@ -209,18 +214,19 @@ async fn dispatcher_loop(
                         _ = callback.closed() => ()
                     }
                 });
-            } // DispatcherCommand::RemoteFunctionInfoRequest { name, mut callback } => {
-              //     let func_vec_future =
-              //         Box::pin(async move { dispatcher.get_function_from_registry(&name).await });
-              //     spawn(async {
-              //         select! {
-              //             func_vec = func_vec_future => {
-              //                 let _ = callback.send(func_vec);
-              //             }
-              //             _ = callback.closed() => ()
-              //         }
-              //     });
-              // }
+            }
+            DispatcherCommand::RemoteFunctionInfoRequest { name, mut callback } => {
+                let func_vec_future =
+                    Box::pin(async move { dispatcher.get_function_from_registry(&name).await });
+                spawn(async {
+                    select! {
+                        func_vec = func_vec_future => {
+                            let _ = callback.send(func_vec);
+                        }
+                        _ = callback.closed() => ()
+                    }
+                });
+            }
         };
     }
 }
@@ -557,4 +563,6 @@ fn main() -> () {
             }
         }
     }
+
+    // TODO: deregister node in multinode scenario
 }

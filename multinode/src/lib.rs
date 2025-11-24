@@ -31,7 +31,7 @@ pub fn deserialize_node_info(buf: Bytes) -> DandelionResult<proto::NodeInfo> {
 
 pub fn deserialize_task(buf: Bytes) -> DandelionResult<proto::Task> {
     match proto::Task::decode(buf) {
-        Ok(node_info) => Ok(node_info),
+        Ok(task) => Ok(task),
         Err(err) => Err(DandelionError::MultinodeError(
             MultinodeError::DeserializationError(format!("{:?}", err)),
         )),
@@ -40,7 +40,25 @@ pub fn deserialize_task(buf: Bytes) -> DandelionResult<proto::Task> {
 
 pub fn deserialize_task_result(buf: Bytes) -> DandelionResult<proto::TaskResult> {
     match proto::TaskResult::decode(buf) {
-        Ok(node_info) => Ok(node_info),
+        Ok(task_result) => Ok(task_result),
+        Err(err) => Err(DandelionError::MultinodeError(
+            MultinodeError::DeserializationError(format!("{:?}", err)),
+        )),
+    }
+}
+
+pub fn deserialize_function_request(buf: Bytes) -> DandelionResult<proto::FunctionRequest> {
+    match proto::FunctionRequest::decode(buf) {
+        Ok(func_req) => Ok(func_req),
+        Err(err) => Err(DandelionError::MultinodeError(
+            MultinodeError::DeserializationError(format!("{:?}", err)),
+        )),
+    }
+}
+
+pub fn deserialize_function_response(buf: Bytes) -> DandelionResult<proto::FunctionResponse> {
+    match proto::FunctionResponse::decode(buf) {
+        Ok(func_resp) => Ok(func_resp),
         Err(err) => Err(DandelionError::MultinodeError(
             MultinodeError::DeserializationError(format!("{:?}", err)),
         )),
@@ -74,5 +92,19 @@ pub fn serialize_task_result(task_result: proto::TaskResult) -> Bytes {
     let mut buf = Vec::new();
     buf.reserve(task_result.encoded_len());
     task_result.encode(&mut buf).unwrap();
+    Bytes::from(buf)
+}
+
+pub fn serialize_function_request(func_req: proto::FunctionRequest) -> Bytes {
+    let mut buf = Vec::new();
+    buf.reserve(func_req.encoded_len());
+    func_req.encode(&mut buf).unwrap();
+    Bytes::from(buf)
+}
+
+pub fn serialize_function_response(func_resp: proto::FunctionResponse) -> Bytes {
+    let mut buf = Vec::new();
+    buf.reserve(func_resp.encoded_len());
+    func_resp.encode(&mut buf).unwrap();
     Bytes::from(buf)
 }
