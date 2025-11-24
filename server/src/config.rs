@@ -1,7 +1,9 @@
 use core::panic;
-use log::{error, warn};
+use log::{debug, error, warn};
 use std::fs::File;
+use std::net::Ipv4Addr;
 use std::path::Path;
+use std::process::Command;
 
 use clap::Parser;
 
@@ -9,7 +11,7 @@ const DEFAULT_CONFIG_PATH: &str = "./dandelion.config";
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_SINGLE_CORE: bool = false;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
-const DEFAULT_MULTINODE_STATE: u8 = 0; // 0 -> off, 1 -> leader, 2 -> worker
+const DEFAULT_MULTINODE_ENABLED: bool = false;
 const DEFAULT_MULTINODE_PORT: u16 = 8081;
 
 #[derive(serde::Deserialize, Debug)]
@@ -59,9 +61,9 @@ pub struct DandelionConfig {
     pub timestamp_count: usize,
 
     // (optional) multinode configuration
-    #[arg(long, env, default_value_t = DEFAULT_MULTINODE_STATE)]
+    #[arg(long, env, default_value_t = DEFAULT_MULTINODE_ENABLED)]
     #[serde(default)]
-    pub multinode_state: u8,
+    pub multinode_enabled: bool,
     #[arg(long, env, default_value_t = DEFAULT_MULTINODE_PORT)]
     #[serde(default)]
     pub multinode_port: u16,
@@ -76,6 +78,32 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value = "")]
     #[serde(default)]
     pub bin_preload_path: String,
+}
+
+fn check_and_resolve_ip(ip: &mut String) -> Result<(), String> {
+    if ip.is_empty() {
+        return Ok(());
+    }
+    if ip.parse::<Ipv4Addr>().is_ok() {
+        return Ok(());
+    }
+    let pattern = match ip.as_str() {
+        "dynamic_r630" => "10.233.0",
+        "dynamic_cloudlab" => "10.0.1",
+        _ => return Err(format!("Got invalid ip address: {}", ip)),
+    };
+    let mut resolved_ip = match Command::new("bash")
+        .arg("-c")
+        .arg(format!("ifconfig | grep {} | awk '{{print $2}}'", pattern))
+        .output()
+    {
+        Ok(out) => String::from_utf8(out.stdout).unwrap(),
+        Err(err) => return Err(format!("Failed to resolve {} ip: {}", pattern, err)),
+    };
+    resolved_ip.pop(); // remove trailing newline
+    debug!("Resolved '{}' to '{}'", ip, resolved_ip);
+    *ip = resolved_ip;
+    Ok(())
 }
 
 impl DandelionConfig {
@@ -118,7 +146,7 @@ impl DandelionConfig {
         merge_option!(frontend_cores);
         merge_option!(io_cores);
         merge!(timestamp_count, DEFAULT_TIMESTAMP_COUNT);
-        merge!(multinode_state, DEFAULT_MULTINODE_STATE);
+        merge!(multinode_enabled, DEFAULT_MULTINODE_ENABLED);
         merge!(multinode_port, DEFAULT_MULTINODE_PORT);
         merge_clone!(multinode_local_ip, String::from(""));
         merge_clone!(multinode_leader_ip, String::from(""));
@@ -147,17 +175,23 @@ impl DandelionConfig {
         cli_config
             .total_cores
             .get_or_insert(num_cpus::get_physical());
+
+        check_and_resolve_ip(&mut cli_config.multinode_leader_ip)
+            .expect("Invalid multinode leader ip in config");
+        check_and_resolve_ip(&mut cli_config.multinode_local_ip)
+            .expect("Invalid multinode local ip in config");
+
         return cli_config;
     }
 
     pub fn multinode_enabled(&self) -> bool {
-        return self.multinode_state != 0;
+        return self.multinode_enabled;
     }
     pub fn is_multinode_leader(&self) -> bool {
-        return self.multinode_state == 1;
+        return self.multinode_enabled && self.multinode_local_ip == self.multinode_leader_ip;
     }
     pub fn is_multinode_worker(&self) -> bool {
-        return self.multinode_state == 2;
+        return self.multinode_enabled && self.multinode_local_ip != self.multinode_leader_ip;
     }
 
     pub fn get_preload_functions(&self) -> Vec<PreloadFunc> {
