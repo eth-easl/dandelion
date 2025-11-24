@@ -124,6 +124,19 @@ impl ContextTrait for KvmContext {
         for (&overlay_end, (overlay_start, item_option)) in
             self.overlay.range_mut(rounded_start.saturating_sub(1)..)
         {
+            // check if the we found one that end right as this one starts and that also has no item
+            if overlay_end == rounded_start.saturating_sub(1) {
+                if item_option.is_none() {
+                    // remove old item
+                    to_remove.push(overlay_end);
+                    // extend new one
+                    new_insert_opt = Some((rounded_end - 1, (*overlay_start, None)));
+                    rounded_start = *overlay_start;
+                    // do not set zero header to offset, since the old overlay did not pre initialize the page
+                    // we are writing to (it ended just before)
+                }
+                continue;
+            }
             // if the overlay starts after the write ends, either there is nothing left to do for this range or we can simply append to the front of the range
             if *overlay_start >= rounded_end {
                 if item_option.is_none() && *overlay_start == rounded_end {
