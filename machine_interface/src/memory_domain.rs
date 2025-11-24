@@ -453,12 +453,14 @@ pub fn transfer_data_item(
         destination_set_name
     );
 
+    let source_offset = source_item.data.offset;
+    let source_size = source_item.data.size;
     transfer_memory(
         destination,
-        source.clone(),
+        source,
         destination_offset,
-        source_item.data.offset,
-        source_item.data.size,
+        source_offset,
+        source_size,
     )?;
     Ok(())
 }

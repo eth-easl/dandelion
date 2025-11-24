@@ -26,10 +26,19 @@ use std::{
 
 use super::MemoryResource;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OverlayItem {
     pub context: Arc<Context>,
     pub offset: usize,
+}
+
+impl Debug for OverlayItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OverlayItem")
+            .field("offset", &self.offset)
+            .field("context", &self.context.context)
+            .finish()
+    }
 }
 
 pub struct KvmContext {
@@ -444,14 +453,17 @@ pub fn transfer_into(
         return Err(DandelionError::InvalidRead);
     }
     if destination_offset + size > destination.storage.len() {
+        debug!(
+            "Trying to transfer into KVM context with destination {} + size {} > context size {}",
+            destination_offset,
+            size,
+            destination.storage.len()
+        );
         return Err(DandelionError::InvalidWrite);
     }
-    if let Some((_, (overlay_start, _))) = destination.overlay.range(destination_offset..).next() {
-        // check if there is overlap, throw error if there is
-        if *overlay_start < destination_offset + size {
-            return Err(DandelionError::InvalidWrite);
-        }
-    }
+    // don't need to check if transfers may partially overlap, since the occupation checks for that.
+    // if occupation check was fine, can overwrite here (may happen because of planned overwrite or
+    // because of page rounding)
 
     if let ContextType::Kvm(_) = &source.context {
         if size < PAGE_SIZE {

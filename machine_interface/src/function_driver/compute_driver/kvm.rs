@@ -253,7 +253,7 @@ impl EngineLoop for KvmLoop {
             // find all overlays that end after the offset starts
             // if there is overlap, need remove all the overlapping pages, and copy the parts that are not overwritten
             let mut to_remove = Vec::new();
-            let mut new_insert_opt = None;
+            let mut new_insert_opt = Some((end - 1, (start, None)));
             let mut insert_before_opt = None;
             // TODO replace with cursor for easy removal / insert, as soon as it stabilizes,
             // so we can keep one cursor accross iterations
@@ -261,14 +261,13 @@ impl EngineLoop for KvmLoop {
             // since it is the only one that can hang off the front
             // also think about writing interface to overlays to centralize overlay manupulation, since it happens in multiple places
             for (&overlay_end, (overlay_start, item_option)) in
-                kvm_context.overlay.range_mut(start..)
+                kvm_context.overlay.range_mut(start.saturating_sub(1)..)
             {
                 // if the overlay starts after the write ends, either there is nothing left to do for this range or we can simply append to the front of the range
                 if *overlay_start >= end {
                     if item_option.is_none() && *overlay_start == end {
                         *overlay_start = start;
-                    } else {
-                        new_insert_opt = Some((end - 1, (start, None)));
+                        new_insert_opt = None
                     }
                     break;
                 }
@@ -284,7 +283,7 @@ impl EngineLoop for KvmLoop {
                     }
                 }
                 // check if we need to shorten or remove the current part of the overlay
-                if end - 1 < overlay_end {
+                if end - 1 <= overlay_end {
                     // shorten the current overlay if it is a separate item, otherwise just append the new space to the old
                     if let Some(item) = item_option {
                         item.offset += end - *overlay_start;
@@ -292,12 +291,14 @@ impl EngineLoop for KvmLoop {
                         new_insert_opt = Some((end - 1, (start, None)));
                     } else {
                         *overlay_start = start;
+                        new_insert_opt = None;
                     }
                     // if it ends before this overlay end, then this was the last one that was relevant
                     break;
                 } else {
                     // remove the current overlay
                     to_remove.push(overlay_end);
+                    new_insert_opt = Some((end - 1, (start, None)));
                 }
             }
             for remove_key in to_remove {
