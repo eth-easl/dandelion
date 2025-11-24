@@ -303,7 +303,7 @@ fn write_after_transfer(mut source: Context, mut destination: Context, chunck_si
         assert_eq!(
             expected, read_buffer[index],
             "Read not equal for first time at {}, expected: {}, actual: {}",
-            index, BYTEPATTERN, read_buffer[index]
+            index, expected, read_buffer[index]
         );
     }
 
@@ -336,7 +336,7 @@ fn write_after_transfer(mut source: Context, mut destination: Context, chunck_si
         assert_eq!(
             expected, read_buffer[index],
             "Read not equal for first time at {}, expected: {}, actual: {}",
-            index, BYTEPATTERN, read_buffer[index]
+            index, expected, read_buffer[index]
         );
     }
     test_offset += 3 * chunck_size;
@@ -369,7 +369,40 @@ fn write_after_transfer(mut source: Context, mut destination: Context, chunck_si
         assert_eq!(
             expected, read_buffer[index],
             "Read not equal for first time at {}, expected: {}, actual: {}",
-            index, BYTEPATTERN, read_buffer[index]
+            index, expected, read_buffer[index]
+        );
+    }
+    test_offset += 3 * chunck_size;
+
+    // transfer 1 chunk write right after the end of the chunk
+    transfer_memory(
+        &mut destination,
+        source_ctxt_arc.clone(),
+        test_offset,
+        size - chunck_size,
+        chunck_size,
+    )
+    .expect("Should successfully transfer");
+    let write_offset = test_offset + chunck_size + 1;
+    destination
+        .write(write_offset, &vec![!BYTEPATTERN; chunck_size / 2])
+        .unwrap();
+    let mut read_buffer = vec![0; 2 * chunck_size];
+    destination
+        .read(test_offset, &mut read_buffer)
+        .expect("Context should return single value vector in range");
+    for index in 0..2 * chunck_size {
+        let expected = if chunck_size < index && index < (chunck_size / 2) * 3 + 1 {
+            !BYTEPATTERN
+        } else if chunck_size <= index {
+            0
+        } else {
+            BYTEPATTERN
+        };
+        assert_eq!(
+            expected, read_buffer[index],
+            "Read not equal for first time at {}, expected: {}, actual: {}",
+            index, expected, read_buffer[index]
         );
     }
 }
@@ -465,7 +498,7 @@ macro_rules! domainTests {
             }
             #[test_log::test]
             fn test_write_after_transfer() {
-                let context_size = 9 * $chunk;
+                let context_size = 11 * $chunk;
                 let source = acquire::<$domain>($init, context_size);
                 let destination = acquire::<$domain>($init, context_size);
                 write_after_transfer(source, destination, $chunk);
