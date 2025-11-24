@@ -10,10 +10,25 @@ use std::{
 };
 
 use super::transfer_memory;
-#[derive(Debug)]
 pub enum DataPosition {
     ContextStorage(Arc<Context>, usize),
     ResponseInformationStorage(Bytes),
+}
+
+impl std::fmt::Debug for DataPosition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ContextStorage(context, size) => f
+                .debug_struct("DataPosition::ContextStorage")
+                .field("size", size)
+                .field("context", &context)
+                .finish(),
+            Self::ResponseInformationStorage(bytes) => f
+                .debug_struct("DataPosition::ResponseInformationStorage")
+                .field("size", &bytes.len())
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug)]
