@@ -484,8 +484,7 @@ pub fn set_page_table(
     //     *p1_entry = PDE64_PRESENT | PDE64_RW | PDE64_USER | (index * PAGE_SIZE) as u64;
     // }
     // for (index, p2_entry) in p2_full_array.iter_mut().enumerate() {
-    //     *p2_entry =
-    //         PDE64_PRESENT | PDE64_RW | PDE64_USER | (index * TABLE_SIZE * 8 + p1_base) as u64;
+    //     *p2_entry = PDE64_PRESENT | PDE64_RW | PDE64_USER | (index * PAGE_SIZE + p1_base) as u64;
     // }
 
     // start installing entries for all already present pages
@@ -502,6 +501,11 @@ pub fn set_page_table(
             // map directly, since content is already there
             (PDE64_ALL_ALLOWED, guest_virtual_start)
         };
+        trace!(
+            "mapping new address range mapped {} and {}",
+            guest_virtual_start,
+            guest_virtual_end + 1
+        );
         previous_past_last_page = set_range(
             p2_full_array,
             p1_full_array,
@@ -513,12 +517,6 @@ pub fn set_page_table(
             previous_past_last_page,
         );
     }
-
-    // TODO MAKE ONLY SINGLE PAGE AND ZERO IT OUT
-    // need to set page for stack
-    // p2_full_array[stack_start >> LARGE_PAGE_SHIFT] =
-    //     PDE64_ALL_ALLOWED | PDE64_IS_PAGE | (stack_start & !(LARGE_PAGE - 1)) as u64;
-    // guest_mem[stack_start & !(LARGE_PAGE - 1)..stack_start].fill(0);
 
     // need to set page for stack
     let stack_page_start = stack_start & !(LARGE_PAGE - 1);
@@ -553,8 +551,8 @@ pub fn set_page_table(
         while page_address < last_address {
             // get all table entries
             let mut debug_info = format!(
-                "p2_base: {}, p1_base: {}, for page address: {}",
-                p2_base, p1_base, page_address
+                "p2_base: {}, p1_base: {}, for page address: {}\nstack start : {}",
+                p2_base, p1_base, page_address, stack_start
             );
             let p4_entry = get_entry_from_address(page_address, PML4_SHIFT);
             assert_eq!(0, p4_entry, "{}", debug_info);
@@ -591,7 +589,7 @@ pub fn set_page_table(
             let p1_flags = p2_full_array[p2_index] & (PAGE_SIZE as u64 - 1);
             debug_info.push_str(
                 format!(
-                    " p1_laddress_local: {}, with p1_flags: {}",
+                    " p1_address_local: {}, with p1_flags: {}",
                     p1_address_local, p1_flags
                 )
                 .as_str(),
@@ -600,7 +598,7 @@ pub fn set_page_table(
                 if p1_flags & PDE64_IS_PAGE != 0 {
                     if p1_flags & PDE64_RW == 0 || p1_flags & PDE64_USER == 0 {
                         // copy on write large page or system page
-                        assert!(page_address > stack_start, "{}", debug_info);
+                        assert!(p1_address_local > stack_start, "{}", debug_info);
                     } else {
                         // directly mapped large page
                         let large_page_address = page_address & !(LARGE_PAGE - 1);
@@ -681,7 +679,8 @@ pub fn handle_page_fault(
     // base address of the page that was accessed
     let page_base_address = faulting_address & !(PAGE_SIZE - 1);
 
-    if faulting_address >= metadata.max_address {
+    trace!("Starting to handle page fault at {}", faulting_address);
+    if faulting_address < PAGE_SIZE || metadata.max_address <= faulting_address {
         return Err(DandelionError::UserError(UserError::SegmentationFault));
     }
 
@@ -738,6 +737,8 @@ pub fn handle_page_fault(
             &mut guest_mem[canonical_p1_start..canonical_p1_start + PAGE_SIZE],
         );
 
+        trace!("Handling 2MB fault");
+
         if p1_flags & PDE64_PRESENT == 0 {
             // page was not present so we need to demand page a zero page
             // TODO: this an later check return error code 6 often, which is a user and write error instead of the expected present error
@@ -747,6 +748,7 @@ pub fn handle_page_fault(
             //     "page not present, but error code is {}, for address {}",
             //     error_code, faulting_address
             // );
+            trace!("Converting not present p1 table to 0s with 1 entry");
             // rest of the p1 was not used so can simply zero fill it
             p1_table.fill(0);
             // need to set the p1 entry to the physical page it is supposed to point to
@@ -793,6 +795,7 @@ pub fn handle_page_fault(
         let (old_address, old_flags) =
             get_offset_and_flags(guest_mem, canonical_p1_start, p1_entry);
         if old_flags & PDE64_PRESENT == 0 {
+            trace!("demand page 0 page at {}", page_base_address);
             // page was not present so demand page it to zero and set entry
             // debug_assert!(
             //     not_present,
@@ -808,6 +811,11 @@ pub fn handle_page_fault(
             debug_assert!(
                 old_address >= metadata.max_address,
                 "Copy on write page original was lower than max address"
+            );
+            trace!(
+                "copy page over at address {} from {}",
+                page_base_address,
+                old_address
             );
             // fill the writable page with the old content
             let (new_page, old_page) = guest_mem.split_at_mut(old_address);

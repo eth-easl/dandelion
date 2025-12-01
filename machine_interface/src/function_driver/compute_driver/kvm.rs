@@ -13,7 +13,7 @@ use core_affinity;
 use dandelion_commons::{DandelionError, DandelionResult, UserError};
 use kvm_bindings::{kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES};
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
-use log::{debug, trace};
+use log::debug;
 use nix::sys::mman::{mmap, MapFlags, ProtFlags};
 use std::{num::NonZeroUsize, sync::Arc};
 
@@ -199,7 +199,6 @@ impl EngineLoop for KvmLoop {
             let reason = self.vcpu.run().unwrap();
             match reason {
                 VcpuExit::IoOut(14, _) => {
-                    trace!("start handling page fault");
                     // handle page fault in guest
                     let page_offset =
                         handle_page_fault(&self.vcpu, &page_fault_metadata, kvm_context.storage)?;
@@ -231,85 +230,20 @@ impl EngineLoop for KvmLoop {
 
         // fix context overlay
         copied_pages.sort();
-        let mut new_overlays = Vec::with_capacity(copied_pages.len());
         if copied_pages.len() > 0 {
             let mut previous_start = copied_pages[0];
             let mut previous_end = previous_start + PAGE_SIZE;
 
             for new_page in copied_pages[1..].into_iter() {
                 if previous_end < *new_page {
-                    new_overlays.push((previous_start, previous_end));
+                    kvm_context.insert_into_overlay(previous_start, previous_end, None);
                     previous_start = *new_page;
                     previous_end = previous_start + PAGE_SIZE;
                 } else {
                     previous_end += PAGE_SIZE;
                 }
             }
-            new_overlays.push((previous_start, previous_end));
-        }
-
-        // make sure all new pages are now in the overlay
-        for (mut start, end) in new_overlays {
-            // find all overlays that end after the offset starts
-            // if there is overlap, need remove all the overlapping pages, and copy the parts that are not overwritten
-            let mut to_remove = Vec::new();
-            let mut new_insert_opt = Some((end - 1, (start, None)));
-            let mut insert_before_opt = None;
-            // TODO replace with cursor for easy removal / insert, as soon as it stabilizes,
-            // so we can keep one cursor accross iterations
-            // TODO when replaced with cursor, could think about handling first page differently,
-            // since it is the only one that can hang off the front
-            // also think about writing interface to overlays to centralize overlay manupulation, since it happens in multiple places
-            for (&overlay_end, (overlay_start, item_option)) in
-                kvm_context.overlay.range_mut(start.saturating_sub(1)..)
-            {
-                // if the overlay starts after the write ends, either there is nothing left to do for this range or we can simply append to the front of the range
-                if *overlay_start >= end {
-                    if item_option.is_none() && *overlay_start == end {
-                        *overlay_start = start;
-                        new_insert_opt = None
-                    }
-                    break;
-                }
-
-                // check if we need to keep part of the overlay before the write, that is at least one page
-                if *overlay_start < start {
-                    if item_option.is_some() {
-                        let new_front = (start - 1, (*overlay_start, item_option.clone()));
-                        assert!(insert_before_opt.replace(new_front).is_none(), "Should never find a second overlay item, that overlays past the start of the write");
-                    } else {
-                        // if the item is none, can just merge it with current one
-                        start = *overlay_start;
-                    }
-                }
-                // check if we need to shorten or remove the current part of the overlay
-                if end - 1 <= overlay_end {
-                    // shorten the current overlay if it is a separate item, otherwise just append the new space to the old
-                    if let Some(item) = item_option {
-                        item.offset += end - *overlay_start;
-                        *overlay_start = end;
-                        new_insert_opt = Some((end - 1, (start, None)));
-                    } else {
-                        *overlay_start = start;
-                        new_insert_opt = None;
-                    }
-                    // if it ends before this overlay end, then this was the last one that was relevant
-                    break;
-                } else {
-                    // remove the current overlay
-                    to_remove.push(overlay_end);
-                    new_insert_opt = Some((end - 1, (start, None)));
-                }
-            }
-            for remove_key in to_remove {
-                kvm_context.overlay.remove(&remove_key);
-            }
-            if let Some((key, value)) = insert_before_opt {
-                kvm_context.overlay.insert(key, value);
-            }
-            if let Some((key, value)) = new_insert_opt {
-                kvm_context.overlay.insert(key, value);
-            }
+            kvm_context.insert_into_overlay(previous_start, previous_end, None);
         }
 
         read_output_structs::<u64, u64>(&mut context, elf_config.system_data_offset)?;

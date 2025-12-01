@@ -250,7 +250,7 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     // input set number and pointer (offset)
     // needs to happen after to get correct lower bound on stack
     let system_buffer = DandelionSystemData::<PtrT, SizeT> {
-        exit_code: 0,
+        exit_code: -1,
         heap_begin,
         heap_end,
         input_sets_len: size_t!(input_set_number),
