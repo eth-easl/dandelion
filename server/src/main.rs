@@ -52,8 +52,7 @@ use dirigent_service::start_dirigent_server;
 mod dirigent_proxy;
 mod request_parser;
 
-use crate::dirigent_proxy::start_proxy_server;
-use dirigent_proxy::proxy_to_uc;
+use crate::dirigent_proxy::start_proxy_server2;
 
 const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
@@ -652,7 +651,7 @@ fn main() -> () {
     print!("\n");
 
     let dg_svc = start_dirigent_server(config.dirigent_sync_port);
-    start_proxy_server(config.dirigent_proxy_port, dg_svc);
+    start_proxy_server2(dispatcher_sender.clone(), config.dirigent_proxy_port, dg_svc);
 
     // Run this server for... forever... unless I receive a signal!
     runtime.block_on(service_loop(dispatcher_sender, config.port));
