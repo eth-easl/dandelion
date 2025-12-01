@@ -9,6 +9,8 @@ use machine_interface::{
 use serde::{Deserialize, Serialize};
 use std::{io::IoSlice, sync::Arc};
 
+use bytes::{Buf, Bytes};
+
 #[derive(Serialize, Deserialize)]
 pub struct DandelionRequest<'data> {
     pub name: String,
@@ -413,6 +415,17 @@ impl DandelionBody {
             }),
         };
     }
+    
+
+    // tmp. Should not use it in the future
+    pub fn into_bytes(mut self) -> Bytes {
+        let mut buf = self.buffer
+            .take()
+            .expect("body already taken");
+        buf.copy_to_bytes(buf.remaining())
+    }
+
+
 }
 
 impl hyper::body::Body for DandelionBody {

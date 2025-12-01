@@ -32,6 +32,8 @@ pub struct FuncMetadata {
     #[serde(rename = "outputSets")]
     pub output_sets: Vec<String>,
 }
+const DEFAULT_NGHTTP2_CODEC_FUNC_NAME: &str = "nghttp2";
+const DEFAULT_NGHTTP2_CODEC_BIN_LOCAL_PATH: &str = "./nghttp2_codec3";
 
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
@@ -68,6 +70,12 @@ pub struct DandelionConfig {
     pub dirigent_sync_port: u16,
     #[arg(long, env, default_value_t = DEFAULT_DIRIGENT_PROXY_PORT)]
     pub dirigent_proxy_port: u16,
+    #[arg(long, env, default_value_t = String::from(DEFAULT_NGHTTP2_CODEC_FUNC_NAME))]
+    #[serde(default)]
+    pub nghttp2_codec_func_name: String,
+    #[arg(long, env, default_value_t = String::from(DEFAULT_NGHTTP2_CODEC_BIN_LOCAL_PATH))]
+    #[serde(default)]
+    pub nghttp2_codec_bin_local_path: String,    
 }
 
 impl DandelionConfig {
