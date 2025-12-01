@@ -4,6 +4,7 @@ use crate::{
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
 };
 
+use super::MemoryResource;
 use dandelion_commons::{range_pool::RangePool, DandelionError, DandelionResult};
 use log::{debug, trace};
 use nix::{
@@ -23,8 +24,6 @@ use std::{
     str::FromStr,
     sync::{Arc, Mutex},
 };
-
-use super::MemoryResource;
 
 #[derive(Clone)]
 pub struct OverlayItem {
@@ -61,6 +60,81 @@ pub struct KvmContext {
     pub fd: RawFd,
     domain: Arc<Mutex<RangePool<u32>>>,
     pub rangepool_start: u32,
+}
+
+impl KvmContext {
+    /// Function that inserts a new item into the overlay.
+    /// Expects the start to be page aligned and the end to point to 1 past the last byte in the overlay
+    /// (equal to start + size of the overlay)
+    pub(crate) fn insert_into_overlay(
+        &mut self,
+        mut new_start: usize,
+        new_end: usize,
+        new_item: Option<OverlayItem>,
+    ) {
+        let mut to_remove = Vec::new();
+        let mut new_insert_opt = Some((new_end - 1, (new_start, new_item.clone())));
+        let mut insert_before_opt = None;
+        // TODO replace with cursor for easy removal / insert, as soon as it stabilizes,
+        // so we can keep one cursor accross iterations
+        // TODO when replaced with cursor, could think about handling first page differently,
+        // since it is the only one that can hang off the front
+        // also think about writing interface to overlays to centralize overlay manupulation, since it happens in multiple places
+        for (&overlay_end, (overlay_start, item_option)) in
+            self.overlay.range_mut(new_start.saturating_sub(1)..)
+        {
+            // if the overlay starts after the write ends, either there is nothing left to do for this range or we can simply append to the front of the range
+            if *overlay_start >= new_end {
+                if new_item.is_none() && item_option.is_none() && *overlay_start == new_end {
+                    *overlay_start = new_start;
+                    new_insert_opt = None
+                }
+                break;
+            }
+
+            // check if we need to keep part of the overlay before the write, that is at least one page
+            if *overlay_start < new_start {
+                if item_option.is_some() || new_item.is_some() {
+                    let new_front = (new_start - 1, (*overlay_start, item_option.clone()));
+                    assert!(insert_before_opt.replace(new_front).is_none(), "Should never find a second overlay item, that overlays past the start of the write");
+                } else {
+                    // if the item is none, can just merge it with current one
+                    new_start = *overlay_start;
+                }
+            }
+            // check if we need to shorten or remove the current part of the overlay
+            if new_end - 1 <= overlay_end {
+                // shorten the current overlay if it is a separate item, otherwise just append the new space to the old
+                if item_option.is_none() && new_item.is_none() {
+                    *overlay_start = new_start;
+                    new_insert_opt = None;
+                } else {
+                    if let Some(item) = item_option {
+                        item.offset += new_end - *overlay_start;
+                    };
+                    *overlay_start = new_end;
+                }
+                // if it ends before this overlay end, then this was the last one that was relevant
+                break;
+            } else {
+                // remove the current overlay
+                to_remove.push(overlay_end);
+                // update the new insert opt to the new start and end in case they changed
+                new_insert_opt.as_mut().unwrap().0 = new_end - 1;
+                new_insert_opt.as_mut().unwrap().1 .0 = new_start;
+                // new_insert_opt = Some((new_end - 1, (new_start, new_item)));
+            }
+        }
+        for remove_key in to_remove {
+            self.overlay.remove(&remove_key);
+        }
+        if let Some((key, value)) = insert_before_opt {
+            self.overlay.insert(key, value);
+        }
+        if let Some((key, value)) = new_insert_opt {
+            self.overlay.insert(key, value);
+        }
+    }
 }
 
 impl Debug for KvmContext {
@@ -147,12 +221,15 @@ impl ContextTrait for KvmContext {
             }
 
             // check if we need to copy parts of a page for a partially overwritten page at the start of the write
-            // can be the first page in the overlay
-            if *overlay_start <= rounded_start && rounded_start < offset {
+            // can be the first page in the overlay, need to compare to offset, because rounded_start may have moved,
+            // to absorb overlay before the new write (can only happen once, when we are processing the one overlay,
+            // that overlaps with the start of the write)
+            if rounded_start < offset && *overlay_start <= offset {
                 if let Some(item) = item_option {
-                    let read_offset = item.offset + (rounded_start - *overlay_start);
+                    let offset_page_base = round_down_to_page(offset);
+                    let read_offset = item.offset + (offset_page_base - *overlay_start);
                     item.context
-                        .read(read_offset, &mut self.storage[rounded_start..offset])?;
+                        .read(read_offset, &mut self.storage[offset_page_base..offset])?;
                 }
                 zero_header = offset;
             }
@@ -391,9 +468,6 @@ impl MemoryDomain for KvmMemoryDomain {
             .or(Err(DandelionError::DomainError(
                 dandelion_commons::DomainError::Mapping,
             )))?
-            // nix::sys::mman::madvise(new_mapping, size, nix::sys::mman::MmapAdvise::MADV_REMOVE)
-            //     .unwrap();
-            // new_mapping
         } as *mut u8;
         let storage = unsafe { core::slice::from_raw_parts_mut(mapping_pointer, size) };
 
@@ -478,7 +552,7 @@ pub fn transfer_into(
     // if occupation check was fine, can overwrite here (may happen because of planned overwrite or
     // because of page rounding)
 
-    if let ContextType::Kvm(_) = &source.context {
+    if let ContextType::Kvm(kvm_source_context) = &source.context {
         if size < PAGE_SIZE {
             let mut bytes_written = 0;
             while bytes_written < size {
@@ -531,17 +605,51 @@ pub fn transfer_into(
                 destination.write(rounded_end + trailer_bytes, chunk)?;
                 trailer_bytes += chunk.len();
             }
+
+            // TODO: may want to keep track on range level with a single file, then we simplify the overlay handling
             if rounded_size != 0 {
-                destination.overlay.insert(
-                    rounded_end - 1,
-                    (
-                        rounded_start,
-                        Some(OverlayItem {
-                            context: source,
-                            offset: source_rounded_start,
-                        }),
-                    ),
-                );
+                let mut overlayed_bytes = 0;
+                // in case the original context has multiple overlays in the transferred range
+                for (source_overlay_end, (source_overlay_start, source_item_option)) in
+                    kvm_source_context.overlay.range(source_rounded_start..)
+                {
+                    if overlayed_bytes >= rounded_size || *source_overlay_start >= rounded_end {
+                        break;
+                    }
+                    assert!(
+                        *source_overlay_start <= source_rounded_start + overlayed_bytes,
+                        "Expect to always find an overlay that starts before the start of the transfer,\
+                        source overlay: {:?}, source_rounded_start: {}, overlayed_bytes {}",
+                        kvm_source_context.overlay, source_rounded_start, overlayed_bytes
+                    );
+
+                    let new_end = min(*source_overlay_end + 1, source_rounded_end);
+                    let new_bytes = new_end - source_rounded_start + overlayed_bytes;
+                    // if this already has been zero copied from another context, use the reference to that context, to avoid dependency chains
+                    let new_item = if let Some(OverlayItem {
+                        offset,
+                        context: nested_context,
+                    }) = source_item_option
+                    {
+                        let new_offset = offset + source_rounded_start - *source_overlay_start;
+                        OverlayItem {
+                            context: nested_context.clone(),
+                            offset: new_offset,
+                        }
+                    } else {
+                        OverlayItem {
+                            context: source.clone(),
+                            offset: source_rounded_start + overlayed_bytes,
+                        }
+                    };
+                    destination.insert_into_overlay(
+                        rounded_start + overlayed_bytes,
+                        rounded_start + overlayed_bytes + new_bytes,
+                        Some(new_item),
+                    );
+                    overlayed_bytes += new_bytes;
+                }
+                debug_assert_eq!(overlayed_bytes, rounded_size);
             }
         }
     } else {
