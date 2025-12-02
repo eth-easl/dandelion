@@ -139,7 +139,7 @@ impl ResetState {
         initialized_pages: Vec<(usize, usize, Option<usize>)>,
         mut stack_pointer: usize,
         last_address: usize,
-    ) -> PageFaultMetadata {
+    ) -> DandelionResult<PageFaultMetadata> {
         let mut sregs = self.sregs.clone();
         let interrupt_end = stack_pointer;
         set_interrupt_table(&mut sregs, guest_mem, &mut stack_pointer);
@@ -152,7 +152,7 @@ impl ResetState {
             stack_pointer,
             (interrupt_start, interrupt_end),
             last_address,
-        );
+        )?;
 
         vcpu.set_sregs(&sregs).unwrap();
         vcpu.set_regs(&kvm_regs {
@@ -164,7 +164,7 @@ impl ResetState {
         })
         .unwrap();
         vcpu.set_fpu(&kvm_fpu::default()).unwrap();
-        return page_fault_metadata;
+        Ok(page_fault_metadata)
     }
 }
 
@@ -418,14 +418,14 @@ fn set_range(
 /// present_pages: a vec with start and end (address of last byte still written, so start + size -1) of all memory that does not need to be zeroed on first access.
 /// The option points to the start of a copy on write segment, if there is any, if None the mapping can be installed directly
 /// last_address: last address in the context available, not related to if it could be used
-pub fn set_page_table(
+fn set_page_table(
     sregs: &mut kvm_sregs,
     guest_mem: &mut [u8],
     present_pages: Vec<(usize, usize, Option<usize>)>,
     mut stack_start: usize,
     interrupt_range: (usize, usize),
     last_address: usize,
-) -> (usize, PageFaultMetadata) {
+) -> DandelionResult<(usize, PageFaultMetadata)> {
     // allocate top level table containing 512 entries for 512 GB ranges, total of 256 TB
     // naming:
     // - p4 is the top level page table overseeing 256TB, each entry being a p3 table which each oversees 512GB
@@ -492,6 +492,11 @@ pub fn set_page_table(
     // the page starting at address 0 is expected to never be written
     if present_pages.len() > 0 {
         debug_assert_ne!(0, present_pages[0].0 >> PAGE_SHIFT);
+        if let Some((_, virtual_end, _)) = present_pages.last() {
+            if stack_start <= *virtual_end {
+                return Err(DandelionError::ContextFull);
+            }
+        }
     }
     for (guest_virtual_start, guest_virtual_end, origin_option) in present_pages {
         let (protection_flags, base_physical) = if let Some(guest_physical) = origin_option {
@@ -557,7 +562,6 @@ pub fn set_page_table(
             let p4_entry = get_entry_from_address(page_address, PML4_SHIFT);
             assert_eq!(0, p4_entry, "{}", debug_info);
             let p3_entry = get_entry_from_address(page_address, HUGE_PAGE_SHIFT);
-            assert_eq!(0, p3_entry, "{}", debug_info);
             let p2_entry = get_entry_from_address(page_address, LARGE_PAGE_SHIFT);
             let p1_entry = get_entry_from_address(page_address, PAGE_SHIFT);
 
@@ -575,7 +579,7 @@ pub fn set_page_table(
             let p2_address_local = p3_table[p3_entry] as usize & !(PAGE_SIZE - 1);
             let p2_flags = p3_table[p3_entry] & (PAGE_SIZE as u64 - 1);
 
-            let expected_address = p2_base + (page_address / HUGE_PAGE) * size_of::<u64>();
+            let expected_address = p2_base + (page_address / HUGE_PAGE) * PAGE_SIZE;
             assert_eq!(expected_address, p2_address_local, "{}", debug_info);
             assert_eq!(
                 PDE64_PRESENT | PDE64_RW | PDE64_USER,
@@ -635,7 +639,7 @@ pub fn set_page_table(
     }
 
     sregs.cr3 = p4_address as u64;
-    (
+    Ok((
         stack_start,
         PageFaultMetadata {
             p4_address,
@@ -644,7 +648,7 @@ pub fn set_page_table(
             p1_base,
             max_address: stack_start,
         },
-    )
+    ))
 }
 
 /// The mask to get the entry into a table with 512 entries of 8 bytes each
@@ -709,14 +713,15 @@ pub fn handle_page_fault(
 
     let (p2_address, p2_flags) = get_offset_and_flags(guest_mem, p3_address, p3_entry);
     let canonical_p2_start = metadata.p2_base
-        + ((faulting_address >> HUGE_PAGE_SHIFT) & !(TABLE_SIZE - 1)) * size_of::<u64>();
+        + ((faulting_address >> LARGE_PAGE_SHIFT) & !(TABLE_SIZE - 1)) * size_of::<u64>();
 
     // check the p2 is at the expected place
     if p2_address != canonical_p2_start {
         trace!(
-            "p2 address not as expected: {}, found {}",
+            "p2 address not as expected {}, found {}, p2 base: {}",
             p2_address,
             canonical_p2_start,
+            metadata.p2_base
         );
         return Err(DandelionError::UserError(UserError::ManupulatedPageTables));
     }

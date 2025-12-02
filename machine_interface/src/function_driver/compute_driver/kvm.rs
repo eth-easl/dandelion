@@ -179,7 +179,7 @@ impl EngineLoop for KvmLoop {
             mappings,
             stack_start,
             kvm_context.storage.len(),
-        );
+        )?;
 
         // make sure that the stack start has not moved into the occupied territory
         if min_stack_start >= stack_start {
