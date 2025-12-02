@@ -1,4 +1,5 @@
 # Sidecar
+Currently it only supports HTTP/2.
 
 ## Clone the repo
 ```
