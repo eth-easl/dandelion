@@ -269,6 +269,15 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     Ok(())
 }
 
+pub fn write_heap_end<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
+    context: &mut Box<impl ContextTrait>,
+    base_address: usize,
+    heap_end: PtrT,
+) -> DandelionResult<()> {
+    let offset = base_address + core::mem::offset_of!(DandelionSystemData::<PtrT, SizeT>, heap_end);
+    context.write(offset, &[heap_end])
+}
+
 pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     context: &mut Context,
     base_address: usize,

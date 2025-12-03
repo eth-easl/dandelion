@@ -4,7 +4,7 @@ use crate::{
         thread_utils::{start_thread, EngineLoop},
         ComputeResource, Driver, ElfConfig, Function, FunctionConfig, WorkQueue,
     },
-    interface::{read_output_structs, setup_input_structs},
+    interface::{read_output_structs, setup_input_structs, write_heap_end},
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
     DataItem, DataRequirement, DataRequirementList, DataSet, Position,
@@ -89,7 +89,7 @@ impl EngineLoop for KvmLoop {
         };
         setup_input_structs::<u64, u64>(&mut context, elf_config.system_data_offset, &output_sets)?;
         let min_stack_start = context.get_last_item_end();
-        let kvm_context = match &mut context.context {
+        let mut kvm_context = match &mut context.context {
             ContextType::Kvm(kvm_context) => kvm_context,
             _ => return Err(DandelionError::ContextMissmatch),
         };
@@ -182,6 +182,12 @@ impl EngineLoop for KvmLoop {
         )?;
 
         // make sure that the stack start has not moved into the occupied territory
+        stack_start = page_fault_metadata.get_stack_start();
+        write_heap_end::<u64, u64>(
+            kvm_context,
+            elf_config.system_data_offset,
+            stack_start as u64,
+        )?;
         if min_stack_start >= stack_start {
             return Err(DandelionError::UserError(UserError::SmallContext));
         }

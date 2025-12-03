@@ -354,7 +354,13 @@ pub struct PageFaultMetadata {
     p1_base: usize,
     /// The highest address for which page faults should be resolved.
     /// If the fault lies above, the function tried to access memory that was not mapped on purpose
-    max_address: usize,
+    stack_start: usize,
+}
+
+impl PageFaultMetadata {
+    pub fn get_stack_start(&self) -> usize {
+        self.stack_start
+    }
 }
 
 fn set_range(
@@ -646,7 +652,7 @@ fn set_page_table(
             p3_address,
             p2_base,
             p1_base,
-            max_address: stack_start,
+            stack_start,
         },
     ))
 }
@@ -684,7 +690,7 @@ pub fn handle_page_fault(
     let page_base_address = faulting_address & !(PAGE_SIZE - 1);
 
     trace!("Starting to handle page fault at {}", faulting_address);
-    if faulting_address < PAGE_SIZE || metadata.max_address <= faulting_address {
+    if faulting_address < PAGE_SIZE || metadata.stack_start <= faulting_address {
         return Err(DandelionError::UserError(UserError::SegmentationFault));
     }
 
@@ -770,7 +776,7 @@ pub fn handle_page_fault(
                 faulting_address
             );
             debug_assert!(
-                p1_address >= metadata.max_address,
+                p1_address >= metadata.stack_start,
                 "Copy on write page original was lower than max address"
             );
             // need to set the p1 entry to the physical page it is supposed to point to
@@ -814,7 +820,7 @@ pub fn handle_page_fault(
             debug_assert!(write_error);
             debug_assert_eq!(PDE64_PRESENT | PDE64_USER, old_flags & !PDE64_ACCESSED);
             debug_assert!(
-                old_address >= metadata.max_address,
+                old_address >= metadata.stack_start,
                 "Copy on write page original was lower than max address"
             );
             trace!(
