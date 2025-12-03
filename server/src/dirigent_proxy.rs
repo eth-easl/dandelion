@@ -1678,11 +1678,21 @@ async fn create_proxy_server2(request_sender: mpsc::Sender<DispatcherCommand>, p
 
     // ****** Before the loop actually starts, register some functions ******
 
+    let engine_type: String = if cfg!(feature = "kvm") {
+        "Kvm".to_string()
+    } 
+    else if cfg!(feature = "mmu") {
+        "Process".to_string()
+    }
+    else {
+        panic!("No valid feature selected: expected `kvm` or `mmu`. Other engine type currently still untested");
+    };
+
     // register the nghttp2 codec
     let _ = register_function_local(
         String::from(nghttp2_codec_bin_local_path),
         String::from(nghttp2_codec_func_name),
-        String::from("Kvm"),
+        engine_type,
         request_sender.clone(),
     ).await.unwrap();
 
