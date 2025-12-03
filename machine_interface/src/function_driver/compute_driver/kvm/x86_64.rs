@@ -677,7 +677,7 @@ pub fn handle_page_fault(
     vcpu: &VcpuFd,
     metadata: &PageFaultMetadata,
     guest_mem: &mut [u8],
-) -> DandelionResult<usize> {
+) -> DandelionResult<(usize, bool)> {
     let regs = vcpu.get_regs().unwrap();
     let sregs = vcpu.get_sregs().unwrap();
     // the faulting address is in cr2, cr3 holds the root table address, rax holds the error code
@@ -738,19 +738,19 @@ pub fn handle_page_fault(
     let canonical_p1_start = metadata.p1_base
         + ((faulting_address >> PAGE_SHIFT) & !(TABLE_SIZE - 1)) * size_of::<u64>();
 
-    // check if it currently is a page or pointing to a p1 table
+    // check if it currently is a large page or pointing to a p1 table
     if p1_flags & PDE64_PRESENT == 0 || p1_flags & PDE64_IS_PAGE != 0 {
         // if it currently not present or is a LARGE_PAGE page, need to set up the p1 table
-        // correct the p2 entry:
-        u8_slice_to_u64_slice(&mut guest_mem[p2_address..p2_address + PAGE_SIZE])[p2_entry] =
-            PDE64_ALL_ALLOWED | canonical_p1_start as u64;
-        let p1_table = u8_slice_to_u64_slice(
-            &mut guest_mem[canonical_p1_start..canonical_p1_start + PAGE_SIZE],
-        );
-
         trace!("Handling 2MB fault");
 
         if p1_flags & PDE64_PRESENT == 0 {
+            let large_page_base = faulting_address & !(LARGE_PAGE - 1);
+            // correct the p2 entry:
+            u8_slice_to_u64_slice(&mut guest_mem[p2_address..p2_address + PAGE_SIZE])[p2_entry] =
+                PDE64_ALL_ALLOWED | PDE64_IS_PAGE | large_page_base as u64;
+            // let p1_table = u8_slice_to_u64_slice(
+            //     &mut guest_mem[canonical_p1_start..canonical_p1_start + PAGE_SIZE],
+            // );
             // page was not present so we need to demand page a zero page
             // TODO: this an later check return error code 6 often, which is a user and write error instead of the expected present error
             // there could be something about the order in which things are checked that need to be understood to make this check correctly
@@ -761,12 +761,19 @@ pub fn handle_page_fault(
             // );
             trace!("Converting not present p1 table to 0s with 1 entry");
             // rest of the p1 was not used so can simply zero fill it
-            p1_table.fill(0);
+            // p1_table.fill(0);
             // need to set the p1 entry to the physical page it is supposed to point to
             // need to zero fill that page
-            u8_slice_to_u64_slice(&mut guest_mem[page_base_address..page_base_address + PAGE_SIZE])
+            u8_slice_to_u64_slice(&mut guest_mem[large_page_base..large_page_base + LARGE_PAGE])
                 .fill(0);
+            return Ok((large_page_base, true));
         } else {
+            // correct the p2 entry:
+            u8_slice_to_u64_slice(&mut guest_mem[p2_address..p2_address + PAGE_SIZE])[p2_entry] =
+                PDE64_ALL_ALLOWED | canonical_p1_start as u64;
+            let p1_table = u8_slice_to_u64_slice(
+                &mut guest_mem[canonical_p1_start..canonical_p1_start + PAGE_SIZE],
+            );
             // page was present so it is a write error
             debug_assert!(write_error);
             debug_assert_eq!(
@@ -839,7 +846,7 @@ pub fn handle_page_fault(
     let p1_table =
         u8_slice_to_u64_slice(&mut guest_mem[canonical_p1_start..canonical_p1_start + PAGE_SIZE]);
     p1_table[p1_entry] = page_base_address as u64 | PDE64_ALL_ALLOWED;
-    Ok(page_base_address)
+    Ok((page_base_address, false))
 }
 
 fn setup_long_mode(sregs: &mut kvm_sregs) {

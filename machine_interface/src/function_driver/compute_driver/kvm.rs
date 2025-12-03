@@ -208,7 +208,7 @@ impl EngineLoop for KvmLoop {
                     // handle page fault in guest
                     let page_offset =
                         handle_page_fault(&self.vcpu, &page_fault_metadata, kvm_context.storage)?;
-                    log::trace!("page fault fixed at: {}", page_offset);
+                    log::trace!("page fault fixed at: {:?}", page_offset);
                     copied_pages.push(page_offset);
                 }
                 VcpuExit::Hlt => break,
@@ -237,16 +237,28 @@ impl EngineLoop for KvmLoop {
         // fix context overlay
         copied_pages.sort();
         if copied_pages.len() > 0 {
-            let mut previous_start = copied_pages[0];
-            let mut previous_end = previous_start + PAGE_SIZE;
+            let mut previous_start = copied_pages[0].0;
+            let mut previous_end = if copied_pages[0].1 {
+                previous_start + LARGE_PAGE
+            } else {
+                previous_start + PAGE_SIZE
+            };
 
-            for new_page in copied_pages[1..].into_iter() {
-                if previous_end < *new_page {
+            for &(new_page, is_large) in copied_pages[1..].into_iter() {
+                if previous_end < new_page {
                     kvm_context.insert_into_overlay(previous_start, previous_end, None);
-                    previous_start = *new_page;
-                    previous_end = previous_start + PAGE_SIZE;
+                    previous_start = new_page;
+                    if is_large {
+                        previous_end = previous_start + LARGE_PAGE;
+                    } else {
+                        previous_end = previous_start + PAGE_SIZE;
+                    }
                 } else {
-                    previous_end += PAGE_SIZE;
+                    if is_large {
+                        previous_end += LARGE_PAGE;
+                    } else {
+                        previous_end += PAGE_SIZE;
+                    }
                 }
             }
             kvm_context.insert_into_overlay(previous_start, previous_end, None);
