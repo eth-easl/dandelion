@@ -613,7 +613,9 @@ pub fn transfer_into(
                 for (source_overlay_end, (source_overlay_start, source_item_option)) in
                     kvm_source_context.overlay.range(source_rounded_start..)
                 {
-                    if overlayed_bytes >= rounded_size || *source_overlay_start >= rounded_end {
+                    if overlayed_bytes >= rounded_size
+                        || *source_overlay_start >= source_rounded_end
+                    {
                         break;
                     }
                     assert!(
