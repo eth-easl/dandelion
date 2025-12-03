@@ -35,8 +35,6 @@ process_add_action(Arc::clone(&dirigent_service.data), String::from("warm-functi
 ```
 Remember to remove them.
 
-## Start the Sidecar
-
 ### kvm isolation
 For the `kvm` isolation, KVM module is required to be installed.
 
@@ -46,9 +44,41 @@ sudo usermod -aG kvm $USER
 newgrp kvm   # refresh groups without logout
 ```
 
-Now we can start the sidecar:
+### mmu isolation
+The `mmu_worker` binary required by the `MmuEngine` is assumed to be present in corresponding `target` directory.
+
+The command is run under the `dandelion` folder:
+
+For `x86_64`:
+```
+# x86_64
+RUSTFLAGS='-C target-feature=+crt-static' cargo build --bin mmu_worker --features mmu --target x86_64-unknown-linux-gnu [--release]
+```
+
+For `aarch64`:
+```
+# aarch64
+ RUSTFLAGS='-C target-feature=+crt-static -C link-arg=-Wl,-fuse-ld=lld,--image-base=0xaaaaaaaa0000' cargo build --bin mmu_worker --features mmu --target aarch64-unknown-linux-gnu [--release]
+```
+
+Also make sure that shared memory objects are executable:
+```
+sudo mount -o remount,exec /dev/shm
+```
+
+
+## Start the Sidecar
+
+Now we can start the sidecar.
+
+If use `KVM`:
 ```
 RUST_LOG=debug cargo run --bin dandelion_server --features  "kvm reqwest_io" --release
+```
+
+If use `MMU`:
+```
+RUST_LOG=debug cargo run --bin dandelion_server --features  "mmu reqwest_io" --release
 ```
 
 We can also assign more cpu cores to the run time (front-end). 
