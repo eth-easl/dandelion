@@ -40,6 +40,15 @@ use hyper::{Response};
 use serde::Deserialize;
 use serde::Serialize;
 
+const http2_magic_packet : [u8; 24] = [
+    0x50, 0x52, 0x49, 0x20,
+    0x2a, 0x20, 0x48, 0x54,
+    0x54, 0x50, 0x2f, 0x32,
+    0x2e, 0x30, 0x0d, 0x0a,
+    0x0d, 0x0a, 0x53, 0x4d,
+    0x0d, 0x0a, 0x0d, 0x0a
+];
+
 pub async fn proxy_to_uc(
     request: Vec<u8>,
     mut client_recv: tokio::net::tcp::ReadHalf<'_>,
@@ -184,7 +193,7 @@ async fn register_function_local(
     //     .to_bytes();
 
     // *** Currently the only parts different from the original register_function() ***
-    let register_request = 
+    let register_request =
         bson::to_vec(&RegisterFunctionLocal {
             name: func_name.clone(),
             context_size: 0x802_0000,
@@ -357,9 +366,7 @@ async fn invoke_dandelion_function(
         .unwrap()
         .expect("Should get result from function");
 
-    
     (function_output, recorder)
-
 }
 
 
@@ -398,7 +405,7 @@ async fn prepare_input_and_invoke_nghttp2_codec(
 
     let input_nghttp2_is_server = is_server.to_ne_bytes();
     let input_nghttp2_first_create = first_create.to_ne_bytes();
-    if size_of_session_state > 0 { 
+    if size_of_session_state > 0 {
         size_of_session_state = size_of_session_state - 8; // // The first 8 bytes are the size, not the actual session state
     }
     let input_nghttp2_size_of_session_state = (size_of_session_state).to_ne_bytes(); // Actually this input is not needed by the codec. So we don't track it
@@ -467,7 +474,7 @@ async fn prepare_input_and_invoke_nghttp2_codec(
             key: 6,
             data: &input_num_req_resp_to_send,
         }
-    );  
+    );
 
     input_set0_items.push(
         InputItem {
@@ -475,13 +482,13 @@ async fn prepare_input_and_invoke_nghttp2_codec(
             key: 7,
             data: &input_num_req_resp_to_receive,
         }
-    );  
+    );
 
     let mut input_sets: Vec<InputSet> = Vec::with_capacity(num_req_resp_to_send+1);
     input_sets.push(
         InputSet{
             identifier: String::from(""),
-            items: input_set0_items,                
+            items: input_set0_items,
         }
     );
 
@@ -564,7 +571,7 @@ async fn prepare_input_and_invoke_nghttp2_codec(
                 data: input_size_of_body_to_send,
             }
         );
-    
+
         input_setn_items.push(
             InputItem {
                 identifier: String::from(""),
@@ -573,16 +580,13 @@ async fn prepare_input_and_invoke_nghttp2_codec(
             }
         );
 
-
         input_sets.push(
             InputSet{
                 identifier: String::from(""),
-                items: input_setn_items,                
+                items: input_setn_items,
             }
         )
-        
-        
-    } 
+    }
 
     // Invoke the function
     let (function_output, recorder) = invoke_dandelion_function(
@@ -616,7 +620,7 @@ fn parse_nghttp2_codec_output(
 ) {
 
     // ************************
-    // *** parse the output *** 
+    // *** parse the output ***
 
     let response_dandelion_body = dandelion_server::DandelionBody::new(function_output, &recorder);
 
@@ -755,7 +759,7 @@ fn parse_nghttp2_codec_output(
 
 
 
-    (   
+    (
         // set 0
         session_state,
         num_of_req_or_res_received,
@@ -869,12 +873,8 @@ async fn read_from_tcp_stream_until_blocking(
                 return true;
             },
         }
-    }  
-
+    }
 }
-
-
-
 
 // This handles the TCP/HTTP connection with user function container
 // Thus, it acts as a HTTP client
@@ -891,7 +891,6 @@ async fn func_connection_worker3(
     // Key: Stream id of the sent request
     // Value: Channel to the stream worker (to send the corresponding response)
     let mut stream_worker_map: HashMap<i32, oneshot::Sender<FunctionConnToStreamWorkerResp>> = HashMap::new();
-
 
     // Output (set_0) from the nghttp2 codec (other sets 1~n use local vars; each set is for one req or resp)
     let mut session_state: Vec<u8> = vec![0u8; 20 * 1024]; // Also the input
@@ -946,7 +945,6 @@ async fn func_connection_worker3(
 
         let mut channel_to_send_back_resp_list: Vec<Option<oneshot::Sender<FunctionConnToStreamWorkerResp>>> = Vec::new();
 
-
         // ****** If first create, we directly call the codec (as a client to initialize the connection) ******
         // ****** Otherwise, block until one of the two events happens
         if first_create == 0 {
@@ -973,7 +971,7 @@ async fn func_connection_worker3(
                             let _ = stream.shutdown().await;
                             return;
                         }
-                        
+
                         // Check if we have truncated frame or incomplete header or unended streams
                         let initial_parse_result: i32;
                         (num_of_req_or_resp_to_receive, initial_parse_result) = http2_initial_parsing(&data_to_read);
@@ -994,7 +992,7 @@ async fn func_connection_worker3(
                                 }
                             }
                         }
-                        
+
                     }
 
                     if data_to_read.is_empty() {
@@ -1002,7 +1000,7 @@ async fn func_connection_worker3(
                             loop_idx = -1;
                         }
                         continue;
-                    }            
+                    }
                 }
                 Some(req) = stream_worker_to_func_connection_worker_rx.recv() => { // 2) These is a response to send (from a stream worker). We continue this iteration
                     debug!("[func_connection_worker3. Local Addr: {}; Peer Addr: {}] gets request from stream worker", tcp_conn_local_addr, tcp_conn_peer_addr);
@@ -1012,7 +1010,7 @@ async fn func_connection_worker3(
                     num_of_headers_to_send_list.push(req.num_of_headers_to_send);
                     size_of_headers_to_send_list.push(req.headers.len());
                     headers_to_send_list.push(req.headers);
-                    size_of_body_to_send_list.push(req.body.len()); 
+                    size_of_body_to_send_list.push(req.body.len());
                     body_to_send_list.push(req.body);
 
                     channel_to_send_back_resp_list.push(Some(req.function_connection_worker_to_stream_worker_tx));
@@ -1029,9 +1027,6 @@ async fn func_connection_worker3(
 
                         channel_to_send_back_resp_list.push(Some(req.function_connection_worker_to_stream_worker_tx));
                     }
-
-
-
                 }
             }
         }
@@ -1055,7 +1050,7 @@ async fn func_connection_worker3(
             &size_of_headers_to_send_list,
             &size_of_body_to_send_list,
             &headers_to_send_list,
-            &body_to_send_list,            
+            &body_to_send_list,
         ).await;
         data_to_read.drain(..size_of_data_to_read);
 
@@ -1069,8 +1064,7 @@ async fn func_connection_worker3(
         let mut body_received_list: Vec<Vec<u8>>;
         let mut header_authority_value_string_list: Vec<String>;
 
-
-        (   
+        (
             // set 0
             session_state,
             num_of_req_or_res_received,
@@ -1090,14 +1084,12 @@ async fn func_connection_worker3(
         // ****** Operations triggered by output set 0 *******
         let mut stream_id_list_sent_requests_i32:Vec<i32> = Vec::new();
         for i in 0..num_of_req_or_resp_sent {
-            // let arr: [u8; size_of::<usize>()]  = 
+            // let arr: [u8; size_of::<usize>()]  =
             let u8_bytes = &stream_id_list_sent_requests[i*(size_of::<i32>())..(i+1)*(size_of::<i32>())];
 
             let arr: [u8; size_of::<i32>()] = u8_bytes.try_into()
                 .expect("wrong length");
             stream_id_list_sent_requests_i32.push(i32::from_ne_bytes(arr));
-
-
         }
 
         // 1) If we have sent request(s)
@@ -1115,7 +1107,7 @@ async fn func_connection_worker3(
                 None => {
                     error!("[func_connection_worker3. Local Addr: {}; Peer Addr: {}] does not find the channel to send back resp to stream worker", tcp_conn_local_addr, tcp_conn_peer_addr)
                 }
-            }            
+            }
         }
 
         // 2) Send data outout
@@ -1130,7 +1122,6 @@ async fn func_connection_worker3(
                 debug!("[func_connection_worker3. Local Addr: {}; Peer Addr: {}] TCP stream send finished successfully", tcp_conn_local_addr, tcp_conn_peer_addr);
             }
         }
-
 
         // ******* Operations triggered by output set 1 ~ n
         // *** If we receive resps from the user func container ****
@@ -1153,8 +1144,7 @@ async fn func_connection_worker3(
                         num_of_headers_to_send: num_of_headers,
                         headers: headers_received,
                         body_to_send: body_received,
-                    }
-                    );
+                    });
                 }
                 None => {
                     error!("[func_connection_worker3. Local Addr: {}; Peer Addr: {}] There is no channel in the hasp map to send back resp to stream worker! The send request (to the uc) stream id: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
@@ -1163,11 +1153,6 @@ async fn func_connection_worker3(
         }
     }
 }
-
-
-
-
-
 
 // It receives request from the stream_worker
 // AND give back a channel to a user_func_conn worker
@@ -1238,7 +1223,7 @@ async fn router (
                 stream_worker_to_func_connection_worker_tx = uc_connections.get(&destination_url_string).unwrap().clone();
 
             }
-            
+
             // Send the answer to the stream worker
             let router_to_stream_worker_reply = RouterToStreamWorkerResp {
                 payload: format!("router processed the request: {}", req.payload),
@@ -1287,7 +1272,7 @@ async fn stream_worker (
             router_to_stream_worker_tx: router_to_stream_worker_tx,
         })
         .await
-    {   
+    {
         error!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] failed to send to router: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, e);
 
         // If we fail to send req to the router
@@ -1342,7 +1327,7 @@ async fn stream_worker (
             }
 
 
-            // *** Wait for the resp from the user func conn worker *** 
+            // *** Wait for the resp from the user func conn worker ***
             match function_connection_worker_to_stream_worker_rx.await {
                 Ok(resp) => {
                     info!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] gets resp from the user func conn worker", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
@@ -1374,9 +1359,6 @@ async fn stream_worker (
 
                 }
             }
-
-
-
         }
         Err(e) => {
             error!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] failed to receive from the router: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, e);
@@ -1391,15 +1373,11 @@ async fn stream_worker (
                 .await;
         }
     }
-    
+
 
     debug!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] stops working!", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
 
 }
-
-
-
-
 
 // The task to handle one TCP/HTTP connection with the data plane
 // Thus, it acts as a HTTP server
@@ -1417,7 +1395,6 @@ async fn dp_connection_worker3(
 
     let mut num_of_completed_stream_worker = 0; // Just for logging
 
-
     // Output (set_0) from the nghttp2 codec (other sets 1~n use local vars; each set is for one req or resp)
     let mut session_state: Vec<u8> = vec![0u8; 20 * 1024]; // Also the input
     let mut num_of_req_or_res_received: usize;
@@ -1425,7 +1402,7 @@ async fn dp_connection_worker3(
     let mut data_to_send: Vec<u8>;
     let mut stream_id_list_sent_requests: Vec<u8>; // not used by the dp_connection_worker
 
-    // *** input to the nghttp2 codec *** 
+    // *** input to the nghttp2 codec ***
     let is_server:i8 = 1;
     let mut first_create:i8;
     let mut size_of_session_state: usize = 0; // actually not used
@@ -1439,8 +1416,7 @@ async fn dp_connection_worker3(
     let mut headers_to_send_list: Vec<Vec<u8>>;
     let mut body_to_send_list: Vec<Vec<u8>>;
     let mut size_of_body_to_send_list: Vec<usize>;
-    
-    
+
     // The main logic loop (it stops until the other side closes the connection)
     let mut loop_idx = -1;
     loop {
@@ -1502,7 +1478,7 @@ async fn dp_connection_worker3(
                         let _ = stream.shutdown().await;
                         return;
                     }
-                    
+
                     // Check if we have truncated frame or incomplete header or unended streams
                     let initial_parse_result: i32;
                     if first_create == 1 {
@@ -1511,7 +1487,14 @@ async fn dp_connection_worker3(
                             initial_parse_result = -1;
                         }
                         else {
-                            (num_of_req_or_resp_to_receive, initial_parse_result) = http2_initial_parsing(&data_to_read[24..]);
+                            if data_to_read[..24] == http2_magic_packet.to_vec() {
+                                (num_of_req_or_resp_to_receive, initial_parse_result) = http2_initial_parsing(&data_to_read[24..]);
+                            } else {
+                                error!("Protocol not supported!");
+                                // TODO: terminate connection
+                                num_of_req_or_resp_to_receive = 0;
+                                initial_parse_result = 0;
+                            }
                         }
                     }
                     else {
@@ -1559,7 +1542,6 @@ async fn dp_connection_worker3(
                     size_of_body_to_send_list.push(req.body_to_send.len());
                     body_to_send_list.push(req.body_to_send);
                 }
-                
 
                 // deplete the channel (send batching)
                 while let Ok(req) = stream_worker_to_dp_connection_worker_rx.try_recv() {
@@ -1600,9 +1582,9 @@ async fn dp_connection_worker3(
             &size_of_headers_to_send_list,
             &size_of_body_to_send_list,
             &headers_to_send_list,
-            &body_to_send_list,            
+            &body_to_send_list,
         ).await;
-        
+
         data_to_read.drain(..size_of_data_to_read);
 
 
@@ -1614,7 +1596,7 @@ async fn dp_connection_worker3(
         let mut headers_received_list: Vec<Vec<u8>>;
         let mut body_received_list: Vec<Vec<u8>>;
         let mut header_authority_value_string_list: Vec<String>;
-        (   
+        (
             // set 0
             session_state,
             num_of_req_or_res_received,
@@ -1673,14 +1655,14 @@ async fn dp_connection_worker3(
 
 async fn create_proxy_server2(request_sender: mpsc::Sender<DispatcherCommand>, port: u16, dg_svc: Arc<DirigentService>) {
     let config = dandelion_server::config::DandelionConfig::get_config();
-    let nghttp2_codec_func_name = config.nghttp2_codec_func_name;    
-    let nghttp2_codec_bin_local_path = config.nghttp2_codec_bin_local_path; 
+    let nghttp2_codec_func_name = config.nghttp2_codec_func_name;
+    let nghttp2_codec_bin_local_path = config.nghttp2_codec_bin_local_path;
 
     // ****** Before the loop actually starts, register some functions ******
 
     let engine_type: String = if cfg!(feature = "kvm") {
         "Kvm".to_string()
-    } 
+    }
     else if cfg!(feature = "mmu") {
         "Process".to_string()
     }
@@ -1711,10 +1693,12 @@ async fn create_proxy_server2(request_sender: mpsc::Sender<DispatcherCommand>, p
     // ****** The listening socket (for the data plane connections)******
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port)); // The dirigent proxy port
     let listener = TcpListener::bind(addr).await.unwrap();
+
     // signal handlers for gracefull shutdown
     let mut sigterm_stream = tokio::signal::unix::signal(SignalKind::terminate()).unwrap();
     let mut sigint_stream = tokio::signal::unix::signal(SignalKind::interrupt()).unwrap();
     let mut sigquit_stream = tokio::signal::unix::signal(SignalKind::quit()).unwrap();
+
     // ****** Start the dirigent proxy ******
     loop {
         tokio::select! {
@@ -1738,9 +1722,6 @@ async fn create_proxy_server2(request_sender: mpsc::Sender<DispatcherCommand>, p
             _ = sigquit_stream.recv() => return,
         }
     }
-
-
-
 }
 
 pub fn start_proxy_server2(request_sender: mpsc::Sender<DispatcherCommand>, port: u16, dg_svc: Arc<DirigentService>) {
