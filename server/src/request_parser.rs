@@ -1,7 +1,8 @@
-use std::{collections::HashMap, hash::Hash};
-use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 use log::{debug, info};
-use std::collections::{HashSet};
+use std::cmp::PartialEq;
+use std::collections::HashSet;
+use std::{collections::HashMap, fmt, hash::Hash};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Request {
@@ -77,25 +78,59 @@ pub async fn parse_request(mut stream: impl AsyncBufRead + Unpin) -> anyhow::Res
     })
 }
 
+#[repr(u8)]
+#[derive(PartialEq)]
+enum Http2FrameTypes {
+    DATA = 0x0,
+    HEADERS = 0x1,
+    PRIORITY = 0x2,
+    RST_STREAM = 0x3,
+    SETTINGS = 0x4,
+    PUSH_PROMISE = 0x5,
+    PING = 0x6,
+    GOAWAY = 0x7,
+    WINDOW_UPDATE = 0x8,
+    CONTINUATION = 0x9,
+}
 
+impl fmt::Display for Http2FrameTypes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Http2FrameTypes::DATA => "DATA",
+            Http2FrameTypes::HEADERS => "HEADERS",
+            Http2FrameTypes::PRIORITY => "PRIORITY",
+            Http2FrameTypes::RST_STREAM => "RST_STREAM",
+            Http2FrameTypes::SETTINGS => "SETTINGS",
+            Http2FrameTypes::PUSH_PROMISE => "PUSH_PROMISE",
+            Http2FrameTypes::PING => "PING",
+            Http2FrameTypes::GOAWAY => "GOAWAY",
+            Http2FrameTypes::WINDOW_UPDATE => "WINDOW_UPDATE",
+            Http2FrameTypes::CONTINUATION => "CONTINUATION",
+        };
 
-/// Map HTTP/2 frame type byte to a human-readable name.
-pub fn frame_type_name(t: u8) -> &'static str {
-    match t {
-        0x0 => "DATA",
-        0x1 => "HEADERS",
-        0x2 => "PRIORITY",
-        0x3 => "RST_STREAM",
-        0x4 => "SETTINGS",
-        0x5 => "PUSH_PROMISE",
-        0x6 => "PING",
-        0x7 => "GOAWAY",
-        0x8 => "WINDOW_UPDATE",
-        0x9 => "CONTINUATION",
-        _   => "UNKNOWN",
+        write!(f, "{}", s)
     }
 }
 
+impl TryFrom<u8> for Http2FrameTypes {
+    type Error = &'static str;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0x0 => Ok(Http2FrameTypes::DATA),
+            0x1 => Ok(Http2FrameTypes::HEADERS),
+            0x2 => Ok(Http2FrameTypes::PRIORITY),
+            0x3 => Ok(Http2FrameTypes::RST_STREAM),
+            0x4 => Ok(Http2FrameTypes::SETTINGS),
+            0x5 => Ok(Http2FrameTypes::PUSH_PROMISE),
+            0x6 => Ok(Http2FrameTypes::PING),
+            0x7 => Ok(Http2FrameTypes::GOAWAY),
+            0x8 => Ok(Http2FrameTypes::WINDOW_UPDATE),
+            0x9 => Ok(Http2FrameTypes::CONTINUATION),
+            _ => Err("Invalid HTTP/2 frame type"),
+        }
+    }
+}
 
 /// Dump basic info for each HTTP/2 frame in `buf`.
 // Very initial parsing
@@ -119,32 +154,25 @@ pub fn http2_initial_parsing(mut buf: &[u8]) -> (usize, i32) {
     const HEADER_LEN: usize = 9;
 
     // Flags
-    const FLAG_END_STREAM:  u8 = 0x1; // relevant for DATA and HEADERS
+    const FLAG_END_STREAM: u8 = 0x1; // relevant for DATA and HEADERS
     const FLAG_END_HEADERS: u8 = 0x4; // relevant for HEADERS and CONTINUATION
 
-    // Frame types we care about
-    const FRAME_DATA:         u8 = 0x0;
-    const FRAME_HEADERS:      u8 = 0x1;
-    const FRAME_CONTINUATION: u8 = 0x9;
-
-
     let mut unended_streams_set = HashSet::new();
-    let mut unended_headers_set  = HashSet::new();
+    let mut unended_headers_set = HashSet::new();
     let mut num_of_currently_received_req_or_resp: usize = 0;
 
     while buf.len() >= HEADER_LEN {
         // Parse length (24-bit big-endian)
         let len = ((buf[0] as u32) << 16) | ((buf[1] as u32) << 8) | (buf[2] as u32);
-
-        let frame_type = buf[3];
+        
+        let frame_type = Http2FrameTypes::try_from(buf[3]).unwrap();
         let flags = buf[4];
 
         // Stream ID: 1 reserved bit + 31-bit ID
-        let raw_stream_id =
-            ((buf[5] as u32) << 24) |
-            ((buf[6] as u32) << 16) |
-            ((buf[7] as u32) << 8)  |
-            (buf[8]  as u32);
+        let raw_stream_id = ((buf[5] as u32) << 24)
+            | ((buf[6] as u32) << 16)
+            | ((buf[7] as u32) << 8)
+            | (buf[8] as u32);
         let stream_id = raw_stream_id & 0x7FFF_FFFF;
 
         // Check that the full frame (header + payload) is present
@@ -163,23 +191,25 @@ pub fn http2_initial_parsing(mut buf: &[u8]) -> (usize, i32) {
 
         // END_STREAM is only meaningful on DATA and HEADERS frames
         let end_stream = match frame_type {
-            FRAME_DATA /* DATA */ | FRAME_HEADERS /* HEADERS */ => (flags & FLAG_END_STREAM) != 0,
+            Http2FrameTypes::DATA /* DATA */ | Http2FrameTypes::HEADERS /* HEADERS */ => {
+                (flags & FLAG_END_STREAM) != 0
+            }
             _ => false,
         };
 
         // END_STREAM is only meaningful on HEADERS and CONTINUATION frames
         let end_headers = match frame_type {
-            FRAME_HEADERS | FRAME_CONTINUATION => (flags & FLAG_END_HEADERS) != 0,
+            Http2FrameTypes::HEADERS | Http2FrameTypes::CONTINUATION => {
+                (flags & FLAG_END_HEADERS) != 0
+            }
             _ => false,
         };
 
-
         // DATA and HEADERS frames
-        if frame_type == 0x0 || frame_type == 0x1 {
+        if frame_type == Http2FrameTypes::DATA || frame_type == Http2FrameTypes::HEADERS {
             if end_stream == false {
                 unended_streams_set.insert(stream_id);
-            }
-            else {
+            } else {
                 num_of_currently_received_req_or_resp = num_of_currently_received_req_or_resp + 1;
                 if unended_streams_set.contains(&stream_id) {
                     unended_streams_set.remove(&stream_id);
@@ -187,16 +217,16 @@ pub fn http2_initial_parsing(mut buf: &[u8]) -> (usize, i32) {
             }
         }
 
-        // HEADRE and CONTINUATION frames
+        // HEADER and CONTINUATION frames
         match frame_type {
-            FRAME_HEADERS => {
+            Http2FrameTypes::HEADERS => {
                 if !end_headers {
                     // HEADERS without END_HEADERS -> header block continues
                     unended_headers_set.insert(stream_id);
                 }
             }
 
-            FRAME_CONTINUATION => {
+            Http2FrameTypes::CONTINUATION => {
                 if end_headers {
                     // Final CONTINUATION for this header block
                     unended_headers_set.remove(&stream_id);
@@ -206,17 +236,19 @@ pub fn http2_initial_parsing(mut buf: &[u8]) -> (usize, i32) {
             _ => {}
         }
 
-
-
         debug!(
-            "Frame: len={} type=0x{:02x} ({}) flags=0x{:02x} stream_id={} end_stream={} num_of_currently_received_req_or_resp={}",
+            "Frame: len={} type=({}) flags=0x{:02x} stream_id={} end_stream={} num_of_currently_received_req_or_resp={}",
             len,
             frame_type,
-            frame_type_name(frame_type),
             flags,
             stream_id,
             end_stream,
             num_of_currently_received_req_or_resp,
+        );
+
+        debug!(
+            "Frame payload: {}",
+            decode_frame_payload(frame_type, &buf[9..total_len])
         );
 
         // Advance to the next frame (skip payload)
@@ -234,12 +266,96 @@ pub fn http2_initial_parsing(mut buf: &[u8]) -> (usize, i32) {
 
     if unended_headers_set.len() > 0 {
         return (num_of_currently_received_req_or_resp, -2); // No Truncated frame but has incomplete HEADER (there are following CONTINUATION)
-    }    
+    }
 
     if unended_streams_set.len() > 0 {
         return (num_of_currently_received_req_or_resp, -3); // No Truncated frame but has unended stream
     }
 
-    info!("Initial parsing finds {} req/resp", num_of_currently_received_req_or_resp);
-    return (num_of_currently_received_req_or_resp, 0); // No truncated frame; No un_ended stream
+    info!(
+        "Initial parsing finds {} req/resp",
+        num_of_currently_received_req_or_resp
+    );
+    (num_of_currently_received_req_or_resp, 0) // No truncated frame; No un_ended stream
+}
+
+fn read_1(buf: &[u8], idx: usize) -> u8 {
+    buf[idx]
+}
+
+fn read_2(buf: &[u8], idx: usize) -> u16 {
+    buf[idx + 1] as u16 | ((buf[idx] as u16) << 8)
+}
+
+fn read_4(buf: &[u8], idx: usize) -> u32 {
+    ((buf[idx + 0] as u32) << 24)
+        | ((buf[idx + 1] as u32) << 16)
+        | ((buf[idx + 2] as u32) << 8)
+        | (buf[idx + 3] as u32)
+}
+
+fn decode_frame_payload(frame_type: Http2FrameTypes, buf: &[u8]) -> String {
+    let mut result = String::from("\n");
+
+    match frame_type {
+        Http2FrameTypes::SETTINGS => {
+            let mut idx = 0;
+
+            loop {
+                if idx + 6 >= buf.len() {
+                    // for the case when no SETTINGS are provided
+                    break;
+                }
+
+                let id: u16 = read_2(buf, idx);
+                idx += 2;
+                let value: u32 = read_4(buf, idx);
+                idx += 4;
+
+                let to_add = match id {
+                    0x1 => format!("SETTINGS_HEADER_TABLE_SIZE (0x01) = {}", value),
+                    0x2 => format!("SETTINGS_ENABLE_PUSH (0x02) = {}", value),
+                    0x3 => format!("SETTINGS_MAX_CONCURRENT_STREAMS (0x03) = {}", value),
+                    0x4 => format!("SETTINGS_INITIAL_WINDOW_SIZE (0x04) = {}", value),
+                    0x5 => format!("SETTINGS_MAX_FRAME_SIZE (0x05) = {}", value),
+                    0x6 => format!("SETTINGS_MAX_HEADER_LIST_SIZE (0x06) = {}", value),
+                    _ => "Unsupported setting ID".parse().unwrap(),
+                };
+
+                result.push_str(&to_add);
+
+                if idx == buf.len() {
+                    break;
+                } else {
+                    result.push_str("\n");
+                }
+            }
+        }
+
+        Http2FrameTypes::WINDOW_UPDATE => {
+            if 4 >= buf.len() {
+                return result;
+            }
+            
+            let val = read_4(buf, 0) & 0x7FFF_FFFF;
+            result.push_str(&format!("Window Size Increment = {}", val));
+        }
+
+        Http2FrameTypes::HEADERS => {
+            result.push_str(&"HPACK decoding has not been implemented yet.".to_string());
+        }
+
+        Http2FrameTypes::DATA => {
+            result.push_str(buf.iter().map(|x| *x as char).collect::<String>().as_str());
+        }
+
+        _ => {
+            info!(
+                "Cannot debug frame of type {}. Feature not yet implemented.",
+                frame_type
+            );
+        }
+    }
+
+    result
 }

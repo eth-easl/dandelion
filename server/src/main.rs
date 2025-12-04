@@ -506,12 +506,12 @@ fn main() -> () {
 
     let dispatcher_cores = config.get_dispatcher_cores();
     let frontend_cores = config.get_frontend_cores();
-    let communication_cores = config
+    let communication_cores: Vec<_> = config
         .get_communication_cores()
         .into_iter()
         .map(|core| resource_conversion(core))
         .collect();
-    let compute_cores = config
+    let compute_cores: Vec<_> = config
         .get_computation_cores()
         .into_iter()
         .map(|core| resource_conversion(core))
