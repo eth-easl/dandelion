@@ -232,15 +232,6 @@ async fn create_dirigent_server(
 
     tracing::info!("Listening on {}", addr);
 
-    // TMP: just for initial testing, should be removed
-    //process_add_action(Arc::clone(&dirigent_service.data), String::from("warm-function-4949985443906962520"), String::from("111"), String::from("localhost:5555"));
-    process_add_action(
-        Arc::clone(&dirigent_service.data),
-        String::from("warm_function"),
-        String::from("sandbox_222"),
-        String::from("localhost:4567"),
-    );
-
     loop {
         let (stream, _) = listener.accept().await?;
         let io = hyper_util::rt::TokioIo::new(stream);
