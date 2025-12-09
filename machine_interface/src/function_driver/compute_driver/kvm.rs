@@ -89,7 +89,7 @@ impl EngineLoop for KvmLoop {
         };
         setup_input_structs::<u64, u64>(&mut context, elf_config.system_data_offset, &output_sets)?;
         let min_stack_start = context.get_last_item_end();
-        let mut kvm_context = match &mut context.context {
+        let kvm_context = match &mut context.context {
             ContextType::Kvm(kvm_context) => kvm_context,
             _ => return Err(DandelionError::ContextMissmatch),
         };
