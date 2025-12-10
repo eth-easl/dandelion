@@ -47,6 +47,8 @@ const PDE64_USER: u64 = 1 << 2;
 const PDE64_ALL_ALLOWED: u64 = PDE64_PRESENT | PDE64_RW | PDE64_USER;
 /// Set by hardware if the entry has been used to translate a linear address
 const PDE64_ACCESSED: u64 = 1 << 5;
+/// Set by hardware if entry has been use to write to linaer address
+const PDE64_DIRTY: u64 = 1 << 6;
 /// Page size, for p3 and lower, this indicates the entry address is the mapping, not another table
 /// In the docs this is called the PDE64_PS
 const PDE64_IS_PAGE: u64 = 1 << 7;
@@ -88,7 +90,13 @@ pub struct ResetState {
     sregs: kvm_sregs,
 }
 
-global_asm!(include_str!("x86_64.asm"));
+global_asm!(include_str!("x86_64.asm"),
+    PAGE_SIZE = const PAGE_SIZE,
+    PDE64_PRESENT = const PDE64_PRESENT,
+    PDE64_USER = const PDE64_USER,
+    PDE64_ALL_ALLOWED = const PDE64_ALL_ALLOWED,
+    PDE64_IS_PAGE = const PDE64_IS_PAGE
+);
 extern "C" {
     // symbols for first and last
     fn asm_start();
@@ -556,6 +564,18 @@ fn set_page_table(
         previous_past_last_page,
     );
 
+    // the page tables also need to be accessable to root mode
+    previous_past_last_page = set_range(
+        table_array,
+        table_base,
+        table_base,
+        p4_address + PAGE_SIZE,
+        PDE64_PRESENT | PDE64_RW,
+        table_base,
+        previous_past_last_page,
+    );
+
+    // need to make the page table handler accessable to root mode
     set_range(
         table_array,
         table_base,
@@ -645,7 +665,7 @@ fn set_page_table(
                     );
                     if page_flags_local & PDE64_PRESENT != 0 {
                         if page_flags_local & PDE64_RW == 0 || page_flags_local & PDE64_USER == 0 {
-                            assert!(page_address_local > stack_start, "{}", debug_info);
+                            assert!(page_address_local >= stack_start, "{}", debug_info);
                         } else {
                             assert_eq!(page_address, page_address_local, "{}", debug_info);
                         }
@@ -692,7 +712,7 @@ pub fn handle_page_fault(
     metadata: &PageFaultMetadata,
     guest_mem: &mut [u8],
 ) -> DandelionResult<(usize, bool)> {
-    // let regs = vcpu.get_regs().unwrap();
+    let regs = vcpu.get_regs().unwrap();
     let sregs = vcpu.get_sregs().unwrap();
     // the faulting address is in cr2, cr3 holds the root table address, rax holds the error code
     let faulting_address = sregs.cr2 as usize;
@@ -714,53 +734,92 @@ pub fn handle_page_fault(
 
     // get all table entries
     let p4_entry = get_entry_from_address(faulting_address, PML4_SHIFT);
+    assert_eq!(0, p4_entry);
     let p3_entry = get_entry_from_address(faulting_address, HUGE_PAGE_SHIFT);
     let p2_entry = get_entry_from_address(faulting_address, LARGE_PAGE_SHIFT);
     let p1_entry = get_entry_from_address(faulting_address, PAGE_SHIFT);
 
+    // Asserts for the exit of the debug assembly
+    // r10 and r11 should contain addresses for the entries of the p4 and p3 entries
+    assert_eq!(regs.r10, (metadata.p4_address) as u64);
+    assert_eq!(
+        regs.r11,
+        (metadata.p3_address + p3_entry * size_of::<u64>()) as u64
+    );
+    // r12 and r13 hold the indices into the p2 and p1 tables respectively
+    assert_eq!(regs.r12, (p2_entry * size_of::<u64>()) as u64);
+    assert_eq!(regs.r13, (p1_entry * size_of::<u64>()) as u64);
+    // r14 and p15 hold the p2 and p1 base address respecively
+    let p2_offset = (p3_entry * (TABLE_SIZE + 1) * TABLE_SIZE) * size_of::<u64>();
+    assert_eq!(
+        regs.r14,
+        (metadata.table_base + p2_offset * size_of::<u64>()) as u64
+    );
+    let p1_offset = ((p3_entry * (TABLE_SIZE + 1) + 1 + p2_entry) * TABLE_SIZE) * size_of::<u64>();
+    println!(
+        "table_base: {}, p2 address: {}",
+        metadata.table_base, regs.r14
+    );
+    assert_eq!(regs.r15, (metadata.table_base + p1_offset) as u64);
+
+    // go through the page table and check it is correct
     let (p3_address, p3_flags) = get_offset_and_flags(guest_mem, p4_address, p4_entry);
-    // check the directory table has the correct flags
-    // should have all the default flags, as they are applied to all memory in scope
-    if p3_flags & !PDE64_ACCESSED != PDE64_ALL_ALLOWED || p3_address != metadata.p3_address {
-        trace!(
-            "p3 flags not as expected: {}, for offset: {} (expected: {})",
-            p3_flags,
-            p3_address,
-            metadata.p3_address,
-        );
-        return Err(DandelionError::UserError(UserError::ManupulatedPageTables));
-    }
+    assert_eq!(p3_address, metadata.p3_address);
+    assert_eq!(p3_flags & !PDE64_ACCESSED, PDE64_ALL_ALLOWED);
 
     let (p2_address, p2_flags) = get_offset_and_flags(guest_mem, p3_address, p3_entry);
     let canonical_p2_start =
         metadata.table_base + (p3_entry * (TABLE_SIZE + 1) * TABLE_SIZE) * size_of::<u64>();
-
-    // check the p2 is at the expected place
-    if p2_address != canonical_p2_start {
-        trace!(
-            "p2 address not as expected {}, found {}, table base: {}",
-            p2_address,
-            canonical_p2_start,
-            metadata.table_base
-        );
-        return Err(DandelionError::UserError(UserError::ManupulatedPageTables));
-    }
-    // p3 entry flags should always be all allowed
-    debug_assert_eq!(PDE64_ALL_ALLOWED, p2_flags & !PDE64_ACCESSED);
+    assert_eq!(p2_address, canonical_p2_start);
+    assert_eq!(p2_flags & !PDE64_ACCESSED, PDE64_ALL_ALLOWED);
 
     let (p1_address, p1_flags) = get_offset_and_flags(guest_mem, p2_address, p2_entry);
     let canonical_p1_start = canonical_p2_start + ((p2_entry + 1) * TABLE_SIZE) * size_of::<u64>();
+    assert_eq!(p1_address, canonical_p1_start);
+    assert_eq!(
+        p1_flags & !PDE64_ACCESSED,
+        PDE64_ALL_ALLOWED,
+        "r15 is holding: {}",
+        regs.r15
+    );
+    // r8 should beholding the previous p2 entry, so check that also
+    let handler_p1_address = regs.r8 & !(PAGE_SIZE as u64 - 1);
+    let handler_p1_flags = regs.r8 & (PAGE_SIZE as u64 - 1);
 
-    // check if it currently is a large page or pointing to a p1 table
-    if p1_flags & PDE64_PRESENT == 0 || p1_flags & PDE64_IS_PAGE != 0 {
+    if handler_p1_flags & PDE64_PRESENT == 0 || handler_p1_flags & PDE64_IS_PAGE != 0 {
         // if it currently not present or is a LARGE_PAGE page, need to set up the p1 table
-        trace!("Handling 2MB fault");
-
-        if p1_flags & PDE64_PRESENT == 0 {
-            let large_page_base = faulting_address & !(LARGE_PAGE - 1);
+        trace!("Checking p2 fault handling");
+        // check if actual page is reasonably set
+        if handler_p1_flags & PDE64_PRESENT == 0 {
+            // check that the remainder of the entries have been set to 0
+            for p1_index in 0..p1_entry {
+                let set_value =
+                    u8_slice_to_u64_slice(&mut guest_mem[p1_address..p1_address + PAGE_SIZE])
+                        [p1_index];
+                assert_eq!(set_value, 0);
+            }
+            let new_entry =
+                u8_slice_to_u64_slice(&mut guest_mem[p1_address..p1_address + PAGE_SIZE])[p1_entry];
+            assert_eq!(
+                new_entry & !(PDE64_DIRTY | PDE64_ACCESSED),
+                PDE64_ALL_ALLOWED | page_base_address as u64
+            );
+            for p1_index in p1_entry + 1..TABLE_SIZE {
+                let set_value =
+                    u8_slice_to_u64_slice(&mut guest_mem[p1_address..p1_address + PAGE_SIZE])
+                        [p1_index];
+                assert_eq!(set_value, 0);
+            }
+            for page_index in 0..TABLE_SIZE {
+                let set_value = u8_slice_to_u64_slice(
+                    &mut guest_mem[page_base_address..page_base_address + PAGE_SIZE],
+                )[page_index];
+                assert_eq!(set_value, 0);
+            }
+            // let large_page_base = faulting_address & !(LARGE_PAGE - 1);
             // correct the p2 entry:
-            u8_slice_to_u64_slice(&mut guest_mem[p2_address..p2_address + PAGE_SIZE])[p2_entry] =
-                PDE64_ALL_ALLOWED | PDE64_IS_PAGE | large_page_base as u64;
+            // u8_slice_to_u64_slice(&mut guest_mem[p2_address..p2_address + PAGE_SIZE])[p2_entry] =
+            //     PDE64_ALL_ALLOWED | PDE64_IS_PAGE | large_page_base as u64;
             // let p1_table = u8_slice_to_u64_slice(
             //     &mut guest_mem[canonical_p1_start..canonical_p1_start + PAGE_SIZE],
             // );
@@ -772,56 +831,94 @@ pub fn handle_page_fault(
             //     "page not present, but error code is {}, for address {}",
             //     error_code, faulting_address
             // );
-            trace!("Converting not present p1 table to 0s with 1 entry");
+            // trace!("Converting not present p1 table to 0s with 1 entry");
             // rest of the p1 was not used so can simply zero fill it
             // p1_table.fill(0);
             // need to set the p1 entry to the physical page it is supposed to point to
             // need to zero fill that page
-            u8_slice_to_u64_slice(&mut guest_mem[large_page_base..large_page_base + LARGE_PAGE])
-                .fill(0);
-            return Ok((large_page_base, true));
+            // u8_slice_to_u64_slice(&mut guest_mem[large_page_base..large_page_base + LARGE_PAGE])
+            //     .fill(0);
         } else {
+            let old_address = handler_p1_address as usize;
+            assert_eq!(old_address % LARGE_PAGE, 0);
+            // check the p1 table
+            for p1_index in 0..p1_entry {
+                let set_val =
+                    u8_slice_to_u64_slice(&mut guest_mem[p1_address..p1_address + PAGE_SIZE])
+                        [p1_index];
+                assert_eq!(
+                    set_val,
+                    PDE64_USER
+                        | PDE64_PRESENT
+                        | (handler_p1_address + (p1_index * PAGE_SIZE) as u64)
+                );
+            }
+            let set_val =
+                u8_slice_to_u64_slice(&mut guest_mem[p1_address..p1_address + PAGE_SIZE])[p1_entry];
+            assert_eq!(set_val, PDE64_ALL_ALLOWED | page_base_address as u64);
+            for p1_index in p1_entry..TABLE_SIZE {
+                let set_val =
+                    u8_slice_to_u64_slice(&mut guest_mem[p1_address..p1_address + PAGE_SIZE])
+                        [p1_index];
+                assert_eq!(
+                    set_val,
+                    PDE64_USER
+                        | PDE64_PRESENT
+                        | (handler_p1_address + (p1_index * PAGE_SIZE) as u64)
+                );
+            }
+            for page_index in 0..TABLE_SIZE {
+                let set_value = u8_slice_to_u64_slice(
+                    &mut guest_mem[page_base_address..page_base_address + PAGE_SIZE],
+                )[page_index];
+                let expected = u8_slice_to_u64_slice(
+                    &mut guest_mem[old_address + p2_entry * PAGE_SIZE
+                        ..old_address + p2_entry * PAGE_SIZE + PAGE_SIZE],
+                )[page_index];
+                assert_eq!(set_value, expected);
+            }
+            // check the page
             // correct the p2 entry:
-            u8_slice_to_u64_slice(&mut guest_mem[p2_address..p2_address + PAGE_SIZE])[p2_entry] =
-                PDE64_ALL_ALLOWED | canonical_p1_start as u64;
-            let p1_table = u8_slice_to_u64_slice(
-                &mut guest_mem[canonical_p1_start..canonical_p1_start + PAGE_SIZE],
-            );
+            // u8_slice_to_u64_slice(&mut guest_mem[p2_address..p2_address + PAGE_SIZE])[p2_entry] =
+            //     PDE64_ALL_ALLOWED | canonical_p1_start as u64;
+            // let p1_table = u8_slice_to_u64_slice(
+            //     &mut guest_mem[canonical_p1_start..canonical_p1_start + PAGE_SIZE],
+            // );
             // page was present so it is a write error
             // debug_assert!(write_error);
-            debug_assert_eq!(
-                PDE64_PRESENT | PDE64_IS_PAGE | PDE64_USER,
-                p1_flags & !PDE64_ACCESSED,
-                "Flag check failed, for p2 present, but write protected at {}",
-                faulting_address
-            );
-            debug_assert!(
-                p1_address >= metadata.stack_start,
-                "Copy on write page original was lower than max address"
-            );
+            // debug_assert_eq!(
+            //     PDE64_PRESENT | PDE64_IS_PAGE | PDE64_USER,
+            //     p1_flags & !PDE64_ACCESSED,
+            //     "Flag check failed, for p2 present, but write protected at {}",
+            //     faulting_address
+            // );
+            // debug_assert!(
+            //     p1_address >= metadata.stack_start,
+            //     "Copy on write page original was lower than max address"
+            // );
             // need to set the p1 entry to the physical page it is supposed to point to
             // and set the protected mapping for the remainder of the LARGE_PAGE
-            let mut old_p2_page = p1_address;
-            for entry in 0..TABLE_SIZE {
-                p1_table[entry] = PDE64_PRESENT | PDE64_USER | old_p2_page as u64;
-                old_p2_page += PAGE_SIZE;
-            }
+            // let mut old_p2_page = p1_address;
+            // for entry in 0..TABLE_SIZE {
+            //     p1_table[entry] = PDE64_PRESENT | PDE64_USER | old_p2_page as u64;
+            //     old_p2_page += PAGE_SIZE;
+            // }
             // fill the writable page with the old content
-            let (new_page, old_page) = guest_mem.split_at_mut(p1_address);
-            new_page[page_base_address..page_base_address + PAGE_SIZE]
-                .copy_from_slice(&old_page[p1_entry * PAGE_SIZE..(p1_entry + 1) * PAGE_SIZE]);
+            // let (new_page, old_page) = guest_mem.split_at_mut(p1_address);
+            // new_page[page_base_address..page_base_address + PAGE_SIZE]
+            //     .copy_from_slice(&old_page[p1_entry * PAGE_SIZE..(p1_entry + 1) * PAGE_SIZE]);
         };
     } else {
         // p2 entry should contain valid p1 table, so validate that
-        if p1_address != canonical_p1_start {
-            trace!(
-                "p1 address not as expected: {}, found {}, for faulting address: {}",
-                p1_address,
-                canonical_p1_start,
-                faulting_address
-            );
-            return Err(DandelionError::UserError(UserError::ManupulatedPageTables));
-        }
+        // if p1_address != canonical_p1_start {
+        //     trace!(
+        //         "p1 address not as expected: {}, found {}, for faulting address: {}",
+        //         p1_address,
+        //         canonical_p1_start,
+        //         faulting_address
+        //     );
+        //     return Err(DandelionError::UserError(UserError::ManupulatedPageTables));
+        // }
         // load page address from p1 table
         let (old_address, old_flags) =
             get_offset_and_flags(guest_mem, canonical_p1_start, p1_entry);
@@ -838,7 +935,10 @@ pub fn handle_page_fault(
         } else {
             // page was present so it is a write error
             // debug_assert!(write_error);
-            debug_assert_eq!(PDE64_PRESENT | PDE64_USER, old_flags & !PDE64_ACCESSED);
+            debug_assert_eq!(
+                PDE64_PRESENT | PDE64_USER,
+                old_flags & !(PDE64_ACCESSED | PDE64_DIRTY)
+            );
             debug_assert!(
                 old_address >= metadata.stack_start,
                 "Copy on write page original was lower than max address"
