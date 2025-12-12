@@ -12,7 +12,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tokio::net::TcpListener;
-use tokio::runtime::Runtime;
+use tokio::runtime::{Builder};
 
 const STATUS_OK: u16 = 200;
 const STATUS_BAD_REQUEST: u16 = 400;
@@ -248,8 +248,38 @@ async fn create_dirigent_server(
     }
 }
 
-pub fn start_dirigent_server(port: u16) -> Arc<DirigentService> {
-    let runtime = Runtime::new().unwrap();
+pub fn start_dirigent_server(server_cores: Vec<u8>, port: u16) -> Arc<DirigentService> {
+    // let runtime = Runtime::new().unwrap();
+
+    // make multithreaded dirigent sever runtime
+    // set up tokio runtime, need io in any case
+    let mut runtime_builder = Builder::new_multi_thread();
+    runtime_builder.enable_io();
+    runtime_builder.worker_threads(server_cores.len());
+    // Pin each Tokio worker thread to a specific core
+    let cores = server_cores.clone(); // move into closure
+    runtime_builder.on_thread_start(move || {
+        // Each worker thread calls this once.
+        // Need a way to pick which core this thread should use.
+
+        // One simple approach: assign cores in a round-robin based on thread name/id
+        // (Tokio doesn't expose a stable "worker index" here), so use a global counter:
+        static NEXT_DIRIGENT_SERVER_CORE: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+
+        let i = NEXT_DIRIGENT_SERVER_CORE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let core = cores[i % cores.len()] as usize;
+
+        // core_affinity expects core_affinity::CoreId
+        let core_id = core_affinity::CoreId { id: core };
+        let _ok = core_affinity::set_for_current(core_id);
+    });
+    // runtime_builder.global_queue_interval(10);
+    // runtime_builder.event_interval(10);
+
+    let runtime = runtime_builder.build().unwrap();
+
+
     let dg_svc = Arc::new(new_dirigent_service());
     let dg_svc_clone = Arc::clone(&dg_svc);
 
