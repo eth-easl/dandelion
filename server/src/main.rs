@@ -45,6 +45,9 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 
+use signal_hook::consts::signal::{SIGINT, SIGQUIT, SIGTERM};
+use signal_hook::iterator::Signals;
+
 mod dirigent_service;
 use dirigent_service::start_dirigent_server;
 
@@ -650,7 +653,7 @@ fn main() -> () {
                     let output_sets = pf.metadata.output_sets.clone();
                     let metadata = Metadata {
                         input_sets: input_sets,
-                        output_sets: Arc::new(output_sets),
+                        output_sets: output_sets,
                     };
                     match dispatcher.insert_function(
                         pf.name.clone(),
@@ -685,8 +688,20 @@ fn main() -> () {
     let dg_svc = start_dirigent_server(dirigent_server_cores, config.dirigent_sync_port);
     start_proxy_server2(dirigent_proxy_cores, dispatcher_sender.clone(), config.dirigent_proxy_port, dg_svc);
 
-    // Run this server for... forever... unless I receive a signal!
-    runtime.block_on(service_loop(dispatcher_sender, config.port));
+    if cfg!(feature = "use_service_loop") {
+        let _guard = runtime.enter();
+        // Run this server for... forever... unless I receive a signal!
+        runtime.block_on(service_loop(dispatcher_sender, config.port));
+    }
+    else {
+        let signals = Signals::new([SIGTERM, SIGINT, SIGQUIT]);
+
+        // blocks until *any* of them arrives
+        for sig in signals.unwrap().forever() {
+            eprintln!("got signal: {sig}");
+            break; // exit after first one
+        }
+    }
 
     // clean up folder in tmp that is used for function storage
     let removal_error = std::fs::remove_dir_all(FUNCTION_FOLDER_PATH);

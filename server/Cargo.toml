@@ -32,6 +32,7 @@ openssl = { version = "0.10", features = ["vendored"] }
 rand = "0.9.2"
 tracing = "0.1.41"
 anyhow = "1.0.100"
+signal-hook = "0.3.17"
 
 [dev-dependencies]
 assert_cmd = "2.0"
@@ -47,3 +48,4 @@ kvm = ["machine_interface/kvm"]
 reqwest_io = ["machine_interface/reqwest_io"]
 timestamp = ["dispatcher/timestamp"]
 log_function_stdio = ["dispatcher/log_function_stdio"]
+use_service_loop = []
