@@ -46,6 +46,9 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 
+use signal_hook::consts::signal::{SIGINT, SIGQUIT, SIGTERM};
+use signal_hook::iterator::Signals;
+
 mod dirigent_service;
 use dirigent_service::start_dirigent_server;
 
@@ -638,8 +641,6 @@ fn main() -> () {
     // start dispatcher
     dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
 
-    let _guard = runtime.enter();
-
     // TODO would be nice to just print server ready with all enabled features if that would be possible
     print!("Server start with features:");
     #[cfg(feature = "cheri")]
@@ -659,8 +660,20 @@ fn main() -> () {
     let dg_svc = start_dirigent_server(dirigent_server_cores, config.dirigent_sync_port);
     start_proxy_server2(dirigent_proxy_cores, dispatcher_sender.clone(), config.dirigent_proxy_port, dg_svc);
 
-    // Run this server for... forever... unless I receive a signal!
-    runtime.block_on(service_loop(dispatcher_sender, config.port));
+    if cfg!(feature = "use_service_loop") {
+        let _guard = runtime.enter();
+        // Run this server for... forever... unless I receive a signal!
+        runtime.block_on(service_loop(dispatcher_sender, config.port));
+    }
+    else {
+        let signals = Signals::new([SIGTERM, SIGINT, SIGQUIT]);
+
+        // blocks until *any* of them arrives
+        for sig in signals.unwrap().forever() {
+            eprintln!("got signal: {sig}");
+            break; // exit after first one
+        }
+    }
 
     // clean up folder in tmp that is used for function storage
     let removal_error = std::fs::remove_dir_all(FUNCTION_FOLDER_PATH);
