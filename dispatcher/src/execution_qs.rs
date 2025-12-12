@@ -31,13 +31,32 @@ impl WorkQueue for EngineQueue {
         while local_ticket != self.worker_queue.start.load(Ordering::Acquire) {
             hint::spin_loop();
         }
-        let work = loop {
-            match self.queue_out.recv() {
-                Ok((args, debt)) if debt.is_alive() => break (args, debt),
-                Ok(_) => continue,                 // dead debt → skip
-                Err(_) => panic!("Work queue disconnected"),
-            }
-        };
+
+        let work = 
+            if cfg!(feature = "engine_queue_blocking") { // use blocking api
+                loop {
+                    match self.queue_out.recv() {
+                        Ok((args, debt)) if debt.is_alive() => break (args, debt),
+                        Ok(_) => continue,                 // dead debt → skip
+                        Err(_) => panic!("Work queue disconnected"),
+                    }
+                }
+            } else { // use non-blocking api. Busy looping.
+                loop {
+                    match self.queue_out.try_recv() {
+                        Err(TryRecvError::Disconnected) => panic!("Work queue disconnected"),
+                        Err(TryRecvError::Empty) => continue,
+                        Ok(recieved) => {
+                            let (recieved_args, recevied_dept) = recieved;
+                            if recevied_dept.is_alive() {
+                                break (recieved_args, recevied_dept);
+                            }
+                        }
+                    }
+                }                
+            };
+
+
         self.worker_queue.start.fetch_add(1, Ordering::Release);
         return work;
     }
