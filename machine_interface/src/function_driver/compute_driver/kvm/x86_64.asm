@@ -99,6 +99,7 @@ page_fault_exception_handler:
    # p1 (table) entries are always 4KB pages   
    # cr2 holds the offending address, cr3 the root table address, [rsp] holds the error code 
    # compute the table entries in 10 - 13, a number in [0..512)
+   # mov r10, cr3 # r10 holds the address of the p4 entry, always expect offset to be zero, so is same as p4 table
    mov r10, cr2 
    mov r11, cr2 
    mov r12, cr2 
@@ -127,38 +128,49 @@ page_fault_exception_handler:
    add r15, {PAGE_SIZE} 
    add r15, r14 # r15 now holds p1 base
    mov r8, [r14 + r12]
-   # now have the p2 entry in r8
+   mov r9, [r15 + r13]
+   # now have the p2 entry in r8 and p1 entry in r9 (p1 entry may not be valid)
    test r8, {PDE64_PRESENT} # check if present  
-   # if it is present can go on to handle p1
-   jnz 8f
-   # if not present, need to zero out p1 table and final page
+   jz 2f # p2 entry is not present handle p2 demand pageing
+   test r8, {PDE64_USER}
+   jz 0f # if user is not set on present, abort handling
+   test r8, {PDE64_IS_PAGE}
+   jnz 4f # p2 is page, handle p2 zero copy 
+   # check if p1 entry points to present page
+   test r9, {PDE64_PRESENT}
+   jz 3f # handle p1 demand pageing
+   test r9, {PDE64_USER}
+   jnz 5f # handle p1 zero copy
+0: # if not user abort handling
+   out 31, eax #
+2: # handle p2 demand page, by zeroing p1 table and inserting mapping
    mov rcx, 0 
 1:  
    mov qword ptr [r15 + rcx], 0    
    add rcx, 8
    cmp rcx, {PAGE_SIZE} 
-   jg 1b
+   jl 1b
    # all zeroed, need to set the p2 and p1 entry
    mov rax, r15
+   or rax, {PDE64_ALL_ALLOWED}
+   mov [r14 + r12], rax
+3: # hanlde p1 demand page, set p1 entry and zeroing page
    mov rbx, cr2 
    and rbx, ~0xFFF
-   or rax, {PDE64_ALL_ALLOWED}
    or rbx, {PDE64_ALL_ALLOWED} 
-   mov [r14 + r12], rax
    mov [r15 + r13], rbx
    # don't need to invalidate tlb entry, since there was no valid one before
-   mov rdx, cr2 # with installed mapping can zero the page
-   and rdx, ~0xFFF
+   and rbx, ~0xFFF
    mov rcx, 0
 1: 
-   mov qword ptr [rdx + rcx], 0
+   mov qword ptr [rbx + rcx], 0
    add rcx, 8
    cmp rcx, {PAGE_SIZE} 
-   jg 1b
-   jmp 9f # Finished hanlding p2 fault with no present page
-8: # the p2 entry had the present flag set
-   test r8, {PDE64_IS_PAGE} # check if page
-   jz 9f # if writable can go to hanlde p1 fault
+   jl 1b
+   jmp 9f # Finished hanlding demand pageing
+4: # the p2 entry had the present flag set and is page, handle p2 copy on write
+   # test r8, {PDE64_IS_PAGE} # check if page
+   # jz 9f # if writable can go to hanlde p1 fault
    # if present and page, assume it is a copy on write fault (there should be no other option)
    # need to get current physical for copy on write
    mov rax, r8 
@@ -169,31 +181,37 @@ page_fault_exception_handler:
    add rax, {PAGE_SIZE} 
    add rbx, 8
    cmp rbx, {PAGE_SIZE} 
-   jg 1b
+   jl 1b
    # set the one page with write permissions
    mov rax, r15 
+   or rax, {PDE64_ALL_ALLOWED} 
+   mov [r14 + r12], rax
+5: # handle p1 copy on write
    mov rbx, cr2 
    and rbx, ~0xFFF
-   or rax, {PDE64_ALL_ALLOWED} 
    or rbx, {PDE64_ALL_ALLOWED} 
-   mov [r14 + r12], rax
    mov [r15 + r13], rbx
    invlpg [rbx] 
-   and r8, ~0xFFF
+   mov rcx, r8
+   test r8, {PDE64_IS_PAGE}
+   cmovz rcx, r9
+   and rcx, ~({LARGE_PAGE}-1)
+   mov rax, r13 
+   imul rax, 512
+   add rax, rcx
+   add rdx, r8 
    and rbx, ~0xFFF
-   mov rax, 0
+   mov rcx, 0
 1: # copy from old page
-   mov rcx, [r8 + rax]
-   mov [rbx + rax], rcx
-   add rax, 8
-   cmp rax, {PAGE_SIZE} 
-   jg 1b # finished hanlding p2 fault for copy on write
-   jmp 9f
-8: 
+   mov rdx, [rax + rcx]
+   mov [rbx + rcx], rdx
+   add rcx, 8
+   cmp rcx, {PAGE_SIZE} 
+   jl 1b # finished hanlding p2 fault for copy on write
 9: 
    out 14, eax
-   mov rax, cr2  
-   invlpg [rax] # invalidate tlb entry
+   # mov rax, cr2  
+   # invlpg [rax] # invalidate tlb entry
    # restore the registers
    pop r15
    pop r14
