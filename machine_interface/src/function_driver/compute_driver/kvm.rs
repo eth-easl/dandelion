@@ -11,7 +11,7 @@ use crate::{
 };
 use core_affinity;
 use dandelion_commons::{DandelionError, DandelionResult, UserError};
-use kvm_bindings::{kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES};
+use kvm_bindings::{kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES, KVM_MEM_LOG_DIRTY_PAGES};
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::debug;
 use nix::sys::mman::{mmap, MapFlags, ProtFlags};
@@ -162,7 +162,7 @@ impl EngineLoop for KvmLoop {
         // attach VM memory
         let mut region = kvm_userspace_memory_region {
             slot: 0,
-            flags: 0,
+            flags: KVM_MEM_LOG_DIRTY_PAGES,
             guest_phys_addr: 0x0,
             memory_size: kvm_context.storage.len() as u64,
             userspace_addr: kvm_context.storage.as_ptr() as u64,
@@ -228,6 +228,21 @@ impl EngineLoop for KvmLoop {
             }
         }
 
+        let dirty_log = self.vm.get_dirty_log(0, kvm_context.storage.len()).unwrap();
+
+        // construct copied pages from dirty log
+        let mut altered_pages = Vec::new();
+        for (index, dirty) in dirty_log.into_iter().enumerate() {
+            let mut local = dirty;
+            for bit_index in 0..64 {
+                if local & 1 != 0 {
+                    let page = index * 64 * PAGE_SIZE + bit_index * PAGE_SIZE;
+                    altered_pages.push(page);
+                }
+                local = local >> 1;
+            }
+        }
+
         // detach VM memory
         region.memory_size = 0;
         unsafe {
@@ -235,30 +250,19 @@ impl EngineLoop for KvmLoop {
         }
 
         // fix context overlay
-        copied_pages.sort();
-        if copied_pages.len() > 0 {
-            let mut previous_start = copied_pages[0].0;
-            let mut previous_end = if copied_pages[0].1 {
-                previous_start + LARGE_PAGE
-            } else {
-                previous_start + PAGE_SIZE
-            };
+        // copied_pages.sort();
+        // assert_eq!(copied_pages, altered_pages);
+        if altered_pages.len() > 0 {
+            let mut previous_start = altered_pages[0];
+            let mut previous_end = previous_start + PAGE_SIZE;
 
-            for &(new_page, is_large) in copied_pages[1..].into_iter() {
+            for &new_page in altered_pages[1..].into_iter() {
                 if previous_end < new_page {
                     kvm_context.insert_into_overlay(previous_start, previous_end, None);
                     previous_start = new_page;
-                    if is_large {
-                        previous_end = previous_start + LARGE_PAGE;
-                    } else {
-                        previous_end = previous_start + PAGE_SIZE;
-                    }
+                    previous_end = previous_start + PAGE_SIZE;
                 } else {
-                    if is_large {
-                        previous_end += LARGE_PAGE;
-                    } else {
-                        previous_end += PAGE_SIZE;
-                    }
+                    previous_end += PAGE_SIZE;
                 }
             }
             kvm_context.insert_into_overlay(previous_start, previous_end, None);

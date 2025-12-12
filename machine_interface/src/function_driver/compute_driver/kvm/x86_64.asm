@@ -209,9 +209,7 @@ page_fault_exception_handler:
    cmp rcx, {PAGE_SIZE} 
    jl 1b # finished hanlding p2 fault for copy on write
 9: 
-   out 14, eax
-   # mov rax, cr2  
-   # invlpg [rax] # invalidate tlb entry
+   # out 14, eax
    # restore the registers
    pop r15
    pop r14

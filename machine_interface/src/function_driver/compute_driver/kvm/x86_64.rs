@@ -738,7 +738,7 @@ pub fn handle_page_fault(
     vcpu: &VcpuFd,
     metadata: &PageFaultMetadata,
     guest_mem: &mut [u8],
-) -> DandelionResult<(usize, bool)> {
+) -> DandelionResult<usize> {
     let regs = vcpu.get_regs().unwrap();
     let sregs = vcpu.get_sregs().unwrap();
     // the faulting address is in cr2, cr3 holds the root table address, rax holds the error code
@@ -1038,7 +1038,7 @@ pub fn handle_page_fault(
     let p1_table =
         u8_slice_to_u64_slice(&mut guest_mem[canonical_p1_start..canonical_p1_start + PAGE_SIZE]);
     p1_table[p1_entry] = page_base_address as u64 | PDE64_ALL_ALLOWED;
-    Ok((page_base_address, false))
+    Ok(page_base_address)
 }
 
 fn setup_long_mode(sregs: &mut kvm_sregs) {
