@@ -505,8 +505,14 @@ fn main() -> () {
         .map(|core| resource_conversion(core))
         .collect();
 
+    // TMP we just assume dirigent server and dirigent proxy also runs on the front-end core(s)
+    let dirigent_server_cores = frontend_cores.clone();
+    let dirigent_proxy_cores = frontend_cores.clone();
+
     println!("core allocation:");
     println!("frontend cores {:?}", frontend_cores);
+    println!("dirigent_server_cores {:?}", dirigent_server_cores);
+    println!("dirigent_proxy_cores {:?}", dirigent_proxy_cores); 
     println!("dispatcher cores: {:?}", dispatcher_cores);
     println!("communication cores: {:?}", communication_cores);
     println!("compute cores: {:?}", compute_cores);
@@ -676,8 +682,8 @@ fn main() -> () {
     print!(" timestamp");
     print!("\n");
 
-    let dg_svc = start_dirigent_server(config.dirigent_sync_port);
-    start_proxy_server2(dispatcher_sender.clone(), config.dirigent_proxy_port, dg_svc);
+    let dg_svc = start_dirigent_server(dirigent_server_cores, config.dirigent_sync_port);
+    start_proxy_server2(dirigent_proxy_cores, dispatcher_sender.clone(), config.dirigent_proxy_port, dg_svc);
 
     // Run this server for... forever... unless I receive a signal!
     runtime.block_on(service_loop(dispatcher_sender, config.port));

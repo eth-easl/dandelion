@@ -30,13 +30,16 @@ use std::{
     io::{ErrorKind, Write},
     path::PathBuf,
     time::Instant,
+    sync::atomic::{AtomicUsize, Ordering},
 };
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::runtime::Runtime;
+use tokio::runtime::{Runtime, Builder};
 use tokio::signal::unix::SignalKind;
 use tokio::sync::{mpsc, oneshot};
 use tokio::{io, try_join};
+
+use core_affinity::{self, CoreId};
 
 const HTTP2_MAGIC_PACKET: [u8; 24] = [
     0x50, 0x52, 0x49, 0x20, 0x2a, 0x20, 0x48, 0x54, 0x54, 0x50, 0x2f, 0x32, 0x2e, 0x30, 0x0d, 0x0a,
@@ -1739,11 +1742,41 @@ async fn create_proxy_server2(
 }
 
 pub fn start_proxy_server2(
+    proxy_cores: Vec<u8>,
     request_sender: mpsc::Sender<DispatcherCommand>,
     port: u16,
     dg_svc: Arc<DirigentService>,
 ) {
-    let runtime = Runtime::new().unwrap();
+    // let runtime = Runtime::new().unwrap(); // The default runtime. Use all the cores it could use
+
+    // make multithreaded dirigent proxy runtime
+    // set up tokio runtime, need io in any case
+    let mut runtime_builder = Builder::new_multi_thread();
+    runtime_builder.enable_io();
+    runtime_builder.worker_threads(proxy_cores.len());
+    // Pin each Tokio worker thread to a specific core
+    let cores = proxy_cores.clone(); // move into closure
+    runtime_builder.on_thread_start(move || {
+        // Each worker thread calls this once.
+        // Need a way to pick which core this thread should use.
+
+        // One simple approach: assign cores in a round-robin based on thread name/id
+        // (Tokio doesn't expose a stable "worker index" here), so use a global counter:
+        static NEXT_DIRIGENT_PROXY_CORE: AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+
+        let i = NEXT_DIRIGENT_PROXY_CORE.fetch_add(1, Ordering::Relaxed);
+        let core = cores[i % cores.len()] as usize;
+
+        // core_affinity expects core_affinity::CoreId
+        let core_id = CoreId { id: core };
+        let _ok = core_affinity::set_for_current(core_id);
+    });
+    // runtime_builder.global_queue_interval(10);
+    // runtime_builder.event_interval(10);
+    
+    let runtime = runtime_builder.build().unwrap();
+
 
     thread::spawn(move || {
         runtime.block_on(async {
