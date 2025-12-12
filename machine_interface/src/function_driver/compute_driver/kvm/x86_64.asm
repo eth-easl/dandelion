@@ -76,18 +76,18 @@ page_fault_exception_handler:
    mov [rsp + 16], rax
    # preserve registers we use in handler
    # push rax
-   sub rsp, 8
-   push rbx
-   push rcx
-   push rdx
-   push r8
-   push r9
-   push r10
-   push r11
-   push r12
-   push r13
-   push r14
-   push r15
+   mov [rsp - 16], rbx
+   mov [rsp - 24], rcx
+   mov [rsp - 32], rdx
+   mov [rsp - 40], r8
+   mov [rsp - 48], r9
+   mov [rsp - 56], r10
+   mov [rsp - 64], r11
+   mov [rsp - 72], r12
+   mov [rsp - 80], r13
+   mov [rsp - 88], r14
+   mov [rsp - 96], r15
+   vmovdqa [rsp - 152], ymm1
    # this handler assumes 4 level paging
    # each linear address consists of the following
    # 47 .. 39 | 38 .. 30 | 29 .. 21 | 20 .. 12 | 11 .. 0
@@ -142,7 +142,7 @@ page_fault_exception_handler:
    test r9, {PDE64_USER}
    jnz 5f # handle p1 zero copy
 0: # if not user abort handling
-   out 31, eax #
+   out 14, eax #
 2: # handle p2 demand page, by zeroing p1 table and inserting mapping
    mov rcx, 0 
 1:  
@@ -164,8 +164,9 @@ page_fault_exception_handler:
    mov rcx, 0
 1: 
    mov qword ptr [rbx + rcx], 0
-   add rcx, 8
-   cmp rcx, {PAGE_SIZE} 
+   mov qword ptr [rbx + rcx + 8], 0
+   add rcx, 16
+   cmp rcx, ({PAGE_SIZE} / 2)
    jl 1b
    jmp 9f # Finished hanlding demand pageing
 4: # the p2 entry had the present flag set and is page, handle p2 copy on write
@@ -209,20 +210,21 @@ page_fault_exception_handler:
    cmp rcx, {PAGE_SIZE} 
    jl 1b # finished hanlding p2 fault for copy on write
 9: 
-   # out 14, eax
+   out 14, eax # !!! Uncomment for backend debug
    # restore the registers
-   pop r15
-   pop r14
-   pop r13
-   pop r12
-   pop r11
-   pop r10
-   pop r9
-   pop r8
-   pop rdx
-   pop rcx
-   pop rbx
-   pop rax
+   # vmovdqa ymm1, [rsp - 152]
+   mov r15, [rsp - 96]
+   mov r14, [rsp - 88]
+   mov r13, [rsp - 80]
+   mov r12, [rsp - 72]
+   mov r11, [rsp - 64]
+   mov r10, [rsp - 56]
+   mov r9, [rsp - 48]
+   mov r8, [rsp - 40]
+   mov rdx, [rsp - 32]
+   mov rcx, [rsp - 24]
+   mov rbx, [rsp - 16]
+   mov rax, [rsp - 8]
    add rsp, 8 # pop the interrupt handler argument (needs to be done manually, as not all handlers have one)
    rex64 iretq
 floating_point_error_handler:

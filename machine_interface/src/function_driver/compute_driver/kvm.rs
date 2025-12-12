@@ -199,17 +199,19 @@ impl EngineLoop for KvmLoop {
             dump_regs(&self.vcpu);
         }
 
-        let mut copied_pages = Vec::new();
         // start running the function
         loop {
             let reason = self.vcpu.run().unwrap();
             match reason {
+                #[cfg(feature = "backend_debug")]
                 VcpuExit::IoOut(14, _) => {
+                    // ATTENTION: unomment out 14 in page handler so it exits to here
                     // handle page fault in guest
-                    let page_offset =
-                        handle_page_fault(&self.vcpu, &page_fault_metadata, kvm_context.storage)?;
-                    log::trace!("page fault fixed at: {:?}", page_offset);
-                    copied_pages.push(page_offset);
+                    check_page_fault_handling(
+                        &self.vcpu,
+                        &page_fault_metadata,
+                        kvm_context.storage,
+                    );
                 }
                 VcpuExit::Hlt => break,
                 VcpuExit::SystemEvent(_type, _data) => {
@@ -230,42 +232,59 @@ impl EngineLoop for KvmLoop {
 
         let dirty_log = self.vm.get_dirty_log(0, kvm_context.storage.len()).unwrap();
 
-        // construct copied pages from dirty log
-        let mut altered_pages = Vec::new();
-        for (index, dirty) in dirty_log.into_iter().enumerate() {
-            let mut local = dirty;
-            for bit_index in 0..64 {
-                if local & 1 != 0 {
-                    let page = index * 64 * PAGE_SIZE + bit_index * PAGE_SIZE;
-                    altered_pages.push(page);
-                }
-                local = local >> 1;
-            }
-        }
-
         // detach VM memory
         region.memory_size = 0;
         unsafe {
             self.vm.set_user_memory_region(region).unwrap();
         }
 
-        // fix context overlay
-        // copied_pages.sort();
-        // assert_eq!(copied_pages, altered_pages);
-        if altered_pages.len() > 0 {
-            let mut previous_start = altered_pages[0];
-            let mut previous_end = previous_start + PAGE_SIZE;
-
-            for &new_page in altered_pages[1..].into_iter() {
-                if previous_end < new_page {
-                    kvm_context.insert_into_overlay(previous_start, previous_end, None);
-                    previous_start = new_page;
-                    previous_end = previous_start + PAGE_SIZE;
-                } else {
-                    previous_end += PAGE_SIZE;
+        let mut dirty_index = 0;
+        let mut contiguous_pages = 0;
+        while dirty_index < dirty_log.len() {
+            let mut local_dirty = dirty_log[dirty_index];
+            if local_dirty == 0 {
+                if contiguous_pages > 0 {
+                    let end = dirty_index * 64 * PAGE_SIZE;
+                    let start = end - contiguous_pages * PAGE_SIZE;
+                    kvm_context.insert_into_overlay(start, end, None);
+                    contiguous_pages = 0;
+                }
+            } else if local_dirty == u64::MAX {
+                contiguous_pages += 64;
+            } else {
+                let mut bits_processed = 0usize;
+                let mut trailing_zeros = local_dirty.trailing_zeros() as usize;
+                if trailing_zeros != 0 && contiguous_pages != 0 {
+                    let end = dirty_index * 64 * PAGE_SIZE;
+                    let start = end - contiguous_pages * PAGE_SIZE;
+                    kvm_context.insert_into_overlay(start, end, None);
+                    contiguous_pages = 0;
+                }
+                while trailing_zeros < 64 {
+                    // can always do this, sice if the last one is not a zero it will simply shift by 0
+                    local_dirty = local_dirty >> trailing_zeros;
+                    bits_processed += trailing_zeros;
+                    let trailing_ones = local_dirty.trailing_ones() as usize;
+                    contiguous_pages += trailing_ones;
+                    local_dirty = local_dirty >> trailing_ones;
+                    bits_processed += trailing_ones;
+                    // if the trailing ones were until the end of the u64, break and continue with the next u64
+                    if bits_processed >= 64 {
+                        break;
+                    }
+                    let end = (dirty_index * 64 + bits_processed) * PAGE_SIZE;
+                    let start = end - contiguous_pages * PAGE_SIZE;
+                    kvm_context.insert_into_overlay(start, end, None);
+                    contiguous_pages = 0;
+                    trailing_zeros = local_dirty.trailing_zeros() as usize;
                 }
             }
-            kvm_context.insert_into_overlay(previous_start, previous_end, None);
+            dirty_index += 1;
+        }
+        if contiguous_pages > 0 {
+            let end = dirty_index * 64 * PAGE_SIZE;
+            let start = end - contiguous_pages * PAGE_SIZE;
+            kvm_context.insert_into_overlay(start, end, None);
         }
 
         read_output_structs::<u64, u64>(&mut context, elf_config.system_data_offset)?;
