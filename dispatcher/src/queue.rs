@@ -9,7 +9,7 @@ use std::{
 
 use dandelion_commons::{DandelionError, DandelionResult};
 use machine_interface::{
-    function_driver::{WorkDone, WorkToDo},
+    function_driver::{EngineWorkQueue, WorkDone, WorkToDo},
     machine_config::EngineType,
     promise::{Debt, PromiseBuffer},
 };
@@ -162,7 +162,8 @@ unsafe impl Send for QueueInternal {}
 /// Thread safe, lock-free ring buffer with fixed size.
 ///
 /// Producers can push new work to the end of the queue using the `push` function.
-/// Consumers can inspect elements using the `inspect` function and pop elements using the `aquire` and `aquire_next` functions.
+/// Consumers can inspect elements using the `inspect` function and pop elements using the `aquire`
+/// and `aquire_next` functions.
 pub struct WorkQueue {
     inner: Arc<QueueInternal>,
     promise_buffer: PromiseBuffer,
@@ -288,8 +289,9 @@ impl WorkQueue {
         }
     }
 
-    /// Inserts the work into the queue and sets the flags according to the supported engines.
-    pub async fn insert_work(
+    /// Inserts the work into the queue setting the flags according to the supported engines and
+    /// awaits the future before returning the result.
+    pub async fn do_work(
         &self,
         work: WorkToDo,
         engines: Vec<EngineType>,
@@ -305,8 +307,19 @@ impl WorkQueue {
         return promise.await;
     }
 
-    /// Tries to acquire some work that matches the given flags starting from the head of
-    /// the queue.
+    /// Inserts the work into the queue with the given engine flags and awaits the future before
+    /// returning the result.
+    pub async fn do_work_flags(
+        &self,
+        work: WorkToDo,
+        engine_flags: u32,
+    ) -> DandelionResult<WorkDone> {
+        let (promise, debt) = self.promise_buffer.get_promise()?;
+        self.push(work, debt, engine_flags)?;
+        return promise.await;
+    }
+
+    /// Tries to acquire some work that matches the given flags starting from the head of the queue.
     pub fn try_get_work(&self, engine_flags: u32) -> Option<(WorkToDo, Debt)> {
         let buffer_len = self.inner.buffer.len();
         let mut idx = self.inner.head.load(Ordering::Acquire);
@@ -333,8 +346,6 @@ impl WorkQueue {
 
     /// Spins on the queue until it manages to acquire some work that matches the given flags.
     pub fn get_work(&self, engine_flags: u32) -> (WorkToDo, Debt) {
-        // TODO: add some ticket system for each engine type to reduce the number of workers
-        // constantly accessing the queue elements
         loop {
             if let Some(content) = self.try_get_work(engine_flags) {
                 return content;
@@ -356,5 +367,38 @@ impl Clone for WorkQueue {
             inner: Arc::clone(&self.inner),
             promise_buffer: self.promise_buffer.clone(),
         }
+    }
+}
+
+/// Engine specific wrapper for the `WorkQueue` that implements the `EngineWorkQueue` trait.
+pub struct EngineQueue {
+    work_queue: WorkQueue,
+    engine_flags: u32,
+}
+
+impl EngineQueue {
+    /// Wraps the work queue and specialized it for the given engine type.
+    pub fn init(work_queue: WorkQueue, engine_type: EngineType) -> Self {
+        EngineQueue {
+            work_queue,
+            engine_flags: get_engine_flag(engine_type),
+        }
+    }
+
+    /// Inserts the work into the queue and awaits the result.
+    pub async fn do_work(&self, work: WorkToDo) -> DandelionResult<WorkDone> {
+        self.work_queue.do_work_flags(work, self.engine_flags).await
+    }
+}
+
+impl EngineWorkQueue for EngineQueue {
+    fn get_engine_args(&self) -> (WorkToDo, machine_interface::promise::Debt) {
+        // TODO: add some ticket system for each engine type to reduce the number of workers
+        // constantly accessing the queue elements
+        self.work_queue.get_work(self.engine_flags)
+    }
+
+    fn try_get_engine_args(&self) -> Option<(WorkToDo, machine_interface::promise::Debt)> {
+        self.work_queue.try_get_work(self.engine_flags)
     }
 }
