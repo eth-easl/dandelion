@@ -1,8 +1,8 @@
 use dandelion_commons::{DandelionError, DandelionResult};
-use kvm_bindings::{kvm_fpu, kvm_regs, kvm_segment, kvm_sregs};
+use kvm_bindings::{kvm_fpu, kvm_regs, kvm_segment, kvm_sregs, kvm_xcrs};
 use kvm_ioctls::{VcpuFd, VmFd};
 use log::{debug, trace};
-use std::{arch::global_asm, os::raw::c_void, slice};
+use std::{os::raw::c_void, slice};
 
 // CR0 bits
 /// Protected Mode Enable
@@ -29,6 +29,18 @@ const CR4_OSFXSR: u64 = 1 << 9;
 const CR4_OSXMMEXCPT: u64 = 1 << 10;
 /// Enables the instructions RDFSBASE, RDGSBASE, WRFSBASE, and WRGSBASE
 const CR4_FSGSBASE: u64 = 1 << 16;
+/// Enables xsafe, required for vector instructions
+const CR4_OSXSAVE: u64 = 1 << 18;
+
+// XCR0 bits
+/// X87 must be 1
+const XCR0_X87: u64 = 1 << 0;
+/// SSE, set to 1 to enable XMM registers and sse instructions
+const XCR0_SSE: u64 = 1 << 1;
+/// AVX, set to 1 to enable ymm registers and avx instructions
+const XCR0_AVX: u64 = 1 << 2;
+/// AVX-512, collection of bits to set to use avx-512 registers and instructions
+const XCR0_AVX512: u64 = 1 << 5 | 1 << 6 | 1 << 7;
 
 // EFER bits
 /// Long Mode Enable
@@ -38,13 +50,13 @@ const EFER_LMA: u64 = 1 << 10;
 
 // 64-bit page directory entry bits
 /// Present
-const PDE64_PRESENT: u64 = 1 << 0;
+pub(super) const PDE64_PRESENT: u64 = 1 << 0;
 /// Writable
 const PDE64_RW: u64 = 1 << 1;
 /// User accessible
-const PDE64_USER: u64 = 1 << 2;
+pub(super) const PDE64_USER: u64 = 1 << 2;
 /// Default flags for user accessable pages
-const PDE64_ALL_ALLOWED: u64 = PDE64_PRESENT | PDE64_RW | PDE64_USER;
+pub(super) const PDE64_ALL_ALLOWED: u64 = PDE64_PRESENT | PDE64_RW | PDE64_USER;
 /// Set by hardware if the entry has been used to translate a linear address
 #[cfg(feature = "backend_debug")]
 const PDE64_ACCESSED: u64 = 1 << 5;
@@ -53,7 +65,7 @@ const PDE64_ACCESSED: u64 = 1 << 5;
 const PDE64_DIRTY: u64 = 1 << 6;
 /// Page size, for p3 and lower, this indicates the entry address is the mapping, not another table
 /// In the docs this is called the PDE64_PS
-const PDE64_IS_PAGE: u64 = 1 << 7;
+pub(super) const PDE64_IS_PAGE: u64 = 1 << 7;
 
 // 4 level paging:
 // each linear address consists of the following
@@ -64,14 +76,14 @@ const PDE64_IS_PAGE: u64 = 1 << 7;
 // The direcotry pointer table entries are either 1GB pages or directory table pointers
 // Directory table entries are either 2MB pages or tables
 // Table entries are always 4KB pages
-const PAGE_SHIFT: usize = 12;
+pub(super) const PAGE_SHIFT: usize = 12;
 pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
-const PAGE_MASK: u64 = (PAGE_SIZE - 1) as u64;
+pub(super) const PAGE_MASK: u64 = (PAGE_SIZE - 1) as u64;
 const LARGE_PAGE_SHIFT: usize = 21;
 pub const LARGE_PAGE: usize = 1 << LARGE_PAGE_SHIFT;
-const HUGE_PAGE_SHIFT: usize = 30;
-const HUGE_PAGE: usize = 1 << HUGE_PAGE_SHIFT;
-const PML4_SHIFT: usize = 39;
+pub(super) const HUGE_PAGE_SHIFT: usize = 30;
+pub(super) const HUGE_PAGE: usize = 1 << HUGE_PAGE_SHIFT;
+pub(super) const PML4_SHIFT: usize = 39;
 const TABLE_SIZE: usize = 512;
 
 fn u8_slice_to_u64_slice(input: &mut [u8]) -> &mut [u64] {
@@ -91,16 +103,9 @@ fn u8_slice_to_u64_slice(input: &mut [u8]) -> &mut [u64] {
 
 pub struct ResetState {
     sregs: kvm_sregs,
+    xregs: kvm_xcrs,
 }
 
-global_asm!(include_str!("x86_64.asm"),
-    PAGE_SIZE = const PAGE_SIZE,
-    LARGE_PAGE = const LARGE_PAGE,
-    PDE64_PRESENT = const PDE64_PRESENT,
-    PDE64_USER = const PDE64_USER,
-    PDE64_ALL_ALLOWED = const PDE64_ALL_ALLOWED,
-    PDE64_IS_PAGE = const PDE64_IS_PAGE
-);
 extern "C" {
     // symbols for first and last
     fn asm_start();
@@ -134,8 +139,9 @@ extern "C" {
 impl ResetState {
     pub fn new(_vm: &VmFd, vcpu: &VcpuFd) -> Self {
         let mut sregs = vcpu.get_sregs().unwrap();
-        setup_long_mode(&mut sregs);
-        return Self { sregs };
+        let mut xregs = vcpu.get_xcrs().unwrap();
+        setup_long_mode(&mut sregs, &mut xregs);
+        return Self { sregs, xregs };
     }
 
     /// initialized_pages: Vec with all pages that do not need to be zeroed on first access
@@ -153,6 +159,7 @@ impl ResetState {
         last_address: usize,
     ) -> DandelionResult<PageFaultMetadata> {
         let mut sregs = self.sregs.clone();
+        let xregs = self.xregs.clone();
         let interrupt_end = stack_pointer;
         set_interrupt_table(&mut sregs, guest_mem, &mut stack_pointer);
         let interrupt_start = stack_pointer;
@@ -167,6 +174,7 @@ impl ResetState {
         )?;
 
         vcpu.set_sregs(&sregs).unwrap();
+        vcpu.set_xcrs(&xregs).unwrap();
         vcpu.set_regs(&kvm_regs {
             rip: entry_point,
             rsp: stack_pointer as u64 - 32,
@@ -947,10 +955,11 @@ pub fn check_page_fault_handling(
     };
 }
 
-fn setup_long_mode(sregs: &mut kvm_sregs) {
-    sregs.cr4 = CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT | CR4_FSGSBASE;
+fn setup_long_mode(sregs: &mut kvm_sregs, xregs: &mut kvm_xcrs) {
+    sregs.cr4 = CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT | CR4_FSGSBASE | CR4_OSXSAVE;
     sregs.cr0 = CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_WP | CR0_AM | CR0_PG;
     sregs.efer = EFER_LME | EFER_LMA;
+    xregs.xcrs[0].value = XCR0_X87 | XCR0_SSE | XCR0_AVX | XCR0_AVX512;
     // set dpl on both code and stack segment to make sure it is user level
     // let priviledge_level = 0u8;
     let priviledge_level = 3u8;

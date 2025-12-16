@@ -1,3 +1,9 @@
+use super::x86_64::{
+    LARGE_PAGE, PAGE_SIZE, PDE64_ALL_ALLOWED, PDE64_IS_PAGE, PDE64_PRESENT, PDE64_USER,
+};
+use core::arch::global_asm;
+
+global_asm!("
 .global asm_start
 .global default_handler
 .global divide_error_exception_handler
@@ -14,6 +20,8 @@
 .global segment_not_present_handler
 .global stack_fault_exception_handler
 .global general_protection_exception_handler
+.global page_fault_exception_handler
+.global floating_point_error_handler
 .global alignment_check_exception_handler
 .global machine_check_exception_handler
 .global simd_fp_exception_handler
@@ -22,6 +30,8 @@
 .global user_exit_handler
 .global fault_handlers_end
 
+// TODO: once attributes on asm stabilize,
+// add in avx-512 versions
 asm_start:
 default_handler:
    mov eax, [rsp]
@@ -75,7 +85,6 @@ page_fault_exception_handler:
    and rax, ~0x10000
    mov [rsp + 16], rax
    # preserve registers we use in handler
-   # push rax
    mov [rsp - 16], rbx
    mov [rsp - 24], rcx
    mov [rsp - 32], rdx
@@ -86,9 +95,17 @@ page_fault_exception_handler:
    mov [rsp - 72], r12
    mov [rsp - 80], r13
    mov [rsp - 88], r14
-   mov [rsp - 96], r15
-   vmovdqa [rsp - 152], ymm1
-   # this handler assumes 4 level paging
+   mov [rsp - 96], r15",
+   // #[not(cfg((target_feature(enable = "avx512f")))]
+   "vmovdqa [rsp - 144], ymm0",
+   "vmovdqa [rsp - 176], ymm1",
+   "vmovdqa [rsp - 208], ymm2",
+   "vmovdqa [rsp - 240], ymm3",
+   "vmovdqa [rsp - 272], ymm4",
+   "vmovdqa [rsp - 304], ymm5",
+   "vmovdqa [rsp - 336], ymm6",
+   "vmovdqa [rsp - 368], ymm7",
+   "# this handler assumes 4 level paging
    # each linear address consists of the following
    # 47 .. 39 | 38 .. 30 | 29 .. 21 | 20 .. 12 | 11 .. 0
    # p4       | p3       | p2       | p1       | Offset
@@ -144,10 +161,20 @@ page_fault_exception_handler:
 0: # if not user abort handling
    out 14, eax #
 2: # handle p2 demand page, by zeroing p1 table and inserting mapping
-   mov rcx, 0 
-1:  
-   mov qword ptr [r15 + rcx], 0    
-   add rcx, 8
+   mov rcx, 0
+   // set vector register to 0",
+   "vpxor ymm0, ymm0, ymm0",
+"1:",
+   "vmovntdq [r15 + rcx], ymm0",
+   "vmovntdq [r15 + rcx + 32], ymm0",
+   "vmovntdq [r15 + rcx + 64], ymm0",
+   "vmovntdq [r15 + rcx + 96], ymm0",
+   "vmovntdq [r15 + rcx + 128], ymm0",
+   "vmovntdq [r15 + rcx + 160], ymm0",
+   "vmovntdq [r15 + rcx + 192], ymm0",
+   "vmovntdq [r15 + rcx + 224], ymm0",
+   // "mov qword ptr [r15 + rcx], 0",
+   "add rcx, 256
    cmp rcx, {PAGE_SIZE} 
    jl 1b
    # all zeroed, need to set the p2 and p1 entry
@@ -161,12 +188,20 @@ page_fault_exception_handler:
    mov [r15 + r13], rbx
    # don't need to invalidate tlb entry, since there was no valid one before
    and rbx, ~0xFFF
-   mov rcx, 0
-1: 
-   mov qword ptr [rbx + rcx], 0
-   mov qword ptr [rbx + rcx + 8], 0
-   add rcx, 16
-   cmp rcx, ({PAGE_SIZE} / 2)
+   mov rcx, 0",
+   "vpxor ymm0, ymm0, ymm0",
+"1:",
+   "vmovntdq [rbx + rcx], ymm0",
+   "vmovntdq [rbx + rcx + 32], ymm0",
+   "vmovntdq [rbx + rcx + 64], ymm0",
+   "vmovntdq [rbx + rcx + 96], ymm0",
+   "vmovntdq [rbx + rcx + 128], ymm0",
+   "vmovntdq [rbx + rcx + 160], ymm0",
+   "vmovntdq [rbx + rcx + 192], ymm0",
+   "vmovntdq [rbx + rcx + 224], ymm0",
+   // "mov qword ptr [rbx + rcx], 0",
+   "add rcx, 256
+   cmp rcx, {PAGE_SIZE}
    jl 1b
    jmp 9f # Finished hanlding demand pageing
 4: # the p2 entry had the present flag set and is page, handle p2 copy on write
@@ -203,17 +238,39 @@ page_fault_exception_handler:
    add rdx, r8 
    and rbx, ~0xFFF
    mov rcx, 0
-1: # copy from old page
-   mov rdx, [rax + rcx]
-   mov [rbx + rcx], rdx
-   add rcx, 8
+1: # copy from old page",
+   "vmovntdqa ymm0, [rax + rcx]",
+   "vmovntdqa ymm1, [rax + rcx + 32]",
+   "vmovntdqa ymm2, [rax + rcx + 64]",
+   "vmovntdqa ymm3, [rax + rcx + 96]",
+   "vmovntdqa ymm4, [rax + rcx + 128]",
+   "vmovntdqa ymm5, [rax + rcx + 160]",
+   "vmovntdqa ymm6, [rax + rcx + 192]",
+   "vmovntdqa ymm7, [rax + rcx + 224]",
+   "vmovntdq [rbx + rcx], ymm0",
+   "vmovntdq [rbx + rcx + 32], ymm1",
+   "vmovntdq [rbx + rcx + 64], ymm2",
+   "vmovntdq [rbx + rcx + 96], ymm3",
+   "vmovntdq [rbx + rcx + 128], ymm4",
+   "vmovntdq [rbx + rcx + 160], ymm5",
+   "vmovntdq [rbx + rcx + 192], ymm6",
+   "vmovntdq [rbx + rcx + 224], ymm7",
+   "add rcx, 256
    cmp rcx, {PAGE_SIZE} 
    jl 1b # finished hanlding p2 fault for copy on write
 9: 
-   out 14, eax # !!! Uncomment for backend debug
-   # restore the registers
-   # vmovdqa ymm1, [rsp - 152]
-   mov r15, [rsp - 96]
+   # out 14, eax # !!! Uncomment for backend debug
+   # restore the registers",
+   // #[not(cfg((target_feature(enable = "avx512f")))]
+   "vmovdqa ymm7, [rsp - 368]",
+   "vmovdqa ymm6, [rsp - 336]",
+   "vmovdqa ymm5, [rsp - 304]",
+   "vmovdqa ymm4, [rsp - 272]",
+   "vmovdqa ymm3, [rsp - 240]",
+   "vmovdqa ymm2, [rsp - 208]",
+   "vmovdqa ymm1, [rsp - 176]",
+   "vmovdqa ymm0, [rsp - 144]",
+   "mov r15, [rsp - 96]
    mov r14, [rsp - 88]
    mov r13, [rsp - 80]
    mov r12, [rsp - 72]
@@ -225,6 +282,7 @@ page_fault_exception_handler:
    mov rcx, [rsp - 24]
    mov rbx, [rsp - 16]
    mov rax, [rsp - 8]
+   # add rsp, 0xd0
    add rsp, 8 # pop the interrupt handler argument (needs to be done manually, as not all handlers have one)
    rex64 iretq
 floating_point_error_handler:
@@ -248,4 +306,11 @@ control_protection_exception:
 user_exit_handler:
    out 32, eax
 fault_handlers_end:
-   hlt
+   hlt", 
+    PAGE_SIZE = const PAGE_SIZE,
+    LARGE_PAGE = const LARGE_PAGE,
+    PDE64_PRESENT = const PDE64_PRESENT,
+    PDE64_USER = const PDE64_USER,
+    PDE64_ALL_ALLOWED = const PDE64_ALL_ALLOWED,
+    PDE64_IS_PAGE = const PDE64_IS_PAGE
+);

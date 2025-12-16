@@ -324,7 +324,6 @@ impl ContextTrait for KvmContext {
 
         let mut overlay_range = self.overlay.range(offset..);
         while let Some((overlay_end, (overlay_start, overlay_option))) = overlay_range.next() {
-            // check if there is any space before the overlay item that needs to be read first
             if *overlay_start > offset {
                 return Err(DandelionError::InvalidRead);
             }
