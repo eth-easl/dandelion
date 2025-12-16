@@ -37,6 +37,8 @@ pub enum DispatcherInput {
     Set(CompositionSet),
 }
 
+const MAX_QUEUE: usize = 4096;
+
 // TODO here and in registry can probably replace driver and loader function maps with fixed size arrays
 // That have compile time size and static indexing
 // TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
@@ -59,7 +61,8 @@ impl Dispatcher {
         let domains = get_available_domains(memory_resources);
         let drivers = get_available_drivers();
 
-        let work_queue = WorkQueue::init(1000); // TODO: get size from config?
+        // TODO: get size from config?
+        let work_queue = WorkQueue::init(MAX_QUEUE);
 
         // create an engine queue wrapper of the work queue for each engine and use up all engine resource available
         let mut domain_map = BTreeMap::new();
@@ -109,7 +112,7 @@ impl Dispatcher {
         &self,
         function_id: String,
         inputs: Vec<DispatcherInput>,
-        non_caching: bool,
+        caching: bool,
         start_time: std::time::Instant,
     ) -> DandelionResult<(Vec<Option<CompositionSet>>, Recorder)> {
         debug!("Queuing function {}", function_id);
@@ -128,12 +131,7 @@ impl Dispatcher {
         }
 
         let results = self
-            .queue_function(
-                function_id,
-                input_vec,
-                non_caching,
-                recorder.get_sub_recorder(),
-            )
+            .queue_function(function_id, input_vec, caching, recorder.get_sub_recorder())
             .await?;
 
         return Ok((results, recorder));
@@ -429,7 +427,11 @@ impl Dispatcher {
             // TODO actual scheduling decisions
             match self.function_registry.get_function(&function_id)? {
                 FunctionType::SystemFunction(func_info) | FunctionType::Function(func_info) => {
-                    // TODO: insert scheduling policy funtion here
+                    // TODO: Scheduling policies:
+                    // - can insert the work with all possible engine alternatives into the queue
+                    // - not yet clear how this works with the function preparation steps
+                    // -> right now we pick the first alternative and insert it into the queue with
+                    //    only that engine
                     let engine_type = func_info
                         .alternatives
                         .read()
