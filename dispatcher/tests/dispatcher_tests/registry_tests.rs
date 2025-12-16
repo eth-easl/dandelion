@@ -75,23 +75,21 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         let mut local_names = in_set_names.clone();
         local_names[i].1 = Some(CompositionSet::from((0, vec![mat_con_a.clone()])));
         // alter metadata for the functions
-        let function_id = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap()
-            .block_on(
-                dispatcher.insert_func(
-                    format!("local_name_{}", i),
-                    engine_type,
-                    DEFAULT_CONTEXT_SIZE,
-                    absolute_path
-                        .to_str()
-                        .expect("Path should be valid string")
-                        .to_string(),
-                    Metadata {
-                        input_sets: Arc::new(local_names),
-                        output_sets: Arc::new(out_set_names.clone()),
-                    },
-                ),
+        let function_id = format!("local_name_{}", i);
+
+        dispatcher
+            .insert_function(
+                function_id.clone(),
+                engine_type,
+                DEFAULT_CONTEXT_SIZE,
+                absolute_path
+                    .to_str()
+                    .expect("Path should be valid string")
+                    .to_string(),
+                Metadata {
+                    input_sets: Arc::new(local_names),
+                    output_sets: Arc::new(out_set_names.clone()),
+                },
             )
             .expect("should be able to update function");
 
@@ -106,16 +104,21 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         let mut overwrite_inputs = inputs.clone();
         overwrite_inputs[i] = Some(CompositionSet::from((0, vec![mat_fault.clone()])));
 
-        let mut recorder = Recorder::new(0, Instant::now());
+        let mut recorder = Recorder::new(0.to_string(), Instant::now());
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(function_id, inputs, false, recorder));
-        recorder = Recorder::new(0, Instant::now());
+            .block_on(dispatcher.queue_function(function_id.clone(), inputs, false, recorder));
+        recorder = Recorder::new(0.to_string(), Instant::now());
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(function_id, overwrite_inputs, false, recorder));
+            .block_on(dispatcher.queue_function(
+                function_id.clone(),
+                overwrite_inputs,
+                false,
+                recorder,
+            ));
         let out_sets = match result {
             Ok(composition_sets) => composition_sets,
             Err(err) => panic!("Non overwrite failed with: {:?}", err),
@@ -181,23 +184,21 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         local_names[fixed_sets[0]].1 = Some(CompositionSet::from((0, vec![mat_con_b.clone()])));
         local_names[fixed_sets[1]].1 = Some(CompositionSet::from((0, vec![mat_con_c.clone()])));
         // alter metadata for the functions
-        let function_id = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap()
-            .block_on(
-                dispatcher.insert_func(
-                    format!("insert_function_{}", i),
-                    engine_type,
-                    DEFAULT_CONTEXT_SIZE,
-                    absolute_path
-                        .to_str()
-                        .expect("Path should be valid string")
-                        .to_string(),
-                    Metadata {
-                        input_sets: Arc::new(local_names),
-                        output_sets: Arc::new(out_set_names.clone()),
-                    },
-                ),
+        let function_id = format!("insert_function_{}", i);
+
+        dispatcher
+            .insert_function(
+                function_id.clone(),
+                engine_type,
+                DEFAULT_CONTEXT_SIZE,
+                absolute_path
+                    .to_str()
+                    .expect("Path should be valid string")
+                    .to_string(),
+                Metadata {
+                    input_sets: Arc::new(local_names),
+                    output_sets: Arc::new(out_set_names.clone()),
+                },
             )
             .expect("should be able to update function");
 
@@ -208,16 +209,21 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         overwrite_inputs[fixed_sets[0]] = Some(CompositionSet::from((0, vec![mat_fault.clone()])));
         overwrite_inputs[fixed_sets[1]] = Some(CompositionSet::from((0, vec![mat_fault.clone()])));
 
-        let mut recorder = Recorder::new(0, Instant::now());
+        let mut recorder = Recorder::new(0.to_string(), Instant::now());
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(function_id, inputs, false, recorder));
-        recorder = Recorder::new(0, Instant::now());
+            .block_on(dispatcher.queue_function(function_id.clone(), inputs, false, recorder));
+        recorder = Recorder::new(0.to_string(), Instant::now());
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(function_id, overwrite_inputs, false, recorder));
+            .block_on(dispatcher.queue_function(
+                function_id.clone(),
+                overwrite_inputs,
+                false,
+                recorder,
+            ));
         let out_sets = match result {
             Ok(composition_sets) => composition_sets,
             Err(err) => panic!("Non overwrite failed with: {:?}", err),
@@ -259,9 +265,7 @@ fn test_insert_composition_with_http_func() {
             HTTP (request = all comp_request, body = all req_body) => (resp_body = body, comp_status = status);
         }
     "#;
-    tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap()
-        .block_on(dispatcher.insert_compositions(String::from(composition_string)))
+    dispatcher
+        .insert_compositions(String::from(composition_string))
         .unwrap();
 }

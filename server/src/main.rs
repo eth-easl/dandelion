@@ -62,7 +62,7 @@ enum DispatcherCommand {
         context_size: usize,
         path: String,
         metadata: Metadata,
-        callback: oneshot::Sender<DandelionResult<u64>>,
+        callback: oneshot::Sender<DandelionResult<()>>,
     },
     CompositionRegistration {
         composition: String,
@@ -373,8 +373,8 @@ async fn dispatcher_loop(
                 mut callback,
             } => {
                 debug!("Handling function request for function {}", name);
-                let function_future =
-                    dispatcher.queue_function_by_name(name, inputs, is_cold, start_time);
+                let function_future = dispatcher
+                    .queue_function_with_dispatcher_input(name, inputs, is_cold, start_time);
                 spawn(async {
                     select! {
                         function_output = function_future => {
@@ -392,34 +392,25 @@ async fn dispatcher_loop(
                 engine_type,
                 context_size,
                 metadata,
-                mut callback,
+                callback,
                 path,
             } => {
-                debug!("Handling function registration");
-                let insertion_future =
-                    dispatcher.insert_func(name, engine_type, context_size, path, metadata);
-                spawn(async {
-                    select! {
-                        result = insertion_future => {
-                            callback.send(result).unwrap();
-                        }
-                        _ = callback.closed() => ()
-                    }
-                });
+                debug!("Handling function registration for {}", name);
+                let insertion_res =
+                    dispatcher.insert_function(name, engine_type, context_size, path, metadata);
+                callback
+                    .send(insertion_res)
+                    .expect("Function registration callback failed!");
             }
             DispatcherCommand::CompositionRegistration {
                 composition,
-                mut callback,
+                callback,
             } => {
-                let insertion_future = dispatcher.insert_compositions(composition);
-                spawn(async {
-                    select! {
-                        result = insertion_future => {
-                            callback.send(result).unwrap();
-                        }
-                        _ = callback.closed() => ()
-                    }
-                });
+                debug!("Handling composition registration");
+                let insertion_res = dispatcher.insert_compositions(composition);
+                callback
+                    .send(insertion_res)
+                    .expect("Composition registration callback failed!");
             }
         };
     }

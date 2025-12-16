@@ -1,7 +1,7 @@
 pub mod range_pool;
 pub mod records;
 
-pub type FunctionId = u64;
+pub type FunctionId = String;
 
 // TODO define error types, possibly better printing than debug
 // TODO make naming consistent and move groups to subtypes, e.g. DomainError -> Domain in main enum
@@ -13,8 +13,8 @@ pub enum DandelionError {
     DomainError(DomainError),
     /// Error from a promise
     PromiseError(PromiseError),
-    /// registry errors
-    FunctionRegistryError(FunctionRegistryError),
+    /// Function registry errors
+    FunctionRegistry(FunctionRegistryError),
     /// Error in the frontend receiveing requests
     RequestError(FrontendError),
     /// Failures in user code or compositions
@@ -25,16 +25,9 @@ pub enum DandelionError {
     /// configuration vector was malformed
     MalformedConfig,
     // errors in parsing or creating compositions
-    /// failed to parse function
-    CompositionParsingError,
+    Composition(CompositionError),
     /// parser did not find symbol that it was searching for
     UnknownSymbol,
-    /// Composition contains function that does not exist
-    CompositionContainsInvalidFunction(String),
-    /// Function in parsing has identifier that is not defined in composition
-    CompositionFunctionInvalidIdentifier(String),
-    /// Set indentifier is produced by multiple functions in a composition
-    CompositionDuplicateSetName,
     // domain and context errors
     /// error creating layout for read only context
     ContextReadOnlyLayout,
@@ -179,11 +172,40 @@ pub enum FrontendError {
     MalformedMessage,
 }
 
-/// Error caused in the function registry
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Errors returned in the function registry
+#[derive(Debug, Clone, PartialEq)]
 pub enum FunctionRegistryError {
+    /// Function alternative is already present in the registry
+    DuplicateInsert(String),
+    /// Function identifier is used for a different function type already
+    TypeConflictInsert(String),
+    /// Tried to insert a user function alternative in an existing system function
+    InvalidSystemInsert(String),
+    /// Tried to insert a system function alternative in an existing user function
+    InvalidUserInsert(String),
+    /// Did not find a function with the given function identifier
+    UnknownFunction(String),
+    /// Could not find the function alternative for the given function identifier and engine combination
+    UnknownFunctionAlternative,
+    /// The given function path could not be found
+    BinaryNotFound,
     /// Failed to receive local loading result that was triggered by another function
     LocalLoadingReceive,
+}
+
+/// Errors related to function compositions
+#[derive(Debug, Clone, PartialEq)]
+pub enum CompositionError {
+    /// Failed to parse composition
+    ParsingError,
+    /// Composition identifier is already taken
+    DuplicateIdentifier(String),
+    /// Composition contains function that does not exist
+    ContainsInvalidFunction(String),
+    /// Function in parsing has identifier that is not defined in composition
+    FunctionInvalidIdentifier(String),
+    /// Set indentifier is produced by multiple functions in a composition
+    DuplicateSetName,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

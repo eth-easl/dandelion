@@ -75,7 +75,7 @@ mod compute_driver_tests {
         let (function_context, config, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
 
-        let recorder = Recorder::new(0, Instant::now());
+        let recorder = Recorder::new(0.to_string(), Instant::now());
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config: config,
             context: function_context,
@@ -113,7 +113,7 @@ mod compute_driver_tests {
             }],
         }));
 
-        let recorder = Recorder::new(0, Instant::now());
+        let recorder = Recorder::new(0.to_string(), Instant::now());
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config,
             context: function_context,
@@ -196,7 +196,7 @@ mod compute_driver_tests {
                 }],
             }));
 
-            let recorder = Recorder::new(0, Instant::now());
+            let recorder = Recorder::new(0.to_string(), Instant::now());
             let promise = queue.enqueu(WorkToDo::FunctionArguments {
                 config,
                 context: function_context,
@@ -285,7 +285,7 @@ mod compute_driver_tests {
             ],
         }));
 
-        let recorder = Recorder::new(0, Instant::now());
+        let recorder = Recorder::new(0.to_string(), Instant::now());
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config,
             context: function_context,
@@ -427,7 +427,7 @@ mod compute_driver_tests {
                 },
             ],
         }));
-        let recorder = Recorder::new(0, Instant::now());
+        let recorder = Recorder::new(0.to_string(), Instant::now());
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config: config,
             context: function_context,

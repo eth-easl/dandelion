@@ -1,3 +1,5 @@
+// TODO: deprecated -> remove this
+
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crossbeam::channel::{TryRecvError, TrySendError};
 use dandelion_commons::{DandelionError, DandelionResult};

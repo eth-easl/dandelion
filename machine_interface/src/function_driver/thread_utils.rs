@@ -1,5 +1,5 @@
 use crate::{
-    function_driver::{ComputeResource, FunctionConfig, WorkDone, WorkQueue, WorkToDo},
+    function_driver::{ComputeResource, EngineWorkQueue, FunctionConfig, WorkDone, WorkToDo},
     memory_domain::{self, Context},
 };
 use core::marker::Send;
@@ -18,7 +18,7 @@ pub trait EngineLoop {
     ) -> DandelionResult<Context>;
 }
 
-fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
+fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
     // set core affinity
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
         log::error!("core received core id that could not be set");
@@ -116,6 +116,6 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn WorkQueue>) {
     }
 }
 
-pub fn start_thread<E: EngineLoop>(cpu_slot: u8, queue: Box<dyn WorkQueue + Send>) -> () {
+pub fn start_thread<E: EngineLoop>(cpu_slot: u8, queue: Box<dyn EngineWorkQueue + Send>) -> () {
     spawn(move || run_thread::<E>(cpu_slot, queue));
 }

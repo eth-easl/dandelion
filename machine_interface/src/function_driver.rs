@@ -150,12 +150,12 @@ impl WorkDone {
     }
 }
 
-pub trait WorkQueue {
+pub trait EngineWorkQueue {
     fn get_engine_args(&self) -> (WorkToDo, crate::promise::Debt);
     fn try_get_engine_args(&self) -> Option<(WorkToDo, crate::promise::Debt)>;
 }
 
-impl futures::stream::Stream for &mut (dyn WorkQueue + Send) {
+impl futures::stream::Stream for &mut (dyn EngineWorkQueue + Send) {
     type Item = (WorkToDo, crate::promise::Debt);
     /// By default the behaviour of the work queue on polling is to call try_get_engine_args()
     /// If the call returns Some(tuple), the poll will returns Ready(tuple)
@@ -180,7 +180,7 @@ pub trait Driver: Send + Sync {
         &self,
         resource: ComputeResource,
         // TODO check out why this can't be impl instead of Box<dyn
-        queue: Box<dyn WorkQueue + Send>,
+        queue: Box<dyn EngineWorkQueue + Send>,
     ) -> DandelionResult<()>;
 
     // parses an executable,

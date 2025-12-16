@@ -117,7 +117,7 @@ mod system_driver_tests {
 
         write_request(&mut context, request).expect("Should be able to prepare request line");
 
-        let recorder = Recorder::new(0, Instant::now());
+        let recorder = Recorder::new(0.to_string(), Instant::now());
         let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config,
@@ -205,7 +205,7 @@ dolore magna aliquyam erat, sed diam voluptua."#
 
         write_request(&mut context, request).unwrap();
 
-        let recorder = Recorder::new(0, Instant::now());
+        let recorder = Recorder::new(0.to_string(), Instant::now());
         let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config,

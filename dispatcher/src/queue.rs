@@ -1,5 +1,6 @@
 use std::{
     cell::UnsafeCell,
+    fmt,
     pin::Pin,
     sync::{
         atomic::{AtomicU32, AtomicUsize, Ordering},
@@ -370,7 +371,20 @@ impl Clone for WorkQueue {
     }
 }
 
+impl fmt::Debug for WorkQueue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "WorkQueue{{head: {}, tail: {}, capacity:{}}}",
+            self.inner.head.load(Ordering::Acquire),
+            self.inner.tail.load(Ordering::Acquire),
+            self.inner.buffer.len() - 1
+        )
+    }
+}
+
 /// Engine specific wrapper for the `WorkQueue` that implements the `EngineWorkQueue` trait.
+#[derive(Clone)]
 pub struct EngineQueue {
     work_queue: WorkQueue,
     engine_flags: u32,

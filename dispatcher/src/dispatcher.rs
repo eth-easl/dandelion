@@ -2,8 +2,8 @@ use crate::{
     composition::{
         get_sharding, Composition, CompositionSet, InputSetDescriptor, JoinStrategy, ShardingMode,
     },
-    execution_qs::EngineQueue,
-    function_registry::{FunctionRegistry, FunctionType, Metadata},
+    function_registry::{FunctionInfo, FunctionRegistry, FunctionType, Metadata},
+    queue::{EngineQueue, WorkQueue},
     resource_pool::ResourcePool,
 };
 use core::pin::Pin;
@@ -42,10 +42,11 @@ pub enum DispatcherInput {
 // TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
 // the entire execution time anyway
 pub struct Dispatcher {
-    domains: BTreeMap<DomainType, (Arc<Box<dyn MemoryDomain>>, Box<EngineQueue>)>,
-    engine_queues: BTreeMap<EngineType, Box<EngineQueue>>,
-    type_map: BTreeMap<EngineType, DomainType>,
     function_registry: FunctionRegistry,
+    work_queue: WorkQueue,
+    type_map: BTreeMap<EngineType, DomainType>,
+    domains: BTreeMap<DomainType, Arc<Box<dyn MemoryDomain>>>,
+    drivers: BTreeMap<EngineType, &'static (dyn Driver + 'static)>,
 }
 
 impl Dispatcher {
@@ -58,73 +59,61 @@ impl Dispatcher {
         let domains = get_available_domains(memory_resources);
         let drivers = get_available_drivers();
 
-        // Insert a work queue for each domain and use up all engine resource available
+        let work_queue = WorkQueue::init(1000); // TODO: get size from config?
+
+        // create an engine queue wrapper of the work queue for each engine and use up all engine resource available
         let mut domain_map = BTreeMap::new();
-        let mut engine_queues = BTreeMap::new();
-        let mut registry_drivers: BTreeMap<EngineType, (&'static dyn Driver, Box<EngineQueue>)> =
-            BTreeMap::new();
+        let mut registry_drivers: BTreeMap<EngineType, &'static dyn Driver> = BTreeMap::new();
         for (engine_type, driver) in drivers.into_iter() {
-            let work_queue = Box::new(EngineQueue::new());
+            let engine_queue = Box::new(EngineQueue::init(work_queue.clone(), engine_type));
             while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(engine_type) {
-                driver.start_engine(resource, work_queue.clone())?;
+                driver.start_engine(resource, engine_queue.clone())?;
             }
             let domain_type = type_map.get(&engine_type).unwrap();
             let domain = domains.get(domain_type).unwrap().clone();
-            domain_map.insert(*domain_type, (domain, work_queue.clone()));
-            engine_queues.insert(engine_type, work_queue.clone());
-            registry_drivers.insert(
-                engine_type,
-                (driver as &'static dyn Driver, work_queue.clone()),
-            );
+            domain_map.insert(*domain_type, domain);
+            registry_drivers.insert(engine_type, driver as &'static dyn Driver);
         }
-        let function_registry = FunctionRegistry::new(registry_drivers, &type_map, &domains);
+
+        // create the function registry
+        let function_registry =
+            FunctionRegistry::new(work_queue.clone(), &type_map, &registry_drivers, &domains);
 
         return Ok(Dispatcher {
-            domains: domain_map,
-            engine_queues,
-            type_map,
             function_registry,
+            work_queue,
+            type_map,
+            domains: domain_map,
+            drivers: registry_drivers,
         });
     }
 
-    pub async fn insert_func(
+    pub fn insert_function(
         &self,
         function_name: String,
         engine_type: EngineType,
         ctx_size: usize,
         path: String,
         metadata: Metadata,
-    ) -> DandelionResult<FunctionId> {
-        return self
-            .function_registry
+    ) -> DandelionResult<()> {
+        self.function_registry
             .insert_function(function_name, engine_type, ctx_size, path, metadata)
-            .await;
     }
 
-    pub async fn insert_compositions(&self, compositions: String) -> DandelionResult<()> {
-        return self
-            .function_registry
-            .insert_compositions(&compositions)
-            .await;
+    pub fn insert_compositions(&self, composition_desc: String) -> DandelionResult<()> {
+        self.function_registry
+            .insert_compositions(&composition_desc)
     }
 
-    pub async fn queue_function_by_name(
+    pub async fn queue_function_with_dispatcher_input(
         &self,
-        function_name: String,
+        function_id: String,
         inputs: Vec<DispatcherInput>,
         non_caching: bool,
         start_time: std::time::Instant,
     ) -> DandelionResult<(Vec<Option<CompositionSet>>, Recorder)> {
-        trace!("Queuing function {}", function_name);
-        let function_id = self
-            .function_registry
-            .get_function_id(&function_name)
-            .await
-            .ok_or(DandelionError::Dispatcher(
-                DispatcherError::UnavailableFunction,
-            ))?;
-
-        let recorder = Recorder::new(function_id, start_time);
+        debug!("Queuing function {}", function_id);
+        let recorder = Recorder::new(function_id.clone(), start_time);
 
         let mut input_vec = Vec::with_capacity(inputs.len());
         input_vec.resize(inputs.len(), None);
@@ -161,7 +150,7 @@ impl Dispatcher {
         &self,
         composition: Composition,
         inputs: Vec<Option<CompositionSet>>,
-        non_caching: bool,
+        caching: bool,
         mut recorder: Recorder,
     ) -> DandelionResult<Vec<Option<CompositionSet>>> {
         // build up ready sets
@@ -244,7 +233,7 @@ impl Dispatcher {
                 args.join_info.0,
                 args.join_info.1,
                 args.output_mapping,
-                non_caching,
+                caching,
                 recorder.get_sub_recorder(),
             )));
         }
@@ -299,7 +288,7 @@ impl Dispatcher {
                                 args.join_info.0,
                                 args.join_info.1,
                                 args.output_mapping,
-                                non_caching,
+                                caching,
                                 recorder.get_sub_recorder(),
                             )));
                             None
@@ -330,11 +319,11 @@ impl Dispatcher {
         join_order: Vec<usize>,
         join_strategies: Vec<JoinStrategy>,
         output_mapping: Vec<Option<usize>>,
-        non_caching: bool,
+        caching: bool,
         recorder: Recorder,
     ) -> DandelionResult<(Vec<(usize, Option<CompositionSet>)>, Vec<Recorder>)> {
         trace!(
-            "queue function {} shareded and input sets: {:?}",
+            "queue function {} sharded and input sets: {:?}",
             function_id,
             input_sets
         );
@@ -353,11 +342,11 @@ impl Dispatcher {
             let resutls: Vec<_> = sharded
                 .into_iter()
                 .map(|ins| {
-                    let new_recorder = Recorder::new_from_parent(function_id, &recorder);
+                    let new_recorder = Recorder::new_from_parent(function_id.clone(), &recorder);
                     let future_box = Box::pin(self.queue_function(
-                        function_id,
+                        function_id.clone(),
                         ins,
-                        non_caching,
+                        caching,
                         new_recorder.get_sub_recorder(),
                     ));
                     recorders.push(new_recorder);
@@ -368,12 +357,12 @@ impl Dispatcher {
             // TODO this is added to support functions with all functions defined as static sets
             // might want to differentiate between those that have static sets and those that did not get input from predecessors
         } else {
-            let new_recorder = Recorder::new_from_parent(function_id, &recorder);
+            let new_recorder = Recorder::new_from_parent(function_id.clone(), &recorder);
             let future_box = self
                 .queue_function(
                     function_id,
                     vec![],
-                    non_caching,
+                    caching,
                     new_recorder.get_sub_recorder(),
                 )
                 .await
@@ -429,7 +418,7 @@ impl Dispatcher {
         &'dispatcher self,
         function_id: FunctionId,
         inputs: Vec<Option<CompositionSet>>,
-        non_caching: bool,
+        caching: bool,
         mut recorder: Recorder,
     ) -> Pin<
         Box<dyn Future<Output = DandelionResult<Vec<Option<CompositionSet>>>> + 'dispatcher + Send>,
@@ -438,103 +427,118 @@ impl Dispatcher {
         Box::pin(async move {
             // find an engine capable of running the function
             // TODO actual scheduling decisions
-            let options = self.function_registry.get_options(function_id).await?;
-            if let Some(alternative) = options.iter().next() {
-                match &alternative.function_type {
-                    FunctionType::Function(engine_id, ctx_size) => {
-                        recorder.record(RecordPoint::PrepareEnvQueue);
-                        let (context, config, metadata) = self
-                            .prepare_for_engine(
-                                function_id,
-                                *engine_id,
-                                inputs,
-                                *ctx_size,
-                                non_caching,
-                                recorder.get_sub_recorder(),
-                            )
-                            .await?;
-                        recorder.record(RecordPoint::GetEngineQueue);
-                        trace!("running function {} on {:?} type engine with input sets {:?} and output sets {:?}",
+            match self.function_registry.get_function(&function_id)? {
+                FunctionType::SystemFunction(func_info) | FunctionType::Function(func_info) => {
+                    // TODO: insert scheduling policy funtion here
+                    let engine_type = func_info
+                        .alternatives
+                        .read()
+                        .expect("Function registry lock is poisoned!")[0]
+                        .engine;
+
+                    // prepare for engine
+                    recorder.record(RecordPoint::PrepareEnvQueue);
+                    let (context, config, metadata) = self
+                        .prepare_for_engine(
+                            func_info,
+                            engine_type,
+                            inputs,
+                            caching,
+                            recorder.get_sub_recorder(),
+                        )
+                        .await?;
+
+                    // run on engine
+                    recorder.record(RecordPoint::GetEngineQueue);
+                    trace!("running function {} on {:?} type engine with input sets {:?} and output sets {:?}",
                             function_id,
-                            *engine_id,
+                            engine_type,
                             metadata.input_sets.iter().map(|(name, _)| name).collect_vec(),
                             metadata.output_sets);
-                        let context = self
-                            .run_on_engine(
-                                *engine_id,
-                                config,
-                                metadata.output_sets,
-                                context,
-                                recorder.get_sub_recorder(),
-                            )
-                            .await?;
-                        let context_arc = Arc::new(context);
-
-                        let composition_sets = context_arc
-                            .content
-                            .iter()
-                            .enumerate()
-                            .map(|(function_set_id, data_option)| {
-                                data_option.as_ref().and_then(|_| {
-                                    Some(CompositionSet::from((
-                                        function_set_id,
-                                        vec![context_arc.clone()],
-                                    )))
-                                })
+                    let context = self
+                        .run_on_engine(
+                            engine_type,
+                            config,
+                            metadata.output_sets.clone(),
+                            context,
+                            recorder.get_sub_recorder(),
+                        )
+                        .await?;
+                    let context_arc = Arc::new(context);
+                    let composition_sets = context_arc
+                        .content
+                        .iter()
+                        .enumerate()
+                        .map(|(function_set_id, data_option)| {
+                            data_option.as_ref().and_then(|_| {
+                                Some(CompositionSet::from((
+                                    function_set_id,
+                                    vec![context_arc.clone()],
+                                )))
                             })
-                            .collect();
-                        return Ok(composition_sets);
-                    }
-                    FunctionType::Composition(composition) => {
-                        return self
-                            .queue_composition(composition.clone(), inputs, non_caching, recorder)
-                            .await;
-                    }
+                        })
+                        .collect();
+
+                    return Ok(composition_sets);
                 }
-            } else {
-                return Err(DandelionError::Dispatcher(
-                    DispatcherError::UnavailableFunction,
-                ));
-            }
+                FunctionType::Composition(comp_info) => {
+                    return self
+                        .queue_composition(
+                            (*comp_info.composition).clone(),
+                            inputs,
+                            caching,
+                            recorder,
+                        )
+                        .await;
+                }
+            };
         })
     }
 
     async fn prepare_for_engine(
         &self,
-        function_id: FunctionId,
+        function_info: FunctionInfo,
         engine_type: EngineType,
         inputs: Vec<Option<CompositionSet>>,
-        ctx_size: usize,
-        non_caching: bool,
+        caching: bool,
         mut recorder: Recorder,
-    ) -> DandelionResult<(Context, FunctionConfig, Metadata)> {
-        debug!("Preparing function {} for engine", function_id);
-        let metadata = self.function_registry.get_metadata(function_id).await?;
+    ) -> DandelionResult<(Context, FunctionConfig, Arc<Metadata>)> {
+        // debug!("Preparing function {} for engine {}", function_id); // TODO
+        let func_alt = self
+            .function_registry
+            .get_alternative(&function_info, engine_type)?;
+
         // get context and load static data
         let context_id = match self.type_map.get(&engine_type) {
             Some(id) => id,
             None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
         };
-        let (domain, transfer_queue) = match self.domains.get(context_id) {
+        // TODO
+        let domain = match self.domains.get(context_id) {
             Some(d) => d,
             None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
         };
-        // start doing transfers
+
+        // transfer input sets
+        let driver = match self.drivers.get(&engine_type) {
+            Some(d) => d,
+            None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
+        };
         let (mut function_context, function_config) = self
             .function_registry
-            .load(
-                function_id,
-                engine_type,
+            .load_function(
+                func_alt,
+                *driver,
                 domain.clone(),
-                ctx_size,
-                non_caching,
+                caching,
                 recorder.get_sub_recorder(),
             )
             .await?;
+
         // make sure all input sets are there at the correct index
         let mut static_sets = BTreeSet::new();
         for (function_set_index, (in_set_name, metadata_set)) in
-            metadata.input_sets.iter().enumerate()
+            function_info.metadata.input_sets.iter().enumerate()
         {
             function_context
                 .content
@@ -543,11 +547,12 @@ impl Dispatcher {
                     buffers: vec![],
                 }));
             if let Some(composition_set) = metadata_set {
-                trace!(
-                    "preparing function {}: copying metadata set to function set {}",
-                    function_id,
-                    function_set_index
-                );
+                // TODO
+                // trace!(
+                //     "preparing function {}: copying metadata set to function set {}",
+                //     function_id,
+                //     function_set_index
+                // );
                 static_sets.insert(function_set_index);
                 let mut function_buffer = 0usize;
                 for (subset, item, source_context) in composition_set {
@@ -563,7 +568,11 @@ impl Dispatcher {
                         recorder: recorder.get_sub_recorder(),
                     };
                     recorder.record(RecordPoint::TransferQueue);
-                    function_context = transfer_queue.enqueu_work(args).await?.get_context();
+                    function_context = self
+                        .work_queue
+                        .do_work(args, vec![engine_type])
+                        .await?
+                        .get_context();
                     recorder.record(RecordPoint::TransferDequeue);
                     function_buffer += 1;
                 }
@@ -577,18 +586,18 @@ impl Dispatcher {
             };
 
             if static_sets.contains(&set_index) {
-                trace!(
-                    "for function {} skipping input set {} from inputs because it was already in metadata",
-                    function_id,
-                    set_index,
-                );
+                // trace!( TODO
+                //     "for function {} skipping input set {} from inputs because it was already in metadata",
+                //     function_id,
+                //     set_index,
+                // );
                 continue;
             }
-            trace!(
-                "preparing function {}: copying composition set to function set {}",
-                function_id,
-                set_index,
-            );
+            // trace!( TODO
+            //     "preparing function {}: copying composition set to function set {}",
+            //     function_id,
+            //     set_index,
+            // );
             let mut function_item = 0usize;
             for (subset, item, source_context) in set {
                 // TODO get allignment information
@@ -609,12 +618,20 @@ impl Dispatcher {
                     recorder: recorder.get_sub_recorder(),
                 };
                 recorder.record(RecordPoint::TransferQueue);
-                function_context = transfer_queue.enqueu_work(args).await?.get_context();
+                function_context = self
+                    .work_queue
+                    .do_work(args, vec![engine_type])
+                    .await?
+                    .get_context();
                 recorder.record(RecordPoint::TransferDequeue);
                 function_item += 1;
             }
         }
-        return Ok((function_context, function_config, metadata));
+        return Ok((
+            function_context,
+            function_config,
+            function_info.metadata.clone(),
+        ));
     }
 
     async fn run_on_engine(
@@ -630,10 +647,6 @@ impl Dispatcher {
             "Running function on engine. Context content size: {}",
             function_context.content.len()
         );
-        let engine_queue = match self.engine_queues.get(&engine_type) {
-            Some(q) => q,
-            None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
-        };
         let subrecoder = recorder.get_sub_recorder();
         let args = WorkToDo::FunctionArguments {
             config: function_config,
@@ -642,7 +655,11 @@ impl Dispatcher {
             recorder: subrecoder,
         };
         recorder.record(RecordPoint::ExecutionQueue);
-        let result = engine_queue.enqueu_work(args).await?.get_context();
+        let result = self
+            .work_queue
+            .do_work(args, vec![engine_type])
+            .await?
+            .get_context();
         recorder.record(RecordPoint::FutureReturn);
         return Ok(result);
     }

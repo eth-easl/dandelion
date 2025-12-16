@@ -54,18 +54,16 @@ mod dispatcher_tests {
             .collect();
         let dispatcher = Dispatcher::init(resource_pool, memory_resources)
             .expect("Should have initialized dispatcher");
-        let function_id = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap()
-            .block_on(dispatcher.insert_func(
+        dispatcher
+            .insert_function(
                 String::from("test_function"),
                 engine_type,
                 DEFAULT_CONTEXT_SIZE,
                 path_string,
                 metadata,
-            ))
+            )
             .expect("Should be able to insert function in new dispatcher");
-        return (dispatcher, function_id);
+        return (dispatcher, String::from("test_function"));
     }
 
     fn check_matrix(context: &Context, set_id: usize, key: u32, rows: u64, expected: Vec<u64>) {

@@ -30,7 +30,7 @@ pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
         memory_resource,
     );
 
-    let recorder = Recorder::new(0, Instant::now());
+    let recorder = Recorder::new(0.to_string(), Instant::now());
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
@@ -78,7 +78,7 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
         vec![(Arc::new(in_context))],
     )))];
 
-    let recorder = Recorder::new(0, Instant::now());
+    let recorder = Recorder::new(0.to_string(), Instant::now());
 
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -144,7 +144,7 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
     };
     let inputs = vec![Some(CompositionSet::from((0, vec![Arc::new(in_context)])))];
 
-    let recorder = Recorder::new(0, Instant::now());
+    let recorder = Recorder::new(0.to_string(), Instant::now());
 
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -171,7 +171,7 @@ fn composition_option_helper(
     inputs: Vec<Option<CompositionSet>>,
     dispatcher: &mut Dispatcher,
 ) -> Vec<Option<CompositionSet>> {
-    let recorder = Recorder::new(0, Instant::now());
+    let recorder = Recorder::new(0.to_string(), Instant::now());
 
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -203,7 +203,7 @@ pub fn composition_optional<Domain: MemoryDomain>(
     // check case where the set is an input set, not optional and not present
     let composition1 = Composition {
         dependencies: vec![FunctionDependencies {
-            function: function_id,
+            function: function_id.clone(),
             join_info: (vec![], vec![]),
             input_set_ids: vec![Some(InputSetDescriptor {
                 composition_id: 0,
@@ -222,7 +222,7 @@ pub fn composition_optional<Domain: MemoryDomain>(
     // check case where the set is an input set, not optional and empty
     let composition2 = Composition {
         dependencies: vec![FunctionDependencies {
-            function: function_id,
+            function: function_id.clone(),
             join_info: (vec![], vec![]),
             input_set_ids: vec![Some(InputSetDescriptor {
                 composition_id: 0,
@@ -241,7 +241,7 @@ pub fn composition_optional<Domain: MemoryDomain>(
     // check case where the set is an input set, optional and not present
     let composition3 = Composition {
         dependencies: vec![FunctionDependencies {
-            function: function_id,
+            function: function_id.clone(),
             join_info: (vec![], vec![]),
             input_set_ids: vec![Some(InputSetDescriptor {
                 composition_id: 0,
@@ -260,7 +260,7 @@ pub fn composition_optional<Domain: MemoryDomain>(
     // check case where the set is an input set, optional and empty
     let composition4 = Composition {
         dependencies: vec![FunctionDependencies {
-            function: function_id,
+            function: function_id.clone(),
             join_info: (vec![], vec![]),
             input_set_ids: vec![Some(InputSetDescriptor {
                 composition_id: 0,
@@ -280,13 +280,13 @@ pub fn composition_optional<Domain: MemoryDomain>(
     let composition5 = Composition {
         dependencies: vec![
             FunctionDependencies {
-                function: function_id,
+                function: function_id.clone(),
                 join_info: (vec![], vec![]),
                 input_set_ids: vec![],
                 output_set_ids: vec![None, Some(1)],
             },
             FunctionDependencies {
-                function: function_id,
+                function: function_id.clone(),
                 join_info: (vec![], vec![]),
                 input_set_ids: vec![Some(InputSetDescriptor {
                     composition_id: 1,
@@ -307,13 +307,13 @@ pub fn composition_optional<Domain: MemoryDomain>(
     let composition6 = Composition {
         dependencies: vec![
             FunctionDependencies {
-                function: function_id,
+                function: function_id.clone(),
                 join_info: (vec![], vec![]),
                 input_set_ids: vec![],
                 output_set_ids: vec![None, Some(1)],
             },
             FunctionDependencies {
-                function: function_id,
+                function: function_id.clone(),
                 join_info: (vec![], vec![]),
                 input_set_ids: vec![Some(InputSetDescriptor {
                     composition_id: 1,
@@ -391,7 +391,7 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
     };
     let inputs = vec![Some(CompositionSet::from((0, vec![Arc::new(in_context)])))];
 
-    let recorder = Recorder::new(0, Instant::now());
+    let recorder = Recorder::new(0.to_string(), Instant::now());
 
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -457,7 +457,7 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
     let composition = Composition {
         dependencies: vec![
             FunctionDependencies {
-                function: function_id,
+                function: function_id.clone(),
                 join_info: (vec![], vec![]),
                 input_set_ids: vec![Some(InputSetDescriptor {
                     composition_id: 0,
@@ -480,7 +480,7 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
         output_map: BTreeMap::from([(2, 0)]),
     };
 
-    let recorder = Recorder::new(0, Instant::now());
+    let recorder = Recorder::new(0.to_string(), Instant::now());
 
     let inputs = vec![Some(CompositionSet::from((0, vec![Arc::new(in_context)])))];
     let result = tokio::runtime::Builder::new_current_thread()
@@ -571,7 +571,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
         dependencies: vec![
             // C = A*B
             FunctionDependencies {
-                function: function_id,
+                function: function_id.clone(),
                 join_info: (vec![], vec![]),
                 input_set_ids: vec![
                     Some(InputSetDescriptor {
@@ -590,7 +590,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             },
             // D = B^T*A
             FunctionDependencies {
-                function: function_id,
+                function: function_id.clone(),
                 join_info: (vec![], vec![]),
                 input_set_ids: vec![
                     Some(InputSetDescriptor {
@@ -609,7 +609,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             },
             // E = B + C
             FunctionDependencies {
-                function: function_id,
+                function: function_id.clone(),
                 join_info: (vec![], vec![]),
                 input_set_ids: vec![
                     None,
@@ -628,7 +628,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             },
             // G = D * C
             FunctionDependencies {
-                function: function_id,
+                function: function_id.clone(),
                 join_info: (vec![], vec![]),
                 input_set_ids: vec![
                     Some(InputSetDescriptor {
@@ -647,7 +647,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             },
             // Result = D*E + G
             FunctionDependencies {
-                function: function_id,
+                function: function_id.clone(),
                 join_info: (vec![], vec![]),
                 input_set_ids: vec![
                     Some(InputSetDescriptor {
@@ -672,7 +672,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
         output_map: BTreeMap::from([(7, 0)]),
     };
 
-    let recorder = Recorder::new(0, Instant::now());
+    let recorder = Recorder::new(0.to_string(), Instant::now());
 
     let context_arc = Arc::new(in_context);
     let inputs = vec![

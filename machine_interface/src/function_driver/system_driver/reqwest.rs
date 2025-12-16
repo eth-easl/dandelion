@@ -4,8 +4,8 @@ use crate::memory_domain::{
 };
 use crate::{
     function_driver::{
-        ComputeResource, Driver, Function, FunctionConfig, SystemFunction, WorkDone, WorkQueue,
-        WorkToDo,
+        ComputeResource, Driver, EngineWorkQueue, Function, FunctionConfig, SystemFunction,
+        WorkDone, WorkToDo,
     },
     memory_domain::{self, Context, ContextTrait},
     promise::Debt,
@@ -663,7 +663,7 @@ async fn run_memcached_request(
     responses_write(context_size, output_set_names, debt, recorder, responses);
 }
 
-async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
+async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
     log::debug!("Reqwest engine Init");
     let http_client = HttpClient::new();
 
@@ -789,7 +789,7 @@ async fn engine_loop(queue: Box<dyn WorkQueue + Send>) -> Debt {
     }
 }
 
-fn outer_engine(core_id: u8, queue: Box<dyn WorkQueue + Send>) {
+fn outer_engine(core_id: u8, queue: Box<dyn EngineWorkQueue + Send>) {
     // set core affinity
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
         log::error!("core received core id that could not be set");
@@ -817,7 +817,7 @@ impl Driver for ReqwestDriver {
     fn start_engine(
         &self,
         resource: ComputeResource,
-        queue: Box<dyn WorkQueue + Send>,
+        queue: Box<dyn EngineWorkQueue + Send>,
     ) -> DandelionResult<()> {
         log::debug!("Starting hyper engine");
         let core_id = match resource {
