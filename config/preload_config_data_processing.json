@@ -1,0 +1,100 @@
+[{
+    "name": "fmt_fetch_req",
+    "engineType": "Kvm",
+    "ctxSize": 268435456,
+    "binaryPath": "../dops_export/fmt_fetch_req",
+    "metadata": {
+        "inputSets": ["url"],
+        "outputSets": ["getRequest"]
+    }
+},{
+    "name": "fmt_store_req",
+    "engineType": "Kvm",
+    "ctxSize": 268435456,
+    "binaryPath": "../dops_export/fmt_store_req",
+    "metadata": {
+        "inputSets": ["inUrl", "data"],
+        "outputSets": ["postRequest", "outUrl"]
+    }
+},{
+    "name": "csv_reader",
+    "engineType": "Kvm",
+    "ctxSize": 4294967296,
+    "binaryPath": "../dops_export/csv_reader",
+    "metadata": {
+        "inputSets": ["options", "inData"],
+        "outputSets": ["outSchema", "outBatches"]
+    }
+},{
+    "name": "csv_writer",
+    "engineType": "Kvm",
+    "ctxSize": 268435456,
+    "binaryPath": "../dops_export/csv_writer",
+    "metadata": {
+        "inputSets": ["options", "inSchema", "inBatches"],
+        "outputSets": ["outData"]
+    }
+},{
+    "name": "aggregate",
+    "engineType": "Kvm",
+    "ctxSize": 1073741824,
+    "binaryPath": "../dops_export/aggregate",
+    "metadata": {
+        "inputSets": ["options", "inSchema", "inBatches"],
+        "outputSets": ["outSchema", "outBatches"]
+    }
+},{
+    "name": "fetch",
+    "engineType": "Kvm",
+    "ctxSize": 268435456,
+    "binaryPath": "../dops_export/fetch",
+    "metadata": {
+        "inputSets": ["options", "inSchema", "inBatches"],
+        "outputSets": ["outSchema", "outBatches"]
+    }
+},{
+    "name": "filter",
+    "engineType": "Kvm",
+    "ctxSize": 268435456,
+    "binaryPath": "../dops_export/filter",
+    "metadata": {
+        "inputSets": ["options", "inSchema", "inBatches"],
+        "outputSets": ["outSchema", "outBatches"]
+    }
+},{
+    "name": "hash_join",
+    "engineType": "Kvm",
+    "ctxSize": 1073741824,
+    "binaryPath": "../dops_export/hash_join",
+    "metadata": {
+        "inputSets": ["options", "inSchema1", "inBatches1", "inSchema2", "inBatches2"],
+        "outputSets": ["outSchema", "outBatches"]
+    }
+},{
+    "name": "order",
+    "engineType": "Kvm",
+    "ctxSize": 268435456,
+    "binaryPath": "../dops_export/order",
+    "metadata": {
+        "inputSets": ["options", "inSchema", "inBatches"],
+        "outputSets": ["outSchema", "outBatches"]
+    }
+},{
+    "name": "project",
+    "engineType": "Kvm",
+    "ctxSize": 268435456,
+    "binaryPath": "../dops_export/project",
+    "metadata": {
+        "inputSets": ["options", "inSchema", "inBatches"],
+        "outputSets": ["outSchema", "outBatches"]
+    }
+},{
+    "name": "splitter",
+    "engineType": "Kvm",
+    "ctxSize": 268435456,
+    "binaryPath": "../dops_export/splitter",
+    "metadata": {
+        "inputSets": ["options", "inSchema", "inBatches"],
+        "outputSets": ["outSchema", "outBatches"]
+    }
+}]
