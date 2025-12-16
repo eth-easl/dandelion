@@ -12,9 +12,46 @@ mod system_driver_tests {
         DataItem, DataSet, Position,
     };
     use dandelion_commons::{records::Recorder, DandelionResult};
-    use std::{sync::Arc, time::Instant};
+    use std::{
+        process::{Child, Command},
+        sync::Arc,
+        thread,
+        time::{Duration, Instant},
+    };
 
     const _CONTEXT_SIZE: usize = 2048 * 1024;
+
+    struct HttpServer {
+        proc_child: Child,
+    }
+
+    impl HttpServer {
+        fn start(port: &str) -> Self {
+            let mut py_server_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            py_server_path.pop();
+            py_server_path.push("machine_interface/tests/python/server.py");
+
+            let proc_child = Command::new("python")
+                .arg(py_server_path)
+                .arg(port)
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .expect("Failed to start python script");
+
+            // TODO: poll the server to figure out if we're started
+            thread::sleep(Duration::from_secs(1));
+
+            HttpServer { proc_child }
+        }
+    }
+
+    impl Drop for HttpServer {
+        fn drop(&mut self) {
+            println!("Stopping the python server...");
+            let _ = self.proc_child.kill();
+            let _ = self.proc_child.wait();
+        }
+    }
 
     fn read_status(response_buffer: &Vec<u8>) -> String {
         // find first '\n'
@@ -113,7 +150,7 @@ mod system_driver_tests {
             .expect("Should be able to get engine");
         let config = FunctionConfig::SysConfig(SystemFunction::HTTP);
 
-        let request = "GET http://httpbin.org/get HTTP/1.1".as_bytes().to_vec();
+        let request = "GET http://127.0.0.1:9000/get HTTP/1.1".as_bytes().to_vec();
 
         write_request(&mut context, request).expect("Should be able to prepare request line");
 
@@ -189,7 +226,7 @@ mod system_driver_tests {
             .expect("Should be able to get engine");
         let config = FunctionConfig::SysConfig(SystemFunction::HTTP);
 
-        let request = r#"POST http://httpbin.org/post HTTP/1.1
+        let request = r#"POST http://127.0.0.1:9001/post HTTP/1.1
 Content-Type: text/plain
 
 Lorem ipsum dolor sit amet, consetetur sadipscing elitr,
@@ -244,17 +281,18 @@ dolore magna aliquyam erat, sed diam voluptua."#
         assert_eq!("HTTP/1.1 200 OK", status);
     }
 
-    // TODO change to start local http server to check against.
     macro_rules! driverTests {
         ($name : ident; $domain: ty; $dom_init: expr; $driver : expr ; $drv_init : expr ) => {
             #[test_log::test]
             fn test_http_get() {
+                let _server = super::HttpServer::start("9000");
                 let driver = Box::new($driver);
                 super::get_http::<$domain>($dom_init, driver, $drv_init);
             }
 
             #[test_log::test]
             fn test_http_post() {
+                let _server = super::HttpServer::start("9001");
                 let driver = Box::new($driver);
                 super::post_http::<$domain>($dom_init, driver, $drv_init);
             }
