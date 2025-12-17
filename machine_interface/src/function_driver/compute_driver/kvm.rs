@@ -68,7 +68,6 @@ impl EngineLoop for KvmLoop {
         assert_eq!(kvm.get_api_version(), 12);
 
         let vm = kvm.create_vm().unwrap();
-
         let vcpu = vm.create_vcpu(0).unwrap();
         // enable all features the real cpu has on the vcpu
         let cpuid = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).unwrap();
@@ -98,9 +97,9 @@ impl EngineLoop for KvmLoop {
 
         #[cfg(feature = "backend_debug")]
         {
-            println!("context ptr: {:?}", kvm_context.storage.as_ptr());
-            println!("context size: {}", kvm_context.storage.len());
-            println!("entry point: {:#x}", elf_config.entry_point);
+            debug!("context ptr: {:?}", kvm_context.storage.as_ptr());
+            debug!("context size: {}", kvm_context.storage.len());
+            debug!("entry point: {:#x}", elf_config.entry_point);
             dump_memory(&kvm_context.storage[elf_config.entry_point..elf_config.entry_point + 64]);
         }
 
@@ -207,8 +206,7 @@ impl EngineLoop for KvmLoop {
             match reason {
                 #[cfg(feature = "backend_debug")]
                 VcpuExit::IoOut(14, _) => {
-                    // ATTENTION: unomment out 14 in page handler so it exits to here
-                    // handle page fault in guest
+                    // ATTENTION: uncomment out 14 in x86_64 page handler so it exits to here
                     check_page_fault_handling(
                         &self.vcpu,
                         &page_fault_metadata,

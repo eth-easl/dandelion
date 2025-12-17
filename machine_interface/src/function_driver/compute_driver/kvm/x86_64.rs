@@ -521,27 +521,6 @@ fn set_page_table(
     };
     // can assume that all p2 tables are zero initialized after this loop
 
-    // TODO: remove this and introduce actual changes, or hide it as debug option
-    // for p2_index in 0..p1_table_number {
-    //     let p2_entry =
-    //         (p2_index % TABLE_SIZE) + (p2_index / TABLE_SIZE) * (TABLE_SIZE * (TABLE_SIZE + 1));
-    //     let p1_address = table_base
-    //         + ((p2_index / TABLE_SIZE) * TABLE_SIZE * (TABLE_SIZE + 1)
-    //             + ((p2_index % TABLE_SIZE) + 1))
-    //             * PAGE_SIZE;
-    //     // println!("p2_entry: {}, p1_address: {}", p2_entry, p1_address);
-    //     table_array[p2_entry] = PDE64_PRESENT | PDE64_RW | PDE64_USER | p1_address as u64;
-    //     for p1_index in 0..TABLE_SIZE {
-    //         let p1_entry = (p2_index / TABLE_SIZE) * (TABLE_SIZE * (TABLE_SIZE + 1))
-    //             + (p2_index + 1) * TABLE_SIZE
-    //             + p1_index;
-    //         table_array[p1_entry] = PDE64_PRESENT
-    //             | PDE64_RW
-    //             | PDE64_USER
-    //             | (p2_index * LARGE_PAGE + p1_index * PAGE_SIZE) as u64;
-    //     }
-    // }
-
     // start installing entries for all already present pages
     let mut previous_past_last_page = 0;
     // the page starting at address 0 is expected to never be written
@@ -759,11 +738,9 @@ pub fn check_page_fault_handling(
     dump_regs(vcpu);
     let regs = vcpu.get_regs().unwrap();
     let sregs = vcpu.get_sregs().unwrap();
-    // the faulting address is in cr2, cr3 holds the root table address, rax holds the error code
+    // the faulting address is in cr2, cr3 holds the root table address
     let faulting_address = sregs.cr2 as usize;
     let p4_address = sregs.cr3 as usize;
-    // let error_code = regs.rax;
-    // base address of the page that was accessed
     let page_base_address = faulting_address & !(PAGE_SIZE - 1);
 
     debug!("Starting to handle page fault at {}", faulting_address);
