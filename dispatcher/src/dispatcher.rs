@@ -99,8 +99,9 @@ impl Dispatcher {
         path: String,
         metadata: Metadata,
     ) -> DandelionResult<()> {
+        let function_id = Arc::new(function_name);
         self.function_registry
-            .insert_function(function_name, engine_type, ctx_size, path, metadata)
+            .insert_function(function_id, engine_type, ctx_size, path, metadata)
     }
 
     pub fn insert_compositions(&self, composition_desc: String) -> DandelionResult<()> {
@@ -108,14 +109,15 @@ impl Dispatcher {
             .insert_compositions(&composition_desc)
     }
 
-    pub async fn queue_function_with_dispatcher_input(
+    pub async fn queue_function_by_name(
         &self,
-        function_id: String,
+        function_name: String,
         inputs: Vec<DispatcherInput>,
         caching: bool,
         start_time: std::time::Instant,
     ) -> DandelionResult<(Vec<Option<CompositionSet>>, Recorder)> {
-        debug!("Queuing function {}", function_id);
+        debug!("Queuing function {}", function_name);
+        let function_id = Arc::new(function_name);
         let recorder = Recorder::new(function_id.clone(), start_time);
 
         let mut input_vec = Vec::with_capacity(inputs.len());

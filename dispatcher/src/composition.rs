@@ -96,7 +96,7 @@ impl Composition {
         for item in module.0.iter() {
             match item {
                 dparser::Item::FunctionDecl(fdecl) => {
-                    if !function_registry.exists(&fdecl.v.name) {
+                    if !function_registry.exists_name(&fdecl.v.name) {
                         return Err(DandelionError::Composition(
                             CompositionError::ContainsInvalidFunction(fdecl.v.name.clone()),
                         ));
@@ -105,7 +105,7 @@ impl Composition {
                 }
                 dparser::Item::Composition(comp) => {
                     // check if composition name is already taken
-                    if function_registry.exists(&comp.v.name)
+                    if function_registry.exists_name(&comp.v.name)
                         || composition_ids.contains(&comp.v.name)
                     {
                         return Err(DandelionError::Composition(
@@ -280,7 +280,7 @@ impl Composition {
                                     }
                                 }
                                 Ok(FunctionDependencies {
-                                    function: function_decl.v.name.clone(),
+                                    function: Arc::new(function_decl.v.name.clone()),
                                     input_set_ids,
                                     join_info: (join_set_order, join_strategies),
                                     output_set_ids,
@@ -308,7 +308,7 @@ impl Composition {
                             .into(),
                     };
                     compositions.push((
-                        comp.v.name.clone(),
+                        Arc::new(comp.v.name.clone()),
                         Composition {
                             dependencies,
                             output_map,

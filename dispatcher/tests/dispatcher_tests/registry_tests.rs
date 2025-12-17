@@ -75,11 +75,11 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         let mut local_names = in_set_names.clone();
         local_names[i].1 = Some(CompositionSet::from((0, vec![mat_con_a.clone()])));
         // alter metadata for the functions
-        let function_id = format!("local_name_{}", i);
+        let function_id = Arc::new(format!("local_name_{}", i));
 
         dispatcher
             .insert_function(
-                function_id.clone(),
+                (*function_id).clone(),
                 engine_type,
                 DEFAULT_CONTEXT_SIZE,
                 absolute_path
@@ -104,12 +104,12 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         let mut overwrite_inputs = inputs.clone();
         overwrite_inputs[i] = Some(CompositionSet::from((0, vec![mat_fault.clone()])));
 
-        let mut recorder = Recorder::new(0.to_string(), Instant::now());
+        let mut recorder = Recorder::new(function_id.clone(), Instant::now());
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(dispatcher.queue_function(function_id.clone(), inputs, false, recorder));
-        recorder = Recorder::new(0.to_string(), Instant::now());
+        recorder = Recorder::new(function_id.clone(), Instant::now());
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -184,11 +184,11 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         local_names[fixed_sets[0]].1 = Some(CompositionSet::from((0, vec![mat_con_b.clone()])));
         local_names[fixed_sets[1]].1 = Some(CompositionSet::from((0, vec![mat_con_c.clone()])));
         // alter metadata for the functions
-        let function_id = format!("insert_function_{}", i);
+        let function_id = Arc::new(format!("insert_function_{}", i));
 
         dispatcher
             .insert_function(
-                function_id.clone(),
+                (*function_id).clone(),
                 engine_type,
                 DEFAULT_CONTEXT_SIZE,
                 absolute_path
@@ -209,12 +209,12 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         overwrite_inputs[fixed_sets[0]] = Some(CompositionSet::from((0, vec![mat_fault.clone()])));
         overwrite_inputs[fixed_sets[1]] = Some(CompositionSet::from((0, vec![mat_fault.clone()])));
 
-        let mut recorder = Recorder::new(0.to_string(), Instant::now());
+        let mut recorder = Recorder::new(function_id.clone(), Instant::now());
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(dispatcher.queue_function(function_id.clone(), inputs, false, recorder));
-        recorder = Recorder::new(0.to_string(), Instant::now());
+        recorder = Recorder::new(function_id.clone(), Instant::now());
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()

@@ -373,8 +373,8 @@ async fn dispatcher_loop(
                 mut callback,
             } => {
                 debug!("Handling function request for function {}", name);
-                let function_future = dispatcher
-                    .queue_function_with_dispatcher_input(name, inputs, is_cold, start_time);
+                let function_future =
+                    dispatcher.queue_function_by_name(name, inputs, is_cold, start_time);
                 spawn(async {
                     select! {
                         function_output = function_future => {

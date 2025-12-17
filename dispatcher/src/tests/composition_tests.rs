@@ -57,7 +57,13 @@ fn create_test_function_registry(functions: &[&str]) -> FunctionRegistry {
             output_sets: Arc::new(vec![]),
         };
         function_reg
-            .insert_function(f.to_string(), dummy_engine_type, 0, String::new(), metadata)
+            .insert_function(
+                Arc::new(f.to_string()),
+                dummy_engine_type,
+                0,
+                String::new(),
+                metadata,
+            )
             .expect("Failed to insert function into registry!");
     }
     function_reg
@@ -277,7 +283,7 @@ fn test_from_module_minmal_composition() {
     let expected = vec![(
         Composition {
             dependencies: vec![FunctionDependencies {
-                function: "Function".to_string(),
+                function: Arc::new("Function".to_string()),
                 join_info: (vec![], vec![]),
                 input_set_ids: vec![],
                 output_set_ids: vec![],
@@ -309,7 +315,7 @@ fn test_from_module_minmal_composition_with_inputs() {
     let expected = vec![(
         Composition {
             dependencies: vec![FunctionDependencies {
-                function: "Function".to_string(),
+                function: Arc::new("Function".to_string()),
                 input_set_ids: vec![Some(InputSetDescriptor {
                     composition_id: 0,
                     sharding: ShardingMode::All,
@@ -345,7 +351,7 @@ fn test_from_module_minmal_composition_function_with_unused_input() {
     let expected = vec![(
         Composition {
             dependencies: vec![FunctionDependencies {
-                function: "Function".to_string(),
+                function: Arc::new("Function".to_string()),
                 input_set_ids: vec![
                     Some(InputSetDescriptor {
                         composition_id: 0,
@@ -384,7 +390,7 @@ fn test_from_module_minmal_composition_function_with_unused_output() {
     let expected = vec![(
         Composition {
             dependencies: vec![FunctionDependencies {
-                function: "Function".to_string(),
+                function: Arc::new("Function".to_string()),
                 join_info: (vec![], vec![]),
                 input_set_ids: vec![Some(InputSetDescriptor {
                     composition_id: 0,
@@ -421,7 +427,7 @@ fn test_from_module_minmal_composition_with_missing_input() {
     let expected = vec![(
         Composition {
             dependencies: vec![FunctionDependencies {
-                function: "Function".to_string(),
+                function: Arc::new("Function".to_string()),
                 join_info: (vec![], vec![]),
                 input_set_ids: vec![Some(InputSetDescriptor {
                     composition_id: 0,
@@ -458,7 +464,7 @@ fn test_from_module_minmal_composition_missing_output() {
     let expected = vec![(
         Composition {
             dependencies: vec![FunctionDependencies {
-                function: "Function".to_string(),
+                function: Arc::new("Function".to_string()),
                 join_info: (vec![], vec![]),
                 input_set_ids: vec![Some(InputSetDescriptor {
                     composition_id: 0,

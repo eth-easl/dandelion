@@ -1,5 +1,5 @@
 use super::{check_matrix, setup_dispatcher};
-use dandelion_commons::records::Recorder;
+use dandelion_commons::{records::Recorder, FunctionId};
 use dispatcher::{
     composition::{
         Composition, CompositionSet, FunctionDependencies, InputSetDescriptor, ShardingMode,
@@ -14,6 +14,11 @@ use machine_interface::{
 };
 use std::sync::Arc;
 use std::{collections::BTreeMap, time::Instant};
+
+#[inline]
+fn zero_id() -> FunctionId {
+    Arc::new(0.to_string())
+}
 
 pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
     memory_resource: (DomainType, MemoryResource),
@@ -30,7 +35,7 @@ pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
         memory_resource,
     );
 
-    let recorder = Recorder::new(0.to_string(), Instant::now());
+    let recorder = Recorder::new(zero_id(), Instant::now());
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
@@ -78,7 +83,7 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
         vec![(Arc::new(in_context))],
     )))];
 
-    let recorder = Recorder::new(0.to_string(), Instant::now());
+    let recorder = Recorder::new(zero_id(), Instant::now());
 
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -144,7 +149,7 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
     };
     let inputs = vec![Some(CompositionSet::from((0, vec![Arc::new(in_context)])))];
 
-    let recorder = Recorder::new(0.to_string(), Instant::now());
+    let recorder = Recorder::new(zero_id(), Instant::now());
 
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -171,7 +176,7 @@ fn composition_option_helper(
     inputs: Vec<Option<CompositionSet>>,
     dispatcher: &mut Dispatcher,
 ) -> Vec<Option<CompositionSet>> {
-    let recorder = Recorder::new(0.to_string(), Instant::now());
+    let recorder = Recorder::new(zero_id(), Instant::now());
 
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -391,7 +396,7 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
     };
     let inputs = vec![Some(CompositionSet::from((0, vec![Arc::new(in_context)])))];
 
-    let recorder = Recorder::new(0.to_string(), Instant::now());
+    let recorder = Recorder::new(zero_id(), Instant::now());
 
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -480,7 +485,7 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
         output_map: BTreeMap::from([(2, 0)]),
     };
 
-    let recorder = Recorder::new(0.to_string(), Instant::now());
+    let recorder = Recorder::new(zero_id(), Instant::now());
 
     let inputs = vec![Some(CompositionSet::from((0, vec![Arc::new(in_context)])))];
     let result = tokio::runtime::Builder::new_current_thread()
@@ -672,7 +677,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
         output_map: BTreeMap::from([(7, 0)]),
     };
 
-    let recorder = Recorder::new(0.to_string(), Instant::now());
+    let recorder = Recorder::new(zero_id(), Instant::now());
 
     let context_arc = Arc::new(in_context);
     let inputs = vec![

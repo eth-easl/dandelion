@@ -83,7 +83,7 @@ pub enum FunctionType {
 }
 
 /// A `BTreeMap` linking function identifiers to function types.
-type FunctionMap = BTreeMap<FunctionId, FunctionType>;
+type FunctionMap = BTreeMap<String, FunctionType>;
 
 // inserts the function into the function map
 fn fmap_insert_function(
@@ -93,13 +93,13 @@ fn fmap_insert_function(
     func_meta: Metadata,
     is_system: bool,
 ) -> DandelionResult<()> {
-    match fmap.get_mut(&key) {
+    match fmap.get_mut(&(*key)) {
         Some(entry) => {
             let func_info = match entry {
                 FunctionType::SystemFunction(info) => {
                     if !is_system {
                         return Err(DandelionError::FunctionRegistry(
-                            FunctionRegistryError::InvalidSystemInsert(key),
+                            FunctionRegistryError::InvalidSystemInsert((*key).clone()),
                         ));
                     }
                     info
@@ -107,14 +107,14 @@ fn fmap_insert_function(
                 FunctionType::Function(info) => {
                     if is_system {
                         return Err(DandelionError::FunctionRegistry(
-                            FunctionRegistryError::InvalidUserInsert(key),
+                            FunctionRegistryError::InvalidUserInsert((*key).clone()),
                         ));
                     }
                     info
                 }
                 FunctionType::Composition(_) => {
                     return Err(DandelionError::FunctionRegistry(
-                        FunctionRegistryError::TypeConflictInsert(key),
+                        FunctionRegistryError::TypeConflictInsert((*key).clone()),
                     ));
                 }
             };
@@ -126,7 +126,7 @@ fn fmap_insert_function(
                 .expect("Function registry lock poisoned!");
             if lock_guard.iter().any(|alt| alt.engine == func_alt.engine) {
                 return Err(DandelionError::FunctionRegistry(
-                    FunctionRegistryError::DuplicateInsert(key),
+                    FunctionRegistryError::DuplicateInsert((*key).clone()),
                 ));
             }
             // TODO: check that metadata matches existing one
@@ -138,9 +138,9 @@ fn fmap_insert_function(
                 metadata: Arc::new(func_meta),
             };
             if is_system {
-                fmap.insert(key, FunctionType::SystemFunction(func_info));
+                fmap.insert((*key).clone(), FunctionType::SystemFunction(func_info));
             } else {
-                fmap.insert(key, FunctionType::Function(func_info));
+                fmap.insert((*key).clone(), FunctionType::Function(func_info));
             }
         }
     };
@@ -154,10 +154,10 @@ fn fmap_insert_composition(
     composition: Composition,
     metadata: Metadata,
 ) -> DandelionResult<()> {
-    match fmap.get(&key) {
+    match fmap.get(&(*key)) {
         Some(_) => {
             return Err(DandelionError::FunctionRegistry(
-                FunctionRegistryError::DuplicateInsert(key),
+                FunctionRegistryError::DuplicateInsert((*key).clone()),
             ))
         }
         None => {
@@ -165,7 +165,7 @@ fn fmap_insert_composition(
                 composition: Arc::new(composition),
                 metadata: Arc::new(metadata),
             };
-            fmap.insert(key, FunctionType::Composition(comp_info))
+            fmap.insert((*key).clone(), FunctionType::Composition(comp_info))
         }
     };
     Ok(())
@@ -225,7 +225,7 @@ impl FunctionRegistry {
         for (engine_type, driver) in drivers.iter() {
             let system_functions = get_system_functions(*engine_type);
             for (system_function, context_size) in system_functions {
-                let func_id = system_function.to_string();
+                let func_id = Arc::new(system_function.to_string());
 
                 // get the config from the parser
                 let function_config = driver
@@ -283,10 +283,10 @@ impl FunctionRegistry {
             .function_map
             .read()
             .expect("Function registry lock poisoned!");
-        match lock_guard.get(function_id) {
+        match lock_guard.get(&(**function_id)) {
             Some(x) => Ok(x.clone()),
             None => Err(DandelionError::FunctionRegistry(
-                FunctionRegistryError::UnknownFunction(function_id.clone()),
+                FunctionRegistryError::UnknownFunction((**function_id).clone()),
             )),
         }
     }
@@ -297,14 +297,14 @@ impl FunctionRegistry {
             .function_map
             .read()
             .expect("Function registry lock poisoned!");
-        match lock_guard.get(function_id) {
+        match lock_guard.get(&(**function_id)) {
             Some(func_type) => match func_type {
                 FunctionType::SystemFunction(func_info) => Ok(func_info.metadata.clone()),
                 FunctionType::Function(func_info) => Ok(func_info.metadata.clone()),
                 FunctionType::Composition(comp_info) => Ok(comp_info.metadata.clone()),
             },
             None => Err(DandelionError::FunctionRegistry(
-                FunctionRegistryError::UnknownFunction(function_id.clone()),
+                FunctionRegistryError::UnknownFunction((**function_id).clone()),
             )),
         }
     }
@@ -491,11 +491,20 @@ impl FunctionRegistry {
     }
 
     /// Checks if a function identifier is registered in the function registry.
-    pub fn exists(&self, function_id: &FunctionId) -> bool {
+    pub fn exists_id(&self, function_id: &FunctionId) -> bool {
         let lock_guard = self
             .function_map
             .read()
             .expect("Function registry lock is poisoned!");
-        lock_guard.contains_key(function_id)
+        lock_guard.contains_key(&(**function_id))
+    }
+
+    /// Checks if a function name is registered in the function registry.
+    pub fn exists_name(&self, function_name: &String) -> bool {
+        let lock_guard = self
+            .function_map
+            .read()
+            .expect("Function registry lock is poisoned!");
+        lock_guard.contains_key(function_name)
     }
 }

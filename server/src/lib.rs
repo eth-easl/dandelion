@@ -470,7 +470,7 @@ fn test_dandelion_body_serialization() {
     }
     let data_box = data.clone().into_boxed_slice();
 
-    let recorder = Recorder::new(0.to_string(), std::time::Instant::now());
+    let recorder = Recorder::new(Arc::new(0.to_string()), std::time::Instant::now());
 
     let expected_response_struct = DandelionDeserializeResponse {
         sets: vec![InputSet {

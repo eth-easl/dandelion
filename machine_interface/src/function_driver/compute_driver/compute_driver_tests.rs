@@ -13,8 +13,13 @@ mod compute_driver_tests {
         DataItem, DataSet, Position,
     };
     use core::panic;
-    use dandelion_commons::{records::Recorder, DandelionError};
+    use dandelion_commons::{records::Recorder, DandelionError, FunctionId};
     use std::{sync::Arc, time::Instant};
+
+    #[inline]
+    fn zero_id() -> FunctionId {
+        Arc::new(0.to_string())
+    }
 
     fn loader_empty<Dom: MemoryDomain>(dom_init: MemoryResource, driver: Box<dyn Driver>) {
         // load elf file
@@ -75,7 +80,7 @@ mod compute_driver_tests {
         let (function_context, config, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
 
-        let recorder = Recorder::new(0.to_string(), Instant::now());
+        let recorder = Recorder::new(Arc::new(0.to_string()), Instant::now());
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config: config,
             context: function_context,
@@ -113,7 +118,7 @@ mod compute_driver_tests {
             }],
         }));
 
-        let recorder = Recorder::new(0.to_string(), Instant::now());
+        let recorder = Recorder::new(zero_id(), Instant::now());
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config,
             context: function_context,
@@ -196,7 +201,7 @@ mod compute_driver_tests {
                 }],
             }));
 
-            let recorder = Recorder::new(0.to_string(), Instant::now());
+            let recorder = Recorder::new(zero_id(), Instant::now());
             let promise = queue.enqueu(WorkToDo::FunctionArguments {
                 config,
                 context: function_context,
@@ -285,7 +290,7 @@ mod compute_driver_tests {
             ],
         }));
 
-        let recorder = Recorder::new(0.to_string(), Instant::now());
+        let recorder = Recorder::new(zero_id(), Instant::now());
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config,
             context: function_context,
@@ -427,7 +432,7 @@ mod compute_driver_tests {
                 },
             ],
         }));
-        let recorder = Recorder::new(0.to_string(), Instant::now());
+        let recorder = Recorder::new(zero_id(), Instant::now());
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
             config: config,
             context: function_context,

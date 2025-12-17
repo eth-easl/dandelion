@@ -54,16 +54,17 @@ mod dispatcher_tests {
             .collect();
         let dispatcher = Dispatcher::init(resource_pool, memory_resources)
             .expect("Should have initialized dispatcher");
+        let function_id = Arc::new(String::from("test_function"));
         dispatcher
             .insert_function(
-                String::from("test_function"),
+                (*function_id).clone(),
                 engine_type,
                 DEFAULT_CONTEXT_SIZE,
                 path_string,
                 metadata,
             )
             .expect("Should be able to insert function in new dispatcher");
-        return (dispatcher, String::from("test_function"));
+        return (dispatcher, function_id);
     }
 
     fn check_matrix(context: &Context, set_id: usize, key: u32, rows: u64, expected: Vec<u64>) {
