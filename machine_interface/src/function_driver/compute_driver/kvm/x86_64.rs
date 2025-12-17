@@ -959,7 +959,12 @@ fn setup_long_mode(sregs: &mut kvm_sregs, xregs: &mut kvm_xcrs) {
     sregs.cr4 = CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT | CR4_FSGSBASE | CR4_OSXSAVE;
     sregs.cr0 = CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_WP | CR0_AM | CR0_PG;
     sregs.efer = EFER_LME | EFER_LMA;
-    xregs.xcrs[0].value = XCR0_X87 | XCR0_SSE | XCR0_AVX | XCR0_AVX512;
+    if cfg!(target_feature = "avx512f") {
+        xregs.xcrs[0].value = XCR0_X87 | XCR0_SSE | XCR0_AVX | XCR0_AVX512;
+    } else {
+        xregs.xcrs[0].value = XCR0_X87 | XCR0_SSE | XCR0_AVX;
+    }
+
     // set dpl on both code and stack segment to make sure it is user level
     // let priviledge_level = 0u8;
     let priviledge_level = 3u8;
