@@ -40,7 +40,7 @@ The server module currently assumes only computation and one communication engin
 
 Feature flags for computation engines:
 - `cheri` for enabling cheri backed isolation, requires a cheri capable compiler and hardware to run it.
-- `kvm` for enabling kvm backed isolation, requires KVM module installed and user to have permissions to access `/dev/kvm`
+- `kvm` for enabling kvm backed isolation, requires KVM module installed and user to have permissions to access `/dev/kvm`, this backend is currently brocken for aarch64, if you need it, please let us know so we can prioritize it.
 - `mmu` for enabling process based isolation
 - `wasm` for enabling rwasm based isolation
 

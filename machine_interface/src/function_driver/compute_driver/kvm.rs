@@ -69,9 +69,12 @@ impl EngineLoop for KvmLoop {
 
         let vm = kvm.create_vm().unwrap();
         let vcpu = vm.create_vcpu(0).unwrap();
-        // enable all features the real cpu has on the vcpu
-        let cpuid = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).unwrap();
-        vcpu.set_cpuid2(&cpuid).unwrap();
+        #[cfg(target_arch = "x86_64")]
+        {
+            // enable all features the real cpu has on the vcpu
+            let cpuid = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).unwrap();
+            vcpu.set_cpuid2(&cpuid).unwrap();
+        }
 
         let state = ResetState::new(&vm, &vcpu);
 
