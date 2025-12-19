@@ -246,10 +246,6 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
 #[cfg(any(feature = "reqwest_io"))]
 fn test_insert_composition_with_http_func() {
     use std::collections::BTreeMap;
-    let memory_resources = BTreeMap::from([(
-        DomainType::Mmap,
-        MemoryResource::Anonymous { size: (1 << 30) },
-    )]);
     let dispatcher = dispatcher::dispatcher::Dispatcher::init(
         dispatcher::resource_pool::ResourcePool {
             engine_pool: futures::lock::Mutex::new(BTreeMap::new()),

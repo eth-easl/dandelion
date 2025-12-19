@@ -768,7 +768,7 @@ pub fn composition_chain_large_matmac<Domain: MemoryDomain>(
     let mut dependencies = vec![FunctionDependencies {
         // C+C, should be a matrix filled with 2s
         // also test that we can use the same set as mutliple input set for one function
-        function: function_id,
+        function: function_id.clone(),
         join_info: (vec![], vec![]),
         input_set_ids: vec![
             None,
@@ -794,7 +794,7 @@ pub fn composition_chain_large_matmac<Domain: MemoryDomain>(
             (chain_stage + 2, chain_stage + 3)
         };
         dependencies.push(FunctionDependencies {
-            function: function_id,
+            function: function_id.clone(),
             join_info: (vec![], vec![]),
             input_set_ids: vec![
                 None,
@@ -818,7 +818,7 @@ pub fn composition_chain_large_matmac<Domain: MemoryDomain>(
         output_map: BTreeMap::from([(chain_length + 2, 0)]),
     };
 
-    let recorder = Recorder::new(0, Instant::now());
+    let recorder = Recorder::new(Arc::new(0.to_string()), Instant::now());
 
     let context_arc = Arc::new(in_context);
     let inputs = vec![
