@@ -1783,7 +1783,6 @@ pub fn start_proxy_server2(
         };
 
 
-
     thread::spawn(move || {
         runtime.block_on(async {
             create_proxy_server2(request_sender, port, dg_svc).await;

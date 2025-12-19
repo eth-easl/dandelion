@@ -51,11 +51,13 @@ use signal_hook::iterator::Signals;
 
 mod dirigent_service;
 use dirigent_service::start_dirigent_server;
+use dirigent_service::start_k8s_informer;
 
 mod dirigent_proxy;
 mod request_parser;
 
 use crate::dirigent_proxy::start_proxy_server2;
+use crate::dirigent_service::DirigentService;
 
 const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
@@ -661,17 +663,30 @@ fn main() -> () {
     print!(" request_io");
     #[cfg(feature = "timestamp")]
     print!(" timestamp");
+    #[cfg(feature = "unpin_proxy")]
+    print!(" unpin_proxy");
+    #[cfg(feature = "use_service_loop")]
+    print!(" use_service_loop");
+    #[cfg(feature = "k8s_integration")]
+    print!(" k8s_integration");
     print!("\n");
 
     let dg_svc = start_dirigent_server(dirigent_server_cores, config.dirigent_sync_port);
-    start_proxy_server2(dirigent_proxy_cores, dispatcher_sender.clone(), config.dirigent_proxy_port, dg_svc);
+    start_proxy_server2(
+        dirigent_proxy_cores,
+        dispatcher_sender.clone(),
+        config.dirigent_proxy_port,
+        Arc::clone(&dg_svc),
+    );
+    if cfg!(feature = "k8s_integration") {
+        start_k8s_informer(Arc::clone(&dg_svc));
+    }
 
     if cfg!(feature = "use_service_loop") {
         let _guard = runtime.enter();
         // Run this server for... forever... unless I receive a signal!
         runtime.block_on(service_loop(dispatcher_sender, config.port));
-    }
-    else {
+    } else {
         let signals = Signals::new([SIGTERM, SIGINT, SIGQUIT]);
 
         // blocks until *any* of them arrives
