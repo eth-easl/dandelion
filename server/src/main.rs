@@ -514,8 +514,14 @@ fn main() -> () {
 
     println!("core allocation:");
     println!("frontend cores {:?}", frontend_cores);
-    println!("dirigent_server_cores {:?}", dirigent_server_cores);
-    println!("dirigent_proxy_cores {:?}", dirigent_proxy_cores); 
+    if cfg!(feature = "unpin_proxy") {
+        println!("dirigent_server_cores: unpinned, could use all the machine cores");
+        println!("dirigent_proxy_cores: unpinned, could use all the machine cores"); 
+    }
+    else {
+        println!("dirigent_server_cores {:?}", dirigent_server_cores);
+        println!("dirigent_proxy_cores {:?}", dirigent_proxy_cores); 
+    }
     println!("dispatcher cores: {:?}", dispatcher_cores);
     println!("communication cores: {:?}", communication_cores);
     println!("compute cores: {:?}", compute_cores);

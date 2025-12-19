@@ -1747,35 +1747,41 @@ pub fn start_proxy_server2(
     port: u16,
     dg_svc: Arc<DirigentService>,
 ) {
-    // let runtime = Runtime::new().unwrap(); // The default runtime. Use all the cores it could use
 
-    // make multithreaded dirigent proxy runtime
-    // set up tokio runtime, need io in any case
-    let mut runtime_builder = Builder::new_multi_thread();
-    runtime_builder.enable_io();
-    runtime_builder.worker_threads(proxy_cores.len());
-    // Pin each Tokio worker thread to a specific core
-    let cores = proxy_cores.clone(); // move into closure
-    runtime_builder.on_thread_start(move || {
-        // Each worker thread calls this once.
-        // Need a way to pick which core this thread should use.
+    let runtime = 
+        if cfg!(feature = "unpin_proxy") {
+            Runtime::new().unwrap() // The default runtime. Use all the cores it could use
+        }
+        else {
+            // make multithreaded dirigent proxy runtime
+            // set up tokio runtime, need io in any case
+            let mut runtime_builder = Builder::new_multi_thread();
+            runtime_builder.enable_io();
+            runtime_builder.worker_threads(proxy_cores.len());
+            // Pin each Tokio worker thread to a specific core
+            let cores = proxy_cores.clone(); // move into closure
+            runtime_builder.on_thread_start(move || {
+                // Each worker thread calls this once.
+                // Need a way to pick which core this thread should use.
 
-        // One simple approach: assign cores in a round-robin based on thread name/id
-        // (Tokio doesn't expose a stable "worker index" here), so use a global counter:
-        static NEXT_DIRIGENT_PROXY_CORE: AtomicUsize =
-            std::sync::atomic::AtomicUsize::new(0);
+                // One simple approach: assign cores in a round-robin based on thread name/id
+                // (Tokio doesn't expose a stable "worker index" here), so use a global counter:
+                static NEXT_DIRIGENT_PROXY_CORE: AtomicUsize =
+                    std::sync::atomic::AtomicUsize::new(0);
 
-        let i = NEXT_DIRIGENT_PROXY_CORE.fetch_add(1, Ordering::Relaxed);
-        let core = cores[i % cores.len()] as usize;
+                let i = NEXT_DIRIGENT_PROXY_CORE.fetch_add(1, Ordering::Relaxed);
+                let core = cores[i % cores.len()] as usize;
 
-        // core_affinity expects core_affinity::CoreId
-        let core_id = CoreId { id: core };
-        let _ok = core_affinity::set_for_current(core_id);
-    });
-    // runtime_builder.global_queue_interval(10);
-    // runtime_builder.event_interval(10);
-    
-    let runtime = runtime_builder.build().unwrap();
+                // core_affinity expects core_affinity::CoreId
+                let core_id = CoreId { id: core };
+                let _ok = core_affinity::set_for_current(core_id);
+            });
+            // runtime_builder.global_queue_interval(10);
+            // runtime_builder.event_interval(10);
+
+            runtime_builder.build().unwrap()
+        };
+
 
 
     thread::spawn(move || {
