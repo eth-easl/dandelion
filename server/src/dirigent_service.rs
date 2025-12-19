@@ -1,9 +1,14 @@
 use bytes::Bytes;
+use futures::{StreamExt, TryStreamExt};
 use http_body_util::Full;
 use hyper::server::conn::http1;
 use hyper::service::Service;
 use hyper::{Method, Request, Response};
-use log::debug;
+use k8s_openapi::api::core::v1::Pod;
+use kube::{Api, Resource};
+use kube_runtime::reflector::Lookup;
+use kube_runtime::{watcher, WatchStreamExt};
+use log::{debug, error, info};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::hash::{Hash, Hasher};
@@ -249,40 +254,37 @@ async fn create_dirigent_server(
 }
 
 pub fn start_dirigent_server(server_cores: Vec<u8>, port: u16) -> Arc<DirigentService> {
+    let runtime = if cfg!(feature = "unpin_proxy") {
+        Runtime::new().unwrap() // The default runtime. Use all the cores it could use
+    } else {
+        // make multithreaded dirigent sever runtime
+        // set up tokio runtime, need io in any case
+        let mut runtime_builder = Builder::new_multi_thread();
+        runtime_builder.enable_io();
+        runtime_builder.worker_threads(server_cores.len());
+        // Pin each Tokio worker thread to a specific core
+        let cores = server_cores.clone(); // move into closure
+        runtime_builder.on_thread_start(move || {
+            // Each worker thread calls this once.
+            // Need a way to pick which core this thread should use.
 
-    let runtime = 
-        if cfg!(feature = "unpin_proxy") {
-            Runtime::new().unwrap() // The default runtime. Use all the cores it could use
-        }
-        else {
-            // make multithreaded dirigent sever runtime
-            // set up tokio runtime, need io in any case
-            let mut runtime_builder = Builder::new_multi_thread();
-            runtime_builder.enable_io();
-            runtime_builder.worker_threads(server_cores.len());
-            // Pin each Tokio worker thread to a specific core
-            let cores = server_cores.clone(); // move into closure
-            runtime_builder.on_thread_start(move || {
-                // Each worker thread calls this once.
-                // Need a way to pick which core this thread should use.
+            // One simple approach: assign cores in a round-robin based on thread name/id
+            // (Tokio doesn't expose a stable "worker index" here), so use a global counter:
+            static NEXT_DIRIGENT_SERVER_CORE: std::sync::atomic::AtomicUsize =
+                std::sync::atomic::AtomicUsize::new(0);
 
-                // One simple approach: assign cores in a round-robin based on thread name/id
-                // (Tokio doesn't expose a stable "worker index" here), so use a global counter:
-                static NEXT_DIRIGENT_SERVER_CORE: std::sync::atomic::AtomicUsize =
-                    std::sync::atomic::AtomicUsize::new(0);
+            let i = NEXT_DIRIGENT_SERVER_CORE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let core = cores[i % cores.len()] as usize;
 
-                let i = NEXT_DIRIGENT_SERVER_CORE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let core = cores[i % cores.len()] as usize;
+            // core_affinity expects core_affinity::CoreId
+            let core_id = core_affinity::CoreId { id: core };
+            let _ok = core_affinity::set_for_current(core_id);
+        });
+        // runtime_builder.global_queue_interval(10);
+        // runtime_builder.event_interval(10);
 
-                // core_affinity expects core_affinity::CoreId
-                let core_id = core_affinity::CoreId { id: core };
-                let _ok = core_affinity::set_for_current(core_id);
-            });
-            // runtime_builder.global_queue_interval(10);
-            // runtime_builder.event_interval(10);
-
-            runtime_builder.build().unwrap()
-        };    
+        runtime_builder.build().unwrap()
+    };
 
     let dg_svc = Arc::new(new_dirigent_service());
     let dg_svc_clone = Arc::clone(&dg_svc);
@@ -294,6 +296,69 @@ pub fn start_dirigent_server(server_cores: Vec<u8>, port: u16) -> Arc<DirigentSe
     });
 
     dg_svc
+}
+
+pub fn start_k8s_informer(dg_svc: Arc<DirigentService>) {
+    let runtime = Runtime::new().unwrap();
+    let data = Arc::clone(&dg_svc.data);
+
+    thread::spawn(move || {
+        runtime.block_on(async {
+            if let Err(e) = knative_k8s_informer(data).await {
+                error!("{:?}", e);
+            }
+        })
+    });
+}
+
+async fn knative_k8s_informer(dg_svc: Arc<Mutex<DgSvcMap>>) -> anyhow::Result<()> {
+    let client = kube::Client::try_default().await?;
+    let api = Api::<Pod>::default_namespaced(client);
+    let wc = watcher::Config::default();
+
+    info!("Starting K8s pod informer...");
+
+    watcher(api, wc)
+        .applied_objects()
+        .default_backoff()
+        .try_for_each({
+            let dg_svc = Arc::clone(&dg_svc);
+
+            move |pod| {
+                let dg_svc = Arc::clone(&dg_svc);
+
+                async move {
+                    if let Some(labels) = pod.metadata.labels {
+                        let function = labels.get("serving.knative.dev/revision").unwrap().clone();
+                        let sandbox_id = pod.metadata.name.unwrap();
+
+                        if let Some(conditions) = pod.status.clone().unwrap().conditions {
+                            let ready = conditions
+                                .iter()
+                                .filter(|c| c.type_ == "Ready")
+                                .any(|c| c.status == "True");
+
+                            if ready {
+                                // Pod becomes Ready when it can serve the traffic and
+                                // remains Ready in Terminating state until it can handle the traffic
+                                if let Some(status) = pod.status {
+                                    if let Some(url) = status.pod_ip {
+                                        process_add_action(dg_svc, function, sandbox_id, url);
+                                    }
+                                }
+                            } else {
+                                process_remove_action(dg_svc, function, sandbox_id);
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
+            }
+        })
+        .await?;
+
+    Ok(())
 }
 
 #[cfg(test)]
