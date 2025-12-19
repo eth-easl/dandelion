@@ -12,8 +12,8 @@ use machine_interface::{
     memory_domain::{read_only::ReadOnlyContext, MemoryDomain, MemoryResource},
     DataItem, DataSet, Position,
 };
-use std::sync::Arc;
 use std::{collections::BTreeMap, time::Instant};
+use std::{iter, sync::Arc};
 
 #[inline]
 fn zero_id() -> FunctionId {
@@ -708,4 +708,138 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             105, 210, 315, 525, 210, 420, 630, 1050, 315, 630, 945, 1575, 525, 1050, 1575, 2625,
         ],
     );
+}
+
+pub fn composition_chain_large_matmac<Domain: MemoryDomain>(
+    memory_resource: (DomainType, MemoryResource),
+    relative_path: &str,
+    engine_type: EngineType,
+    engine_resource: Vec<ComputeResource>,
+) {
+    let (dispatcher, function_id) = self::setup_dispatcher::<Domain>(
+        relative_path,
+        vec![
+            (String::from(""), None),
+            (String::from(""), None),
+            (String::from(""), None),
+        ],
+        vec![String::from("")],
+        engine_type,
+        engine_resource,
+        memory_resource,
+    );
+    let matrix_width = 128u64;
+    let matrix_size = matrix_width * matrix_width;
+    let mut mat_a = vec![matrix_width];
+    mat_a.extend(1..matrix_size + 1);
+    let mut mat_b = vec![matrix_width];
+    mat_b.extend(iter::repeat_n(1, matrix_size as usize));
+
+    let mut data = vec![];
+    data.extend_from_slice(&mat_a);
+    data.extend_from_slice(&mat_b);
+    let mut in_context = ReadOnlyContext::new(data.into_boxed_slice())
+        .expect("Should be able to create read only context");
+    in_context.content = vec![
+        Some(DataSet {
+            ident: String::from("a set"),
+            buffers: vec![DataItem {
+                ident: String::from("a mat"),
+                data: Position {
+                    offset: 0,
+                    size: mat_a.len() * core::mem::size_of::<u64>(),
+                },
+                key: 0,
+            }],
+        }),
+        Some(DataSet {
+            ident: String::from("b set"),
+            buffers: vec![DataItem {
+                ident: String::from("b mat"),
+                data: Position {
+                    offset: mat_a.len() * core::mem::size_of::<u64>(),
+                    size: mat_b.len() * core::mem::size_of::<u64>(),
+                },
+                key: 0,
+            }],
+        }),
+    ];
+
+    let mut dependencies = vec![FunctionDependencies {
+        // C+C, should be a matrix filled with 2s
+        // also test that we can use the same set as mutliple input set for one function
+        function: function_id,
+        join_info: (vec![], vec![]),
+        input_set_ids: vec![
+            None,
+            Some(InputSetDescriptor {
+                composition_id: 1,
+                sharding: ShardingMode::All,
+                optional: false,
+            }),
+            Some(InputSetDescriptor {
+                composition_id: 1,
+                sharding: ShardingMode::All,
+                optional: false,
+            }),
+        ],
+        output_set_ids: vec![Some(2)],
+    }];
+
+    let chain_length = 10;
+    for chain_stage in 0..chain_length {
+        let (input_set, output_set) = if chain_stage == 0 {
+            (0, 3)
+        } else {
+            (chain_stage + 2, chain_stage + 3)
+        };
+        dependencies.push(FunctionDependencies {
+            function: function_id,
+            join_info: (vec![], vec![]),
+            input_set_ids: vec![
+                None,
+                Some(InputSetDescriptor {
+                    composition_id: 2,
+                    sharding: ShardingMode::All,
+                    optional: false,
+                }),
+                Some(InputSetDescriptor {
+                    composition_id: input_set,
+                    sharding: ShardingMode::All,
+                    optional: false,
+                }),
+            ],
+            output_set_ids: vec![Some(output_set)],
+        });
+    }
+
+    let composition = Composition {
+        dependencies,
+        output_map: BTreeMap::from([(chain_length + 2, 0)]),
+    };
+
+    let recorder = Recorder::new(0, Instant::now());
+
+    let context_arc = Arc::new(in_context);
+    let inputs = vec![
+        Some(CompositionSet::from((0, vec![context_arc.clone()]))),
+        Some(CompositionSet::from((1, vec![context_arc.clone()]))),
+    ];
+    let result = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
+    let out_contexts = match result {
+        Ok(context) => context,
+        Err(err) => panic!("Failed with: {:?}", err),
+    };
+    assert_eq!(1, out_contexts.len());
+    let out_composition_set = out_contexts[0].as_ref().expect("Should have set 0");
+    let mut out_context_iter = out_composition_set.into_iter();
+    let (_, _, out_context) = out_context_iter.next().unwrap();
+    assert!(out_context_iter.next().is_none());
+    assert_eq!(1, out_context.content.len());
+    let expected =
+        (1 + 2 * chain_length as u64..matrix_size + 1 + 2 * chain_length as u64).collect();
+    check_matrix(&out_context, 0, 0, matrix_width, expected);
 }

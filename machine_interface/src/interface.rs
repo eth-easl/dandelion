@@ -250,7 +250,7 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     // input set number and pointer (offset)
     // needs to happen after to get correct lower bound on stack
     let system_buffer = DandelionSystemData::<PtrT, SizeT> {
-        exit_code: 0,
+        exit_code: -1,
         heap_begin,
         heap_end,
         input_sets_len: size_t!(input_set_number),
@@ -260,9 +260,22 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
         input_bufs: input_buffers_offset,
         output_bufs: PtrT::default(),
     };
-
+    log::trace!(
+        "System data: {},{}",
+        system_data_offset,
+        size_of::<DandelionSystemData<PtrT, SizeT>>(),
+    );
     context.write(system_data_offset, core::slice::from_ref(&system_buffer))?;
     Ok(())
+}
+
+pub fn write_heap_end<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
+    context: &mut Box<impl ContextTrait>,
+    base_address: usize,
+    heap_end: PtrT,
+) -> DandelionResult<()> {
+    let offset = base_address + core::mem::offset_of!(DandelionSystemData::<PtrT, SizeT>, heap_end);
+    context.write(offset, &[heap_end])
 }
 
 pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(

@@ -254,7 +254,7 @@ fn test_insert_composition_with_http_func() {
         dispatcher::resource_pool::ResourcePool {
             engine_pool: futures::lock::Mutex::new(BTreeMap::new()),
         },
-        memory_resources,
+        BTreeMap::new(),
     )
     .unwrap();
     let composition_string = r#"

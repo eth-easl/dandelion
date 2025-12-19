@@ -90,18 +90,34 @@ mod dispatcher_tests {
             .read(out_mat_position.data.offset, &mut out_mat)
             .expect("Should read output matrix");
         assert_eq!(rows, out_mat[0]);
+        let mut found_error = false;
         for i in 0..expected.len() {
-            assert_eq!(expected[i], out_mat[1 + i]);
+            if expected[i] != out_mat[1 + i] {
+                println!(
+                    "expected {}, actual {}, at index {}, one before {:?}, one after {:?}",
+                    expected[i],
+                    out_mat[1 + i],
+                    i,
+                    out_mat.get(i),
+                    out_mat.get(2 + i)
+                );
+                found_error = true;
+            }
         }
+        assert!(
+            !found_error,
+            "There was an error in the matrix, check stdout for logs"
+        );
     }
 
     macro_rules! dispatcherTests {
         ($name: ident; $domain : ty; $init : expr; $engine_type : expr; $engine_resource: expr) => {
             use crate::dispatcher_tests::{
                 function_tests::{
-                    composition_chain_matmul, composition_diamond_matmac, composition_optional,
-                    composition_parallel_matmul, composition_single_matmul,
-                    single_domain_and_engine_basic, single_domain_and_engine_matmul,
+                    composition_chain_large_matmac, composition_chain_matmul,
+                    composition_diamond_matmac, composition_optional, composition_parallel_matmul,
+                    composition_single_matmul, single_domain_and_engine_basic,
+                    single_domain_and_engine_matmul,
                 },
                 registry_tests::{multiple_input_fixed, single_input_fixed},
             };
@@ -159,6 +175,17 @@ mod dispatcher_tests {
             }
 
             #[test_log::test]
+            fn test_composition_chain_large_matmac() {
+                let name = format!("test_{}_matmac", stringify!($name));
+                composition_chain_large_matmac::<$domain>(
+                    $init,
+                    &name,
+                    $engine_type,
+                    $engine_resource,
+                )
+            }
+
+            #[test_log::test]
             fn test_single_input_fixed() {
                 let name = format!("test_{}_matmac", stringify!($name));
                 single_input_fixed::<$domain>($init, &name, $engine_type, $engine_resource)
@@ -200,12 +227,12 @@ mod dispatcher_tests {
         use machine_interface::{
             function_driver::ComputeResource,
             machine_config::{DomainType, EngineType},
-            memory_domain::{mmap::MmapMemoryDomain, MemoryResource},
+            memory_domain::{kvm::KvmMemoryDomain, MemoryResource},
         };
         #[cfg(target_arch = "x86_64")]
-        dispatcherTests!(elf_kvm_x86_64; MmapMemoryDomain; (DomainType::Mmap, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Kvm; vec![ComputeResource::CPU(1)]);
+        dispatcherTests!(elf_kvm_x86_64; KvmMemoryDomain; (DomainType::Kvm, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Kvm; vec![ComputeResource::CPU(1)]);
         #[cfg(target_arch = "aarch64")]
-        dispatcherTests!(elf_kvm_aarch64; MmapMemoryDomain; (DomainType::Mmap, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Kvm; vec![ComputeResource::CPU(1)]);
+        dispatcherTests!(elf_kvm_aarch64; KvmMemoryDomain; (DomainType::Kvm, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Kvm; vec![ComputeResource::CPU(1)]);
     }
 
     #[cfg(feature = "wasm")]
