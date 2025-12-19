@@ -84,7 +84,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
                     .expect("Path should be valid string")
                     .to_string(),
                 Metadata {
-                    input_sets: Arc::new(local_names),
+                    input_sets: local_names,
                     output_sets: Arc::new(out_set_names.clone()),
                 },
             )
@@ -193,7 +193,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
                     .expect("Path should be valid string")
                     .to_string(),
                 Metadata {
-                    input_sets: Arc::new(local_names),
+                    input_sets: local_names,
                     output_sets: Arc::new(out_set_names.clone()),
                 },
             )

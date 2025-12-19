@@ -255,7 +255,7 @@ async fn register_function(
         .collect();
     let (callback, confirmation) = oneshot::channel();
     let metadata = Metadata {
-        input_sets: Arc::new(input_sets),
+        input_sets: input_sets,
         output_sets: Arc::new(request_map.output_sets),
     };
     dispatcher

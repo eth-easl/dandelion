@@ -525,17 +525,13 @@ impl Dispatcher {
         caching: bool,
         mut recorder: Recorder,
     ) -> DandelionResult<(Context, FunctionConfig, Arc<Metadata>)> {
-        // debug!("Preparing function {} for engine {}", function_id); // TODO
-        let func_alt = self
-            .function_registry
-            .get_alternative(&function_info, engine_type)?;
+        let func_alt = function_info.get_alternative(engine_type)?;
 
         // get context and load static data
         let context_id = match self.type_map.get(&engine_type) {
             Some(id) => id,
             None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
         };
-        // TODO
         let domain = match self.domains.get(context_id) {
             Some(d) => d,
             None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
@@ -569,12 +565,6 @@ impl Dispatcher {
                     buffers: vec![],
                 }));
             if let Some(composition_set) = metadata_set {
-                // TODO
-                // trace!(
-                //     "preparing function {}: copying metadata set to function set {}",
-                //     function_id,
-                //     function_set_index
-                // );
                 static_sets.insert(function_set_index);
                 let mut function_buffer = 0usize;
                 for (subset, item, source_context) in composition_set {
@@ -608,18 +598,12 @@ impl Dispatcher {
             };
 
             if static_sets.contains(&set_index) {
-                // trace!( TODO
-                //     "for function {} skipping input set {} from inputs because it was already in metadata",
-                //     function_id,
-                //     set_index,
-                // );
+                trace!(
+                    "skipping input set {} because it was already in the metadata",
+                    set_index
+                );
                 continue;
             }
-            // trace!( TODO
-            //     "preparing function {}: copying composition set to function set {}",
-            //     function_id,
-            //     set_index,
-            // );
             let mut function_item = 0usize;
             for (subset, item, source_context) in set {
                 // TODO get allignment information

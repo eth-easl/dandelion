@@ -35,6 +35,9 @@ pub struct FunctionAlternative {
     /// Path to the function binary.
     pub path: String,
     /// Function object once the binary is loaded in memory.
+    /// TODO: Could change it to create the future on insertion, as it only gets resolved on the
+    ///       first await anyway. Might also want to implement some caching logic behind the future
+    ///       at that point.
     pub function: Mutex<
         Option<
             future::Shared<Pin<Box<dyn Future<Output = DandelionResult<Arc<Function>>> + Send>>>,
@@ -47,7 +50,7 @@ pub struct FunctionAlternative {
 pub struct Metadata {
     /// The input set names with an optional static composition set. If the static set is set it will
     /// prioritized and any other input for that set is ignored.
-    pub input_sets: Arc<Vec<(String, Option<CompositionSet>)>>,
+    pub input_sets: Vec<(String, Option<CompositionSet>)>,
     /// The output set names.
     pub output_sets: Arc<Vec<String>>,
 }
@@ -60,6 +63,22 @@ pub struct FunctionInfo {
     pub alternatives: Arc<RwLock<Vec<Arc<FunctionAlternative>>>>,
     /// The metadata that applies to all function alternatives.
     pub metadata: Arc<Metadata>,
+}
+
+impl FunctionInfo {
+    /// Returns an atomic reference to the function alternative corresponding to the given engine type.
+    pub fn get_alternative(&self, engine: EngineType) -> DandelionResult<Arc<FunctionAlternative>> {
+        let alternatives_locked = self
+            .alternatives
+            .read()
+            .expect("Function registry lock poisoned!");
+        match alternatives_locked.iter().find(|alt| alt.engine == engine) {
+            Some(alt) => Ok(alt.clone()),
+            None => Err(DandelionError::FunctionRegistry(
+                FunctionRegistryError::UnknownFunctionAlternative,
+            )),
+        }
+    }
 }
 
 /// Struct holding the parsed composition and corresponding metadata. This struct
@@ -251,12 +270,10 @@ impl FunctionRegistry {
 
                 // get metadata
                 let func_metadata = Metadata {
-                    input_sets: Arc::new(
-                        get_system_function_input_sets(system_function)
-                            .into_iter()
-                            .map(|name| (name, None))
-                            .collect(),
-                    ),
+                    input_sets: get_system_function_input_sets(system_function)
+                        .into_iter()
+                        .map(|name| (name, None))
+                        .collect(),
                     output_sets: Arc::new(get_system_function_output_sets(system_function)),
                 };
 
@@ -309,24 +326,6 @@ impl FunctionRegistry {
         }
     }
 
-    /// Returns an atomic reference to the function alternative corresponding to the given engine type.
-    pub fn get_alternative(
-        &self,
-        function_info: &FunctionInfo,
-        engine: EngineType,
-    ) -> DandelionResult<Arc<FunctionAlternative>> {
-        let alternatives_locked = function_info
-            .alternatives
-            .read()
-            .expect("Function registry lock poisoned!");
-        match alternatives_locked.iter().find(|alt| alt.engine == engine) {
-            Some(alt) => Ok(alt.clone()),
-            None => Err(DandelionError::FunctionRegistry(
-                FunctionRegistryError::UnknownFunctionAlternative,
-            )),
-        }
-    }
-
     /// Inserts the function into the function registry. If the function identifier is already the
     /// metadata is expected to match the already existing one.
     pub fn insert_function(
@@ -337,8 +336,8 @@ impl FunctionRegistry {
         path: String,
         metadata: Metadata,
     ) -> DandelionResult<()> {
-        // check that path exists except for empty paths which we also allow
-        if !path.is_empty() && !Path::new(&path).exists() {
+        // check that path exists
+        if !Path::new(&path).exists() {
             return Err(DandelionError::FunctionRegistry(
                 FunctionRegistryError::BinaryNotFound,
             ));
@@ -359,7 +358,7 @@ impl FunctionRegistry {
 
     /// Inserts the composition into the function registry.
     pub fn insert_compositions(&self, composition_desc: &str) -> DandelionResult<()> {
-        // TODO: handle the parser error in a more sensible way
+        // TODO: might want to return the parsing issue back to the user in a better way
         let module = dparser::parse(composition_desc).map_err(|parse_error| {
             print_errors(composition_desc, parse_error);
             DandelionError::Composition(CompositionError::ParsingError)
@@ -373,72 +372,10 @@ impl FunctionRegistry {
             fmap_insert_composition(&mut lock_guard, comp_name, composition, metadata)?;
         }
         Ok(())
-
-        // // TODO actually handle the error in some sensible way
-        // // the error contains the parsing failure
-
-        // let mut dictlock = self.function_dict.lock().await;
-        // let composition_meta_pairs = {
-        //     let module = dparser::parse(module).map_err(|parse_error| {
-        //         print_errors(module, parse_error);
-        //         DandelionError::CompositionParsingError
-        //     })?;
-        //     Composition::from_module(&module, &mut dictlock)?
-        // };
-        // for (function_id, composition, metadata) in composition_meta_pairs {
-        //     self.metadata.lock().await.insert(function_id, metadata);
-        //     self.add_composition(function_id, composition).await?;
-        // }
-        // return Ok("");
     }
 
-    // TODO: what is this function used for?
-    // pub async fn add_local(
-    //     &self,
-    //     function_id: FunctionId,
-    //     engine_id: EngineType,
-    //     ctx_size: usize,
-    //     path: String,
-    // ) -> DandelionResult<()> {
-    //     if !self.metadata.lock().await.contains_key(&function_id) {
-    //         return Err(DandelionError::Dispatcher(
-    //             DispatcherError::MetaDataUnavailable,
-    //         ));
-    //     }
-    //     self.loadable
-    //         .lock()
-    //         .await
-    //         .insert((function_id, engine_id), (path, None));
-    //     self.engine_map
-    //         .lock()
-    //         .await
-    //         .entry(function_id)
-    //         .and_modify(|set| {
-    //             set.insert(engine_id);
-    //         })
-    //         .or_insert({
-    //             let mut set = BTreeSet::new();
-    //             set.insert(engine_id);
-    //             set
-    //         });
-    //     self.options
-    //         .lock()
-    //         .await
-    //         .entry(function_id)
-    //         .and_modify(|current_alts| {
-    //             current_alts.push(Alternative {
-    //                 function_type: FunctionType::Function(engine_id, ctx_size),
-    //                 in_memory: false,
-    //             })
-    //         })
-    //         .or_insert(vec![Alternative {
-    //             function_type: FunctionType::Function(engine_id, ctx_size),
-    //             in_memory: false,
-    //         }]);
-    //     return Ok(());
-    // }
-
     /// Load the given function info of given engine type.
+    /// TODO: should be independent of the registry and moved into the worker in the future
     pub async fn load_function(
         &self,
         function_alt: Arc<FunctionAlternative>,

@@ -51,9 +51,12 @@ fn create_test_function_registry(functions: &[&str]) -> FunctionRegistry {
     let function_reg = FunctionRegistry::new(work_queue, &type_map, &drivers, &domains);
 
     let dummy_engine_type = get_some_engine_type();
+    let mut dummy_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    dummy_path.pop();
+    dummy_path.push("machine_interface/tests/data/test_elf_mmu_aarch64_basic");
     for f in functions {
         let metadata = Metadata {
-            input_sets: Arc::new(vec![]),
+            input_sets: vec![],
             output_sets: Arc::new(vec![]),
         };
         function_reg
@@ -61,7 +64,7 @@ fn create_test_function_registry(functions: &[&str]) -> FunctionRegistry {
                 Arc::new(f.to_string()),
                 dummy_engine_type,
                 0,
-                String::new(),
+                dummy_path.clone().into_os_string().into_string().unwrap(),
                 metadata,
             )
             .expect("Failed to insert function into registry!");
@@ -291,7 +294,7 @@ fn test_from_module_minmal_composition() {
             output_map: BTreeMap::new(),
         },
         Metadata {
-            input_sets: Arc::new(Vec::new()),
+            input_sets: Vec::new(),
             output_sets: Arc::new(Vec::new()),
         },
     )];
@@ -327,7 +330,7 @@ fn test_from_module_minmal_composition_with_inputs() {
             output_map: BTreeMap::from([(1, 0)]),
         },
         Metadata {
-            input_sets: Arc::new(vec![(String::from("Cin"), None)]),
+            input_sets: vec![(String::from("Cin"), None)],
             output_sets: Arc::new(vec![String::from("Cout")]),
         },
     )];
@@ -366,7 +369,7 @@ fn test_from_module_minmal_composition_function_with_unused_input() {
             output_map: BTreeMap::from([(1, 0)]),
         },
         Metadata {
-            input_sets: Arc::new(vec![(String::from("Cin"), None)]),
+            input_sets: vec![(String::from("Cin"), None)],
             output_sets: Arc::new(vec![String::from("Cout")]),
         },
     )];
@@ -402,7 +405,7 @@ fn test_from_module_minmal_composition_function_with_unused_output() {
             output_map: BTreeMap::from([(1, 0)]),
         },
         Metadata {
-            input_sets: Arc::new(vec![(String::from("Cin"), None)]),
+            input_sets: vec![(String::from("Cin"), None)],
             output_sets: Arc::new(vec![String::from("Cout")]),
         },
     )];
@@ -439,7 +442,7 @@ fn test_from_module_minmal_composition_with_missing_input() {
             output_map: BTreeMap::from([(1, 0)]),
         },
         Metadata {
-            input_sets: Arc::new(vec![(String::from("Cin"), None)]),
+            input_sets: vec![(String::from("Cin"), None)],
             output_sets: Arc::new(vec![String::from("Cout")]),
         },
     )];
@@ -476,7 +479,7 @@ fn test_from_module_minmal_composition_missing_output() {
             output_map: BTreeMap::from([(1, 0)]),
         },
         Metadata {
-            input_sets: Arc::new(vec![(String::from("Cin"), None)]),
+            input_sets: vec![(String::from("Cin"), None)],
             output_sets: Arc::new(vec![String::from("Cout")]),
         },
     )];

@@ -35,7 +35,7 @@ mod dispatcher_tests {
         path.push(name);
         let path_string = path.to_str().expect("Path should be string").to_string();
         let metadata = Metadata {
-            input_sets: Arc::new(in_set_names),
+            input_sets: in_set_names,
             output_sets: Arc::new(out_set_names),
         };
         let mut pool_map = BTreeMap::new();
