@@ -36,7 +36,7 @@ mod system_driver_tests {
             py_server_path.pop();
             py_server_path.push("machine_interface/tests/python/server.py");
 
-            let proc_child = Command::new("python")
+            let proc_child = Command::new("python3")
                 .arg(py_server_path)
                 .arg(port)
                 .stdout(std::process::Stdio::null())

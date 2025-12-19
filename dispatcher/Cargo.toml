@@ -17,9 +17,11 @@ dparser = {path = "../dparser"}
 crossbeam = "0.8.4"
 
 [features]
+default = ["spin_queue"]
 cheri = ["machine_interface/cheri"]
 wasm = ["machine_interface/wasm"]
 mmu = ["machine_interface/mmu"]
 kvm = ["machine_interface/kvm"]
 reqwest_io = ["machine_interface/reqwest_io"]
 timestamp = ["dandelion_commons/timestamp"]
+spin_queue = []

@@ -1,16 +1,13 @@
 use crate::dispatcher_tests::{check_matrix, setup_dispatcher};
 use dandelion_commons::records::Recorder;
-use dispatcher::{
-    composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
-};
-use futures::lock::Mutex;
+use dispatcher::{composition::CompositionSet, function_registry::Metadata};
 use machine_interface::{
     function_driver::ComputeResource,
     machine_config::{DomainType, EngineType},
     memory_domain::{read_only::ReadOnlyContext, Context, MemoryDomain, MemoryResource},
     DataItem, DataSet, Position,
 };
-use std::{collections::BTreeMap, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 
 // using 0x802_0000 as that is what the WASM test binaries expect
 // TODO fix once the update has been merged allowing for 800_0000
@@ -248,13 +245,14 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
 #[test_log::test]
 #[cfg(any(feature = "reqwest_io"))]
 fn test_insert_composition_with_http_func() {
+    use std::collections::BTreeMap;
     let memory_resources = BTreeMap::from([(
         DomainType::Mmap,
         MemoryResource::Anonymous { size: (1 << 30) },
     )]);
-    let dispatcher = Dispatcher::init(
+    let dispatcher = dispatcher::dispatcher::Dispatcher::init(
         dispatcher::resource_pool::ResourcePool {
-            engine_pool: Mutex::new(BTreeMap::new()),
+            engine_pool: futures::lock::Mutex::new(BTreeMap::new()),
         },
         memory_resources,
     )
