@@ -10,10 +10,25 @@ use std::{
 };
 
 use super::transfer_memory;
-#[derive(Debug)]
 pub enum DataPosition {
     ContextStorage(Arc<Context>, usize),
     ResponseInformationStorage(Bytes),
+}
+
+impl std::fmt::Debug for DataPosition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ContextStorage(context, size) => f
+                .debug_struct("DataPosition::ContextStorage")
+                .field("size", size)
+                .field("context", &context)
+                .finish(),
+            Self::ResponseInformationStorage(bytes) => f
+                .debug_struct("DataPosition::ResponseInformationStorage")
+                .field("size", &bytes.len())
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -148,7 +163,7 @@ impl ContextTrait for SystemContext {
                         // We calculate the amount of bytes that are definitely contiguous, namely
                         // at max the whole Bytes representing this item
                         let max_length = min(length, item_size);
-                        return Ok(&body.as_ref()[offset_in_item..max_length]);
+                        return Ok(&body.as_ref()[offset_in_item..offset_in_item + max_length]);
                     }
                 }
             }

@@ -4,10 +4,25 @@ use alloc::alloc::Layout;
 use dandelion_commons::{DandelionError, DandelionResult};
 use log::error;
 
-#[derive(Debug)]
 pub struct ReadOnlyContext {
     storage: &'static mut [u8],
     layout: Option<Layout>,
+}
+
+impl std::fmt::Debug for ReadOnlyContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KvmContext")
+            .field(
+                "storage",
+                &format_args!(
+                    "addr: {:?}, len: {}",
+                    self.storage.as_ptr(),
+                    self.storage.len()
+                ),
+            )
+            .field("layout", &self.layout)
+            .finish()
+    }
 }
 
 impl ContextTrait for ReadOnlyContext {
