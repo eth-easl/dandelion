@@ -596,6 +596,7 @@ fn parse_nghttp2_codec_output(
     Vec<Vec<u8>>, // headers_received_list
     Vec<Vec<u8>>, // body_received_list
     Vec<String>,  // header_authority_value_string_list
+    Vec<String>,  // header_authorization_value_string_list
 ) {
     // ************************
     // *** parse the output ***
@@ -668,6 +669,7 @@ fn parse_nghttp2_codec_output(
     let mut headers_received_list: Vec<Vec<u8>> = Vec::new();
     let mut body_received_list: Vec<Vec<u8>> = Vec::new();
     let mut header_authority_value_string_list: Vec<String> = Vec::new();
+    let mut header_authorization_value_string_list: Vec<String> = Vec::new();
     for idx_req_resp in 0..num_of_req_or_res_received {
         let set_idx = idx_req_resp + 1;
 
@@ -676,9 +678,11 @@ fn parse_nghttp2_codec_output(
         let mut headers_received: Vec<u8> = Vec::new();
         let mut body_received: Vec<u8> = Vec::new();
         let mut header_authority_value: Vec<u8> = Vec::new();
+        let mut header_authorization_value: Vec<u8> = Vec::new();
         let header_authority_value_string;
+        let header_authorization_value_string;
 
-        assert_eq!(5, response.sets[set_idx].items.len());
+        assert_eq!(6, response.sets[set_idx].items.len());
 
         debug!("output set {}", set_idx);
         for output_item in &(response.sets[set_idx].items) {
@@ -724,6 +728,15 @@ fn parse_nghttp2_codec_output(
                         header_authority_value.len()
                     );
                 }
+                5 => {
+                    header_authorization_value.clear();
+                    header_authorization_value.extend_from_slice(output_item_data);
+
+                    debug!(
+                        "codec header_authorization_value length: {}",
+                        header_authorization_value.len()
+                    );
+                }
                 _ => {}
             }
         }
@@ -739,6 +752,13 @@ fn parse_nghttp2_codec_output(
             header_authority_value_string
         );
         header_authority_value_string_list.push(header_authority_value_string);
+
+        header_authorization_value_string = String::from_utf8(header_authorization_value).unwrap();
+        debug!(
+            "codec header_authorization_value: {}",
+            header_authorization_value_string
+        );
+        header_authorization_value_string_list.push(header_authorization_value_string);        
     }
 
     (
@@ -754,6 +774,7 @@ fn parse_nghttp2_codec_output(
         headers_received_list,
         body_received_list,
         header_authority_value_string_list,
+        header_authorization_value_string_list,
     )
 }
 
@@ -1040,6 +1061,7 @@ async fn func_connection_worker3(
         let mut headers_received_list: Vec<Vec<u8>>;
         let mut body_received_list: Vec<Vec<u8>>;
         let mut header_authority_value_string_list: Vec<String>;
+        let mut header_authorization_value_string_list: Vec<String>;
 
         (
             // set 0
@@ -1054,6 +1076,7 @@ async fn func_connection_worker3(
             headers_received_list,
             body_received_list,
             header_authority_value_string_list,
+            header_authorization_value_string_list,
         ) = parse_nghttp2_codec_output(function_output, recorder);
         size_of_session_state = session_state.len();
 
@@ -1253,6 +1276,7 @@ async fn stream_worker(
     num_of_headers_received: usize,
     headers_received: Vec<u8>,
     header_authority_value_string: String,
+    header_authorization_value_string: String,
     body_received: Vec<u8>,
     stream_worker_to_dp_connection_worker_tx: mpsc::Sender<StreamWorkerToDpConnReq>,
     stream_worker_to_router_tx: mpsc::Sender<StreamWorkerToRouterReq>,
@@ -1263,6 +1287,11 @@ async fn stream_worker(
     info!(
         "[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] A new stream worker",
         tcp_conn_local_addr, tcp_conn_peer_addr, stream_id
+    );
+
+    info!(
+        "[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] authorization: {}",
+        tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, header_authorization_value_string
     );
 
     // The stream worker would query the router to get the channel to the user_func_conn_worker
@@ -1606,6 +1635,7 @@ async fn dp_connection_worker3(
         let mut headers_received_list: Vec<Vec<u8>>;
         let mut body_received_list: Vec<Vec<u8>>;
         let mut header_authority_value_string_list: Vec<String>;
+        let mut header_authorization_value_string_list: Vec<String>;
         (
             // set 0
             session_state,
@@ -1619,6 +1649,7 @@ async fn dp_connection_worker3(
             headers_received_list,
             body_received_list,
             header_authority_value_string_list,
+            header_authorization_value_string_list,
         ) = parse_nghttp2_codec_output(function_output, recorder);
 
         size_of_session_state = session_state.len();
@@ -1646,12 +1677,15 @@ async fn dp_connection_worker3(
             let body_received: Vec<u8> = body_received_list.remove(0);
             let header_authority_value_string: String =
                 header_authority_value_string_list.remove(0);
+            let header_authorization_value_string: String =
+                header_authorization_value_string_list.remove(0);            
 
             info!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] Receive req with stream id {}. Spawn a stream worker.", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
             tokio::spawn(stream_worker(
                 num_of_headers,
                 headers_received,
                 header_authority_value_string,
+                header_authorization_value_string,
                 body_received,
                 stream_worker_to_dp_connection_worker_tx.clone(),
                 stream_worker_to_router_tx.clone(),
