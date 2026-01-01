@@ -29,7 +29,7 @@ use std::{
     convert::Infallible,
     io::{ErrorKind, Write},
     path::PathBuf,
-    time::Instant,
+    time::{Instant, SystemTime, UNIX_EPOCH},
     sync::atomic::{AtomicUsize, Ordering},
 };
 use tokio::io::{AsyncWriteExt, BufReader};
@@ -778,6 +778,123 @@ fn parse_nghttp2_codec_output(
     )
 }
 
+//Prepare the input to the jwt verifier function and invokes it
+async fn prepare_input_and_invoke_jwt_verifier(
+    request_sender: mpsc::Sender<DispatcherCommand>,
+    verification_key: String,
+    jwt: String,
+) -> (Vec<Option<CompositionSet>>, Recorder) {
+    let config = dandelion_server::config::DandelionConfig::get_config();
+    let jwt_verifier_func_name = config.jwt_verifier_func_name;
+
+    // *** Prepare Input to the jwt verifier *****
+    
+    // **input set 0 **
+    let mut input_set0_items = Vec::new();
+
+    let input_jwt_verification_key = verification_key.as_bytes();
+    let input_jwt= jwt.as_bytes();
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards");
+    let timestamp_secs: i64 = now.as_secs() as i64;
+    let input_current_time = timestamp_secs.to_ne_bytes();
+    debug!("jwt_verifier INPUT set0 jwt_verification_key: {}", verification_key);
+    debug!("jwt_verifier INPUT set0 jwt: {}", jwt);
+    debug!("jwt_verifier INPUT set0 current time: {}", timestamp_secs);
+
+    input_set0_items.push(InputItem {
+        identifier: String::from(""),
+        key: 0,
+        data: input_jwt_verification_key,
+    });
+
+    input_set0_items.push(InputItem {
+        identifier: String::from(""),
+        key: 1,
+        data: input_jwt,
+    });
+
+    input_set0_items.push(InputItem {
+        identifier: String::from(""),
+        key: 2,
+        data: &input_current_time,
+    });
+
+    let mut input_sets: Vec<InputSet> = Vec::with_capacity(1);
+    input_sets.push(InputSet {
+        identifier: String::from(""),
+        items: input_set0_items,
+    });
+
+    // Invoke the function
+    let (function_output, recorder) = invoke_dandelion_function(
+        String::from(jwt_verifier_func_name),
+        input_sets,
+        request_sender.clone(),
+    )
+    .await;
+
+    (function_output, recorder)
+
+
+}
+
+
+// parse jwt_verifier output
+// *** TO DO: Currently the way to get the func output involves unnessary serialization/deserialization and data copying ****
+fn parse_jwt_verifier_output(
+    function_output: Vec<Option<CompositionSet>>,
+    recorder: Recorder,    
+) -> (
+    // set 0
+    i32, // Verification result
+) {
+    // ************************
+    // *** parse the output ***
+
+    let response_dandelion_body = dandelion_server::DandelionBody::new(function_output, &recorder);
+
+    // ***TO DO***: currently we first transfer the reponse_dandelion_body into Bytes and then Deserialize it.
+    // Can we directly get the reponse from the response_dandelion_body (DandelionBody)
+    let body = response_dandelion_body.into_bytes(); // tmp, should have zero-copy in the future
+    let response: DandelionDeserializeResponse = bson::from_slice(&body).unwrap();
+
+    info!("jwt_verifier response.sets.len(): {}", response.sets.len());
+
+    // ***TO DO****: currently we copy data from the output_item.data (&[u8]). Can we avoid this data copying?
+    // *** set 0 ***
+    assert_eq!(1, response.sets[0].items.len());
+    info!("output set 0");
+    let mut verification_result: i32 = 0;
+    for output_item in &(response.sets[0].items) {
+        let output_item_key = output_item.key;
+        let output_item_data = output_item.data;
+
+        match output_item_key {
+            0 => {
+                let arr: [u8; size_of::<i32>()] =
+                    output_item_data.try_into().expect("wrong length");
+                verification_result = i32::from_ne_bytes(arr);
+
+                info!(
+                    "jwt_verifier OUTPUT verification_result: {}",
+                    verification_result
+                );
+            }
+            _ => {}
+        }
+    }
+
+    (
+        // set_0
+        verification_result,
+    )
+
+
+}
+
 // ********* Different worker threads *************
 // ************************************************
 // ************************************************
@@ -1273,6 +1390,7 @@ async fn router(
 // Later, it would reiceves the HTTP2 response from the func_conn_worker and forwards it back to the dp_conn_worker
 // *** TO DO: it should also execute the request-level network filters ***
 async fn stream_worker(
+    request_sender: mpsc::Sender<DispatcherCommand>,
     num_of_headers_received: usize,
     headers_received: Vec<u8>,
     header_authority_value_string: String,
@@ -1289,10 +1407,68 @@ async fn stream_worker(
         tcp_conn_local_addr, tcp_conn_peer_addr, stream_id
     );
 
-    info!(
+    debug!(
         "[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] authorization: {}",
         tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, header_authorization_value_string
     );
+
+    // ****** Prepare input and call the jwt verifier ******
+    debug!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] prepare input and call the jwt verifier", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
+    let config = dandelion_server::config::DandelionConfig::get_config();
+    let tmp_jwt_verifier_hs512_key = config.tmp_jwt_verifier_hs512_key;
+
+    let (function_output, recorder) = prepare_input_and_invoke_jwt_verifier(
+        request_sender.clone(), 
+        tmp_jwt_verifier_hs512_key, 
+        header_authorization_value_string,
+    )
+    .await;
+
+    // ****** Parse the output of the jwt verifier ******
+    debug!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] parse the output of the jwt verifier", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
+    let jwt_verification_result: i32;
+
+    (
+        jwt_verification_result,
+    ) = parse_jwt_verifier_output(function_output, recorder);
+    debug!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] jwt verification result: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, jwt_verification_result);
+
+    // If the jwt verification fails, directly return to the dp_conn_worker to return a 401 response
+    if jwt_verification_result < 0 {
+        let num_of_headers_to_send = 1;
+        let mut headers: Vec<u8> = Vec::new();
+        let mut body_to_send: Vec<u8> = Vec::new();
+
+        let header_status_name_string = ":status\0";
+        let header_stauts_name_len = header_status_name_string.len();
+        let header_stauts_name_len_bytes = header_stauts_name_len.to_ne_bytes();
+        let header_status_value_string = "401\0";
+        let header_stauts_value_len = header_status_value_string.len();
+        let header_stauts_value_len_bytes = header_stauts_value_len.to_ne_bytes();
+        headers.extend_from_slice(&header_stauts_name_len_bytes);
+        headers.extend_from_slice(header_status_name_string.as_bytes());
+        headers.extend_from_slice(&header_stauts_value_len_bytes);
+        headers.extend_from_slice(header_status_value_string.as_bytes());
+
+        let body_to_send_string = "JWT verification fails. Unauthorized Request!!!";
+        body_to_send.extend_from_slice(body_to_send_string.as_bytes());
+
+        let _ = stream_worker_to_dp_connection_worker_tx
+            .send(StreamWorkerToDpConnReq {
+                payload: format!(
+                    "[stream worker:{}] jwt fails. 401 unauthorized ",
+                    stream_id,
+                ),
+                stream_id_to_send_response: stream_id,
+                num_of_headers_to_send: num_of_headers_to_send,
+                headers: headers,
+                body_to_send: body_to_send,
+            })
+            .await;
+        return;
+    }
+
+
 
     // The stream worker would query the router to get the channel to the user_func_conn_worker
     // The channel used by the router to send resp back
@@ -1682,6 +1858,7 @@ async fn dp_connection_worker3(
 
             info!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] Receive req with stream id {}. Spawn a stream worker.", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
             tokio::spawn(stream_worker(
+                request_sender.clone(),
                 num_of_headers,
                 headers_received,
                 header_authority_value_string,
@@ -1709,6 +1886,8 @@ async fn create_proxy_server2(
     let config = dandelion_server::config::DandelionConfig::get_config();
     let nghttp2_codec_func_name = config.nghttp2_codec_func_name;
     let nghttp2_codec_bin_local_path = config.nghttp2_codec_bin_local_path;
+    let jwt_verifier_func_name = config.jwt_verifier_func_name;
+    let jwt_verifier_bin_local_path = config.jwt_verifier_bin_local_path;    
 
     // ****** Before the loop actually starts, register some functions ******
 
@@ -1724,7 +1903,16 @@ async fn create_proxy_server2(
     let _ = register_function_local(
         String::from(nghttp2_codec_bin_local_path),
         String::from(nghttp2_codec_func_name),
-        engine_type,
+        engine_type.clone(),
+        request_sender.clone(),
+    )
+    .await
+    .unwrap();
+    //register the jwt verifier
+    let _ = register_function_local(
+        String::from(jwt_verifier_bin_local_path),
+        String::from(jwt_verifier_func_name),
+        engine_type.clone(),
         request_sender.clone(),
     )
     .await

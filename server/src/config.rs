@@ -11,6 +11,9 @@ const DEFAULT_DIRIGENT_PROXY_PORT: u16 = 8084;
 
 const DEFAULT_NGHTTP2_CODEC_FUNC_NAME: &str = "nghttp2";
 const DEFAULT_NGHTTP2_CODEC_BIN_LOCAL_PATH: &str = "./nghttp2_codec3";
+const DEFAULT_JWT_VERIFIER_FUNC_NAME: &str = "jwt";
+const DEFAULT_JWT_VERIFIER_BIN_LOCAL_PATH: &str = "./jwt";
+const TMP_JWT_VERIFIER_HS512_KEY: &str = "YoUR sUpEr S3krEt 1337 HMAC kEy HeRE"; // TMP hard-coded
 
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
@@ -43,7 +46,16 @@ pub struct DandelionConfig {
     pub nghttp2_codec_func_name: String,
     #[arg(long, env, default_value_t = String::from(DEFAULT_NGHTTP2_CODEC_BIN_LOCAL_PATH))]
     #[serde(default)]
-    pub nghttp2_codec_bin_local_path: String,    
+    pub nghttp2_codec_bin_local_path: String,
+    #[arg(long, env, default_value_t = String::from(DEFAULT_JWT_VERIFIER_FUNC_NAME))]
+    #[serde(default)]
+    pub jwt_verifier_func_name: String,
+    #[arg(long, env, default_value_t = String::from(DEFAULT_JWT_VERIFIER_BIN_LOCAL_PATH))]
+    #[serde(default)]
+    pub jwt_verifier_bin_local_path: String,
+    #[arg(long, env, default_value_t = String::from(TMP_JWT_VERIFIER_HS512_KEY))]
+    #[serde(default)]
+    pub tmp_jwt_verifier_hs512_key: String,      
 }
 
 impl DandelionConfig {
