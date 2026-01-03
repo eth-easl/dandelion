@@ -12,6 +12,9 @@ const DEFAULT_DIRIGENT_PROXY_PORT: u16 = 8084;
 const DEFAULT_NGHTTP2_CODEC_FUNC_NAME: &str = "nghttp2";
 const DEFAULT_NGHTTP2_CODEC_BIN_LOCAL_PATH: &str = "./nghttp2_codec3";
 
+const DEFAULT_MAX_RETRY_PER_REQUEST: usize = 3;
+const DEFAULT_MAX_CONSEVUTIVE_ERORRS_PER_CONN: usize = 10;
+
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
     #[arg(long, env, default_value_t = String::from(DEFAULT_CONFIG_PATH))]
@@ -43,7 +46,13 @@ pub struct DandelionConfig {
     pub nghttp2_codec_func_name: String,
     #[arg(long, env, default_value_t = String::from(DEFAULT_NGHTTP2_CODEC_BIN_LOCAL_PATH))]
     #[serde(default)]
-    pub nghttp2_codec_bin_local_path: String,    
+    pub nghttp2_codec_bin_local_path: String,
+    #[arg(long, env, default_value_t = DEFAULT_MAX_RETRY_PER_REQUEST)]
+    #[serde(default)]
+    pub max_retry_per_request: usize,
+    #[arg(long, env, default_value_t = DEFAULT_MAX_CONSEVUTIVE_ERORRS_PER_CONN)]
+    #[serde(default)]
+    pub max_consecutive_errors_per_conn: usize,    
 }
 
 impl DandelionConfig {

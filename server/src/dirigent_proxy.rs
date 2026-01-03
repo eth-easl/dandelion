@@ -596,6 +596,8 @@ fn parse_nghttp2_codec_output(
     Vec<Vec<u8>>, // headers_received_list
     Vec<Vec<u8>>, // body_received_list
     Vec<String>,  // header_authority_value_string_list
+    Vec<String>,  // header_authorization_value_string_list
+    Vec<String>,  // header_status_value_string_list
 ) {
     // ************************
     // *** parse the output ***
@@ -668,6 +670,8 @@ fn parse_nghttp2_codec_output(
     let mut headers_received_list: Vec<Vec<u8>> = Vec::new();
     let mut body_received_list: Vec<Vec<u8>> = Vec::new();
     let mut header_authority_value_string_list: Vec<String> = Vec::new();
+    let mut header_authorization_value_string_list: Vec<String> = Vec::new();
+    let mut header_status_value_string_list: Vec<String> = Vec::new();
     for idx_req_resp in 0..num_of_req_or_res_received {
         let set_idx = idx_req_resp + 1;
 
@@ -676,9 +680,13 @@ fn parse_nghttp2_codec_output(
         let mut headers_received: Vec<u8> = Vec::new();
         let mut body_received: Vec<u8> = Vec::new();
         let mut header_authority_value: Vec<u8> = Vec::new();
+        let mut header_authorization_value: Vec<u8> = Vec::new();
+        let mut header_status_value: Vec<u8> = Vec::new();
         let header_authority_value_string;
+        let header_authorization_value_string;
+        let header_status_value_string;
 
-        assert_eq!(5, response.sets[set_idx].items.len());
+        assert_eq!(7, response.sets[set_idx].items.len());
 
         debug!("output set {}", set_idx);
         for output_item in &(response.sets[set_idx].items) {
@@ -724,6 +732,24 @@ fn parse_nghttp2_codec_output(
                         header_authority_value.len()
                     );
                 }
+                5 => {
+                    header_authorization_value.clear();
+                    header_authorization_value.extend_from_slice(output_item_data);
+
+                    debug!(
+                        "codec header_authorization_value length: {}",
+                        header_authorization_value.len()
+                    );
+                }
+                6 => {
+                    header_status_value.clear();
+                    header_status_value.extend_from_slice(output_item_data);
+
+                    debug!(
+                        "codec header_status_value length: {}",
+                        header_status_value.len()
+                    );
+                }
                 _ => {}
             }
         }
@@ -739,6 +765,20 @@ fn parse_nghttp2_codec_output(
             header_authority_value_string
         );
         header_authority_value_string_list.push(header_authority_value_string);
+
+        header_authorization_value_string = String::from_utf8(header_authorization_value).unwrap();
+        debug!(
+            "codec header_authorization_value: {}",
+            header_authorization_value_string
+        );
+        header_authorization_value_string_list.push(header_authorization_value_string); 
+
+        header_status_value_string = String::from_utf8(header_status_value).unwrap();
+        debug!(
+            "codec header_status_value: {}",
+            header_status_value_string
+        );
+        header_status_value_string_list.push(header_status_value_string); 
     }
 
     (
@@ -754,6 +794,8 @@ fn parse_nghttp2_codec_output(
         headers_received_list,
         body_received_list,
         header_authority_value_string_list,
+        header_authorization_value_string_list,
+        header_status_value_string_list,
     )
 }
 
@@ -779,6 +821,8 @@ struct RouterToStreamWorkerResp {
 
 struct FunctionConnToStreamWorkerResp {
     payload: String,
+    conn_worker_circuit_break: u8, // 0 means not break
+    status: String, // The ":status" of the received response
     num_of_headers_to_send: usize,
     headers: Vec<u8>,
     body_to_send: Vec<u8>,
@@ -850,6 +894,15 @@ async fn read_from_tcp_stream_until_blocking(
     }
 }
 
+// Check is the :status string is a 5xx error
+fn is_5xx(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    bytes.len() == 3
+        && bytes[0] == b'5'
+        && bytes[1].is_ascii_digit()
+        && bytes[2].is_ascii_digit()
+}
+
 // This handles the TCP/HTTP connection with user function container
 // Thus, it acts as a HTTP client
 async fn func_connection_worker3(
@@ -863,6 +916,10 @@ async fn func_connection_worker3(
         "[func_connection_worker3. Local Addr: {}; Peer Addr: {}] A new user function connection",
         tcp_conn_local_addr, tcp_conn_peer_addr
     );
+
+    // The max num of resp errors before circuit breaks
+    let config = dandelion_server::config::DandelionConfig::get_config();
+    let max_consecutive_errors_per_conn = config.max_consecutive_errors_per_conn;
 
     // Hash Map
     // Key: Stream id of the sent request
@@ -894,6 +951,8 @@ async fn func_connection_worker3(
 
     // The main logic loop (it stops until the other side closes the connection)
     let mut loop_idx = -1;
+    let mut consecutive_error_resp = 0; // The current num of received consecutive error responses
+    let mut conn_worker_circuit_break: u8 = 0; // > 0 means the circuit break. Different numbers represent different reasons
     loop {
         loop_idx = loop_idx + 1;
 
@@ -983,18 +1042,31 @@ async fn func_connection_worker3(
                 Some(req) = stream_worker_to_func_connection_worker_rx.recv() => { // 2) These is a response to send (from a stream worker). We continue this iteration
                     debug!("[func_connection_worker3. Local Addr: {}; Peer Addr: {}] gets request from stream worker", tcp_conn_local_addr, tcp_conn_peer_addr);
 
-                    num_req_resp_to_send = num_req_resp_to_send + 1;
-                    stream_id_to_send_response_list.push(-1); // meaningless for the client
-                    num_of_headers_to_send_list.push(req.num_of_headers_to_send);
-                    size_of_headers_to_send_list.push(req.headers.len());
-                    headers_to_send_list.push(req.headers);
-                    size_of_body_to_send_list.push(req.body.len());
-                    body_to_send_list.push(req.body);
+                    // If the conn worker circuit breaks, directly return to the stream worker
+                    if conn_worker_circuit_break > 0 {
+                        req.function_connection_worker_to_stream_worker_tx.send(FunctionConnToStreamWorkerResp {
+                            payload: format!("Conn worker Circuit Breaks"),
+                            conn_worker_circuit_break: conn_worker_circuit_break,
+                            status: String::from(""),
+                            num_of_headers_to_send: 0,
+                            headers: Vec::new(),
+                            body_to_send: Vec::new(),
+                        });
 
-                    channel_to_send_back_resp_list.push(Some(req.function_connection_worker_to_stream_worker_tx));
+                        while let Ok(req) = stream_worker_to_func_connection_worker_rx.try_recv() {
+                            req.function_connection_worker_to_stream_worker_tx.send(FunctionConnToStreamWorkerResp {
+                                payload: format!("Conn worker Circuit Breaks"),
+                                conn_worker_circuit_break: conn_worker_circuit_break,
+                                status: String::from(""),
+                                num_of_headers_to_send: 0,
+                                headers: Vec::new(),
+                                body_to_send: Vec::new(),
+                            });
+                        }
 
-                    // deplete the channel (send batching)
-                    while let Ok(req) = stream_worker_to_func_connection_worker_rx.try_recv() {
+                        continue; // start the next main loop iteration
+                    }
+                    else {
                         num_req_resp_to_send = num_req_resp_to_send + 1;
                         stream_id_to_send_response_list.push(-1); // meaningless for the client
                         num_of_headers_to_send_list.push(req.num_of_headers_to_send);
@@ -1004,6 +1076,19 @@ async fn func_connection_worker3(
                         body_to_send_list.push(req.body);
 
                         channel_to_send_back_resp_list.push(Some(req.function_connection_worker_to_stream_worker_tx));
+
+                        // deplete the channel (send batching)
+                        while let Ok(req) = stream_worker_to_func_connection_worker_rx.try_recv() {
+                            num_req_resp_to_send = num_req_resp_to_send + 1;
+                            stream_id_to_send_response_list.push(-1); // meaningless for the client
+                            num_of_headers_to_send_list.push(req.num_of_headers_to_send);
+                            size_of_headers_to_send_list.push(req.headers.len());
+                            headers_to_send_list.push(req.headers);
+                            size_of_body_to_send_list.push(req.body.len());
+                            body_to_send_list.push(req.body);
+
+                            channel_to_send_back_resp_list.push(Some(req.function_connection_worker_to_stream_worker_tx));
+                        }
                     }
                 }
             }
@@ -1040,6 +1125,8 @@ async fn func_connection_worker3(
         let mut headers_received_list: Vec<Vec<u8>>;
         let mut body_received_list: Vec<Vec<u8>>;
         let mut header_authority_value_string_list: Vec<String>;
+        let mut header_authorization_value_string_list: Vec<String>;
+        let mut header_status_value_string_list: Vec<String>;
 
         (
             // set 0
@@ -1054,6 +1141,8 @@ async fn func_connection_worker3(
             headers_received_list,
             body_received_list,
             header_authority_value_string_list,
+            header_authorization_value_string_list,
+            header_status_value_string_list,
         ) = parse_nghttp2_codec_output(function_output, recorder);
         size_of_session_state = session_state.len();
 
@@ -1102,6 +1191,7 @@ async fn func_connection_worker3(
         // *** If we receive resps from the user func container ****
         // Send it to the corresponding stream worker
         for i in 0..num_of_req_or_res_received {
+            let header_status_string: String = header_status_value_string_list.remove(0);
             let stream_id: i32 = stream_id_list[i];
             let num_of_headers: usize = num_of_headers_list[i];
             let headers_received: Vec<u8> = headers_received_list.remove(0);
@@ -1110,12 +1200,27 @@ async fn func_connection_worker3(
 
             info!("[func_connection_worker3. Local Addr: {}; Peer Addr: {}] receives a resp from uc with stream id: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
 
+            // if we receive a response with 5xx error
+            if is_5xx(&header_status_string) {
+                consecutive_error_resp = consecutive_error_resp + 1;
+            }
+            else {
+                consecutive_error_resp = 0;
+            }
+
+            // If the consecutive_error_resp exceeds the threshold, set the circuit_break status to 1
+            if consecutive_error_resp >= max_consecutive_errors_per_conn {
+                conn_worker_circuit_break = 1;
+            }
+
             match channel_to_stream_worker {
                 Some(c) => {
                     // debug!("[func conn worker] sends response to stream worker {}", stream_id);
 
                     c.send(FunctionConnToStreamWorkerResp {
                         payload: format!("get resp from user func"),
+                        conn_worker_circuit_break: 0, // Return the actual response received from the func container.
+                        status: header_status_string,
                         num_of_headers_to_send: num_of_headers,
                         headers: headers_received,
                         body_to_send: body_received,
@@ -1265,6 +1370,10 @@ async fn stream_worker(
         tcp_conn_local_addr, tcp_conn_peer_addr, stream_id
     );
 
+    // The max num of retries per request
+    let config = dandelion_server::config::DandelionConfig::get_config();
+    let max_retry_times_per_request = config.max_retry_per_request;
+
     // The stream worker would query the router to get the channel to the user_func_conn_worker
     // The channel used by the router to send resp back
     let (router_to_stream_worker_tx, router_to_stream_worker_rx) =
@@ -1302,70 +1411,151 @@ async fn stream_worker(
             // From the router, we now know which user-func connection to use
             let stream_worker_to_func_connection_worker_tx =
                 resp.stream_worker_to_func_connection_worker_tx;
+            
 
-            // Used to get the resp back from the func_conn_worker
-            let (
-                function_connection_worker_to_stream_worker_tx,
-                function_connection_worker_to_stream_worker_rx,
-            ) = oneshot::channel::<FunctionConnToStreamWorkerResp>();
-            // send request to the func_conn worker
-            if let Err(e) = stream_worker_to_func_connection_worker_tx
-                .send(StreamWorkerToFuncConnReq {
-                    payload: format!("request from stream worker: {}", stream_id),
-                    stream_id: stream_id,
-                    num_of_headers_to_send: num_of_headers_received,
-                    headers: headers_received,
-                    body: body_received,
-                    function_connection_worker_to_stream_worker_tx:
-                        function_connection_worker_to_stream_worker_tx,
-                })
-                .await
-            {
-                error!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] failed to send to user func conn worker: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, e);
+            let mut return_abnormal_resp: u8 = 0; // If > 0, return a abnormal resp to the dp_conn_worker. Different numbers represent different reasons
+            let mut retry_times: usize = 0; // The current number of retries
+            // Break until we reach the max retry times or the circuit breaks
+            while true {
+                // If the retry times for this request/stream has exceeded the upper threshold
+                if retry_times >= max_retry_times_per_request {
+                    return_abnormal_resp = 1;
+                    break;
+                }
 
-                // If we fail to send to user func conn worker
-                let _ = stream_worker_to_dp_connection_worker_tx
-                    .send(StreamWorkerToDpConnReq {
-                        payload: format!(
-                            "[stream worker:{}] failed to send to user func conn worker: {}",
-                            stream_id, e
-                        ),
-                        ..Default::default()
+                // Used to get the resp back from the func_conn_worker
+                let (
+                    function_connection_worker_to_stream_worker_tx,
+                    function_connection_worker_to_stream_worker_rx,
+                ) = oneshot::channel::<FunctionConnToStreamWorkerResp>();
+                // send request to the func_conn worker
+                if let Err(e) = stream_worker_to_func_connection_worker_tx
+                    .send(StreamWorkerToFuncConnReq {
+                        payload: format!("request from stream worker: {}", stream_id),
+                        stream_id: stream_id,
+                        num_of_headers_to_send: num_of_headers_received,
+                        headers: headers_received.clone(),
+                        body: body_received.clone(),
+                        function_connection_worker_to_stream_worker_tx:
+                            function_connection_worker_to_stream_worker_tx,
                     })
-                    .await;
-                return;
-            }
+                    .await
+                {
+                    error!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] failed to send to user func conn worker: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, e);
 
-            // *** Wait for the resp from the user func conn worker ***
-            match function_connection_worker_to_stream_worker_rx.await {
-                Ok(resp) => {
-                    info!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] gets resp from the user func conn worker", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
-
+                    // If we fail to send to user func conn worker
                     let _ = stream_worker_to_dp_connection_worker_tx
                         .send(StreamWorkerToDpConnReq {
                             payload: format!(
-                                "[stream worker:{}] final response: {} ",
-                                stream_id, resp.payload
+                                "[stream worker:{}] failed to send to user func conn worker: {}",
+                                stream_id, e
                             ),
-                            stream_id_to_send_response: stream_id,
-                            num_of_headers_to_send: resp.num_of_headers_to_send,
-                            headers: resp.headers,
-                            body_to_send: resp.body_to_send,
+                            ..Default::default()
                         })
                         .await;
+                    return;
                 }
-                Err(e) => {
-                    error!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] fails to get resp from the func conn worker: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, e);
 
-                    let _ = stream_worker_to_dp_connection_worker_tx
-                        .send(
-                            StreamWorkerToDpConnReq {
-                                payload: format!("[stream worker:{}] fails to receive from the user func conn worker: {} ", stream_id, e),
-                                ..Default::default()
+                // *** Wait for the resp from the user func conn worker ***
+                match function_connection_worker_to_stream_worker_rx.await {
+                    Ok(resp) => {
+                        info!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] gets resp (status: {}) from the user func conn worker", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, resp.status);
+
+                        // upstream/func conn worker circuit break
+                        if resp.conn_worker_circuit_break > 0 {
+                            if resp.conn_worker_circuit_break == 1 {
+                                return_abnormal_resp = 2; // conn worker has received multiple consecutive responses with status 5xx
                             }
-                        )
-                        .await;
+                            else {
+                                return_abnormal_resp = 100; // undefined
+                            }
+
+                            break;
+                        }
+
+                        // If the response status is 5xx error, retries
+                        if is_5xx(&resp.status) {
+                            error!("5xx error!");
+                            retry_times = retry_times + 1;
+                            continue;
+                        }
+
+                        // For the response with other status (Not 5xx), return it to the dp_connection_worker
+                        let _ = stream_worker_to_dp_connection_worker_tx
+                            .send(StreamWorkerToDpConnReq {
+                                payload: format!(
+                                    "[stream worker:{}] final response: {} ",
+                                    stream_id, resp.payload
+                                ),
+                                stream_id_to_send_response: stream_id,
+                                num_of_headers_to_send: resp.num_of_headers_to_send,
+                                headers: resp.headers,
+                                body_to_send: resp.body_to_send,
+                            })
+                            .await;
+                        
+                            break;
+                    }
+                    Err(e) => {
+                        error!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] fails to get resp from the func conn worker: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, e);
+
+                        let _ = stream_worker_to_dp_connection_worker_tx
+                            .send(
+                                StreamWorkerToDpConnReq {
+                                    payload: format!("[stream worker:{}] fails to receive from the user func conn worker: {} ", stream_id, e),
+                                    ..Default::default()
+                                }
+                            )
+                            .await;
+                        
+                        return;
+                    }
                 }
+            }
+
+            // If we need to return the abnormal resp to the dp_conn_worker
+            if return_abnormal_resp > 0 { // different numbers represent different reasons
+                let num_of_headers_to_send = 1;
+                let mut headers: Vec<u8> = Vec::new();
+                let mut body_to_send: Vec<u8> = Vec::new();
+
+                let header_status_name_string = ":status\0";
+                let header_stauts_name_len = header_status_name_string.len();
+                let header_stauts_name_len_bytes = header_stauts_name_len.to_ne_bytes();
+                let header_status_value_string = 
+                    match return_abnormal_resp {
+                        1 => "503\0",
+                        2 => "503\0",
+                        _ => "500\0", // Undefined
+                    };
+                let header_stauts_value_len = header_status_value_string.len();
+                let header_stauts_value_len_bytes = header_stauts_value_len.to_ne_bytes();
+                headers.extend_from_slice(&header_stauts_name_len_bytes);
+                headers.extend_from_slice(header_status_name_string.as_bytes());
+                headers.extend_from_slice(&header_stauts_value_len_bytes);
+                headers.extend_from_slice(header_status_value_string.as_bytes());
+
+                let body_to_send_string = 
+                    match return_abnormal_resp {
+                        1 => "Service Not Available. Max retry (per request) times exceede",
+                        2 => "Service Not Available. Connection Circuit Break because the max num of consecutive errors",
+                        _ => "Undefined error", // Undefined
+                    };                
+                body_to_send.extend_from_slice(body_to_send_string.as_bytes());
+
+                let _ = stream_worker_to_dp_connection_worker_tx
+                    .send(StreamWorkerToDpConnReq {
+                        payload: format!(
+                            "[stream worker:{}] max retry (per request) times exceeded. 503 service not available",
+                            stream_id,
+                        ),
+                        stream_id_to_send_response: stream_id,
+                        num_of_headers_to_send: num_of_headers_to_send,
+                        headers: headers,
+                        body_to_send: body_to_send,
+                    })
+                    .await;
+                return;
             }
         }
         Err(e) => {
@@ -1606,6 +1796,9 @@ async fn dp_connection_worker3(
         let mut headers_received_list: Vec<Vec<u8>>;
         let mut body_received_list: Vec<Vec<u8>>;
         let mut header_authority_value_string_list: Vec<String>;
+        let mut header_authorization_value_string_list: Vec<String>;
+        let mut header_status_value_string_list: Vec<String>;
+
         (
             // set 0
             session_state,
@@ -1619,6 +1812,8 @@ async fn dp_connection_worker3(
             headers_received_list,
             body_received_list,
             header_authority_value_string_list,
+            header_authorization_value_string_list,
+            header_status_value_string_list,
         ) = parse_nghttp2_codec_output(function_output, recorder);
 
         size_of_session_state = session_state.len();
