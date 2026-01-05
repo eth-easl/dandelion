@@ -920,6 +920,7 @@ async fn func_connection_worker3(
     // The max num of resp errors before circuit breaks
     let config = dandelion_server::config::DandelionConfig::get_config();
     let max_consecutive_errors_per_conn = config.max_consecutive_errors_per_conn;
+    let max_pending_requests_per_conn = config.max_pending_requests_per_conn;
 
     // Hash Map
     // Key: Stream id of the sent request
@@ -952,6 +953,7 @@ async fn func_connection_worker3(
     // The main logic loop (it stops until the other side closes the connection)
     let mut loop_idx = -1;
     let mut consecutive_error_resp = 0; // The current num of received consecutive error responses
+    let mut num_pending_requests = 0; // The current number of pending requests
     let mut conn_worker_circuit_break: u8 = 0; // > 0 means the circuit break. Different numbers represent different reasons
     loop {
         loop_idx = loop_idx + 1;
@@ -1066,7 +1068,7 @@ async fn func_connection_worker3(
 
                         continue; // start the next main loop iteration
                     }
-                    else {
+                    else { // if conn_worker_circuit_break == 0
                         num_req_resp_to_send = num_req_resp_to_send + 1;
                         stream_id_to_send_response_list.push(-1); // meaningless for the client
                         num_of_headers_to_send_list.push(req.num_of_headers_to_send);
@@ -1077,17 +1079,33 @@ async fn func_connection_worker3(
 
                         channel_to_send_back_resp_list.push(Some(req.function_connection_worker_to_stream_worker_tx));
 
-                        // deplete the channel (send batching)
-                        while let Ok(req) = stream_worker_to_func_connection_worker_rx.try_recv() {
-                            num_req_resp_to_send = num_req_resp_to_send + 1;
-                            stream_id_to_send_response_list.push(-1); // meaningless for the client
-                            num_of_headers_to_send_list.push(req.num_of_headers_to_send);
-                            size_of_headers_to_send_list.push(req.headers.len());
-                            headers_to_send_list.push(req.headers);
-                            size_of_body_to_send_list.push(req.body.len());
-                            body_to_send_list.push(req.body);
+                        // Increase the num of pending requests
+                        num_pending_requests = num_pending_requests + 1;
+                        if num_pending_requests >= max_pending_requests_per_conn {
+                            conn_worker_circuit_break = conn_worker_circuit_break | 2;
+                        }
 
-                            channel_to_send_back_resp_list.push(Some(req.function_connection_worker_to_stream_worker_tx));
+
+                        // deplete the channel (send batching)
+                        if conn_worker_circuit_break == 0 {
+                            while let Ok(req) = stream_worker_to_func_connection_worker_rx.try_recv() {
+                                num_req_resp_to_send = num_req_resp_to_send + 1;
+                                stream_id_to_send_response_list.push(-1); // meaningless for the client
+                                num_of_headers_to_send_list.push(req.num_of_headers_to_send);
+                                size_of_headers_to_send_list.push(req.headers.len());
+                                headers_to_send_list.push(req.headers);
+                                size_of_body_to_send_list.push(req.body.len());
+                                body_to_send_list.push(req.body);
+
+                                channel_to_send_back_resp_list.push(Some(req.function_connection_worker_to_stream_worker_tx));
+
+                                // Increase the num of pending requests
+                                num_pending_requests = num_pending_requests + 1;
+                                if num_pending_requests >= max_pending_requests_per_conn {
+                                    conn_worker_circuit_break = conn_worker_circuit_break | 2;
+                                    break;
+                                }     
+                            }
                         }
                     }
                 }
@@ -1210,7 +1228,7 @@ async fn func_connection_worker3(
 
             // If the consecutive_error_resp exceeds the threshold, set the circuit_break status to 1
             if consecutive_error_resp >= max_consecutive_errors_per_conn {
-                conn_worker_circuit_break = 1;
+                conn_worker_circuit_break = conn_worker_circuit_break | 1;
             }
 
             match channel_to_stream_worker {
@@ -1231,6 +1249,17 @@ async fn func_connection_worker3(
                 }
             }
         }
+        // Reduce the number of pending requests
+        num_pending_requests = num_pending_requests - num_of_req_or_res_received;
+
+        // Decide circuit break: the num of pending requests on this connection
+        if num_pending_requests >= max_pending_requests_per_conn {
+            conn_worker_circuit_break = conn_worker_circuit_break | 2;
+        }
+        else {
+            conn_worker_circuit_break = conn_worker_circuit_break & !(1 << 1);
+        }
+
     }
 }
 
@@ -1463,8 +1492,11 @@ async fn stream_worker(
 
                         // upstream/func conn worker circuit break
                         if resp.conn_worker_circuit_break > 0 {
-                            if resp.conn_worker_circuit_break == 1 {
+                            if resp.conn_worker_circuit_break & 1 > 0 { // The first bit is set
                                 return_abnormal_resp = 2; // conn worker has received multiple consecutive responses with status 5xx
+                            }
+                            else if resp.conn_worker_circuit_break & 2 > 0 {
+                                return_abnormal_resp = 3; // conn worker has reached maximun num of pending requests
                             }
                             else {
                                 return_abnormal_resp = 100; // undefined
@@ -1475,7 +1507,6 @@ async fn stream_worker(
 
                         // If the response status is 5xx error, retries
                         if is_5xx(&resp.status) {
-                            error!("5xx error!");
                             retry_times = retry_times + 1;
                             continue;
                         }
@@ -1526,6 +1557,7 @@ async fn stream_worker(
                     match return_abnormal_resp {
                         1 => "503\0",
                         2 => "503\0",
+                        3 => "429\0",
                         _ => "500\0", // Undefined
                     };
                 let header_stauts_value_len = header_status_value_string.len();
@@ -1539,6 +1571,7 @@ async fn stream_worker(
                     match return_abnormal_resp {
                         1 => "Service Not Available. Max retry (per request) times exceede",
                         2 => "Service Not Available. Connection Circuit Break because the max num of consecutive errors",
+                        3 => "Too Many Requests",
                         _ => "Undefined error", // Undefined
                     };                
                 body_to_send.extend_from_slice(body_to_send_string.as_bytes());
@@ -1546,7 +1579,7 @@ async fn stream_worker(
                 let _ = stream_worker_to_dp_connection_worker_tx
                     .send(StreamWorkerToDpConnReq {
                         payload: format!(
-                            "[stream worker:{}] max retry (per request) times exceeded. 503 service not available",
+                            "[stream worker:{}] Request Fails",
                             stream_id,
                         ),
                         stream_id_to_send_response: stream_id,

@@ -14,6 +14,7 @@ const DEFAULT_NGHTTP2_CODEC_BIN_LOCAL_PATH: &str = "./nghttp2_codec3";
 
 const DEFAULT_MAX_RETRY_PER_REQUEST: usize = 3;
 const DEFAULT_MAX_CONSEVUTIVE_ERORRS_PER_CONN: usize = 10;
+const DEFAULT_MAX_PENDING_REQUEST_PER_CONN: usize = 5;   
 
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
@@ -52,7 +53,10 @@ pub struct DandelionConfig {
     pub max_retry_per_request: usize,
     #[arg(long, env, default_value_t = DEFAULT_MAX_CONSEVUTIVE_ERORRS_PER_CONN)]
     #[serde(default)]
-    pub max_consecutive_errors_per_conn: usize,    
+    pub max_consecutive_errors_per_conn: usize,
+    #[arg(long, env, default_value_t = DEFAULT_MAX_PENDING_REQUEST_PER_CONN)]
+    #[serde(default)]
+    pub max_pending_requests_per_conn: usize,       
 }
 
 impl DandelionConfig {
