@@ -1,4 +1,4 @@
-name: Dandelion Cargo Tests
+name: Dandelion depenency checks
 
 on:
   push:
