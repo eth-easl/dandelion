@@ -682,7 +682,7 @@ fn parse_nghttp2_codec_output(
         let header_authority_value_string;
         let header_authorization_value_string;
 
-        assert_eq!(6, response.sets[set_idx].items.len());
+        assert_eq!(7, response.sets[set_idx].items.len());
 
         debug!("output set {}", set_idx);
         for output_item in &(response.sets[set_idx].items) {
@@ -1412,60 +1412,63 @@ async fn stream_worker(
         tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, header_authorization_value_string
     );
 
-    // ****** Prepare input and call the jwt verifier ******
-    debug!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] prepare input and call the jwt verifier", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
-    let config = dandelion_server::config::DandelionConfig::get_config();
-    let tmp_jwt_verifier_hs512_key = config.tmp_jwt_verifier_hs512_key;
+    // If 'use_jwt_verifier' is enabled
+    if cfg!(feature = "use_jwt_verifier") {
+        // ****** Prepare input and call the jwt verifier ******
+        debug!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] prepare input and call the jwt verifier", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
+        let config = dandelion_server::config::DandelionConfig::get_config();
+        let tmp_jwt_verifier_hs512_key = config.tmp_jwt_verifier_hs512_key;
 
-    let (function_output, recorder) = prepare_input_and_invoke_jwt_verifier(
-        request_sender.clone(), 
-        tmp_jwt_verifier_hs512_key, 
-        header_authorization_value_string,
-    )
-    .await;
+        let (function_output, recorder) = prepare_input_and_invoke_jwt_verifier(
+            request_sender.clone(), 
+            tmp_jwt_verifier_hs512_key, 
+            header_authorization_value_string,
+        )
+        .await;
 
-    // ****** Parse the output of the jwt verifier ******
-    debug!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] parse the output of the jwt verifier", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
-    let jwt_verification_result: i32;
+        // ****** Parse the output of the jwt verifier ******
+        debug!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] parse the output of the jwt verifier", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
+        let jwt_verification_result: i32;
 
-    (
-        jwt_verification_result,
-    ) = parse_jwt_verifier_output(function_output, recorder);
-    debug!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] jwt verification result: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, jwt_verification_result);
+        (
+            jwt_verification_result,
+        ) = parse_jwt_verifier_output(function_output, recorder);
+        debug!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] jwt verification result: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, jwt_verification_result);
 
-    // If the jwt verification fails, directly return to the dp_conn_worker to return a 401 response
-    if jwt_verification_result < 0 {
-        let num_of_headers_to_send = 1;
-        let mut headers: Vec<u8> = Vec::new();
-        let mut body_to_send: Vec<u8> = Vec::new();
+        // If the jwt verification fails, directly return to the dp_conn_worker to return a 401 response
+        if jwt_verification_result < 0 {
+            let num_of_headers_to_send = 1;
+            let mut headers: Vec<u8> = Vec::new();
+            let mut body_to_send: Vec<u8> = Vec::new();
 
-        let header_status_name_string = ":status\0";
-        let header_stauts_name_len = header_status_name_string.len();
-        let header_stauts_name_len_bytes = header_stauts_name_len.to_ne_bytes();
-        let header_status_value_string = "401\0";
-        let header_stauts_value_len = header_status_value_string.len();
-        let header_stauts_value_len_bytes = header_stauts_value_len.to_ne_bytes();
-        headers.extend_from_slice(&header_stauts_name_len_bytes);
-        headers.extend_from_slice(header_status_name_string.as_bytes());
-        headers.extend_from_slice(&header_stauts_value_len_bytes);
-        headers.extend_from_slice(header_status_value_string.as_bytes());
+            let header_status_name_string = ":status\0";
+            let header_stauts_name_len = header_status_name_string.len();
+            let header_stauts_name_len_bytes = header_stauts_name_len.to_ne_bytes();
+            let header_status_value_string = "401\0";
+            let header_stauts_value_len = header_status_value_string.len();
+            let header_stauts_value_len_bytes = header_stauts_value_len.to_ne_bytes();
+            headers.extend_from_slice(&header_stauts_name_len_bytes);
+            headers.extend_from_slice(header_status_name_string.as_bytes());
+            headers.extend_from_slice(&header_stauts_value_len_bytes);
+            headers.extend_from_slice(header_status_value_string.as_bytes());
 
-        let body_to_send_string = "JWT verification fails. Unauthorized Request!!!";
-        body_to_send.extend_from_slice(body_to_send_string.as_bytes());
+            let body_to_send_string = "JWT verification fails. Unauthorized Request!!!";
+            body_to_send.extend_from_slice(body_to_send_string.as_bytes());
 
-        let _ = stream_worker_to_dp_connection_worker_tx
-            .send(StreamWorkerToDpConnReq {
-                payload: format!(
-                    "[stream worker:{}] jwt fails. 401 unauthorized ",
-                    stream_id,
-                ),
-                stream_id_to_send_response: stream_id,
-                num_of_headers_to_send: num_of_headers_to_send,
-                headers: headers,
-                body_to_send: body_to_send,
-            })
-            .await;
-        return;
+            let _ = stream_worker_to_dp_connection_worker_tx
+                .send(StreamWorkerToDpConnReq {
+                    payload: format!(
+                        "[stream worker:{}] jwt fails. 401 unauthorized ",
+                        stream_id,
+                    ),
+                    stream_id_to_send_response: stream_id,
+                    num_of_headers_to_send: num_of_headers_to_send,
+                    headers: headers,
+                    body_to_send: body_to_send,
+                })
+                .await;
+            return;
+        }
     }
 
 
