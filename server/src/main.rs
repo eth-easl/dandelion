@@ -211,8 +211,6 @@ async fn register_function(
     };
 
     let engine_type = match request_map.engine_type.as_str() {
-        #[cfg(feature = "wasm")]
-        "RWasm" => EngineType::RWasm,
         #[cfg(feature = "mmu")]
         "Process" => EngineType::Process,
         #[cfg(feature = "kvm")]
@@ -548,15 +546,13 @@ fn main() -> () {
 
     // insert engines for the currentyl selected compute engine type
     // todo add function to machine config to detect resources and auto generate this
-    #[cfg(feature = "wasm")]
-    let engine_type = EngineType::RWasm;
     #[cfg(feature = "mmu")]
     let engine_type = EngineType::Process;
     #[cfg(feature = "kvm")]
     let engine_type = EngineType::Kvm;
     #[cfg(feature = "cheri")]
     let engine_type = EngineType::Cheri;
-    #[cfg(any(feature = "cheri", feature = "wasm", feature = "mmu", feature = "kvm"))]
+    #[cfg(any(feature = "cheri", feature = "mmu", feature = "kvm"))]
     pool_map.insert(engine_type, compute_cores);
     #[cfg(feature = "reqwest_io")]
     pool_map.insert(EngineType::Reqwest, communication_cores);
@@ -595,11 +591,6 @@ fn main() -> () {
                 size: max_ram,
             },
         ),
-        #[cfg(feature = "wasm")]
-        (
-            DomainType::RWasm,
-            MemoryResource::Anonymous { size: max_ram },
-        ),
     ]);
 
     // Create an ARC pointer to the dispatcher for thread-safe access
@@ -619,8 +610,6 @@ fn main() -> () {
     print!(" mmu");
     #[cfg(feature = "kvm")]
     print!(" kvm");
-    #[cfg(feature = "wasm")]
-    print!(" wasm");
     #[cfg(feature = "reqwest_io")]
     print!(" request_io");
     #[cfg(feature = "timestamp")]

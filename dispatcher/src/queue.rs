@@ -15,9 +15,8 @@ use std::{
 pub enum QueueFlag {
     EngineReqwestIO = 0b1,
     EngineCheri = 0b10,
-    EngineWasm = 0b100,
-    EngineProcess = 0b1000,
-    EngineKvm = 0b1_0000,
+    EngineProcess = 0b100,
+    EngineKvm = 0b1000,
 }
 
 pub fn get_engine_flag(t: EngineType) -> u32 {
@@ -26,8 +25,6 @@ pub fn get_engine_flag(t: EngineType) -> u32 {
         EngineType::Reqwest => QueueFlag::EngineReqwestIO as u32,
         #[cfg(feature = "cheri")]
         EngineType::Cheri => QueueFlag::EngineCheri as u32,
-        #[cfg(feature = "wasm")]
-        EngineType::RWasm => QueueFlag::EngineWasm as u32,
         #[cfg(feature = "mmu")]
         EngineType::Process => QueueFlag::EngineProcess as u32,
         #[cfg(feature = "kvm")]

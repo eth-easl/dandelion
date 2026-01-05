@@ -1,4 +1,4 @@
-name: Dandelion format checks
+name: Dandelion depenency checks
 
 on:
   push:
@@ -13,5 +13,7 @@ jobs:
     steps:
     # check out the code
     - uses: actions/checkout@v3
-    - name: cargo fmt check
-      run: cargo fmt --all -- --check
+    - name: install cargo machete
+      run: |
+        cargo install cargo-machete
+        cargo-machete

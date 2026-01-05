@@ -9,9 +9,7 @@ use machine_interface::{
 };
 use std::{sync::Arc, time::Instant};
 
-// using 0x802_0000 as that is what the WASM test binaries expect
-// TODO fix once the update has been merged allowing for 800_0000
-const DEFAULT_CONTEXT_SIZE: usize = 0x802_0000; // 128MiB
+const DEFAULT_CONTEXT_SIZE: usize = 0x800_0000; // 128MiB
 
 fn create_context(matrix: Box<[u64]>) -> Context {
     let mat_len = matrix.len();

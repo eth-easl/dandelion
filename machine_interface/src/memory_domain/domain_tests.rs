@@ -5,7 +5,7 @@ use crate::memory_domain::{
 use dandelion_commons::{DandelionError, DandelionResult, DomainError};
 use std::sync::Arc;
 
-#[cfg(any(feature = "cheri", feature = "kvm", feature = "mmu", feature = "wasm"))]
+#[cfg(any(feature = "cheri", feature = "kvm", feature = "mmu"))]
 use crate::memory_domain::system_domain::SystemMemoryDomain;
 
 // produces binary pattern 0b0101_01010 or 0x55
@@ -80,7 +80,7 @@ fn read(ctx: &mut Context, offset: usize, size: usize, expect_success: bool) {
     }
 }
 
-#[cfg(any(feature = "cheri", feature = "kvm", feature = "mmu", feature = "wasm"))]
+#[cfg(any(feature = "cheri", feature = "kvm", feature = "mmu"))]
 fn read_system_context(
     system_ctx: &mut Context,
     base_ctx: Context,
@@ -121,7 +121,7 @@ fn get_chunks(ctx: &mut Context, offset: usize, size: usize, expect_success: boo
     }
 }
 
-#[cfg(any(feature = "cheri", feature = "kvm", feature = "mmu", feature = "wasm"))]
+#[cfg(any(feature = "cheri", feature = "kvm", feature = "mmu"))]
 fn get_chunks_system_context(
     system_ctx: &mut Context,
     base_ctx: Context,
@@ -507,7 +507,7 @@ macro_rules! domainTests {
     };
 }
 
-#[cfg(any(feature = "cheri", feature = "kvm", feature = "mmu", feature = "wasm"))]
+#[cfg(any(feature = "cheri", feature = "kvm", feature = "mmu"))]
 macro_rules! systemsDomainTests {
     ($name : ident ; $domain : ty ; $init : expr) => {
         mod $name {
@@ -716,10 +716,3 @@ use super::mmu::MmuMemoryDomain as mmuType;
 domainTests!(mmu; mmuType; MemoryResource::Shared { id: 0, size: (2<<22) }; DEFAULT_CHUNK_SIZE);
 #[cfg(feature = "mmu")]
 systemsDomainTests!(mmu_system; mmuType; MemoryResource::Shared {id: 0, size: (2<<22)});
-
-#[cfg(feature = "wasm")]
-use super::wasm::WasmMemoryDomain as wasmType;
-#[cfg(feature = "wasm")]
-domainTests!(wasm; wasmType; MemoryResource::Anonymous { size: (2<<22) }; 4096);
-#[cfg(feature = "wasm")]
-systemsDomainTests!(wasm_system; wasmType; MemoryResource::Anonymous{size: (2<<22)});

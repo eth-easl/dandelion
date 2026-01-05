@@ -14,8 +14,6 @@ pub enum EngineType {
     Reqwest,
     #[cfg(feature = "cheri")]
     Cheri,
-    #[cfg(feature = "wasm")]
-    RWasm,
     #[cfg(feature = "mmu")]
     Process,
     #[cfg(feature = "kvm")]
@@ -29,8 +27,6 @@ pub enum DomainType {
     Cheri,
     #[cfg(feature = "kvm")]
     Kvm,
-    #[cfg(feature = "wasm")]
-    RWasm,
     #[cfg(feature = "mmu")]
     Process,
 }
@@ -41,8 +37,6 @@ pub fn get_compatibilty_table() -> BTreeMap<EngineType, DomainType> {
         (EngineType::Reqwest, DomainType::System),
         #[cfg(feature = "cheri")]
         (EngineType::Cheri, DomainType::Cheri),
-        #[cfg(feature = "wasm")]
-        (EngineType::RWasm, DomainType::RWasm),
         #[cfg(feature = "mmu")]
         (EngineType::Process, DomainType::Process),
         #[cfg(feature = "kvm")]
@@ -79,8 +73,6 @@ pub fn get_available_domains(
                 size: 0,
             },
         ),
-        #[cfg(feature = "wasm")]
-        (DomainType::RWasm, MemoryResource::Anonymous { size: 0 }),
     ]);
     for (dom, resource) in resources {
         default_resources.insert(dom, resource);
@@ -110,11 +102,6 @@ pub fn get_available_domains(
                 dom_type,
                 Arc::new(crate::memory_domain::mmu::MmuMemoryDomain::init(resource).unwrap()),
             ),
-            #[cfg(feature = "wasm")]
-            DomainType::RWasm => (
-                dom_type,
-                Arc::new(crate::memory_domain::wasm::WasmMemoryDomain::init(resource).unwrap()),
-            ),
         })
         .collect();
 }
@@ -133,13 +120,6 @@ pub fn get_available_drivers() -> BTreeMap<EngineType, &'static dyn Driver> {
             EngineType::Cheri,
             Box::leak(Box::new(
                 crate::function_driver::compute_driver::cheri::CheriDriver {},
-            )) as &'static dyn Driver,
-        ),
-        #[cfg(feature = "wasm")]
-        (
-            EngineType::RWasm,
-            Box::leak(Box::new(
-                crate::function_driver::compute_driver::wasm::WasmDriver {},
             )) as &'static dyn Driver,
         ),
         #[cfg(feature = "mmu")]

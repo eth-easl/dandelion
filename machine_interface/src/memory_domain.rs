@@ -10,8 +10,6 @@ pub mod malloc;
 pub mod mmu;
 pub mod read_only;
 pub(crate) mod system_domain;
-#[cfg(feature = "wasm")]
-pub mod wasm;
 
 use crate::{DataItem, DataSet, Position};
 use dandelion_commons::{DandelionError, DandelionResult};
@@ -45,8 +43,6 @@ pub enum ContextType {
     Kvm(Box<kvm::KvmContext>),
     #[cfg(feature = "mmu")]
     Mmu(Box<mmu::MmuContext>),
-    #[cfg(feature = "wasm")]
-    Wasm(Box<wasm::WasmContext>),
     System(Box<system_domain::SystemContext>),
 }
 
@@ -61,8 +57,6 @@ impl ContextTrait for ContextType {
             ContextType::Kvm(context) => context.write(offset, data),
             #[cfg(feature = "mmu")]
             ContextType::Mmu(context) => context.write(offset, data),
-            #[cfg(feature = "wasm")]
-            ContextType::Wasm(context) => context.write(offset, data),
             #[cfg(feature = "bytes_context")]
             ContextType::Bytes(context) => context.write(offset, data),
             ContextType::System(context) => context.write(offset, data),
@@ -78,8 +72,6 @@ impl ContextTrait for ContextType {
             ContextType::Kvm(context) => context.read(offset, read_buffer),
             #[cfg(feature = "mmu")]
             ContextType::Mmu(context) => context.read(offset, read_buffer),
-            #[cfg(feature = "wasm")]
-            ContextType::Wasm(context) => context.read(offset, read_buffer),
             #[cfg(feature = "bytes_context")]
             ContextType::Bytes(context) => context.read(offset, read_buffer),
             ContextType::System(context) => context.read(offset, read_buffer),
@@ -95,8 +87,6 @@ impl ContextTrait for ContextType {
             ContextType::Kvm(context) => context.get_chunk_ref(offset, length),
             #[cfg(feature = "mmu")]
             ContextType::Mmu(context) => context.get_chunk_ref(offset, length),
-            #[cfg(feature = "wasm")]
-            ContextType::Wasm(context) => context.get_chunk_ref(offset, length),
             #[cfg(feature = "bytes_context")]
             ContextType::Bytes(context) => context.get_chunk_ref(offset, length),
             ContextType::System(context) => context.get_chunk_ref(offset, length),
@@ -297,26 +287,6 @@ pub fn transfer_memory(
         #[cfg(all(feature = "mmu", feature = "bytes_context"))]
         (ContextType::Mmu(destination_ctxt), ContextType::Bytes(source_ctxt)) => {
             mmu::bytest_to_mmu_transfer(
-                destination_ctxt,
-                &source_ctxt,
-                destination_offset,
-                source_offset,
-                size,
-            )
-        }
-        #[cfg(feature = "wasm")]
-        (ContextType::Wasm(destination_ctxt), ContextType::Wasm(source_ctxt)) => {
-            wasm::wasm_transfer(
-                destination_ctxt,
-                &source_ctxt,
-                destination_offset,
-                source_offset,
-                size,
-            )
-        }
-        #[cfg(all(feature = "wasm", feature = "bytes_context"))]
-        (ContextType::Wasm(destination_ctxt), ContextType::Bytes(source_ctxt)) => {
-            wasm::bytes_to_wasm_transfer(
                 destination_ctxt,
                 &source_ctxt,
                 destination_offset,

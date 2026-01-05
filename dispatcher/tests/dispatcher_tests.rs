@@ -1,7 +1,4 @@
-#[cfg(all(
-    test,
-    any(feature = "cheri", feature = "mmu", feature = "kvm", feature = "wasm")
-))]
+#[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "kvm")))]
 mod dispatcher_tests {
     mod function_tests;
     mod registry_tests;
@@ -18,8 +15,7 @@ mod dispatcher_tests {
     };
     use std::{collections::BTreeMap, sync::Arc};
 
-    // using 0x802_0000 because that is what WASM specifies
-    const DEFAULT_CONTEXT_SIZE: usize = 0x802_0000; // 128MiB
+    const DEFAULT_CONTEXT_SIZE: usize = 0x800_0000; // 128MiB
 
     fn setup_dispatcher<Dom: MemoryDomain>(
         name: &str,
@@ -233,20 +229,5 @@ mod dispatcher_tests {
         dispatcherTests!(elf_kvm_x86_64; KvmMemoryDomain; (DomainType::Kvm, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Kvm; vec![ComputeResource::CPU(1)]);
         #[cfg(target_arch = "aarch64")]
         dispatcherTests!(elf_kvm_aarch64; KvmMemoryDomain; (DomainType::Kvm, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Kvm; vec![ComputeResource::CPU(1)]);
-    }
-
-    #[cfg(feature = "wasm")]
-    mod wasm {
-        use machine_interface::{
-            function_driver::ComputeResource,
-            machine_config::{DomainType, EngineType},
-            memory_domain::{wasm::WasmMemoryDomain, MemoryResource},
-        };
-
-        #[cfg(target_arch = "x86_64")]
-        dispatcherTests!(sysld_wasm_x86_64; WasmMemoryDomain; (DomainType::RWasm, MemoryResource::Anonymous { size: (1<<30) }); EngineType::RWasm; vec![ComputeResource::CPU(1)]);
-
-        #[cfg(target_arch = "aarch64")]
-        dispatcherTests!(sysld_wasm_aarch64; WasmMemoryDomain; (DomainType::RWasm, MemoryResource::Anonymous { size: (1<<30) }); EngineType::RWasm; vec![ComputeResource::CPU(1)]);
     }
 }

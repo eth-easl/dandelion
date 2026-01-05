@@ -269,6 +269,7 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     Ok(())
 }
 
+#[allow(unused)]
 pub fn write_heap_end<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     context: &mut Box<impl ContextTrait>,
     base_address: usize,
