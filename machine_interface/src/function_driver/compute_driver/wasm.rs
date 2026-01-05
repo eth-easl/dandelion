@@ -1,7 +1,7 @@
 use crate::{
     function_driver::{
         thread_utils::{start_thread, EngineLoop},
-        ComputeResource, Driver, Function, FunctionConfig, WasmConfig, WorkQueue,
+        ComputeResource, Driver, EngineWorkQueue, Function, FunctionConfig, WasmConfig,
     },
     interface::{read_output_structs, setup_input_structs},
     memory_domain::{Context, ContextType, MemoryDomain},
@@ -71,7 +71,7 @@ impl Driver for WasmDriver {
     fn start_engine(
         &self,
         resource: ComputeResource,
-        queue: Box<dyn WorkQueue + Send>,
+        queue: Box<dyn EngineWorkQueue + Send>,
     ) -> DandelionResult<()> {
         // sanity checks; extract core id
         let cpu_slot = match resource {

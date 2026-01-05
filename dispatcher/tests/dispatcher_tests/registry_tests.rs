@@ -1,16 +1,13 @@
 use crate::dispatcher_tests::{check_matrix, setup_dispatcher};
 use dandelion_commons::records::Recorder;
-use dispatcher::{
-    composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
-};
-use futures::lock::Mutex;
+use dispatcher::{composition::CompositionSet, function_registry::Metadata};
 use machine_interface::{
     function_driver::ComputeResource,
     machine_config::{DomainType, EngineType},
     memory_domain::{read_only::ReadOnlyContext, Context, MemoryDomain, MemoryResource},
     DataItem, DataSet, Position,
 };
-use std::{collections::BTreeMap, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 
 // using 0x802_0000 as that is what the WASM test binaries expect
 // TODO fix once the update has been merged allowing for 800_0000
@@ -75,23 +72,21 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         let mut local_names = in_set_names.clone();
         local_names[i].1 = Some(CompositionSet::from((0, vec![mat_con_a.clone()])));
         // alter metadata for the functions
-        let function_id = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap()
-            .block_on(
-                dispatcher.insert_func(
-                    format!("local_name_{}", i),
-                    engine_type,
-                    DEFAULT_CONTEXT_SIZE,
-                    absolute_path
-                        .to_str()
-                        .expect("Path should be valid string")
-                        .to_string(),
-                    Metadata {
-                        input_sets: Arc::new(local_names),
-                        output_sets: Arc::new(out_set_names.clone()),
-                    },
-                ),
+        let function_id = Arc::new(format!("local_name_{}", i));
+
+        dispatcher
+            .insert_function(
+                (*function_id).clone(),
+                engine_type,
+                DEFAULT_CONTEXT_SIZE,
+                absolute_path
+                    .to_str()
+                    .expect("Path should be valid string")
+                    .to_string(),
+                Metadata {
+                    input_sets: local_names,
+                    output_sets: Arc::new(out_set_names.clone()),
+                },
             )
             .expect("should be able to update function");
 
@@ -106,16 +101,21 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         let mut overwrite_inputs = inputs.clone();
         overwrite_inputs[i] = Some(CompositionSet::from((0, vec![mat_fault.clone()])));
 
-        let mut recorder = Recorder::new(0, Instant::now());
+        let mut recorder = Recorder::new(function_id.clone(), Instant::now());
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(function_id, inputs, false, recorder));
-        recorder = Recorder::new(0, Instant::now());
+            .block_on(dispatcher.queue_function(function_id.clone(), inputs, false, recorder));
+        recorder = Recorder::new(function_id.clone(), Instant::now());
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(function_id, overwrite_inputs, false, recorder));
+            .block_on(dispatcher.queue_function(
+                function_id.clone(),
+                overwrite_inputs,
+                false,
+                recorder,
+            ));
         let out_sets = match result {
             Ok(composition_sets) => composition_sets,
             Err(err) => panic!("Non overwrite failed with: {:?}", err),
@@ -181,23 +181,21 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         local_names[fixed_sets[0]].1 = Some(CompositionSet::from((0, vec![mat_con_b.clone()])));
         local_names[fixed_sets[1]].1 = Some(CompositionSet::from((0, vec![mat_con_c.clone()])));
         // alter metadata for the functions
-        let function_id = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap()
-            .block_on(
-                dispatcher.insert_func(
-                    format!("insert_function_{}", i),
-                    engine_type,
-                    DEFAULT_CONTEXT_SIZE,
-                    absolute_path
-                        .to_str()
-                        .expect("Path should be valid string")
-                        .to_string(),
-                    Metadata {
-                        input_sets: Arc::new(local_names),
-                        output_sets: Arc::new(out_set_names.clone()),
-                    },
-                ),
+        let function_id = Arc::new(format!("insert_function_{}", i));
+
+        dispatcher
+            .insert_function(
+                (*function_id).clone(),
+                engine_type,
+                DEFAULT_CONTEXT_SIZE,
+                absolute_path
+                    .to_str()
+                    .expect("Path should be valid string")
+                    .to_string(),
+                Metadata {
+                    input_sets: local_names,
+                    output_sets: Arc::new(out_set_names.clone()),
+                },
             )
             .expect("should be able to update function");
 
@@ -208,16 +206,21 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         overwrite_inputs[fixed_sets[0]] = Some(CompositionSet::from((0, vec![mat_fault.clone()])));
         overwrite_inputs[fixed_sets[1]] = Some(CompositionSet::from((0, vec![mat_fault.clone()])));
 
-        let mut recorder = Recorder::new(0, Instant::now());
+        let mut recorder = Recorder::new(function_id.clone(), Instant::now());
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(function_id, inputs, false, recorder));
-        recorder = Recorder::new(0, Instant::now());
+            .block_on(dispatcher.queue_function(function_id.clone(), inputs, false, recorder));
+        recorder = Recorder::new(function_id.clone(), Instant::now());
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(function_id, overwrite_inputs, false, recorder));
+            .block_on(dispatcher.queue_function(
+                function_id.clone(),
+                overwrite_inputs,
+                false,
+                recorder,
+            ));
         let out_sets = match result {
             Ok(composition_sets) => composition_sets,
             Err(err) => panic!("Non overwrite failed with: {:?}", err),
@@ -242,9 +245,10 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
 #[test_log::test]
 #[cfg(any(feature = "reqwest_io"))]
 fn test_insert_composition_with_http_func() {
-    let dispatcher = Dispatcher::init(
+    use std::collections::BTreeMap;
+    let dispatcher = dispatcher::dispatcher::Dispatcher::init(
         dispatcher::resource_pool::ResourcePool {
-            engine_pool: Mutex::new(BTreeMap::new()),
+            engine_pool: futures::lock::Mutex::new(BTreeMap::new()),
         },
         BTreeMap::new(),
     )
@@ -255,9 +259,7 @@ fn test_insert_composition_with_http_func() {
             HTTP (request = all comp_request, body = all req_body) => (resp_body = body, comp_status = status);
         }
     "#;
-    tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap()
-        .block_on(dispatcher.insert_compositions(String::from(composition_string)))
+    dispatcher
+        .insert_compositions(String::from(composition_string))
         .unwrap();
 }

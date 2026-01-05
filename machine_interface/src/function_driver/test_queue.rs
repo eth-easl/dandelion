@@ -1,5 +1,5 @@
 use crate::{
-    function_driver::{WorkQueue, WorkToDo},
+    function_driver::{EngineWorkQueue, WorkToDo},
     promise::{Debt, Promise, PromiseBuffer},
 };
 use std::sync::{Arc, Condvar, Mutex};
@@ -38,7 +38,7 @@ impl TestQueue {
     }
 }
 
-impl WorkQueue for TestQueue {
+impl EngineWorkQueue for TestQueue {
     fn get_engine_args(&self) -> (WorkToDo, Debt) {
         let (lock, arg_var) = self.internal.as_ref();
         let mut lock_guard = lock

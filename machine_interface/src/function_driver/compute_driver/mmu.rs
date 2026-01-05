@@ -2,7 +2,7 @@ use crate::{
     function_driver::{
         load_utils::load_u8_from_file,
         thread_utils::{start_thread, EngineLoop},
-        ComputeResource, Driver, ElfConfig, Function, FunctionConfig, WorkQueue,
+        ComputeResource, Driver, ElfConfig, EngineWorkQueue, Function, FunctionConfig,
     },
     interface::{read_output_structs, setup_input_structs},
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
@@ -224,7 +224,7 @@ impl Driver for MmuDriver {
     fn start_engine(
         &self,
         resource: ComputeResource,
-        queue: Box<dyn WorkQueue + Send>,
+        queue: Box<dyn EngineWorkQueue + Send>,
     ) -> DandelionResult<()> {
         let cpu_slot = match resource {
             ComputeResource::CPU(core) => core,

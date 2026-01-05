@@ -1,10 +1,16 @@
 use crate::{
     composition::{Composition, FunctionDependencies, InputSetDescriptor, ShardingMode},
-    function_registry::{FunctionDict, Metadata},
+    function_registry::{FunctionRegistry, Metadata},
+    queue::WorkQueue,
 };
-use dandelion_commons::DandelionError;
+use dandelion_commons::{CompositionError, DandelionError, FunctionId};
 use dparser::Module;
 use itertools::Itertools;
+use machine_interface::{
+    function_driver::Driver,
+    machine_config::{DomainType, EngineType},
+    memory_domain::MemoryDomain,
+};
 use std::{collections::BTreeMap, ops::Range, sync::Arc, vec};
 
 fn get_module(comp_string: &str) -> Module {
@@ -12,6 +18,58 @@ fn get_module(comp_string: &str) -> Module {
         dparser::print_errors(comp_string, err);
         panic!("parsing failed");
     });
+}
+
+#[allow(unreachable_code)]
+fn get_some_engine_type() -> EngineType {
+    #[cfg(feature = "reqwest_io")]
+    return EngineType::Reqwest;
+    #[cfg(feature = "cheri")]
+    return EngineType::Cheri;
+    #[cfg(feature = "wasm")]
+    return EngineType::RWasm;
+    #[cfg(feature = "mmu")]
+    return EngineType::Process;
+    #[cfg(feature = "kvm")]
+    return EngineType::Kvm;
+
+    #[cfg(all(
+        not(feature = "reqwest_io"),
+        not(feature = "cheri"),
+        not(feature = "wasm"),
+        not(feature = "mmu"),
+        not(feature = "kvm")
+    ))]
+    compile_error!("Need to enable at least one engine type!");
+}
+
+fn create_test_function_registry(functions: &[&str]) -> FunctionRegistry {
+    let work_queue = WorkQueue::init(1);
+    let type_map: BTreeMap<EngineType, DomainType> = BTreeMap::new();
+    let drivers: BTreeMap<EngineType, &'static dyn Driver> = BTreeMap::new();
+    let domains: BTreeMap<DomainType, Arc<Box<dyn MemoryDomain>>> = BTreeMap::new();
+    let function_reg = FunctionRegistry::new(work_queue, &type_map, &drivers, &domains);
+
+    let dummy_engine_type = get_some_engine_type();
+    let mut dummy_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    dummy_path.pop();
+    dummy_path.push("machine_interface/tests/data/test_elf_mmu_aarch64_basic");
+    for f in functions {
+        let metadata = Metadata {
+            input_sets: vec![],
+            output_sets: Arc::new(vec![]),
+        };
+        function_reg
+            .insert_function(
+                Arc::new(f.to_string()),
+                dummy_engine_type,
+                0,
+                dummy_path.clone().into_os_string().into_string().unwrap(),
+                metadata,
+            )
+            .expect("Failed to insert function into registry!");
+    }
+    function_reg
 }
 
 fn check_metadata(actual_meta: &Metadata, expected_meta: &Metadata) -> bool {
@@ -129,7 +187,7 @@ fn check_composition(
 }
 
 fn check_compositions_and_metadata(
-    actual: Vec<(u64, Composition, Metadata)>,
+    actual: Vec<(FunctionId, Composition, Metadata)>,
     expected: Vec<(Composition, Metadata)>,
     input_set_range: Range<usize>,
     output_set_range: Range<usize>,
@@ -186,10 +244,10 @@ fn test_from_module_non_registered_function() {
     let unregistered_function = r#"
         function not_registered () => ();
     "#;
-    let mut function_dict = FunctionDict::new();
+    let function_registry = create_test_function_registry(&[]);
     let module = get_module(unregistered_function);
-    match Composition::from_module(&module, &mut function_dict) {
-        Err(DandelionError::CompositionContainsInvalidFunction(_)) => (),
+    match Composition::from_module(module, &function_registry) {
+        Err(DandelionError::Composition(CompositionError::ContainsInvalidFunction(_))) => (),
         Err(err) => panic!(
             "Found wrong error on composition with invalid function: {:?}",
             err
@@ -203,10 +261,9 @@ fn test_from_module_single_registered_function() {
     let unregistered_function = r#"
         function registered () => ();
     "#;
-    let mut function_dict = FunctionDict::new();
-    function_dict.insert_or_lookup(String::from("registered"));
+    let function_registry = create_test_function_registry(&["registered"]);
     let module = get_module(unregistered_function);
-    match Composition::from_module(&module, &mut function_dict) {
+    match Composition::from_module(module, &function_registry) {
         Ok(_) => (),
         Err(err) => panic!("Found unexpected error on from_module {:?}", err),
     }
@@ -220,17 +277,16 @@ fn test_from_module_minmal_composition() {
             Function () => ();
         }
     "#;
-    let mut function_dict = FunctionDict::new();
-    let function_id = function_dict.insert_or_lookup(String::from("Function"));
+    let function_registry = create_test_function_registry(&["Function"]);
     let module = get_module(composition_string);
-    let compositions = match Composition::from_module(&module, &mut function_dict) {
+    let compositions = match Composition::from_module(module, &function_registry) {
         Ok(c) => c,
         Err(err) => panic!("Found unexpected error on from_module {:?}", err),
     };
     let expected = vec![(
         Composition {
             dependencies: vec![FunctionDependencies {
-                function: function_id,
+                function: Arc::new("Function".to_string()),
                 join_info: (vec![], vec![]),
                 input_set_ids: vec![],
                 output_set_ids: vec![],
@@ -238,7 +294,7 @@ fn test_from_module_minmal_composition() {
             output_map: BTreeMap::new(),
         },
         Metadata {
-            input_sets: Arc::new(Vec::new()),
+            input_sets: Vec::new(),
             output_sets: Arc::new(Vec::new()),
         },
     )];
@@ -253,17 +309,16 @@ fn test_from_module_minmal_composition_with_inputs() {
             Function (Fin = all Cin) => (Cout = Fout);
         }
     "#;
-    let mut function_dict = FunctionDict::new();
-    let function_id = function_dict.insert_or_lookup(String::from("Function"));
+    let function_registry = create_test_function_registry(&["Function"]);
     let module = get_module(composition_string);
-    let compositions = match Composition::from_module(&module, &mut function_dict) {
+    let compositions = match Composition::from_module(module, &function_registry) {
         Ok(c) => c,
         Err(err) => panic!("Found unexpected error on from_module: {:?}", err),
     };
     let expected = vec![(
         Composition {
             dependencies: vec![FunctionDependencies {
-                function: function_id,
+                function: Arc::new("Function".to_string()),
                 input_set_ids: vec![Some(InputSetDescriptor {
                     composition_id: 0,
                     sharding: ShardingMode::All,
@@ -275,7 +330,7 @@ fn test_from_module_minmal_composition_with_inputs() {
             output_map: BTreeMap::from([(1, 0)]),
         },
         Metadata {
-            input_sets: Arc::new(vec![(String::from("Cin"), None)]),
+            input_sets: vec![(String::from("Cin"), None)],
             output_sets: Arc::new(vec![String::from("Cout")]),
         },
     )];
@@ -290,17 +345,16 @@ fn test_from_module_minmal_composition_function_with_unused_input() {
             Function (Fin = all Cin) => (Cout = Fout);
         }
     "#;
-    let mut function_dict = FunctionDict::new();
-    let function_id = function_dict.insert_or_lookup(String::from("Function"));
+    let function_registry = create_test_function_registry(&["Function"]);
     let module = get_module(composition_string);
-    let compositions = match Composition::from_module(&module, &mut function_dict) {
+    let compositions = match Composition::from_module(module, &function_registry) {
         Ok(c) => c,
         Err(err) => panic!("Found unexpected error on from_module: {:?}", err),
     };
     let expected = vec![(
         Composition {
             dependencies: vec![FunctionDependencies {
-                function: function_id,
+                function: Arc::new("Function".to_string()),
                 input_set_ids: vec![
                     Some(InputSetDescriptor {
                         composition_id: 0,
@@ -315,7 +369,7 @@ fn test_from_module_minmal_composition_function_with_unused_input() {
             output_map: BTreeMap::from([(1, 0)]),
         },
         Metadata {
-            input_sets: Arc::new(vec![(String::from("Cin"), None)]),
+            input_sets: vec![(String::from("Cin"), None)],
             output_sets: Arc::new(vec![String::from("Cout")]),
         },
     )];
@@ -330,17 +384,16 @@ fn test_from_module_minmal_composition_function_with_unused_output() {
             Function (Fin = all Cin) => (Cout = Fout);
         }
     "#;
-    let mut function_dict = FunctionDict::new();
-    let function_id = function_dict.insert_or_lookup(String::from("Function"));
+    let function_registry = create_test_function_registry(&["Function"]);
     let module = get_module(composition_string);
-    let compositions = match Composition::from_module(&module, &mut function_dict) {
+    let compositions = match Composition::from_module(module, &function_registry) {
         Ok(c) => c,
         Err(err) => panic!("Found unexpected error on from_module: {:?}", err),
     };
     let expected = vec![(
         Composition {
             dependencies: vec![FunctionDependencies {
-                function: function_id,
+                function: Arc::new("Function".to_string()),
                 join_info: (vec![], vec![]),
                 input_set_ids: vec![Some(InputSetDescriptor {
                     composition_id: 0,
@@ -352,7 +405,7 @@ fn test_from_module_minmal_composition_function_with_unused_output() {
             output_map: BTreeMap::from([(1, 0)]),
         },
         Metadata {
-            input_sets: Arc::new(vec![(String::from("Cin"), None)]),
+            input_sets: vec![(String::from("Cin"), None)],
             output_sets: Arc::new(vec![String::from("Cout")]),
         },
     )];
@@ -368,17 +421,16 @@ fn test_from_module_minmal_composition_with_missing_input() {
             Function (Fin = all NonExistent) => (Cout = Fout);
         }
     "#;
-    let mut function_dict = FunctionDict::new();
-    let function_id = function_dict.insert_or_lookup(String::from("Function"));
+    let function_registry = create_test_function_registry(&["Function"]);
     let module = get_module(composition_string);
-    let compositions = match Composition::from_module(&module, &mut function_dict) {
+    let compositions = match Composition::from_module(module, &function_registry) {
         Ok(c) => c,
         Err(err) => panic!("Found unexpected error on from_module: {:?}", err),
     };
     let expected = vec![(
         Composition {
             dependencies: vec![FunctionDependencies {
-                function: function_id,
+                function: Arc::new("Function".to_string()),
                 join_info: (vec![], vec![]),
                 input_set_ids: vec![Some(InputSetDescriptor {
                     composition_id: 0,
@@ -390,7 +442,7 @@ fn test_from_module_minmal_composition_with_missing_input() {
             output_map: BTreeMap::from([(1, 0)]),
         },
         Metadata {
-            input_sets: Arc::new(vec![(String::from("Cin"), None)]),
+            input_sets: vec![(String::from("Cin"), None)],
             output_sets: Arc::new(vec![String::from("Cout")]),
         },
     )];
@@ -406,17 +458,16 @@ fn test_from_module_minmal_composition_missing_output() {
             Function (Fin = all Cin) => ();
         }
     "#;
-    let mut function_dict = FunctionDict::new();
-    let function_id = function_dict.insert_or_lookup(String::from("Function"));
+    let function_registry = create_test_function_registry(&["Function"]);
     let module = get_module(composition_string);
-    let compositions = match Composition::from_module(&module, &mut function_dict) {
+    let compositions = match Composition::from_module(module, &function_registry) {
         Ok(c) => c,
         Err(err) => panic!("Found unexpected error on from_module: {:?}", err),
     };
     let expected = vec![(
         Composition {
             dependencies: vec![FunctionDependencies {
-                function: function_id,
+                function: Arc::new("Function".to_string()),
                 join_info: (vec![], vec![]),
                 input_set_ids: vec![Some(InputSetDescriptor {
                     composition_id: 0,
@@ -428,7 +479,7 @@ fn test_from_module_minmal_composition_missing_output() {
             output_map: BTreeMap::from([(1, 0)]),
         },
         Metadata {
-            input_sets: Arc::new(vec![(String::from("Cin"), None)]),
+            input_sets: vec![(String::from("Cin"), None)],
             output_sets: Arc::new(vec![String::from("Cout")]),
         },
     )];

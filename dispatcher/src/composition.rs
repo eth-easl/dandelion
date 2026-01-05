@@ -1,10 +1,12 @@
-use crate::function_registry::{FunctionDict, Metadata};
-use dandelion_commons::{DandelionError, DandelionResult, DispatcherError, FunctionId};
+use crate::function_registry::{FunctionRegistry, Metadata};
+use dandelion_commons::{
+    CompositionError, DandelionError, DandelionResult, DispatcherError, FunctionId,
+};
 use dparser;
 use itertools::Itertools;
 use machine_interface::memory_domain::Context;
 use std::{
-    collections::{btree_map::Entry, BTreeMap},
+    collections::{btree_map::Entry, BTreeMap, BTreeSet},
     sync::Arc,
 };
 
@@ -85,38 +87,43 @@ impl Composition {
     /// For internal numbering there are no guarnatees.
     /// TODO: add validation for the function input / output set names against the locally registered meta data (or at least the number)
     pub fn from_module(
-        module: &dparser::Module,
-        function_ids: &mut FunctionDict,
+        module: dparser::Module,
+        function_registry: &FunctionRegistry,
     ) -> DandelionResult<Vec<(FunctionId, Self, Metadata)>> {
-        // TODO: do we need module somewhere else outside? Otherwise take ownership to safe a lot of clones
+        let mut composition_ids = BTreeSet::new();
         let mut known_functions = BTreeMap::new();
         let mut compositions = Vec::new();
         for item in module.0.iter() {
             match item {
                 dparser::Item::FunctionDecl(fdecl) => {
-                    known_functions.insert(
-                        fdecl.v.name.clone(),
-                        (
-                            function_ids.lookup(&fdecl.v.name).ok_or(
-                                DandelionError::CompositionContainsInvalidFunction(format!(
-                                    "{}",
-                                    &fdecl.v.name
-                                )),
-                            )?,
-                            fdecl,
-                        ),
-                    );
+                    if !function_registry.exists_name(&fdecl.v.name) {
+                        return Err(DandelionError::Composition(
+                            CompositionError::ContainsInvalidFunction(fdecl.v.name.clone()),
+                        ));
+                    }
+                    known_functions.insert(fdecl.v.name.clone(), fdecl);
                 }
                 dparser::Item::Composition(comp) => {
-                    let composition_id = function_ids.insert_or_lookup(comp.v.name.clone());
+                    // check if composition name is already taken
+                    if function_registry.exists_name(&comp.v.name)
+                        || composition_ids.contains(&comp.v.name)
+                    {
+                        return Err(DandelionError::Composition(
+                            CompositionError::DuplicateIdentifier(comp.v.name.clone()),
+                        ));
+                    }
+                    composition_ids.insert(comp.v.name.clone());
+
+                    // add composition input sets
                     let mut set_counter = 0usize;
                     let mut set_numbers = BTreeMap::new();
-                    // add composition input sets
                     for input_set_name in comp.v.params.iter() {
                         match set_numbers.entry(input_set_name.clone()) {
                             Entry::Vacant(v) => v.insert(set_counter),
                             Entry::Occupied(_) => {
-                                return Err(DandelionError::CompositionDuplicateSetName)
+                                return Err(DandelionError::Composition(
+                                    CompositionError::DuplicateSetName,
+                                ))
                             }
                         };
                         set_counter += 1;
@@ -160,7 +167,9 @@ impl Composition {
                                 if output_sets_start <= *o.get() && *o.get() < output_sets_end {
                                     continue;
                                 } else {
-                                    return Err(DandelionError::CompositionDuplicateSetName);
+                                    return Err(DandelionError::Composition(
+                                        CompositionError::DuplicateSetName,
+                                    ));
                                 }
                             }
                         }
@@ -173,14 +182,14 @@ impl Composition {
                         .iter()
                         .map(|statement| match statement {
                             dparser::Statement::FunctionApplication(function_application) => {
-                                let (function_id, function_decl) = known_functions
+                                let function_decl = known_functions
                                     .get(&function_application.v.name)
-                                    .ok_or_else(|| DandelionError::CompositionContainsInvalidFunction(function_application.v.name.clone()))?;
+                                    .ok_or_else(|| DandelionError::Composition(CompositionError::ContainsInvalidFunction(function_application.v.name.clone())))?;
                                 if function_decl.v.params.len() < function_application.v.args.len()
                                     || function_decl.v.returns.len()
                                         < function_application.v.rets.len()
                                 {
-                                    return Err(DandelionError::CompositionContainsInvalidFunction(function_application.v.name.clone()));
+                                    return Err(DandelionError::Composition(CompositionError::ContainsInvalidFunction(function_application.v.name.clone())));
                                 }
                                 // find the indeces of the sets in the function application by looking though the definition
                                 let mut input_set_ids = Vec::new();
@@ -194,10 +203,10 @@ impl Composition {
                                         )
                                     {
                                         let set_id = set_numbers.get(&argument.v.ident).ok_or_else(
-                                            ||DandelionError::CompositionFunctionInvalidIdentifier(
+                                            ||DandelionError::Composition(CompositionError::FunctionInvalidIdentifier(
                                                 format!("Could not find compositon set for argument {} of function {}",
                                                 argument.v.ident, function_application.v.name)
-                                            ),
+                                            )),
                                         )?;
                                         input_set_ids[index] = Some(InputSetDescriptor {
                                             composition_id: *set_id,
@@ -209,10 +218,10 @@ impl Composition {
                                         );
                                     } else {
                                         return Err(
-                                            DandelionError::CompositionFunctionInvalidIdentifier(
+                                            DandelionError::Composition(CompositionError::FunctionInvalidIdentifier(
                                                 format!("could not find index for input set {} for function {}",
                                                 argument.v.name, function_application.v.name)
-                                            ),
+                                            )),
                                         );
                                     }
                                 }
@@ -231,9 +240,9 @@ impl Composition {
                                     for set_name in strategy.join_strategy_order.iter() {
                                         let set_index = function_decl.v.params.iter()
                                             .position(|param_name| *param_name == *set_name)
-                                            .ok_or_else(|| DandelionError::CompositionFunctionInvalidIdentifier(
+                                            .ok_or_else(|| DandelionError::Composition(CompositionError::FunctionInvalidIdentifier(
                                                 format!("Join order for {} contains invalid set name: {}", function_application.v.name, set_name))
-                                            )?;
+                                            ))?;
                                         all_sets[set_index] = None;
                                         join_set_order.push(set_index);
                                     }
@@ -257,21 +266,21 @@ impl Composition {
                                         )
                                     {
                                         let set_id = set_numbers.get(&return_set.v.ident).ok_or(
-                                            DandelionError::CompositionFunctionInvalidIdentifier(
+                                            DandelionError::Composition(CompositionError::FunctionInvalidIdentifier(
                                                 return_set.v.ident.clone(),
-                                            ),
+                                            )),
                                         )?;
                                         output_set_ids[index] = Some(*set_id);
                                     } else {
                                         return Err(
-                                            DandelionError::CompositionFunctionInvalidIdentifier(
+                                            DandelionError::Composition(CompositionError::FunctionInvalidIdentifier(
                                                 return_set.v.ident.clone(),
-                                            ),
+                                            )),
                                         );
                                     }
                                 }
                                 Ok(FunctionDependencies {
-                                    function: *function_id,
+                                    function: Arc::new(function_decl.v.name.clone()),
                                     input_set_ids,
                                     join_info: (join_set_order, join_strategies),
                                     output_set_ids,
@@ -299,7 +308,7 @@ impl Composition {
                             .into(),
                     };
                     compositions.push((
-                        composition_id,
+                        Arc::new(comp.v.name.clone()),
                         Composition {
                             dependencies,
                             output_map,

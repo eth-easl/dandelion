@@ -35,7 +35,7 @@ mod dispatcher_tests {
         path.push(name);
         let path_string = path.to_str().expect("Path should be string").to_string();
         let metadata = Metadata {
-            input_sets: Arc::new(in_set_names),
+            input_sets: in_set_names,
             output_sets: Arc::new(out_set_names),
         };
         let mut pool_map = BTreeMap::new();
@@ -54,16 +54,15 @@ mod dispatcher_tests {
             .collect();
         let dispatcher = Dispatcher::init(resource_pool, memory_resources)
             .expect("Should have initialized dispatcher");
-        let function_id = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap()
-            .block_on(dispatcher.insert_func(
-                String::from("test_function"),
+        let function_id = Arc::new(String::from("test_function"));
+        dispatcher
+            .insert_function(
+                (*function_id).clone(),
                 engine_type,
                 DEFAULT_CONTEXT_SIZE,
                 path_string,
                 metadata,
-            ))
+            )
             .expect("Should be able to insert function in new dispatcher");
         return (dispatcher, function_id);
     }
