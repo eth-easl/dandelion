@@ -1,7 +1,4 @@
-#[cfg(all(
-    test,
-    any(feature = "cheri", feature = "mmu", feature = "kvm", feature = "wasm")
-))]
+#[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "kvm")))]
 mod compute_driver_tests {
     use crate::{
         function_driver::{
@@ -238,7 +235,6 @@ mod compute_driver_tests {
         }
     }
 
-    #[cfg(not(feature = "wasm"))]
     fn engine_stdio<Dom: MemoryDomain>(
         filename: &str,
         dom_init: MemoryResource,
@@ -355,7 +351,6 @@ mod compute_driver_tests {
         assert_eq!("Test string to stderr\n", stderr_string);
     }
 
-    #[cfg(not(feature = "wasm"))]
     fn engine_fileio<Dom: MemoryDomain>(
         filename: &str,
         dom_init: MemoryResource,
@@ -536,7 +531,6 @@ mod compute_driver_tests {
             }
 
             #[test_log::test]
-            #[cfg(not(feature = "wasm"))]
             fn test_engine_stdio() {
                 let name = format!(
                     "{}/tests/data/test_{}_stdio",
@@ -548,7 +542,6 @@ mod compute_driver_tests {
             }
 
             #[test_log::test]
-            #[cfg(not(feature = "wasm"))]
             fn test_engine_fileio() {
                 let name = format!(
                     "{}/tests/data/test_{}_fileio",
@@ -630,40 +623,6 @@ mod compute_driver_tests {
         ]);
         #[cfg(target_arch = "aarch64")]
         driverTests!(elf_kvm_aarch64; KvmMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; KvmDriver {};
-        core_affinity::get_core_ids()
-            .and_then(
-                |core_vec|
-                Some(core_vec
-                    .into_iter()
-                    .map(|id| ComputeResource::CPU(id.id as u8))
-                    .collect())).expect("Should have at least one core");
-        vec![
-            ComputeResource::CPU(255),
-            ComputeResource::GPU(0),
-        ]);
-    }
-
-    #[cfg(feature = "wasm")]
-    mod wasm {
-        use crate::function_driver::{compute_driver::wasm::WasmDriver, ComputeResource};
-        use crate::memory_domain::{wasm::WasmMemoryDomain, MemoryResource};
-
-        #[cfg(target_arch = "x86_64")]
-        driverTests!(sysld_wasm_x86_64; WasmMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; WasmDriver {};
-        core_affinity::get_core_ids()
-            .and_then(
-                |core_vec|
-                Some(core_vec
-                    .into_iter()
-                    .map(|id| ComputeResource::CPU(id.id as u8))
-                    .collect())).expect("Should have at least one core");
-        vec![
-            ComputeResource::CPU(255),
-            ComputeResource::GPU(0),
-        ]);
-
-        #[cfg(target_arch = "aarch64")]
-        driverTests!(sysld_wasm_aarch64; WasmMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; WasmDriver {};
         core_affinity::get_core_ids()
             .and_then(
                 |core_vec|

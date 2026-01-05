@@ -4,10 +4,7 @@ use crate::{
 };
 extern crate alloc;
 use alloc::sync::Arc;
-use dandelion_commons::{records::Recorder, DandelionError, DandelionResult};
-
-#[cfg(feature = "wasm")]
-use libloading::Library;
+use dandelion_commons::{records::Recorder, DandelionResult};
 
 pub mod compute_driver;
 mod load_utils;
@@ -44,21 +41,9 @@ impl core::fmt::Display for SystemFunction {
 }
 
 #[derive(Clone)]
-#[allow(dead_code)]
-pub struct WasmConfig {
-    #[cfg(feature = "wasm")]
-    lib: Arc<Library>,
-    wasm_mem_size: usize,
-    sdk_heap_base: usize,
-    sdk_heap_size: usize,
-    system_data_struct_offset: usize,
-}
-
-#[derive(Clone)]
 pub enum FunctionConfig {
     ElfConfig(ElfConfig),
     SysConfig(SystemFunction),
-    WasmConfig(WasmConfig),
 }
 
 pub struct Function {
@@ -78,14 +63,6 @@ impl Function {
                 load_utils::load_static(domain, self.context.clone(), &self.requirements, ctx_size)
             }
             FunctionConfig::SysConfig(_) => domain.acquire_context(ctx_size),
-            FunctionConfig::WasmConfig(c) => {
-                if ctx_size != c.wasm_mem_size {
-                    return Err(DandelionError::WasmContextMemoryMismatch);
-                }
-                let mut context = domain.acquire_context(c.wasm_mem_size)?;
-                context.occupy_space(0, c.sdk_heap_base)?;
-                Ok(context)
-            }
         };
     }
 }

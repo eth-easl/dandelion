@@ -26,8 +26,6 @@ fn get_some_engine_type() -> EngineType {
     return EngineType::Reqwest;
     #[cfg(feature = "cheri")]
     return EngineType::Cheri;
-    #[cfg(feature = "wasm")]
-    return EngineType::RWasm;
     #[cfg(feature = "mmu")]
     return EngineType::Process;
     #[cfg(feature = "kvm")]
@@ -36,7 +34,6 @@ fn get_some_engine_type() -> EngineType {
     #[cfg(all(
         not(feature = "reqwest_io"),
         not(feature = "cheri"),
-        not(feature = "wasm"),
         not(feature = "mmu"),
         not(feature = "kvm")
     ))]

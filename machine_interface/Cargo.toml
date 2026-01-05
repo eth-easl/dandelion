@@ -3,6 +3,9 @@ name = "machine_interface"
 version = "0.1.0"
 edition = "2021"
 
+[package.metadata.cargo-machete]
+ignored = ["openssl"]
+
 [features]
 # TODO remove as default feature and check everyting also works with no default feature
 default = ["bytes_context"]
@@ -13,7 +16,6 @@ kvm = ["std", "dep:kvm-bindings", "dep:kvm-ioctls"]
 backend_debug = []
 reqwest_io = ["std", "dep:reqwest", "dep:http", "dep:bytes"]
 bytes_context = ["std", "dep:bytes"]
-wasm = ["std"]
 timestamp = ["dandelion_commons/timestamp"]
 test_export = []
 
@@ -31,7 +33,6 @@ dandelion_commons = { path = "../dandelion_commons" }
 # FFI dependencies
 libc = "0.2"
 nix = "0.26"
-rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 core_affinity = { version = "0.8"}
@@ -41,11 +42,11 @@ memcache = "0.18.0"
 reqwest = { version = "0.12", optional = true }
 http = { version = "1.1", optional = true }
 bytes = { version = "1.6", optional = true}
-libloading = { version = "0.8.1" }
 log = "0.4.20"
-env_logger = "0.11.5"
 kvm-bindings = { version = "0.14", optional = true }
 kvm-ioctls = { version = "0.24", optional = true }
+# To make sure we can compile everywhere. 
+# This sets it for the other dependencies we have that use it.
 openssl = { version = "0.10", features = ["vendored"] }
 
 # disable benchmarks in library, to not run all unit tests on every benchmark

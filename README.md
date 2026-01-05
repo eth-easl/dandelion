@@ -42,7 +42,6 @@ Feature flags for computation engines:
 - `cheri` for enabling cheri backed isolation, requires a cheri capable compiler and hardware to run it.
 - `kvm` for enabling kvm backed isolation, requires KVM module installed and user to have permissions to access `/dev/kvm`, this backend is currently brocken for aarch64, if you need it, please let us know so we can prioritize it.
 - `mmu` for enabling process based isolation
-- `wasm` for enabling rwasm based isolation
 
 Feature flags for communcation engines:
 - `reqwest_io` for enabling the reqwest based communication
@@ -50,8 +49,6 @@ Feature flags for communcation engines:
 Other features:
 
 `timestamp` enables timestamping, this also enables http requests to `/stat` on the running server to get timestamps information. The timestamps are preallocated at the start and thus have a limited number. Currently running out of preallocated timestamps causes errors on requests. When the stat interface is accessed the used timestamps are cleared and put back into the pool of available ones.
-
-Note: the `wasm` backend is currently based on rWasm, a reasearch project that seems to have been abandoned, so we may drop support for it in the future.
 
 # Config
 

@@ -14,12 +14,10 @@ futures = {version = "0.3.28", default-features = false}
 log = "0.4.21"
 itertools = {version = "0.11", default-features = false, features = ["use_alloc"]}
 dparser = {path = "../dparser"}
-crossbeam = "0.8.4"
 
 [features]
 default = ["spin_queue"]
 cheri = ["machine_interface/cheri"]
-wasm = ["machine_interface/wasm"]
 mmu = ["machine_interface/mmu"]
 kvm = ["machine_interface/kvm"]
 reqwest_io = ["machine_interface/reqwest_io"]
