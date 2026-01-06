@@ -609,8 +609,6 @@ fn main() -> () {
             .block_on(async {
                 for pf in preload_func.iter() {
                     let engine_type = match pf.engine_type_id.to_lowercase().as_str() {
-                        #[cfg(feature = "wasm")]
-                        "rwasm" => EngineType::RWasm,
                         #[cfg(feature = "mmu")]
                         "process" => EngineType::Process,
                         #[cfg(feature = "kvm")]
@@ -634,11 +632,11 @@ fn main() -> () {
                     #[allow(unused_mut)]
                     let mut output_sets = pf.metadata.output_sets.clone();
                     let metadata = Metadata {
-                        input_sets: Arc::new(input_sets),
+                        input_sets: input_sets,
                         output_sets: Arc::new(output_sets),
                     };
                     match dispatcher
-                        .insert_func(
+                        .insert_function(
                             pf.name.clone(),
                             engine_type,
                             pf.ctx_size,
