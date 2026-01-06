@@ -32,12 +32,17 @@ use std::{
     time::Instant,
     sync::atomic::{AtomicUsize, Ordering},
 };
+use std::fs::File;
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::{Runtime, Builder};
 use tokio::signal::unix::SignalKind;
 use tokio::sync::{mpsc, oneshot};
-use tokio::{io, try_join};
+use tokio::{io,try_join};
+use tokio_rustls::{TlsAcceptor, rustls};
+use rustls::server::WebPkiClientVerifier;
+use rustls_pemfile::{certs, pkcs8_private_keys};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncReadExt,ReadBuf};
 
 use core_affinity::{self, CoreId};
 
@@ -678,7 +683,7 @@ fn parse_nghttp2_codec_output(
         let mut header_authority_value: Vec<u8> = Vec::new();
         let header_authority_value_string;
 
-        assert_eq!(5, response.sets[set_idx].items.len());
+        assert_eq!(7, response.sets[set_idx].items.len());
 
         debug!("output set {}", set_idx);
         for output_item in &(response.sets[set_idx].items) {
@@ -850,6 +855,22 @@ async fn read_from_tcp_stream_until_blocking(
     }
 }
 
+async fn read_from_stream_some<S>(
+    stream: &mut S,
+    data_to_read: &mut Vec<u8>,
+) -> io::Result<bool>
+where
+    S: AsyncRead + Unpin,
+{
+    // Returns: Ok(true) if peer closed, Ok(false) otherwise
+    let mut buf = vec![0u8; 16 * 1024];
+    let n = stream.read(&mut buf).await?;
+    if n == 0 {
+        return Ok(true);
+    }
+    data_to_read.extend_from_slice(&buf[..n]);
+    Ok(false)
+}
 // This handles the TCP/HTTP connection with user function container
 // Thus, it acts as a HTTP client
 async fn func_connection_worker3(
@@ -1395,7 +1416,8 @@ async fn dp_connection_worker3(
     mut stream: TcpStream,
     request_sender: mpsc::Sender<DispatcherCommand>,
     stream_worker_to_router_tx: mpsc::Sender<StreamWorkerToRouterReq>,
-) {
+)
+{
     let tcp_conn_local_addr = stream.local_addr().unwrap();
     let tcp_conn_peer_addr = stream.peer_addr().unwrap();
     info!(
@@ -1663,6 +1685,325 @@ async fn dp_connection_worker3(
     }
 }
 
+
+
+
+async fn dp_connection_worker3_tls<S>(
+    mut stream: S,
+    tcp_conn_local_addr: std::net::SocketAddr,
+    tcp_conn_peer_addr: std::net::SocketAddr,
+    request_sender: mpsc::Sender<DispatcherCommand>,
+    stream_worker_to_router_tx: mpsc::Sender<StreamWorkerToRouterReq>,
+)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    info!(
+        "[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] A new dp connection",
+        tcp_conn_local_addr, tcp_conn_peer_addr
+    );
+
+    // Create channel to receive req from the stream worker
+    let (stream_worker_to_dp_connection_worker_tx, mut stream_worker_to_dp_connection_worker_rx) =
+        mpsc::channel::<StreamWorkerToDpConnReq>(32);
+
+    let mut num_of_completed_stream_worker = 0; // Just for logging
+
+    // Output (set_0) from the nghttp2 codec (other sets 1~n use local vars; each set is for one req or resp)
+    let mut session_state: Vec<u8> = vec![0u8; 20 * 1024]; // Also the input
+    let mut num_of_req_or_res_received: usize;
+    let mut num_of_req_or_resp_sent: usize;
+    let mut data_to_send: Vec<u8>;
+    let mut stream_id_list_sent_requests: Vec<u8>; // not used by the dp_connection_worker
+
+    // *** input to the nghttp2 codec ***
+    let is_server: i8 = 1;
+    let mut first_create: i8;
+    let mut size_of_session_state: usize = 0; // actually not used
+    let mut data_to_read = Vec::new();
+    let mut size_of_data_to_read: usize;
+    let mut num_req_resp_to_send: usize;
+    let mut num_of_req_or_resp_to_receive: usize;
+    let mut stream_id_to_send_response_list: Vec<i32>;
+    let mut num_of_headers_to_send_list: Vec<usize>;
+    let mut size_of_headers_to_send_list: Vec<usize>;
+    let mut headers_to_send_list: Vec<Vec<u8>>;
+    let mut body_to_send_list: Vec<Vec<u8>>;
+    let mut size_of_body_to_send_list: Vec<usize>;
+
+    // The main logic loop (it stops until the other side closes the connection)
+    let mut loop_idx = -1;
+    loop {
+        loop_idx = loop_idx + 1;
+
+        // *** first_create ***
+        if loop_idx == 0 {
+            first_create = 1;
+        } else {
+            first_create = 0;
+        }
+
+
+        // Re-initialize
+
+        // Re-initialize the data to read
+        size_of_data_to_read = 0;
+        num_of_req_or_resp_to_receive = 0;
+
+        // Re-initialize the data to send
+        num_req_resp_to_send = 0;
+        stream_id_to_send_response_list = Vec::new();
+        num_of_headers_to_send_list = Vec::new();
+        headers_to_send_list = Vec::new();
+        body_to_send_list = Vec::new();
+        size_of_headers_to_send_list = Vec::new();
+        size_of_body_to_send_list = Vec::new();
+
+        // ****** Block until one of the two events happpen *******
+        tokio::select! {
+            peer_closed = read_from_stream_some(&mut stream, &mut data_to_read) => { // 1) Data received at the socket.
+
+                let peer_closed = peer_closed.map_err(|e| { /* log */ e }).unwrap();
+                if peer_closed {
+                    info!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] The dp connection peer has closed the connection", tcp_conn_local_addr, tcp_conn_peer_addr);
+                    let _ = stream.shutdown().await;
+                    return;
+                }
+
+
+                // read data from the socket until
+                // There is no data in the scoket AND There is no truncated frame/ unended stream in the received data.
+                loop {
+                    // Check if we have truncated frame or incomplete header or unended streams
+                    let initial_parse_result: i32;
+                    if first_create == 1 {
+                        if data_to_read.len() < 24 { // if what we receive is even less than the len of MAGIC interface
+                            num_of_req_or_resp_to_receive = 0;
+                            initial_parse_result = -1;
+                        }
+                        else {
+                            if data_to_read[..24] == HTTP2_MAGIC_PACKET.to_vec() {
+                                (num_of_req_or_resp_to_receive, initial_parse_result) = http2_initial_parsing(&data_to_read[24..]);
+                            } else {
+                                error!("Protocol not supported!");
+                                // TODO: terminate connection
+                                num_of_req_or_resp_to_receive = 0;
+                                initial_parse_result = 0;
+                            }
+                        }
+                    }
+                    else {
+                        (num_of_req_or_resp_to_receive, initial_parse_result) = http2_initial_parsing(&data_to_read);
+                    }
+
+                    if initial_parse_result == 0 {
+                        size_of_data_to_read = data_to_read.len();
+                        break;
+                    }
+                    else {
+                        debug!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] currently received data contains truncated frame or incomplete req/res. Thus, waiting for more data to arrive", tcp_conn_local_addr, tcp_conn_peer_addr);
+                        continue;
+                    }
+                }
+
+                if data_to_read.is_empty() {
+                    if first_create == 1 {
+                        loop_idx = -1;
+                    }
+                    continue;
+                }
+            }
+
+            Some(req) = stream_worker_to_dp_connection_worker_rx.recv() => { // 2) These is a response to send. We continue this iteration
+                info!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}]  From the stream worker, get the response to stream {}", tcp_conn_local_addr, tcp_conn_peer_addr, req.stream_id_to_send_response);
+
+                if req.stream_id_to_send_response > 0 {
+                    num_of_completed_stream_worker = num_of_completed_stream_worker + 1;
+
+                    num_req_resp_to_send = num_req_resp_to_send + 1;
+                    stream_id_to_send_response_list.push(req.stream_id_to_send_response);
+                    num_of_headers_to_send_list.push(req.num_of_headers_to_send);
+                    size_of_headers_to_send_list.push(req.headers.len());
+                    headers_to_send_list.push(req.headers);
+                    size_of_body_to_send_list.push(req.body_to_send.len());
+                    body_to_send_list.push(req.body_to_send);
+                }
+
+                // deplete the channel (send batching)
+                while let Ok(req) = stream_worker_to_dp_connection_worker_rx.try_recv() {
+                    if req.stream_id_to_send_response > 0 {
+                        num_of_completed_stream_worker = num_of_completed_stream_worker + 1;
+
+                        num_req_resp_to_send = num_req_resp_to_send + 1;
+                        stream_id_to_send_response_list.push(req.stream_id_to_send_response);
+                        num_of_headers_to_send_list.push(req.num_of_headers_to_send);
+                        size_of_headers_to_send_list.push(req.headers.len());
+                        headers_to_send_list.push(req.headers);
+                        size_of_body_to_send_list.push(req.body_to_send.len());
+                        body_to_send_list.push(req.body_to_send);
+                    }
+                }
+
+            }
+        }
+
+        debug!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] num_of_completed_stream_worker {}", tcp_conn_local_addr, tcp_conn_peer_addr, num_of_completed_stream_worker);
+
+        // ****** Prepare input and call the nghttp2 codec ******
+        debug!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] prepare input and call the nghttp2 codec", tcp_conn_local_addr, tcp_conn_peer_addr);
+        let (function_output, recorder) = prepare_input_and_invoke_nghttp2_codec(
+            request_sender.clone(),
+            is_server,
+            first_create,
+            size_of_session_state,
+            size_of_data_to_read,
+            num_req_resp_to_send,
+            num_of_req_or_resp_to_receive,
+            &session_state,
+            &data_to_read,
+            &stream_id_to_send_response_list,
+            &num_of_headers_to_send_list,
+            &size_of_headers_to_send_list,
+            &size_of_body_to_send_list,
+            &headers_to_send_list,
+            &body_to_send_list,
+        )
+        .await;
+
+        data_to_read.drain(..size_of_data_to_read);
+
+        // ****** Parse the output of the codec ******
+        debug!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] parse the output of the nghttp2 codec", tcp_conn_local_addr, tcp_conn_peer_addr);
+        // for output set 1 ~ n
+        let stream_id_list: Vec<i32>;
+        let num_of_headers_list: Vec<usize>;
+        let mut headers_received_list: Vec<Vec<u8>>;
+        let mut body_received_list: Vec<Vec<u8>>;
+        let mut header_authority_value_string_list: Vec<String>;
+        (
+            // set 0
+            session_state,
+            num_of_req_or_res_received,
+            num_of_req_or_resp_sent,
+            stream_id_list_sent_requests,
+            data_to_send,
+            // set 1 ~ n
+            stream_id_list,
+            num_of_headers_list,
+            headers_received_list,
+            body_received_list,
+            header_authority_value_string_list,
+        ) = parse_nghttp2_codec_output(function_output, recorder);
+
+        size_of_session_state = session_state.len();
+
+        // ****** Operations triggered by output set 0 *******
+        // 1) Send data outout
+        // *** If there is data needed to be sent
+        if data_to_send.len() > 0 {
+            if let Err(err) = stream.write_all(&data_to_send).await {
+                error!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] tcp stream write_all failed: {:?}", tcp_conn_local_addr, tcp_conn_peer_addr, err);
+                let _ = stream.shutdown().await;
+                return;
+            } else {
+                debug!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] TCP stream send finished successfully", tcp_conn_local_addr, tcp_conn_peer_addr);
+            }
+        }
+
+        // ******* Operations triggered by output set 1 ~ n
+        // *** If we receive reqs from the data plane ***
+
+        for i in 0..num_of_req_or_res_received {
+            let stream_id: i32 = stream_id_list[i];
+            let num_of_headers: usize = num_of_headers_list[i];
+            let headers_received: Vec<u8> = headers_received_list.remove(0);
+            let body_received: Vec<u8> = body_received_list.remove(0);
+            let header_authority_value_string: String =
+                header_authority_value_string_list.remove(0);
+
+            info!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] Receive req with stream id {}. Spawn a stream worker.", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
+            tokio::spawn(stream_worker(
+                num_of_headers,
+                headers_received,
+                header_authority_value_string,
+                body_received,
+                stream_worker_to_dp_connection_worker_tx.clone(),
+                stream_worker_to_router_tx.clone(),
+                stream_id,
+                tcp_conn_local_addr,
+                tcp_conn_peer_addr,
+            ));
+        }
+    }
+}
+
+
+
+// ********* mTLS *************
+// ******************************************************************
+// ******************************************************************
+
+fn load_certs(path: &str) -> Vec<rustls::pki_types::CertificateDer<'static>> {
+    let mut reader = std::io::BufReader::new(File::open(path).expect("open cert file"));
+    certs(&mut reader)
+        .map(|v| v.expect("read cert"))
+        .into_iter()
+        .map(|c| c.into_owned())
+        .collect()
+}
+
+fn load_private_key_pkcs8(path: &str) -> rustls::pki_types::PrivateKeyDer<'static> {
+    let mut reader = std::io::BufReader::new(File::open(path).expect("open key file"));
+
+    let mut keys: Vec<_> = pkcs8_private_keys(&mut reader)
+        .collect::<Result<_, _>>()
+        .expect("read key");
+
+    if keys.is_empty() {
+        panic!("no PKCS#8 keys found in {path}");
+    }
+
+    rustls::pki_types::PrivateKeyDer::Pkcs8(keys.remove(0).clone_key())
+}
+
+
+/// Build a rustls ServerConfig that *requires* a client certificate (mTLS).
+fn make_mtls_server_config(
+    server_cert_pem: &str,
+    server_key_pem: &str,
+    client_ca_pem: &str,
+) -> Arc<rustls::ServerConfig> {
+    // Server identity
+    let server_certs = load_certs(server_cert_pem);
+    let server_key = load_private_key_pkcs8(server_key_pem);
+
+    // Trust store used to verify client certs
+    let mut ca_reader = std::io::BufReader::new(File::open(client_ca_pem).expect("open client CA file"));
+    let client_ca_certs: Vec<_> = certs(&mut ca_reader)
+        .map(|v| v.expect("read ca cert"))
+        .into_iter()
+        .map(|c| c.into_owned())
+        .collect();
+
+    let mut roots = rustls::RootCertStore::empty();
+    for cacert in client_ca_certs {
+        roots.add(cacert).expect("add CA cert to root store");
+    }
+
+    // Require and verify client certificates:
+    let client_verifier = WebPkiClientVerifier::builder(Arc::new(roots))
+        // .allow_unauthenticated()  // <-- DON'T use this if you want real mTLS
+        .build()
+        .expect("build client verifier");
+
+    let config = rustls::ServerConfig::builder()
+        .with_client_cert_verifier(client_verifier)
+        .with_single_cert(server_certs, server_key)
+        .expect("build server config");
+
+    Arc::new(config)
+}
+
 // ********* To create and start the dirigent proxy *************
 // ******************************************************************
 // ******************************************************************
@@ -1711,6 +2052,17 @@ async fn create_proxy_server2(
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port)); // The dirigent proxy port
     let listener = TcpListener::bind(addr).await.unwrap();
 
+    // Files:
+    // - server_cert.pem: server leaf cert (+ optional intermediates)
+    // - server_key.pem: server private key (PKCS#8 PEM in this example)
+    // - client_ca.pem: CA (or intermediate) that issued client certificates
+    let tls_config = make_mtls_server_config(
+        "/users/haozhu2/server_cert.pem",
+        "/users/haozhu2/server_key.pem",
+        "/users/haozhu2/client_ca.pem",
+    );
+    let tls_acceptor = TlsAcceptor::from(tls_config);
+
     // signal handlers for gracefull shutdown
     let mut sigterm_stream = tokio::signal::unix::signal(SignalKind::terminate()).unwrap();
     let mut sigint_stream = tokio::signal::unix::signal(SignalKind::interrupt()).unwrap();
@@ -1721,15 +2073,39 @@ async fn create_proxy_server2(
         tokio::select! {
             connection_pair = listener.accept() => {
                 info!("A new DP connection!");
-                let (stream,_) = connection_pair.unwrap();
+                let (stream,peer) = connection_pair.unwrap();
                 let loop_dispatcher = request_sender.clone();
 
                 let stream_worker_to_router_tx_clone = stream_worker_to_router_tx.clone();
 
+                let tls_acceptor_clone = tls_acceptor.clone();
+                
+                let tcp_conn_local_addr = stream.local_addr().unwrap();
+                let tcp_conn_peer_addr = stream.peer_addr().unwrap();
+
                 // for each new dp connection spawn a dp connection worker
                 tokio::spawn(async move {
-                    let service_dispatcher_ptr = loop_dispatcher.clone();
-                    dp_connection_worker3(stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone()).await;
+                     if cfg!(feature = "mtls_with_data_plane") {
+                        // 1) TLS handshake (this is where client cert is requested + verified)
+                        let tls_stream = match tls_acceptor_clone.accept(stream).await {
+                            Ok(s) => s,
+                            Err(e) => {
+                                // Handshake failed (bad/no client cert, unknown CA, etc.)
+                                log::warn!("TLS handshake failed from {}: {}", peer, e);
+                                return;
+                            }
+                        };
+
+                        info!("mTLS established with {}", peer);
+
+                        let service_dispatcher_ptr = loop_dispatcher.clone();
+                        dp_connection_worker3_tls(tls_stream,tcp_conn_local_addr, tcp_conn_peer_addr, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone()).await;
+                     }
+                     else {
+                        let service_dispatcher_ptr = loop_dispatcher.clone();
+                        dp_connection_worker3(stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone()).await;                        
+                     }
+
                 });
 
 
