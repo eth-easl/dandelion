@@ -182,7 +182,8 @@ async fn register_function(
         .expect("Failed to extract body from function registration")
         .to_bytes();
     // find first line end character
-    let request_map: RegisterFunction =
+    #[allow(unused_mut)]
+    let mut request_map: RegisterFunction =
         bson::from_slice(&bytes).expect("Should be able to deserialize request");
     // if local is present ignore the binary
     let path_string = if !request_map.local_path.is_empty() {
@@ -251,6 +252,12 @@ async fn register_function(
             }
         })
         .collect();
+
+    #[cfg(feature = "log_function_stdio")]
+    if !request_map.output_sets.iter().any(|s| s == "stdio") {
+        request_map.output_sets.push("stdio".to_string());
+    };
+
     let (callback, confirmation) = oneshot::channel();
     let metadata = Metadata {
         input_sets: input_sets,
@@ -631,22 +638,23 @@ fn main() -> () {
                         .collect();
                     #[allow(unused_mut)]
                     let mut output_sets = pf.metadata.output_sets.clone();
+                    #[cfg(feature = "log_function_stdio")]
+                    if !output_sets.iter().any(|s| s == "stdio") {
+                        output_sets.push("stdio".to_string());
+                    };
                     let metadata = Metadata {
                         input_sets: input_sets,
                         output_sets: Arc::new(output_sets),
                     };
-                    match dispatcher
-                        .insert_function(
-                            pf.name.clone(),
-                            engine_type,
-                            pf.ctx_size,
-                            pf.bin_path.clone(),
-                            metadata,
-                        )
-                        .await
-                    {
+                    match dispatcher.insert_function(
+                        pf.name.clone(),
+                        engine_type,
+                        pf.ctx_size,
+                        pf.bin_path.clone(),
+                        metadata,
+                    ) {
                         Err(err) => warn!("Failed to preload function {}: {}", pf.name, err),
-                        Ok(id) => info!("Inserted preload function {} with id {}", pf.name, id),
+                        Ok(_) => info!("Inserted preload function {}", pf.name),
                     }
                 }
             });
