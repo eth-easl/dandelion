@@ -76,8 +76,7 @@ impl Dispatcher {
         }
 
         // create the function registry
-        let function_registry =
-            FunctionRegistry::new(work_queue.clone(), &type_map, &registry_drivers, &domains);
+        let function_registry = FunctionRegistry::new(&type_map, &registry_drivers, &domains);
 
         return Ok(Dispatcher {
             function_registry,
@@ -97,8 +96,19 @@ impl Dispatcher {
         metadata: Metadata,
     ) -> DandelionResult<()> {
         let function_id = Arc::new(function_name);
-        self.function_registry
-            .insert_function(function_id, engine_type, ctx_size, path, metadata)
+        let domain_type = self.type_map.get(&engine_type).unwrap();
+        let static_domain = self.domains.get(domain_type).unwrap();
+        let driver = *self.drivers.get(&engine_type).unwrap();
+        self.function_registry.insert_function(
+            function_id,
+            engine_type,
+            static_domain.clone(),
+            driver,
+            self.work_queue.clone(),
+            ctx_size,
+            path,
+            metadata,
+        )
     }
 
     pub fn insert_compositions(&self, composition_desc: String) -> DandelionResult<()> {
@@ -463,11 +473,10 @@ impl Dispatcher {
                         .get(self.type_map.get(&engine_type).unwrap())
                         .unwrap()
                         .clone();
-                    let function = self
-                        .function_registry
+                    let function = chosen_alternative
                         .load_function(
-                            chosen_alternative,
                             driver,
+                            self.work_queue.clone(),
                             domain,
                             caching,
                             recorder.get_sub_recorder(),

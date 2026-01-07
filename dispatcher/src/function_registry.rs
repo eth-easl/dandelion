@@ -4,7 +4,7 @@ use dandelion_commons::{
     CompositionError, DandelionError, DandelionResult, FunctionId, FunctionRegistryError,
 };
 use dparser::print_errors;
-use futures::{future, lock::Mutex, Future, FutureExt};
+use futures::{future, Future, FutureExt};
 use itertools::Itertools;
 use log::error;
 use machine_interface::{
@@ -38,11 +38,35 @@ pub struct FunctionAlternative {
     /// TODO: Could change it to create the future on insertion, as it only gets resolved on the
     ///       first await anyway. Might also want to implement some caching logic behind the future
     ///       at that point.
-    pub function: Mutex<
-        Option<
-            future::Shared<Pin<Box<dyn Future<Output = DandelionResult<Arc<Function>>> + Send>>>,
-        >,
-    >,
+    pub function:
+        future::Shared<Pin<Box<dyn Future<Output = DandelionResult<Arc<Function>>> + Send>>>,
+}
+
+impl FunctionAlternative {
+    /// Load the given function info of given engine type.
+    pub async fn load_function(
+        &self,
+        driver: &'static dyn Driver,
+        work_queue: WorkQueue,
+        memory_domain: Arc<Box<dyn MemoryDomain>>,
+        caching: bool,
+        recorder: Recorder,
+    ) -> DandelionResult<Arc<Function>> {
+        // load the function
+        if caching {
+            self.function.clone().await
+        } else {
+            load_local(
+                memory_domain.clone(),
+                driver,
+                recorder,
+                work_queue,
+                vec![self.engine],
+                self.path.clone(),
+            )
+            .await
+        }
+    }
 }
 
 /// Struct holding all engine alternatives to run a function and the constant metadata. This struct
@@ -216,14 +240,11 @@ pub struct FunctionRegistry {
     /// The function map which links function ids to function types
     /// (functions with alternatives or compositions).
     function_map: RwLock<FunctionMap>,
-    /// The work queue where function loading tasks may be inserted.
-    work_queue: WorkQueue,
 }
 
 impl FunctionRegistry {
     /// Creates a new FunctionRegistry object.
     pub fn new(
-        work_queue: WorkQueue,
         type_map: &BTreeMap<EngineType, DomainType>,
         drivers: &BTreeMap<EngineType, &'static dyn Driver>,
         domains: &BTreeMap<DomainType, Arc<Box<dyn MemoryDomain>>>,
@@ -251,11 +272,9 @@ impl FunctionRegistry {
                     engine: *engine_type,
                     context_size,
                     path: String::new(),
-                    function: Mutex::new(Some(
-                        (Box::pin(futures::future::ready(Ok(Arc::new(function_config))))
-                            as Pin<Box<dyn Future<Output = DandelionResult<_>> + Send>>)
-                            .shared(),
-                    )),
+                    function: (Box::pin(futures::future::ready(Ok(Arc::new(function_config))))
+                        as Pin<Box<dyn Future<Output = DandelionResult<_>> + Send>>)
+                        .shared(),
                 };
 
                 // get metadata
@@ -278,7 +297,6 @@ impl FunctionRegistry {
 
         return FunctionRegistry {
             function_map: RwLock::new(function_map),
-            work_queue,
         };
     }
 
@@ -322,6 +340,9 @@ impl FunctionRegistry {
         &self,
         function_id: FunctionId,
         engine_type: EngineType,
+        static_domain: Arc<Box<dyn MemoryDomain>>,
+        driver: &'static dyn Driver,
+        work_queue: WorkQueue,
         context_size: usize,
         path: String,
         metadata: Metadata,
@@ -333,11 +354,22 @@ impl FunctionRegistry {
             ));
         }
 
+        // TODO: check if timestamp is still useful this way
+        let new_future = (Box::pin(load_local(
+            static_domain,
+            driver,
+            Recorder::new(function_id.clone(), std::time::Instant::now()),
+            work_queue,
+            vec![engine_type],
+            path.clone(),
+        )) as Pin<Box<dyn Future<Output = DandelionResult<_>> + Send>>)
+            .shared();
+
         let func_alt = FunctionAlternative {
             engine: engine_type,
             context_size,
             path,
-            function: Mutex::new(None),
+            function: new_future,
         };
         let mut lock_guard = self
             .function_map
@@ -600,42 +632,6 @@ impl FunctionRegistry {
             fmap_insert_composition(&mut lock_guard, comp_name, composition, metadata)?;
         }
         Ok(())
-    }
-
-    /// Load the given function info of given engine type.
-    /// TODO: should be independent of the registry and moved into the worker in the future
-    pub async fn load_function(
-        &self,
-        function_alt: Arc<FunctionAlternative>,
-        driver: &'static dyn Driver,
-        memory_domain: Arc<Box<dyn MemoryDomain>>,
-        caching: bool,
-        recorder: Recorder,
-    ) -> DandelionResult<Arc<Function>> {
-        // check if a function future already exists
-        let mut lock_guard = function_alt.function.lock().await;
-        let func_future = if lock_guard.is_some() {
-            lock_guard.clone().unwrap()
-        } else {
-            let new_future = (Box::pin(load_local(
-                memory_domain.clone(),
-                driver,
-                recorder,
-                self.work_queue.clone(), // TODO: remove clone
-                vec![function_alt.engine],
-                function_alt.path.clone(),
-            ))
-                as Pin<Box<dyn Future<Output = DandelionResult<_>> + Send>>)
-                .shared();
-            if caching {
-                *lock_guard = Some(new_future.clone());
-            }
-            new_future
-        };
-        drop(lock_guard);
-
-        // load the function
-        func_future.await
     }
 
     /// Checks if a function identifier is registered in the function registry.
