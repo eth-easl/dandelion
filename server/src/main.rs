@@ -182,8 +182,7 @@ async fn register_function(
         .expect("Failed to extract body from function registration")
         .to_bytes();
     // find first line end character
-    #[allow(unused_mut)]
-    let mut request_map: RegisterFunction =
+    let request_map: RegisterFunction =
         bson::from_slice(&bytes).expect("Should be able to deserialize request");
     // if local is present ignore the binary
     let path_string = if !request_map.local_path.is_empty() {
@@ -252,11 +251,6 @@ async fn register_function(
             }
         })
         .collect();
-
-    #[cfg(feature = "log_function_stdio")]
-    if !request_map.output_sets.iter().any(|s| s == "stdio") {
-        request_map.output_sets.push("stdio".to_string());
-    };
 
     let (callback, confirmation) = oneshot::channel();
     let metadata = Metadata {
@@ -636,12 +630,7 @@ fn main() -> () {
                         .iter()
                         .map(|s| (s.clone(), None))
                         .collect();
-                    #[allow(unused_mut)]
-                    let mut output_sets = pf.metadata.output_sets.clone();
-                    #[cfg(feature = "log_function_stdio")]
-                    if !output_sets.iter().any(|s| s == "stdio") {
-                        output_sets.push("stdio".to_string());
-                    };
+                    let output_sets = pf.metadata.output_sets.clone();
                     let metadata = Metadata {
                         input_sets: input_sets,
                         output_sets: Arc::new(output_sets),
