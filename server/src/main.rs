@@ -250,6 +250,7 @@ async fn register_function(
             }
         })
         .collect();
+
     let (callback, confirmation) = oneshot::channel();
     let metadata = Metadata {
         input_sets: input_sets,
@@ -448,11 +449,6 @@ async fn service_loop(request_sender: mpsc::Sender<DispatcherCommand>, port: u16
 }
 
 fn main() -> () {
-    // check if there is a configuration file
-    let config = dandelion_server::config::DandelionConfig::get_config();
-
-    println!("config: {:?}", config);
-
     let default_warn_level = if cfg!(debug_assertions) {
         "debug"
     } else {
@@ -461,6 +457,10 @@ fn main() -> () {
 
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_warn_level))
         .init();
+
+    // check if there is a configuration file
+    let config = dandelion_server::config::DandelionConfig::get_config();
+    info!("Loaded configuration:\n{:?}", config);
 
     // Initilize metric collection
     match TRACING_ARCHIVE.set(Archive::init()) {
@@ -598,6 +598,55 @@ fn main() -> () {
     ));
     // start dispatcher
     dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
+
+    // register preload functions
+    let preload_func = config.get_preload_functions();
+    if preload_func.len() > 0 {
+        Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                for pf in preload_func.iter() {
+                    let engine_type = match pf.engine_type_id.to_lowercase().as_str() {
+                        #[cfg(feature = "mmu")]
+                        "process" => EngineType::Process,
+                        #[cfg(feature = "kvm")]
+                        "kvm" => EngineType::Kvm,
+                        #[cfg(feature = "cheri")]
+                        "cheri" => EngineType::Cheri,
+                        _ => {
+                            error!(
+                                "Failed to preload function {}: Unkown engine type string {}",
+                                pf.name, pf.engine_type_id
+                            );
+                            continue;
+                        }
+                    };
+                    let input_sets: Vec<(String, Option<CompositionSet>)> = pf
+                        .metadata
+                        .input_sets
+                        .iter()
+                        .map(|s| (s.clone(), None))
+                        .collect();
+                    let output_sets = pf.metadata.output_sets.clone();
+                    let metadata = Metadata {
+                        input_sets: input_sets,
+                        output_sets: Arc::new(output_sets),
+                    };
+                    match dispatcher.insert_function(
+                        pf.name.clone(),
+                        engine_type,
+                        pf.ctx_size,
+                        pf.bin_path.clone(),
+                        metadata,
+                    ) {
+                        Err(err) => warn!("Failed to preload function {}: {}", pf.name, err),
+                        Ok(_) => info!("Inserted preload function {}", pf.name),
+                    }
+                }
+            });
+    }
 
     let _guard = runtime.enter();
 

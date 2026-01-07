@@ -1,17 +1,43 @@
 use core::panic;
+use std::{fs::File, path::Path};
 
 use clap::Parser;
+use log::{error, warn};
 
 const DEFAULT_CONFIG_PATH: &str = "./dandelion.config";
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_SINGLE_CORE: bool = false;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
 
+#[derive(serde::Deserialize, Debug)]
+pub struct PreloadFunc {
+    #[serde(rename = "name")]
+    pub name: String,
+    #[serde(rename = "engineType")]
+    pub engine_type_id: String,
+    #[serde(rename = "ctxSize")]
+    pub ctx_size: usize,
+    #[serde(rename = "binaryPath")]
+    pub bin_path: String,
+    #[serde(rename = "metadata")]
+    pub metadata: FuncMetadata,
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct FuncMetadata {
+    #[serde(rename = "inputSets")]
+    pub input_sets: Vec<String>,
+    #[serde(rename = "outputSets")]
+    pub output_sets: Vec<String>,
+}
+
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
     #[arg(long, env, default_value_t = String::from(DEFAULT_CONFIG_PATH))]
     #[serde(default)]
     pub config_path: String,
+
+    // general configuration parameters
     #[arg(long, env, default_value_t = DEFAULT_PORT)]
     #[serde(default)]
     pub port: u16,
@@ -29,57 +55,75 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = DEFAULT_TIMESTAMP_COUNT)]
     #[serde(default)]
     pub timestamp_count: usize,
+
+    // (optional) preload config
+    #[arg(long, env, default_value = "")]
+    #[serde(default)]
+    pub bin_preload_path: String,
 }
 
 impl DandelionConfig {
     /// Merge config generated from args into config read from serde, overwrite serde with non args value.
     /// If both serde and args give default values use the one from args
-    fn merge_serde_into_args(&mut self, other: &Self) {
-        let default: Self = serde_json::from_slice(&[])
+    fn merge_serde_into_args(&mut self, serde_config: &Self) {
+        let default: Self = serde_json::from_slice("{}".as_bytes())
             .expect("Should have default values for all values in config");
-        // config path can be ignored, as it is not meaning full afterwards
-        // handle port
-        if self.port != DEFAULT_PORT && other.port != default.port {
-            self.port = other.port;
+
+        // define merging macros
+        macro_rules! merge {
+            ($field:ident, $default:expr) => {
+                if self.$field == $default && serde_config.$field != default.$field {
+                    self.$field = serde_config.$field;
+                }
+            };
         }
-        // handle single core mode
-        if self.single_core_mode != DEFAULT_SINGLE_CORE
-            && self.single_core_mode != default.single_core_mode
-        {
-            self.single_core_mode = other.single_core_mode;
+        macro_rules! merge_clone {
+            ($field:ident, $default:expr) => {
+                if self.$field == $default && serde_config.$field != default.$field {
+                    self.$field = serde_config.$field.clone();
+                }
+            };
         }
-        // handle options
-        if let Some(other_val) = other.total_cores {
-            self.total_cores.get_or_insert(other_val);
+        macro_rules! merge_option {
+            ($field:ident) => {
+                if let Some(serde_val) = serde_config.$field {
+                    self.$field.get_or_insert(serde_val);
+                }
+            };
         }
-        if let Some(other_val) = other.dispatcher_cores {
-            self.dispatcher_cores.get_or_insert(other_val);
-        }
-        if let Some(other_val) = other.frontend_cores {
-            self.frontend_cores.get_or_insert(other_val);
-        }
-        if let Some(other_val) = other.io_cores {
-            self.io_cores.get_or_insert(other_val);
-        }
-        // timestamp count
-        if other.timestamp_count != DEFAULT_TIMESTAMP_COUNT
-            && self.timestamp_count != default.timestamp_count
-        {
-            self.timestamp_count = other.timestamp_count;
-        }
+
+        // merge serde config into args config
+        // -> any args defaults are overwritten by serde non-default values
+        // NOTE: config path is no further useful an can be ignored
+        merge!(port, DEFAULT_PORT);
+        merge!(single_core_mode, DEFAULT_SINGLE_CORE);
+        merge_option!(total_cores);
+        merge_option!(dispatcher_cores);
+        merge_option!(frontend_cores);
+        merge_option!(io_cores);
+        merge!(timestamp_count, DEFAULT_TIMESTAMP_COUNT);
+        merge_clone!(bin_preload_path, String::from(""));
     }
 
     /// Get the config from the arguments, environment and possibly config file
     pub fn get_config() -> Self {
         // parse arguments from the command line and environent first
         let mut cli_config: DandelionConfig = DandelionConfig::parse();
-        // get dandelion config path if it exists and if not use current working directory
-        // check if the user specified a config file or if there is one in the default location
-        if let Ok(config_buff) = std::fs::read(cli_config.config_path.clone()) {
-            if let Ok(file_config) = serde_json::from_slice::<DandelionConfig>(&config_buff) {
-                cli_config.merge_serde_into_args(&file_config);
-            }
+
+        // if a config path is given -> read + parse it and merge into args config
+        if !cli_config.config_path.is_empty() {
+            match File::open(Path::new(&cli_config.config_path)) {
+                Err(err) => warn!(
+                    "Could not load config file {}: {}",
+                    cli_config.config_path, err
+                ),
+                Ok(config_file) => match serde_json::from_reader(config_file) {
+                    Ok(file_config) => cli_config.merge_serde_into_args(&file_config),
+                    Err(err) => warn!("Could not load config file: {}", err),
+                },
+            };
         }
+
         cli_config
             .total_cores
             .get_or_insert(num_cpus::get_physical());
@@ -166,5 +210,44 @@ impl DandelionConfig {
             (other_cores as u8..max_core as u8).collect()
         };
         return core_vec;
+    }
+
+    pub fn get_preload_functions(&self) -> Vec<PreloadFunc> {
+        if self.bin_preload_path.is_empty() {
+            return vec![];
+        }
+
+        // read + parse json file
+        let reader = match File::open(Path::new(&self.bin_preload_path)) {
+            Err(err) => {
+                error!("Failed to read preload json file: {}", err);
+                return vec![];
+            }
+            Ok(f) => f,
+        };
+        let json: Vec<PreloadFunc> = match serde_json::from_reader(reader) {
+            Err(err) => {
+                error!("Failed to read preload json file: {}", err);
+                return vec![];
+            }
+            Ok(json) => json,
+        };
+
+        // sanity checks
+        json.into_iter()
+            .filter(|pf| {
+                let valid = !pf.name.is_empty()
+                    && pf.ctx_size > 0
+                    && !pf.engine_type_id.is_empty()
+                    && !pf.bin_path.is_empty();
+                if !valid {
+                    warn!(
+                        "Ignoring preload function {}: does not match specification!",
+                        pf.name
+                    )
+                };
+                valid
+            })
+            .collect()
     }
 }
