@@ -1,4 +1,5 @@
 use crate::{
+    composition::CompositionSet,
     memory_domain::{Context, MemoryDomain},
     DataRequirementList,
 };
@@ -73,34 +74,29 @@ pub enum ComputeResource {
     GPU(u8),
 }
 
+/// Struct holding general function metadata that is true across all drivers.
+#[derive(Debug)]
+pub struct Metadata {
+    /// The input set names with an optional static composition set. If the static set is set it will
+    /// prioritized and any other input for that set is ignored.
+    pub input_sets: Vec<(String, Option<CompositionSet>)>,
+    /// The output set names.
+    pub output_sets: Vec<String>,
+}
+
 pub enum WorkToDo {
     FunctionArguments {
-        config: FunctionConfig,
-        context: Context,
-        output_sets: Arc<Vec<String>>,
-        recorder: Recorder,
-    },
-    TransferArguments {
-        destination: Context,
-        source: Arc<Context>,
-        destination_set_index: usize,
-        destination_allignment: usize,
-        destination_item_index: usize,
-        destination_set_name: String,
-        source_set_index: usize,
-        source_item_index: usize,
+        function: Arc<Function>,
+        domain: Arc<Box<dyn MemoryDomain>>,
+        context_size: usize,
+        input_sets: Vec<Option<CompositionSet>>,
+        metadata: Arc<Metadata>,
         recorder: Recorder,
     },
     ParsingArguments {
         driver: &'static dyn Driver,
         path: String,
         static_domain: Arc<Box<dyn MemoryDomain>>,
-        recorder: Recorder,
-    },
-    LoadingArguments {
-        function: Arc<Function>,
-        domain: Arc<Box<dyn MemoryDomain>>,
-        ctx_size: usize,
         recorder: Recorder,
     },
     Shutdown(),

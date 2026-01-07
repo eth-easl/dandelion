@@ -1,13 +1,10 @@
-use crate::{
-    composition::{Composition, FunctionDependencies, InputSetDescriptor, ShardingMode},
-    function_registry::{FunctionRegistry, Metadata},
-    queue::WorkQueue,
-};
+use crate::{function_registry::FunctionRegistry, queue::WorkQueue};
 use dandelion_commons::{CompositionError, DandelionError, FunctionId};
 use dparser::Module;
 use itertools::Itertools;
 use machine_interface::{
-    function_driver::Driver,
+    composition::{Composition, FunctionDependencies, InputSetDescriptor, ShardingMode},
+    function_driver::{Driver, Metadata},
     machine_config::{DomainType, EngineType},
     memory_domain::MemoryDomain,
 };
@@ -54,7 +51,7 @@ fn create_test_function_registry(functions: &[&str]) -> FunctionRegistry {
     for f in functions {
         let metadata = Metadata {
             input_sets: vec![],
-            output_sets: Arc::new(vec![]),
+            output_sets: vec![],
         };
         function_reg
             .insert_function(
@@ -243,7 +240,7 @@ fn test_from_module_non_registered_function() {
     "#;
     let function_registry = create_test_function_registry(&[]);
     let module = get_module(unregistered_function);
-    match Composition::from_module(module, &function_registry) {
+    match function_registry.composition_from_module(module) {
         Err(DandelionError::Composition(CompositionError::ContainsInvalidFunction(_))) => (),
         Err(err) => panic!(
             "Found wrong error on composition with invalid function: {:?}",
@@ -260,7 +257,7 @@ fn test_from_module_single_registered_function() {
     "#;
     let function_registry = create_test_function_registry(&["registered"]);
     let module = get_module(unregistered_function);
-    match Composition::from_module(module, &function_registry) {
+    match function_registry.composition_from_module(module) {
         Ok(_) => (),
         Err(err) => panic!("Found unexpected error on from_module {:?}", err),
     }
@@ -276,7 +273,7 @@ fn test_from_module_minmal_composition() {
     "#;
     let function_registry = create_test_function_registry(&["Function"]);
     let module = get_module(composition_string);
-    let compositions = match Composition::from_module(module, &function_registry) {
+    let compositions = match function_registry.composition_from_module(module) {
         Ok(c) => c,
         Err(err) => panic!("Found unexpected error on from_module {:?}", err),
     };
@@ -292,7 +289,7 @@ fn test_from_module_minmal_composition() {
         },
         Metadata {
             input_sets: Vec::new(),
-            output_sets: Arc::new(Vec::new()),
+            output_sets: Vec::new(),
         },
     )];
     check_compositions_and_metadata(compositions, expected, 0..0, 0..0);
@@ -308,7 +305,7 @@ fn test_from_module_minmal_composition_with_inputs() {
     "#;
     let function_registry = create_test_function_registry(&["Function"]);
     let module = get_module(composition_string);
-    let compositions = match Composition::from_module(module, &function_registry) {
+    let compositions = match function_registry.composition_from_module(module) {
         Ok(c) => c,
         Err(err) => panic!("Found unexpected error on from_module: {:?}", err),
     };
@@ -328,7 +325,7 @@ fn test_from_module_minmal_composition_with_inputs() {
         },
         Metadata {
             input_sets: vec![(String::from("Cin"), None)],
-            output_sets: Arc::new(vec![String::from("Cout")]),
+            output_sets: vec![String::from("Cout")],
         },
     )];
     check_compositions_and_metadata(compositions, expected, 0..1, 1..2);
@@ -344,7 +341,7 @@ fn test_from_module_minmal_composition_function_with_unused_input() {
     "#;
     let function_registry = create_test_function_registry(&["Function"]);
     let module = get_module(composition_string);
-    let compositions = match Composition::from_module(module, &function_registry) {
+    let compositions = match function_registry.composition_from_module(module) {
         Ok(c) => c,
         Err(err) => panic!("Found unexpected error on from_module: {:?}", err),
     };
@@ -367,7 +364,7 @@ fn test_from_module_minmal_composition_function_with_unused_input() {
         },
         Metadata {
             input_sets: vec![(String::from("Cin"), None)],
-            output_sets: Arc::new(vec![String::from("Cout")]),
+            output_sets: vec![String::from("Cout")],
         },
     )];
     check_compositions_and_metadata(compositions, expected, 0..1, 1..2);
@@ -383,7 +380,7 @@ fn test_from_module_minmal_composition_function_with_unused_output() {
     "#;
     let function_registry = create_test_function_registry(&["Function"]);
     let module = get_module(composition_string);
-    let compositions = match Composition::from_module(module, &function_registry) {
+    let compositions = match function_registry.composition_from_module(module) {
         Ok(c) => c,
         Err(err) => panic!("Found unexpected error on from_module: {:?}", err),
     };
@@ -403,7 +400,7 @@ fn test_from_module_minmal_composition_function_with_unused_output() {
         },
         Metadata {
             input_sets: vec![(String::from("Cin"), None)],
-            output_sets: Arc::new(vec![String::from("Cout")]),
+            output_sets: vec![String::from("Cout")],
         },
     )];
     check_compositions_and_metadata(compositions, expected, 0..1, 1..2);
@@ -420,7 +417,7 @@ fn test_from_module_minmal_composition_with_missing_input() {
     "#;
     let function_registry = create_test_function_registry(&["Function"]);
     let module = get_module(composition_string);
-    let compositions = match Composition::from_module(module, &function_registry) {
+    let compositions = match function_registry.composition_from_module(module) {
         Ok(c) => c,
         Err(err) => panic!("Found unexpected error on from_module: {:?}", err),
     };
@@ -440,7 +437,7 @@ fn test_from_module_minmal_composition_with_missing_input() {
         },
         Metadata {
             input_sets: vec![(String::from("Cin"), None)],
-            output_sets: Arc::new(vec![String::from("Cout")]),
+            output_sets: vec![String::from("Cout")],
         },
     )];
     check_compositions_and_metadata(compositions, expected, 0..1, 1..2);
@@ -457,7 +454,7 @@ fn test_from_module_minmal_composition_missing_output() {
     "#;
     let function_registry = create_test_function_registry(&["Function"]);
     let module = get_module(composition_string);
-    let compositions = match Composition::from_module(module, &function_registry) {
+    let compositions = match function_registry.composition_from_module(module) {
         Ok(c) => c,
         Err(err) => panic!("Found unexpected error on from_module: {:?}", err),
     };
@@ -477,7 +474,7 @@ fn test_from_module_minmal_composition_missing_output() {
         },
         Metadata {
             input_sets: vec![(String::from("Cin"), None)],
-            output_sets: Arc::new(vec![String::from("Cout")]),
+            output_sets: vec![String::from("Cout")],
         },
     )];
     check_compositions_and_metadata(compositions, expected, 0..1, 1..2);

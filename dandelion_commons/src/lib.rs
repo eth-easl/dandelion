@@ -53,8 +53,6 @@ pub enum DandelionError {
     EmptyDataSet,
     /// tried to transfer a set index that is not in the content of the context
     TransferInputNoSetAvailable,
-    /// tried to transfer to a data item that was already present
-    TransferItemAlreadyPresent,
     /// error converting pointers or integers
     UsizeTypeConversionError,
     /// context synchronization failed
@@ -220,15 +218,17 @@ pub enum PromiseError {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UserError {
-    /// Configured context is too small for execution,
-    /// can happen in KVM zero copy, since each item takes up 2 as much virtual space
-    SmallContext,
     /// Set not declared optional is empty
     EmptyNonOptional,
     /// Function indicated it failed
     FunctionError(i32),
+    /// Function output identfier not valid utf-8
+    InvalidIdentifier,
     /// Function corrupted page tables stored inside function in KVM backend
     ManupulatedPageTables,
     /// Function tried to access memory it should not try to access
     SegmentationFault,
+    /// Configured context is too small for execution,
+    /// can happen in KVM zero copy, since each item takes up 2 as much virtual space
+    SmallContext,
 }

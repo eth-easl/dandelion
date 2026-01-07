@@ -342,7 +342,6 @@ pub fn transfer_data_item(
     source: Arc<Context>,
     destination_set_index: usize,
     destination_allignment: usize,
-    destination_item_index: usize,
     destination_set_name: &str,
     source_set_index: usize,
     source_item_index: usize,
@@ -393,27 +392,27 @@ pub fn transfer_data_item(
         }
         _ => destination.get_free_space(source_item.data.size, destination_allignment)?,
     };
+
+    log::debug!(
+        "Transfer destination offset determined to be at: {}",
+        destination_offset
+    );
+
     {
         let destination_set =
             &mut destination.content[destination_set_index].get_or_insert(DataSet {
                 ident: destination_set_name.to_string(),
                 buffers: vec![],
             });
-        if destination_set.buffers.len() <= destination_item_index {
-            destination_set
-                .buffers
-                .resize_with(destination_item_index + 1, || DataItem {
-                    ident: String::from(""),
-                    data: Position { offset: 0, size: 0 },
-                    key: 0,
-                });
-        } else if destination_set.buffers[destination_item_index].data.size > 0 {
-            return Err(DandelionError::TransferItemAlreadyPresent);
-        }
-        destination_set.buffers[destination_item_index].data.offset = destination_offset;
-        destination_set.buffers[destination_item_index].data.size = source_item.data.size;
-        destination_set.buffers[destination_item_index].ident = source_item.ident.clone();
-        destination_set.buffers[destination_item_index].key = source_item.key;
+
+        destination_set.buffers.push(DataItem {
+            ident: source_item.ident.clone(),
+            data: Position {
+                offset: destination_offset,
+                size: source_item.data.size,
+            },
+            key: source_item.key,
+        });
     }
 
     log::trace!(

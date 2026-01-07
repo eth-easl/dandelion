@@ -14,7 +14,7 @@ cheri = ["std"]
 mmu = ["std"]
 kvm = ["std", "dep:kvm-bindings", "dep:kvm-ioctls"]
 backend_debug = []
-reqwest_io = ["std", "dep:reqwest", "dep:http", "dep:bytes"]
+reqwest_io = ["std", "dep:reqwest", "dep:http", "dep:bytes", "dep:memcache"]
 bytes_context = ["std", "dep:bytes"]
 timestamp = ["dandelion_commons/timestamp"]
 test_export = []
@@ -29,7 +29,10 @@ regex = "1.7.1"
 test-log = "0.2.16"
 
 [dependencies]
+# project internal dependencies
 dandelion_commons = { path = "../dandelion_commons" }
+dparser = {path = "../dparser"}
+
 # FFI dependencies
 libc = "0.2"
 nix = "0.26"
@@ -38,13 +41,18 @@ serde_json = "1.0"
 core_affinity = { version = "0.8"}
 futures = { version = "0.3.28" }
 tokio = { version = "1.38.2", features = ["full"] }
-memcache = "0.18.0"
-reqwest = { version = "0.12", optional = true }
-http = { version = "1.1", optional = true }
-bytes = { version = "1.6", optional = true}
 log = "0.4.20"
+itertools = {version = "0.11", default-features = false, features = ["use_alloc"]}
+
+# KVM specific dependencies
 kvm-bindings = { version = "0.14", optional = true }
 kvm-ioctls = { version = "0.24", optional = true }
+
+# networking dependencies
+http = { version = "1.1", optional = true }
+reqwest = { version = "0.12", optional = true }
+memcache = { version = "0.18.0", optional = true }
+bytes = { version = "1.6", optional = true}
 # To make sure we can compile everywhere. 
 # This sets it for the other dependencies we have that use it.
 openssl = { version = "0.10", features = ["vendored"] }
