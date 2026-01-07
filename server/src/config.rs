@@ -12,6 +12,10 @@ const DEFAULT_DIRIGENT_PROXY_PORT: u16 = 8084;
 const DEFAULT_NGHTTP2_CODEC_FUNC_NAME: &str = "nghttp2";
 const DEFAULT_NGHTTP2_CODEC_BIN_LOCAL_PATH: &str = "./nghttp2_codec3";
 
+const DEFAULT_MTLS_SERVER_CERT_LOCAL_PATH: &str = "./server_cert.pem";
+const DEFAULT_MTLS_SERVER_KEY_LOCAL_PATH: &str = "./server_key.pem";
+const DEFAULT_MTLS_CLIENT_CA_LOCAL_PATH: &str = "./client_ca.pem";
+
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
     #[arg(long, env, default_value_t = String::from(DEFAULT_CONFIG_PATH))]
@@ -43,7 +47,16 @@ pub struct DandelionConfig {
     pub nghttp2_codec_func_name: String,
     #[arg(long, env, default_value_t = String::from(DEFAULT_NGHTTP2_CODEC_BIN_LOCAL_PATH))]
     #[serde(default)]
-    pub nghttp2_codec_bin_local_path: String,    
+    pub nghttp2_codec_bin_local_path: String,
+    #[arg(long, env, default_value_t = String::from(DEFAULT_MTLS_SERVER_CERT_LOCAL_PATH))]
+    #[serde(default)]
+    pub mtls_server_cert_local_path: String, 
+    #[arg(long, env, default_value_t = String::from(DEFAULT_MTLS_SERVER_KEY_LOCAL_PATH))]
+    #[serde(default)]
+    pub mtls_server_key_local_path: String,
+    #[arg(long, env, default_value_t = String::from(DEFAULT_MTLS_CLIENT_CA_LOCAL_PATH))]
+    #[serde(default)]
+    pub mtls_client_ca_local_path: String,      
 }
 
 impl DandelionConfig {

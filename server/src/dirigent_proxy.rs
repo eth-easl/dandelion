@@ -855,6 +855,7 @@ async fn read_from_tcp_stream_until_blocking(
     }
 }
 
+// a helper func used by the worker to read once from a tls stream
 async fn read_from_stream_some<S>(
     stream: &mut S,
     data_to_read: &mut Vec<u8>,
@@ -871,6 +872,7 @@ where
     data_to_read.extend_from_slice(&buf[..n]);
     Ok(false)
 }
+
 // This handles the TCP/HTTP connection with user function container
 // Thus, it acts as a HTTP client
 async fn func_connection_worker3(
@@ -1685,9 +1687,7 @@ async fn dp_connection_worker3(
     }
 }
 
-
-
-
+// The difference with dp_connection_worker3: it uses a tls stream instead of a TCP stream
 async fn dp_connection_worker3_tls<S>(
     mut stream: S,
     tcp_conn_local_addr: std::net::SocketAddr,
@@ -1761,13 +1761,40 @@ where
 
         // ****** Block until one of the two events happpen *******
         tokio::select! {
-            peer_closed = read_from_stream_some(&mut stream, &mut data_to_read) => { // 1) Data received at the socket.
+            mut peer_closed = read_from_stream_some(&mut stream, &mut data_to_read) => { // 1) Data received at the socket.
 
-                let peer_closed = peer_closed.map_err(|e| { /* log */ e }).unwrap();
-                if peer_closed {
-                    info!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] The dp connection peer has closed the connection", tcp_conn_local_addr, tcp_conn_peer_addr);
-                    let _ = stream.shutdown().await;
-                    return;
+                match peer_closed {
+                    Ok(true) => {
+                        info!(
+                            "[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] The dp connection peer has closed the connection",
+                            tcp_conn_local_addr, tcp_conn_peer_addr
+                        );
+                        let _ = stream.shutdown().await;
+                        return;
+                    }
+                    Ok(false) => { // Peer not closed and some data is read
+                        // keep going
+                    }
+                    Err(e) => {
+                        // Rustls often reports abrupt TLS close as UnexpectedEof (no close_notify).
+                        // Treat it as a normal disconnect instead of panicking.
+                        let is_unexpected_eof = e.kind() == std::io::ErrorKind::UnexpectedEof;
+
+                        if is_unexpected_eof {
+                            info!(
+                                "[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] Peer disconnected (TLS close_notify not sent): {}",
+                                tcp_conn_local_addr, tcp_conn_peer_addr, e
+                            );
+                        } else {
+                            warn!(
+                                "[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] Error while checking whether peer closed: {}",
+                                tcp_conn_local_addr, tcp_conn_peer_addr, e
+                            );
+                        }
+
+                        let _ = stream.shutdown().await;
+                        return;
+                    }
                 }
 
 
@@ -1802,6 +1829,44 @@ where
                     }
                     else {
                         debug!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] currently received data contains truncated frame or incomplete req/res. Thus, waiting for more data to arrive", tcp_conn_local_addr, tcp_conn_peer_addr);
+
+                        // Wait for more data to arrive
+                        peer_closed = read_from_stream_some(&mut stream, &mut data_to_read).await;
+                        match peer_closed {
+                            Ok(true) => {
+                                info!(
+                                    "[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] The dp connection peer has closed the connection",
+                                    tcp_conn_local_addr, tcp_conn_peer_addr
+                                );
+                                let _ = stream.shutdown().await;
+                                return;
+                            }
+                            Ok(false) => { // Peer not closed and some data is read
+                                // keep going
+                                debug!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] More data arrives", tcp_conn_local_addr, tcp_conn_peer_addr);
+                            }
+                            Err(e) => {
+                                // Rustls often reports abrupt TLS close as UnexpectedEof (no close_notify).
+                                // Treat it as a normal disconnect instead of panicking.
+                                let is_unexpected_eof = e.kind() == std::io::ErrorKind::UnexpectedEof;
+
+                                if is_unexpected_eof {
+                                    info!(
+                                        "[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] Peer disconnected (TLS close_notify not sent): {}",
+                                        tcp_conn_local_addr, tcp_conn_peer_addr, e
+                                    );
+                                } else {
+                                    warn!(
+                                        "[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] Error while checking whether peer closed: {}",
+                                        tcp_conn_local_addr, tcp_conn_peer_addr, e
+                                    );
+                                }
+
+                                let _ = stream.shutdown().await;
+                                return;
+                            }
+                        }
+
                         continue;
                     }
                 }
@@ -2016,6 +2081,9 @@ async fn create_proxy_server2(
     let config = dandelion_server::config::DandelionConfig::get_config();
     let nghttp2_codec_func_name = config.nghttp2_codec_func_name;
     let nghttp2_codec_bin_local_path = config.nghttp2_codec_bin_local_path;
+    let mtls_server_cert_local_path = config.mtls_server_cert_local_path;
+    let mtls_server_key_local_path = config.mtls_server_key_local_path;
+    let mtls_client_ca_local_path = config.mtls_client_ca_local_path;
 
     // ****** Before the loop actually starts, register some functions ******
 
@@ -2052,17 +2120,6 @@ async fn create_proxy_server2(
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port)); // The dirigent proxy port
     let listener = TcpListener::bind(addr).await.unwrap();
 
-    // Files:
-    // - server_cert.pem: server leaf cert (+ optional intermediates)
-    // - server_key.pem: server private key (PKCS#8 PEM in this example)
-    // - client_ca.pem: CA (or intermediate) that issued client certificates
-    let tls_config = make_mtls_server_config(
-        "/users/haozhu2/server_cert.pem",
-        "/users/haozhu2/server_key.pem",
-        "/users/haozhu2/client_ca.pem",
-    );
-    let tls_acceptor = TlsAcceptor::from(tls_config);
-
     // signal handlers for gracefull shutdown
     let mut sigterm_stream = tokio::signal::unix::signal(SignalKind::terminate()).unwrap();
     let mut sigint_stream = tokio::signal::unix::signal(SignalKind::interrupt()).unwrap();
@@ -2077,17 +2134,31 @@ async fn create_proxy_server2(
                 let loop_dispatcher = request_sender.clone();
 
                 let stream_worker_to_router_tx_clone = stream_worker_to_router_tx.clone();
-
-                let tls_acceptor_clone = tls_acceptor.clone();
                 
                 let tcp_conn_local_addr = stream.local_addr().unwrap();
                 let tcp_conn_peer_addr = stream.peer_addr().unwrap();
 
+                let mtls_server_cert_local_path_clone = mtls_server_cert_local_path.clone();
+                let mtls_server_key_local_path_clone = mtls_server_key_local_path.clone();
+                let mtls_client_ca_local_path_clone = mtls_client_ca_local_path.clone();
+
                 // for each new dp connection spawn a dp connection worker
                 tokio::spawn(async move {
                      if cfg!(feature = "mtls_with_data_plane") {
-                        // 1) TLS handshake (this is where client cert is requested + verified)
-                        let tls_stream = match tls_acceptor_clone.accept(stream).await {
+                        // Files:
+                        // - server_cert.pem: server leaf cert (+ optional intermediates)
+                        // - server_key.pem: server private key (PKCS#8 PEM in this example)
+                        // - client_ca.pem: CA (or intermediate) that issued client certificates
+                        let tls_config = make_mtls_server_config(
+                            &mtls_server_cert_local_path_clone,
+                            &mtls_server_key_local_path_clone,
+                            &mtls_client_ca_local_path_clone,
+                        );
+                        let tls_acceptor = TlsAcceptor::from(tls_config);
+
+
+                        // TLS handshake (this is where client cert is requested + verified)
+                        let tls_stream = match tls_acceptor.accept(stream).await {
                             Ok(s) => s,
                             Err(e) => {
                                 // Handshake failed (bad/no client cert, unknown CA, etc.)
