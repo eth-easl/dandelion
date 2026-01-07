@@ -4,12 +4,10 @@ mod dispatcher_tests {
     mod registry_tests;
 
     use dandelion_commons::FunctionId;
-    use dispatcher::{
-        composition::CompositionSet, dispatcher::Dispatcher, function_registry::Metadata,
-        resource_pool::ResourcePool,
-    };
+    use dispatcher::{dispatcher::Dispatcher, resource_pool::ResourcePool};
     use machine_interface::{
-        function_driver::ComputeResource,
+        composition::CompositionSet,
+        function_driver::{ComputeResource, Metadata},
         machine_config::{DomainType, EngineType},
         memory_domain::{Context, ContextTrait, MemoryDomain, MemoryResource},
     };
@@ -32,7 +30,7 @@ mod dispatcher_tests {
         let path_string = path.to_str().expect("Path should be string").to_string();
         let metadata = Metadata {
             input_sets: in_set_names,
-            output_sets: Arc::new(out_set_names),
+            output_sets: out_set_names,
         };
         let mut pool_map = BTreeMap::new();
         pool_map.insert(engine_type, engine_resource);

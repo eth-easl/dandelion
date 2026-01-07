@@ -85,7 +85,7 @@ impl EngineLoop for KvmLoop {
         &mut self,
         config: FunctionConfig,
         mut context: Context,
-        output_sets: Arc<Vec<String>>,
+        output_sets: &Vec<String>,
     ) -> DandelionResult<Context> {
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,

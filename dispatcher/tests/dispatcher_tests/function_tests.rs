@@ -1,12 +1,10 @@
 use super::{check_matrix, setup_dispatcher};
 use dandelion_commons::{records::Recorder, FunctionId};
-use dispatcher::{
+use dispatcher::dispatcher::Dispatcher;
+use machine_interface::{
     composition::{
         Composition, CompositionSet, FunctionDependencies, InputSetDescriptor, ShardingMode,
     },
-    dispatcher::Dispatcher,
-};
-use machine_interface::{
     function_driver::ComputeResource,
     machine_config::{DomainType, EngineType},
     memory_domain::{read_only::ReadOnlyContext, MemoryDomain, MemoryResource},
@@ -538,9 +536,9 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
         .expect("Should be able to create read only context");
     in_context.content = vec![
         Some(DataSet {
-            ident: String::from(""),
+            ident: String::from("A set"),
             buffers: vec![DataItem {
-                ident: String::from(""),
+                ident: String::from("A"),
                 data: Position {
                     offset: 0,
                     size: mat_a.len() * core::mem::size_of::<u64>(),
@@ -549,9 +547,9 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             }],
         }),
         Some(DataSet {
-            ident: String::from(""),
+            ident: String::from("B set"),
             buffers: vec![DataItem {
-                ident: String::from(""),
+                ident: String::from("B"),
                 data: Position {
                     offset: mat_a.len() * core::mem::size_of::<u64>(),
                     size: mat_b.len() * core::mem::size_of::<u64>(),
@@ -560,9 +558,9 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             }],
         }),
         Some(DataSet {
-            ident: String::from(""),
+            ident: String::from("BT set"),
             buffers: vec![DataItem {
-                ident: String::from(""),
+                ident: String::from("BT"),
                 data: Position {
                     offset: (mat_a.len() + mat_b.len()) * core::mem::size_of::<u64>(),
                     size: mat_b.len() * core::mem::size_of::<u64>(),

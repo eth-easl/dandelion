@@ -1,17 +1,21 @@
 #[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "kvm")))]
 mod compute_driver_tests {
     use crate::{
+        composition::CompositionSet,
         function_driver::{
-            test_queue::TestQueue, ComputeResource, Driver, FunctionConfig, WorkToDo,
+            test_queue::TestQueue, ComputeResource, Driver, Function, Metadata, WorkToDo,
         },
         memory_domain::{
-            test_resource::get_resource, Context, ContextTrait, MemoryDomain, MemoryResource,
+            read_only::ReadOnlyContext, test_resource::get_resource, ContextTrait, MemoryDomain,
+            MemoryResource,
         },
         DataItem, DataSet, Position,
     };
     use core::panic;
     use dandelion_commons::{records::Recorder, DandelionError, FunctionId};
     use std::{sync::Arc, time::Instant};
+
+    const DEFAULT_CONTEXT_SIZE: usize = 0x800_0000; // 128MiB
 
     #[inline]
     fn zero_id() -> FunctionId {
@@ -53,19 +57,19 @@ mod compute_driver_tests {
         dom_init: MemoryResource,
         driver: &Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
-    ) -> (Context, FunctionConfig, Box<TestQueue>) {
+    ) -> (Arc<Function>, Arc<Box<dyn MemoryDomain>>, Box<TestQueue>) {
         let queue = Box::new(TestQueue::new());
-        let domain = Dom::init(get_resource(dom_init)).expect("Should have initialized domain");
-        let function = driver
-            .parse_function(filename.to_string(), &domain)
-            .expect("Should be able to parse function");
+        let domain =
+            Arc::new(Dom::init(get_resource(dom_init)).expect("Should have initialized domain"));
+        let function = Arc::new(
+            driver
+                .parse_function(filename.to_string(), &domain)
+                .expect("Should be able to parse function"),
+        );
         driver
             .start_engine(drv_init[0], queue.clone())
             .expect("Should be able to start engine");
-        let function_context = function
-            .load(&domain, 0x802_0000)
-            .expect("Should be able to load function");
-        return (function_context, function.config, queue);
+        return (function, domain, queue);
     }
 
     fn engine_minimal<Dom: MemoryDomain>(
@@ -74,14 +78,21 @@ mod compute_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (function_context, config, queue) =
+        let (function, domain, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
+
+        let metadata = Arc::new(Metadata {
+            input_sets: vec![],
+            output_sets: vec![],
+        });
 
         let recorder = Recorder::new(Arc::new(0.to_string()), Instant::now());
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
-            config: config,
-            context: function_context,
-            output_sets: Arc::new(Vec::new()),
+            function,
+            domain,
+            context_size: DEFAULT_CONTEXT_SIZE,
+            input_sets: vec![],
+            metadata,
             recorder,
         });
         let _ = tokio::runtime::Builder::new_current_thread()
@@ -97,29 +108,37 @@ mod compute_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (mut function_context, config, queue) =
+        let (function, domain, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
         // add inputs
-        let in_size_offset = function_context
-            .get_free_space_and_write_slice(&[1i64, 2i64])
-            .expect("Should have space for single i64");
-        function_context.content.push(Some(DataSet {
+        let in_data = vec![1i64, 2i64];
+        let mut input_context = ReadOnlyContext::new(in_data.into_boxed_slice()).unwrap();
+        input_context.content.push(Some(DataSet {
             ident: "".to_string(),
             buffers: vec![DataItem {
                 ident: "".to_string(),
                 data: Position {
-                    offset: in_size_offset as usize,
+                    offset: 0,
                     size: 16,
                 },
                 key: 0,
             }],
         }));
+        let context_arc = Arc::new(input_context);
+        let input_sets = vec![Some(CompositionSet::from((0, vec![context_arc])))];
+
+        let metadata = Arc::new(Metadata {
+            input_sets: vec![("".to_string(), None)],
+            output_sets: vec!["".to_string()],
+        });
 
         let recorder = Recorder::new(zero_id(), Instant::now());
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
-            config,
-            context: function_context,
-            output_sets: Arc::new(vec![String::from("")]),
+            function,
+            domain,
+            context_size: DEFAULT_CONTEXT_SIZE,
+            input_sets,
+            metadata,
             recorder,
         });
         let result_context = tokio::runtime::Builder::new_current_thread()
@@ -171,7 +190,7 @@ mod compute_driver_tests {
         const LOWER_SIZE_BOUND: usize = 2;
         const UPPER_SIZE_BOUND: usize = 16;
         for mat_size in LOWER_SIZE_BOUND..UPPER_SIZE_BOUND {
-            let (mut function_context, config, queue) = prepare_engine_and_function::<Dom>(
+            let (function, domain, queue) = prepare_engine_and_function::<Dom>(
                 filename,
                 dom_init.clone(),
                 &driver,
@@ -183,26 +202,34 @@ mod compute_driver_tests {
             for i in 0..(mat_size * mat_size) {
                 mat_vec.push(i as i64);
             }
-            let in_mat_offset = function_context
-                .get_free_space_and_write_slice(&mat_vec)
-                .expect("Should have space") as usize;
-            function_context.content.push(Some(DataSet {
+            let item_size = mat_vec.len() * core::mem::size_of::<i64>();
+            let mut input_context = ReadOnlyContext::new(mat_vec.into_boxed_slice()).unwrap();
+            input_context.content = vec![Some(DataSet {
                 ident: "".to_string(),
                 buffers: vec![DataItem {
                     ident: "".to_string(),
                     data: Position {
-                        offset: in_mat_offset,
-                        size: mat_vec.len() * core::mem::size_of::<i64>(),
+                        offset: 0,
+                        size: item_size,
                     },
                     key: 0,
                 }],
-            }));
+            })];
+            let context_arc = Arc::new(input_context);
+            let input_sets = vec![Some(CompositionSet::from((0, vec![context_arc])))];
+
+            let metadata = Arc::new(Metadata {
+                input_sets: vec![("".to_string(), None)],
+                output_sets: vec!["".to_string()],
+            });
 
             let recorder = Recorder::new(zero_id(), Instant::now());
             let promise = queue.enqueu(WorkToDo::FunctionArguments {
-                config,
-                context: function_context,
-                output_sets: Arc::new(vec![String::from("")]),
+                function,
+                domain,
+                context_size: DEFAULT_CONTEXT_SIZE,
+                input_sets,
+                metadata,
                 recorder,
             });
             let result_context = tokio::runtime::Builder::new_current_thread()
@@ -241,22 +268,22 @@ mod compute_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (mut function_context, config, queue) =
+        let (function, domain, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
-        let stdin_content = "Test line \n line 2\n";
-        let stdin_offset = function_context
-            .get_free_space_and_write_slice(stdin_content.as_bytes())
-            .expect("Should have space") as usize;
-        let argv_content = "stdio\0flag0\0flag1\0";
-        let argv_offset = function_context
-            .get_free_space_and_write_slice(argv_content.as_bytes())
-            .expect("Should have space") as usize;
-        let env_content = "HOME=test_home\0";
-        let env_offset = function_context
-            .get_free_space_and_write_slice(env_content.as_bytes())
-            .expect("Should have space") as usize;
 
-        function_context.content.push(Some(DataSet {
+        let mut in_data = String::new();
+        let mut content = Vec::new();
+        let stdin_content = "Test line \n line 2\n";
+        let stdin_offset = in_data.len();
+        in_data.push_str(stdin_content);
+        let argv_content = "stdio\0flag0\0flag1\0";
+        let argv_offset = in_data.len();
+        in_data.push_str(argv_content);
+        let env_content = "HOME=test_home\0";
+        let env_offset = in_data.len();
+        in_data.push_str(env_content);
+
+        content.push(Some(DataSet {
             ident: "stdio".to_string(),
             buffers: vec![
                 DataItem {
@@ -286,11 +313,25 @@ mod compute_driver_tests {
             ],
         }));
 
+        let mut input_context =
+            ReadOnlyContext::new(unsafe { in_data.as_mut_vec() }.clone().into_boxed_slice())
+                .unwrap();
+        input_context.content = content;
+        let context_arc = Arc::new(input_context);
+        let input_sets = vec![Some(CompositionSet::from((0, vec![context_arc])))];
+
+        let metadata = Arc::new(Metadata {
+            input_sets: vec![("stdio".to_string(), None)],
+            output_sets: vec!["stdio".to_string()],
+        });
+
         let recorder = Recorder::new(zero_id(), Instant::now());
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
-            config,
-            context: function_context,
-            output_sets: Arc::new(vec![String::from("stdio")]),
+            function,
+            domain,
+            context_size: DEFAULT_CONTEXT_SIZE,
+            input_sets,
+            metadata,
             recorder,
         });
         let result_context = tokio::runtime::Builder::new_current_thread()
@@ -357,40 +398,38 @@ mod compute_driver_tests {
         driver: Box<dyn Driver>,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (mut function_context, config, queue) =
+        let (function, domain, queue) =
             prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
+        let mut in_data = String::new();
+        let mut content = Vec::new();
         let in_file_content = "Test file 0\n line 2\n";
-        let in_file_offset = function_context
-            .get_free_space_and_write_slice(in_file_content.as_bytes())
-            .expect("Should have space") as usize;
-        function_context.content.push(Some(DataSet {
+        content.push(Some(DataSet {
             ident: "in".to_string(),
             buffers: vec![DataItem {
                 ident: "in_file".to_string(),
                 data: Position {
-                    offset: in_file_offset,
+                    offset: in_data.len(),
                     size: in_file_content.len(),
                 },
                 key: 0,
             }],
         }));
+        in_data.push_str(in_file_content);
+
         let in_file1_content = "Test file 1 \n line 2\n";
-        let in_file1_offset = function_context
-            .get_free_space_and_write_slice(in_file1_content.as_bytes())
-            .expect("Should have space") as usize;
+        let in_file1_offset = in_data.len();
+        in_data.push_str(in_file1_content);
         let in_file2_content = "Test file 2 \n line 2\n";
-        let in_file2_offset = function_context
-            .get_free_space_and_write_slice(in_file2_content.as_bytes())
-            .expect("Should have space") as usize;
+        let in_file2_offset = in_data.len();
+        in_data.push_str(in_file2_content);
         let in_file3_content = "Test file 3 \n line 2\n";
-        let in_file3_offset = function_context
-            .get_free_space_and_write_slice(in_file3_content.as_bytes())
-            .expect("Should have space") as usize;
+        let in_file3_offset = in_data.len();
+        in_data.push_str(in_file3_content);
         let in_file4_content = "Test file 4 \n line 2\n";
-        let in_file4_offset = function_context
-            .get_free_space_and_write_slice(in_file4_content.as_bytes())
-            .expect("Should have space") as usize;
-        function_context.content.push(Some(DataSet {
+        let in_file4_offset = in_data.len();
+        in_data.push_str(in_file4_content);
+
+        content.push(Some(DataSet {
             ident: "in_nested".to_string(),
             buffers: vec![
                 DataItem {
@@ -427,15 +466,33 @@ mod compute_driver_tests {
                 },
             ],
         }));
-        let recorder = Recorder::new(zero_id(), Instant::now());
-        let promise = queue.enqueu(WorkToDo::FunctionArguments {
-            config: config,
-            context: function_context,
-            output_sets: Arc::new(vec![
+
+        let mut input_context =
+            ReadOnlyContext::new(unsafe { in_data.as_mut_vec() }.clone().into_boxed_slice())
+                .unwrap();
+        input_context.content = content;
+        let context_arc = Arc::new(input_context);
+        let input_sets = vec![
+            Some(CompositionSet::from((0, vec![context_arc.clone()]))),
+            Some(CompositionSet::from((1, vec![context_arc]))),
+        ];
+
+        let metadata = Arc::new(Metadata {
+            input_sets: vec![("in".to_string(), None), ("in_nested".to_string(), None)],
+            output_sets: vec![
                 "stdio".to_string(),
                 "out".to_string(),
                 "out_nested".to_string(),
-            ]),
+            ],
+        });
+
+        let recorder = Recorder::new(zero_id(), Instant::now());
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            function,
+            domain,
+            context_size: DEFAULT_CONTEXT_SIZE,
+            input_sets,
+            metadata,
             recorder,
         });
         let result_context = tokio::runtime::Builder::new_current_thread()

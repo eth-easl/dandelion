@@ -1,13 +1,17 @@
-use crate::memory_domain::{
-    system_domain::{system_context_write_from_bytes, SystemContext},
-    ContextType,
+use crate::{
+    composition::CompositionSet,
+    function_driver::Metadata,
+    memory_domain::{
+        system_domain::{system_context_write_from_bytes, SystemContext},
+        ContextType,
+    },
 };
 use crate::{
     function_driver::{
         ComputeResource, Driver, EngineWorkQueue, Function, FunctionConfig, SystemFunction,
         WorkDone, WorkToDo,
     },
-    memory_domain::{self, Context, ContextTrait},
+    memory_domain::{Context, ContextTrait},
     promise::Debt,
     DataItem, DataSet, Position,
 };
@@ -264,29 +268,18 @@ impl Request for MemcachedRequest {
     }
 }
 
-fn parse_requests<RequestType: Request>(context: &Context) -> DandelionResult<Vec<RequestType>> {
-    let request_set = match context.content.iter().find(|set_option| {
-        if let Some(set) = set_option {
-            return set.ident == "request";
-        } else {
-            return false;
-        }
-    }) {
-        Some(Some(set)) => set,
-        _ => {
-            return Err(DandelionError::MalformedSystemFuncArg(String::from(
-                "No request set",
-            )))
-        }
-    };
-    let request_info: DandelionResult<Vec<RequestType>> = request_set
-        .buffers
-        .iter()
-        .map(|set_item| {
-            let mut request_buffer = Vec::with_capacity(set_item.data.size);
-            request_buffer.resize(set_item.data.size, 0);
-            context.read(set_item.data.offset, &mut request_buffer)?;
-            RequestType::from_raw(request_buffer, set_item.ident.clone(), set_item.key)
+fn parse_requests<RequestType: Request>(
+    composition_set: &CompositionSet,
+) -> DandelionResult<Vec<RequestType>> {
+    let request_info: DandelionResult<Vec<RequestType>> = composition_set
+        .into_iter()
+        .map(|(set_index, item_index, context)| {
+            let data_item = &context.content[set_index].as_ref().unwrap().buffers[item_index];
+            let mut request_buffer = Vec::with_capacity(data_item.data.size);
+            request_buffer.resize(data_item.data.size, 0);
+            context.read(data_item.data.offset, &mut request_buffer)?;
+            // TODO: from raw may also take the vec of refs from the context (via the get_chunk interface), so we don't need to copy the request
+            RequestType::from_raw(request_buffer, data_item.ident.clone(), data_item.key)
         })
         .collect();
     return request_info;
@@ -548,7 +541,7 @@ fn response_write(context: &mut Context, response: ResponseInformation) -> Dande
 
 fn responses_write(
     context_size: usize,
-    output_set_names: Arc<Vec<String>>,
+    output_set_names: &Vec<String>,
     debt: Debt,
     mut recorder: Recorder,
     responses: Vec<ResponseInformation>,
@@ -593,23 +586,20 @@ fn responses_write(
 }
 
 async fn run_http_request(
-    context: Context,
+    context_size: usize,
+    composition_set: CompositionSet,
     client: HttpClient,
-    output_set_names: Arc<Vec<String>>,
+    metadata: Arc<Metadata>,
     debt: Debt,
     recorder: Recorder,
 ) -> () {
-    let request_vec = match parse_requests(&context) {
+    let request_vec = match parse_requests(&composition_set) {
         Ok(request) => request,
         Err(err) => {
             debt.fulfill(Err(err));
             return;
         }
     };
-    let context_size = context.size;
-
-    // get rid of systems context to drop references to old contexts before starting to do requests
-    drop(context);
 
     let responses = match futures::future::try_join_all(
         request_vec
@@ -625,26 +615,32 @@ async fn run_http_request(
         }
     };
 
-    responses_write(context_size, output_set_names, debt, recorder, responses);
+    responses_write(
+        context_size,
+        &metadata.output_sets,
+        debt,
+        recorder,
+        responses,
+    );
 }
 
 async fn run_memcached_request(
-    context: Context,
-    output_set_names: Arc<Vec<String>>,
+    context_size: usize,
+    composition_set: CompositionSet,
+    metadata: Arc<Metadata>,
     debt: Debt,
     recorder: Recorder,
 ) -> () {
-    let request_vec = match parse_requests(&context) {
+    let request_vec = match parse_requests(&composition_set) {
         Ok(request) => request,
         Err(err) => {
             debt.fulfill(Err(err));
             return;
         }
     };
-    let context_size = context.size;
 
     // get rid of systems context to drop references to old contexts before starting to do requests
-    drop(context);
+    drop(composition_set);
 
     let responses = match futures::future::try_join_all(
         request_vec
@@ -660,7 +656,13 @@ async fn run_memcached_request(
         }
     };
 
-    responses_write(context_size, output_set_names, debt, recorder, responses);
+    responses_write(
+        context_size,
+        &metadata.output_sets,
+        debt,
+        recorder,
+        responses,
+    );
 }
 
 async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
@@ -680,16 +682,17 @@ async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
         };
         match args {
             WorkToDo::FunctionArguments {
-                config,
-                context,
-                output_sets,
+                function,
+                domain: _,
+                context_size,
+                mut input_sets,
+                metadata,
                 mut recorder,
             } => {
                 recorder.record(RecordPoint::EngineStart);
 
-                // let result = engine_state.run(config, context, output_sets);
                 log::debug!("Reqwest engine running function");
-                let function = match config {
+                let function = match function.config {
                     FunctionConfig::SysConfig(sys_func) => sys_func,
                     _ => {
                         drop(recorder);
@@ -697,56 +700,45 @@ async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
                         continue;
                     }
                 };
-                match function {
-                    SystemFunction::HTTP => {
-                        tokio::spawn(run_http_request(
-                            context,
-                            http_client.clone(),
-                            output_sets,
-                            debt,
-                            recorder,
-                        ));
-                    }
-                    SystemFunction::MEMCACHED => {
-                        tokio::spawn(run_memcached_request(context, output_sets, debt, recorder));
-                    }
-                    #[allow(unreachable_patterns)]
-                    _ => {
-                        drop(recorder);
-                        debt.fulfill(Err(DandelionError::MalformedConfig));
-                    }
-                };
-                continue;
-            }
-            WorkToDo::TransferArguments {
-                source,
-                mut destination,
-                destination_set_index,
-                destination_allignment,
-                destination_item_index,
-                destination_set_name,
-                source_set_index,
-                source_item_index,
-                mut recorder,
-            } => {
-                recorder.record(RecordPoint::TransferStart);
 
-                let transfer_result = memory_domain::transfer_data_item(
-                    &mut destination,
-                    source,
-                    destination_set_index,
-                    destination_allignment,
-                    destination_item_index,
-                    destination_set_name.as_str(),
-                    source_set_index,
-                    source_item_index,
-                );
-
-                recorder.record(RecordPoint::TransferEnd);
-
-                let transfer_return = transfer_result.and(Ok(WorkDone::Context(destination)));
-                drop(recorder);
-                debt.fulfill(transfer_return);
+                let input_option = metadata.input_sets[0]
+                    .1
+                    .as_ref()
+                    .and_then(|static_set| Some(static_set.clone()))
+                    .or_else(|| input_sets[0].take());
+                if let Some(request_set) = input_option {
+                    match function {
+                        SystemFunction::HTTP => {
+                            tokio::spawn(run_http_request(
+                                context_size,
+                                request_set,
+                                http_client.clone(),
+                                metadata,
+                                debt,
+                                recorder,
+                            ));
+                        }
+                        SystemFunction::MEMCACHED => {
+                            tokio::spawn(run_memcached_request(
+                                context_size,
+                                request_set,
+                                metadata,
+                                debt,
+                                recorder,
+                            ));
+                        }
+                        #[allow(unreachable_patterns)]
+                        _ => {
+                            drop(recorder);
+                            debt.fulfill(Err(DandelionError::MalformedConfig));
+                        }
+                    };
+                } else {
+                    drop(recorder);
+                    debt.fulfill(Err(DandelionError::MalformedSystemFuncArg(String::from(
+                        "No request set",
+                    ))));
+                }
                 continue;
             }
             WorkToDo::ParsingArguments {
@@ -761,22 +753,6 @@ async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
                 drop(recorder);
                 match function_result {
                     Ok(function) => debt.fulfill(Ok(WorkDone::Function(function))),
-                    Err(err) => debt.fulfill(Err(err)),
-                }
-                continue;
-            }
-            WorkToDo::LoadingArguments {
-                function,
-                domain,
-                ctx_size,
-                mut recorder,
-            } => {
-                recorder.record(RecordPoint::LoadStart);
-                let load_result = function.load(&domain, ctx_size);
-                recorder.record(RecordPoint::LoadEnd);
-                drop(recorder);
-                match load_result {
-                    Ok(context) => debt.fulfill(Ok(WorkDone::Context(context))),
                     Err(err) => debt.fulfill(Err(err)),
                 }
                 continue;

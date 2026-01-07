@@ -5,9 +5,7 @@ use dandelion_commons::{
 };
 use dandelion_server::DandelionBody;
 use dispatcher::{
-    composition::CompositionSet,
     dispatcher::{Dispatcher, DispatcherInput},
-    function_registry::Metadata,
     resource_pool::ResourcePool,
 };
 use http_body_util::BodyExt;
@@ -18,7 +16,8 @@ use hyper::{
 };
 use log::{debug, error, info, trace, warn};
 use machine_interface::{
-    function_driver::ComputeResource,
+    composition::CompositionSet,
+    function_driver::{ComputeResource, Metadata},
     machine_config::{DomainType, EngineType},
     memory_domain::{bytes_context::BytesContext, read_only::ReadOnlyContext, MemoryResource},
     DataItem, DataSet, Position,
@@ -254,7 +253,7 @@ async fn register_function(
     let (callback, confirmation) = oneshot::channel();
     let metadata = Metadata {
         input_sets: input_sets,
-        output_sets: Arc::new(request_map.output_sets),
+        output_sets: request_map.output_sets,
     };
     dispatcher
         .send(DispatcherCommand::FunctionRegistration {

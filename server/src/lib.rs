@@ -1,9 +1,11 @@
 pub mod config;
 
 use dandelion_commons::{records::Recorder, DandelionError};
-use dispatcher::composition::CompositionSet;
 use hyper::body::Frame;
-use machine_interface::memory_domain::{Context, ContextTrait};
+use machine_interface::{
+    composition::CompositionSet,
+    memory_domain::{Context, ContextTrait},
+};
 use serde::{Deserialize, Serialize};
 use std::{io::IoSlice, sync::Arc};
 

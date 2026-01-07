@@ -1,17 +1,19 @@
 #[cfg(all(test, any(feature = "reqwest_io")))]
 mod system_driver_tests {
     use crate::{
+        composition::CompositionSet,
         function_driver::{
-            system_driver::get_system_function_output_sets, test_queue::TestQueue, ComputeResource,
-            Driver, FunctionConfig, SystemFunction, WorkToDo,
+            system_driver::{get_system_function_input_sets, get_system_function_output_sets},
+            test_queue::TestQueue,
+            ComputeResource, Driver, Metadata, SystemFunction, WorkToDo,
         },
         memory_domain::{
-            malloc::MallocMemoryDomain, test_resource::get_resource, transfer_memory, Context,
-            ContextTrait, MemoryDomain, MemoryResource,
+            read_only::ReadOnlyContext, test_resource::get_resource, ContextTrait, MemoryDomain,
+            MemoryResource,
         },
         DataItem, DataSet, Position,
     };
-    use dandelion_commons::{records::Recorder, DandelionResult, FunctionId};
+    use dandelion_commons::{records::Recorder, FunctionId};
     use std::{
         process::{Child, Command},
         sync::Arc,
@@ -83,88 +85,52 @@ mod system_driver_tests {
         };
     }
 
-    fn write_request(context: &mut Context, request: Vec<u8>) -> DandelionResult<()> {
-        let malloc_domain = MallocMemoryDomain::init(MemoryResource::None)
-            .expect("Failed to initialize MmapMemoryDomain: Domain Error");
-        let mut malloc_context = malloc_domain
-            .acquire_context(_CONTEXT_SIZE)
-            .expect("Should be able to get context");
-
-        let request_length = request.len();
-        let request_offset_mmap = malloc_context.get_free_space_and_write_slice(&request)? as usize;
-
-        let mut response_buffer_mmap = Vec::<u8>::new();
-        response_buffer_mmap.resize(request_length, 0);
-        malloc_context
-            .read(request_offset_mmap, &mut response_buffer_mmap)
-            .expect("Should be able to read");
-        let status_mmap = read_status(&response_buffer_mmap);
-
-        let source_ctxt = Arc::new(malloc_context);
-        let request_offset_ok = context.get_free_space(request_length, 128);
-
-        let request_offset = if let Ok(req) = request_offset_ok {
-            req
-        } else {
-            panic!("offset in write_request is not ok");
-        };
-
-        transfer_memory(
-            context,
-            source_ctxt,
-            request_offset,
-            request_offset_mmap,
-            request_length,
-        )
-        .expect("Should successfully transfer");
-
-        let mut response_buffer = Vec::<u8>::new();
-        response_buffer.resize(request_length, 0);
-        context
-            .read(request_offset, &mut response_buffer)
-            .expect("Should be able to read context");
-        let status = read_status(&response_buffer);
-        assert_eq!(status_mmap, status);
-
-        context.content.push(Some(DataSet {
-            ident: String::from("request"),
-            buffers: vec![DataItem {
-                ident: String::from("request"),
-                data: Position {
-                    offset: request_offset,
-                    size: request_length,
-                },
-                key: 0,
-            }],
-        }));
-        return Ok(());
-    }
-
     fn get_http<Dom: MemoryDomain>(
         dom_init: MemoryResource,
         driver: Box<dyn Driver>,
         drv_init: ComputeResource,
     ) -> () {
-        let domain = Dom::init(get_resource(dom_init)).expect("Should be able to get domain");
+        let domain =
+            Arc::new(Dom::init(get_resource(dom_init)).expect("Should be able to get domain"));
         let queue = Box::new(TestQueue::new());
-        let mut context = domain
-            .acquire_context(_CONTEXT_SIZE)
-            .expect("Should be able to get context");
         let _engine = driver
             .start_engine(drv_init, queue.clone())
             .expect("Should be able to get engine");
-        let config = FunctionConfig::SysConfig(SystemFunction::HTTP);
+        let function = Arc::new(driver.parse_function(String::from(""), &domain).unwrap());
 
         let request = "GET http://127.0.0.1:9000/get HTTP/1.1".as_bytes().to_vec();
-
-        write_request(&mut context, request).expect("Should be able to prepare request line");
+        let request_length = request.len();
+        let mut input_context = ReadOnlyContext::new(request.into_boxed_slice()).unwrap();
+        input_context.content.push(Some(DataSet {
+            ident: "request".to_string(),
+            buffers: vec![DataItem {
+                ident: "".to_string(),
+                data: Position {
+                    offset: 0,
+                    size: request_length,
+                },
+                key: 0,
+            }],
+        }));
+        let input_sets = vec![Some(CompositionSet::from((
+            0,
+            vec![Arc::new(input_context)],
+        )))];
 
         let recorder = Recorder::new(zero_id(), Instant::now());
-        let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
+        let metadata = Arc::new(Metadata {
+            input_sets: get_system_function_input_sets(SystemFunction::HTTP)
+                .into_iter()
+                .map(|name| (name, None))
+                .collect(),
+            output_sets: get_system_function_output_sets(SystemFunction::HTTP),
+        });
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
-            config,
-            context,
-            output_sets,
+            function,
+            domain,
+            context_size: _CONTEXT_SIZE,
+            input_sets,
+            metadata,
             recorder: recorder,
         });
         let result_context = tokio::runtime::Builder::new_current_thread()
@@ -222,14 +188,12 @@ mod system_driver_tests {
         drv_init: ComputeResource,
     ) -> () {
         let queue = Box::new(TestQueue::new());
-        let domain = Dom::init(get_resource(dom_init)).expect("Should be able to get domain");
-        let mut context = domain
-            .acquire_context(_CONTEXT_SIZE)
-            .expect("Should be able to get context");
+        let domain =
+            Arc::new(Dom::init(get_resource(dom_init)).expect("Should be able to get domain"));
         let _engine = driver
             .start_engine(drv_init, queue.clone())
             .expect("Should be able to get engine");
-        let config = FunctionConfig::SysConfig(SystemFunction::HTTP);
+        let function = Arc::new(driver.parse_function(String::from(""), &domain).unwrap());
 
         let request = r#"POST http://127.0.0.1:9001/post HTTP/1.1
 Content-Type: text/plain
@@ -244,15 +208,38 @@ elitr, sed diam nonumy eirmod tempor invidunt ut labore et
 dolore magna aliquyam erat, sed diam voluptua."#
             .as_bytes()
             .to_vec();
-
-        write_request(&mut context, request).unwrap();
+        let request_length = request.len();
+        let mut input_context = ReadOnlyContext::new(request.into_boxed_slice()).unwrap();
+        input_context.content.push(Some(DataSet {
+            ident: "request".to_string(),
+            buffers: vec![DataItem {
+                ident: "".to_string(),
+                data: Position {
+                    offset: 0,
+                    size: request_length,
+                },
+                key: 0,
+            }],
+        }));
+        let input_sets = vec![Some(CompositionSet::from((
+            0,
+            vec![Arc::new(input_context)],
+        )))];
 
         let recorder = Recorder::new(zero_id(), Instant::now());
-        let output_sets = Arc::new(get_system_function_output_sets(SystemFunction::HTTP));
+        let metadata = Arc::new(Metadata {
+            input_sets: get_system_function_input_sets(SystemFunction::HTTP)
+                .into_iter()
+                .map(|name| (name, None))
+                .collect(),
+            output_sets: get_system_function_output_sets(SystemFunction::HTTP),
+        });
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
-            config,
-            context,
-            output_sets,
+            function,
+            domain,
+            context_size: _CONTEXT_SIZE,
+            input_sets,
+            metadata,
             recorder,
         });
         let result_context = tokio::runtime::Builder::new_current_thread()

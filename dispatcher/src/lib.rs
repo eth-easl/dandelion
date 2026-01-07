@@ -1,4 +1,3 @@
-pub mod composition;
 pub mod dispatcher;
 pub mod function_registry;
 pub mod queue;

@@ -1,8 +1,5 @@
 use crate::{
-    composition::{
-        get_sharding, Composition, CompositionSet, InputSetDescriptor, JoinStrategy, ShardingMode,
-    },
-    function_registry::{FunctionInfo, FunctionRegistry, FunctionType, Metadata},
+    function_registry::{FunctionRegistry, FunctionType},
     queue::{EngineQueue, WorkQueue},
     resource_pool::ResourcePool,
 };
@@ -19,17 +16,17 @@ use futures::{
 use itertools::Itertools;
 use log::{debug, trace};
 use machine_interface::{
-    function_driver::{Driver, FunctionConfig, WorkToDo},
+    composition::{
+        get_sharding, Composition, CompositionSet, InputSetDescriptor, JoinStrategy, ShardingMode,
+    },
+    function_driver::{Driver, Function, Metadata, WorkToDo},
     machine_config::{
         get_available_domains, get_available_drivers, get_compatibilty_table, DomainType,
         EngineType,
     },
     memory_domain::{Context, MemoryDomain, MemoryResource},
 };
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Debug, Clone)]
 pub enum DispatcherInput {
@@ -79,8 +76,7 @@ impl Dispatcher {
         }
 
         // create the function registry
-        let function_registry =
-            FunctionRegistry::new(work_queue.clone(), &type_map, &registry_drivers, &domains);
+        let function_registry = FunctionRegistry::new(&type_map, &registry_drivers, &domains);
 
         return Ok(Dispatcher {
             function_registry,
@@ -100,8 +96,19 @@ impl Dispatcher {
         metadata: Metadata,
     ) -> DandelionResult<()> {
         let function_id = Arc::new(function_name);
-        self.function_registry
-            .insert_function(function_id, engine_type, ctx_size, path, metadata)
+        let domain_type = self.type_map.get(&engine_type).unwrap();
+        let static_domain = self.domains.get(domain_type).unwrap();
+        let driver = *self.drivers.get(&engine_type).unwrap();
+        self.function_registry.insert_function(
+            function_id,
+            engine_type,
+            static_domain.clone(),
+            driver,
+            self.work_queue.clone(),
+            ctx_size,
+            path,
+            metadata,
+        )
     }
 
     pub fn insert_compositions(&self, composition_desc: String) -> DandelionResult<()> {
@@ -444,7 +451,8 @@ impl Dispatcher {
         trace!("queueing function with id: {}", function_id);
         Box::pin(async move {
             // find an engine capable of running the function
-            // TODO actual scheduling decisions
+            // TODO: think about more distinctions, that allow pushing chains of functions which can be executed by single engine,
+            // or potentially or potentially even compositions that still need to be split.
             match self.function_registry.get_function(&function_id)? {
                 FunctionType::SystemFunction(func_info) | FunctionType::Function(func_info) => {
                     // TODO: Scheduling policies:
@@ -452,24 +460,30 @@ impl Dispatcher {
                     // - not yet clear how this works with the function preparation steps
                     // -> right now we pick the first alternative and insert it into the queue with
                     //    only that engine
-                    let engine_type = func_info
+                    let chosen_alternative = func_info
                         .alternatives
                         .read()
                         .expect("Function registry lock is poisoned!")[0]
-                        .engine;
-
-                    // prepare for engine
-                    recorder.record(RecordPoint::PrepareEnvQueue);
-                    let (context, config, metadata) = self
-                        .prepare_for_engine(
-                            func_info,
-                            engine_type,
-                            inputs,
+                        .clone();
+                    let engine_type = chosen_alternative.engine;
+                    let context_size = chosen_alternative.context_size;
+                    let driver = *self.drivers.get(&engine_type).unwrap();
+                    let domain = self
+                        .domains
+                        .get(self.type_map.get(&engine_type).unwrap())
+                        .unwrap()
+                        .clone();
+                    let function = chosen_alternative
+                        .load_function(
+                            driver,
+                            self.work_queue.clone(),
+                            domain,
                             caching,
                             recorder.get_sub_recorder(),
                         )
                         .await?;
 
+                    let metadata = func_info.metadata;
                     // run on engine
                     recorder.record(RecordPoint::GetEngineQueue);
                     trace!("running function {} on {:?} type engine with input sets {:?} and output sets {:?}",
@@ -480,10 +494,11 @@ impl Dispatcher {
                     let context = self
                         .run_on_engine(
                             engine_type,
-                            config,
-                            metadata.output_sets.clone(),
-                            context,
-                            recorder.get_sub_recorder(),
+                            function,
+                            inputs,
+                            metadata.clone(),
+                            context_size,
+                            recorder,
                         )
                         .await?;
                     let context_arc = Arc::new(context);
@@ -517,147 +532,28 @@ impl Dispatcher {
         })
     }
 
-    async fn prepare_for_engine(
-        &self,
-        function_info: FunctionInfo,
-        engine_type: EngineType,
-        inputs: Vec<Option<CompositionSet>>,
-        caching: bool,
-        mut recorder: Recorder,
-    ) -> DandelionResult<(Context, FunctionConfig, Arc<Metadata>)> {
-        let func_alt = function_info.get_alternative(engine_type)?;
-
-        // get context and load static data
-        let context_id = match self.type_map.get(&engine_type) {
-            Some(id) => id,
-            None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
-        };
-        let domain = match self.domains.get(context_id) {
-            Some(d) => d,
-            None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
-        };
-
-        // transfer input sets
-        let driver = match self.drivers.get(&engine_type) {
-            Some(d) => d,
-            None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
-        };
-        let (mut function_context, function_config) = self
-            .function_registry
-            .load_function(
-                func_alt,
-                *driver,
-                domain.clone(),
-                caching,
-                recorder.get_sub_recorder(),
-            )
-            .await?;
-
-        // make sure all input sets are there at the correct index
-        let mut static_sets = BTreeSet::new();
-        for (function_set_index, (in_set_name, metadata_set)) in
-            function_info.metadata.input_sets.iter().enumerate()
-        {
-            function_context
-                .content
-                .push(Some(machine_interface::DataSet {
-                    ident: in_set_name.clone(),
-                    buffers: vec![],
-                }));
-            if let Some(composition_set) = metadata_set {
-                static_sets.insert(function_set_index);
-                let mut function_buffer = 0usize;
-                for (subset, item, source_context) in composition_set {
-                    let args = WorkToDo::TransferArguments {
-                        destination: function_context,
-                        source: source_context,
-                        destination_set_index: function_set_index,
-                        destination_allignment: 128,
-                        destination_item_index: function_buffer,
-                        destination_set_name: in_set_name.clone(),
-                        source_set_index: subset,
-                        source_item_index: item,
-                        recorder: recorder.get_sub_recorder(),
-                    };
-                    recorder.record(RecordPoint::TransferQueue);
-                    function_context = self
-                        .work_queue
-                        .do_work(args, vec![engine_type])
-                        .await?
-                        .get_context();
-                    recorder.record(RecordPoint::TransferDequeue);
-                    function_buffer += 1;
-                }
-            }
-        }
-        for (set_index, set_option) in inputs.iter().enumerate() {
-            let set = if let Some(set) = set_option {
-                set
-            } else {
-                continue;
-            };
-
-            if static_sets.contains(&set_index) {
-                trace!(
-                    "skipping input set {} because it was already in the metadata",
-                    set_index
-                );
-                continue;
-            }
-            let mut function_item = 0usize;
-            for (subset, item, source_context) in set {
-                // TODO get allignment information
-                let set_name = source_context.content[subset]
-                    .as_ref()
-                    .unwrap()
-                    .ident
-                    .clone();
-                let args = WorkToDo::TransferArguments {
-                    destination: function_context,
-                    source: source_context,
-                    destination_set_index: set_index,
-                    destination_allignment: 128,
-                    destination_item_index: function_item,
-                    destination_set_name: set_name,
-                    source_set_index: subset,
-                    source_item_index: item,
-                    recorder: recorder.get_sub_recorder(),
-                };
-                recorder.record(RecordPoint::TransferQueue);
-                function_context = self
-                    .work_queue
-                    .do_work(args, vec![engine_type])
-                    .await?
-                    .get_context();
-                recorder.record(RecordPoint::TransferDequeue);
-                function_item += 1;
-            }
-        }
-        return Ok((
-            function_context,
-            function_config,
-            function_info.metadata.clone(),
-        ));
-    }
-
     async fn run_on_engine(
         &self,
         engine_type: EngineType,
-        function_config: FunctionConfig,
-        output_sets: Arc<Vec<String>>,
-        function_context: Context,
+        function: Arc<Function>,
+        input_sets: Vec<Option<CompositionSet>>,
+        metadata: Arc<Metadata>,
+        context_size: usize,
         mut recorder: Recorder,
     ) -> DandelionResult<Context> {
         // preparation is done, get engine to receive engine
-        debug!(
-            "Running function on engine. Context content size: {}",
-            function_context.content.len()
-        );
+        let domain_id = self.type_map.get(&engine_type).unwrap();
+        let domain = match self.domains.get(domain_id) {
+            Some(d) => d.clone(),
+            None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
+        };
         let subrecoder = recorder.get_sub_recorder();
         let args = WorkToDo::FunctionArguments {
-            config: function_config,
-            context: function_context,
-            output_sets,
+            function,
+            domain,
+            context_size,
+            input_sets,
+            metadata,
             recorder: subrecoder,
         };
         recorder.record(RecordPoint::ExecutionQueue);

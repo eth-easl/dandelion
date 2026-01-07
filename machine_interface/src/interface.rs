@@ -359,9 +359,15 @@ pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
 
         let ident_offset = usize_ptr!(output_set_info[output_set].ident);
         let ident_length = usize!(output_set_info[output_set].ident_len);
-        let mut set_ident = vec![0u8; ident_length];
-        context.read(ident_offset, &mut set_ident)?;
-        let set_ident_string = String::from_utf8(set_ident).unwrap_or("".to_string());
+        let set_ident_string = if ident_length > 0 {
+            let mut set_ident = vec![0u8; ident_length];
+            context.read(ident_offset, &mut set_ident)?;
+            String::from_utf8(set_ident).or(Err(DandelionError::UserError(
+                dandelion_commons::UserError::InvalidIdentifier,
+            )))?
+        } else {
+            "".to_string()
+        };
         let buffer_number = one_past_last_buffer - first_buffer;
         let mut buffers = Vec::new();
         if buffers.try_reserve(buffer_number).is_err() {
@@ -370,12 +376,25 @@ pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
         for buffer_index in first_buffer..one_past_last_buffer {
             let buffer_ident_offset = usize_ptr!(output_buffers[buffer_index].ident);
             let buffer_ident_length = usize!(output_buffers[buffer_index].ident_len);
-            let mut buffer_ident = vec![0u8; buffer_ident_length];
-            context.read(buffer_ident_offset, &mut buffer_ident)?;
             let data_offset = usize_ptr!(output_buffers[buffer_index].data);
             let data_length = usize!(output_buffers[buffer_index].data_len);
             let key = usize!(output_buffers[buffer_index].key);
-            let ident_string = String::from_utf8(buffer_ident).unwrap_or("".to_string());
+            let ident_string = if ident_length > 0 {
+                let mut buffer_ident = vec![0u8; buffer_ident_length];
+                context.read(buffer_ident_offset, &mut buffer_ident)?;
+                String::from_utf8(buffer_ident).or(Err(DandelionError::UserError(
+                    dandelion_commons::UserError::InvalidIdentifier,
+                )))?
+            } else {
+                "".to_string()
+            };
+            log::debug!(
+                "Data item: identifier: {}, offset: {}, size: {}, key: {}",
+                ident_string,
+                data_offset,
+                data_length,
+                key
+            );
             buffers.push(DataItem {
                 ident: ident_string,
                 data: Position {

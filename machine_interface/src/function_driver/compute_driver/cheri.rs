@@ -35,7 +35,7 @@ impl EngineLoop for CheriLoop {
         &mut self,
         config: FunctionConfig,
         mut context: Context,
-        output_sets: std::sync::Arc<Vec<String>>,
+        output_sets: &Vec<String>,
     ) -> DandelionResult<Context> {
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,

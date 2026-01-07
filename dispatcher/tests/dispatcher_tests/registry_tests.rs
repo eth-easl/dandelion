@@ -1,8 +1,8 @@
 use crate::dispatcher_tests::{check_matrix, setup_dispatcher};
 use dandelion_commons::records::Recorder;
-use dispatcher::{composition::CompositionSet, function_registry::Metadata};
 use machine_interface::{
-    function_driver::ComputeResource,
+    composition::CompositionSet,
+    function_driver::{ComputeResource, Metadata},
     machine_config::{DomainType, EngineType},
     memory_domain::{read_only::ReadOnlyContext, Context, MemoryDomain, MemoryResource},
     DataItem, DataSet, Position,
@@ -83,7 +83,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
                     .to_string(),
                 Metadata {
                     input_sets: local_names,
-                    output_sets: Arc::new(out_set_names.clone()),
+                    output_sets: out_set_names.clone(),
                 },
             )
             .expect("should be able to update function");
@@ -192,7 +192,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
                     .to_string(),
                 Metadata {
                     input_sets: local_names,
-                    output_sets: Arc::new(out_set_names.clone()),
+                    output_sets: out_set_names.clone(),
                 },
             )
             .expect("should be able to update function");

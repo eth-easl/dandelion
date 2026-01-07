@@ -221,7 +221,6 @@ fn transfer_item(
         Arc::new(source),
         destination_index,
         8,
-        0,
         "",
         source_index,
         0,
