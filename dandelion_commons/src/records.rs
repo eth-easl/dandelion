@@ -5,7 +5,7 @@ use std::time::Instant;
 /// Maximum usize to expect when converting a record point to a usize
 /// By setting the last element to this explicitly, the compiler will throw an error,
 /// if there are more than this, because it enumerates from 0 and won't allow a number to be assigned twice.
-const LAST_RECORD_POINT: usize = 17;
+const LAST_RECORD_POINT: usize = 11;
 
 #[repr(usize)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -20,22 +20,10 @@ pub enum RecordPoint {
     ParsingEnd,
     /// Dequeue from parsing (async)
     ParsingDequeue,
-    /// Load function code (async)
-    LoadQueue,
     /// Start loading code + alloc ctx (sync)
     LoadStart,
-    /// End loading coad and ctx allocation (sync)
-    LoadEnd,
-    /// Promise await on loading returned (async)
-    LoadDequeue,
-    /// Enqueue transfer on work queue (async)
-    TransferQueue,
     /// Start data transfer to the ctx (sync)
     TransferStart,
-    /// End data transfer to the ctx (sync)
-    TransferEnd,
-    /// Promise await on transfer returned (async)
-    TransferDequeue,
     /// Queue to get an engine for execution
     GetEngineQueue,
     /// Queue to get the function executed on the engine (async)
