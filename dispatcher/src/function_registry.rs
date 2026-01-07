@@ -35,9 +35,6 @@ pub struct FunctionAlternative {
     /// Path to the function binary.
     pub path: String,
     /// Function object once the binary is loaded in memory.
-    /// TODO: Could change it to create the future on insertion, as it only gets resolved on the
-    ///       first await anyway. Might also want to implement some caching logic behind the future
-    ///       at that point.
     pub function:
         future::Shared<Pin<Box<dyn Future<Output = DandelionResult<Arc<Function>>> + Send>>>,
 }
