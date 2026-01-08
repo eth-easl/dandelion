@@ -742,13 +742,15 @@ async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
                 continue;
             }
             WorkToDo::ParsingArguments {
-                driver,
+                engine_type,
                 path,
                 static_domain,
                 mut recorder,
             } => {
                 recorder.record(RecordPoint::ParsingStart);
-                let function_result = driver.parse_function(path, &static_domain);
+                let function_result = engine_type
+                    .get_driver()
+                    .parse_function(path, &static_domain);
                 recorder.record(RecordPoint::ParsingEnd);
                 drop(recorder);
                 match function_result {

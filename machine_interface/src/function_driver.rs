@@ -1,5 +1,6 @@
 use crate::{
     composition::CompositionSet,
+    machine_config::EngineType,
     memory_domain::{Context, MemoryDomain},
     DataRequirementList,
 };
@@ -94,7 +95,7 @@ pub enum WorkToDo {
         recorder: Recorder,
     },
     ParsingArguments {
-        driver: &'static dyn Driver,
+        engine_type: EngineType,
         path: String,
         static_domain: Arc<Box<dyn MemoryDomain>>,
         recorder: Recorder,

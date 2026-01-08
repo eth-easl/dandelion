@@ -105,13 +105,15 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
                 debt.fulfill(results);
             }
             WorkToDo::ParsingArguments {
-                driver,
+                engine_type,
                 path,
                 static_domain,
                 mut recorder,
             } => {
                 recorder.record(RecordPoint::ParsingStart);
-                let function_result = driver.parse_function(path, &static_domain);
+                let function_result = engine_type
+                    .get_driver()
+                    .parse_function(path, &static_domain);
                 recorder.record(RecordPoint::ParsingEnd);
                 drop(recorder);
                 match function_result {

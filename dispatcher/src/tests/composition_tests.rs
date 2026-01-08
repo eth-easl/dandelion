@@ -4,8 +4,8 @@ use dparser::Module;
 use itertools::Itertools;
 use machine_interface::{
     composition::{Composition, FunctionDependencies, InputSetDescriptor, ShardingMode},
-    function_driver::{Driver, Metadata},
-    machine_config::{DomainType, EngineType},
+    function_driver::Metadata,
+    machine_config::{get_available_domains, EngineType},
     memory_domain::{malloc::MallocMemoryDomain, MemoryDomain},
 };
 use std::{collections::BTreeMap, ops::Range, sync::Arc, vec};
@@ -38,19 +38,13 @@ fn get_some_engine_type() -> EngineType {
 }
 
 fn create_test_function_registry(functions: &[&str]) -> FunctionRegistry {
-    let type_map: BTreeMap<EngineType, DomainType> = BTreeMap::new();
-    let drivers: BTreeMap<EngineType, &'static dyn Driver> = BTreeMap::new();
-    let domains: BTreeMap<DomainType, Arc<Box<dyn MemoryDomain>>> = BTreeMap::new();
-    let function_reg = FunctionRegistry::new(&type_map, &drivers, &domains);
+    let domains: Vec<Arc<Box<dyn MemoryDomain>>> = get_available_domains(BTreeMap::new());
+    let function_reg = FunctionRegistry::new(&domains);
 
     let dummy_engine_type = get_some_engine_type();
     let dummy_domain = Arc::new(
         MallocMemoryDomain::init(machine_interface::memory_domain::MemoryResource::None).unwrap(),
     );
-    let dummy_driver = *machine_interface::machine_config::get_available_drivers()
-        .values()
-        .next()
-        .unwrap();
     let mut dummy_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     dummy_path.pop();
     dummy_path.push("machine_interface/tests/data/test_elf_mmu_aarch64_basic");
@@ -64,7 +58,6 @@ fn create_test_function_registry(functions: &[&str]) -> FunctionRegistry {
                 Arc::new(f.to_string()),
                 dummy_engine_type,
                 dummy_domain.clone(),
-                dummy_driver,
                 WorkQueue::init(100),
                 0,
                 dummy_path.clone().into_os_string().into_string().unwrap(),

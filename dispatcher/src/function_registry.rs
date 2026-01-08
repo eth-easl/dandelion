@@ -13,9 +13,9 @@ use machine_interface::{
     },
     function_driver::{
         system_driver::{get_system_function_input_sets, get_system_function_output_sets},
-        Driver, Function, FunctionConfig, Metadata, WorkToDo,
+        Function, FunctionConfig, Metadata, WorkToDo,
     },
-    machine_config::{get_system_functions, DomainType, EngineType},
+    machine_config::{EngineType, SYSTEM_FUNCTIONS},
     memory_domain::MemoryDomain,
 };
 use std::{
@@ -43,7 +43,7 @@ impl FunctionAlternative {
     /// Load the given function info of given engine type.
     pub async fn load_function(
         &self,
-        driver: &'static dyn Driver,
+        driver_type: EngineType,
         work_queue: WorkQueue,
         memory_domain: Arc<Box<dyn MemoryDomain>>,
         caching: bool,
@@ -55,7 +55,7 @@ impl FunctionAlternative {
         } else {
             load_local(
                 memory_domain.clone(),
-                driver,
+                driver_type,
                 recorder,
                 work_queue,
                 vec![self.engine],
@@ -204,7 +204,7 @@ fn fmap_insert_composition(
 // creates a future that returns the loaded function
 async fn load_local(
     static_domain: Arc<Box<dyn MemoryDomain>>,
-    driver: &'static dyn Driver,
+    driver_type: EngineType,
     mut recorder: Recorder,
     work_queue: WorkQueue,
     engines: Vec<EngineType>,
@@ -214,7 +214,7 @@ async fn load_local(
     let function = work_queue
         .do_work(
             WorkToDo::ParsingArguments {
-                driver,
+                engine_type: driver_type,
                 path,
                 static_domain,
                 recorder: recorder.get_sub_recorder(),
@@ -241,54 +241,48 @@ pub struct FunctionRegistry {
 
 impl FunctionRegistry {
     /// Creates a new FunctionRegistry object.
-    pub fn new(
-        type_map: &BTreeMap<EngineType, DomainType>,
-        drivers: &BTreeMap<EngineType, &'static dyn Driver>,
-        domains: &BTreeMap<DomainType, Arc<Box<dyn MemoryDomain>>>,
-    ) -> Self {
+    pub fn new(domains: &Vec<Arc<Box<dyn MemoryDomain>>>) -> Self {
         let mut function_map = BTreeMap::new();
 
         // insert all system functons
-        for (engine_type, driver) in drivers.iter() {
-            let system_functions = get_system_functions(*engine_type);
-            for (system_function, context_size) in system_functions {
-                let func_id = Arc::new(system_function.to_string());
+        for &(engine_type, system_function, context_size) in SYSTEM_FUNCTIONS {
+            let func_id = Arc::new(system_function.to_string());
 
-                // get the config from the parser
-                let function_config = driver
-                    .parse_function(
-                        String::from(""),
-                        domains.get(type_map.get(engine_type).unwrap()).unwrap(),
-                    )
-                    .unwrap();
-                match function_config.config {
-                    FunctionConfig::SysConfig(_) => (),
-                    _ => panic!("parsing system function did not return system config"),
-                };
-                let func_alt = FunctionAlternative {
-                    engine: *engine_type,
-                    context_size,
-                    path: String::new(),
-                    function: (Box::pin(futures::future::ready(Ok(Arc::new(function_config))))
-                        as Pin<Box<dyn Future<Output = DandelionResult<_>> + Send>>)
-                        .shared(),
-                };
+            // get the config from the parser
+            let function_config = engine_type
+                .get_driver()
+                .parse_function(
+                    String::from(""),
+                    &domains[engine_type.get_domain_type() as usize],
+                )
+                .unwrap();
+            match function_config.config {
+                FunctionConfig::SysConfig(_) => (),
+                _ => panic!("parsing system function did not return system config"),
+            };
+            let func_alt = FunctionAlternative {
+                engine: engine_type,
+                context_size,
+                path: String::new(),
+                function: (Box::pin(futures::future::ready(Ok(Arc::new(function_config))))
+                    as Pin<Box<dyn Future<Output = DandelionResult<_>> + Send>>)
+                    .shared(),
+            };
 
-                // get metadata
-                let func_metadata = Metadata {
-                    input_sets: get_system_function_input_sets(system_function)
-                        .into_iter()
-                        .map(|name| (name, None))
-                        .collect(),
-                    output_sets: get_system_function_output_sets(system_function),
-                };
+            // get metadata
+            let func_metadata = Metadata {
+                input_sets: get_system_function_input_sets(system_function)
+                    .into_iter()
+                    .map(|name| (name, None))
+                    .collect(),
+                output_sets: get_system_function_output_sets(system_function),
+            };
 
-                if let Err(err) =
-                    fmap_insert_function(&mut function_map, func_id, func_alt, func_metadata, true)
-                {
-                    error!("Failed to insert system function: {:?}", err);
-                    panic!("Function registry initialization failed!");
-                }
+            if let Err(err) =
+                fmap_insert_function(&mut function_map, func_id, func_alt, func_metadata, true)
+            {
+                error!("Failed to insert system function: {:?}", err);
+                panic!("Function registry initialization failed!");
             }
         }
 
@@ -338,7 +332,6 @@ impl FunctionRegistry {
         function_id: FunctionId,
         engine_type: EngineType,
         static_domain: Arc<Box<dyn MemoryDomain>>,
-        driver: &'static dyn Driver,
         work_queue: WorkQueue,
         context_size: usize,
         path: String,
@@ -354,7 +347,7 @@ impl FunctionRegistry {
         // TODO: check if timestamp is still useful this way
         let new_future = (Box::pin(load_local(
             static_domain,
-            driver,
+            engine_type,
             Recorder::new(function_id.clone(), std::time::Instant::now()),
             work_queue,
             vec![engine_type],

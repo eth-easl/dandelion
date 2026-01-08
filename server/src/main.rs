@@ -632,7 +632,7 @@ fn main() -> () {
                     let output_sets = pf.metadata.output_sets.clone();
                     let metadata = Metadata {
                         input_sets: input_sets,
-                        output_sets: Arc::new(output_sets),
+                        output_sets: output_sets,
                     };
                     match dispatcher.insert_function(
                         pf.name.clone(),

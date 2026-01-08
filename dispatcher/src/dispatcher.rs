@@ -6,7 +6,7 @@ use crate::{
 use core::pin::Pin;
 use dandelion_commons::{
     records::{RecordPoint, Recorder},
-    DandelionError, DandelionResult, DispatcherError, FunctionId,
+    DandelionResult, FunctionId,
 };
 use futures::{
     future::{join_all, ready, Either},
@@ -23,11 +23,8 @@ use machine_interface::{
     composition::{
         get_sharding, Composition, CompositionSet, InputSetDescriptor, JoinStrategy, ShardingMode,
     },
-    function_driver::{Driver, Function, Metadata, WorkToDo},
-    machine_config::{
-        get_available_domains, get_available_drivers, get_compatibilty_table, DomainType,
-        EngineType,
-    },
+    function_driver::{Function, Metadata, WorkToDo},
+    machine_config::{get_available_domains, DomainType, EngineType},
     memory_domain::{Context, MemoryDomain, MemoryResource},
 };
 use std::{collections::BTreeMap, sync::Arc};
@@ -47,9 +44,7 @@ const MAX_QUEUE: usize = 4096;
 pub struct Dispatcher {
     function_registry: FunctionRegistry,
     work_queue: WorkQueue,
-    type_map: BTreeMap<EngineType, DomainType>,
-    domains: BTreeMap<DomainType, Arc<Box<dyn MemoryDomain>>>,
-    drivers: BTreeMap<EngineType, &'static (dyn Driver + 'static)>,
+    domains: Vec<Arc<Box<dyn MemoryDomain>>>,
 }
 
 impl Dispatcher {
@@ -58,36 +53,27 @@ impl Dispatcher {
         memory_resources: BTreeMap<DomainType, MemoryResource>,
     ) -> DandelionResult<Dispatcher> {
         // get machine specific configurations
-        let type_map = get_compatibilty_table();
         let domains = get_available_domains(memory_resources);
-        let drivers = get_available_drivers();
 
         // TODO: get size from config?
         let work_queue = WorkQueue::init(MAX_QUEUE);
 
         // create an engine queue wrapper of the work queue for each engine and use up all engine resource available
-        let mut domain_map = BTreeMap::new();
-        let mut registry_drivers: BTreeMap<EngineType, &'static dyn Driver> = BTreeMap::new();
-        for (engine_type, driver) in drivers.into_iter() {
+        for &engine_type in EngineType::VARIANTS {
             let engine_queue = Box::new(EngineQueue::init(work_queue.clone(), engine_type));
+            let driver = engine_type.get_driver();
             while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(engine_type) {
                 driver.start_engine(resource, engine_queue.clone())?;
             }
-            let domain_type = type_map.get(&engine_type).unwrap();
-            let domain = domains.get(domain_type).unwrap().clone();
-            domain_map.insert(*domain_type, domain);
-            registry_drivers.insert(engine_type, driver as &'static dyn Driver);
         }
 
         // create the function registry
-        let function_registry = FunctionRegistry::new(&type_map, &registry_drivers, &domains);
+        let function_registry = FunctionRegistry::new(&domains);
 
         return Ok(Dispatcher {
             function_registry,
             work_queue,
-            type_map,
-            domains: domain_map,
-            drivers: registry_drivers,
+            domains,
         });
     }
 
@@ -100,14 +86,11 @@ impl Dispatcher {
         metadata: Metadata,
     ) -> DandelionResult<()> {
         let function_id = Arc::new(function_name);
-        let domain_type = self.type_map.get(&engine_type).unwrap();
-        let static_domain = self.domains.get(domain_type).unwrap();
-        let driver = *self.drivers.get(&engine_type).unwrap();
+        let domain_type = engine_type.get_domain_type();
         self.function_registry.insert_function(
             function_id,
             engine_type,
-            static_domain.clone(),
-            driver,
+            self.domains[domain_type as usize].clone(),
             self.work_queue.clone(),
             ctx_size,
             path,
@@ -471,15 +454,10 @@ impl Dispatcher {
                         .clone();
                     let engine_type = chosen_alternative.engine;
                     let context_size = chosen_alternative.context_size;
-                    let driver = *self.drivers.get(&engine_type).unwrap();
-                    let domain = self
-                        .domains
-                        .get(self.type_map.get(&engine_type).unwrap())
-                        .unwrap()
-                        .clone();
+                    let domain = self.domains[engine_type.get_domain_type() as usize].clone();
                     let function = chosen_alternative
                         .load_function(
-                            driver,
+                            engine_type,
                             self.work_queue.clone(),
                             domain,
                             caching,
@@ -546,11 +524,8 @@ impl Dispatcher {
         mut recorder: Recorder,
     ) -> DandelionResult<Context> {
         // preparation is done, get engine to receive engine
-        let domain_id = self.type_map.get(&engine_type).unwrap();
-        let domain = match self.domains.get(domain_id) {
-            Some(d) => d.clone(),
-            None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
-        };
+        let domain_id = engine_type.get_domain_type();
+        let domain = self.domains[domain_id as usize].clone();
         let subrecoder = recorder.get_sub_recorder();
         let args = WorkToDo::FunctionArguments {
             function,

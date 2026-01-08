@@ -20,6 +20,7 @@ pub enum EngineType {
     Kvm,
 }
 
+#[repr(usize)]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub enum DomainType {
     System,
@@ -31,34 +32,62 @@ pub enum DomainType {
     Process,
 }
 
-pub fn get_compatibilty_table() -> BTreeMap<EngineType, DomainType> {
-    return BTreeMap::from([
+impl EngineType {
+    pub const VARIANTS: &[EngineType] = &[
         #[cfg(feature = "reqwest_io")]
-        (EngineType::Reqwest, DomainType::System),
+        EngineType::Reqwest,
         #[cfg(feature = "cheri")]
-        (EngineType::Cheri, DomainType::Cheri),
+        EngineType::Cheri,
         #[cfg(feature = "mmu")]
-        (EngineType::Process, DomainType::Process),
+        EngineType::Process,
         #[cfg(feature = "kvm")]
-        (EngineType::Kvm, DomainType::Kvm),
-    ]);
+        EngineType::Kvm,
+    ];
+
+    pub fn get_domain_type(&self) -> DomainType {
+        match self {
+            #[cfg(feature = "reqwest_io")]
+            EngineType::Reqwest => DomainType::System,
+            #[cfg(feature = "cheri")]
+            EngineType::Cheri => DomainType::Cheri,
+            #[cfg(feature = "mmu")]
+            EngineType::Process => DomainType::Process,
+            #[cfg(feature = "kvm")]
+            EngineType::Kvm => DomainType::Kvm,
+        }
+    }
+
+    pub fn get_driver(&self) -> &dyn Driver {
+        match self {
+            #[cfg(feature = "reqwest_io")]
+            EngineType::Reqwest => {
+                &crate::function_driver::system_driver::reqwest::ReqwestDriver {}
+            }
+            #[cfg(feature = "cheri")]
+            EngineType::Cheri => &crate::function_driver::compute_driver::cheri::CheriDriver {},
+            #[cfg(feature = "mmu")]
+            EngineType::Process => &crate::function_driver::compute_driver::mmu::MmuDriver {},
+            #[cfg(feature = "kvm")]
+            EngineType::Kvm => &crate::function_driver::compute_driver::kvm::KvmDriver {},
+        }
+    }
 }
 
 #[cfg(any(feature = "reqwest_io"))]
 const SYS_FUNC_DEFAULT_CONTEXT_SIZE: usize = 0x200_0000;
 
-pub fn get_system_functions(engine_type: EngineType) -> Vec<(SystemFunction, usize)> {
-    return match engine_type {
-        #[cfg(feature = "reqwest_io")]
-        EngineType::Reqwest => vec![(SystemFunction::HTTP, SYS_FUNC_DEFAULT_CONTEXT_SIZE)],
-        #[allow(unreachable_patterns)]
-        _ => Vec::new(),
-    };
-}
+pub const SYSTEM_FUNCTIONS: &[(EngineType, SystemFunction, usize)] = &[
+    #[cfg(feature = "reqwest_io")]
+    (
+        EngineType::Reqwest,
+        SystemFunction::HTTP,
+        SYS_FUNC_DEFAULT_CONTEXT_SIZE,
+    ),
+];
 
 pub fn get_available_domains(
     resources: BTreeMap<DomainType, MemoryResource>,
-) -> BTreeMap<DomainType, Arc<Box<dyn MemoryDomain>>> {
+) -> Vec<Arc<Box<dyn MemoryDomain>>> {
     let mut default_resources = BTreeMap::from([
         (DomainType::System, MemoryResource::None),
         #[cfg(feature = "cheri")]
@@ -80,61 +109,21 @@ pub fn get_available_domains(
     return default_resources
         .into_iter()
         .map(|(dom_type, resource)| match dom_type {
-            DomainType::System => (
-                dom_type,
-                Arc::new(
-                    crate::memory_domain::system_domain::SystemMemoryDomain::init(resource)
-                        .unwrap(),
-                ),
+            DomainType::System => Arc::new(
+                crate::memory_domain::system_domain::SystemMemoryDomain::init(resource).unwrap(),
             ),
             #[cfg(feature = "cheri")]
-            DomainType::Cheri => (
-                dom_type,
-                Arc::new(crate::memory_domain::cheri::CheriMemoryDomain::init(resource).unwrap()),
-            ),
+            DomainType::Cheri => {
+                Arc::new(crate::memory_domain::cheri::CheriMemoryDomain::init(resource).unwrap())
+            }
             #[cfg(feature = "kvm")]
-            DomainType::Kvm => (
-                dom_type,
-                Arc::new(crate::memory_domain::kvm::KvmMemoryDomain::init(resource).unwrap()),
-            ),
+            DomainType::Kvm => {
+                Arc::new(crate::memory_domain::kvm::KvmMemoryDomain::init(resource).unwrap())
+            }
             #[cfg(feature = "mmu")]
-            DomainType::Process => (
-                dom_type,
-                Arc::new(crate::memory_domain::mmu::MmuMemoryDomain::init(resource).unwrap()),
-            ),
+            DomainType::Process => {
+                Arc::new(crate::memory_domain::mmu::MmuMemoryDomain::init(resource).unwrap())
+            }
         })
         .collect();
-}
-
-pub fn get_available_drivers() -> BTreeMap<EngineType, &'static dyn Driver> {
-    return BTreeMap::<EngineType, &'static dyn Driver>::from([
-        #[cfg(feature = "reqwest_io")]
-        (
-            EngineType::Reqwest,
-            Box::leak(Box::new(
-                crate::function_driver::system_driver::reqwest::ReqwestDriver {},
-            )) as &'static dyn Driver,
-        ),
-        #[cfg(feature = "cheri")]
-        (
-            EngineType::Cheri,
-            Box::leak(Box::new(
-                crate::function_driver::compute_driver::cheri::CheriDriver {},
-            )) as &'static dyn Driver,
-        ),
-        #[cfg(feature = "mmu")]
-        (
-            EngineType::Process,
-            Box::leak(Box::new(
-                crate::function_driver::compute_driver::mmu::MmuDriver {},
-            )) as &'static dyn Driver,
-        ),
-        #[cfg(feature = "kvm")]
-        (
-            EngineType::Kvm,
-            Box::leak(Box::new(
-                crate::function_driver::compute_driver::kvm::KvmDriver {},
-            )) as &'static dyn Driver,
-        ),
-    ]);
 }
