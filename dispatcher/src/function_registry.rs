@@ -613,14 +613,21 @@ impl FunctionRegistry {
         Ok(compositions)
     }
 
-    /// Inserts the composition into the function registry.
-    pub fn insert_compositions(&self, composition_desc: &str) -> DandelionResult<()> {
+    pub fn parse_compositions(
+        &self,
+        composition_desc: &str,
+    ) -> DandelionResult<Vec<(FunctionId, Composition, Metadata)>> {
         // TODO: might want to return the parsing issue back to the user in a better way
         let module = dparser::parse(composition_desc).map_err(|parse_error| {
             print_errors(composition_desc, parse_error);
             DandelionError::Composition(CompositionError::ParsingError)
         })?;
-        let comp_vec = self.composition_from_module(module)?;
+        self.composition_from_module(module)
+    }
+
+    /// Inserts the composition into the function registry.
+    pub fn insert_compositions(&self, composition_desc: &str) -> DandelionResult<()> {
+        let comp_vec = self.parse_compositions(composition_desc)?;
         let mut lock_guard = self
             .function_map
             .write()

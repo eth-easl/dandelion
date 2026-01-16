@@ -150,6 +150,55 @@ impl Dispatcher {
         return Ok((results, recorder));
     }
 
+    pub async fn queue_composition_description(
+        &self,
+        composition_desc: String,
+        inputs: Vec<DispatcherInput>,
+        non_caching: bool,
+        start_time: std::time::Instant,
+    ) -> DandelionResult<(Vec<Option<CompositionSet>>, Recorder)> {
+        debug!("Parsing single use composition");
+
+        let composition_meta_pairs = self
+            .function_registry
+            .parse_compositions(&composition_desc.as_str())?;
+        if composition_meta_pairs.len() != 1 {
+            debug!(
+                "Expected exactly one composition got {}",
+                composition_meta_pairs.len()
+            );
+            return Err(DandelionError::Dispatcher(
+                DispatcherError::InvalidComposition,
+            ));
+        }
+
+        debug!(
+            "Queuing single use composition {}",
+            composition_meta_pairs[0].0
+        );
+        let recorder = Recorder::new(Arc::new("0".to_string()), start_time);
+        let mut input_vec = Vec::with_capacity(inputs.len());
+        input_vec.resize(inputs.len(), None);
+        for (index, input) in inputs.into_iter().enumerate() {
+            match input {
+                DispatcherInput::None => (),
+                DispatcherInput::Set(set) => {
+                    input_vec[index] = Some(set);
+                }
+            }
+        }
+        let results = self
+            .queue_composition(
+                composition_meta_pairs[0].1.clone(),
+                input_vec,
+                non_caching,
+                recorder.get_sub_recorder(),
+            )
+            .await?;
+
+        return Ok((results, recorder));
+    }
+
     /// Queue a composition for execution.
     /// Returns a Vec of sets with the index corresponding to the set index in the composition definition
     ///

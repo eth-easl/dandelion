@@ -1,0 +1,4 @@
+{
+    "io_cores": 3,
+    "bin_preload_path": "config/preload_config_data_processing.json"
+}

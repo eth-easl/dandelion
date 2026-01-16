@@ -55,6 +55,12 @@ enum DispatcherCommand {
         start_time: Instant,
         callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
     },
+    CompositionRequest {
+        composition: String,
+        inputs: Vec<DispatcherInput>,
+        start_time: Instant,
+        callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
+    },
     FunctionRegistration {
         name: String,
         engine_type: EngineType,
@@ -104,7 +110,7 @@ async fn serve_request(
     if request_context_result.is_err() {
         warn!("request parsing failed with: {:?}", request_context_result);
     }
-    let (function_name, request_context) = request_context_result.unwrap();
+    let (function_name, composition, request_context) = request_context_result.unwrap();
     debug!("finished creating request context");
 
     // TODO match set names to assign sets to composition sets
@@ -121,16 +127,29 @@ async fn serve_request(
     // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
 
     let (callback, output_recevier) = tokio::sync::oneshot::channel();
-    dispatcher
-        .send(DispatcherCommand::FunctionRequest {
-            name: function_name,
-            inputs,
-            is_cold,
-            start_time: start_time.clone(),
-            callback,
-        })
-        .await
-        .unwrap();
+    if let Some(name) = function_name {
+        dispatcher
+            .send(DispatcherCommand::FunctionRequest {
+                name,
+                inputs,
+                is_cold,
+                start_time: start_time.clone(),
+                callback,
+            })
+            .await
+            .unwrap();
+    } else {
+        dispatcher
+            .send(DispatcherCommand::CompositionRequest {
+                composition: composition
+                    .expect("Did not get a service name nor a composition description in request"),
+                inputs,
+                start_time: start_time.clone(),
+                callback,
+            })
+            .await
+            .unwrap();
+    }
     let (function_output, recorder) = output_recevier
         .await
         .unwrap()
@@ -385,6 +404,28 @@ async fn dispatcher_loop(
                     }
                 });
             }
+            DispatcherCommand::CompositionRequest {
+                composition,
+                inputs,
+                start_time,
+                mut callback,
+            } => {
+                debug!("Handling composition request");
+                let future = dispatcher.queue_composition_description(
+                    composition,
+                    inputs,
+                    false, // TODO
+                    start_time,
+                );
+                spawn(async {
+                    select! {
+                        output = future => {
+                            let _ = callback.send(output);
+                        }
+                        _ = callback.closed() => ()
+                    }
+                });
+            }
             DispatcherCommand::FunctionRegistration {
                 name,
                 engine_type,
@@ -632,7 +673,7 @@ fn main() -> () {
                     let output_sets = pf.metadata.output_sets.clone();
                     let metadata = Metadata {
                         input_sets: input_sets,
-                        output_sets: Arc::new(output_sets),
+                        output_sets: output_sets,
                     };
                     match dispatcher.insert_function(
                         pf.name.clone(),
