@@ -697,6 +697,8 @@ fn main() -> () {
     print!(" use_service_loop");
     #[cfg(feature = "k8s_integration")]
     print!(" k8s_integration");
+    #[cfg(feature = "decode_hpack")]
+    print!(" decode_hpack");
     print!("\n");
 
     let dg_svc = start_dirigent_server(dirigent_server_cores, config.dirigent_sync_port);

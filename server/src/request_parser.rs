@@ -1,3 +1,4 @@
+use hpack::Decoder;
 use log::{debug, info};
 use std::cmp::PartialEq;
 use std::collections::HashSet;
@@ -164,7 +165,7 @@ pub fn http2_initial_parsing(mut buf: &[u8]) -> (usize, i32) {
     while buf.len() >= HEADER_LEN {
         // Parse length (24-bit big-endian)
         let len = ((buf[0] as u32) << 16) | ((buf[1] as u32) << 8) | (buf[2] as u32);
-        
+
         let frame_type = Http2FrameTypes::try_from(buf[3]).unwrap();
         let flags = buf[4];
 
@@ -336,13 +337,24 @@ fn decode_frame_payload(frame_type: Http2FrameTypes, buf: &[u8]) -> String {
             if 4 >= buf.len() {
                 return result;
             }
-            
+
             let val = read_4(buf, 0) & 0x7FFF_FFFF;
             result.push_str(&format!("Window Size Increment = {}", val));
         }
 
         Http2FrameTypes::HEADERS => {
-            result.push_str(&"HPACK decoding has not been implemented yet.".to_string());
+            if cfg!(feature = "decode_hpack") {
+                if buf.len() > 0 {
+                    let mut decoder = Decoder::new();
+                    let _ = decoder.decode_with_cb(buf, |name, value| {
+                        result.push_str(&format!(
+                            "{:?} {:?}\n",
+                            str::from_utf8(name.iter().as_slice()),
+                            str::from_utf8(value.iter().as_slice())
+                        ));
+                    });
+                }
+            }
         }
 
         Http2FrameTypes::DATA => {

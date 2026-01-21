@@ -1150,6 +1150,7 @@ async fn router(
             req.header_authority_value_string
         );
 
+        // TODO: use X-Anakonda-Forward for routing
         // ****** Based on the header_authority_value_sting, query the dirigent service to get the url ******
         // ****** Based on the url, pick one connection and its corresponding func_conn_worker ******
         let destination_url = dg_svc.choose_on_endpoint(&req.header_authority_value_string);
