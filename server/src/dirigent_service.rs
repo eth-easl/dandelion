@@ -343,7 +343,7 @@ async fn knative_k8s_informer(dg_svc: Arc<Mutex<DgSvcMap>>) -> anyhow::Result<()
                                 // remains Ready in Terminating state until it can handle the traffic
                                 if let Some(status) = pod.status {
                                     if let Some(url) = status.pod_ip {
-                                        process_add_action(dg_svc, function, sandbox_id, url);
+                                        process_add_action(dg_svc, function, sandbox_id, format!("{url}:8013"));
                                     }
                                 }
                             } else {
