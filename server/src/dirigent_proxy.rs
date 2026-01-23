@@ -194,8 +194,8 @@ async fn register_function_local(
         local_path: func_bin_path,
         binary: Vec::new(),
         engine_type,
-        input_sets: vec![(String::from(""), None); 33], // set to 33 input sets
-        output_sets: vec![String::from(""); 256],        // set to 32 output sets
+        input_sets: vec![(String::from(""), None); 256], // set to 256 input sets
+        output_sets: vec![String::from(""); 256],        // set to 256 output sets
     })
     .unwrap();
     let bytes = Bytes::from(register_request);
