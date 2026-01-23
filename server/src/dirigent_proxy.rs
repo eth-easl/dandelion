@@ -7,13 +7,13 @@ use dandelion_commons::records::Recorder;
 use dandelion_server::{
     DandelionBody, DandelionDeserializeResponse, DandelionRequest, InputItem, InputSet,
 };
-use dispatcher::{
-    composition::CompositionSet, dispatcher::DispatcherInput, function_registry::Metadata,
-};
+use dispatcher::dispatcher::DispatcherInput;
 use hyper::Response;
 use log::trace;
 use log::{debug, error, info, warn};
 use machine_interface::{
+    composition::CompositionSet,
+    function_driver::Metadata,
     machine_config::EngineType,
     memory_domain::{bytes_context::BytesContext, read_only::ReadOnlyContext},
     DataItem, DataSet, Position,
@@ -40,6 +40,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::{io, try_join};
 
 use core_affinity::{self, CoreId};
+use dandelion_server::config::DandelionConfig;
 
 const HTTP2_MAGIC_PACKET: [u8; 24] = [
     0x50, 0x52, 0x49, 0x20, 0x2a, 0x20, 0x48, 0x54, 0x54, 0x50, 0x2f, 0x32, 0x2e, 0x30, 0x0d, 0x0a,
@@ -275,8 +276,8 @@ async fn register_function_local(
         .collect();
     let (callback, confirmation) = oneshot::channel();
     let metadata = Metadata {
-        input_sets: Arc::new(input_sets),
-        output_sets: Arc::new(request_map.output_sets),
+        input_sets: input_sets,
+        output_sets: request_map.output_sets,
     };
     dispatcher
         .send(DispatcherCommand::FunctionRegistration {
@@ -366,6 +367,7 @@ async fn invoke_dandelion_function(
 
 // Prepare the input to the nghttp2_codec function and invokes it
 async fn prepare_input_and_invoke_nghttp2_codec(
+    nghttp2_codec_func_name : String,
     request_sender: mpsc::Sender<DispatcherCommand>,
     is_server: i8,
     first_create: i8,
@@ -382,9 +384,6 @@ async fn prepare_input_and_invoke_nghttp2_codec(
     headers_to_send_list: &Vec<Vec<u8>>,
     body_to_send_list: &Vec<Vec<u8>>,
 ) -> (Vec<Option<CompositionSet>>, Recorder) {
-    let config = dandelion_server::config::DandelionConfig::get_config();
-    let nghttp2_codec_func_name = config.nghttp2_codec_func_name;
-
     // *** Prepare Input to the nghttp2 codec *****
     // **** input set items to the ngtthp2 codec; ****
 
@@ -853,6 +852,7 @@ async fn read_from_tcp_stream_until_blocking(
 // This handles the TCP/HTTP connection with user function container
 // Thus, it acts as a HTTP client
 async fn func_connection_worker3(
+    nghttp2_codec_func_name : String,
     mut stream: TcpStream,
     request_sender: mpsc::Sender<DispatcherCommand>,
     mut stream_worker_to_func_connection_worker_rx: mpsc::Receiver<StreamWorkerToFuncConnReq>,
@@ -1012,6 +1012,7 @@ async fn func_connection_worker3(
         // ****** Prepare input and call the nghttp2 codec ******
         debug!("[func_connection_worker3. Local Addr: {}; Peer Addr: {}] prepare input and call the nghttp2 codec", tcp_conn_local_addr, tcp_conn_peer_addr);
         let (function_output, recorder) = prepare_input_and_invoke_nghttp2_codec(
+            nghttp2_codec_func_name.clone(),
             request_sender.clone(),
             is_server,
             first_create,
@@ -1134,6 +1135,7 @@ async fn func_connection_worker3(
 // It would query the Dirigent Service to get the url of user func containers.
 // Based on the url, it might use the existing connection or create a new one.
 async fn router(
+    nghttp2_codec_func_name : String,
     dg_svc: Arc<DirigentService>,
     request_sender: mpsc::Sender<DispatcherCommand>,
     mut stream_worker_to_router_rx: mpsc::Receiver<StreamWorkerToRouterReq>,
@@ -1204,6 +1206,7 @@ async fn router(
                         let stream = s;
 
                         tokio::spawn(func_connection_worker3(
+                            nghttp2_codec_func_name.clone(),
                             stream,
                             request_sender.clone(),
                             stream_worker_to_func_connection_worker_rx,
@@ -1393,6 +1396,7 @@ async fn stream_worker(
 // The task to handle one TCP/HTTP connection with the data plane
 // Thus, it acts as a HTTP server
 async fn dp_connection_worker3(
+    nghttp2_codec_func_name: String,
     mut stream: TcpStream,
     request_sender: mpsc::Sender<DispatcherCommand>,
     stream_worker_to_router_tx: mpsc::Sender<StreamWorkerToRouterReq>,
@@ -1579,6 +1583,7 @@ async fn dp_connection_worker3(
         // ****** Prepare input and call the nghttp2 codec ******
         debug!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] prepare input and call the nghttp2 codec", tcp_conn_local_addr, tcp_conn_peer_addr);
         let (function_output, recorder) = prepare_input_and_invoke_nghttp2_codec(
+            nghttp2_codec_func_name.clone(),
             request_sender.clone(),
             is_server,
             first_create,
@@ -1669,14 +1674,12 @@ async fn dp_connection_worker3(
 // ******************************************************************
 
 async fn create_proxy_server2(
+    nghttp2_codec_func_name : String,
+    nghttp2_codec_bin_local_path : String,
     request_sender: mpsc::Sender<DispatcherCommand>,
     port: u16,
     dg_svc: Arc<DirigentService>,
 ) {
-    let config = dandelion_server::config::DandelionConfig::get_config();
-    let nghttp2_codec_func_name = config.nghttp2_codec_func_name;
-    let nghttp2_codec_bin_local_path = config.nghttp2_codec_bin_local_path;
-
     // ****** Before the loop actually starts, register some functions ******
 
     let engine_type: String = if cfg!(feature = "kvm") {
@@ -1689,8 +1692,8 @@ async fn create_proxy_server2(
 
     // register the nghttp2 codec
     let _ = register_function_local(
-        String::from(nghttp2_codec_bin_local_path),
-        String::from(nghttp2_codec_func_name),
+        nghttp2_codec_bin_local_path.clone(),
+        nghttp2_codec_func_name.clone(),
         engine_type,
         request_sender.clone(),
     )
@@ -1703,6 +1706,7 @@ async fn create_proxy_server2(
     let dg_svc_clone = Arc::clone(&dg_svc);
 
     tokio::spawn(router(
+        nghttp2_codec_func_name.clone(),
         dg_svc_clone,
         request_sender.clone(),
         stream_worker_to_func_router_rx,
@@ -1728,12 +1732,11 @@ async fn create_proxy_server2(
                 let stream_worker_to_router_tx_clone = stream_worker_to_router_tx.clone();
 
                 // for each new dp connection spawn a dp connection worker
+                let func_name = nghttp2_codec_func_name.clone();
                 tokio::spawn(async move {
                     let service_dispatcher_ptr = loop_dispatcher.clone();
-                    dp_connection_worker3(stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone()).await;
+                    dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone()).await;
                 });
-
-
             }
             _ = sigterm_stream.recv() => return,
             _ = sigint_stream.recv() => return,
@@ -1743,6 +1746,8 @@ async fn create_proxy_server2(
 }
 
 pub fn start_proxy_server2(
+    nghttp2_codec_func_name : String,
+    nghttp2_codec_bin_local_path : String,
     proxy_cores: Vec<u8>,
     request_sender: mpsc::Sender<DispatcherCommand>,
     port: u16,
@@ -1786,7 +1791,7 @@ pub fn start_proxy_server2(
 
     thread::spawn(move || {
         runtime.block_on(async {
-            create_proxy_server2(request_sender, port, dg_svc).await;
+            create_proxy_server2(nghttp2_codec_func_name, nghttp2_codec_bin_local_path, request_sender, port, dg_svc).await;
         });
     });
 }

@@ -63,9 +63,6 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value = "")]
     #[serde(default)]
     pub bin_preload_path: String,
-    #[arg(long, env)]
-    //, default_value_t = DEFAULT_REQUEST_ACCEPT_PORTS)] // TODO: add support for default ports
-    pub dirigent_request_ports: Vec<u16>,
     #[arg(long, env, default_value_t = DEFAULT_DIRIGENT_SYNC_PORT)]
     pub dirigent_sync_port: u16,
     #[arg(long, env, default_value_t = DEFAULT_DIRIGENT_PROXY_PORT)]

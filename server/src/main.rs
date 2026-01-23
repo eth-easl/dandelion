@@ -703,6 +703,8 @@ fn main() -> () {
 
     let dg_svc = start_dirigent_server(dirigent_server_cores, config.dirigent_sync_port);
     start_proxy_server2(
+        config.nghttp2_codec_func_name,
+        config.nghttp2_codec_bin_local_path,
         dirigent_proxy_cores,
         dispatcher_sender.clone(),
         config.dirigent_proxy_port,
