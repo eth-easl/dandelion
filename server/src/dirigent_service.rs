@@ -60,9 +60,13 @@ impl DirigentService {
         let eps = self.data.lock().unwrap().get(path).cloned();
         if eps.is_some() {
             let list: Vec<ExternalSandbox> = eps.unwrap().into_iter().collect();
-            let index: usize = rand::random_range(0..list.len());
-
-            Some(list.get(index)?.url.clone())
+            if list.len() > 0 {
+                let index: usize = rand::random_range(0..list.len());
+                Some(list.get(index)?.url.clone())
+            }
+            else {
+                None
+            }
         } else {
             None
         }
