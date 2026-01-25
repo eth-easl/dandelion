@@ -215,13 +215,14 @@ impl DandelionConfig {
             let max_core = self
                 .total_cores
                 .expect("total_cores should be set after init");
-            // 1 other core for dispatcher is fixed
-            let other_cores = self.dispatcher_cores.unwrap_or(1)
-                + self.frontend_cores.unwrap_or(0)
-                + self.io_cores.unwrap_or(0);
-            if other_cores >= max_core {
-                panic!("no cores for engines left");
-            }
+            // // 1 other core for dispatcher is fixed
+            // let other_cores = self.dispatcher_cores.unwrap_or(1)
+            //     + self.frontend_cores.unwrap_or(0)
+            //     + self.io_cores.unwrap_or(0);
+            // if other_cores >= max_core {
+            //     panic!("no cores for engines left");
+            // }
+            let other_cores = 0;
             (other_cores as u8..max_core as u8).collect()
         };
         return core_vec;
