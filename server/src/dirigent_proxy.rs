@@ -1403,7 +1403,7 @@ async fn dp_connection_worker3(
 ) {
     let tcp_conn_local_addr = stream.local_addr().unwrap();
     let tcp_conn_peer_addr = stream.peer_addr().unwrap();
-    info!(
+    error!(
         "[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] A new dp connection",
         tcp_conn_local_addr, tcp_conn_peer_addr
     );
