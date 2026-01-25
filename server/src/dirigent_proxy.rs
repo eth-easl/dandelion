@@ -1195,7 +1195,7 @@ async fn router(
                 (
                     stream_worker_to_func_connection_worker_tx,
                     stream_worker_to_func_connection_worker_rx,
-                ) = mpsc::channel::<StreamWorkerToFuncConnReq>(32);
+                ) = mpsc::channel::<StreamWorkerToFuncConnReq>(256);
 
                 match TcpStream::connect(&destination_url_string).await {
                     Ok(s) => {
@@ -1410,7 +1410,7 @@ async fn dp_connection_worker3(
 
     // Create channel to receive req from the stream worker
     let (stream_worker_to_dp_connection_worker_tx, mut stream_worker_to_dp_connection_worker_rx) =
-        mpsc::channel::<StreamWorkerToDpConnReq>(32);
+        mpsc::channel::<StreamWorkerToDpConnReq>(256);
 
     let mut num_of_completed_stream_worker = 0; // Just for logging
 
@@ -1702,7 +1702,7 @@ async fn create_proxy_server2(
 
     // ***** spawn the router ******
     let (stream_worker_to_router_tx, stream_worker_to_func_router_rx) =
-        mpsc::channel::<StreamWorkerToRouterReq>(32);
+        mpsc::channel::<StreamWorkerToRouterReq>(256);
     let dg_svc_clone = Arc::clone(&dg_svc);
 
     tokio::spawn(router(
