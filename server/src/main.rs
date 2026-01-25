@@ -510,9 +510,11 @@ fn main() -> () {
         .map(|core| resource_conversion(core))
         .collect();
 
-    // TMP we just assume dirigent server and dirigent proxy also runs on the front-end core(s)
-    let dirigent_server_cores = frontend_cores.clone();
-    let dirigent_proxy_cores = frontend_cores.clone();
+    let dirigent_proxy_cores: Vec<_> = config
+        .get_dirigent_proxy_cores();
+
+    // TMP we just assume dirigent server and dirigent proxy also runs on the same cores
+    let dirigent_server_cores = dirigent_proxy_cores.clone();
 
     println!("core allocation:");
     println!("frontend cores {:?}", frontend_cores);

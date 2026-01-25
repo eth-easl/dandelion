@@ -227,6 +227,26 @@ impl DandelionConfig {
         return core_vec;
     }
 
+    pub fn get_dirigent_proxy_cores(&self) -> Vec<u8> {
+        let core_vec = if self.single_core_mode {
+            vec![0]
+        } else {
+            let max_core = self
+                .total_cores
+                .expect("total_cores should be set after init");
+            // // 1 other core for dispatcher is fixed
+            // let other_cores = self.dispatcher_cores.unwrap_or(1)
+            //     + self.frontend_cores.unwrap_or(0)
+            //     + self.io_cores.unwrap_or(0);
+            // if other_cores >= max_core {
+            //     panic!("no cores for engines left");
+            // }
+            let other_cores = 0;
+            (other_cores as u8..max_core as u8).collect()
+        };
+        return core_vec;
+    }
+
     pub fn get_preload_functions(&self) -> Vec<PreloadFunc> {
         if self.bin_preload_path.is_empty() {
             return vec![];
