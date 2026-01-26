@@ -29,12 +29,12 @@ use std::{
     convert::Infallible,
     io::{ErrorKind, Write},
     path::PathBuf,
-    time::Instant,
     sync::atomic::{AtomicUsize, Ordering},
+    time::Instant,
 };
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::runtime::{Runtime, Builder};
+use tokio::runtime::{Builder, Runtime};
 use tokio::signal::unix::SignalKind;
 use tokio::sync::{mpsc, oneshot};
 use tokio::{io, try_join};
@@ -46,114 +46,6 @@ const HTTP2_MAGIC_PACKET: [u8; 24] = [
     0x50, 0x52, 0x49, 0x20, 0x2a, 0x20, 0x48, 0x54, 0x54, 0x50, 0x2f, 0x32, 0x2e, 0x30, 0x0d, 0x0a,
     0x0d, 0x0a, 0x53, 0x4d, 0x0d, 0x0a, 0x0d, 0x0a,
 ];
-
-pub async fn proxy_to_uc(
-    request: Vec<u8>,
-    mut client_recv: tokio::net::tcp::ReadHalf<'_>,
-    mut client_send: tokio::net::tcp::WriteHalf<'_>,
-    mut destination: TcpStream,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // By the model of: https://anirudhsingh.dev/blog/2021/07/writing-a-tcp-proxy-in-rust/
-    let (mut server_recv, mut server_send) = destination.split();
-
-    let destination_to_source = async {
-        let val = io::copy(&mut server_recv, &mut client_send).await.unwrap();
-        trace!("SERVER -> CLIENT: server_recv -> client_send {}", val);
-
-        Ok::<u64, Error>(val)
-    };
-
-    let source_to_destination = async {
-        let val = server_send.write(request.as_slice()).await;
-        trace!(
-            "CLIENT -> SERVER: client_recv -> server_send {}",
-            val.unwrap()
-        );
-
-        let res = io::copy(&mut client_recv, &mut server_send).await.unwrap();
-        trace!("CLIENT -> SERVER: client_recv -> server_send {}", res);
-
-        Ok::<u64, Error>(res)
-    };
-
-    let _ = try_join!(destination_to_source, source_to_destination);
-
-    Ok(())
-}
-
-async fn create_proxy_server(port: u16, dg_svc: Arc<DirigentService>) -> io::Result<()> {
-    let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
-    let listener = TcpListener::bind(addr).await?;
-
-    tracing::info!("Listening on {}", addr);
-
-    loop {
-        let (mut raw_stream, _) = listener.accept().await?;
-        let dg_svc_clone = Arc::clone(&dg_svc);
-
-        tokio::task::spawn(async move {
-            let (mut client_recv, client_send) = raw_stream.split();
-            let mut stream = BufReader::new(&mut client_recv);
-
-            match request_parser::parse_request(&mut stream).await {
-                Ok(request) => {
-                    tracing::info!(?request, "incoming request");
-
-                    // NOTE: in curl set -H 'Connection: close' to force connection closure
-                    let function_raw = request.headers.get("Host");
-                    if function_raw.is_none() {
-                        tracing::error!("Header 'Host' not found. Aborting request.");
-
-                        return Err::<(), Error>(Error::new(
-                            io::ErrorKind::Other,
-                            "Header 'Host' not found. Aborting request.",
-                        ));
-                    }
-
-                    let function = function_raw.unwrap();
-                    let destination_url = dg_svc_clone.choose_on_endpoint(&function);
-                    if destination_url.is_none() {
-                        tracing::error!("Path not found '{}'. Aborting request.", &function);
-
-                        return Err::<(), Error>(Error::new(
-                            io::ErrorKind::Other,
-                            format!("function not found for the given path {}", function),
-                        ));
-                    }
-
-                    let destination = TcpStream::connect(destination_url.clone().unwrap())
-                        .await
-                        .unwrap();
-
-                    // TODO: share socket towards the destination URL between multiple threads
-                    let _ =
-                        proxy_to_uc(request.raw_data, client_recv, client_send, destination).await;
-
-                    trace!("Connection to {} closed\n", destination_url.unwrap());
-                }
-                Err(e) => {
-                    tracing::info!(?e, "failed to parse request");
-                    return Err::<(), Error>(Error::new(
-                        io::ErrorKind::Other,
-                        "failed to parse request",
-                    ));
-                }
-            }
-
-            return Ok::<_, Error>(());
-        });
-    }
-}
-
-pub fn start_proxy_server(port: u16, dg_svc: Arc<DirigentService>) {
-    let runtime = Runtime::new().unwrap();
-
-    thread::spawn(move || {
-        runtime.block_on(async {
-            create_proxy_server(port, dg_svc).await.unwrap();
-        });
-    });
-}
 
 const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
@@ -367,7 +259,7 @@ async fn invoke_dandelion_function(
 
 // Prepare the input to the nghttp2_codec function and invokes it
 async fn prepare_input_and_invoke_nghttp2_codec(
-    nghttp2_codec_func_name : String,
+    nghttp2_codec_func_name: String,
     request_sender: mpsc::Sender<DispatcherCommand>,
     is_server: i8,
     first_create: i8,
@@ -767,6 +659,7 @@ fn parse_nghttp2_codec_output(
 struct StreamWorkerToRouterReq {
     payload: String,
     header_authority_value_string: String,
+    header_x_anakonda_forward_value_string: String,
     router_to_stream_worker_tx: oneshot::Sender<RouterToStreamWorkerResp>,
 }
 
@@ -852,7 +745,7 @@ async fn read_from_tcp_stream_until_blocking(
 // This handles the TCP/HTTP connection with user function container
 // Thus, it acts as a HTTP client
 async fn func_connection_worker3(
-    nghttp2_codec_func_name : String,
+    nghttp2_codec_func_name: String,
     mut stream: TcpStream,
     request_sender: mpsc::Sender<DispatcherCommand>,
     mut stream_worker_to_func_connection_worker_rx: mpsc::Receiver<StreamWorkerToFuncConnReq>,
@@ -1135,8 +1028,7 @@ async fn func_connection_worker3(
 // It would query the Dirigent Service to get the url of user func containers.
 // Based on the url, it might use the existing connection or create a new one.
 async fn router(
-    nghttp2_codec_func_name : String,
-    dg_svc: Arc<DirigentService>,
+    nghttp2_codec_func_name: String,
     request_sender: mpsc::Sender<DispatcherCommand>,
     mut stream_worker_to_router_rx: mpsc::Receiver<StreamWorkerToRouterReq>,
 ) {
@@ -1148,101 +1040,89 @@ async fn router(
     // Process requests from stream workers
     while let Some(req) = stream_worker_to_router_rx.recv().await {
         info!(
-            "[Router] receives the request with header authority: {}",
-            req.header_authority_value_string
+            "[Router] receives the request with header authority: {} {}",
+            req.header_authority_value_string, req.header_x_anakonda_forward_value_string,
         );
 
-        // TODO: use X-Anakonda-Forward for routing
+        // TODO: use X-Anakonda-Forward for routing ----> working on this
         // ****** Based on the header_authority_value_sting, query the dirigent service to get the url ******
         // ****** Based on the url, pick one connection and its corresponding func_conn_worker ******
-        let destination_url = dg_svc.choose_on_endpoint(&req.header_authority_value_string);
-        if destination_url.is_none() {
-            error!(
-                "[Router] the dirigent service does not the find the url of function {}",
-                req.header_authority_value_string
-            );
+        let destination_url_string = req.header_x_anakonda_forward_value_string;
+        debug!(
+            "[Router] gets the url: {} from the dirigent service",
+            destination_url_string
+        );
+
+        let stream_worker_to_func_connection_worker_tx: mpsc::Sender<StreamWorkerToFuncConnReq>;
+        let stream_worker_to_func_connection_worker_rx: mpsc::Receiver<StreamWorkerToFuncConnReq>;
+
+        // *** Check if there is a need to create a new connection ***
+        let mut need_to_create_a_new_connection: bool = false;
+        if uc_connections.contains_key(&destination_url_string) {
+            if uc_connections
+                .get(&destination_url_string)
+                .unwrap()
+                .is_closed()
+            {
+                info!("[Router] The connection stored in the map is closed. Need to create a new connection to the uc");
+                need_to_create_a_new_connection = true;
+                uc_connections.remove(&destination_url_string);
+            }
         } else {
-            let destination_url_string = destination_url.unwrap();
+            need_to_create_a_new_connection = true;
+        }
+
+        if need_to_create_a_new_connection == true {
+            (
+                stream_worker_to_func_connection_worker_tx,
+                stream_worker_to_func_connection_worker_rx,
+            ) = mpsc::channel::<StreamWorkerToFuncConnReq>(32);
+
+            match TcpStream::connect(&destination_url_string).await {
+                Ok(s) => {
+                    info!(
+                        "[Router] creates a new connection to {}",
+                        destination_url_string
+                    );
+                    let stream = s;
+
+                    tokio::spawn(func_connection_worker3(
+                        nghttp2_codec_func_name.clone(),
+                        stream,
+                        request_sender.clone(),
+                        stream_worker_to_func_connection_worker_rx,
+                    ));
+
+                    uc_connections.insert(
+                        destination_url_string,
+                        stream_worker_to_func_connection_worker_tx.clone(),
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        "[Router] establish connection to {} with  error: {}",
+                        destination_url_string, e
+                    );
+                }
+            }
+        } else {
             debug!(
-                "[Router] gets the url: {} from the dirigent service",
+                "[Router] already has a connection to {}",
                 destination_url_string
             );
-
-            let stream_worker_to_func_connection_worker_tx: mpsc::Sender<
-                StreamWorkerToFuncConnReq,
-            >;
-            let stream_worker_to_func_connection_worker_rx: mpsc::Receiver<
-                StreamWorkerToFuncConnReq,
-            >;
-
-            // *** Check if there is a need to create a new connection ***
-            let mut need_to_create_a_new_connection: bool = false;
-            if uc_connections.contains_key(&destination_url_string) {
-                if uc_connections
-                    .get(&destination_url_string)
-                    .unwrap()
-                    .is_closed()
-                {
-                    info!("[Router] The connection stored in the map is closed. Need to create a new connection to the uc");
-                    need_to_create_a_new_connection = true;
-                    uc_connections.remove(&destination_url_string);
-                }
-            } else {
-                need_to_create_a_new_connection = true;
-            }
-
-            if need_to_create_a_new_connection == true {
-                (
-                    stream_worker_to_func_connection_worker_tx,
-                    stream_worker_to_func_connection_worker_rx,
-                ) = mpsc::channel::<StreamWorkerToFuncConnReq>(32);
-
-                match TcpStream::connect(&destination_url_string).await {
-                    Ok(s) => {
-                        info!(
-                            "[Router] creates a new connection to {}",
-                            destination_url_string
-                        );
-                        let stream = s;
-
-                        tokio::spawn(func_connection_worker3(
-                            nghttp2_codec_func_name.clone(),
-                            stream,
-                            request_sender.clone(),
-                            stream_worker_to_func_connection_worker_rx,
-                        ));
-
-                        uc_connections.insert(
-                            destination_url_string,
-                            stream_worker_to_func_connection_worker_tx.clone(),
-                        );
-                    }
-                    Err(e) => {
-                        error!(
-                            "[Router] establish connection to {} with  error: {}",
-                            destination_url_string, e
-                        );
-                    }
-                }
-            } else {
-                debug!(
-                    "[Router] already has a connection to {}",
-                    destination_url_string
-                );
-                stream_worker_to_func_connection_worker_tx =
-                    uc_connections.get(&destination_url_string).unwrap().clone();
-            }
-
-            // Send the answer to the stream worker
-            let router_to_stream_worker_reply = RouterToStreamWorkerResp {
-                payload: format!("router processed the request: {}", req.payload),
-                stream_worker_to_func_connection_worker_tx:
-                    stream_worker_to_func_connection_worker_tx.clone(),
-            };
-            let _ = req
-                .router_to_stream_worker_tx
-                .send(router_to_stream_worker_reply);
+            stream_worker_to_func_connection_worker_tx =
+                uc_connections.get(&destination_url_string).unwrap().clone();
         }
+
+        // Send the answer to the stream worker
+        let router_to_stream_worker_reply = RouterToStreamWorkerResp {
+            payload: format!("router processed the request: {}", req.payload),
+            stream_worker_to_func_connection_worker_tx: stream_worker_to_func_connection_worker_tx
+                .clone(),
+        };
+        let _ = req
+            .router_to_stream_worker_tx
+            .send(router_to_stream_worker_reply);
     }
 
     debug!("[Router] all channels to the router are closed; Router stops working");
@@ -1674,11 +1554,10 @@ async fn dp_connection_worker3(
 // ******************************************************************
 
 async fn create_proxy_server2(
-    nghttp2_codec_func_name : String,
-    nghttp2_codec_bin_local_path : String,
+    nghttp2_codec_func_name: String,
+    nghttp2_codec_bin_local_path: String,
     request_sender: mpsc::Sender<DispatcherCommand>,
     port: u16,
-    dg_svc: Arc<DirigentService>,
 ) {
     // ****** Before the loop actually starts, register some functions ******
 
@@ -1703,11 +1582,9 @@ async fn create_proxy_server2(
     // ***** spawn the router ******
     let (stream_worker_to_router_tx, stream_worker_to_func_router_rx) =
         mpsc::channel::<StreamWorkerToRouterReq>(32);
-    let dg_svc_clone = Arc::clone(&dg_svc);
 
     tokio::spawn(router(
         nghttp2_codec_func_name.clone(),
-        dg_svc_clone,
         request_sender.clone(),
         stream_worker_to_func_router_rx,
     ));
@@ -1745,7 +1622,7 @@ async fn create_proxy_server2(
     }
 }
 
-pub fn start_proxy_server2(
+/*pub fn start_proxy_server2(
     nghttp2_codec_func_name : String,
     nghttp2_codec_bin_local_path : String,
     proxy_cores: Vec<u8>,
@@ -1754,7 +1631,7 @@ pub fn start_proxy_server2(
     dg_svc: Arc<DirigentService>,
 ) {
 
-    let runtime = 
+    let runtime =
         if cfg!(feature = "unpin_proxy") {
             Runtime::new().unwrap() // The default runtime. Use all the cores it could use
         }
@@ -1789,9 +1666,9 @@ pub fn start_proxy_server2(
         };
 
 
-    thread::spawn(move || {
+    /*thread::spawn(move || {
         runtime.block_on(async {
             create_proxy_server2(nghttp2_codec_func_name, nghttp2_codec_bin_local_path, request_sender, port, dg_svc).await;
         });
-    });
-}
+    });*/
+}*/

@@ -50,13 +50,13 @@ use signal_hook::iterator::Signals;
 
 mod dirigent_service;
 use dirigent_service::start_dirigent_server;
-use dirigent_service::start_k8s_informer;
+//use dirigent_service::start_k8s_informer;
 
 mod dirigent_proxy;
 mod request_parser;
 
-use crate::dirigent_proxy::start_proxy_server2;
-use crate::dirigent_service::DirigentService;
+/*use crate::dirigent_proxy::start_proxy_server2;
+use crate::dirigent_service::DirigentService;*/
 
 const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
@@ -701,7 +701,7 @@ fn main() -> () {
     print!(" decode_hpack");
     print!("\n");
 
-    let dg_svc = start_dirigent_server(dirigent_server_cores, config.dirigent_sync_port);
+    /*let dg_svc = start_dirigent_server(dirigent_server_cores, config.dirigent_sync_port);
     start_proxy_server2(
         config.nghttp2_codec_func_name,
         config.nghttp2_codec_bin_local_path,
@@ -709,10 +709,10 @@ fn main() -> () {
         dispatcher_sender.clone(),
         config.dirigent_proxy_port,
         Arc::clone(&dg_svc),
-    );
-    if cfg!(feature = "k8s_integration") {
+    );*/
+    /*if cfg!(feature = "k8s_integration") {
         start_k8s_informer(Arc::clone(&dg_svc));
-    }
+    }*/
 
     if cfg!(feature = "use_service_loop") {
         let _guard = runtime.enter();
