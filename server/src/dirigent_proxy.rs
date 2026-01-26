@@ -86,8 +86,8 @@ async fn register_function_local(
         local_path: func_bin_path,
         binary: Vec::new(),
         engine_type,
-        input_sets: vec![(String::from(""), None); 33], // set to 33 input sets
-        output_sets: vec![String::from(""); 32],        // set to 32 output sets
+        input_sets: vec![(String::from(""), None); 256], // set to 256 input sets
+        output_sets: vec![String::from(""); 256],        // set to 256 output sets
     })
     .unwrap();
     let bytes = Bytes::from(register_request);
@@ -487,6 +487,7 @@ fn parse_nghttp2_codec_output(
     Vec<Vec<u8>>, // headers_received_list
     Vec<Vec<u8>>, // body_received_list
     Vec<String>,  // header_authority_value_string_list
+    Vec<String> // header_x_anakonda_forward_value_string_list
 ) {
     // ************************
     // *** parse the output ***
@@ -559,6 +560,7 @@ fn parse_nghttp2_codec_output(
     let mut headers_received_list: Vec<Vec<u8>> = Vec::new();
     let mut body_received_list: Vec<Vec<u8>> = Vec::new();
     let mut header_authority_value_string_list: Vec<String> = Vec::new();
+    let mut header_x_anakonda_forward_value_string_list: Vec<String> = Vec::new();
     for idx_req_resp in 0..num_of_req_or_res_received {
         let set_idx = idx_req_resp + 1;
 
@@ -568,8 +570,10 @@ fn parse_nghttp2_codec_output(
         let mut body_received: Vec<u8> = Vec::new();
         let mut header_authority_value: Vec<u8> = Vec::new();
         let header_authority_value_string;
+        let mut header_x_anakonda_forward_value: Vec<u8> = Vec::new();
+        let header_x_anakonda_forward_value_string;        
 
-        assert_eq!(5, response.sets[set_idx].items.len());
+        assert_eq!(8, response.sets[set_idx].items.len());
 
         debug!("output set {}", set_idx);
         for output_item in &(response.sets[set_idx].items) {
@@ -615,6 +619,15 @@ fn parse_nghttp2_codec_output(
                         header_authority_value.len()
                     );
                 }
+                7 => {
+                    header_x_anakonda_forward_value.clear();
+                    header_x_anakonda_forward_value.extend_from_slice(output_item_data);
+
+                    debug!(
+                        "codec header_x_anakonda_forward_value length: {}",
+                        header_x_anakonda_forward_value.len()
+                    );
+                }                
                 _ => {}
             }
         }
@@ -630,6 +643,14 @@ fn parse_nghttp2_codec_output(
             header_authority_value_string
         );
         header_authority_value_string_list.push(header_authority_value_string);
+
+        header_x_anakonda_forward_value_string = String::from_utf8(header_x_anakonda_forward_value).unwrap();
+        debug!(
+            "codec header_x_anakonda_forward_value: {}",
+            header_x_anakonda_forward_value_string
+        );
+        header_x_anakonda_forward_value_string_list.push(header_x_anakonda_forward_value_string);
+
     }
 
     (
@@ -645,6 +666,7 @@ fn parse_nghttp2_codec_output(
         headers_received_list,
         body_received_list,
         header_authority_value_string_list,
+        header_x_anakonda_forward_value_string_list,
     )
 }
 
@@ -934,6 +956,7 @@ async fn func_connection_worker3(
         let mut headers_received_list: Vec<Vec<u8>>;
         let mut body_received_list: Vec<Vec<u8>>;
         let mut header_authority_value_string_list: Vec<String>;
+        let mut header_x_anakonda_forward_value_string_list: Vec<String>;
 
         (
             // set 0
@@ -948,6 +971,7 @@ async fn func_connection_worker3(
             headers_received_list,
             body_received_list,
             header_authority_value_string_list,
+            header_x_anakonda_forward_value_string_list,
         ) = parse_nghttp2_codec_output(function_output, recorder);
         size_of_session_state = session_state.len();
 
@@ -1137,6 +1161,7 @@ async fn stream_worker(
     num_of_headers_received: usize,
     headers_received: Vec<u8>,
     header_authority_value_string: String,
+    header_x_anakonda_forward_value_string: String,
     body_received: Vec<u8>,
     stream_worker_to_dp_connection_worker_tx: mpsc::Sender<StreamWorkerToDpConnReq>,
     stream_worker_to_router_tx: mpsc::Sender<StreamWorkerToRouterReq>,
@@ -1159,6 +1184,7 @@ async fn stream_worker(
         .send(StreamWorkerToRouterReq {
             payload: format!("request from stream worker: {}", stream_id),
             header_authority_value_string: header_authority_value_string,
+            header_x_anakonda_forward_value_string: header_x_anakonda_forward_value_string,
             router_to_stream_worker_tx: router_to_stream_worker_tx,
         })
         .await
@@ -1492,6 +1518,8 @@ async fn dp_connection_worker3(
         let mut headers_received_list: Vec<Vec<u8>>;
         let mut body_received_list: Vec<Vec<u8>>;
         let mut header_authority_value_string_list: Vec<String>;
+        let mut header_x_anakonda_forward_value_string_list: Vec<String>;
+
         (
             // set 0
             session_state,
@@ -1505,6 +1533,7 @@ async fn dp_connection_worker3(
             headers_received_list,
             body_received_list,
             header_authority_value_string_list,
+            header_x_anakonda_forward_value_string_list,
         ) = parse_nghttp2_codec_output(function_output, recorder);
 
         size_of_session_state = session_state.len();
@@ -1532,12 +1561,15 @@ async fn dp_connection_worker3(
             let body_received: Vec<u8> = body_received_list.remove(0);
             let header_authority_value_string: String =
                 header_authority_value_string_list.remove(0);
+            let header_x_anakonda_forward_value_string: String =
+                header_x_anakonda_forward_value_string_list.remove(0);            
 
             info!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] Receive req with stream id {}. Spawn a stream worker.", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
             tokio::spawn(stream_worker(
                 num_of_headers,
                 headers_received,
                 header_authority_value_string,
+                header_x_anakonda_forward_value_string,
                 body_received,
                 stream_worker_to_dp_connection_worker_tx.clone(),
                 stream_worker_to_router_tx.clone(),
@@ -1622,13 +1654,12 @@ async fn create_proxy_server2(
     }
 }
 
-/*pub fn start_proxy_server2(
+pub fn start_proxy_server2(
     nghttp2_codec_func_name : String,
     nghttp2_codec_bin_local_path : String,
     proxy_cores: Vec<u8>,
     request_sender: mpsc::Sender<DispatcherCommand>,
     port: u16,
-    dg_svc: Arc<DirigentService>,
 ) {
 
     let runtime =
@@ -1666,9 +1697,9 @@ async fn create_proxy_server2(
         };
 
 
-    /*thread::spawn(move || {
+    thread::spawn(move || {
         runtime.block_on(async {
-            create_proxy_server2(nghttp2_codec_func_name, nghttp2_codec_bin_local_path, request_sender, port, dg_svc).await;
+            create_proxy_server2(nghttp2_codec_func_name, nghttp2_codec_bin_local_path, request_sender, port).await;
         });
-    });*/
-}*/
+    });
+}
