@@ -49,15 +49,10 @@ use signal_hook::consts::signal::{SIGINT, SIGQUIT, SIGTERM};
 use signal_hook::iterator::Signals;
 
 mod dirigent_service;
-// use dirigent_service::start_dirigent_server;
-//use dirigent_service::start_k8s_informer;
 
 mod dirigent_proxy;
 use dirigent_proxy::start_proxy_server2;
 mod request_parser;
-
-/*use crate::dirigent_proxy::start_proxy_server2;
-use crate::dirigent_service::DirigentService;*/
 
 const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
@@ -696,24 +691,9 @@ fn main() -> () {
     print!(" unpin_proxy");
     #[cfg(feature = "use_service_loop")]
     print!(" use_service_loop");
-    #[cfg(feature = "k8s_integration")]
-    print!(" k8s_integration");
     #[cfg(feature = "decode_hpack")]
     print!(" decode_hpack");
     print!("\n");
-
-    /*let dg_svc = start_dirigent_server(dirigent_server_cores, config.dirigent_sync_port);
-    start_proxy_server2(
-        config.nghttp2_codec_func_name,
-        config.nghttp2_codec_bin_local_path,
-        dirigent_proxy_cores,
-        dispatcher_sender.clone(),
-        config.dirigent_proxy_port,
-        Arc::clone(&dg_svc),
-    );*/
-    /*if cfg!(feature = "k8s_integration") {
-        start_k8s_informer(Arc::clone(&dg_svc));
-    }*/
 
     start_proxy_server2(
         config.nghttp2_codec_func_name,
