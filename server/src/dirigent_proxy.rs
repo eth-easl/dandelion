@@ -487,7 +487,7 @@ fn parse_nghttp2_codec_output(
     Vec<Vec<u8>>, // headers_received_list
     Vec<Vec<u8>>, // body_received_list
     Vec<String>,  // header_authority_value_string_list
-    Vec<String> // header_x_anakonda_forward_value_string_list
+    Vec<String>,  // header_x_anakonda_forward_value_string_list
 ) {
     // ************************
     // *** parse the output ***
@@ -571,7 +571,7 @@ fn parse_nghttp2_codec_output(
         let mut header_authority_value: Vec<u8> = Vec::new();
         let header_authority_value_string;
         let mut header_x_anakonda_forward_value: Vec<u8> = Vec::new();
-        let header_x_anakonda_forward_value_string;        
+        let header_x_anakonda_forward_value_string;
 
         assert_eq!(8, response.sets[set_idx].items.len());
 
@@ -627,7 +627,7 @@ fn parse_nghttp2_codec_output(
                         "codec header_x_anakonda_forward_value length: {}",
                         header_x_anakonda_forward_value.len()
                     );
-                }                
+                }
                 _ => {}
             }
         }
@@ -644,13 +644,13 @@ fn parse_nghttp2_codec_output(
         );
         header_authority_value_string_list.push(header_authority_value_string);
 
-        header_x_anakonda_forward_value_string = String::from_utf8(header_x_anakonda_forward_value).unwrap();
+        header_x_anakonda_forward_value_string =
+            String::from_utf8(header_x_anakonda_forward_value).unwrap();
         debug!(
             "codec header_x_anakonda_forward_value: {}",
             header_x_anakonda_forward_value_string
         );
         header_x_anakonda_forward_value_string_list.push(header_x_anakonda_forward_value_string);
-
     }
 
     (
@@ -1068,7 +1068,7 @@ async fn router(
             req.header_authority_value_string, req.header_x_anakonda_forward_value_string,
         );
 
-        // TODO: use X-Anakonda-Forward for routing ----> working on this
+        // TODO: need to make sure that the user codec does not alter this header --> security concern
         // ****** Based on the header_authority_value_sting, query the dirigent service to get the url ******
         // ****** Based on the url, pick one connection and its corresponding func_conn_worker ******
         let destination_url_string = req.header_x_anakonda_forward_value_string;
@@ -1562,7 +1562,7 @@ async fn dp_connection_worker3(
             let header_authority_value_string: String =
                 header_authority_value_string_list.remove(0);
             let header_x_anakonda_forward_value_string: String =
-                header_x_anakonda_forward_value_string_list.remove(0);            
+                header_x_anakonda_forward_value_string_list.remove(0);
 
             info!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] Receive req with stream id {}. Spawn a stream worker.", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
             tokio::spawn(stream_worker(
@@ -1655,51 +1655,52 @@ async fn create_proxy_server2(
 }
 
 pub fn start_proxy_server2(
-    nghttp2_codec_func_name : String,
-    nghttp2_codec_bin_local_path : String,
+    nghttp2_codec_func_name: String,
+    nghttp2_codec_bin_local_path: String,
     proxy_cores: Vec<u8>,
     request_sender: mpsc::Sender<DispatcherCommand>,
     port: u16,
 ) {
+    let runtime = if cfg!(feature = "unpin_proxy") {
+        Runtime::new().unwrap() // The default runtime. Use all the cores it could use
+    } else {
+        // make multithreaded dirigent proxy runtime
+        // set up tokio runtime, need io in any case
+        let mut runtime_builder = Builder::new_multi_thread();
+        runtime_builder.enable_io();
+        runtime_builder.worker_threads(proxy_cores.len());
+        // Pin each Tokio worker thread to a specific core
+        let cores = proxy_cores.clone(); // move into closure
+        runtime_builder.on_thread_start(move || {
+            // Each worker thread calls this once.
+            // Need a way to pick which core this thread should use.
 
-    let runtime =
-        if cfg!(feature = "unpin_proxy") {
-            Runtime::new().unwrap() // The default runtime. Use all the cores it could use
-        }
-        else {
-            // make multithreaded dirigent proxy runtime
-            // set up tokio runtime, need io in any case
-            let mut runtime_builder = Builder::new_multi_thread();
-            runtime_builder.enable_io();
-            runtime_builder.worker_threads(proxy_cores.len());
-            // Pin each Tokio worker thread to a specific core
-            let cores = proxy_cores.clone(); // move into closure
-            runtime_builder.on_thread_start(move || {
-                // Each worker thread calls this once.
-                // Need a way to pick which core this thread should use.
+            // One simple approach: assign cores in a round-robin based on thread name/id
+            // (Tokio doesn't expose a stable "worker index" here), so use a global counter:
+            static NEXT_DIRIGENT_PROXY_CORE: AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-                // One simple approach: assign cores in a round-robin based on thread name/id
-                // (Tokio doesn't expose a stable "worker index" here), so use a global counter:
-                static NEXT_DIRIGENT_PROXY_CORE: AtomicUsize =
-                    std::sync::atomic::AtomicUsize::new(0);
+            let i = NEXT_DIRIGENT_PROXY_CORE.fetch_add(1, Ordering::Relaxed);
+            let core = cores[i % cores.len()] as usize;
 
-                let i = NEXT_DIRIGENT_PROXY_CORE.fetch_add(1, Ordering::Relaxed);
-                let core = cores[i % cores.len()] as usize;
+            // core_affinity expects core_affinity::CoreId
+            let core_id = CoreId { id: core };
+            let _ok = core_affinity::set_for_current(core_id);
+        });
+        // runtime_builder.global_queue_interval(10);
+        // runtime_builder.event_interval(10);
 
-                // core_affinity expects core_affinity::CoreId
-                let core_id = CoreId { id: core };
-                let _ok = core_affinity::set_for_current(core_id);
-            });
-            // runtime_builder.global_queue_interval(10);
-            // runtime_builder.event_interval(10);
-
-            runtime_builder.build().unwrap()
-        };
-
+        runtime_builder.build().unwrap()
+    };
 
     thread::spawn(move || {
         runtime.block_on(async {
-            create_proxy_server2(nghttp2_codec_func_name, nghttp2_codec_bin_local_path, request_sender, port).await;
+            create_proxy_server2(
+                nghttp2_codec_func_name,
+                nghttp2_codec_bin_local_path,
+                request_sender,
+                port,
+            )
+            .await;
         });
     });
 }
