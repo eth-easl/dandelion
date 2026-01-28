@@ -1,7 +1,8 @@
 use dandelion_commons::DandelionResult;
+use log::trace;
 use machine_interface::{
     function_driver::{EngineWorkQueue, WorkDone, WorkToDo},
-    machine_config::EngineType,
+    machine_config::{EngineType, EnumCount},
     promise::{Debt, PromiseBuffer},
 };
 #[cfg(feature = "spin_queue")]
@@ -54,20 +55,26 @@ pub struct WorkQueue {
     inner: Arc<Mutex<std::collections::LinkedList<QueueElement>>>,
     promise_buffer: PromiseBuffer,
     #[cfg(feature = "spin_queue")]
-    tickets: Arc<AtomicTickets>,
+    tickets: Arc<Box<[AtomicTickets]>>,
 }
 
 impl WorkQueue {
     /// Creates a new WorkQueue of given size.
     pub fn init(capacity: usize) -> Self {
+        #[cfg(feature = "spin_queue")]
         WorkQueue {
             inner: Arc::new(Mutex::new(LinkedList::new())),
             promise_buffer: PromiseBuffer::init(capacity),
             #[cfg(feature = "spin_queue")]
-            tickets: Arc::new(AtomicTickets {
-                start: AtomicUsize::new(0),
-                end: AtomicUsize::new(0),
-            }),
+            tickets: Arc::new(
+                (0..EngineType::COUNT)
+                    .map(|_| AtomicTickets {
+                        start: AtomicUsize::new(0),
+                        end: AtomicUsize::new(0),
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            ),
         }
     }
 
@@ -81,15 +88,28 @@ impl WorkQueue {
 
     /// Inserts the work into the queue setting the flags according to the supported engines and
     /// awaits the future before returning the result.
-    pub async fn do_work(
-        &self,
-        work: WorkToDo,
-        engines: Vec<EngineType>,
-    ) -> DandelionResult<WorkDone> {
-        let mut flags = 0;
-        for e in engines {
-            flags |= get_engine_flag(e);
-        }
+    pub async fn do_work(&self, work: WorkToDo) -> DandelionResult<WorkDone> {
+        let flags = match &work {
+            WorkToDo::Shutdown(engine_type) => get_engine_flag(*engine_type),
+            WorkToDo::FunctionArguments {
+                function_alternatives,
+                input_sets: _,
+                metadata: _,
+                caching: _,
+                recorder: _,
+            } => {
+                let mut flags = 0;
+                trace!(
+                    "found function arguments with alternatives: {:?}",
+                    function_alternatives
+                );
+                for alternative in function_alternatives {
+                    flags |= get_engine_flag(alternative.engine);
+                }
+                flags
+            }
+        };
+        log::trace!("Enqueueing with flags: {}", flags);
 
         let (promise, debt) = self.promise_buffer.get_promise()?;
         self.push(work, debt, flags)?;
@@ -110,12 +130,17 @@ impl WorkQueue {
     }
 
     /// Tries to acquire some work that matches the given flags starting from the head of the queue.
-    pub fn try_get_work(&self, engine_flags: u32) -> Option<(WorkToDo, Debt)> {
+    pub fn try_get_work(
+        &self,
+        engine_flags: u32,
+        engine_type: EngineType,
+    ) -> Option<(WorkToDo, Debt)> {
         #[cfg(feature = "spin_queue")]
         {
-            let queue_head = self.tickets.start.load(Ordering::Acquire);
-            if self
-                .tickets
+            let queue_head = self.tickets[engine_type as usize]
+                .start
+                .load(Ordering::Acquire);
+            if self.tickets[engine_type as usize]
                 .end
                 .compare_exchange(
                     queue_head,
@@ -135,17 +160,25 @@ impl WorkQueue {
             .next()
             .map(|queue_element| (queue_element.work, queue_element.debt));
         #[cfg(feature = "spin_queue")]
-        self.tickets.start.fetch_add(1, Ordering::AcqRel);
+        self.tickets[engine_type as usize]
+            .start
+            .fetch_add(1, Ordering::AcqRel);
         result
     }
 
     /// Spins on the queue until it manages to acquire some work that matches the given flags.
-    pub fn get_work(&self, engine_flags: u32) -> (WorkToDo, Debt) {
+    pub fn get_work(&self, engine_flags: u32, engine_type: EngineType) -> (WorkToDo, Debt) {
         loop {
             #[cfg(feature = "spin_queue")]
             {
-                let local_ticket = self.tickets.end.fetch_add(1, Ordering::AcqRel);
-                while local_ticket != self.tickets.start.load(Ordering::Acquire) {
+                let local_ticket = self.tickets[engine_type as usize]
+                    .end
+                    .fetch_add(1, Ordering::AcqRel);
+                while local_ticket
+                    != self.tickets[engine_type as usize]
+                        .start
+                        .load(Ordering::Acquire)
+                {
                     core::hint::spin_loop();
                 }
             }
@@ -155,7 +188,9 @@ impl WorkQueue {
                 .next()
                 .map(|queue_element| (queue_element.work, queue_element.debt));
             #[cfg(feature = "spin_queue")]
-            self.tickets.start.fetch_add(1, Ordering::Release);
+            self.tickets[engine_type as usize]
+                .start
+                .fetch_add(1, Ordering::Release);
             if let Some(result_tupple) = result {
                 return result_tupple;
             }
@@ -178,6 +213,7 @@ impl fmt::Debug for WorkQueue {
 pub struct EngineQueue {
     work_queue: WorkQueue,
     engine_flags: u32,
+    engine_type: EngineType,
 }
 
 impl EngineQueue {
@@ -186,6 +222,7 @@ impl EngineQueue {
         EngineQueue {
             work_queue,
             engine_flags: get_engine_flag(engine_type),
+            engine_type,
         }
     }
 
@@ -197,10 +234,12 @@ impl EngineQueue {
 
 impl EngineWorkQueue for EngineQueue {
     fn get_engine_args(&self) -> (WorkToDo, machine_interface::promise::Debt) {
-        self.work_queue.get_work(self.engine_flags)
+        self.work_queue
+            .get_work(self.engine_flags, self.engine_type)
     }
 
     fn try_get_engine_args(&self) -> Option<(WorkToDo, machine_interface::promise::Debt)> {
-        self.work_queue.try_get_work(self.engine_flags)
+        self.work_queue
+            .try_get_work(self.engine_flags, self.engine_type)
     }
 }

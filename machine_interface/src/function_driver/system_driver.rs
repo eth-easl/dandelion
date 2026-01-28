@@ -1,7 +1,7 @@
-use crate::function_driver::SystemFunction;
-
 #[cfg(feature = "reqwest_io")]
 pub mod reqwest;
+
+use crate::{function_driver::functions::SystemFunction, machine_config::EngineType};
 
 /// HTTP function currently expects one set with requests formated by HTTP standard (in text).
 /// This means one line with the reqest method, a space, request url, another space and the protocol version
@@ -39,6 +39,18 @@ pub fn get_system_function_output_sets(function: SystemFunction) -> Vec<String> 
     .map(|name| name.to_string())
     .to_vec();
 }
+
+#[cfg(any(feature = "reqwest_io"))]
+const SYS_FUNC_DEFAULT_CONTEXT_SIZE: usize = 0x200_0000;
+
+pub const SYSTEM_FUNCTIONS: &[(EngineType, SystemFunction, usize)] = &[
+    #[cfg(feature = "reqwest_io")]
+    (
+        EngineType::Reqwest,
+        SystemFunction::HTTP,
+        SYS_FUNC_DEFAULT_CONTEXT_SIZE,
+    ),
+];
 
 #[cfg(test)]
 mod system_driver_tests;

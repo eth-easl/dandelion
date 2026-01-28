@@ -2,72 +2,18 @@ use crate::{
     composition::CompositionSet,
     machine_config::EngineType,
     memory_domain::{Context, MemoryDomain},
-    DataRequirementList,
 };
 extern crate alloc;
 use alloc::sync::Arc;
 use dandelion_commons::{records::Recorder, DandelionResult};
 
 pub mod compute_driver;
+pub mod functions;
 mod load_utils;
 pub mod system_driver;
 #[cfg(test)]
 mod test_queue;
 mod thread_utils;
-
-#[derive(Clone)]
-#[allow(dead_code)]
-pub struct ElfConfig {
-    // TODO change to positions
-    system_data_offset: usize,
-    #[cfg(feature = "cheri")]
-    return_offset: (usize, usize),
-    entry_point: usize,
-    #[cfg(feature = "mmu")]
-    protection_flags: Arc<Vec<(u32, crate::Position)>>,
-}
-
-#[derive(Clone, Copy)]
-pub enum SystemFunction {
-    HTTP,
-    MEMCACHED,
-}
-
-impl core::fmt::Display for SystemFunction {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> core::fmt::Result {
-        return match self {
-            SystemFunction::HTTP => write!(f, "HTTP"),
-            SystemFunction::MEMCACHED => write!(f, "MEMCACHED"),
-        };
-    }
-}
-
-#[derive(Clone)]
-pub enum FunctionConfig {
-    ElfConfig(ElfConfig),
-    SysConfig(SystemFunction),
-}
-
-pub struct Function {
-    pub requirements: DataRequirementList,
-    pub context: Arc<Context>,
-    pub config: FunctionConfig,
-}
-
-impl Function {
-    pub fn load(
-        &self,
-        domain: &Box<dyn MemoryDomain>,
-        ctx_size: usize,
-    ) -> DandelionResult<Context> {
-        return match &self.config {
-            FunctionConfig::ElfConfig(_) => {
-                load_utils::load_static(domain, self.context.clone(), &self.requirements, ctx_size)
-            }
-            FunctionConfig::SysConfig(_) => domain.acquire_context(ctx_size),
-        };
-    }
-}
 
 #[derive(Debug, Clone, Copy)]
 pub enum ComputeResource {
@@ -87,25 +33,17 @@ pub struct Metadata {
 
 pub enum WorkToDo {
     FunctionArguments {
-        function: Arc<Function>,
-        domain: Arc<Box<dyn MemoryDomain>>,
-        context_size: usize,
+        function_alternatives: Vec<Arc<functions::FunctionAlternative>>,
         input_sets: Vec<Option<CompositionSet>>,
         metadata: Arc<Metadata>,
+        caching: bool,
         recorder: Recorder,
     },
-    ParsingArguments {
-        engine_type: EngineType,
-        path: String,
-        static_domain: Arc<Box<dyn MemoryDomain>>,
-        recorder: Recorder,
-    },
-    Shutdown(),
+    Shutdown(EngineType),
 }
 
 pub enum WorkDone {
     Context(Context),
-    Function(Function),
     Resources(Vec<ComputeResource>),
 }
 
@@ -114,12 +52,6 @@ impl WorkDone {
         return match self {
             WorkDone::Context(context) => context,
             _ => panic!("WorkDone is not context when context was expected"),
-        };
-    }
-    pub fn get_function(self) -> Function {
-        return match self {
-            WorkDone::Function(function) => function,
-            _ => panic!("WorkDone is not function when function was expected"),
         };
     }
 }
@@ -164,5 +96,5 @@ pub trait Driver: Send + Sync {
         &self,
         function_path: String,
         static_domain: &Box<dyn MemoryDomain>,
-    ) -> DandelionResult<Function>;
+    ) -> DandelionResult<functions::Function>;
 }

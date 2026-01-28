@@ -1,4 +1,4 @@
-use crate::{function_registry::FunctionRegistry, queue::WorkQueue};
+use crate::function_registry::FunctionRegistry;
 use dandelion_commons::{CompositionError, DandelionError, FunctionId};
 use dparser::Module;
 use itertools::Itertools;
@@ -58,7 +58,6 @@ fn create_test_function_registry(functions: &[&str]) -> FunctionRegistry {
                 Arc::new(f.to_string()),
                 dummy_engine_type,
                 dummy_domain.clone(),
-                WorkQueue::init(100),
                 0,
                 dummy_path.clone().into_os_string().into_string().unwrap(),
                 metadata,

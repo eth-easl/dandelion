@@ -23,8 +23,8 @@ use machine_interface::{
     composition::{
         get_sharding, Composition, CompositionSet, InputSetDescriptor, JoinStrategy, ShardingMode,
     },
-    function_driver::{Function, Metadata, WorkToDo},
-    machine_config::{get_available_domains, DomainType, EngineType},
+    function_driver::{functions::FunctionAlternative, Metadata, WorkToDo},
+    machine_config::{get_available_domains, DomainType, EngineType, IntoEnumIterator},
     memory_domain::{Context, MemoryDomain, MemoryResource},
 };
 use std::{collections::BTreeMap, sync::Arc};
@@ -59,7 +59,7 @@ impl Dispatcher {
         let work_queue = WorkQueue::init(MAX_QUEUE);
 
         // create an engine queue wrapper of the work queue for each engine and use up all engine resource available
-        for &engine_type in EngineType::VARIANTS {
+        for engine_type in EngineType::iter() {
             let engine_queue = Box::new(EngineQueue::init(work_queue.clone(), engine_type));
             let driver = engine_type.get_driver();
             while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(engine_type) {
@@ -91,7 +91,6 @@ impl Dispatcher {
             function_id,
             engine_type,
             self.domains[domain_type as usize].clone(),
-            self.work_queue.clone(),
             ctx_size,
             path,
             metadata,
@@ -447,41 +446,28 @@ impl Dispatcher {
                     // - not yet clear how this works with the function preparation steps
                     // -> right now we pick the first alternative and insert it into the queue with
                     //    only that engine
-                    let chosen_alternative = func_info
+                    let alternatives = func_info
                         .alternatives
                         .read()
-                        .expect("Function registry lock is poisoned!")[0]
+                        .expect("Function registry lock is poisoned!")
                         .clone();
-                    let engine_type = chosen_alternative.engine;
-                    let context_size = chosen_alternative.context_size;
-                    let domain = self.domains[engine_type.get_domain_type() as usize].clone();
-                    let function = chosen_alternative
-                        .load_function(
-                            engine_type,
-                            self.work_queue.clone(),
-                            domain,
-                            caching,
-                            recorder.get_sub_recorder(),
-                        )
-                        .await?;
 
                     let metadata = func_info.metadata;
                     // run on engine
                     recorder.record(RecordPoint::GetEngineQueue);
-                    trace!("running function {} on {:?} type engine with input sets {:?} and output sets {:?}",
-                            function_id,
-                            engine_type,
-                            metadata.input_sets.iter().map(|(name, _)| name).collect_vec(),
-                            metadata.output_sets);
+                    trace!(
+                        "Running function {} with input sets {:?} and output sets {:?} and alternatives: {:?}",
+                        function_id,
+                        metadata
+                            .input_sets
+                            .iter()
+                            .map(|(name, _)| name)
+                            .collect_vec(),
+                        metadata.output_sets,
+                        alternatives
+                    );
                     let context = self
-                        .run_on_engine(
-                            engine_type,
-                            function,
-                            inputs,
-                            metadata.clone(),
-                            context_size,
-                            recorder,
-                        )
+                        .run_on_engine(alternatives, inputs, metadata.clone(), caching, recorder)
                         .await?;
                     let context_arc = Arc::new(context);
                     let composition_sets = context_arc
@@ -516,31 +502,23 @@ impl Dispatcher {
 
     async fn run_on_engine(
         &self,
-        engine_type: EngineType,
-        function: Arc<Function>,
+        function_alternatives: Vec<Arc<FunctionAlternative>>,
         input_sets: Vec<Option<CompositionSet>>,
         metadata: Arc<Metadata>,
-        context_size: usize,
+        caching: bool,
         mut recorder: Recorder,
     ) -> DandelionResult<Context> {
         // preparation is done, get engine to receive engine
-        let domain_id = engine_type.get_domain_type();
-        let domain = self.domains[domain_id as usize].clone();
         let subrecoder = recorder.get_sub_recorder();
         let args = WorkToDo::FunctionArguments {
-            function,
-            domain,
-            context_size,
+            function_alternatives,
             input_sets,
             metadata,
+            caching,
             recorder: subrecoder,
         };
         recorder.record(RecordPoint::ExecutionQueue);
-        let result = self
-            .work_queue
-            .do_work(args, vec![engine_type])
-            .await?
-            .get_context();
+        let result = self.work_queue.do_work(args).await?.get_context();
         recorder.record(RecordPoint::FutureReturn);
 
         #[cfg(feature = "log_function_stdio")]

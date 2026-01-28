@@ -1,5 +1,9 @@
 use crate::{
-    function_driver::{compute_driver::cheri::CheriDriver, Driver, Function, FunctionConfig},
+    function_driver::{
+        compute_driver::cheri::CheriDriver,
+        functions::{Function, FunctionConfig},
+        Driver,
+    },
     memory_domain::{malloc::MallocMemoryDomain, MemoryDomain},
     Position,
 };
@@ -20,28 +24,29 @@ fn test_loader_basic() {
     } = driver
         .parse_function(elf_path, &malloc_domain)
         .expect("Parsing should work");
+    println!("requirements: {:?}", requirements);
     // check requirement list to be list of programm header info for after load
     // meaning addresses and sizes in virtual address space
     let expected_requirements = vec![
         Position {
-            offset: 0x00000,
-            size: 0x1c8,
+            offset: 0x10000,
+            size: 0x210,
         },
         Position {
-            offset: 0x101c8,
-            size: 0xbb4,
+            offset: 0x20210,
+            size: 0xac4,
         },
         Position {
-            offset: 0x20d80,
+            offset: 0x30cd8,
             size: 0x18,
         },
         Position {
-            offset: 0x30da0,
-            size: 0x70,
+            offset: 0x40cf0,
+            size: 0x190,
         },
     ];
     // actual sizes in file
-    let expected_sizes = vec![0x1c8, 0xbb4, 0x18, 0x0];
+    let expected_sizes = vec![0x210, 0xac4, 0x18, 0x48];
     assert_eq!(
         expected_requirements.len(),
         requirements.static_requirements.len(),
@@ -90,17 +95,17 @@ fn test_loader_basic() {
         _ => panic!("Non elf FunctionConfig from cheri loader"),
     };
     assert_eq!(
-        (0x30db8),
+        (0x40cf0),
         function_config.system_data_offset,
         "System data offset missmatch"
     );
     assert_eq!(
-        (0x30e00, 0x10),
+        (0x40e70, 0x10),
         function_config.return_offset,
         "Return offset missmatch"
     );
     assert_eq!(
-        0x101c8, function_config.entry_point,
+        0x20210, function_config.entry_point,
         "Entry point missmatch"
     );
 }

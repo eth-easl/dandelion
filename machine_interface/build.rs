@@ -2,7 +2,8 @@ fn main() {
     // check if cheri is enabled and build library if so
     #[cfg(feature = "cheri")]
     {
-        let morello_sdk = std::env::var("MORELLO_SDK").unwrap();
+        let morello_sdk =
+            std::env::var("MORELLO_SDK").expect("Expect env variable MORELLO_SDK to be set");
         let mut toolchainfile = std::env::var("CARGO_MANIFEST_DIR").unwrap();
         toolchainfile.push_str("/c_machine_libraries/morello-toolchain.txt");
         let mut new_toolchainfile = std::env::var("OUT_DIR").unwrap();

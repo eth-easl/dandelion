@@ -1,26 +1,23 @@
 use crate::{
     composition::CompositionSet,
-    function_driver::Metadata,
+    function_driver::{
+        functions::{Function, FunctionConfig},
+        system_driver::SystemFunction,
+        ComputeResource, Driver, EngineWorkQueue, Metadata, WorkDone, WorkToDo,
+    },
+    machine_config::EngineType,
     memory_domain::{
         system_domain::{system_context_write_from_bytes, SystemContext},
-        ContextType,
+        Context, ContextTrait, ContextType,
     },
-};
-use crate::{
-    function_driver::{
-        ComputeResource, Driver, EngineWorkQueue, Function, FunctionConfig, SystemFunction,
-        WorkDone, WorkToDo,
-    },
-    memory_domain::{Context, ContextTrait},
     promise::Debt,
     DataItem, DataSet, Position,
 };
-use bytes::Buf;
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use core_affinity::set_for_current;
 use dandelion_commons::{
     records::{RecordPoint, Recorder},
-    DandelionError, DandelionResult,
+    DandelionError, DandelionResult, FunctionRegistryError,
 };
 use futures::{FutureExt, StreamExt};
 use http::{version::Version as HttpVersion, HeaderName, HeaderValue, Method as HttpMethod};
@@ -682,17 +679,33 @@ async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
         };
         match args {
             WorkToDo::FunctionArguments {
-                function,
-                domain: _,
-                context_size,
+                function_alternatives,
                 mut input_sets,
                 metadata,
+                caching,
                 mut recorder,
             } => {
+                debug_assert!(caching, "System functions should always be caching");
+
+                let alternative = match function_alternatives
+                    .into_iter()
+                    .find(|alt| alt.engine == EngineType::Reqwest)
+                {
+                    Some(alt) => alt,
+                    None => {
+                        drop(recorder);
+                        debt.fulfill(Err(DandelionError::FunctionRegistry(
+                            FunctionRegistryError::UnknownFunctionAlternative,
+                        )));
+                        continue;
+                    }
+                };
                 recorder.record(RecordPoint::EngineStart);
 
+                let function = alternative.load_function(true, &mut recorder).unwrap();
+
                 log::debug!("Reqwest engine running function");
-                let function = match function.config {
+                let system_function = match function.config {
                     FunctionConfig::SysConfig(sys_func) => sys_func,
                     _ => {
                         drop(recorder);
@@ -707,10 +720,10 @@ async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
                     .and_then(|static_set| Some(static_set.clone()))
                     .or_else(|| input_sets[0].take());
                 if let Some(request_set) = input_option {
-                    match function {
+                    match system_function {
                         SystemFunction::HTTP => {
                             tokio::spawn(run_http_request(
-                                context_size,
+                                alternative.context_size,
                                 request_set,
                                 http_client.clone(),
                                 metadata,
@@ -720,7 +733,7 @@ async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
                         }
                         SystemFunction::MEMCACHED => {
                             tokio::spawn(run_memcached_request(
-                                context_size,
+                                alternative.context_size,
                                 request_set,
                                 metadata,
                                 debt,
@@ -741,25 +754,7 @@ async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
                 }
                 continue;
             }
-            WorkToDo::ParsingArguments {
-                engine_type,
-                path,
-                static_domain,
-                mut recorder,
-            } => {
-                recorder.record(RecordPoint::ParsingStart);
-                let function_result = engine_type
-                    .get_driver()
-                    .parse_function(path, &static_domain);
-                recorder.record(RecordPoint::ParsingEnd);
-                drop(recorder);
-                match function_result {
-                    Ok(function) => debt.fulfill(Ok(WorkDone::Function(function))),
-                    Err(err) => debt.fulfill(Err(err)),
-                }
-                continue;
-            }
-            WorkToDo::Shutdown() => {
+            WorkToDo::Shutdown(_) => {
                 let _ = worker_lock.write_owned().await;
                 return debt;
             }

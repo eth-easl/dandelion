@@ -1,9 +1,14 @@
 use crate::{
-    function_driver::{ComputeResource, EngineWorkQueue, FunctionConfig, WorkDone, WorkToDo},
+    function_driver::{
+        functions::FunctionConfig, ComputeResource, EngineWorkQueue, WorkDone, WorkToDo,
+    },
+    machine_config::EngineType,
     memory_domain::{self, Context},
 };
 use core::marker::Send;
-use dandelion_commons::{records::RecordPoint, DandelionResult};
+use dandelion_commons::{
+    records::RecordPoint, DandelionError, DandelionResult, FunctionRegistryError,
+};
 use std::thread::spawn;
 
 extern crate alloc;
@@ -16,6 +21,7 @@ pub trait EngineLoop {
         context: Context,
         output_sets: &Vec<String>,
     ) -> DandelionResult<Context>;
+    fn get_engine_type(&self) -> EngineType;
 }
 
 fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
@@ -30,23 +36,45 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
         let (args, debt) = queue.get_engine_args();
         match args {
             WorkToDo::FunctionArguments {
-                function,
-                domain,
-                context_size,
+                function_alternatives,
                 input_sets,
                 metadata,
+                caching,
                 mut recorder,
             } => {
-                recorder.record(RecordPoint::LoadStart);
-                let load_result = function.load(&domain, context_size);
-                let mut function_context = match load_result {
-                    Ok(context) => context,
+                let engine_type = engine_state.get_engine_type();
+                let alternative = match function_alternatives
+                    .into_iter()
+                    .find(|alt| alt.engine == engine_type)
+                {
+                    Some(alt) => alt,
+                    None => {
+                        drop(recorder);
+                        debt.fulfill(Err(DandelionError::FunctionRegistry(
+                            FunctionRegistryError::UnknownFunctionAlternative,
+                        )));
+                        continue;
+                    }
+                };
+                let function = match alternative.load_function(caching, &mut recorder) {
+                    Ok(func) => func,
                     Err(err) => {
                         drop(recorder);
                         debt.fulfill(Err(err));
                         continue;
                     }
                 };
+
+                recorder.record(RecordPoint::LoadStart);
+                let mut function_context =
+                    match function.load(&alternative.domain, alternative.context_size) {
+                        Ok(con) => con,
+                        Err(err) => {
+                            drop(recorder);
+                            debt.fulfill(Err(err));
+                            continue;
+                        }
+                    };
 
                 recorder.record(RecordPoint::TransferStart);
 
@@ -104,24 +132,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
                 let results = result.and_then(|context| Ok(WorkDone::Context(context)));
                 debt.fulfill(results);
             }
-            WorkToDo::ParsingArguments {
-                engine_type,
-                path,
-                static_domain,
-                mut recorder,
-            } => {
-                recorder.record(RecordPoint::ParsingStart);
-                let function_result = engine_type
-                    .get_driver()
-                    .parse_function(path, &static_domain);
-                recorder.record(RecordPoint::ParsingEnd);
-                drop(recorder);
-                match function_result {
-                    Ok(function) => debt.fulfill(Ok(WorkDone::Function(function))),
-                    Err(err) => debt.fulfill(Err(err)),
-                }
-            }
-            WorkToDo::Shutdown() => {
+            WorkToDo::Shutdown(_) => {
                 debt.fulfill(Ok(WorkDone::Resources(vec![ComputeResource::CPU(core_id)])));
                 return;
             }

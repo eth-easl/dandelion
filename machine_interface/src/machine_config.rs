@@ -1,14 +1,14 @@
-use std::{collections::BTreeMap, sync::Arc};
-
-use crate::function_driver::SystemFunction;
-#[allow(unused_imports)]
 use crate::{
     function_driver::Driver,
     memory_domain::{MemoryDomain, MemoryResource},
 };
+use std::{collections::BTreeMap, sync::Arc};
+pub use strum::IntoEnumIterator;
+pub use strum::{EnumCount, EnumIter};
 
 /// Enum for all engine types that allows use in lookup structures
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)] // ensure that always safe to cast to usize
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, EnumCount, EnumIter)]
 pub enum EngineType {
     #[cfg(feature = "reqwest_io")]
     Reqwest,
@@ -20,7 +20,6 @@ pub enum EngineType {
     Kvm,
 }
 
-#[repr(usize)]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub enum DomainType {
     System,
@@ -33,17 +32,6 @@ pub enum DomainType {
 }
 
 impl EngineType {
-    pub const VARIANTS: &[EngineType] = &[
-        #[cfg(feature = "reqwest_io")]
-        EngineType::Reqwest,
-        #[cfg(feature = "cheri")]
-        EngineType::Cheri,
-        #[cfg(feature = "mmu")]
-        EngineType::Process,
-        #[cfg(feature = "kvm")]
-        EngineType::Kvm,
-    ];
-
     pub fn get_domain_type(&self) -> DomainType {
         match self {
             #[cfg(feature = "reqwest_io")]
@@ -72,18 +60,6 @@ impl EngineType {
         }
     }
 }
-
-#[cfg(any(feature = "reqwest_io"))]
-const SYS_FUNC_DEFAULT_CONTEXT_SIZE: usize = 0x200_0000;
-
-pub const SYSTEM_FUNCTIONS: &[(EngineType, SystemFunction, usize)] = &[
-    #[cfg(feature = "reqwest_io")]
-    (
-        EngineType::Reqwest,
-        SystemFunction::HTTP,
-        SYS_FUNC_DEFAULT_CONTEXT_SIZE,
-    ),
-];
 
 pub fn get_available_domains(
     resources: BTreeMap<DomainType, MemoryResource>,

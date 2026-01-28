@@ -1,5 +1,9 @@
 use crate::{
-    function_driver::{compute_driver::mmu::MmuDriver, Driver, Function, FunctionConfig},
+    function_driver::{
+        compute_driver::mmu::MmuDriver,
+        functions::{Function, FunctionConfig},
+        Driver,
+    },
     memory_domain::{mmu::MmuMemoryDomain, MemoryDomain},
     Position,
 };
@@ -31,18 +35,18 @@ fn test_loader_basic() {
     let expected_requirements = vec![
         Position {
             offset: 0x10000,
-            size: 0x62c,
+            size: 0x654,
         },
         Position {
-            offset: 0x11630,
-            size: 0x1908,
+            offset: 0x11660,
+            size: 0x18e8,
         },
         Position {
-            offset: 0x13f38,
-            size: 0xc8,
+            offset: 0x13f48,
+            size: 0xb8,
         },
         Position {
-            offset: 0x14f38,
+            offset: 0x14f48,
             size: 0x180,
         },
     ];
@@ -50,26 +54,26 @@ fn test_loader_basic() {
     let expected_requirements = vec![
         Position {
             offset: 0x10000,
-            size: 0x1d1,
+            size: 0x1f8,
         },
         Position {
-            offset: 0x201d4,
-            size: 0x19bc,
+            offset: 0x201f8,
+            size: 0x19a8,
         },
         Position {
-            offset: 0x31b90,
-            size: 0x470,
+            offset: 0x31ba0,
+            size: 0x460,
         },
         Position {
-            offset: 0x41ba0,
-            size: 0x180,
+            offset: 0x41bb0,
+            size: 0x178,
         },
     ];
     // actual sizes in file
     #[cfg(target_arch = "x86_64")]
-    let expected_sizes = vec![0x62c, 0x1908, 0x0, 0x58];
+    let expected_sizes = vec![0x654, 0x18e8, 0x0, 0x48];
     #[cfg(target_arch = "aarch64")]
-    let expected_sizes = vec![0x1d1, 0x19bc, 0x10, 0x58];
+    let expected_sizes = vec![0x1f8, 0x19a8, 0x10, 0x48];
     assert_eq!(
         expected_requirements.len(),
         requirements.static_requirements.len(),
@@ -127,20 +131,14 @@ fn test_loader_basic() {
         0x41bb0, function_config.system_data_offset,
         "System data offset missmatch"
     );
-    #[cfg(feature = "cheri")]
-    assert_eq!(
-        (0x0, 0x0),
-        function_config.return_offset,
-        "Return offset missmatch"
-    );
     #[cfg(target_arch = "x86_64")]
     assert_eq!(
-        0x11630, function_config.entry_point,
+        0x11660, function_config.entry_point,
         "Entry point missmatch"
     );
     #[cfg(target_arch = "aarch64")]
     assert_eq!(
-        0x201d4, function_config.entry_point,
+        0x201f8, function_config.entry_point,
         "Entry point missmatch"
     );
 }

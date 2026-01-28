@@ -1,10 +1,7 @@
-use crate::queue::WorkQueue;
 use dandelion_commons::{
-    records::{RecordPoint, Recorder},
     CompositionError, DandelionError, DandelionResult, FunctionId, FunctionRegistryError,
 };
 use dparser::print_errors;
-use futures::{future, Future, FutureExt};
 use itertools::Itertools;
 use log::error;
 use machine_interface::{
@@ -12,59 +9,20 @@ use machine_interface::{
         Composition, FunctionDependencies, InputSetDescriptor, JoinStrategy, ShardingMode,
     },
     function_driver::{
-        system_driver::{get_system_function_input_sets, get_system_function_output_sets},
-        Function, FunctionConfig, Metadata, WorkToDo,
+        functions::{FunctionAlternative, FunctionConfig},
+        system_driver::{
+            get_system_function_input_sets, get_system_function_output_sets, SYSTEM_FUNCTIONS,
+        },
+        Metadata,
     },
-    machine_config::{EngineType, SYSTEM_FUNCTIONS},
+    machine_config::EngineType,
     memory_domain::MemoryDomain,
 };
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
     path::Path,
-    pin::Pin,
     sync::{Arc, RwLock},
 };
-
-/// Struct holding all information about an alternative engine to execute the function.
-#[derive(Debug)]
-pub struct FunctionAlternative {
-    /// The engine type of the alternative.
-    pub engine: EngineType,
-    /// The default context size of this alternative.
-    pub context_size: usize,
-    /// Path to the function binary.
-    pub path: String,
-    /// Function object once the binary is loaded in memory.
-    pub function:
-        future::Shared<Pin<Box<dyn Future<Output = DandelionResult<Arc<Function>>> + Send>>>,
-}
-
-impl FunctionAlternative {
-    /// Load the given function info of given engine type.
-    pub async fn load_function(
-        &self,
-        driver_type: EngineType,
-        work_queue: WorkQueue,
-        memory_domain: Arc<Box<dyn MemoryDomain>>,
-        caching: bool,
-        recorder: Recorder,
-    ) -> DandelionResult<Arc<Function>> {
-        // load the function
-        if caching {
-            self.function.clone().await
-        } else {
-            load_local(
-                memory_domain.clone(),
-                driver_type,
-                recorder,
-                work_queue,
-                vec![self.engine],
-                self.path.clone(),
-            )
-            .await
-        }
-    }
-}
 
 /// Struct holding all engine alternatives to run a function and the constant metadata. This struct
 /// can be cloned cheaply and given to the scheduler for function execution.
@@ -201,32 +159,6 @@ fn fmap_insert_composition(
     Ok(())
 }
 
-// creates a future that returns the loaded function
-async fn load_local(
-    static_domain: Arc<Box<dyn MemoryDomain>>,
-    driver_type: EngineType,
-    mut recorder: Recorder,
-    work_queue: WorkQueue,
-    engines: Vec<EngineType>,
-    path: String,
-) -> DandelionResult<Arc<Function>> {
-    recorder.record(RecordPoint::ParsingQueue);
-    let function = work_queue
-        .do_work(
-            WorkToDo::ParsingArguments {
-                engine_type: driver_type,
-                path,
-                static_domain,
-                recorder: recorder.get_sub_recorder(),
-            },
-            engines,
-        )
-        .await?
-        .get_function();
-    recorder.record(RecordPoint::ParsingDequeue);
-    return Ok(Arc::new(function));
-}
-
 /// The core function registry of dandelion.
 ///
 /// The registration maps a function identifier (string) to a single function or composition of
@@ -260,14 +192,13 @@ impl FunctionRegistry {
                 FunctionConfig::SysConfig(_) => (),
                 _ => panic!("parsing system function did not return system config"),
             };
-            let func_alt = FunctionAlternative {
-                engine: engine_type,
+            let func_alt = FunctionAlternative::new_loaded(
+                engine_type,
                 context_size,
-                path: String::new(),
-                function: (Box::pin(futures::future::ready(Ok(Arc::new(function_config))))
-                    as Pin<Box<dyn Future<Output = DandelionResult<_>> + Send>>)
-                    .shared(),
-            };
+                String::new(),
+                domains[engine_type.get_domain_type() as usize].clone(),
+                Arc::new(function_config),
+            );
 
             // get metadata
             let func_metadata = Metadata {
@@ -332,7 +263,6 @@ impl FunctionRegistry {
         function_id: FunctionId,
         engine_type: EngineType,
         static_domain: Arc<Box<dyn MemoryDomain>>,
-        work_queue: WorkQueue,
         context_size: usize,
         path: String,
         metadata: Metadata,
@@ -344,23 +274,19 @@ impl FunctionRegistry {
             ));
         }
 
-        // TODO: check if timestamp is still useful this way
-        let new_future = (Box::pin(load_local(
-            static_domain,
-            engine_type,
-            Recorder::new(function_id.clone(), std::time::Instant::now()),
-            work_queue,
-            vec![engine_type],
-            path.clone(),
-        )) as Pin<Box<dyn Future<Output = DandelionResult<_>> + Send>>)
-            .shared();
+        log::trace!(
+            "Inserting function with id: {} and path: {}",
+            function_id,
+            path
+        );
 
-        let func_alt = FunctionAlternative {
-            engine: engine_type,
+        let func_alt = FunctionAlternative::new_unloaded(
+            engine_type,
             context_size,
             path,
-            function: new_future,
-        };
+            static_domain.clone(),
+        );
+
         let mut lock_guard = self
             .function_map
             .write()

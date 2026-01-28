@@ -36,6 +36,8 @@ dparser = {path = "../dparser"}
 # FFI dependencies
 libc = "0.2"
 nix = "0.26"
+
+# general dependencies
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 core_affinity = { version = "0.8"}
@@ -43,6 +45,7 @@ futures = { version = "0.3.28" }
 tokio = { version = "1.38.2", features = ["full"] }
 log = "0.4.20"
 itertools = {version = "0.11", default-features = false, features = ["use_alloc"]}
+strum = { version = "0.27", features = ["derive"] }
 
 # KVM specific dependencies
 kvm-bindings = { version = "0.14", optional = true }
