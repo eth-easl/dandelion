@@ -12,7 +12,6 @@ pub mod proto {
 
 // serialization
 
-#[macro_export]
 macro_rules! serialize {
     ($proto_msg:ident) => {{
         let mut buf = Vec::new();
@@ -20,6 +19,22 @@ macro_rules! serialize {
         $proto_msg.encode(&mut buf).unwrap();
         prost::bytes::Bytes::from(buf)
     }};
+}
+
+pub fn serialize_action_status(action_status: proto::ActionStatus) -> Bytes {
+    serialize!(action_status)
+}
+
+pub fn serialize_node_info(node_info: proto::NodeInfo) -> Bytes {
+    serialize!(node_info)
+}
+
+pub fn serialize_invocation_request(invocation_request: proto::InvocationRequest) -> Bytes {
+    serialize!(invocation_request)
+}
+
+pub fn serialize_invocation_response(invocation_response: proto::InvocationResponse) -> Bytes {
+    serialize!(invocation_response)
 }
 
 // deserialization
@@ -51,7 +66,7 @@ pub fn deserialize_invocation_request(buf: Bytes) -> DandelionResult<proto::Invo
     }
 }
 
-pub fn deserialize_invocaion_response(buf: Bytes) -> DandelionResult<proto::InvocationResponse> {
+pub fn deserialize_invocation_response(buf: Bytes) -> DandelionResult<proto::InvocationResponse> {
     match proto::InvocationResponse::decode(buf) {
         Ok(resp) => Ok(resp),
         Err(err) => Err(DandelionError::Multinode(

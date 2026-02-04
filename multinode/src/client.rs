@@ -3,7 +3,7 @@ use log::warn;
 use machine_interface::{
     composition::CompositionSet, machine_config::EngineType, memory_domain::Context,
 };
-use prost::{bytes::Bytes, Message};
+use prost::bytes::Bytes;
 use tokio::time::{sleep, Duration};
 
 use crate::{
@@ -150,7 +150,7 @@ impl RemoteNode {
             port: self.local_port as u32,
             engines: proto_engines,
         };
-        let request = super::serialize!(node_info);
+        let request = super::serialize_node_info(node_info);
 
         // execute
         let response_body = self
@@ -181,7 +181,7 @@ impl RemoteNode {
             port: self.local_port as u32,
             engines: vec![],
         };
-        let request = super::serialize!(node_info);
+        let request = super::serialize_node_info(node_info);
 
         // execute
         let response_body = self
@@ -217,7 +217,7 @@ impl RemoteNode {
             function_id: (*function_id).clone(),
             data_sets: serialized_data,
         };
-        let request = super::serialize!(inv_req);
+        let request = super::serialize_invocation_request(inv_req);
 
         // execute
         let response_body = self
@@ -231,7 +231,17 @@ impl RemoteNode {
             .await?;
 
         // process response
-        let inv_resp = super::deserialize_invocaion_response(response_body.clone())?;
+        let inv_resp = match super::deserialize_invocation_response(response_body.clone()) {
+            Ok(resp) => resp,
+            Err(_) => {
+                // might also return a non-successful ActionStatus on internal errors
+                let action_status = super::deserialize_action_status(response_body.clone())?;
+                assert!(!action_status.success);
+                return Err(DandelionError::Multinode(MultinodeError::RequestFailed(
+                    action_status.message,
+                )));
+            }
+        };
         if !inv_resp.success {
             return Err(DandelionError::Multinode(MultinodeError::RequestFailed(
                 inv_resp.error_msg,

@@ -158,8 +158,12 @@ pub enum DispatcherError {
     DependencyError,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FrontendError {
+    /// The frontend request failed due to invalid request
+    InvalidRequest(String),
+    /// The frontend request failed due to an internal error
+    InternalError(String),
     /// Failed to get more frames from the connection
     FailledToGetFrames,
     /// Attemped to read bytes form stream to desiarialize but stream ran out
