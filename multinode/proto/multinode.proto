@@ -1,0 +1,51 @@
+syntax = "proto3";
+package multinode_proto;
+
+message ActionStatus {
+    bool success = 1;
+    string message = 2;
+}
+
+// Node Information
+
+enum EngineType {
+    ENGINE_REQWEST = 0;
+    ENGINE_CHERI = 1;
+    ENGINE_PROCESS = 2;
+    ENGINE_KVM = 3;
+}
+
+message Engine {
+    EngineType engine_type = 1;
+    uint32 engine_capacity = 2;
+}
+
+message NodeInfo {
+    string host = 1;
+    uint32 port = 2;
+    repeated Engine engines = 3;
+}
+
+// Task Invocation
+
+message DataItem {
+    string ident = 1;
+    uint32 key = 2;
+    bytes data = 3;
+}
+
+message DataSet {
+    string ident = 1;
+    repeated DataItem items = 2;
+}
+
+message InvocationRequest {
+    string function_id = 1;
+    repeated DataSet data_sets = 2;
+}
+
+message InvocationResponse {
+    bool success = 1;
+    string error_msg = 2;
+    repeated DataSet data_sets = 3;
+}

@@ -1,4 +1,4 @@
-use crate::memory_domain::Context;
+use crate::memory_domain::{Context, ContextTrait};
 use dandelion_commons::{DandelionError, DandelionResult, DispatcherError, FunctionId};
 use itertools::Itertools;
 use std::{collections::BTreeMap, sync::Arc};
@@ -90,6 +90,20 @@ impl CompositionSet {
 
     pub fn len(&self) -> usize {
         self.item_list.len()
+    }
+
+    pub fn get_set_idx(&self) -> usize {
+        self.set_index
+    }
+
+    pub fn get_item(&self, idx: usize) -> (String, u32, Vec<u8>) {
+        let item = &self.item_list[idx];
+        let context_item = &item.2.content[self.set_index].as_ref().unwrap().buffers[item.1];
+        let mut data_bytes = Vec::<u8>::with_capacity(context_item.data.size);
+        item.2
+            .read(context_item.data.offset, data_bytes.as_mut_slice())
+            .expect("Failed to read item!");
+        (context_item.ident.clone(), context_item.key, data_bytes)
     }
 
     pub fn shard(self, mode: ShardingMode) -> Vec<CompositionSet> {

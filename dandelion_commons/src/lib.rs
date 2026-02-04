@@ -21,6 +21,8 @@ pub enum DandelionError {
     RequestError(FrontendError),
     /// Failures in user code or compositions
     UserError(UserError),
+    /// Error in inter communication to other nodes
+    Multinode(MultinodeError),
     /// trying to use a feature that is not yet implemented
     NotImplemented,
     // errors in configurations
@@ -231,4 +233,20 @@ pub enum UserError {
     /// Configured context is too small for execution,
     /// can happen in KVM zero copy, since each item takes up 2 as much virtual space
     SmallContext,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MultinodeError {
+    /// Failed to deserialize buffer
+    DeserializationError(String),
+    /// Failed to reach the remote node
+    ConnectionFailed(String),
+    /// The request was not sucessful
+    RequestFailed(String),
+    /// Configuration mismatch between the remote and local node
+    ConfigError(String),
+    /// Data received does not match the protocol, received unexpected message type
+    ProtocolError(String),
+    /// ???
+    BufferGone,
 }
