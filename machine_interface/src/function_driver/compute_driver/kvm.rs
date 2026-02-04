@@ -1,8 +1,9 @@
 use crate::{
     function_driver::{
+        functions::{ElfConfig, Function, FunctionConfig},
         load_utils::load_u8_from_file,
         thread_utils::{start_thread, EngineLoop},
-        ComputeResource, Driver, ElfConfig, EngineWorkQueue, Function, FunctionConfig,
+        ComputeResource, Driver, EngineWorkQueue,
     },
     interface::{read_output_structs, setup_input_structs, write_heap_end},
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
@@ -79,6 +80,10 @@ impl EngineLoop for KvmLoop {
         let state = ResetState::new(&vm, &vcpu);
 
         return Ok(Box::new(KvmLoop { vm, vcpu, state }));
+    }
+
+    fn get_engine_type(&self) -> crate::machine_config::EngineType {
+        crate::machine_config::EngineType::Kvm
     }
 
     fn run(
@@ -204,6 +209,7 @@ impl EngineLoop for KvmLoop {
         }
 
         // start running the function
+        // TODO: on unexpected break, mark function as failure
         loop {
             let reason = self.vcpu.run().unwrap();
             match reason {
@@ -216,7 +222,10 @@ impl EngineLoop for KvmLoop {
                         kvm_context.storage,
                     );
                 }
-                VcpuExit::Hlt => break,
+                // the expected way to exit a function with the new interface
+                VcpuExit::IoOut(32, _) => {
+                    break;
+                }
                 VcpuExit::SystemEvent(_type, _data) => {
                     debug!("System Event, type: {}", _type);
                     break;

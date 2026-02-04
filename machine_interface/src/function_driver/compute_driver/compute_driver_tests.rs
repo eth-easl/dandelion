@@ -3,8 +3,10 @@ mod compute_driver_tests {
     use crate::{
         composition::CompositionSet,
         function_driver::{
-            test_queue::TestQueue, ComputeResource, Driver, Function, Metadata, WorkToDo,
+            functions::FunctionAlternative, test_queue::TestQueue, ComputeResource, Driver,
+            Metadata, WorkToDo,
         },
+        machine_config::EngineType,
         memory_domain::{
             read_only::ReadOnlyContext, test_resource::get_resource, ContextTrait, MemoryDomain,
             MemoryResource,
@@ -22,7 +24,8 @@ mod compute_driver_tests {
         Arc::new(0.to_string())
     }
 
-    fn loader_empty<Dom: MemoryDomain>(dom_init: MemoryResource, driver: Box<dyn Driver>) {
+    fn loader_empty<Dom: MemoryDomain>(dom_init: MemoryResource, engine_type: EngineType) {
+        let driver = engine_type.get_driver();
         // load elf file
         let elf_path = String::new();
         let domain = Dom::init(get_resource(dom_init)).expect("Should be able to get domain");
@@ -32,10 +35,11 @@ mod compute_driver_tests {
     }
 
     fn driver(
-        driver: Box<dyn Driver>,
+        engine_type: EngineType,
         init: Vec<ComputeResource>,
         wrong_init: Vec<ComputeResource>,
     ) {
+        let driver = engine_type.get_driver();
         for wronge_resource in wrong_init {
             let queue_box = Box::new(TestQueue::new());
             let wrong_resource_engine = driver.start_engine(wronge_resource, queue_box);
@@ -52,34 +56,28 @@ mod compute_driver_tests {
         }
     }
 
-    fn prepare_engine_and_function<Dom: MemoryDomain>(
-        filename: &str,
+    fn prepare_engine_and_domain<Dom: MemoryDomain>(
         dom_init: MemoryResource,
-        driver: &Box<dyn Driver>,
+        driver: &dyn Driver,
         drv_init: Vec<ComputeResource>,
-    ) -> (Arc<Function>, Arc<Box<dyn MemoryDomain>>, Box<TestQueue>) {
+    ) -> (Arc<Box<dyn MemoryDomain>>, Box<TestQueue>) {
         let queue = Box::new(TestQueue::new());
         let domain =
             Arc::new(Dom::init(get_resource(dom_init)).expect("Should have initialized domain"));
-        let function = Arc::new(
-            driver
-                .parse_function(filename.to_string(), &domain)
-                .expect("Should be able to parse function"),
-        );
         driver
             .start_engine(drv_init[0], queue.clone())
             .expect("Should be able to start engine");
-        return (function, domain, queue);
+        return (domain, queue);
     }
 
     fn engine_minimal<Dom: MemoryDomain>(
         filename: &str,
         dom_init: MemoryResource,
-        driver: Box<dyn Driver>,
+        engine_type: EngineType,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (function, domain, queue) =
-            prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
+        let driver = engine_type.get_driver();
+        let (domain, queue) = prepare_engine_and_domain::<Dom>(dom_init, driver, drv_init);
 
         let metadata = Arc::new(Metadata {
             input_sets: vec![],
@@ -87,12 +85,59 @@ mod compute_driver_tests {
         });
 
         let recorder = Recorder::new(Arc::new(0.to_string()), Instant::now());
-        let promise = queue.enqueu(WorkToDo::FunctionArguments {
-            function,
+        let function_alternatives = vec![Arc::new(FunctionAlternative::new_unloaded(
+            engine_type,
+            DEFAULT_CONTEXT_SIZE,
+            filename.to_string(),
             domain,
-            context_size: DEFAULT_CONTEXT_SIZE,
+        ))];
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            function_alternatives,
             input_sets: vec![],
             metadata,
+            caching: false,
+            recorder,
+        });
+        let _ = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(promise)
+            .expect("Engine should run ok with basic function");
+    }
+
+    fn engine_caching<Dom: MemoryDomain>(
+        filename: &str,
+        dom_init: MemoryResource,
+        engine_type: EngineType,
+        drv_init: Vec<ComputeResource>,
+    ) {
+        let driver = engine_type.get_driver();
+        let (domain, queue) = prepare_engine_and_domain::<Dom>(dom_init, driver, drv_init);
+
+        let function = Arc::new(
+            driver
+                .parse_function(filename.to_string(), &domain)
+                .expect("Should be able to parse function"),
+        );
+
+        let metadata = Arc::new(Metadata {
+            input_sets: vec![],
+            output_sets: vec![],
+        });
+
+        let recorder = Recorder::new(Arc::new(0.to_string()), Instant::now());
+        let function_alternatives = vec![Arc::new(FunctionAlternative::new_loaded(
+            engine_type,
+            DEFAULT_CONTEXT_SIZE,
+            String::new(), // do not use actual path, to ensure it fails if cached function is not used
+            domain,
+            function,
+        ))];
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            function_alternatives,
+            input_sets: vec![],
+            metadata,
+            caching: true,
             recorder,
         });
         let _ = tokio::runtime::Builder::new_current_thread()
@@ -105,11 +150,11 @@ mod compute_driver_tests {
     fn engine_matmul_single<Dom: MemoryDomain>(
         filename: &str,
         dom_init: MemoryResource,
-        driver: Box<dyn Driver>,
+        engine_type: EngineType,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (function, domain, queue) =
-            prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
+        let driver = engine_type.get_driver();
+        let (domain, queue) = prepare_engine_and_domain::<Dom>(dom_init, driver, drv_init);
         // add inputs
         let in_data = vec![1i64, 2i64];
         let mut input_context = ReadOnlyContext::new(in_data.into_boxed_slice()).unwrap();
@@ -133,12 +178,17 @@ mod compute_driver_tests {
         });
 
         let recorder = Recorder::new(zero_id(), Instant::now());
-        let promise = queue.enqueu(WorkToDo::FunctionArguments {
-            function,
+        let function_alternatives = vec![Arc::new(FunctionAlternative::new_unloaded(
+            engine_type,
+            DEFAULT_CONTEXT_SIZE,
+            filename.to_string(),
             domain,
-            context_size: DEFAULT_CONTEXT_SIZE,
+        ))];
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            function_alternatives,
             input_sets,
             metadata,
+            caching: false,
             recorder,
         });
         let result_context = tokio::runtime::Builder::new_current_thread()
@@ -184,18 +234,15 @@ mod compute_driver_tests {
     fn engine_matmul_size_sweep<Dom: MemoryDomain>(
         filename: &str,
         dom_init: MemoryResource,
-        driver: Box<dyn Driver>,
+        engine_type: EngineType,
         drv_init: Vec<ComputeResource>,
     ) {
         const LOWER_SIZE_BOUND: usize = 2;
         const UPPER_SIZE_BOUND: usize = 16;
+        let driver = engine_type.get_driver();
         for mat_size in LOWER_SIZE_BOUND..UPPER_SIZE_BOUND {
-            let (function, domain, queue) = prepare_engine_and_function::<Dom>(
-                filename,
-                dom_init.clone(),
-                &driver,
-                drv_init.clone(),
-            );
+            let (domain, queue) =
+                prepare_engine_and_domain::<Dom>(dom_init.clone(), driver, drv_init.clone());
             // add inputs
             let mut mat_vec = Vec::<i64>::new();
             mat_vec.push(mat_size as i64);
@@ -224,12 +271,17 @@ mod compute_driver_tests {
             });
 
             let recorder = Recorder::new(zero_id(), Instant::now());
-            let promise = queue.enqueu(WorkToDo::FunctionArguments {
-                function,
+            let function_alternatives = vec![Arc::new(FunctionAlternative::new_unloaded(
+                engine_type,
+                DEFAULT_CONTEXT_SIZE,
+                filename.to_string(),
                 domain,
-                context_size: DEFAULT_CONTEXT_SIZE,
+            ))];
+            let promise = queue.enqueu(WorkToDo::FunctionArguments {
+                function_alternatives,
                 input_sets,
                 metadata,
+                caching: false,
                 recorder,
             });
             let result_context = tokio::runtime::Builder::new_current_thread()
@@ -265,18 +317,18 @@ mod compute_driver_tests {
     fn engine_stdio<Dom: MemoryDomain>(
         filename: &str,
         dom_init: MemoryResource,
-        driver: Box<dyn Driver>,
+        engine_type: EngineType,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (function, domain, queue) =
-            prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
+        let (domain, queue) =
+            prepare_engine_and_domain::<Dom>(dom_init, engine_type.get_driver(), drv_init);
 
         let mut in_data = String::new();
         let mut content = Vec::new();
         let stdin_content = "Test line \n line 2\n";
         let stdin_offset = in_data.len();
         in_data.push_str(stdin_content);
-        let argv_content = "stdio\0flag0\0flag1\0";
+        let argv_content = "stdio flag0 flag1";
         let argv_offset = in_data.len();
         in_data.push_str(argv_content);
         let env_content = "HOME=test_home\0";
@@ -326,12 +378,17 @@ mod compute_driver_tests {
         });
 
         let recorder = Recorder::new(zero_id(), Instant::now());
-        let promise = queue.enqueu(WorkToDo::FunctionArguments {
-            function,
+        let function_alternatives = vec![Arc::new(FunctionAlternative::new_unloaded(
+            engine_type,
+            DEFAULT_CONTEXT_SIZE,
+            filename.to_string(),
             domain,
-            context_size: DEFAULT_CONTEXT_SIZE,
+        ))];
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            function_alternatives,
             input_sets,
             metadata,
+            caching: false,
             recorder,
         });
         let result_context = tokio::runtime::Builder::new_current_thread()
@@ -395,11 +452,11 @@ mod compute_driver_tests {
     fn engine_fileio<Dom: MemoryDomain>(
         filename: &str,
         dom_init: MemoryResource,
-        driver: Box<dyn Driver>,
+        engine_type: EngineType,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (function, domain, queue) =
-            prepare_engine_and_function::<Dom>(filename, dom_init, &driver, drv_init);
+        let (domain, queue) =
+            prepare_engine_and_domain::<Dom>(dom_init, engine_type.get_driver(), drv_init);
         let mut in_data = String::new();
         let mut content = Vec::new();
         let in_file_content = "Test file 0\n line 2\n";
@@ -487,12 +544,17 @@ mod compute_driver_tests {
         });
 
         let recorder = Recorder::new(zero_id(), Instant::now());
-        let promise = queue.enqueu(WorkToDo::FunctionArguments {
-            function,
+        let function_alternatives = vec![Arc::new(FunctionAlternative::new_unloaded(
+            engine_type,
+            DEFAULT_CONTEXT_SIZE,
+            filename.to_string(),
             domain,
-            context_size: DEFAULT_CONTEXT_SIZE,
+        ))];
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            function_alternatives,
             input_sets,
             metadata,
+            caching: false,
             recorder,
         });
         let result_context = tokio::runtime::Builder::new_current_thread()
@@ -540,18 +602,16 @@ mod compute_driver_tests {
     }
 
     macro_rules! driverTests {
-        ($name : ident; $domain : ty; $dom_init: expr; $driver : expr ; $drv_init : expr; $drv_init_wrong : expr) => {
+        ($name : ident; $domain : ty; $dom_init: expr; $engine_type : expr ; $drv_init : expr; $drv_init_wrong : expr) => {
             #[test_log::test]
             #[should_panic]
             fn test_loader_empty() {
-                let driver = Box::new($driver);
-                super::loader_empty::<$domain>($dom_init, driver);
+                super::loader_empty::<$domain>($dom_init, $engine_type);
             }
 
             #[test_log::test]
             fn test_driver() {
-                let driver = Box::new($driver);
-                super::driver(driver, $drv_init, $drv_init_wrong);
+                super::driver($engine_type, $drv_init, $drv_init_wrong);
             }
 
             #[test_log::test]
@@ -561,8 +621,17 @@ mod compute_driver_tests {
                     env!("CARGO_MANIFEST_DIR"),
                     stringify!($name)
                 );
-                let driver = Box::new($driver);
-                super::engine_minimal::<$domain>(&name, $dom_init, driver, $drv_init);
+                super::engine_minimal::<$domain>(&name, $dom_init, $engine_type, $drv_init);
+            }
+
+            #[test_log::test]
+            fn test_engine_caching() {
+                let name = format!(
+                    "{}/tests/data/test_{}_basic",
+                    env!("CARGO_MANIFEST_DIR"),
+                    stringify!($name)
+                );
+                super::engine_caching::<$domain>(&name, $dom_init, $engine_type, $drv_init);
             }
 
             #[test_log::test]
@@ -572,8 +641,7 @@ mod compute_driver_tests {
                     env!("CARGO_MANIFEST_DIR"),
                     stringify!($name)
                 );
-                let driver = Box::new($driver);
-                super::engine_matmul_single::<$domain>(&name, $dom_init, driver, $drv_init);
+                super::engine_matmul_single::<$domain>(&name, $dom_init, $engine_type, $drv_init);
             }
 
             #[test_log::test]
@@ -583,8 +651,12 @@ mod compute_driver_tests {
                     env!("CARGO_MANIFEST_DIR"),
                     stringify!($name)
                 );
-                let driver = Box::new($driver);
-                super::engine_matmul_size_sweep::<$domain>(&name, $dom_init, driver, $drv_init);
+                super::engine_matmul_size_sweep::<$domain>(
+                    &name,
+                    $dom_init,
+                    $engine_type,
+                    $drv_init,
+                );
             }
 
             #[test_log::test]
@@ -594,8 +666,7 @@ mod compute_driver_tests {
                     env!("CARGO_MANIFEST_DIR"),
                     stringify!($name)
                 );
-                let driver = Box::new($driver);
-                super::engine_stdio::<$domain>(&name, $dom_init, driver, $drv_init);
+                super::engine_stdio::<$domain>(&name, $dom_init, $engine_type, $drv_init);
             }
 
             #[test_log::test]
@@ -605,17 +676,19 @@ mod compute_driver_tests {
                     env!("CARGO_MANIFEST_DIR"),
                     stringify!($name)
                 );
-                let driver = Box::new($driver);
-                super::engine_fileio::<$domain>(&name, $dom_init, driver, $drv_init)
+                super::engine_fileio::<$domain>(&name, $dom_init, $engine_type, $drv_init)
             }
         };
     }
 
     #[cfg(feature = "cheri")]
     mod cheri {
-        use crate::function_driver::{compute_driver::cheri::CheriDriver, ComputeResource};
-        use crate::memory_domain::{cheri::CheriMemoryDomain, MemoryResource};
-        driverTests!(elf_cheri; CheriMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; CheriDriver {};
+        use crate::{
+            function_driver::ComputeResource,
+            machine_config::EngineType,
+            memory_domain::{cheri::CheriMemoryDomain, MemoryResource},
+        };
+        driverTests!(elf_cheri; CheriMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; EngineType::Cheri;
         core_affinity::get_core_ids()
            .and_then(
                 |core_vec|
@@ -631,10 +704,13 @@ mod compute_driver_tests {
 
     #[cfg(feature = "mmu")]
     mod mmu {
-        use crate::function_driver::{compute_driver::mmu::MmuDriver, ComputeResource};
-        use crate::memory_domain::{mmu::MmuMemoryDomain, MemoryResource};
+        use crate::{
+            function_driver::ComputeResource,
+            machine_config::EngineType,
+            memory_domain::{mmu::MmuMemoryDomain, MemoryResource},
+        };
         #[cfg(target_arch = "x86_64")]
-        driverTests!(elf_mmu_x86_64; MmuMemoryDomain; MemoryResource::Shared { id: 0, size: (1<<30) }; MmuDriver {};
+        driverTests!(elf_mmu_x86_64; MmuMemoryDomain; MemoryResource::Shared { id: 0, size: (1<<30) }; EngineType::Process;
         core_affinity::get_core_ids()
            .and_then(
                 |core_vec|
@@ -647,7 +723,7 @@ mod compute_driver_tests {
             ComputeResource::GPU(0)
         ]);
         #[cfg(target_arch = "aarch64")]
-        driverTests!(elf_mmu_aarch64; MmuMemoryDomain; MemoryResource::Shared { id: 0, size: (1<<30) }; MmuDriver {};
+        driverTests!(elf_mmu_aarch64; MmuMemoryDomain; MemoryResource::Shared { id: 0, size: (1<<30) }; EngineType::Process;
         core_affinity::get_core_ids()
             .and_then(
                 |core_vec|
@@ -663,10 +739,13 @@ mod compute_driver_tests {
 
     #[cfg(feature = "kvm")]
     mod kvm {
-        use crate::function_driver::{compute_driver::kvm::KvmDriver, ComputeResource};
-        use crate::memory_domain::{kvm::KvmMemoryDomain, MemoryResource};
+        use crate::{
+            function_driver::ComputeResource,
+            machine_config::EngineType,
+            memory_domain::{kvm::KvmMemoryDomain, MemoryResource},
+        };
         #[cfg(target_arch = "x86_64")]
-        driverTests!(elf_kvm_x86_64; KvmMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; KvmDriver {};
+        driverTests!(elf_kvm_x86_64; KvmMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; EngineType::Kvm;
         core_affinity::get_core_ids()
            .and_then(
                 |core_vec|
@@ -679,7 +758,7 @@ mod compute_driver_tests {
             ComputeResource::GPU(0)
         ]);
         #[cfg(target_arch = "aarch64")]
-        driverTests!(elf_kvm_aarch64; KvmMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; KvmDriver {};
+        driverTests!(elf_kvm_aarch64; KvmMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; EngineType::Kvm;
         core_affinity::get_core_ids()
             .and_then(
                 |core_vec|
