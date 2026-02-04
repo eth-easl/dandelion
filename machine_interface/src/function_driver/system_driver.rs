@@ -41,7 +41,7 @@ pub fn get_system_function_output_sets(function: SystemFunction) -> Vec<String> 
 }
 
 #[cfg(any(feature = "reqwest_io"))]
-const SYS_FUNC_DEFAULT_CONTEXT_SIZE: usize = 0x200_0000;
+const SYS_FUNC_DEFAULT_CONTEXT_SIZE: usize = 0x1_0000_0000;
 
 pub const SYSTEM_FUNCTIONS: &[(EngineType, SystemFunction, usize)] = &[
     #[cfg(feature = "reqwest_io")]

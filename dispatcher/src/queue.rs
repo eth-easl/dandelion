@@ -61,7 +61,6 @@ pub struct WorkQueue {
 impl WorkQueue {
     /// Creates a new WorkQueue of given size.
     pub fn init(capacity: usize) -> Self {
-        #[cfg(feature = "spin_queue")]
         WorkQueue {
             inner: Arc::new(Mutex::new(LinkedList::new())),
             promise_buffer: PromiseBuffer::init(capacity),
@@ -183,6 +182,8 @@ impl WorkQueue {
                 }
             }
             let mut queue_guard = self.inner.lock().unwrap();
+            // TODO: use the loading flag of the alternative to check if the function is being loaded and skip it.
+            // Also if we take one that needs to be loaded, mark it as loading in progress.
             let result = queue_guard
                 .extract_if(|queue_element| queue_element.flags & engine_flags == engine_flags)
                 .next()
