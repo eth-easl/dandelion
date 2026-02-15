@@ -271,6 +271,8 @@ async fn prepare_input_and_invoke_nghttp2_codec(
     data_to_read: &Vec<u8>,
     stream_id_to_send_response_list: &Vec<i32>,
     num_of_headers_to_send_list: &Vec<usize>,
+    trailer_offset_to_send_list: &Vec<i32>,
+    num_of_trailers_to_send_list: &Vec<usize>,
     size_of_headers_to_send_list: &Vec<usize>,
     size_of_body_to_send_list: &Vec<usize>,
     headers_to_send_list: &Vec<Vec<u8>>,
@@ -372,21 +374,29 @@ async fn prepare_input_and_invoke_nghttp2_codec(
     // Transfer the input to [u8]
     let mut input_stream_id_to_send_response_list = Vec::with_capacity(num_req_resp_to_send);
     let mut input_num_of_headers_to_send_list = Vec::with_capacity(num_req_resp_to_send);
+    let mut input_trailer_offset_to_send_list = Vec::with_capacity(num_req_resp_to_send);
+    let mut input_num_of_trailers_to_send_list = Vec::with_capacity(num_req_resp_to_send);
     let mut input_size_of_headers_to_send_list = Vec::with_capacity(num_req_resp_to_send);
     let mut input_size_of_body_to_send_list = Vec::with_capacity(num_req_resp_to_send);
     for input_set_idx in 1..(1 + num_req_resp_to_send) {
         let stream_id_to_send_response = stream_id_to_send_response_list[input_set_idx - 1];
         let num_of_headers_to_send = num_of_headers_to_send_list[input_set_idx - 1];
+        let trailer_offset_to_send = trailer_offset_to_send_list[input_set_idx - 1];
+        let num_of_trailers_to_send = num_of_trailers_to_send_list[input_set_idx - 1];
         let size_of_headers_to_send = size_of_headers_to_send_list[input_set_idx - 1];
         let size_of_body_to_send = size_of_body_to_send_list[input_set_idx - 1];
 
         let input_stream_id_to_send_response = stream_id_to_send_response.to_ne_bytes();
         let input_num_of_headers_to_send = num_of_headers_to_send.to_ne_bytes();
+        let input_trailer_offset_to_send = trailer_offset_to_send.to_ne_bytes();
+        let input_num_of_trailers_to_send = num_of_trailers_to_send.to_ne_bytes();
         let input_size_of_headers_to_send = size_of_headers_to_send.to_ne_bytes();
         let input_size_of_body_to_send = size_of_body_to_send.to_ne_bytes();
 
         input_stream_id_to_send_response_list.push(input_stream_id_to_send_response);
         input_num_of_headers_to_send_list.push(input_num_of_headers_to_send);
+        input_trailer_offset_to_send_list.push(input_trailer_offset_to_send);
+        input_num_of_trailers_to_send_list.push(input_num_of_trailers_to_send);
         input_size_of_headers_to_send_list.push(input_size_of_headers_to_send);
         input_size_of_body_to_send_list.push(input_size_of_body_to_send);
 
@@ -411,6 +421,8 @@ async fn prepare_input_and_invoke_nghttp2_codec(
         let input_stream_id_to_send_response =
             &input_stream_id_to_send_response_list[input_set_idx - 1];
         let input_num_of_headers_to_send = &input_num_of_headers_to_send_list[input_set_idx - 1];
+        let input_trailer_offset_to_send = &input_trailer_offset_to_send_list[input_set_idx - 1];
+        let input_num_of_trailers_to_send = &input_num_of_trailers_to_send_list[input_set_idx - 1];
         let input_size_of_headers_to_send = &input_size_of_headers_to_send_list[input_set_idx - 1];
         let input_size_of_body_to_send = &input_size_of_body_to_send_list[input_set_idx - 1];
         let headers_to_send = &headers_to_send_list[input_set_idx - 1];
@@ -452,6 +464,18 @@ async fn prepare_input_and_invoke_nghttp2_codec(
             data: body_to_send,
         });
 
+        input_setn_items.push(InputItem {
+            identifier: String::from(""),
+            key: 12,
+            data: input_trailer_offset_to_send,
+        });
+
+        input_setn_items.push(InputItem {
+            identifier: String::from(""),
+            key: 13,
+            data: input_num_of_trailers_to_send,
+        });
+
         input_sets.push(InputSet {
             identifier: String::from(""),
             items: input_setn_items,
@@ -484,6 +508,8 @@ fn parse_nghttp2_codec_output(
     // set 1 ~ n
     Vec<i32>,     // stream_id_list
     Vec<usize>,   // num_of_headers_list
+    Vec<i32>,     // trailer_offset_list
+    Vec<usize>,   // num_of_trailers_list
     Vec<Vec<u8>>, // headers_received_list
     Vec<Vec<u8>>, // body_received_list
     Vec<String>,  // header_authority_value_string_list
@@ -557,6 +583,8 @@ fn parse_nghttp2_codec_output(
     // *** Each set is one resp or req (received)
     let mut stream_id_list: Vec<i32> = Vec::new();
     let mut num_of_headers_list: Vec<usize> = Vec::new();
+    let mut trailer_offset_list: Vec<i32> = Vec::new();
+    let mut num_of_trailers_list: Vec<usize> = Vec::new();
     let mut headers_received_list: Vec<Vec<u8>> = Vec::new();
     let mut body_received_list: Vec<Vec<u8>> = Vec::new();
     let mut header_authority_value_string_list: Vec<String> = Vec::new();
@@ -566,6 +594,8 @@ fn parse_nghttp2_codec_output(
 
         let mut stream_id: i32 = -1;
         let mut num_of_headers: usize = 0;
+        let mut trailer_offset: i32 = -1;
+        let mut num_of_trailers: usize = 0;
         let mut headers_received: Vec<u8> = Vec::new();
         let mut body_received: Vec<u8> = Vec::new();
         let mut header_authority_value: Vec<u8> = Vec::new();
@@ -573,7 +603,7 @@ fn parse_nghttp2_codec_output(
         let mut header_x_anakonda_forward_value: Vec<u8> = Vec::new();
         let header_x_anakonda_forward_value_string;
 
-        assert_eq!(8, response.sets[set_idx].items.len());
+        assert_eq!(10, response.sets[set_idx].items.len());
 
         debug!("output set {}", set_idx);
         for output_item in &(response.sets[set_idx].items) {
@@ -628,12 +658,28 @@ fn parse_nghttp2_codec_output(
                         header_x_anakonda_forward_value.len()
                     );
                 }
+                8 => {
+                    let arr: [u8; size_of::<i32>()] =
+                        output_item_data.try_into().expect("wrong length");
+                    trailer_offset = i32::from_ne_bytes(arr);
+
+                    debug!(" codec OUTPUT trailer_offset: {}", trailer_offset);                    
+                }
+                9 => {
+                    let arr: [u8; size_of::<usize>()] =
+                        output_item_data.try_into().expect("wrong length");
+                    num_of_trailers = usize::from_ne_bytes(arr);
+
+                    debug!(" codec OUTPUT num_of_trailers: {}", num_of_trailers);
+                }
                 _ => {}
             }
         }
 
         stream_id_list.push(stream_id);
         num_of_headers_list.push(num_of_headers);
+        trailer_offset_list.push(trailer_offset);
+        num_of_trailers_list.push(num_of_trailers);
         headers_received_list.push(headers_received);
         body_received_list.push(body_received);
 
@@ -663,6 +709,8 @@ fn parse_nghttp2_codec_output(
         // set 1 ~ n
         stream_id_list,
         num_of_headers_list,
+        trailer_offset_list,
+        num_of_trailers_list,
         headers_received_list,
         body_received_list,
         header_authority_value_string_list,
@@ -694,6 +742,8 @@ struct RouterToStreamWorkerResp {
 struct FunctionConnToStreamWorkerResp {
     payload: String,
     num_of_headers_to_send: usize,
+    trailer_offset: i32,
+    num_of_trailers_to_send: usize,
     headers: Vec<u8>,
     body_to_send: Vec<u8>,
 }
@@ -702,6 +752,8 @@ struct StreamWorkerToFuncConnReq {
     payload: String,
     stream_id: i32, // The stream_id of that stream worker
     num_of_headers_to_send: usize,
+    trailer_offset: i32,
+    num_of_trailers_to_send: usize,
     headers: Vec<u8>,
     body: Vec<u8>,
     function_connection_worker_to_stream_worker_tx: oneshot::Sender<FunctionConnToStreamWorkerResp>,
@@ -711,6 +763,8 @@ struct StreamWorkerToDpConnReq {
     payload: String,
     stream_id_to_send_response: i32,
     num_of_headers_to_send: usize,
+    trailer_offset: i32,
+    num_of_trailers_to_send: usize,
     headers: Vec<u8>,
     body_to_send: Vec<u8>,
 }
@@ -721,6 +775,8 @@ impl Default for StreamWorkerToDpConnReq {
             payload: String::new(),
             stream_id_to_send_response: -1,
             num_of_headers_to_send: 0,
+            trailer_offset: -1,
+            num_of_trailers_to_send: 0,
             headers: Vec::new(),
             body_to_send: Vec::new(),
         }
@@ -802,6 +858,8 @@ async fn func_connection_worker3(
     let mut num_of_req_or_resp_to_receive: usize;
     let mut stream_id_to_send_response_list: Vec<i32>;
     let mut num_of_headers_to_send_list: Vec<usize>;
+    let mut trailer_offset_to_send_list: Vec<i32>;
+    let mut num_of_trailers_to_send_list: Vec<usize>;
     let mut size_of_headers_to_send_list: Vec<usize>;
     let mut headers_to_send_list: Vec<Vec<u8>>;
     let mut body_to_send_list: Vec<Vec<u8>>;
@@ -829,6 +887,8 @@ async fn func_connection_worker3(
         num_req_resp_to_send = 0;
         stream_id_to_send_response_list = Vec::new();
         num_of_headers_to_send_list = Vec::new();
+        trailer_offset_to_send_list = Vec::new();
+        num_of_trailers_to_send_list = Vec::new();
         headers_to_send_list = Vec::new();
         body_to_send_list = Vec::new();
         size_of_headers_to_send_list = Vec::new();
@@ -901,6 +961,8 @@ async fn func_connection_worker3(
                     num_req_resp_to_send = num_req_resp_to_send + 1;
                     stream_id_to_send_response_list.push(-1); // meaningless for the client
                     num_of_headers_to_send_list.push(req.num_of_headers_to_send);
+                    trailer_offset_to_send_list.push(req.trailer_offset);
+                    num_of_trailers_to_send_list.push(req.num_of_trailers_to_send);
                     size_of_headers_to_send_list.push(req.headers.len());
                     headers_to_send_list.push(req.headers);
                     size_of_body_to_send_list.push(req.body.len());
@@ -913,6 +975,8 @@ async fn func_connection_worker3(
                         num_req_resp_to_send = num_req_resp_to_send + 1;
                         stream_id_to_send_response_list.push(-1); // meaningless for the client
                         num_of_headers_to_send_list.push(req.num_of_headers_to_send);
+                        trailer_offset_to_send_list.push(req.trailer_offset);
+                        num_of_trailers_to_send_list.push(req.num_of_trailers_to_send);
                         size_of_headers_to_send_list.push(req.headers.len());
                         headers_to_send_list.push(req.headers);
                         size_of_body_to_send_list.push(req.body.len());
@@ -939,6 +1003,8 @@ async fn func_connection_worker3(
             &data_to_read,
             &stream_id_to_send_response_list,
             &num_of_headers_to_send_list,
+            &trailer_offset_to_send_list,
+            &num_of_trailers_to_send_list,
             &size_of_headers_to_send_list,
             &size_of_body_to_send_list,
             &headers_to_send_list,
@@ -953,6 +1019,8 @@ async fn func_connection_worker3(
         // for output set 1 ~ n
         let stream_id_list: Vec<i32>;
         let num_of_headers_list: Vec<usize>;
+        let trailer_offset_list: Vec<i32>;
+        let num_of_trailers_list: Vec<usize>;
         let mut headers_received_list: Vec<Vec<u8>>;
         let mut body_received_list: Vec<Vec<u8>>;
         let mut header_authority_value_string_list: Vec<String>;
@@ -968,6 +1036,8 @@ async fn func_connection_worker3(
             // set 1 ~ n
             stream_id_list,
             num_of_headers_list,
+            trailer_offset_list,
+            num_of_trailers_list,
             headers_received_list,
             body_received_list,
             header_authority_value_string_list,
@@ -1022,6 +1092,8 @@ async fn func_connection_worker3(
         for i in 0..num_of_req_or_res_received {
             let stream_id: i32 = stream_id_list[i];
             let num_of_headers: usize = num_of_headers_list[i];
+            let trailer_offset: i32 = trailer_offset_list[i];
+            let num_of_trailers: usize = num_of_trailers_list[i];
             let headers_received: Vec<u8> = headers_received_list.remove(0);
             let body_received: Vec<u8> = body_received_list.remove(0);
             let channel_to_stream_worker = stream_worker_map.remove(&stream_id);
@@ -1035,6 +1107,8 @@ async fn func_connection_worker3(
                     c.send(FunctionConnToStreamWorkerResp {
                         payload: format!("get resp from user func"),
                         num_of_headers_to_send: num_of_headers,
+                        trailer_offset: trailer_offset,
+                        num_of_trailers_to_send: num_of_trailers,
                         headers: headers_received,
                         body_to_send: body_received,
                     });
@@ -1160,6 +1234,8 @@ async fn router(
 async fn stream_worker(
     num_of_headers_received: usize,
     headers_received: Vec<u8>,
+    trailer_offset: i32,
+    num_of_trailers_received: usize,
     header_authority_value_string: String,
     header_x_anakonda_forward_value_string: String,
     body_received: Vec<u8>,
@@ -1224,6 +1300,8 @@ async fn stream_worker(
                     payload: format!("request from stream worker: {}", stream_id),
                     stream_id: stream_id,
                     num_of_headers_to_send: num_of_headers_received,
+                    trailer_offset: trailer_offset,
+                    num_of_trailers_to_send: num_of_trailers_received,
                     headers: headers_received,
                     body: body_received,
                     function_connection_worker_to_stream_worker_tx:
@@ -1259,6 +1337,8 @@ async fn stream_worker(
                             ),
                             stream_id_to_send_response: stream_id,
                             num_of_headers_to_send: resp.num_of_headers_to_send,
+                            trailer_offset: resp.trailer_offset,
+                            num_of_trailers_to_send: resp.num_of_trailers_to_send,
                             headers: resp.headers,
                             body_to_send: resp.body_to_send,
                         })
@@ -1337,6 +1417,8 @@ async fn dp_connection_worker3(
     let mut num_of_req_or_resp_to_receive: usize;
     let mut stream_id_to_send_response_list: Vec<i32>;
     let mut num_of_headers_to_send_list: Vec<usize>;
+    let mut trailer_offset_to_send_list: Vec<i32>;
+    let mut num_of_trailers_to_send_list: Vec<usize>;
     let mut size_of_headers_to_send_list: Vec<usize>;
     let mut headers_to_send_list: Vec<Vec<u8>>;
     let mut body_to_send_list: Vec<Vec<u8>>;
@@ -1373,6 +1455,8 @@ async fn dp_connection_worker3(
         num_req_resp_to_send = 0;
         stream_id_to_send_response_list = Vec::new();
         num_of_headers_to_send_list = Vec::new();
+        trailer_offset_to_send_list = Vec::new();
+        num_of_trailers_to_send_list = Vec::new();
         headers_to_send_list = Vec::new();
         body_to_send_list = Vec::new();
         size_of_headers_to_send_list = Vec::new();
@@ -1460,6 +1544,8 @@ async fn dp_connection_worker3(
                     num_req_resp_to_send = num_req_resp_to_send + 1;
                     stream_id_to_send_response_list.push(req.stream_id_to_send_response);
                     num_of_headers_to_send_list.push(req.num_of_headers_to_send);
+                    trailer_offset_to_send_list.push(req.trailer_offset);
+                    num_of_trailers_to_send_list.push(req.num_of_trailers_to_send);
                     size_of_headers_to_send_list.push(req.headers.len());
                     headers_to_send_list.push(req.headers);
                     size_of_body_to_send_list.push(req.body_to_send.len());
@@ -1474,6 +1560,8 @@ async fn dp_connection_worker3(
                         num_req_resp_to_send = num_req_resp_to_send + 1;
                         stream_id_to_send_response_list.push(req.stream_id_to_send_response);
                         num_of_headers_to_send_list.push(req.num_of_headers_to_send);
+                        trailer_offset_to_send_list.push(req.trailer_offset);
+                        num_of_trailers_to_send_list.push(req.num_of_trailers_to_send);
                         size_of_headers_to_send_list.push(req.headers.len());
                         headers_to_send_list.push(req.headers);
                         size_of_body_to_send_list.push(req.body_to_send.len());
@@ -1501,6 +1589,8 @@ async fn dp_connection_worker3(
             &data_to_read,
             &stream_id_to_send_response_list,
             &num_of_headers_to_send_list,
+            &trailer_offset_to_send_list,
+            &num_of_trailers_to_send_list,
             &size_of_headers_to_send_list,
             &size_of_body_to_send_list,
             &headers_to_send_list,
@@ -1515,6 +1605,8 @@ async fn dp_connection_worker3(
         // for output set 1 ~ n
         let stream_id_list: Vec<i32>;
         let num_of_headers_list: Vec<usize>;
+        let trailer_offset_list: Vec<i32>;
+        let num_of_trailers_list: Vec<usize>;
         let mut headers_received_list: Vec<Vec<u8>>;
         let mut body_received_list: Vec<Vec<u8>>;
         let mut header_authority_value_string_list: Vec<String>;
@@ -1530,6 +1622,8 @@ async fn dp_connection_worker3(
             // set 1 ~ n
             stream_id_list,
             num_of_headers_list,
+            trailer_offset_list,
+            num_of_trailers_list,
             headers_received_list,
             body_received_list,
             header_authority_value_string_list,
@@ -1557,6 +1651,8 @@ async fn dp_connection_worker3(
         for i in 0..num_of_req_or_res_received {
             let stream_id: i32 = stream_id_list[i];
             let num_of_headers: usize = num_of_headers_list[i];
+            let trailer_offset: i32 = trailer_offset_list[i];
+            let num_of_trailers: usize = num_of_trailers_list[i];
             let headers_received: Vec<u8> = headers_received_list.remove(0);
             let body_received: Vec<u8> = body_received_list.remove(0);
             let header_authority_value_string: String =
@@ -1568,6 +1664,8 @@ async fn dp_connection_worker3(
             tokio::spawn(stream_worker(
                 num_of_headers,
                 headers_received,
+                trailer_offset,
+                num_of_trailers,
                 header_authority_value_string,
                 header_x_anakonda_forward_value_string,
                 body_received,
