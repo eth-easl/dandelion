@@ -20,7 +20,7 @@ use machine_interface::{
 };
 use serde::Deserialize;
 use serde::Serialize;
-use std::io::Error;
+use std::io::{Error, Cursor, Read};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::thread;
@@ -251,6 +251,65 @@ async fn invoke_dandelion_function(
         .expect("Should get result from function");
 
     (function_output, recorder)
+}
+
+// ********* Invoke authentication policy func; Parse its output *************
+// async fn prepare_input_and_invoke_authentication_policy(
+//     authentication_policy_func_name: String,
+//     request_sender: mpsc::Sender<DispatcherCommand>,
+//     header_pairs: &Vec<(String, String)>,
+// ) -> u8 {
+//     let mut input_set0_items = Vec::new();
+
+//     for (header_name, header_value) in header_pairs {
+        
+//     }
+// }
+
+
+
+// ********* Invoke authorization policy func; Parse its output *************
+async fn prepare_input_and_invoke_authorization_policy(
+    authorization_policy_func_name: String,
+    request_sender: mpsc::Sender<DispatcherCommand>,
+    header_pairs: &Vec<(String, String)>,
+) -> u8{
+    let mut input_set0_items = Vec::new();
+    
+    for (header_name, header_value) in header_pairs {
+        let header_value_bytes = header_value.as_bytes();
+
+        if header_name == ":method" {
+            input_set0_items.push(InputItem {
+                identifier: String::from(""),
+                key: 0,
+                data: &header_value_bytes,
+            });
+            // debug!("Authorization policy input :method: {}", header_value);
+        }
+    }
+
+    let input_sets: Vec<InputSet> = vec![InputSet {
+        identifier: String::from(""),
+        items: input_set0_items,
+    }];
+
+    let (function_output, recorder) = invoke_dandelion_function(
+        String::from(authorization_policy_func_name),
+        input_sets,
+        request_sender.clone(),
+    )
+    .await;
+
+    let response_dandelion_body = dandelion_server::DandelionBody::new(function_output, &recorder);
+
+    let body: Bytes = response_dandelion_body.into_bytes();
+    let response: DandelionDeserializeResponse = bson::from_slice(&body).unwrap();
+
+    let authorization_verdict = response.sets[0].items[0].data[0];
+
+    // debug!("Authorization policy function output: {:?}", function_output);
+    authorization_verdict
 }
 
 // ********* Invoke nghttp2 code func; Parse its output *************
@@ -697,6 +756,12 @@ fn parse_nghttp2_codec_output(
             header_x_anakonda_forward_value_string
         );
         header_x_anakonda_forward_value_string_list.push(header_x_anakonda_forward_value_string);
+    }
+
+    debug!("headers_received_list: {:?}", headers_received_list);
+
+    for header in &headers_received_list {
+        debug!("headers_received: {}", String::from_utf8(header.to_vec()).unwrap());
     }
 
     (
@@ -1226,6 +1291,59 @@ async fn router(
     debug!("[Router] all channels to the router are closed; Router stops working");
 }
 
+fn read_u64_le(cur: &mut Cursor<&[u8]>) -> Result<u64, String> {
+    let mut b = [0u8; 8];
+    cur.read_exact(&mut b)
+        .map_err(|_| "EOF while reading u64".to_string())?;
+    Ok(u64::from_le_bytes(b))
+}
+
+/// Read exactly `len` bytes, then optionally consume a single trailing NUL (0x00) if present.
+/// Also strips a trailing NUL from the returned payload (in case `len` includes it).
+fn read_len_prefixed_field(cur: &mut Cursor<&[u8]>, len: usize, what: &'static str) -> Result<Vec<u8>, String> {
+    // Read payload
+    let mut v = vec![0u8; len];
+    cur.read_exact(&mut v)
+        .map_err(|_| format!("EOF while reading {what} payload ({len} bytes)"))?;
+
+    // Variant A: payload ends with NUL and len included it -> strip
+    if v.last() == Some(&0) {
+        v.pop();
+        return Ok(v);
+    }
+
+    // Variant B: payload is followed by an external NUL separator -> consume if present
+    let pos = cur.position() as usize;
+    let buf = cur.get_ref();
+    if pos < buf.len() && buf[pos] == 0 {
+        cur.set_position((pos + 1) as u64);
+    }
+
+    Ok(v)
+}
+
+/// Robust parsing for:
+/// [u64 klen][k bytes][optional 0] [u64 vlen][v bytes][optional 0] ...
+pub fn parse_headers(buf: &[u8]) -> Result<Vec<(String, String)>, String> {
+    let mut cur = Cursor::new(buf);
+    let mut out = Vec::new();
+
+    while (cur.position() as usize) < buf.len() {
+        let klen = read_u64_le(&mut cur)? as usize;
+        let kbytes = read_len_prefixed_field(&mut cur, klen, "key")?;
+
+        let vlen = read_u64_le(&mut cur)? as usize;
+        let vbytes = read_len_prefixed_field(&mut cur, vlen, "value")?;
+
+        let key = String::from_utf8(kbytes).map_err(|e| format!("key not utf8: {e}"))?;
+        let val = String::from_utf8(vbytes).map_err(|e| format!("value not utf8: {e}"))?;
+
+        out.push((key, val));
+    }
+
+    Ok(out)
+}
+
 // It handles one HTTP2 req-resp pair
 // It is launched by the dp_conn worker
 // It receives the HTTP2 Request from the dp_conn_worker, query the router and forwards it to the func_conn_worker.
@@ -1244,11 +1362,54 @@ async fn stream_worker(
     stream_id: i32,
     tcp_conn_local_addr: SocketAddr, // just for log
     tcp_conn_peer_addr: SocketAddr,  // just for log
+    request_sender: mpsc::Sender<DispatcherCommand>,
+    authorization_policy_func_name: String,
 ) {
     info!(
         "[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] A new stream worker",
         tcp_conn_local_addr, tcp_conn_peer_addr, stream_id
     );
+
+    let header_pairs: Vec<(String, String)>= match parse_headers(&headers_received) {
+        Ok(v) => {
+            debug!("headers parsed: {:?}", v);
+            v
+        },
+        Err(e) => {
+            error!("failed to parse headers: {}", e);
+            Vec::new() // or handle the error as needed
+        }
+    };
+
+    debug!("stream_worker headers raw: {:?}", headers_received);
+    debug!("stream_worker headers_received: {}", String::from_utf8(headers_received.clone()).unwrap());
+
+    //  First policy that we want to check: authorization
+    let authorization_verdict = prepare_input_and_invoke_authorization_policy(authorization_policy_func_name, request_sender.clone(), &header_pairs)
+    .await;
+
+    if authorization_verdict == 0 {
+        error!(
+            "[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] The authorization policy returns deny. Thus, the stream worker stops working",
+            tcp_conn_local_addr, tcp_conn_peer_addr, stream_id
+        );
+        let _ = stream_worker_to_dp_connection_worker_tx
+            .send(StreamWorkerToDpConnReq {
+                payload: format!(
+                    "[stream worker:{}] The authorization policy returns deny. Thus, the stream worker stops working",
+                    stream_id
+                ),
+                stream_id_to_send_response: stream_id,
+                num_of_headers_to_send: 0,
+                headers: Vec::new(),
+                body_to_send: Vec::new(),
+            })
+            .await;
+        return;
+    }
+
+    //  Second policy that we want to check: authentication via JWT
+
 
     // The stream worker would query the router to get the channel to the user_func_conn_worker
     // The channel used by the router to send resp back
@@ -1386,6 +1547,7 @@ async fn dp_connection_worker3(
     mut stream: TcpStream,
     request_sender: mpsc::Sender<DispatcherCommand>,
     stream_worker_to_router_tx: mpsc::Sender<StreamWorkerToRouterReq>,
+    authorization_policy_func_name: String,
 ) {
     let tcp_conn_local_addr = stream.local_addr().unwrap();
     let tcp_conn_peer_addr = stream.peer_addr().unwrap();
@@ -1674,6 +1836,9 @@ async fn dp_connection_worker3(
                 stream_id,
                 stream.local_addr().unwrap(),
                 stream.peer_addr().unwrap(),
+                request_sender.clone(),
+                authorization_policy_func_name.clone(),
+
             ));
         }
     }
@@ -1688,6 +1853,8 @@ async fn create_proxy_server2(
     nghttp2_codec_bin_local_path: String,
     request_sender: mpsc::Sender<DispatcherCommand>,
     port: u16,
+    authorization_policy_func_name: String,
+    authorization_policy_bin_local_path: String,
 ) {
     // ****** Before the loop actually starts, register some functions ******
 
@@ -1703,7 +1870,17 @@ async fn create_proxy_server2(
     let _ = register_function_local(
         nghttp2_codec_bin_local_path.clone(),
         nghttp2_codec_func_name.clone(),
-        engine_type,
+        engine_type.clone(),
+        request_sender.clone(),
+    )
+    .await
+    .unwrap();
+
+    // register the authorization policy function
+    let _ = register_function_local(
+        authorization_policy_bin_local_path.clone(),
+        authorization_policy_func_name.clone(),
+        engine_type.clone(),
         request_sender.clone(),
     )
     .await
@@ -1740,9 +1917,10 @@ async fn create_proxy_server2(
 
                 // for each new dp connection spawn a dp connection worker
                 let func_name = nghttp2_codec_func_name.clone();
+                let authorization_policy_func_name = authorization_policy_func_name.clone();
                 tokio::spawn(async move {
                     let service_dispatcher_ptr = loop_dispatcher.clone();
-                    dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone()).await;
+                    dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name).await;
                 });
             }
             _ = sigterm_stream.recv() => return,
@@ -1758,6 +1936,8 @@ pub fn start_proxy_server2(
     proxy_cores: Vec<u8>,
     request_sender: mpsc::Sender<DispatcherCommand>,
     port: u16,
+    authorization_policy_func_name: String,
+    authorization_policy_bin_local_path: String,
 ) {
     let runtime = if cfg!(feature = "unpin_proxy") {
         Runtime::new().unwrap() // The default runtime. Use all the cores it could use
@@ -1797,6 +1977,8 @@ pub fn start_proxy_server2(
                 nghttp2_codec_bin_local_path,
                 request_sender,
                 port,
+                authorization_policy_func_name,
+                authorization_policy_bin_local_path,
             )
             .await;
         });
