@@ -36,6 +36,7 @@ const DEFAULT_NGHTTP2_CODEC_FUNC_NAME: &str = "nghttp2";
 const DEFAULT_NGHTTP2_CODEC_BIN_LOCAL_PATH: &str = "./nghttp2_codec3";
 
 const DEFAULT_AUTHORIZATION_POLICY_NAME: &str = "authorization_policy";
+const DEFAULT_JWT_POLICY_NAME: &str = "jwt_policy";
 
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
@@ -79,6 +80,12 @@ pub struct DandelionConfig {
     pub authorization_policy_bin_local_path: String,
     #[arg(long, env, default_value_t = String::from(DEFAULT_AUTHORIZATION_POLICY_NAME))]
     pub authorization_policy_name: String,
+    #[arg(long, env)]
+    pub jwt_policy_bin_local_path: String,
+    #[arg(long, env, default_value_t = String::from(DEFAULT_JWT_POLICY_NAME))]
+    pub jwt_policy_name: String,
+    #[arg(long, env)]
+    pub jwt_policy_pem_file_local_path: String,
 }
 
 impl DandelionConfig {
