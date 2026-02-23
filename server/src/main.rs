@@ -701,6 +701,8 @@ fn main() -> () {
         dirigent_proxy_cores,
         dispatcher_sender.clone(),
         config.dirigent_proxy_port,
+        config.authorization_policy_name,
+        config.authorization_policy_bin_local_path,
     );
 
     if cfg!(feature = "use_service_loop") {
