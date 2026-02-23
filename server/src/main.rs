@@ -703,6 +703,9 @@ fn main() -> () {
         config.dirigent_proxy_port,
         config.authorization_policy_name,
         config.authorization_policy_bin_local_path,
+        config.jwt_policy_name,
+        config.jwt_policy_bin_local_path,
+        config.jwt_policy_pem_file_local_path,
     );
 
     if cfg!(feature = "use_service_loop") {

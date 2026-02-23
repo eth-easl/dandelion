@@ -9,6 +9,7 @@ use dandelion_server::{
 };
 use dispatcher::dispatcher::DispatcherInput;
 use hyper::Response;
+use k8s_openapi::api::authorization;
 use log::trace;
 use log::{debug, error, info, warn};
 use machine_interface::{
@@ -17,6 +18,7 @@ use machine_interface::{
     machine_config::EngineType,
     memory_domain::{bytes_context::BytesContext, read_only::ReadOnlyContext},
     DataItem, DataSet, Position,
+    memory_domain::Context,
 };
 use serde::Deserialize;
 use serde::Serialize;
@@ -254,17 +256,106 @@ async fn invoke_dandelion_function(
 }
 
 // ********* Invoke authentication policy func; Parse its output *************
-// async fn prepare_input_and_invoke_authentication_policy(
-//     authentication_policy_func_name: String,
-//     request_sender: mpsc::Sender<DispatcherCommand>,
-//     header_pairs: &Vec<(String, String)>,
-// ) -> u8 {
-//     let mut input_set0_items = Vec::new();
 
-//     for (header_name, header_value) in header_pairs {
-        
-//     }
-// }
+fn make_single_item_context(
+    set_index: usize,
+    set_ident: &str,
+    item_ident: &str,
+    key: u32,
+    data: Box<[u8]>,
+) -> Arc<machine_interface::memory_domain::Context> {
+    let data_len = data.len();
+    let mut ctx = ReadOnlyContext::new(data).expect("Failed to create ReadOnlyContext");
+    if ctx.content.len() <= set_index {
+        ctx.content.resize_with(set_index + 1, || None);
+    }
+    ctx.content[set_index] = Some(DataSet {
+        ident: set_ident.to_string(),
+        buffers: vec![DataItem {
+            ident: item_ident.to_string(),
+            data: Position {
+                offset: 0,
+                size: data_len,
+            },
+            key,
+        }],
+    });
+    Arc::new(ctx)
+}
+
+async fn invoke_dandelion_function_direct(
+    function_name: String,
+    input_sets: Vec<Option<CompositionSet>>,
+    request_sender: mpsc::Sender<DispatcherCommand>,
+) -> (Vec<Option<CompositionSet>>, Recorder) {
+    let inputs = input_sets
+        .into_iter()
+        .map(|set| match set {
+            Some(s) => DispatcherInput::Set(s),
+            None => DispatcherInput::None,
+        })
+        .collect::<Vec<_>>();
+
+    let is_cold: bool = false;
+    let start_time = Instant::now();
+    let (callback, output_recevier) = tokio::sync::oneshot::channel();
+    request_sender
+        .send(DispatcherCommand::FunctionRequest {
+            name: function_name,
+            inputs,
+            is_cold,
+            start_time: start_time.clone(),
+            callback,
+        })
+        .await
+        .unwrap();
+
+    let (function_output, recorder) = output_recevier
+        .await
+        .unwrap()
+        .expect("Should get result from function");
+
+    (function_output, recorder)
+}
+
+async fn prepare_input_and_invoke_jwt_policy(
+    jwt_policy_func_name: String,
+    jwt_pem_context: Arc<Context>,
+    request_sender: mpsc::Sender<DispatcherCommand>,
+    header_pairs: &Vec<(String, String)>,
+) -> u8 {
+    let mut contexts: Vec<Arc<Context>> = Vec::new();
+    contexts.push(jwt_pem_context);
+
+    for (header_name, header_value) in header_pairs {
+        if header_name == "authorization" {
+            let header_ctx = make_single_item_context(
+                0,
+                "",
+                "",
+                1,
+                header_value.clone().into_bytes().into_boxed_slice(),
+            );
+            contexts.push(header_ctx);
+        }
+    }
+
+    let set0 = CompositionSet::from((0, contexts));
+    let input_sets: Vec<Option<CompositionSet>> = vec![Some(set0)];
+
+    let (function_output, recorder) = invoke_dandelion_function_direct(
+        String::from(jwt_policy_func_name),
+        input_sets,
+        request_sender.clone(),
+    )
+    .await;
+
+    let response_dandelion_body = dandelion_server::DandelionBody::new(function_output, &recorder);
+    let body: Bytes = response_dandelion_body.into_bytes();
+    let response: DandelionDeserializeResponse = bson::from_slice(&body).unwrap();
+    response.sets[0].items[0].data[0]
+}
+
 
 
 
@@ -277,9 +368,8 @@ async fn prepare_input_and_invoke_authorization_policy(
     let mut input_set0_items = Vec::new();
     
     for (header_name, header_value) in header_pairs {
-        let header_value_bytes = header_value.as_bytes();
-
         if header_name == ":method" {
+            let header_value_bytes = header_value.as_bytes();
             input_set0_items.push(InputItem {
                 identifier: String::from(""),
                 key: 0,
@@ -1364,6 +1454,8 @@ async fn stream_worker(
     tcp_conn_peer_addr: SocketAddr,  // just for log
     request_sender: mpsc::Sender<DispatcherCommand>,
     authorization_policy_func_name: String,
+    jwt_policy_func_name: String,
+    jwt_pem_context: Arc<Context>,
 ) {
     info!(
         "[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] A new stream worker",
@@ -1381,8 +1473,7 @@ async fn stream_worker(
         }
     };
 
-    debug!("stream_worker headers raw: {:?}", headers_received);
-    debug!("stream_worker headers_received: {}", String::from_utf8(headers_received.clone()).unwrap());
+    debug!("header pairs: {:?}", header_pairs);
 
     //  First policy that we want to check: authorization
     let authorization_verdict = prepare_input_and_invoke_authorization_policy(authorization_policy_func_name, request_sender.clone(), &header_pairs)
@@ -1408,7 +1499,30 @@ async fn stream_worker(
         return;
     }
 
+
     //  Second policy that we want to check: authentication via JWT
+    let jwt_verdict = prepare_input_and_invoke_jwt_policy(jwt_policy_func_name, jwt_pem_context, request_sender.clone(), &header_pairs)
+    .await;
+
+    if jwt_verdict == 0 {
+        error!(
+            "[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] The jwt policy returns deny. Thus, the stream worker stops working",
+            tcp_conn_local_addr, tcp_conn_peer_addr, stream_id
+        );
+        let _ = stream_worker_to_dp_connection_worker_tx
+            .send(StreamWorkerToDpConnReq {
+                payload: format!(
+                    "[stream worker:{}] The jwt policy returns deny. Thus, the stream worker stops working",
+                    stream_id
+                ),
+                stream_id_to_send_response: stream_id,
+                num_of_headers_to_send: 0,
+                headers: Vec::new(),
+                body_to_send: Vec::new(),
+            })
+            .await;
+        return;
+    }
 
 
     // The stream worker would query the router to get the channel to the user_func_conn_worker
@@ -1548,6 +1662,8 @@ async fn dp_connection_worker3(
     request_sender: mpsc::Sender<DispatcherCommand>,
     stream_worker_to_router_tx: mpsc::Sender<StreamWorkerToRouterReq>,
     authorization_policy_func_name: String,
+    jwt_policy_func_name: String,
+    jwt_pem_context: Arc<Context>,
 ) {
     let tcp_conn_local_addr = stream.local_addr().unwrap();
     let tcp_conn_peer_addr = stream.peer_addr().unwrap();
@@ -1821,7 +1937,8 @@ async fn dp_connection_worker3(
                 header_authority_value_string_list.remove(0);
             let header_x_anakonda_forward_value_string: String =
                 header_x_anakonda_forward_value_string_list.remove(0);
-
+            let jwt_pem_context= Arc::clone(&jwt_pem_context);
+            
             info!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] Receive req with stream id {}. Spawn a stream worker.", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
             tokio::spawn(stream_worker(
                 num_of_headers,
@@ -1838,7 +1955,8 @@ async fn dp_connection_worker3(
                 stream.peer_addr().unwrap(),
                 request_sender.clone(),
                 authorization_policy_func_name.clone(),
-
+                jwt_policy_func_name.clone(),
+                jwt_pem_context,
             ));
         }
     }
@@ -1855,6 +1973,9 @@ async fn create_proxy_server2(
     port: u16,
     authorization_policy_func_name: String,
     authorization_policy_bin_local_path: String,
+    jwt_policy_func_name: String,
+    jwt_policy_bin_local_path: String,
+    jwt_pem_context: Arc<Context>,
 ) {
     // ****** Before the loop actually starts, register some functions ******
 
@@ -1880,6 +2001,16 @@ async fn create_proxy_server2(
     let _ = register_function_local(
         authorization_policy_bin_local_path.clone(),
         authorization_policy_func_name.clone(),
+        engine_type.clone(),
+        request_sender.clone(),
+    )
+    .await
+    .unwrap();
+
+    // register the jwt policy function
+    let _ = register_function_local(
+        jwt_policy_bin_local_path.clone(),
+        jwt_policy_func_name.clone(),
         engine_type.clone(),
         request_sender.clone(),
     )
@@ -1918,9 +2049,11 @@ async fn create_proxy_server2(
                 // for each new dp connection spawn a dp connection worker
                 let func_name = nghttp2_codec_func_name.clone();
                 let authorization_policy_func_name = authorization_policy_func_name.clone();
+                let jwt_policy_func_name = jwt_policy_func_name.clone();
+                let jwt_pem_context = Arc::clone(&jwt_pem_context);
                 tokio::spawn(async move {
                     let service_dispatcher_ptr = loop_dispatcher.clone();
-                    dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name).await;
+                    dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context).await;
                 });
             }
             _ = sigterm_stream.recv() => return,
@@ -1938,6 +2071,9 @@ pub fn start_proxy_server2(
     port: u16,
     authorization_policy_func_name: String,
     authorization_policy_bin_local_path: String,
+    jwt_policy_func_name: String,
+    jwt_policy_bin_local_path: String,
+    jwt_policy_pem_file_local_path: String,
 ) {
     let runtime = if cfg!(feature = "unpin_proxy") {
         Runtime::new().unwrap() // The default runtime. Use all the cores it could use
@@ -1970,6 +2106,15 @@ pub fn start_proxy_server2(
         runtime_builder.build().unwrap()
     };
 
+    let jwt_pem_bytes = std::fs::read(&jwt_policy_pem_file_local_path)
+    .expect("Failed to read JWT policy PEM file");
+    let jwt_pem_context = make_single_item_context(
+        0,
+        "",
+        "",
+        0,
+        jwt_pem_bytes.into_boxed_slice(),
+    );
     thread::spawn(move || {
         runtime.block_on(async {
             create_proxy_server2(
@@ -1979,6 +2124,9 @@ pub fn start_proxy_server2(
                 port,
                 authorization_policy_func_name,
                 authorization_policy_bin_local_path,
+                jwt_policy_func_name,
+                jwt_policy_bin_local_path,
+                jwt_pem_context,
             )
             .await;
         });
