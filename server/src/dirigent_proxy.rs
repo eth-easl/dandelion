@@ -848,7 +848,7 @@ fn parse_nghttp2_codec_output(
         header_x_anakonda_forward_value_string_list.push(header_x_anakonda_forward_value_string);
     }
 
-    debug!("headers_received_list: {:?}", headers_received_list);
+    // debug!("headers_received_list: {:?}", headers_received_list);
 
     for header in &headers_received_list {
         debug!("headers_received: {}", String::from_utf8(header.to_vec()).unwrap());
@@ -1456,6 +1456,8 @@ async fn stream_worker(
     authorization_policy_func_name: String,
     jwt_policy_func_name: String,
     jwt_pem_context: Arc<Context>,
+    enable_authorization_policy: bool,
+    enable_jwt_policy: bool,
 ) {
     info!(
         "[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] A new stream worker",
@@ -1464,7 +1466,7 @@ async fn stream_worker(
 
     let header_pairs: Vec<(String, String)>= match parse_headers(&headers_received) {
         Ok(v) => {
-            debug!("headers parsed: {:?}", v);
+            // debug!("headers parsed: {:?}", v);
             v
         },
         Err(e) => {
@@ -1473,55 +1475,58 @@ async fn stream_worker(
         }
     };
 
-    debug!("header pairs: {:?}", header_pairs);
+    // debug!("header pairs: {:?}", header_pairs);
 
     //  First policy that we want to check: authorization
-    let authorization_verdict = prepare_input_and_invoke_authorization_policy(authorization_policy_func_name, request_sender.clone(), &header_pairs)
-    .await;
+    if enable_authorization_policy {
+        let authorization_verdict = prepare_input_and_invoke_authorization_policy(authorization_policy_func_name, request_sender.clone(), &header_pairs)
+        .await;
 
-    if authorization_verdict == 0 {
-        error!(
-            "[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] The authorization policy returns deny. Thus, the stream worker stops working",
-            tcp_conn_local_addr, tcp_conn_peer_addr, stream_id
-        );
-        let _ = stream_worker_to_dp_connection_worker_tx
-            .send(StreamWorkerToDpConnReq {
-                payload: format!(
-                    "[stream worker:{}] The authorization policy returns deny. Thus, the stream worker stops working",
-                    stream_id
-                ),
-                stream_id_to_send_response: stream_id,
-                num_of_headers_to_send: 0,
-                headers: Vec::new(),
-                body_to_send: Vec::new(),
-            })
-            .await;
-        return;
+        if authorization_verdict == 0 {
+            error!(
+                "[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] The authorization policy returns deny. Thus, the stream worker stops working",
+                tcp_conn_local_addr, tcp_conn_peer_addr, stream_id
+            );
+            let _ = stream_worker_to_dp_connection_worker_tx
+                .send(StreamWorkerToDpConnReq {
+                    payload: format!(
+                        "[stream worker:{}] The authorization policy returns deny. Thus, the stream worker stops working",
+                        stream_id
+                    ),
+                    stream_id_to_send_response: stream_id,
+                    num_of_headers_to_send: 0,
+                    headers: Vec::new(),
+                    body_to_send: Vec::new(),
+                })
+                .await;
+            return;
+        }
     }
 
-
     //  Second policy that we want to check: authentication via JWT
-    let jwt_verdict = prepare_input_and_invoke_jwt_policy(jwt_policy_func_name, jwt_pem_context, request_sender.clone(), &header_pairs)
-    .await;
+    if enable_jwt_policy {
+        let jwt_verdict = prepare_input_and_invoke_jwt_policy(jwt_policy_func_name, jwt_pem_context, request_sender.clone(), &header_pairs)
+        .await;
 
-    if jwt_verdict == 0 {
-        error!(
-            "[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] The jwt policy returns deny. Thus, the stream worker stops working",
-            tcp_conn_local_addr, tcp_conn_peer_addr, stream_id
-        );
-        let _ = stream_worker_to_dp_connection_worker_tx
-            .send(StreamWorkerToDpConnReq {
-                payload: format!(
-                    "[stream worker:{}] The jwt policy returns deny. Thus, the stream worker stops working",
-                    stream_id
-                ),
-                stream_id_to_send_response: stream_id,
-                num_of_headers_to_send: 0,
-                headers: Vec::new(),
-                body_to_send: Vec::new(),
-            })
-            .await;
-        return;
+        if jwt_verdict == 0 {
+            error!(
+                "[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] The jwt policy returns deny. Thus, the stream worker stops working",
+                tcp_conn_local_addr, tcp_conn_peer_addr, stream_id
+            );
+            let _ = stream_worker_to_dp_connection_worker_tx
+                .send(StreamWorkerToDpConnReq {
+                    payload: format!(
+                        "[stream worker:{}] The jwt policy returns deny. Thus, the stream worker stops working",
+                        stream_id
+                    ),
+                    stream_id_to_send_response: stream_id,
+                    num_of_headers_to_send: 0,
+                    headers: Vec::new(),
+                    body_to_send: Vec::new(),
+                })
+                .await;
+            return;
+        }
     }
 
 
@@ -1664,6 +1669,8 @@ async fn dp_connection_worker3(
     authorization_policy_func_name: String,
     jwt_policy_func_name: String,
     jwt_pem_context: Arc<Context>,
+    enable_authorization_policy: bool,
+    enable_jwt_policy: bool,
 ) {
     let tcp_conn_local_addr = stream.local_addr().unwrap();
     let tcp_conn_peer_addr = stream.peer_addr().unwrap();
@@ -1957,6 +1964,8 @@ async fn dp_connection_worker3(
                 authorization_policy_func_name.clone(),
                 jwt_policy_func_name.clone(),
                 jwt_pem_context,
+                enable_authorization_policy,
+                enable_jwt_policy,
             ));
         }
     }
@@ -1976,6 +1985,8 @@ async fn create_proxy_server2(
     jwt_policy_func_name: String,
     jwt_policy_bin_local_path: String,
     jwt_pem_context: Arc<Context>,
+    enable_authorization_policy: bool,
+    enable_jwt_policy: bool,
 ) {
     // ****** Before the loop actually starts, register some functions ******
 
@@ -1997,25 +2008,29 @@ async fn create_proxy_server2(
     .await
     .unwrap();
 
-    // register the authorization policy function
-    let _ = register_function_local(
-        authorization_policy_bin_local_path.clone(),
-        authorization_policy_func_name.clone(),
-        engine_type.clone(),
-        request_sender.clone(),
-    )
-    .await
-    .unwrap();
+    if enable_authorization_policy {
+        // register the authorization policy function
+        let _ = register_function_local(
+            authorization_policy_bin_local_path.clone(),
+            authorization_policy_func_name.clone(),
+            engine_type.clone(),
+            request_sender.clone(),
+        )
+        .await
+        .unwrap();
+    }
 
-    // register the jwt policy function
-    let _ = register_function_local(
-        jwt_policy_bin_local_path.clone(),
-        jwt_policy_func_name.clone(),
-        engine_type.clone(),
-        request_sender.clone(),
-    )
-    .await
-    .unwrap();
+    if enable_jwt_policy {
+        // register the jwt policy function
+        let _ = register_function_local(
+            jwt_policy_bin_local_path.clone(),
+            jwt_policy_func_name.clone(),
+            engine_type.clone(),
+            request_sender.clone(),
+        )
+        .await
+        .unwrap();
+    }
 
     // ***** spawn the router ******
     let (stream_worker_to_router_tx, stream_worker_to_func_router_rx) =
@@ -2053,7 +2068,7 @@ async fn create_proxy_server2(
                 let jwt_pem_context = Arc::clone(&jwt_pem_context);
                 tokio::spawn(async move {
                     let service_dispatcher_ptr = loop_dispatcher.clone();
-                    dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context).await;
+                    dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy).await;
                 });
             }
             _ = sigterm_stream.recv() => return,
@@ -2074,6 +2089,8 @@ pub fn start_proxy_server2(
     jwt_policy_func_name: String,
     jwt_policy_bin_local_path: String,
     jwt_policy_pem_file_local_path: String,
+    enable_authorization_policy: bool,
+    enable_jwt_policy: bool,
 ) {
     let runtime = if cfg!(feature = "unpin_proxy") {
         Runtime::new().unwrap() // The default runtime. Use all the cores it could use
@@ -2127,6 +2144,8 @@ pub fn start_proxy_server2(
                 jwt_policy_func_name,
                 jwt_policy_bin_local_path,
                 jwt_pem_context,
+                enable_authorization_policy,
+                enable_jwt_policy,
             )
             .await;
         });
