@@ -86,6 +86,12 @@ pub struct DandelionConfig {
     pub jwt_policy_name: String,
     #[arg(long, env)]
     pub jwt_policy_pem_file_local_path: String,
+    #[arg(long,env, default_value_t = false)]
+    #[serde(default)]
+    pub enable_jwt_policy: bool,
+    #[arg(long,env, default_value_t = false)]
+    #[serde(default)]
+    pub enable_authorization_policy: bool,
 }
 
 impl DandelionConfig {

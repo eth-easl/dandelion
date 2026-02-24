@@ -706,6 +706,8 @@ fn main() -> () {
         config.jwt_policy_name,
         config.jwt_policy_bin_local_path,
         config.jwt_policy_pem_file_local_path,
+        config.enable_authorization_policy,
+        config.enable_jwt_policy, 
     );
 
     if cfg!(feature = "use_service_loop") {
