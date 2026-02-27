@@ -327,6 +327,7 @@ async fn prepare_input_and_invoke_jwt_policy(
     let mut contexts: Vec<Arc<Context>> = Vec::new();
     contexts.push(jwt_pem_context);
 
+    let mut found_token_in_header = false;
     for (header_name, header_value) in header_pairs {
         if header_name == "authorization" {
             let header_ctx = make_single_item_context(
@@ -337,7 +338,12 @@ async fn prepare_input_and_invoke_jwt_policy(
                 header_value.clone().into_bytes().into_boxed_slice(),
             );
             contexts.push(header_ctx);
+            found_token_in_header = true;
         }
+    }
+    if !found_token_in_header {
+        debug!("No authorization header found in caller's request!");
+        return 0;
     }
 
     let set0 = CompositionSet::from((0, contexts));
