@@ -372,7 +372,7 @@ async fn prepare_input_and_invoke_authorization_policy(
     header_pairs: &Vec<(String, String)>,
 ) -> u8{
     let mut input_set0_items = Vec::new();
-    
+
     for (header_name, header_value) in header_pairs {
         if header_name == ":method" {
             let header_value_bytes = header_value.as_bytes();
@@ -818,7 +818,7 @@ fn parse_nghttp2_codec_output(
                         output_item_data.try_into().expect("wrong length");
                     trailer_offset = i32::from_ne_bytes(arr);
 
-                    debug!(" codec OUTPUT trailer_offset: {}", trailer_offset);                    
+                    debug!(" codec OUTPUT trailer_offset: {}", trailer_offset);
                 }
                 9 => {
                     let arr: [u8; size_of::<usize>()] =
@@ -1501,6 +1501,8 @@ async fn stream_worker(
                     ),
                     stream_id_to_send_response: stream_id,
                     num_of_headers_to_send: 0,
+                    num_of_trailers_to_send: num_of_trailers_received,
+                    trailer_offset: trailer_offset,
                     headers: Vec::new(),
                     body_to_send: Vec::new(),
                 })
@@ -1527,6 +1529,8 @@ async fn stream_worker(
                     ),
                     stream_id_to_send_response: stream_id,
                     num_of_headers_to_send: 0,
+                    num_of_trailers_to_send: num_of_trailers_received,
+                    trailer_offset: trailer_offset,
                     headers: Vec::new(),
                     body_to_send: Vec::new(),
                 })
@@ -1951,7 +1955,7 @@ async fn dp_connection_worker3(
             let header_x_anakonda_forward_value_string: String =
                 header_x_anakonda_forward_value_string_list.remove(0);
             let jwt_pem_context= Arc::clone(&jwt_pem_context);
-            
+
             info!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] Receive req with stream id {}. Spawn a stream worker.", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
             tokio::spawn(stream_worker(
                 num_of_headers,
