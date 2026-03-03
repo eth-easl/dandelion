@@ -9,6 +9,7 @@ use dandelion_server::{
 };
 use dispatcher::dispatcher::DispatcherInput;
 use hyper::Response;
+use hyper_util::client::legacy::connect::proxy;
 use k8s_openapi::api::authorization;
 use log::trace;
 use log::{debug, error, info, warn};
@@ -22,7 +23,7 @@ use machine_interface::{
 };
 use serde::Deserialize;
 use serde::Serialize;
-use std::io::{Error, Cursor, Read};
+use std::io::{Error, Cursor, Read, BufReader};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::thread;
@@ -33,13 +34,25 @@ use std::{
     path::PathBuf,
     sync::atomic::{AtomicUsize, Ordering},
     time::Instant,
+    future::Future,
 };
-use tokio::io::{AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::{Builder, Runtime};
 use tokio::signal::unix::SignalKind;
 use tokio::sync::{mpsc, oneshot};
 use tokio::{io, try_join};
+
+// Stuff needed for mTLS
+use bytes::{Buf, BytesMut};
+use anyhow::{anyhow, bail, Result, Context as AnyhowContext};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::{RootCertStore, ServerConfig};
+use rustls::server::WebPkiClientVerifier;
+use tokio_rustls::{TlsAcceptor, server::TlsStream};
+use std::{fs::File};
+use tokio::io::{AsyncReadExt};
+use x509_parser::{extensions::GeneralName, parse_x509_certificate};
 
 use core_affinity::{self, CoreId};
 use dandelion_server::config::DandelionConfig;
@@ -50,6 +63,123 @@ const HTTP2_MAGIC_PACKET: [u8; 24] = [
 ];
 
 const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
+
+
+// ********* mTLS related functions ************* 
+// ************************************************
+// ************************************************
+fn load_certs(path: &str) -> Result<Vec<CertificateDer<'static>>> {
+    let mut rd = BufReader::new(File::open(path).context("open server cert")?);
+    let certs = rustls_pemfile::certs(&mut rd).collect::<Result<Vec<_>, _>>()?;
+    if certs.is_empty() { bail!("no certs found in {}", path); }
+    Ok(certs)
+}
+
+fn load_key(path: &str) -> Result<PrivateKeyDer<'static>> {
+    let mut rd = BufReader::new(File::open(path).context("open server key")?);
+    rustls_pemfile::private_key(&mut rd)?
+        .ok_or_else(|| anyhow::anyhow!("no private key found in {}", path))
+}
+
+fn load_client_roots(path: &str) -> Result<RootCertStore> {
+    let mut rd = BufReader::new(File::open(path).context("open client CA bundle")?);
+    let certs = rustls_pemfile::certs(&mut rd).collect::<Result<Vec<_>, _>>()?;
+    let mut roots = RootCertStore::empty();
+    let (added, _ignored) = roots.add_parsable_certificates(certs);
+    if added == 0 { bail!("no valid CA certs in {}", path); }
+    Ok(roots)
+}
+
+fn build_mtls_acceptor(server_cert: &str, server_key: &str, client_ca: &str) -> Result<TlsAcceptor> {
+    let cert_chain = load_certs(server_cert)?;
+    let key = load_key(server_key)?;
+    let roots = load_client_roots(client_ca)?;
+    let verifier = WebPkiClientVerifier::builder(Arc::new(roots)).build()?;
+
+    let mut cfg = ServerConfig::builder()
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(cert_chain, key)?;
+
+    cfg.alpn_protocols = vec![b"h2".to_vec()]; // apparently this is recommended for HTTP/2 over TLS
+
+    Ok(TlsAcceptor::from(Arc::new(cfg)))
+}
+
+fn extract_spiffe_id(tls_stream: &TlsStream<TcpStream>) -> Result<String> {
+    let (_, server_conn) = tls_stream.get_ref();
+
+    let certs = server_conn.peer_certificates().ok_or_else(|| anyhow!("no peer certificates"))?;
+    let leaf = certs.first().ok_or_else(|| anyhow!("empty peer cert chain"))?;
+
+    let (_, cert) = parse_x509_certificate(leaf.as_ref()).map_err(|e| anyhow!("bad cert DER: {e}"))?;
+
+    let san = cert.subject_alternative_name().map_err(|e| anyhow!("failed to read SAN: {e}"))?.ok_or_else(|| anyhow!("SAN extension not found"))?;
+
+    san.value.general_names.iter().find_map(|gn| match gn {
+        GeneralName::URI(uri) if uri.starts_with("spiffe://") => Some(uri.to_string()),
+        _ => None,
+    }).ok_or_else(|| anyhow!("no SPIFFE URI found in SAN"))
+}
+
+//  We implement the "DpStream" as a wrapper around the TlsStream<TcpStream> and implement the required interface
+//  such that our workers can read/write to it in the same way they read/write to a normal TcpStream.
+struct DpStream {
+    inner: TlsStream<TcpStream>,
+    local_addr: SocketAddr,
+    peer_addr: SocketAddr,
+    read_cache: BytesMut,
+    eof: bool,
+}
+
+impl DpStream {
+    fn new(inner: TlsStream<TcpStream>, local_addr: SocketAddr, peer_addr: SocketAddr) -> Self {
+        Self {
+            inner,
+            local_addr,
+            peer_addr,
+            read_cache: BytesMut::new(),
+            eof: false,
+        }
+    }
+
+    fn local_addr(&self) -> io::Result<SocketAddr> { Ok(self.local_addr) }
+    fn peer_addr(&self) -> io::Result<SocketAddr> { Ok(self.peer_addr) }
+
+    async fn readable(&mut self) -> io::Result<()> {
+        if !self.read_cache.is_empty() || self.eof {
+            return Ok(());
+        }
+        let mut tmp = [0u8; 16 * 1024];
+        let n = self.inner.read(&mut tmp).await?;
+        if n == 0 {
+            self.eof = true;
+        } else {
+            self.read_cache.extend_from_slice(&tmp[..n]);
+        }
+        Ok(())
+    }
+
+    fn try_read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if self.eof && self.read_cache.is_empty() {
+            return Ok(0);
+        }
+        if self.read_cache.is_empty() {
+            return Err(io::Error::new(ErrorKind::WouldBlock, "no decrypted bytes ready"));
+        }
+        let n = out.len().min(self.read_cache.len());
+        out[..n].copy_from_slice(&self.read_cache[..n]);
+        self.read_cache.advance(n);
+        Ok(n)
+    }
+
+    async fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        self.inner.write_all(buf).await
+    }
+
+    async fn shutdown(&mut self) -> io::Result<()> {
+        self.inner.shutdown().await
+    }
+}
 
 // ********* Register/invoke Dandelion functions*************
 // ************************************************
@@ -981,6 +1111,42 @@ async fn read_from_tcp_stream_until_blocking(
     }
 }
 
+// a helper func used by the worker to read from a dp stream until blocking
+async fn read_from_dp_stream_until_blocking(
+    stream: &mut DpStream,
+    data_to_read: &mut Vec<u8>,
+) -> bool {
+    // The returned value indicates if the connection is closed by the peer or there is a connection error
+
+    // Scratch buffer for each try_read call
+    let mut buf = vec![0u8; 16 * 1024];
+
+    loop {
+        match stream.try_read(&mut buf) {
+            Ok(0) => {
+                // Peer closed the connection
+                let _ = stream.shutdown().await;
+
+                return true;
+            }
+            Ok(n) => {
+                data_to_read.extend_from_slice(&buf[..n]);
+
+                // Keep draining until the kernel says "no more right now"
+                continue;
+            }
+            Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
+                // No more bytes currently available; process what we have
+
+                return false;
+            }
+            Err(err) => {
+                let _ = stream.shutdown().await;
+                return true;
+            }
+        }
+    }
+}
 // This handles the TCP/HTTP connection with user function container
 // Thus, it acts as a HTTP client
 async fn func_connection_worker3(
@@ -1389,7 +1555,7 @@ async fn router(
 
 fn read_u64_le(cur: &mut Cursor<&[u8]>) -> Result<u64, String> {
     let mut b = [0u8; 8];
-    cur.read_exact(&mut b)
+    std::io::Read::read_exact(cur, &mut b)
         .map_err(|_| "EOF while reading u64".to_string())?;
     Ok(u64::from_le_bytes(b))
 }
@@ -1399,7 +1565,7 @@ fn read_u64_le(cur: &mut Cursor<&[u8]>) -> Result<u64, String> {
 fn read_len_prefixed_field(cur: &mut Cursor<&[u8]>, len: usize, what: &'static str) -> Result<Vec<u8>, String> {
     // Read payload
     let mut v = vec![0u8; len];
-    cur.read_exact(&mut v)
+    std::io::Read::read_exact(cur, &mut v)
         .map_err(|_| format!("EOF while reading {what} payload ({len} bytes)"))?;
 
     // Variant A: payload ends with NUL and len included it -> strip
@@ -1673,7 +1839,7 @@ async fn stream_worker(
 // Thus, it acts as a HTTP server
 async fn dp_connection_worker3(
     nghttp2_codec_func_name: String,
-    mut stream: TcpStream,
+    mut stream: DpStream,
     request_sender: mpsc::Sender<DispatcherCommand>,
     stream_worker_to_router_tx: mpsc::Sender<StreamWorkerToRouterReq>,
     authorization_policy_func_name: String,
@@ -1773,7 +1939,7 @@ async fn dp_connection_worker3(
                 // read data from the socket until
                 // There is no data in the scoket AND There is no truncated frame/ unended stream in the received data.
                 loop {
-                    let peer_closed = read_from_tcp_stream_until_blocking(&mut stream, &mut data_to_read).await;
+                    let peer_closed = read_from_dp_stream_until_blocking(&mut stream, &mut data_to_read).await;
                     if peer_closed == true {
                         info!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] The dp connection peer has closed the connection", tcp_conn_local_addr, tcp_conn_peer_addr);
                         // Peer closed the connection
@@ -2061,12 +2227,29 @@ async fn create_proxy_server2(
     let mut sigint_stream = tokio::signal::unix::signal(SignalKind::interrupt()).unwrap();
     let mut sigquit_stream = tokio::signal::unix::signal(SignalKind::quit()).unwrap();
 
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("install rustls crypto provider (aws-lc-rs)");
+
+    //  This is super hardcoded for now.
+    //  TODO: make this configurable and more robust. The path should be provided as CLI args to the dirigent proxy.
+    let proxy_tls_server_cert_path = "/home/worg/Documents/masters_thesis/code/generate_mTLS_data/pki_out/worker_node.crt.pem".to_string();
+    let proxy_tls_server_key_path = "/home/worg/Documents/masters_thesis/code/generate_mTLS_data/pki_out/worker_node.key.pem".to_string();
+    let proxy_tls_client_ca_bundle_path = "/home/worg/Documents/masters_thesis/code/generate_mTLS_data/pki_out/ca.crt.pem".to_string();
+    let tls_acceptor = build_mtls_acceptor(
+        &proxy_tls_server_cert_path,
+        &proxy_tls_server_key_path,
+        &proxy_tls_client_ca_bundle_path,
+    ).expect("failed to build mTLS acceptor");
+
     // ****** Start the dirigent proxy ******
     loop {
         tokio::select! {
             connection_pair = listener.accept() => {
                 info!("A new DP connection!");
-                let (stream,_) = connection_pair.unwrap();
+                let (tcp_stream, peer_addr) = connection_pair.unwrap();
+                let local_addr = tcp_stream.local_addr().unwrap();
+                let tls_acceptor = tls_acceptor.clone();
                 let loop_dispatcher = request_sender.clone();
 
                 let stream_worker_to_router_tx_clone = stream_worker_to_router_tx.clone();
@@ -2077,8 +2260,26 @@ async fn create_proxy_server2(
                 let jwt_policy_func_name = jwt_policy_func_name.clone();
                 let jwt_pem_context = Arc::clone(&jwt_pem_context);
                 tokio::spawn(async move {
-                    let service_dispatcher_ptr = loop_dispatcher.clone();
-                    dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy).await;
+                    match tls_acceptor.accept(tcp_stream).await {
+                        Ok(tls_stream) => {
+                            //  Let's print the SPIFFE id of the peer (data plane). Just for debug purposes for now :D
+                            match extract_spiffe_id(&tls_stream) {
+                                Ok(spiffe_id) => {
+                                    debug!("mTLS handshake successful. Peer SPIFFE ID: {}", spiffe_id);
+                                }
+                                Err(e) => {
+                                    error!("Failed to extract SPIFFE ID from mTLS stream: {:?}", e);
+                                }
+                            }
+
+                            let stream = DpStream::new(tls_stream, local_addr, peer_addr);
+                            let service_dispatcher_ptr = loop_dispatcher.clone();
+                            dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy).await;
+                        }
+                        Err (err) => {
+                            warn!("mTLS handshake failed from {}: {:?}", peer_addr, err);
+                        }
+                    }
                 });
             }
             _ = sigterm_stream.recv() => return,
