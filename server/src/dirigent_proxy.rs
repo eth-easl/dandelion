@@ -17,26 +17,26 @@ use machine_interface::{
     composition::CompositionSet,
     function_driver::Metadata,
     machine_config::EngineType,
+    memory_domain::Context,
     memory_domain::{bytes_context::BytesContext, read_only::ReadOnlyContext},
     DataItem, DataSet, Position,
-    memory_domain::Context,
 };
 use serde::Deserialize;
 use serde::Serialize;
-use std::io::{Error, Cursor, Read, BufReader};
+use std::io::{BufReader, Cursor, Error, Read};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::thread;
 use std::{
     collections::HashMap,
     convert::Infallible,
+    future::Future,
     io::{ErrorKind, Write},
     path::PathBuf,
     sync::atomic::{AtomicUsize, Ordering},
     time::Instant,
-    future::Future,
 };
-use tokio::io::{AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::{Builder, Runtime};
 use tokio::signal::unix::SignalKind;
@@ -44,14 +44,14 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::{io, try_join};
 
 // Stuff needed for mTLS
+use anyhow::{anyhow, bail, Context as AnyhowContext, Result};
 use bytes::{Buf, BytesMut};
-use anyhow::{anyhow, bail, Result, Context as AnyhowContext};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls::{RootCertStore, ServerConfig};
 use rustls::server::WebPkiClientVerifier;
-use tokio_rustls::{TlsAcceptor, server::TlsStream};
-use std::{fs::File};
-use tokio::io::{AsyncReadExt};
+use rustls::{RootCertStore, ServerConfig};
+use std::{fs::File, path::Path};
+use tokio::io::AsyncReadExt;
+use tokio_rustls::{server::TlsStream, TlsAcceptor};
 use x509_parser::{extensions::GeneralName, parse_x509_certificate};
 
 use core_affinity::{self, CoreId};
@@ -64,14 +64,20 @@ const HTTP2_MAGIC_PACKET: [u8; 24] = [
 
 const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
+const PROXY_TLS_WORKER_CERT_FILENAME: &str = "worker.crt.pem";
+const PROXY_TLS_WORKER_KEY_FILENAME: &str = "worker.key.pem";
+const PROXY_TLS_CA_BUNDLE_FILENAME: &str = "ca.crt.pem";
+const PROXY_TLS_EXPECTED_SPIFFE_FILENAME: &str = "expected_data_plane_spiffe_id.txt";
 
-// ********* mTLS related functions ************* 
+// ********* mTLS related functions *************
 // ************************************************
 // ************************************************
 fn load_certs(path: &str) -> Result<Vec<CertificateDer<'static>>> {
     let mut rd = BufReader::new(File::open(path).context("open server cert")?);
     let certs = rustls_pemfile::certs(&mut rd).collect::<Result<Vec<_>, _>>()?;
-    if certs.is_empty() { bail!("no certs found in {}", path); }
+    if certs.is_empty() {
+        bail!("no certs found in {}", path);
+    }
     Ok(certs)
 }
 
@@ -86,11 +92,17 @@ fn load_client_roots(path: &str) -> Result<RootCertStore> {
     let certs = rustls_pemfile::certs(&mut rd).collect::<Result<Vec<_>, _>>()?;
     let mut roots = RootCertStore::empty();
     let (added, _ignored) = roots.add_parsable_certificates(certs);
-    if added == 0 { bail!("no valid CA certs in {}", path); }
+    if added == 0 {
+        bail!("no valid CA certs in {}", path);
+    }
     Ok(roots)
 }
 
-fn build_mtls_acceptor(server_cert: &str, server_key: &str, client_ca: &str) -> Result<TlsAcceptor> {
+fn build_mtls_acceptor(
+    server_cert: &str,
+    server_key: &str,
+    client_ca: &str,
+) -> Result<TlsAcceptor> {
     let cert_chain = load_certs(server_cert)?;
     let key = load_key(server_key)?;
     let roots = load_client_roots(client_ca)?;
@@ -108,17 +120,70 @@ fn build_mtls_acceptor(server_cert: &str, server_key: &str, client_ca: &str) -> 
 fn extract_spiffe_id(tls_stream: &TlsStream<TcpStream>) -> Result<String> {
     let (_, server_conn) = tls_stream.get_ref();
 
-    let certs = server_conn.peer_certificates().ok_or_else(|| anyhow!("no peer certificates"))?;
-    let leaf = certs.first().ok_or_else(|| anyhow!("empty peer cert chain"))?;
+    let certs = server_conn
+        .peer_certificates()
+        .ok_or_else(|| anyhow!("no peer certificates"))?;
+    let leaf = certs
+        .first()
+        .ok_or_else(|| anyhow!("empty peer cert chain"))?;
 
-    let (_, cert) = parse_x509_certificate(leaf.as_ref()).map_err(|e| anyhow!("bad cert DER: {e}"))?;
+    let (_, cert) =
+        parse_x509_certificate(leaf.as_ref()).map_err(|e| anyhow!("bad cert DER: {e}"))?;
 
-    let san = cert.subject_alternative_name().map_err(|e| anyhow!("failed to read SAN: {e}"))?.ok_or_else(|| anyhow!("SAN extension not found"))?;
+    let san = cert
+        .subject_alternative_name()
+        .map_err(|e| anyhow!("failed to read SAN: {e}"))?
+        .ok_or_else(|| anyhow!("SAN extension not found"))?;
 
-    san.value.general_names.iter().find_map(|gn| match gn {
-        GeneralName::URI(uri) if uri.starts_with("spiffe://") => Some(uri.to_string()),
-        _ => None,
-    }).ok_or_else(|| anyhow!("no SPIFFE URI found in SAN"))
+    san.value
+        .general_names
+        .iter()
+        .find_map(|gn| match gn {
+            GeneralName::URI(uri) if uri.starts_with("spiffe://") => Some(uri.to_string()),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow!("no SPIFFE URI found in SAN"))
+}
+
+struct ProxyMTLSMaterialPaths {
+    server_cert_path: String,
+    server_key_path: String,
+    client_ca_bundle_path: String,
+    expected_data_plane_spiffe_id_path: String,
+}
+
+fn build_proxy_mtls_material_paths(material_dir: &str) -> ProxyMTLSMaterialPaths {
+    let dir = Path::new(material_dir);
+    ProxyMTLSMaterialPaths {
+        server_cert_path: dir
+            .join(PROXY_TLS_WORKER_CERT_FILENAME)
+            .to_string_lossy()
+            .into_owned(),
+        server_key_path: dir
+            .join(PROXY_TLS_WORKER_KEY_FILENAME)
+            .to_string_lossy()
+            .into_owned(),
+        client_ca_bundle_path: dir
+            .join(PROXY_TLS_CA_BUNDLE_FILENAME)
+            .to_string_lossy()
+            .into_owned(),
+        expected_data_plane_spiffe_id_path: dir
+            .join(PROXY_TLS_EXPECTED_SPIFFE_FILENAME)
+            .to_string_lossy()
+            .into_owned(),
+    }
+}
+
+fn load_expected_data_plane_spiffe_id(path: &str) -> Result<String> {
+    let expected = std::fs::read_to_string(path)
+        .context("failed to read expected data-plane SPIFFE ID file")?;
+
+    let trimmed = expected.trim().to_string();
+    if trimmed.is_empty() {
+        bail!("expected data-plane SPIFFE ID file is empty: {}", path);
+    }
+
+    Ok(trimmed)
 }
 
 //  We implement the "DpStream" as a wrapper around the TlsStream<TcpStream> and implement the required interface
@@ -142,8 +207,12 @@ impl DpStream {
         }
     }
 
-    fn local_addr(&self) -> io::Result<SocketAddr> { Ok(self.local_addr) }
-    fn peer_addr(&self) -> io::Result<SocketAddr> { Ok(self.peer_addr) }
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        Ok(self.local_addr)
+    }
+    fn peer_addr(&self) -> io::Result<SocketAddr> {
+        Ok(self.peer_addr)
+    }
 
     async fn readable(&mut self) -> io::Result<()> {
         if !self.read_cache.is_empty() || self.eof {
@@ -164,7 +233,10 @@ impl DpStream {
             return Ok(0);
         }
         if self.read_cache.is_empty() {
-            return Err(io::Error::new(ErrorKind::WouldBlock, "no decrypted bytes ready"));
+            return Err(io::Error::new(
+                ErrorKind::WouldBlock,
+                "no decrypted bytes ready",
+            ));
         }
         let n = out.len().min(self.read_cache.len());
         out[..n].copy_from_slice(&self.read_cache[..n]);
@@ -179,6 +251,33 @@ impl DpStream {
     async fn shutdown(&mut self) -> io::Result<()> {
         self.inner.shutdown().await
     }
+}
+
+trait ProxyStream {
+    fn local_addr(&self) -> io::Result<SocketAddr>;
+    fn peer_addr(&self) -> io::Result<SocketAddr>;
+    async fn wait_readable(&mut self) -> io::Result<()>;
+    fn read_nonblocking(&mut self, out: &mut [u8]) -> io::Result<usize>;
+    async fn send_all(&mut self, buf: &[u8]) -> io::Result<()>;
+    async fn close_stream(&mut self) -> io::Result<()>;
+}
+
+impl ProxyStream for TcpStream {
+    fn local_addr(&self) -> io::Result<SocketAddr> { self.local_addr() }
+    fn peer_addr(&self) -> io::Result<SocketAddr> { self.peer_addr() }
+    async fn wait_readable(&mut self) -> io::Result<()> { self.readable().await }
+    fn read_nonblocking(&mut self, out: &mut [u8]) -> io::Result<usize> { self.try_read(out) }
+    async fn send_all(&mut self, buf: &[u8]) -> io::Result<()> { tokio::io::AsyncWriteExt::write_all(self, buf).await }
+    async fn close_stream(&mut self) -> io::Result<()> { tokio::io::AsyncWriteExt::shutdown(self).await }
+}
+
+impl ProxyStream for DpStream {
+    fn local_addr(&self) -> io::Result<SocketAddr> { DpStream::local_addr(self) }
+    fn peer_addr(&self) -> io::Result<SocketAddr> { DpStream::peer_addr(self) }
+    async fn wait_readable(&mut self) -> io::Result<()> { DpStream::readable(self).await }
+    fn read_nonblocking(&mut self, out: &mut [u8]) -> io::Result<usize> { DpStream::try_read(self, out) }
+    async fn send_all(&mut self, buf: &[u8]) -> io::Result<()> { DpStream::write_all(self, buf).await }
+    async fn close_stream(&mut self) -> io::Result<()> { DpStream::shutdown(self).await }
 }
 
 // ********* Register/invoke Dandelion functions*************
@@ -492,15 +591,12 @@ async fn prepare_input_and_invoke_jwt_policy(
     response.sets[0].items[0].data[0]
 }
 
-
-
-
 // ********* Invoke authorization policy func; Parse its output *************
 async fn prepare_input_and_invoke_authorization_policy(
     authorization_policy_func_name: String,
     request_sender: mpsc::Sender<DispatcherCommand>,
     header_pairs: &Vec<(String, String)>,
-) -> u8{
+) -> u8 {
     let mut input_set0_items = Vec::new();
 
     for (header_name, header_value) in header_pairs {
@@ -987,7 +1083,10 @@ fn parse_nghttp2_codec_output(
     // debug!("headers_received_list: {:?}", headers_received_list);
 
     for header in &headers_received_list {
-        debug!("headers_received: {}", String::from_utf8(header.to_vec()).unwrap());
+        debug!(
+            "headers_received: {}",
+            String::from_utf8(header.to_vec()).unwrap()
+        );
     }
 
     (
@@ -1111,9 +1210,9 @@ async fn read_from_tcp_stream_until_blocking(
     }
 }
 
-// a helper func used by the worker to read from a dp stream until blocking
-async fn read_from_dp_stream_until_blocking(
-    stream: &mut DpStream,
+// a helper func used by the worker to read from a ProxyStream (which can be either a TCP or TLS stream) until blocking
+async fn read_from_stream_until_blocking<S:ProxyStream>(
+    stream: &mut S,
     data_to_read: &mut Vec<u8>,
 ) -> bool {
     // The returned value indicates if the connection is closed by the peer or there is a connection error
@@ -1122,10 +1221,10 @@ async fn read_from_dp_stream_until_blocking(
     let mut buf = vec![0u8; 16 * 1024];
 
     loop {
-        match stream.try_read(&mut buf) {
+        match stream.read_nonblocking(&mut buf) {
             Ok(0) => {
                 // Peer closed the connection
-                let _ = stream.shutdown().await;
+                let _ = stream.close_stream().await;
 
                 return true;
             }
@@ -1141,7 +1240,7 @@ async fn read_from_dp_stream_until_blocking(
                 return false;
             }
             Err(err) => {
-                let _ = stream.shutdown().await;
+                let _ = stream.close_stream().await;
                 return true;
             }
         }
@@ -1555,14 +1654,17 @@ async fn router(
 
 fn read_u64_le(cur: &mut Cursor<&[u8]>) -> Result<u64, String> {
     let mut b = [0u8; 8];
-    std::io::Read::read_exact(cur, &mut b)
-        .map_err(|_| "EOF while reading u64".to_string())?;
+    std::io::Read::read_exact(cur, &mut b).map_err(|_| "EOF while reading u64".to_string())?;
     Ok(u64::from_le_bytes(b))
 }
 
 /// Read exactly `len` bytes, then optionally consume a single trailing NUL (0x00) if present.
 /// Also strips a trailing NUL from the returned payload (in case `len` includes it).
-fn read_len_prefixed_field(cur: &mut Cursor<&[u8]>, len: usize, what: &'static str) -> Result<Vec<u8>, String> {
+fn read_len_prefixed_field(
+    cur: &mut Cursor<&[u8]>,
+    len: usize,
+    what: &'static str,
+) -> Result<Vec<u8>, String> {
     // Read payload
     let mut v = vec![0u8; len];
     std::io::Read::read_exact(cur, &mut v)
@@ -1636,11 +1738,11 @@ async fn stream_worker(
         tcp_conn_local_addr, tcp_conn_peer_addr, stream_id
     );
 
-    let header_pairs: Vec<(String, String)>= match parse_headers(&headers_received) {
+    let header_pairs: Vec<(String, String)> = match parse_headers(&headers_received) {
         Ok(v) => {
             // debug!("headers parsed: {:?}", v);
             v
-        },
+        }
         Err(e) => {
             error!("failed to parse headers: {}", e);
             Vec::new() // or handle the error as needed
@@ -1651,7 +1753,11 @@ async fn stream_worker(
 
     //  First policy that we want to check: authorization
     if enable_authorization_policy {
-        let authorization_verdict = prepare_input_and_invoke_authorization_policy(authorization_policy_func_name, request_sender.clone(), &header_pairs)
+        let authorization_verdict = prepare_input_and_invoke_authorization_policy(
+            authorization_policy_func_name,
+            request_sender.clone(),
+            &header_pairs,
+        )
         .await;
 
         if authorization_verdict == 0 {
@@ -1679,7 +1785,12 @@ async fn stream_worker(
 
     //  Second policy that we want to check: authentication via JWT
     if enable_jwt_policy {
-        let jwt_verdict = prepare_input_and_invoke_jwt_policy(jwt_policy_func_name, jwt_pem_context, request_sender.clone(), &header_pairs)
+        let jwt_verdict = prepare_input_and_invoke_jwt_policy(
+            jwt_policy_func_name,
+            jwt_pem_context,
+            request_sender.clone(),
+            &header_pairs,
+        )
         .await;
 
         if jwt_verdict == 0 {
@@ -1704,7 +1815,6 @@ async fn stream_worker(
             return;
         }
     }
-
 
     // The stream worker would query the router to get the channel to the user_func_conn_worker
     // The channel used by the router to send resp back
@@ -1837,9 +1947,9 @@ async fn stream_worker(
 
 // The task to handle one TCP/HTTP connection with the data plane
 // Thus, it acts as a HTTP server
-async fn dp_connection_worker3(
+async fn dp_connection_worker3<S: ProxyStream>(
     nghttp2_codec_func_name: String,
-    mut stream: DpStream,
+    mut stream: S,
     request_sender: mpsc::Sender<DispatcherCommand>,
     stream_worker_to_router_tx: mpsc::Sender<StreamWorkerToRouterReq>,
     authorization_policy_func_name: String,
@@ -1847,7 +1957,9 @@ async fn dp_connection_worker3(
     jwt_pem_context: Arc<Context>,
     enable_authorization_policy: bool,
     enable_jwt_policy: bool,
-) {
+) where
+    S: ProxyStream + Send + Unpin + 'static {
+
     let tcp_conn_local_addr = stream.local_addr().unwrap();
     let tcp_conn_peer_addr = stream.peer_addr().unwrap();
     info!(
@@ -1900,7 +2012,7 @@ async fn dp_connection_worker3(
         // If first create, wait until the socket is readable (maybe not necessary)
         if first_create == 1 {
             // Wait until the socket becomes readable
-            if let Err(err) = stream.readable().await {
+            if let Err(err) = stream.wait_readable().await {
                 error!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] tcp stream readable() failed: {:?}", tcp_conn_local_addr, tcp_conn_peer_addr, err);
                 break;
             }
@@ -1925,7 +2037,7 @@ async fn dp_connection_worker3(
 
         // ****** Block until one of the two events happpen *******
         tokio::select! {
-            stream_readable = stream.readable() => { // 1) Data received at the socket.
+            stream_readable = stream.wait_readable() => { // 1) Data received at the socket.
                 match stream_readable {
                     Ok(()) => {
                         // println!("stream is now readable");
@@ -1939,11 +2051,11 @@ async fn dp_connection_worker3(
                 // read data from the socket until
                 // There is no data in the scoket AND There is no truncated frame/ unended stream in the received data.
                 loop {
-                    let peer_closed = read_from_dp_stream_until_blocking(&mut stream, &mut data_to_read).await;
+                    let peer_closed = read_from_stream_until_blocking(&mut stream, &mut data_to_read).await;
                     if peer_closed == true {
                         info!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] The dp connection peer has closed the connection", tcp_conn_local_addr, tcp_conn_peer_addr);
                         // Peer closed the connection
-                        let _ = stream.shutdown().await;
+                        let _ = stream.close_stream().await;
                         return;
                     }
 
@@ -1975,7 +2087,7 @@ async fn dp_connection_worker3(
                     }
                     else {
                         debug!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] currently received data contains truncated frame or incomplete req/res. Thus, waiting for more data to arrive", tcp_conn_local_addr, tcp_conn_peer_addr);
-                        let stream_readable_again = stream.readable().await;
+                        let stream_readable_again = stream.wait_readable().await;
                         match stream_readable_again {
                             Ok(()) => {
                                 debug!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] More data arrives", tcp_conn_local_addr, tcp_conn_peer_addr);
@@ -2097,9 +2209,9 @@ async fn dp_connection_worker3(
         // 1) Send data outout
         // *** If there is data needed to be sent
         if data_to_send.len() > 0 {
-            if let Err(err) = stream.write_all(&data_to_send).await {
+            if let Err(err) = stream.send_all(&data_to_send).await {
                 error!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] tcp stream write_all failed: {:?}", tcp_conn_local_addr, tcp_conn_peer_addr, err);
-                let _ = stream.shutdown().await;
+                let _ = stream.close_stream().await;
                 return;
             } else {
                 debug!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] TCP stream send finished successfully", tcp_conn_local_addr, tcp_conn_peer_addr);
@@ -2120,7 +2232,7 @@ async fn dp_connection_worker3(
                 header_authority_value_string_list.remove(0);
             let header_x_anakonda_forward_value_string: String =
                 header_x_anakonda_forward_value_string_list.remove(0);
-            let jwt_pem_context= Arc::clone(&jwt_pem_context);
+            let jwt_pem_context = Arc::clone(&jwt_pem_context);
 
             info!("[dp_connection_worker3. Local Addr: {}; Peer Addr: {}] Receive req with stream id {}. Spawn a stream worker.", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
             tokio::spawn(stream_worker(
@@ -2156,6 +2268,7 @@ async fn create_proxy_server2(
     nghttp2_codec_bin_local_path: String,
     request_sender: mpsc::Sender<DispatcherCommand>,
     port: u16,
+    proxy_tls_material_dir: String,
     authorization_policy_func_name: String,
     authorization_policy_bin_local_path: String,
     jwt_policy_func_name: String,
@@ -2163,6 +2276,7 @@ async fn create_proxy_server2(
     jwt_pem_context: Arc<Context>,
     enable_authorization_policy: bool,
     enable_jwt_policy: bool,
+    enable_mtls: bool,
 ) {
     // ****** Before the loop actually starts, register some functions ******
 
@@ -2231,17 +2345,6 @@ async fn create_proxy_server2(
         .install_default()
         .expect("install rustls crypto provider (aws-lc-rs)");
 
-    //  This is super hardcoded for now.
-    //  TODO: make this configurable and more robust. The path should be provided as CLI args to the dirigent proxy.
-    let proxy_tls_server_cert_path = "/home/worg/Documents/masters_thesis/code/generate_mTLS_data/pki_out/worker_node.crt.pem".to_string();
-    let proxy_tls_server_key_path = "/home/worg/Documents/masters_thesis/code/generate_mTLS_data/pki_out/worker_node.key.pem".to_string();
-    let proxy_tls_client_ca_bundle_path = "/home/worg/Documents/masters_thesis/code/generate_mTLS_data/pki_out/ca.crt.pem".to_string();
-    let tls_acceptor = build_mtls_acceptor(
-        &proxy_tls_server_cert_path,
-        &proxy_tls_server_key_path,
-        &proxy_tls_client_ca_bundle_path,
-    ).expect("failed to build mTLS acceptor");
-
     // ****** Start the dirigent proxy ******
     loop {
         tokio::select! {
@@ -2249,8 +2352,8 @@ async fn create_proxy_server2(
                 info!("A new DP connection!");
                 let (tcp_stream, peer_addr) = connection_pair.unwrap();
                 let local_addr = tcp_stream.local_addr().unwrap();
-                let tls_acceptor = tls_acceptor.clone();
                 let loop_dispatcher = request_sender.clone();
+                let proxy_tls_material_dir = proxy_tls_material_dir.clone();
 
                 let stream_worker_to_router_tx_clone = stream_worker_to_router_tx.clone();
 
@@ -2259,28 +2362,80 @@ async fn create_proxy_server2(
                 let authorization_policy_func_name = authorization_policy_func_name.clone();
                 let jwt_policy_func_name = jwt_policy_func_name.clone();
                 let jwt_pem_context = Arc::clone(&jwt_pem_context);
-                tokio::spawn(async move {
-                    match tls_acceptor.accept(tcp_stream).await {
-                        Ok(tls_stream) => {
-                            //  Let's print the SPIFFE id of the peer (data plane). Just for debug purposes for now :D
-                            match extract_spiffe_id(&tls_stream) {
-                                Ok(spiffe_id) => {
-                                    debug!("mTLS handshake successful. Peer SPIFFE ID: {}", spiffe_id);
-                                }
-                                Err(e) => {
-                                    error!("Failed to extract SPIFFE ID from mTLS stream: {:?}", e);
-                                }
-                            }
 
-                            let stream = DpStream::new(tls_stream, local_addr, peer_addr);
-                            let service_dispatcher_ptr = loop_dispatcher.clone();
-                            dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy).await;
+                if enable_mtls {
+                    tokio::spawn(async move {
+                        let mtls_paths = build_proxy_mtls_material_paths(&proxy_tls_material_dir);
+                        let expected_data_plane_spiffe_id = match load_expected_data_plane_spiffe_id(
+                            &mtls_paths.expected_data_plane_spiffe_id_path,
+                        ) {
+                            Ok(spiffe_id) => spiffe_id,
+                            Err(err) => {
+                                warn!(
+                                    "Cannot load expected data-plane SPIFFE ID from '{}': {:?}",
+                                    mtls_paths.expected_data_plane_spiffe_id_path,
+                                    err,
+                                );
+                                return;
+                            }
+                        };
+
+                        let tls_acceptor = match build_mtls_acceptor(
+                            &mtls_paths.server_cert_path,
+                            &mtls_paths.server_key_path,
+                            &mtls_paths.client_ca_bundle_path,
+                        ) {
+                            Ok(acceptor) => acceptor,
+                            Err(err) => {
+                                warn!(
+                                    "Cannot configure mTLS acceptor from material directory '{}': {:?}",
+                                    proxy_tls_material_dir,
+                                    err,
+                                );
+                                return;
+                            }
+                        };
+
+                        match tls_acceptor.accept(tcp_stream).await {
+                            Ok(tls_stream) => {
+                                match extract_spiffe_id(&tls_stream) {
+                                    Ok(spiffe_id) => {
+                                        if spiffe_id != expected_data_plane_spiffe_id {
+                                            warn!(
+                                                "mTLS handshake rejected from {} due to SPIFFE mismatch. expected={}, actual={}",
+                                                peer_addr,
+                                                expected_data_plane_spiffe_id,
+                                                spiffe_id,
+                                            );
+                                            return;
+                                        }
+
+                                        debug!("mTLS handshake successful. Peer SPIFFE ID: {}", spiffe_id);
+                                    }
+                                    Err(e) => {
+                                        warn!("mTLS handshake rejected from {}: failed to extract SPIFFE ID: {:?}", peer_addr, e);
+                                        return;
+                                    }
+                                }
+
+                                let stream = DpStream::new(tls_stream, local_addr, peer_addr);
+                                let service_dispatcher_ptr = loop_dispatcher.clone();
+                                dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy).await;
+                            }
+                            Err (err) => {
+                                warn!("mTLS handshake failed from {}: {:?}", peer_addr, err);
+                            }
                         }
-                        Err (err) => {
-                            warn!("mTLS handshake failed from {}: {:?}", peer_addr, err);
-                        }
-                    }
-                });
+                    });
+                }
+                else {
+                    tokio::spawn(async move {
+                        let service_dispatcher_ptr = loop_dispatcher.clone();
+                        dp_connection_worker3(func_name, tcp_stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy).await;
+                    });
+                }
+
+
             }
             _ = sigterm_stream.recv() => return,
             _ = sigint_stream.recv() => return,
@@ -2295,6 +2450,7 @@ pub fn start_proxy_server2(
     proxy_cores: Vec<u8>,
     request_sender: mpsc::Sender<DispatcherCommand>,
     port: u16,
+    proxy_tls_material_dir: String,
     authorization_policy_func_name: String,
     authorization_policy_bin_local_path: String,
     jwt_policy_func_name: String,
@@ -2302,6 +2458,7 @@ pub fn start_proxy_server2(
     jwt_policy_pem_file_local_path: String,
     enable_authorization_policy: bool,
     enable_jwt_policy: bool,
+    enable_mtls: bool,
 ) {
     let runtime = if cfg!(feature = "unpin_proxy") {
         Runtime::new().unwrap() // The default runtime. Use all the cores it could use
@@ -2334,15 +2491,9 @@ pub fn start_proxy_server2(
         runtime_builder.build().unwrap()
     };
 
-    let jwt_pem_bytes = std::fs::read(&jwt_policy_pem_file_local_path)
-    .expect("Failed to read JWT policy PEM file");
-    let jwt_pem_context = make_single_item_context(
-        0,
-        "",
-        "",
-        0,
-        jwt_pem_bytes.into_boxed_slice(),
-    );
+    let jwt_pem_bytes =
+        std::fs::read(&jwt_policy_pem_file_local_path).expect("Failed to read JWT policy PEM file");
+    let jwt_pem_context = make_single_item_context(0, "", "", 0, jwt_pem_bytes.into_boxed_slice());
     thread::spawn(move || {
         runtime.block_on(async {
             create_proxy_server2(
@@ -2350,6 +2501,7 @@ pub fn start_proxy_server2(
                 nghttp2_codec_bin_local_path,
                 request_sender,
                 port,
+                proxy_tls_material_dir,
                 authorization_policy_func_name,
                 authorization_policy_bin_local_path,
                 jwt_policy_func_name,
@@ -2357,6 +2509,7 @@ pub fn start_proxy_server2(
                 jwt_pem_context,
                 enable_authorization_policy,
                 enable_jwt_policy,
+                enable_mtls,
             )
             .await;
         });
