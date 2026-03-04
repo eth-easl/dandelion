@@ -514,11 +514,10 @@ fn main() -> () {
     println!("frontend cores {:?}", frontend_cores);
     if cfg!(feature = "unpin_proxy") {
         println!("dirigent_server_cores: unpinned, could use all the machine cores");
-        println!("dirigent_proxy_cores: unpinned, could use all the machine cores"); 
-    }
-    else {
+        println!("dirigent_proxy_cores: unpinned, could use all the machine cores");
+    } else {
         println!("dirigent_server_cores {:?}", dirigent_server_cores);
-        println!("dirigent_proxy_cores {:?}", dirigent_proxy_cores); 
+        println!("dirigent_proxy_cores {:?}", dirigent_proxy_cores);
     }
     println!("dispatcher cores: {:?}", dispatcher_cores);
     println!("communication cores: {:?}", communication_cores);
@@ -701,13 +700,15 @@ fn main() -> () {
         dirigent_proxy_cores,
         dispatcher_sender.clone(),
         config.dirigent_proxy_port,
+        config.proxy_tls_material_dir,
         config.authorization_policy_name,
         config.authorization_policy_bin_local_path,
         config.jwt_policy_name,
         config.jwt_policy_bin_local_path,
         config.jwt_policy_pem_file_local_path,
         config.enable_authorization_policy,
-        config.enable_jwt_policy, 
+        config.enable_jwt_policy,
+        config.enable_mtls,
     );
 
     if cfg!(feature = "use_service_loop") {
