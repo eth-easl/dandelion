@@ -10,6 +10,7 @@ const DEFAULT_SINGLE_CORE: bool = false;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
 const DEFAULT_DIRIGENT_SYNC_PORT: u16 = 8083;
 const DEFAULT_DIRIGENT_PROXY_PORT: u16 = 8084;
+const DEFAULT_PROXY_TLS_MATERIAL_DIR: &str = "/var/lib/cluster_manager/worker-mtls";
 
 #[derive(serde::Deserialize, Debug)]
 pub struct PreloadFunc {
@@ -75,7 +76,7 @@ pub struct DandelionConfig {
     pub nghttp2_codec_func_name: String,
     #[arg(long, env, default_value_t = String::from(DEFAULT_NGHTTP2_CODEC_BIN_LOCAL_PATH))]
     #[serde(default)]
-    pub nghttp2_codec_bin_local_path: String,    
+    pub nghttp2_codec_bin_local_path: String,
     #[arg(long, env)]
     pub authorization_policy_bin_local_path: String,
     #[arg(long, env, default_value_t = String::from(DEFAULT_AUTHORIZATION_POLICY_NAME))]
@@ -86,12 +87,18 @@ pub struct DandelionConfig {
     pub jwt_policy_name: String,
     #[arg(long, env)]
     pub jwt_policy_pem_file_local_path: String,
-    #[arg(long,env, default_value_t = false)]
+    #[arg(long, env, default_value_t = false)]
     #[serde(default)]
     pub enable_jwt_policy: bool,
-    #[arg(long,env, default_value_t = false)]
+    #[arg(long, env, default_value_t = false)]
     #[serde(default)]
     pub enable_authorization_policy: bool,
+    #[arg(long, env, default_value_t = false)]
+    #[serde(default)]
+    pub enable_mtls: bool,
+    #[arg(long, env, default_value_t = String::from(DEFAULT_PROXY_TLS_MATERIAL_DIR))]
+    #[serde(default)]
+    pub proxy_tls_material_dir: String,
 }
 
 impl DandelionConfig {
@@ -137,6 +144,10 @@ impl DandelionConfig {
         merge_clone!(bin_preload_path, String::from(""));
         merge!(dirigent_sync_port, DEFAULT_DIRIGENT_SYNC_PORT);
         merge!(dirigent_proxy_port, DEFAULT_DIRIGENT_PROXY_PORT);
+        merge_clone!(
+            proxy_tls_material_dir,
+            String::from(DEFAULT_PROXY_TLS_MATERIAL_DIR)
+        );
     }
 
     /// Get the config from the arguments, environment and possibly config file
