@@ -142,9 +142,10 @@ impl FunctionAlternative {
         if caching {
             let mut function_lock = self.function.write().unwrap();
             *function_lock = Some(function.clone());
-            self.function_state
-                .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
-                .expect("Finish loading should always find load reservation");
+            self.function_state.store(2, Ordering::Release);
+            // self.function_state
+            //     .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
+            //     .expect("Finish loading should always find load reservation");
         }
         Ok(function)
     }
