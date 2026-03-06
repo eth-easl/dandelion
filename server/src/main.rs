@@ -49,10 +49,10 @@ const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
 enum DispatcherCommand {
     FunctionRequest {
-        name: String,
+        function_id: Arc<String>,
         inputs: Vec<DispatcherInput>,
         is_cold: bool,
-        start_time: Instant,
+        recorder: Recorder,
         callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
     },
     FunctionRegistration {
@@ -105,6 +105,9 @@ async fn serve_request(
         warn!("request parsing failed with: {:?}", request_context_result);
     }
     let (function_name, request_context) = request_context_result.unwrap();
+    let function_id = Arc::new(function_name);
+    let mut recorder = Recorder::new(function_id.clone(), start_time);
+    recorder.record(dandelion_commons::records::RecordPoint::DeserializationEnd);
     debug!("finished creating request context");
 
     // TODO match set names to assign sets to composition sets
@@ -123,10 +126,10 @@ async fn serve_request(
     let (callback, output_recevier) = tokio::sync::oneshot::channel();
     dispatcher
         .send(DispatcherCommand::FunctionRequest {
-            name: function_name,
+            function_id,
             inputs,
             is_cold,
-            start_time: start_time.clone(),
+            recorder,
             callback,
         })
         .await
@@ -364,15 +367,15 @@ async fn dispatcher_loop(
     while let Some(dispatcher_args) = request_receiver.recv().await {
         match dispatcher_args {
             DispatcherCommand::FunctionRequest {
-                name,
+                function_id,
                 inputs,
                 is_cold,
-                start_time,
+                recorder,
                 mut callback,
             } => {
-                debug!("Handling function request for function {}", name);
+                debug!("Handling function request for function {}", function_id);
                 let function_future =
-                    dispatcher.queue_function_by_name(name, inputs, is_cold, start_time);
+                    dispatcher.queue_function_by_name(function_id, inputs, !is_cold, recorder);
                 spawn(async {
                     select! {
                         function_output = function_future => {

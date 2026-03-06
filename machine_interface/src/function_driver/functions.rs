@@ -5,6 +5,7 @@ use crate::{
     DataRequirementList,
 };
 use dandelion_commons::{records::Recorder, DandelionResult};
+use log::warn;
 use std::{
     fmt::Debug,
     sync::{
@@ -79,7 +80,8 @@ pub struct FunctionAlternative {
     pub domain: Arc<Box<dyn MemoryDomain>>,
     /// state of the function cell
     /// 0: empty, 1: load in progress, 2: ready
-    function_state: AtomicU8,
+    /// This is to make it easy to read the state from the queue later on
+    // function_state: AtomicU8,
     /// Function object once the binary is loaded in memory.
     pub function: RwLock<Option<Arc<Function>>>,
 }
@@ -99,7 +101,7 @@ impl FunctionAlternative {
             context_size,
             path,
             domain,
-            function_state: AtomicU8::new(2),
+            // function_state: AtomicU8::new(2),
             function: RwLock::new(Some(function)),
         }
     }
@@ -115,7 +117,7 @@ impl FunctionAlternative {
             context_size,
             path,
             domain,
-            function_state: AtomicU8::new(0),
+            // function_state: AtomicU8::new(0),
             function: RwLock::new(None),
         }
     }
@@ -128,12 +130,20 @@ impl FunctionAlternative {
         recorder: &mut Recorder,
     ) -> DandelionResult<Arc<Function>> {
         // load the function
+        // let mut write_lock = None;
         if caching {
-            let state = self.function_state.load(Ordering::Acquire);
-            debug_assert_ne!(0, state, "State should never be 0 if loading with caching");
-            if state == 2 {
-                return Ok(self.function.read().unwrap().as_ref().unwrap().clone());
+            let read_guard = self.function.read().unwrap();
+            if let Some(inner) = read_guard.as_ref() {
+                return Ok(inner.clone());
+                // } else {
+                // drop(read_guard);
+                // write_lock = Some(self.function.write().unwrap());
             }
+            // let state = self.function_state.load(Ordering::Acquire);
+            // debug_assert_ne!(0, state, "State should never be 0 if loading with caching");
+            // if state == 2 {
+            //     return Ok(self.function.read().unwrap().as_ref().unwrap().clone());
+            // }
         }
         let driver = self.engine.get_driver();
         recorder.record(dandelion_commons::records::RecordPoint::ParsingStart);
@@ -142,7 +152,7 @@ impl FunctionAlternative {
         if caching {
             let mut function_lock = self.function.write().unwrap();
             *function_lock = Some(function.clone());
-            self.function_state.store(2, Ordering::Release);
+            // self.function_state.store(2, Ordering::Release);
             // self.function_state
             //     .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
             //     .expect("Finish loading should always find load reservation");
@@ -157,15 +167,15 @@ impl Debug for FunctionAlternative {
             .field("engine", &self.engine)
             .field("context_size", &self.context_size)
             .field("path", &self.path)
-            .field(
-                "function",
-                match self.function_state.load(Ordering::Acquire) {
-                    0 => &"None",
-                    1 => &"Loading",
-                    2 => &"Ready",
-                    x => panic!("Should never have function state {:x}", x),
-                },
-            )
+            // .field(
+            //     "function",
+            //     match self.function_state.load(Ordering::Acquire) {
+            //         0 => &"None",
+            //         1 => &"Loading",
+            //         2 => &"Ready",
+            //         x => panic!("Should never have function state {:x}", x),
+            //     },
+            // )
             .finish()
     }
 }
