@@ -710,6 +710,8 @@ fn main() -> () {
         config.enable_jwt_policy,
         config.enable_mtls,
         config.enable_rate_limiting,
+        config.rate_limiting_policy_name,
+        config.rate_limiting_policy_bin_local_path,
         config.rate_limiting_redis_addr,
         config.rate_limiting_redis_port,
         config.rate_limiting_requests_per_time_unit,

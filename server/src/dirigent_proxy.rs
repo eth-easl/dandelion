@@ -2297,6 +2297,8 @@ async fn create_proxy_server2(
     enable_jwt_policy: bool,
     enable_mtls: bool,
     enable_rate_limiting: bool,
+    rate_limiting_policy_func_name: String,
+    rate_limiting_policy_bin_local_path: String,
     rate_limiting_redis_addr: String,
     rate_limiting_redis_port: u16,
     rate_limiting_requests_per_time_unit: u32,
@@ -2347,7 +2349,15 @@ async fn create_proxy_server2(
     }
 
     if enable_rate_limiting {
-        //  TODO: register the rate limiting policy function
+        //  register the rate_limiting policy function
+        let _ = register_function_local(
+            rate_limiting_policy_bin_local_path.clone(),
+            rate_limiting_policy_func_name.clone(),
+            engine_type.clone(),
+            request_sender.clone(),
+        )
+        .await
+        .unwrap();
     }
 
     // ***** spawn the router ******
@@ -2489,6 +2499,8 @@ pub fn start_proxy_server2(
     enable_jwt_policy: bool,
     enable_mtls: bool,
     enable_rate_limiting: bool,
+    rate_limiting_policy_func_name: String,
+    rate_limiting_policy_bin_local_path: String,
     rate_limiting_redis_addr: String,
     rate_limiting_redis_port: u16,
     rate_limiting_requests_per_time_unit: u32,
@@ -2545,6 +2557,8 @@ pub fn start_proxy_server2(
                 enable_jwt_policy,
                 enable_mtls,
                 enable_rate_limiting,
+                rate_limiting_policy_func_name,
+                rate_limiting_policy_bin_local_path,
                 rate_limiting_redis_addr,
                 rate_limiting_redis_port,
                 rate_limiting_requests_per_time_unit,
