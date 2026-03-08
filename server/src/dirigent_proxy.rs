@@ -23,6 +23,7 @@ use machine_interface::{
 };
 use serde::Deserialize;
 use serde::Serialize;
+use x509_parser::nom::number;
 use std::io::{BufReader, Cursor, Error, Read};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -305,6 +306,34 @@ struct RateLimitRedisCtx {
     conn: MultiplexedConnection,   // clone per command call/task
     incr_with_expire: Script,      // immutable shared script
     safe_rollback: Script,         // immutable shared script
+}
+
+fn now_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+fn compute_bucket_start_and_end(
+    now_secs: u64,
+    rate_limiting_time_unit_in_seconds: u32,
+) -> (u64, u64) {
+    let bucket_size = u64::from(rate_limiting_time_unit_in_seconds);
+    assert!(bucket_size > 0, "time bucket size must be > 0");
+
+    let bucket_start = now_secs - (now_secs % bucket_size);
+    let bucket_end = bucket_start + bucket_size;
+
+    (bucket_start, bucket_end)
+}
+
+//  we prefix the keys with "rate_limiting" in case we end up using the same Redis instance for other purposes in the future
+fn make_rate_limiting_key(
+    function_name: &String,
+    bucket_start: u64,
+) -> String {
+    format!("rate_limiting:{}:{}", function_name, bucket_start)
 }
 
 
@@ -660,6 +689,51 @@ async fn prepare_input_and_invoke_authorization_policy(
 
     // debug!("Authorization policy function output: {:?}", function_output);
     authorization_verdict
+}
+
+async fn prepare_input_and_invoke_rate_limiting_policy(
+    rate_limiting_policy_func_name: String,
+    request_sender: mpsc::Sender<DispatcherCommand>,
+    number_of_requests_in_current_time_window: u32,
+    rate_limiting_requests_per_time_unit: u32,
+) -> u8 {
+    // For simplicity, we only pass the ":path" header to the rate limiting function as input for now
+    let mut input_set0_items = Vec::new();
+
+    let number_of_requests_in_current_time_window = number_of_requests_in_current_time_window.to_ne_bytes();
+    let rate_limiting_requests_per_time_unit = rate_limiting_requests_per_time_unit.to_ne_bytes();
+    input_set0_items.push(InputItem {
+        identifier: String::from(""),
+        key: 0,
+        data: &number_of_requests_in_current_time_window,
+    });
+    input_set0_items.push(InputItem {
+        identifier: String::from(""),
+        key: 1,
+        data: &rate_limiting_requests_per_time_unit,
+    });
+
+    let input_sets: Vec<InputSet> = vec![InputSet {
+        identifier: String::from(""),
+        items: input_set0_items,
+    }];
+
+    let (function_output, recorder) = invoke_dandelion_function(
+        String::from(rate_limiting_policy_func_name),
+        input_sets,
+        request_sender.clone(),
+    )
+    .await;
+
+    let response_dandelion_body = dandelion_server::DandelionBody::new(function_output, &recorder);
+
+    let body: Bytes = response_dandelion_body.into_bytes();
+    let response: DandelionDeserializeResponse = bson::from_slice(&body).unwrap();
+
+    let rate_limiting_verdict = response.sets[0].items[0].data[0];
+
+    // debug!("Rate limiting policy function output: {:?}", function_output);
+    rate_limiting_verdict
 }
 
 // ********* Invoke nghttp2 code func; Parse its output *************
@@ -1760,6 +1834,7 @@ async fn stream_worker(
     jwt_pem_context: Arc<Context>,
     enable_authorization_policy: bool,
     enable_jwt_policy: bool,
+    rate_limiting_policy_func_name: String,
     rate_limit_ctx: Option<Arc<RateLimitRedisCtx>>,
     rate_limiting_requests_per_time_unit: u32,
     rate_limiting_time_unit_in_seconds: u32,
@@ -1849,8 +1924,83 @@ async fn stream_worker(
 
     //  If we have a rate_limit_ctx, we want to apply rate limiting
     if let Some(rate_limit_ctx) = rate_limit_ctx.as_ref() {
+        // unpack variables from redis context
+        let mut redis_con = rate_limit_ctx.conn.clone(); // cheap clone of multiplexed conn         
+        let incr_script = &rate_limit_ctx.incr_with_expire;
+        let rollback_script = &rate_limit_ctx.safe_rollback;
 
+        // compute buckets and rate_limiting_key
+        let now_secs = now_unix_seconds();
+        let (bucket_start, bucket_end) = compute_bucket_start_and_end(now_secs, rate_limiting_time_unit_in_seconds);
 
+        
+        let mut function_name: String = "".to_string();
+        for (header_name, header_value) in header_pairs {
+            if header_name == "function" {
+                function_name = header_value;
+                break;
+            }
+        }
+
+        let rate_limiting_key = make_rate_limiting_key(&function_name, bucket_start);
+
+        let current_counter_value: u32  = match incr_script
+            .key(&rate_limiting_key)
+            .arg(bucket_end as i64)
+            .invoke_async(&mut redis_con)
+            .await
+        {
+            Ok(v) => {
+                v
+            }
+            Err(e) => {
+                error!("Redis INCR script failed: {}", e);
+                0 // If we don't manage to query redis, we decide to let the request go (i.e. assume that the request count for this function is 0)
+            }
+        };
+
+        let rate_limiting_verdict = prepare_input_and_invoke_rate_limiting_policy(
+            rate_limiting_policy_func_name, 
+            request_sender, 
+            current_counter_value, 
+            rate_limiting_requests_per_time_unit
+        ).await;
+
+        if rate_limiting_verdict == 0 {
+            //  We want to rollback the counter in redis
+            match rollback_script
+                .key(&rate_limiting_key)
+                .invoke_async::<Option<i64>>(&mut redis_con)
+                .await
+            {
+                Ok(_) => {
+                    debug!("Redis rollback script succeeded for key: {}", rate_limiting_key);
+                }
+                Err(e) => {
+                    error!("Redis rollback script failed for key: {} with error: {}", rate_limiting_key, e);
+                }
+            }
+
+            error!(
+                "[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] The rate limiting policy returns deny. Thus, the stream worker stops working",
+                tcp_conn_local_addr, tcp_conn_peer_addr, stream_id
+            );
+            let _ = stream_worker_to_dp_connection_worker_tx
+                .send(StreamWorkerToDpConnReq {
+                    payload: format!(
+                        "[stream worker:{}] The rate limiting policy returns deny. Thus, the stream worker stops working",
+                        stream_id
+                    ),
+                    stream_id_to_send_response: stream_id,
+                    num_of_headers_to_send: 0,
+                    num_of_trailers_to_send: num_of_trailers_received,
+                    trailer_offset: trailer_offset,
+                    headers: Vec::new(),
+                    body_to_send: Vec::new(),
+                })
+                .await;
+            return;
+        }
     }
 
     // The stream worker would query the router to get the channel to the user_func_conn_worker
@@ -1994,6 +2144,7 @@ async fn dp_connection_worker3<S: ProxyStream>(
     jwt_pem_context: Arc<Context>,
     enable_authorization_policy: bool,
     enable_jwt_policy: bool,
+    rate_limiting_policy_func_name: String,
     rate_limit_ctx: Option<Arc<RateLimitRedisCtx>>,
     rate_limiting_requests_per_time_unit: u32,
     rate_limiting_time_unit_in_seconds: u32,
@@ -2294,6 +2445,7 @@ async fn dp_connection_worker3<S: ProxyStream>(
                 jwt_pem_context,
                 enable_authorization_policy,
                 enable_jwt_policy,
+                rate_limiting_policy_func_name.clone(),
                 rate_limit_ctx.clone(),
                 rate_limiting_requests_per_time_unit,
                 rate_limiting_time_unit_in_seconds
@@ -2455,6 +2607,7 @@ async fn create_proxy_server2(
                 let authorization_policy_func_name = authorization_policy_func_name.clone();
                 let jwt_policy_func_name = jwt_policy_func_name.clone();
                 let jwt_pem_context = Arc::clone(&jwt_pem_context);
+                let rate_limiting_policy_func_name = rate_limiting_policy_func_name.clone();
                 if enable_mtls {
                     let rate_limit_ctx = rate_limit_ctx.clone();
 
@@ -2514,7 +2667,7 @@ async fn create_proxy_server2(
 
                                 let stream = DpStream::new(tls_stream, local_addr, peer_addr);
                                 let service_dispatcher_ptr = loop_dispatcher.clone();
-                                dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, rate_limit_ctx, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds).await;
+                                dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, rate_limiting_policy_func_name,rate_limit_ctx, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds).await;
                             }
                             Err (err) => {
                                 warn!("mTLS handshake failed from {}: {:?}", peer_addr, err);
@@ -2526,7 +2679,7 @@ async fn create_proxy_server2(
                     let rate_limit_ctx = rate_limit_ctx.clone();
                     tokio::spawn(async move {
                         let service_dispatcher_ptr = loop_dispatcher.clone();
-                        dp_connection_worker3(func_name, tcp_stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, rate_limit_ctx, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds).await;
+                        dp_connection_worker3(func_name, tcp_stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, rate_limiting_policy_func_name,rate_limit_ctx, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds).await;
                     });
                 }
 
