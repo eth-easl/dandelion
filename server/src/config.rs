@@ -12,6 +12,7 @@ const DEFAULT_DIRIGENT_SYNC_PORT: u16 = 8083;
 const DEFAULT_DIRIGENT_PROXY_PORT: u16 = 8084;
 const DEFAULT_RATE_LIMITING_REDIS_ADDR: &str = "127.0.0.1";
 const DEFAULT_RATE_LIMITING_REDIS_PORT: u16 = 10379;
+const DEFAULT_RATE_LIMITING_REDIS_PASS: &str = "";  //  By default we assume no password, since it makes it easier to test the system. In production this should be overriden by the CLI argument.
 const DEFAULT_RATE_LIMITING_REQUESTS_PER_TIME_UNIT: u32 = 60000;
 const DEFAULT_RATE_LIMITING_TIME_UNIT_SECONDS: u32 = 1;
 const DEFAULT_PROXY_TLS_MATERIAL_DIR: &str = "/var/lib/cluster_manager/worker-mtls";
@@ -117,6 +118,9 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = DEFAULT_RATE_LIMITING_REDIS_PORT)]
     #[serde(default)]
     pub rate_limiting_redis_port: u16,
+    #[arg(long, env, default_value_t = String::from(DEFAULT_RATE_LIMITING_REDIS_PASS))]
+    #[serde(default)]
+    pub rate_limiting_redis_pass: String,
     #[arg(long, env, default_value_t = DEFAULT_RATE_LIMITING_REQUESTS_PER_TIME_UNIT)]
     #[serde(default)]
     pub rate_limiting_requests_per_time_unit: u32,
