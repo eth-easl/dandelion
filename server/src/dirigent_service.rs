@@ -261,6 +261,7 @@ pub fn start_dirigent_server(server_cores: Vec<u8>, port: u16) -> Arc<DirigentSe
         // set up tokio runtime, need io in any case
         let mut runtime_builder = Builder::new_multi_thread();
         runtime_builder.enable_io();
+        runtime_builder.enable_time();
         runtime_builder.worker_threads(server_cores.len());
         // Pin each Tokio worker thread to a specific core
         let cores = server_cores.clone(); // move into closure

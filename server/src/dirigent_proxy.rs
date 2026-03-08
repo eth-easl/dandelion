@@ -54,6 +54,10 @@ use tokio::io::AsyncReadExt;
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
 use x509_parser::{extensions::GeneralName, parse_x509_certificate};
 
+// Stuff needed for rate limiting
+use std::time::{SystemTime, UNIX_EPOCH};
+use redis::{aio::MultiplexedConnection, Client, Script};
+
 use core_affinity::{self, CoreId};
 use dandelion_server::config::DandelionConfig;
 
@@ -279,6 +283,30 @@ impl ProxyStream for DpStream {
     async fn send_all(&mut self, buf: &[u8]) -> io::Result<()> { DpStream::write_all(self, buf).await }
     async fn close_stream(&mut self) -> io::Result<()> { DpStream::shutdown(self).await }
 }
+
+
+// ********* rate_limiting related functions *************
+// ************************************************
+// ************************************************
+async fn connect_redis(
+    redis_ip: &str,
+    redis_port: u16,
+    redis_password: &str,
+) -> redis::RedisResult<MultiplexedConnection> {
+    //  Assumes that password is URL-safe. If it contains special chars like @ or :, percent-encode it first
+    let redis_url = format!("redis://:{}@{}:{}/", redis_password, redis_ip, redis_port);
+
+    let client = Client::open(redis_url)?;
+    client.get_multiplexed_async_connection().await
+}
+
+#[derive(Clone)]
+struct RateLimitRedisCtx {
+    conn: MultiplexedConnection,   // clone per command call/task
+    incr_with_expire: Script,      // immutable shared script
+    safe_rollback: Script,         // immutable shared script
+}
+
 
 // ********* Register/invoke Dandelion functions*************
 // ************************************************
@@ -1732,9 +1760,7 @@ async fn stream_worker(
     jwt_pem_context: Arc<Context>,
     enable_authorization_policy: bool,
     enable_jwt_policy: bool,
-    enable_rate_limiting: bool,
-    rate_limiting_redis_addr: String,
-    rate_limiting_redis_port: u16,
+    rate_limit_ctx: Option<Arc<RateLimitRedisCtx>>,
     rate_limiting_requests_per_time_unit: u32,
     rate_limiting_time_unit_in_seconds: u32,
 ) {
@@ -1821,8 +1847,10 @@ async fn stream_worker(
         }
     }
 
-    if enable_rate_limiting {
-        //  TODO: implement the rate limiting logic here.
+    //  If we have a rate_limit_ctx, we want to apply rate limiting
+    if let Some(rate_limit_ctx) = rate_limit_ctx.as_ref() {
+
+
     }
 
     // The stream worker would query the router to get the channel to the user_func_conn_worker
@@ -1966,9 +1994,7 @@ async fn dp_connection_worker3<S: ProxyStream>(
     jwt_pem_context: Arc<Context>,
     enable_authorization_policy: bool,
     enable_jwt_policy: bool,
-    enable_rate_limiting: bool,
-    rate_limiting_redis_addr: String,
-    rate_limiting_redis_port: u16,
+    rate_limit_ctx: Option<Arc<RateLimitRedisCtx>>,
     rate_limiting_requests_per_time_unit: u32,
     rate_limiting_time_unit_in_seconds: u32,
 ) where
@@ -2268,9 +2294,7 @@ async fn dp_connection_worker3<S: ProxyStream>(
                 jwt_pem_context,
                 enable_authorization_policy,
                 enable_jwt_policy,
-                enable_rate_limiting,
-                rate_limiting_redis_addr.clone(),
-                rate_limiting_redis_port,
+                rate_limit_ctx.clone(),
                 rate_limiting_requests_per_time_unit,
                 rate_limiting_time_unit_in_seconds
             ));
@@ -2301,6 +2325,7 @@ async fn create_proxy_server2(
     rate_limiting_policy_bin_local_path: String,
     rate_limiting_redis_addr: String,
     rate_limiting_redis_port: u16,
+    rate_limiting_redis_pass: String,
     rate_limiting_requests_per_time_unit: u32,
     rate_limiting_time_unit_in_seconds: u32,
 ) {
@@ -2360,6 +2385,36 @@ async fn create_proxy_server2(
         .unwrap();
     }
 
+    let rate_limit_ctx: Option<Arc<RateLimitRedisCtx>> = if enable_rate_limiting {
+        let conn = connect_redis(&rate_limiting_redis_addr, rate_limiting_redis_port, &rate_limiting_redis_pass)
+            .await
+            .expect("failed to connect to the rate-limiting redis instance");
+
+        let incr_with_expire = Script::new(r#"
+            local v = redis.call("INCR", KEYS[1])
+            if v == 1 then
+                redis.call("EXPIREAT", KEYS[1], tonumber(ARGV[1]))
+            end
+            return v
+        "#);
+
+        let safe_rollback = Script::new(r#"
+            local v = redis.call("GET", KEYS[1])
+            if not v then
+                return nil
+            end
+            v = tonumber(v)
+            if v <= 0 then
+                return v
+            end
+            return redis.call("DECR", KEYS[1])
+        "#);
+
+        Some(Arc::new(RateLimitRedisCtx { conn, incr_with_expire, safe_rollback }))
+    } else {
+        None
+    };
+
     // ***** spawn the router ******
     let (stream_worker_to_router_tx, stream_worker_to_func_router_rx) =
         mpsc::channel::<StreamWorkerToRouterReq>(32);
@@ -2400,9 +2455,9 @@ async fn create_proxy_server2(
                 let authorization_policy_func_name = authorization_policy_func_name.clone();
                 let jwt_policy_func_name = jwt_policy_func_name.clone();
                 let jwt_pem_context = Arc::clone(&jwt_pem_context);
-                let rate_limiting_redis_addr = rate_limiting_redis_addr.clone();
-
                 if enable_mtls {
+                    let rate_limit_ctx = rate_limit_ctx.clone();
+
                     tokio::spawn(async move {
                         let mtls_paths = build_proxy_mtls_material_paths(&proxy_tls_material_dir);
                         let expected_data_plane_spiffe_id = match load_expected_data_plane_spiffe_id(
@@ -2459,7 +2514,7 @@ async fn create_proxy_server2(
 
                                 let stream = DpStream::new(tls_stream, local_addr, peer_addr);
                                 let service_dispatcher_ptr = loop_dispatcher.clone();
-                                dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, enable_rate_limiting, rate_limiting_redis_addr, rate_limiting_redis_port, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds).await;
+                                dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, rate_limit_ctx, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds).await;
                             }
                             Err (err) => {
                                 warn!("mTLS handshake failed from {}: {:?}", peer_addr, err);
@@ -2468,9 +2523,10 @@ async fn create_proxy_server2(
                     });
                 }
                 else {
+                    let rate_limit_ctx = rate_limit_ctx.clone();
                     tokio::spawn(async move {
                         let service_dispatcher_ptr = loop_dispatcher.clone();
-                        dp_connection_worker3(func_name, tcp_stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, enable_rate_limiting, rate_limiting_redis_addr, rate_limiting_redis_port, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds).await;
+                        dp_connection_worker3(func_name, tcp_stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, rate_limit_ctx, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds).await;
                     });
                 }
 
@@ -2503,6 +2559,7 @@ pub fn start_proxy_server2(
     rate_limiting_policy_bin_local_path: String,
     rate_limiting_redis_addr: String,
     rate_limiting_redis_port: u16,
+    rate_limiting_redis_pass: String,
     rate_limiting_requests_per_time_unit: u32,
     rate_limiting_time_unit_in_seconds: u32
 ) {
@@ -2513,6 +2570,7 @@ pub fn start_proxy_server2(
         // set up tokio runtime, need io in any case
         let mut runtime_builder = Builder::new_multi_thread();
         runtime_builder.enable_io();
+        runtime_builder.enable_time();
         runtime_builder.worker_threads(proxy_cores.len());
         // Pin each Tokio worker thread to a specific core
         let cores = proxy_cores.clone(); // move into closure
@@ -2536,6 +2594,7 @@ pub fn start_proxy_server2(
 
         runtime_builder.build().unwrap()
     };
+
 
     let jwt_pem_bytes =
         std::fs::read(&jwt_policy_pem_file_local_path).expect("Failed to read JWT policy PEM file");
@@ -2561,6 +2620,7 @@ pub fn start_proxy_server2(
                 rate_limiting_policy_bin_local_path,
                 rate_limiting_redis_addr,
                 rate_limiting_redis_port,
+                rate_limiting_redis_pass,
                 rate_limiting_requests_per_time_unit,
                 rate_limiting_time_unit_in_seconds
             )
