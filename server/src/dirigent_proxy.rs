@@ -1735,6 +1735,8 @@ async fn stream_worker(
     enable_rate_limiting: bool,
     rate_limiting_redis_addr: String,
     rate_limiting_redis_port: u16,
+    rate_limiting_requests_per_time_unit: u32,
+    rate_limiting_time_unit_in_seconds: u32,
 ) {
     info!(
         "[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] A new stream worker",
@@ -1967,6 +1969,8 @@ async fn dp_connection_worker3<S: ProxyStream>(
     enable_rate_limiting: bool,
     rate_limiting_redis_addr: String,
     rate_limiting_redis_port: u16,
+    rate_limiting_requests_per_time_unit: u32,
+    rate_limiting_time_unit_in_seconds: u32,
 ) where
     S: ProxyStream + Send + Unpin + 'static {
 
@@ -2267,6 +2271,8 @@ async fn dp_connection_worker3<S: ProxyStream>(
                 enable_rate_limiting,
                 rate_limiting_redis_addr.clone(),
                 rate_limiting_redis_port,
+                rate_limiting_requests_per_time_unit,
+                rate_limiting_time_unit_in_seconds
             ));
         }
     }
@@ -2293,6 +2299,8 @@ async fn create_proxy_server2(
     enable_rate_limiting: bool,
     rate_limiting_redis_addr: String,
     rate_limiting_redis_port: u16,
+    rate_limiting_requests_per_time_unit: u32,
+    rate_limiting_time_unit_in_seconds: u32,
 ) {
     // ****** Before the loop actually starts, register some functions ******
 
@@ -2441,7 +2449,7 @@ async fn create_proxy_server2(
 
                                 let stream = DpStream::new(tls_stream, local_addr, peer_addr);
                                 let service_dispatcher_ptr = loop_dispatcher.clone();
-                                dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, enable_rate_limiting, rate_limiting_redis_addr, rate_limiting_redis_port).await;
+                                dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, enable_rate_limiting, rate_limiting_redis_addr, rate_limiting_redis_port, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds).await;
                             }
                             Err (err) => {
                                 warn!("mTLS handshake failed from {}: {:?}", peer_addr, err);
@@ -2452,7 +2460,7 @@ async fn create_proxy_server2(
                 else {
                     tokio::spawn(async move {
                         let service_dispatcher_ptr = loop_dispatcher.clone();
-                        dp_connection_worker3(func_name, tcp_stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, enable_rate_limiting, rate_limiting_redis_addr, rate_limiting_redis_port).await;
+                        dp_connection_worker3(func_name, tcp_stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, enable_rate_limiting, rate_limiting_redis_addr, rate_limiting_redis_port, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds).await;
                     });
                 }
 
@@ -2483,6 +2491,8 @@ pub fn start_proxy_server2(
     enable_rate_limiting: bool,
     rate_limiting_redis_addr: String,
     rate_limiting_redis_port: u16,
+    rate_limiting_requests_per_time_unit: u32,
+    rate_limiting_time_unit_in_seconds: u32
 ) {
     let runtime = if cfg!(feature = "unpin_proxy") {
         Runtime::new().unwrap() // The default runtime. Use all the cores it could use
@@ -2537,6 +2547,8 @@ pub fn start_proxy_server2(
                 enable_rate_limiting,
                 rate_limiting_redis_addr,
                 rate_limiting_redis_port,
+                rate_limiting_requests_per_time_unit,
+                rate_limiting_time_unit_in_seconds
             )
             .await;
         });
