@@ -10,6 +10,8 @@ const DEFAULT_SINGLE_CORE: bool = false;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
 const DEFAULT_DIRIGENT_SYNC_PORT: u16 = 8083;
 const DEFAULT_DIRIGENT_PROXY_PORT: u16 = 8084;
+const DEFAULT_RATE_LIMITING_REDIS_ADDR: &str = "127.0.0.1";
+const DEFAULT_RATE_LIMITING_REDIS_PORT: u16 = 10379;
 const DEFAULT_PROXY_TLS_MATERIAL_DIR: &str = "/var/lib/cluster_manager/worker-mtls";
 
 #[derive(serde::Deserialize, Debug)]
@@ -38,6 +40,7 @@ const DEFAULT_NGHTTP2_CODEC_BIN_LOCAL_PATH: &str = "./nghttp2_codec3";
 
 const DEFAULT_AUTHORIZATION_POLICY_NAME: &str = "authorization_policy";
 const DEFAULT_JWT_POLICY_NAME: &str = "jwt_policy";
+const DEFAULT_RATE_LIMITING_POLICY_NAME: &str = "rate_limiting_policy";
 
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
@@ -99,6 +102,15 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = String::from(DEFAULT_PROXY_TLS_MATERIAL_DIR))]
     #[serde(default)]
     pub proxy_tls_material_dir: String,
+    #[arg(long, env, default_value_t = false)]
+    #[serde(default)]
+    pub enable_rate_limiting: bool,
+    #[arg(long, env, default_value_t = String::from(DEFAULT_RATE_LIMITING_REDIS_ADDR))]
+    #[serde(default)]
+    pub rate_limiting_redis_addr: String,
+    #[arg(long, env, default_value_t = DEFAULT_RATE_LIMITING_REDIS_PORT)]
+    #[serde(default)]
+    pub rate_limiting_redis_port: u16,
 }
 
 impl DandelionConfig {
@@ -148,6 +160,11 @@ impl DandelionConfig {
             proxy_tls_material_dir,
             String::from(DEFAULT_PROXY_TLS_MATERIAL_DIR)
         );
+        merge_clone!(
+            rate_limiting_redis_addr,
+            String::from(DEFAULT_RATE_LIMITING_REDIS_ADDR)
+        );
+        merge!(rate_limiting_redis_port, DEFAULT_RATE_LIMITING_REDIS_PORT);
     }
 
     /// Get the config from the arguments, environment and possibly config file

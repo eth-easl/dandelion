@@ -709,6 +709,9 @@ fn main() -> () {
         config.enable_authorization_policy,
         config.enable_jwt_policy,
         config.enable_mtls,
+        config.enable_rate_limiting,
+        config.rate_limiting_redis_addr,
+        config.rate_limiting_redis_port,
     );
 
     if cfg!(feature = "use_service_loop") {
