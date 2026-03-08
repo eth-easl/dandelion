@@ -107,6 +107,10 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = false)]
     #[serde(default)]
     pub enable_rate_limiting: bool,
+    #[arg(long, env, default_value_t = String::from(DEFAULT_RATE_LIMITING_POLICY_NAME))]
+    pub rate_limiting_policy_name: String,
+    #[arg(long, env)]
+    pub rate_limiting_policy_bin_local_path: String,
     #[arg(long, env, default_value_t = String::from(DEFAULT_RATE_LIMITING_REDIS_ADDR))]
     #[serde(default)]
     pub rate_limiting_redis_addr: String,
