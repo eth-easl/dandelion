@@ -712,6 +712,8 @@ fn main() -> () {
         config.enable_rate_limiting,
         config.rate_limiting_redis_addr,
         config.rate_limiting_redis_port,
+        config.rate_limiting_requests_per_time_unit,
+        config.rate_limiting_time_unit_seconds,
     );
 
     if cfg!(feature = "use_service_loop") {
