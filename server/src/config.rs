@@ -12,6 +12,8 @@ const DEFAULT_DIRIGENT_SYNC_PORT: u16 = 8083;
 const DEFAULT_DIRIGENT_PROXY_PORT: u16 = 8084;
 const DEFAULT_RATE_LIMITING_REDIS_ADDR: &str = "127.0.0.1";
 const DEFAULT_RATE_LIMITING_REDIS_PORT: u16 = 10379;
+const DEFAULT_RATE_LIMITING_REQUESTS_PER_TIME_UNIT: u32 = 60000;
+const DEFAULT_RATE_LIMITING_TIME_UNIT_SECONDS: u32 = 1;
 const DEFAULT_PROXY_TLS_MATERIAL_DIR: &str = "/var/lib/cluster_manager/worker-mtls";
 
 #[derive(serde::Deserialize, Debug)]
@@ -111,6 +113,12 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = DEFAULT_RATE_LIMITING_REDIS_PORT)]
     #[serde(default)]
     pub rate_limiting_redis_port: u16,
+    #[arg(long, env, default_value_t = DEFAULT_RATE_LIMITING_REQUESTS_PER_TIME_UNIT)]
+    #[serde(default)]
+    pub rate_limiting_requests_per_time_unit: u32,
+    #[arg(long, env, default_value_t = DEFAULT_RATE_LIMITING_TIME_UNIT_SECONDS)]
+    #[serde(default)]
+    pub rate_limiting_time_unit_seconds: u32,
 }
 
 impl DandelionConfig {
@@ -165,6 +173,8 @@ impl DandelionConfig {
             String::from(DEFAULT_RATE_LIMITING_REDIS_ADDR)
         );
         merge!(rate_limiting_redis_port, DEFAULT_RATE_LIMITING_REDIS_PORT);
+        merge!(rate_limiting_requests_per_time_unit, DEFAULT_RATE_LIMITING_REQUESTS_PER_TIME_UNIT);
+        merge!(rate_limiting_time_unit_seconds, DEFAULT_RATE_LIMITING_TIME_UNIT_SECONDS);
     }
 
     /// Get the config from the arguments, environment and possibly config file
