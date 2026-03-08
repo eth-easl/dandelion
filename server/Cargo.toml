@@ -34,6 +34,7 @@ tracing = "0.1.41"
 anyhow = "1.0.100"
 signal-hook = "0.3.17"
 hpack = "0.3.0"
+redis = { version = "1.0", features = ["aio", "tokio-comp", "script"] }
 
 kube = "0.98.0"
 kube-derive = "0.98.0"
