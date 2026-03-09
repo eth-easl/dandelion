@@ -8,7 +8,6 @@ const DEFAULT_CONFIG_PATH: &str = "./dandelion.config";
 const DEFAULT_PORT: u16 = 8082;
 const DEFAULT_SINGLE_CORE: bool = false;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
-const DEFAULT_DIRIGENT_SYNC_PORT: u16 = 8083;
 const DEFAULT_DIRIGENT_PROXY_PORT: u16 = 8084;
 const DEFAULT_RATE_LIMITING_REDIS_ADDR: &str = "127.0.0.1";
 const DEFAULT_RATE_LIMITING_REDIS_PORT: u16 = 10379;
@@ -79,8 +78,6 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value = "")]
     #[serde(default)]
     pub bin_preload_path: String,
-    #[arg(long, env, default_value_t = DEFAULT_DIRIGENT_SYNC_PORT)]
-    pub dirigent_sync_port: u16,
     #[arg(long, env, default_value_t = DEFAULT_DIRIGENT_PROXY_PORT)]
     pub dirigent_proxy_port: u16,
     #[arg(long, env, default_value_t = String::from(DEFAULT_NGHTTP2_CODEC_FUNC_NAME))]
@@ -195,7 +192,6 @@ impl DandelionConfig {
         merge_option!(io_cores);
         merge!(timestamp_count, DEFAULT_TIMESTAMP_COUNT);
         merge_clone!(bin_preload_path, String::from(""));
-        merge!(dirigent_sync_port, DEFAULT_DIRIGENT_SYNC_PORT);
         merge!(dirigent_proxy_port, DEFAULT_DIRIGENT_PROXY_PORT);
         merge_clone!(
             proxy_tls_material_dir,
