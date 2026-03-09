@@ -345,10 +345,10 @@ struct ZipkinCtx {
     tx: mpsc::Sender<ZipkinEvent>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ZipkinEvent {
     stream_id: i32,
-    outcome: &'static str,
+    outcome: String,
     ts_unix_us: u64,
 }
 
@@ -380,15 +380,16 @@ fn now_unix_microseconds() -> u64 {
 fn emit_zipkin_event(
     zipkin_ctx: Option<&Arc<ZipkinCtx>>,
     stream_id: i32,
-    outcome: &'static str,
+    outcome: impl Into<String>,
 ) {
     let Some(ctx) = zipkin_ctx else {
         return;
     };
+    let outcome = outcome.into();
 
     let event = ZipkinEvent {
         stream_id,
-        outcome,
+        outcome: outcome.clone(),
         ts_unix_us: now_unix_microseconds(),
     };
 
@@ -407,6 +408,17 @@ fn emit_zipkin_event(
                 );
             }
         }
+    }
+}
+
+fn maybe_emit_zipkin_event(
+    should_emit_zipkin: bool,
+    zipkin_ctx: Option<&Arc<ZipkinCtx>>,
+    stream_id: i32,
+    outcome: impl Into<String>,
+) {
+    if should_emit_zipkin {
+        emit_zipkin_event(zipkin_ctx, stream_id, outcome);
     }
 }
 
@@ -904,6 +916,92 @@ async fn prepare_input_and_invoke_rate_limiting_policy(
 
     // debug!("Rate limiting policy function output: {:?}", function_output);
     rate_limiting_verdict
+}
+
+async fn prepare_input_and_invoke_logging_policy(
+    logging_policy_func_name: String,
+    request_sender: mpsc::Sender<DispatcherCommand>,
+    authorization_policy_start_ts_us: u64,
+    authorization_policy_end_ts_us: u64,
+    jwt_policy_start_ts_us: u64,
+    jwt_policy_end_ts_us: u64,
+    rate_limiting_policy_start_ts_us: u64,
+    rate_limiting_policy_end_ts_us: u64,
+    execution_engine_roundtrip_start_ts_us: u64,
+    execution_engine_roundtrip_end_ts_us: u64,
+) -> String {
+    let mut input_set0_items = Vec::new();
+
+    let authorization_policy_start_ts_us = authorization_policy_start_ts_us.to_ne_bytes();
+    let authorization_policy_end_ts_us = authorization_policy_end_ts_us.to_ne_bytes();
+    let jwt_policy_start_ts_us = jwt_policy_start_ts_us.to_ne_bytes();
+    let jwt_policy_end_ts_us = jwt_policy_end_ts_us.to_ne_bytes();
+    let rate_limiting_policy_start_ts_us = rate_limiting_policy_start_ts_us.to_ne_bytes();
+    let rate_limiting_policy_end_ts_us = rate_limiting_policy_end_ts_us.to_ne_bytes();
+    let execution_engine_roundtrip_start_ts_us = execution_engine_roundtrip_start_ts_us.to_ne_bytes();
+    let execution_engine_roundtrip_end_ts_us = execution_engine_roundtrip_end_ts_us.to_ne_bytes();
+
+    input_set0_items.push(InputItem {
+        identifier: String::from(""),
+        key: 0,
+        data: &authorization_policy_start_ts_us,
+    });
+    input_set0_items.push(InputItem {
+        identifier: String::from(""),
+        key: 1,
+        data: &authorization_policy_end_ts_us,
+    });
+    input_set0_items.push(InputItem {
+        identifier: String::from(""),
+        key: 2,
+        data: &jwt_policy_start_ts_us,
+    });
+    input_set0_items.push(InputItem {
+        identifier: String::from(""),
+        key: 3,
+        data: &jwt_policy_end_ts_us,
+    });
+    input_set0_items.push(InputItem {
+        identifier: String::from(""),
+        key: 4,
+        data: &rate_limiting_policy_start_ts_us,
+    });
+    input_set0_items.push(InputItem {
+        identifier: String::from(""),
+        key: 5,
+        data: &rate_limiting_policy_end_ts_us,
+    });
+    input_set0_items.push(InputItem {
+        identifier: String::from(""),
+        key: 6,
+        data: &execution_engine_roundtrip_start_ts_us,
+    });
+    input_set0_items.push(InputItem {
+        identifier: String::from(""),
+        key: 7,
+        data: &execution_engine_roundtrip_end_ts_us,
+    });
+
+    let input_sets: Vec<InputSet> = vec![InputSet {
+        identifier: String::from(""),
+        items: input_set0_items,
+    }];
+
+    let (function_output, recorder) = invoke_dandelion_function(
+        String::from(logging_policy_func_name),
+        input_sets,
+        request_sender.clone(),
+    )
+    .await;
+
+    let response_dandelion_body = dandelion_server::DandelionBody::new(function_output, &recorder);
+
+    let body: Bytes = response_dandelion_body.into_bytes();
+    let response: DandelionDeserializeResponse = bson::from_slice(&body).unwrap();
+
+    let logging_message = response.sets[0].items[0].data.iter().map(|b| *b as char).collect::<String>();
+
+    logging_message
 }
 
 // ********* Invoke nghttp2 code func; Parse its output *************
@@ -2009,12 +2107,29 @@ async fn stream_worker(
     zipkin_ctx: Option<Arc<ZipkinCtx>>,
     rate_limiting_requests_per_time_unit: u32,
     rate_limiting_time_unit_in_seconds: u32,
+    logging_policy_name: String,
+    logging_policy_bin_local_path: String,
 ) {
     info!(
         "[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] A new stream worker",
         tcp_conn_local_addr, tcp_conn_peer_addr, stream_id
     );
-    emit_zipkin_event(zipkin_ctx.as_ref(), stream_id, "started");
+    let should_emit_zipkin = zipkin_ctx.is_some();
+    maybe_emit_zipkin_event(
+        should_emit_zipkin,
+        zipkin_ctx.as_ref(),
+        stream_id,
+        "request entered the stream_worker in anakonda proxy",
+    );
+
+    let mut authorization_policy_start_ts_us: u64 = 0;
+    let mut authorization_policy_end_ts_us: u64 = 0;
+    let mut jwt_policy_start_ts_us: u64 = 0;
+    let mut jwt_policy_end_ts_us: u64 = 0;
+    let mut rate_limiting_policy_start_ts_us: u64 = 0;
+    let mut rate_limiting_policy_end_ts_us: u64 = 0;
+    let mut execution_engine_roundtrip_start_ts_us: u64 = 0;
+    let mut execution_engine_roundtrip_end_ts_us: u64 = 0;
 
     let header_pairs: Vec<(String, String)> = match parse_headers(&headers_received) {
         Ok(v) => {
@@ -2031,12 +2146,14 @@ async fn stream_worker(
 
     //  First policy that we want to check: authorization
     if enable_authorization_policy {
+        authorization_policy_start_ts_us = now_unix_microseconds();
         let authorization_verdict = prepare_input_and_invoke_authorization_policy(
             authorization_policy_func_name,
             request_sender.clone(),
             &header_pairs,
         )
         .await;
+        authorization_policy_end_ts_us = now_unix_microseconds();
 
         if authorization_verdict == 0 {
             error!(
@@ -2057,13 +2174,19 @@ async fn stream_worker(
                     body_to_send: Vec::new(),
                 })
                 .await;
-            emit_zipkin_event(zipkin_ctx.as_ref(), stream_id, "authorization_denied");
+            maybe_emit_zipkin_event(
+                should_emit_zipkin,
+                zipkin_ctx.as_ref(),
+                stream_id,
+                "authorization_denied",
+            );
             return;
         }
     }
 
     //  Second policy that we want to check: authentication via JWT
     if enable_jwt_policy {
+        jwt_policy_start_ts_us = now_unix_microseconds();
         let jwt_verdict = prepare_input_and_invoke_jwt_policy(
             jwt_policy_func_name,
             jwt_pem_context,
@@ -2071,6 +2194,7 @@ async fn stream_worker(
             &header_pairs,
         )
         .await;
+        jwt_policy_end_ts_us = now_unix_microseconds();
 
         if jwt_verdict == 0 {
             error!(
@@ -2091,13 +2215,19 @@ async fn stream_worker(
                     body_to_send: Vec::new(),
                 })
                 .await;
-            emit_zipkin_event(zipkin_ctx.as_ref(), stream_id, "jwt_denied");
+            maybe_emit_zipkin_event(
+                should_emit_zipkin,
+                zipkin_ctx.as_ref(),
+                stream_id,
+                "jwt_denied",
+            );
             return;
         }
     }
 
     //  If we have a rate_limit_ctx, we want to apply rate limiting
     if let Some(rate_limit_ctx) = rate_limit_ctx.as_ref() {
+        rate_limiting_policy_start_ts_us = now_unix_microseconds();
         // unpack variables from redis context
         let mut redis_con = rate_limit_ctx.conn.clone(); // cheap clone of multiplexed conn         
         let incr_script = &rate_limit_ctx.incr_with_expire;
@@ -2135,10 +2265,11 @@ async fn stream_worker(
 
         let rate_limiting_verdict = prepare_input_and_invoke_rate_limiting_policy(
             rate_limiting_policy_func_name, 
-            request_sender, 
+            request_sender.clone(), 
             current_counter_value, 
             rate_limiting_requests_per_time_unit
         ).await;
+        rate_limiting_policy_end_ts_us = now_unix_microseconds();
 
         if rate_limiting_verdict == 0 {
             //  We want to rollback the counter in redis
@@ -2173,7 +2304,12 @@ async fn stream_worker(
                     body_to_send: Vec::new(),
                 })
                 .await;
-            emit_zipkin_event(zipkin_ctx.as_ref(), stream_id, "rate_limited");
+            maybe_emit_zipkin_event(
+                should_emit_zipkin,
+                zipkin_ctx.as_ref(),
+                stream_id,
+                "rate_limited",
+            );
             return;
         }
     }
@@ -2182,6 +2318,7 @@ async fn stream_worker(
     // The channel used by the router to send resp back
     let (router_to_stream_worker_tx, router_to_stream_worker_rx) =
         oneshot::channel::<RouterToStreamWorkerResp>();
+    execution_engine_roundtrip_start_ts_us = now_unix_microseconds();
 
     // ****** send request to the router ******
     if let Err(e) = stream_worker_to_router_tx
@@ -2205,7 +2342,14 @@ async fn stream_worker(
                 ..Default::default()
             })
             .await;
-        emit_zipkin_event(zipkin_ctx.as_ref(), stream_id, "router_send_failed");
+        execution_engine_roundtrip_start_ts_us = 0;
+        execution_engine_roundtrip_end_ts_us = 0;
+        maybe_emit_zipkin_event(
+            should_emit_zipkin,
+            zipkin_ctx.as_ref(),
+            stream_id,
+            "router_send_failed",
+        );
         return;
     }
 
@@ -2250,14 +2394,45 @@ async fn stream_worker(
                         ..Default::default()
                     })
                     .await;
-                emit_zipkin_event(zipkin_ctx.as_ref(), stream_id, "func_conn_send_failed");
+                execution_engine_roundtrip_end_ts_us = now_unix_microseconds();
+                maybe_emit_zipkin_event(
+                    should_emit_zipkin,
+                    zipkin_ctx.as_ref(),
+                    stream_id,
+                    "func_conn_send_failed",
+                );
                 return;
             }
 
             // *** Wait for the resp from the user func conn worker ***
             match function_connection_worker_to_stream_worker_rx.await {
                 Ok(resp) => {
+                    execution_engine_roundtrip_end_ts_us = now_unix_microseconds();
                     info!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] gets resp from the user func conn worker", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
+
+                    //  if we have zipkin enabled, we want to call the logging function and create the string log
+                    //  then we want to make the call to zipkin to log it
+                    if should_emit_zipkin {
+                        let string_log_for_zipkin = prepare_input_and_invoke_logging_policy(
+                            logging_policy_name,
+                            request_sender.clone(),
+                            authorization_policy_start_ts_us,
+                            authorization_policy_end_ts_us,
+                            jwt_policy_start_ts_us,
+                            jwt_policy_end_ts_us,
+                            rate_limiting_policy_start_ts_us,
+                            rate_limiting_policy_end_ts_us,
+                            execution_engine_roundtrip_start_ts_us,
+                            execution_engine_roundtrip_end_ts_us
+                        ).await;
+
+                        maybe_emit_zipkin_event(
+                            should_emit_zipkin,
+                            zipkin_ctx.as_ref(),
+                            stream_id,
+                            string_log_for_zipkin,
+                        );
+                    }
 
                     let _ = stream_worker_to_dp_connection_worker_tx
                         .send(StreamWorkerToDpConnReq {
@@ -2275,6 +2450,7 @@ async fn stream_worker(
                         .await;
                 }
                 Err(e) => {
+                    execution_engine_roundtrip_end_ts_us = now_unix_microseconds();
                     error!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] fails to get resp from the func conn worker: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, e);
 
                     let _ = stream_worker_to_dp_connection_worker_tx
@@ -2289,6 +2465,8 @@ async fn stream_worker(
             }
         }
         Err(e) => {
+            execution_engine_roundtrip_start_ts_us = 0;
+            execution_engine_roundtrip_end_ts_us = 0;
             error!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] failed to receive from the router: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, e);
 
             let _ = stream_worker_to_dp_connection_worker_tx
@@ -2326,6 +2504,8 @@ async fn dp_connection_worker3<S: ProxyStream>(
     zipkin_ctx: Option<Arc<ZipkinCtx>>,
     rate_limiting_requests_per_time_unit: u32,
     rate_limiting_time_unit_in_seconds: u32,
+    logging_policy_name: String,
+    logging_policy_bin_local_path: String,
 ) where
     S: ProxyStream + Send + Unpin + 'static {
 
@@ -2627,7 +2807,9 @@ async fn dp_connection_worker3<S: ProxyStream>(
                 rate_limit_ctx.clone(),
                 zipkin_ctx.clone(),
                 rate_limiting_requests_per_time_unit,
-                rate_limiting_time_unit_in_seconds
+                rate_limiting_time_unit_in_seconds,
+                logging_policy_name.clone(),
+                logging_policy_bin_local_path.clone(),
             ));
         }
     }
@@ -2664,6 +2846,8 @@ async fn create_proxy_server2(
     zipkin_port: u16,
     zipkin_batch_size: usize,
     zipkin_flush_interval_ms: u64,
+    logging_policy_name: String,
+    logging_policy_bin_local_path: String,
 ) {
     // ****** Before the loop actually starts, register some functions ******
 
@@ -2714,6 +2898,18 @@ async fn create_proxy_server2(
         let _ = register_function_local(
             rate_limiting_policy_bin_local_path.clone(),
             rate_limiting_policy_func_name.clone(),
+            engine_type.clone(),
+            request_sender.clone(),
+        )
+        .await
+        .unwrap();
+    }
+
+    if enable_zipkin_logging {
+        //  register the logging function
+        let _ = register_function_local(
+            logging_policy_bin_local_path.clone(),
+            logging_policy_name.clone(),
             engine_type.clone(),
             request_sender.clone(),
         )
@@ -2806,7 +3002,9 @@ async fn create_proxy_server2(
                 let jwt_policy_func_name = jwt_policy_func_name.clone();
                 let jwt_pem_context = Arc::clone(&jwt_pem_context);
                 let rate_limiting_policy_func_name = rate_limiting_policy_func_name.clone();
-                // let zipkin_ctx = zipkin_ctx.clone();
+                let logging_policy_name = logging_policy_name.clone();
+                let logging_policy_bin_local_path = logging_policy_bin_local_path.clone();
+
                 if enable_mtls {
                     let rate_limit_ctx = rate_limit_ctx.clone();
                     let zipkin_ctx = zipkin_ctx.clone();
@@ -2867,7 +3065,7 @@ async fn create_proxy_server2(
 
                                 let stream = DpStream::new(tls_stream, local_addr, peer_addr);
                                 let service_dispatcher_ptr = loop_dispatcher.clone();
-                                dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, rate_limiting_policy_func_name,rate_limit_ctx, zipkin_ctx, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds).await;
+                                dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, rate_limiting_policy_func_name,rate_limit_ctx, zipkin_ctx, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds, logging_policy_name, logging_policy_bin_local_path).await;
                             }
                             Err (err) => {
                                 warn!("mTLS handshake failed from {}: {:?}", peer_addr, err);
@@ -2880,7 +3078,7 @@ async fn create_proxy_server2(
                     let zipkin_ctx = zipkin_ctx.clone();
                     tokio::spawn(async move {
                         let service_dispatcher_ptr = loop_dispatcher.clone();
-                        dp_connection_worker3(func_name, tcp_stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, rate_limiting_policy_func_name,rate_limit_ctx, zipkin_ctx, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds).await;
+                        dp_connection_worker3(func_name, tcp_stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, rate_limiting_policy_func_name,rate_limit_ctx, zipkin_ctx, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds, logging_policy_name, logging_policy_bin_local_path).await;
                     });
                 }
 
@@ -2921,6 +3119,8 @@ pub fn start_proxy_server2(
     zipkin_port: u16,
     zipkin_batch_size: usize,
     zipkin_flush_interval_ms: u64,
+    logging_policy_name: String,
+    logging_policy_bin_local_path: String
 ) {
     let runtime = if cfg!(feature = "unpin_proxy") {
         Runtime::new().unwrap() // The default runtime. Use all the cores it could use
@@ -2987,6 +3187,8 @@ pub fn start_proxy_server2(
                 zipkin_port,
                 zipkin_batch_size,
                 zipkin_flush_interval_ms,
+                logging_policy_name,
+                logging_policy_bin_local_path
             )
             .await;
         });
