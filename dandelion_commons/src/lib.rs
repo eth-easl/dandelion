@@ -154,6 +154,8 @@ pub enum DispatcherError {
     CompositionCombine,
     /// dispatcher found mistake when trying to find waiting functions
     DependencyError,
+    /// dispatcher got invalid composition
+    InvalidComposition,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

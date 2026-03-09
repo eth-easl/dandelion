@@ -362,7 +362,7 @@ impl BytesContext {
     pub async fn from_bytes_vec(
         frame_data: Vec<Bytes>,
         total_size: usize,
-    ) -> DandelionResult<(String, Context)> {
+    ) -> DandelionResult<(Option<String>, Option<String>, Context)> {
         let mut frame_buf = FrameBuf {
             byte_iter: &frame_data,
             remaining: total_size,
@@ -377,16 +377,32 @@ impl BytesContext {
         }
 
         // allow for arbitrary ordering of the 'name' and 'sets' fields
-        let mut function_name = "".to_string();
+        let mut function_name = None;
+        let mut composition = None;
         let mut sets = Vec::new();
         let mut check: u8 = 0;
         for _ in 0..2 {
             let next_type = read_type_byte(&mut frame_buf)?;
             match next_type {
                 2 => {
-                    // -> expect the function name part
-                    read_and_check_cstring(&mut frame_buf, "name\0")?;
-                    function_name = read_string(&mut frame_buf)?;
+                    // -> expect the function name or composition description part
+                    if check & 0x1 > 0 {
+                        debug!("Got second 'name' or 'composition' field");
+                        return Err(DandelionError::RequestError(
+                            FrontendError::MalformedMessage,
+                        ));
+                    }
+                    let cstring = read_cstring(&mut frame_buf)?;
+                    if cstring.as_str() == "name\0" {
+                        function_name = Some(read_string(&mut frame_buf)?);
+                    } else if cstring.as_str() == "composition\0" {
+                        composition = Some(read_string(&mut frame_buf)?);
+                    } else {
+                        debug!("Expected either 'name' or 'composition', got {}", cstring);
+                        return Err(DandelionError::RequestError(
+                            FrontendError::MalformedMessage,
+                        ));
+                    }
                     check |= 1;
                 }
                 4 => {
@@ -442,7 +458,7 @@ impl BytesContext {
         context.occupy_space(0, bson_dict_length)?;
         context.content = sets;
 
-        Ok((function_name, context))
+        Ok((function_name, composition, context))
     }
 }
 

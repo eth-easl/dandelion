@@ -6,7 +6,7 @@ use crate::{
 use core::pin::Pin;
 use dandelion_commons::{
     records::{RecordPoint, Recorder},
-    DandelionResult, FunctionId,
+    DandelionError, DandelionResult, DispatcherError, FunctionId,
 };
 use futures::{
     future::{join_all, ready, Either},
@@ -125,6 +125,54 @@ impl Dispatcher {
 
         let results = self
             .queue_function(function_id, input_vec, caching, recorder.get_sub_recorder())
+            .await?;
+
+        return Ok((results, recorder));
+    }
+
+    pub async fn queue_unregistered_composition(
+        &self,
+        composition_desc: String,
+        inputs: Vec<DispatcherInput>,
+        caching: bool,
+        start_time: std::time::Instant,
+    ) -> DandelionResult<(Vec<Option<CompositionSet>>, Recorder)> {
+        debug!("Parsing single use composition");
+        let composition_meta_pairs = self
+            .function_registry
+            .parse_compositions(&composition_desc.as_str())?;
+        if composition_meta_pairs.len() != 1 {
+            debug!(
+                "Expected exactly one composition got {}",
+                composition_meta_pairs.len()
+            );
+            return Err(DandelionError::Dispatcher(
+                DispatcherError::InvalidComposition,
+            ));
+        }
+
+        debug!(
+            "Queuing single use composition {}",
+            composition_meta_pairs[0].0
+        );
+        let recorder = Recorder::new(composition_meta_pairs[0].0.clone(), start_time);
+        let mut input_vec = Vec::with_capacity(inputs.len());
+        input_vec.resize(inputs.len(), None);
+        for (index, input) in inputs.into_iter().enumerate() {
+            match input {
+                DispatcherInput::None => (),
+                DispatcherInput::Set(set) => {
+                    input_vec[index] = Some(set);
+                }
+            }
+        }
+        let results = self
+            .queue_composition(
+                composition_meta_pairs[0].1.clone(),
+                input_vec,
+                caching,
+                recorder.get_sub_recorder(),
+            )
             .await?;
 
         return Ok((results, recorder));

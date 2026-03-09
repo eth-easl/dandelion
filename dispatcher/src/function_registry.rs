@@ -550,6 +550,19 @@ impl FunctionRegistry {
         Ok(())
     }
 
+    /// Parses the compositions without inserting it into the registry.
+    pub fn parse_compositions(
+        &self,
+        composition_desc: &str,
+    ) -> DandelionResult<Vec<(FunctionId, Composition, Metadata)>> {
+        // TODO: might want to return the parsing issue back to the user in a better way
+        let module = dparser::parse(composition_desc).map_err(|parse_error| {
+            print_errors(composition_desc, parse_error);
+            DandelionError::Composition(CompositionError::ParsingError)
+        })?;
+        self.composition_from_module(module)
+    }
+
     /// Checks if a function identifier is registered in the function registry.
     pub fn exists_id(&self, function_id: &FunctionId) -> bool {
         let lock_guard = self
