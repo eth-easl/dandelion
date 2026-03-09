@@ -480,7 +480,7 @@ impl Dispatcher {
     ) -> Pin<
         Box<dyn Future<Output = DandelionResult<Vec<Option<CompositionSet>>>> + 'dispatcher + Send>,
     > {
-        trace!("queueing function with id: {}", function_id);
+        debug!("Queueing function with id: {}", function_id);
         Box::pin(async move {
             // find an engine capable of running the function
             // TODO: think about more distinctions, that allow pushing chains of functions which can be executed by single engine,
