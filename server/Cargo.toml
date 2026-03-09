@@ -35,6 +35,7 @@ anyhow = "1.0.100"
 signal-hook = "0.3.17"
 hpack = "0.3.0"
 redis = { version = "1.0", features = ["aio", "tokio-comp", "script"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 kube = "0.98.0"
 kube-derive = "0.98.0"
