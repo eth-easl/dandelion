@@ -717,6 +717,11 @@ fn main() -> () {
         config.rate_limiting_redis_pass,
         config.rate_limiting_requests_per_time_unit,
         config.rate_limiting_time_unit_seconds,
+        config.enable_zipkin_logging,
+        config.zipkin_addr,
+        config.zipkin_port,
+        config.zipkin_batch_size,
+        config.zipkin_flush_interval_ms,
     );
 
     if cfg!(feature = "use_service_loop") {

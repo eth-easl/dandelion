@@ -15,6 +15,11 @@ const DEFAULT_RATE_LIMITING_REDIS_PORT: u16 = 10379;
 const DEFAULT_RATE_LIMITING_REDIS_PASS: &str = "";  //  By default, we assume no password, since it makes it easier to test the system. In production this should be overridden by the CLI argument.
 const DEFAULT_RATE_LIMITING_REQUESTS_PER_TIME_UNIT: u32 = 60000;
 const DEFAULT_RATE_LIMITING_TIME_UNIT_SECONDS: u32 = 1;
+const DEFAULT_ENABLE_ZIPKIN_LOGGING: bool = false;
+const DEFAULT_ZIPKIN_ADDR: &str = "127.0.0.1";
+const DEFAULT_ZIPKIN_PORT: u16 = 10400;
+const DEFAULT_ZIPKIN_BATCH_SIZE: usize = 64;
+const DEFAULT_ZIPKIN_FLUSH_INTERVAL_MS: u64 = 100;
 const DEFAULT_PROXY_TLS_MATERIAL_DIR: &str = "/var/lib/cluster_manager/worker-mtls";
 
 #[derive(serde::Deserialize, Debug)]
@@ -127,6 +132,21 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = DEFAULT_RATE_LIMITING_TIME_UNIT_SECONDS)]
     #[serde(default)]
     pub rate_limiting_time_unit_seconds: u32,
+    #[arg(long, env, default_value_t = DEFAULT_ENABLE_ZIPKIN_LOGGING)]
+    #[serde(default)]
+    pub enable_zipkin_logging: bool,
+    #[arg(long, env, default_value_t = String::from(DEFAULT_ZIPKIN_ADDR))]
+    #[serde(default)]
+    pub zipkin_addr: String,
+    #[arg(long, env, default_value_t = DEFAULT_ZIPKIN_PORT)]
+    #[serde(default)]
+    pub zipkin_port: u16,
+    #[arg(long, env, default_value_t = DEFAULT_ZIPKIN_BATCH_SIZE)]
+    #[serde(default)]
+    pub zipkin_batch_size: usize,
+    #[arg(long, env, default_value_t = DEFAULT_ZIPKIN_FLUSH_INTERVAL_MS)]
+    #[serde(default)]
+    pub zipkin_flush_interval_ms: u64,
 }
 
 impl DandelionConfig {
@@ -184,6 +204,11 @@ impl DandelionConfig {
         merge_clone!(rate_limiting_redis_pass, DEFAULT_RATE_LIMITING_REDIS_PASS);
         merge!(rate_limiting_requests_per_time_unit, DEFAULT_RATE_LIMITING_REQUESTS_PER_TIME_UNIT);
         merge!(rate_limiting_time_unit_seconds, DEFAULT_RATE_LIMITING_TIME_UNIT_SECONDS);
+        merge!(enable_zipkin_logging, DEFAULT_ENABLE_ZIPKIN_LOGGING);
+        merge_clone!(zipkin_addr, String::from(DEFAULT_ZIPKIN_ADDR));
+        merge!(zipkin_port, DEFAULT_ZIPKIN_PORT);
+        merge!(zipkin_batch_size, DEFAULT_ZIPKIN_BATCH_SIZE);
+        merge!(zipkin_flush_interval_ms, DEFAULT_ZIPKIN_FLUSH_INTERVAL_MS);
     }
 
     /// Get the config from the arguments, environment and possibly config file
