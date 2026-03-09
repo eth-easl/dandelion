@@ -722,6 +722,8 @@ fn main() -> () {
         config.zipkin_port,
         config.zipkin_batch_size,
         config.zipkin_flush_interval_ms,
+        config.logging_policy_name,
+        config.logging_policy_bin_local_path,
     );
 
     if cfg!(feature = "use_service_loop") {
