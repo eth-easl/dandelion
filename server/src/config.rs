@@ -49,6 +49,7 @@ const DEFAULT_NGHTTP2_CODEC_BIN_LOCAL_PATH: &str = "./nghttp2_codec3";
 const DEFAULT_AUTHORIZATION_POLICY_NAME: &str = "authorization_policy";
 const DEFAULT_JWT_POLICY_NAME: &str = "jwt_policy";
 const DEFAULT_RATE_LIMITING_POLICY_NAME: &str = "rate_limiting_policy";
+const DEFAULT_LOGGING_POLICY_NAME: &str = "logging_policy";
 
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
@@ -147,6 +148,10 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = DEFAULT_ZIPKIN_FLUSH_INTERVAL_MS)]
     #[serde(default)]
     pub zipkin_flush_interval_ms: u64,
+    #[arg(long, env, default_value_t = String::from(DEFAULT_LOGGING_POLICY_NAME))]
+    pub logging_policy_name: String,
+    #[arg(long, env)]
+    pub logging_policy_bin_local_path: String,
 }
 
 impl DandelionConfig {
