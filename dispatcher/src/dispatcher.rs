@@ -102,14 +102,13 @@ impl Dispatcher {
 
     pub async fn queue_function_by_name(
         &self,
-        function_name: String,
+        function_id: Arc<String>,
         inputs: Vec<DispatcherInput>,
         caching: bool,
-        start_time: std::time::Instant,
+        mut recorder: Recorder,
     ) -> DandelionResult<(Vec<Option<CompositionSet>>, Recorder)> {
-        debug!("Queuing function {}", function_name);
-        let function_id = Arc::new(function_name);
-        let recorder = Recorder::new(function_id.clone(), start_time);
+        debug!("Queuing function {}", function_id);
+        recorder.record(RecordPoint::EnterDispatcher);
 
         let mut input_vec = Vec::with_capacity(inputs.len());
         input_vec.resize(inputs.len(), None);
@@ -135,7 +134,7 @@ impl Dispatcher {
         composition_desc: String,
         inputs: Vec<DispatcherInput>,
         caching: bool,
-        start_time: std::time::Instant,
+        recorder: Recorder,
     ) -> DandelionResult<(Vec<Option<CompositionSet>>, Recorder)> {
         debug!("Parsing single use composition");
         let composition_meta_pairs = self
@@ -155,7 +154,6 @@ impl Dispatcher {
             "Queuing single use composition {}",
             composition_meta_pairs[0].0
         );
-        let recorder = Recorder::new(composition_meta_pairs[0].0.clone(), start_time);
         let mut input_vec = Vec::with_capacity(inputs.len());
         input_vec.resize(inputs.len(), None);
         for (index, input) in inputs.into_iter().enumerate() {
@@ -495,7 +493,6 @@ impl Dispatcher {
 
                     let metadata = func_info.metadata;
                     // run on engine
-                    recorder.record(RecordPoint::GetEngineQueue);
                     trace!(
                         "Running function {} with input sets {:?} and output sets {:?} and alternatives: {:?}",
                         function_id,

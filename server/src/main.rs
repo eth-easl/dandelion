@@ -49,10 +49,10 @@ const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
 enum DispatcherCommand {
     FunctionRequest {
-        name: String,
+        function_id: Arc<String>,
         inputs: Vec<DispatcherInput>,
         is_cold: bool,
-        start_time: Instant,
+        recorder: Recorder,
         callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
     },
     FunctionRegistration {
@@ -70,7 +70,7 @@ enum DispatcherCommand {
     CompositionRequest {
         composition: String,
         inputs: Vec<DispatcherInput>,
-        start_time: Instant,
+        recorder: Recorder,
         callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
     },
 }
@@ -110,7 +110,12 @@ async fn serve_request(
     if request_context_result.is_err() {
         warn!("request parsing failed with: {:?}", request_context_result);
     }
+    // TODO make single enum, so we cannot have the None None or Some Some case
     let (function_name, composition, request_context) = request_context_result.unwrap();
+    let had_function_name = function_name.is_some();
+    let function_id = Arc::new(function_name.unwrap_or_else(|| String::from("Composition")));
+    let mut recorder = Recorder::new(function_id.clone(), start_time);
+    recorder.record(dandelion_commons::records::RecordPoint::DeserializationEnd);
     debug!("finished creating request context");
 
     // TODO match set names to assign sets to composition sets
@@ -127,13 +132,13 @@ async fn serve_request(
     // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
 
     let (callback, output_recevier) = tokio::sync::oneshot::channel();
-    if let Some(name) = function_name {
+    if had_function_name {
         dispatcher
             .send(DispatcherCommand::FunctionRequest {
-                name,
+                function_id,
                 inputs,
                 is_cold,
-                start_time: start_time.clone(),
+                recorder,
                 callback,
             })
             .await
@@ -144,7 +149,7 @@ async fn serve_request(
                 composition: composition
                     .expect("Did not get a service name nor a composition description in request"),
                 inputs,
-                start_time: start_time.clone(),
+                recorder,
                 callback,
             })
             .await
@@ -383,15 +388,15 @@ async fn dispatcher_loop(
     while let Some(dispatcher_args) = request_receiver.recv().await {
         match dispatcher_args {
             DispatcherCommand::FunctionRequest {
-                name,
+                function_id,
                 inputs,
                 is_cold,
-                start_time,
+                recorder,
                 mut callback,
             } => {
-                debug!("Handling function request for function {}", name);
+                debug!("Handling function request for function {}", function_id);
                 let function_future =
-                    dispatcher.queue_function_by_name(name, inputs, is_cold, start_time);
+                    dispatcher.queue_function_by_name(function_id, inputs, !is_cold, recorder);
                 spawn(async {
                     select! {
                         function_output = function_future => {
@@ -407,7 +412,7 @@ async fn dispatcher_loop(
             DispatcherCommand::CompositionRequest {
                 composition,
                 inputs,
-                start_time,
+                recorder,
                 mut callback,
             } => {
                 debug!("Handling composition request");
@@ -415,7 +420,7 @@ async fn dispatcher_loop(
                     composition,
                     inputs,
                     false, // TODO
-                    start_time,
+                    recorder,
                 );
                 spawn(async {
                     select! {

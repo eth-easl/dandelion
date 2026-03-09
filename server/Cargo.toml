@@ -28,7 +28,7 @@ bson = "2.9.0"
 clap = {version = "4.5", features = ["env","derive"]}
 # to make sure server can cross compile (removes dependecy on installed openssl
 # requires C compiler, perl (and perl-core) and make
-openssl = { version = "0.10", features = ["vendored"] }
+openssl = { version = "0.10", features = ["vendored"], optional=true}
 
 [dev-dependencies]
 assert_cmd = "2.0"
@@ -44,3 +44,4 @@ kvm = ["machine_interface/kvm"]
 reqwest_io = ["machine_interface/reqwest_io"]
 timestamp = ["dispatcher/timestamp"]
 log_function_stdio = ["dispatcher/log_function_stdio"]
+vendored-ssl = ["dep:openssl"]
