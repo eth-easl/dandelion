@@ -473,12 +473,12 @@ impl Dispatcher {
                     recorder.record(RecordPoint::FutureReturn);
 
                     #[cfg(feature = "log_function_stdio")]
-                    for opt in result.content.iter() {
+                    for opt in context.content.iter() {
                         if opt.as_ref().is_some_and(|s| s.ident == "stdio") {
                             for itm in opt.as_ref().unwrap().buffers.iter() {
                                 if itm.ident == "stderr" && itm.data.size > 0 {
                                     let mut stderr_output: Vec<u8> = vec![0; itm.data.size];
-                                    result.context.read(itm.data.offset, &mut stderr_output)?;
+                                    context.context.read(itm.data.offset, &mut stderr_output)?;
                                     warn!(
                                         "Function result contains stderr output:\n{}",
                                         std::str::from_utf8(stderr_output.as_slice())
@@ -487,7 +487,7 @@ impl Dispatcher {
                                 }
                                 if itm.ident == "stdout" && itm.data.size > 0 {
                                     let mut stdout_output: Vec<u8> = vec![0; itm.data.size];
-                                    result.context.read(itm.data.offset, &mut stdout_output)?;
+                                    context.context.read(itm.data.offset, &mut stdout_output)?;
                                     debug!(
                                         "Function output:\n{}",
                                         std::str::from_utf8(stdout_output.as_slice())
