@@ -17,6 +17,7 @@ backend_debug = []
 reqwest_io = ["std", "dep:reqwest", "dep:http", "dep:bytes", "dep:memcache"]
 bytes_context = ["std", "dep:bytes"]
 timestamp = ["dandelion_commons/timestamp"]
+vendored-ssl = ["dep:openssl"]
 test_export = []
 
 [build-dependencies]
@@ -58,7 +59,7 @@ memcache = { version = "0.18.0", optional = true }
 bytes = { version = "1.6", optional = true}
 # To make sure we can compile everywhere. 
 # This sets it for the other dependencies we have that use it.
-openssl = { version = "0.10", features = ["vendored"] }
+openssl = { version = "0.10", features = ["vendored"], optional = true }
 
 # disable benchmarks in library, to not run all unit tests on every benchmark
 # also needs to be disabled for criterion flags to work that are not available for tests

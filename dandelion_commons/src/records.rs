@@ -5,29 +5,25 @@ use std::time::Instant;
 /// Maximum usize to expect when converting a record point to a usize
 /// By setting the last element to this explicitly, the compiler will throw an error,
 /// if there are more than this, because it enumerates from 0 and won't allow a number to be assigned twice.
-const LAST_RECORD_POINT: usize = 11;
+const LAST_RECORD_POINT: usize = 9;
 
 #[repr(usize)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RecordPoint {
-    /// Queue to load the function code + ctx
-    PrepareEnvQueue,
-    /// Enqueue parsing operation (async)
-    ParsingQueue,
+    /// Frontend has finished deserializing
+    DeserializationEnd,
+    /// When the request first enters the dispatcher
+    EnterDispatcher,
+    /// Queue to get the function executed on the engine (async)
+    ExecutionQueue,
     /// Start parsing (sync)
     ParsingStart,
     /// Finished Parsing (sync)
     ParsingEnd,
-    /// Dequeue from parsing (async)
-    ParsingDequeue,
     /// Start loading code + alloc ctx (sync)
     LoadStart,
     /// Start data transfer to the ctx (sync)
     TransferStart,
-    /// Queue to get an engine for execution
-    GetEngineQueue,
-    /// Queue to get the function executed on the engine (async)
-    ExecutionQueue,
     /// Start execution of the function on the engine (sync)
     EngineStart,
     /// End execution of the function on the engine (sync)
@@ -77,23 +73,27 @@ impl FunctionTimestamp {
 #[cfg(feature = "timestamp")]
 impl fmt::Display for FunctionTimestamp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "function_id {}, time_points: ", self.function_id)?;
+        write!(
+            f,
+            "{{\"function_id\": {}, \"time_points\": [",
+            self.function_id
+        )?;
         // write own time points
         for index in 0..LAST_RECORD_POINT {
             let duration = unsafe { *self.time_points[index].get() };
             write!(f, "{},", duration.as_micros())?;
         }
         let duration = unsafe { *self.time_points[LAST_RECORD_POINT].get() };
-        write!(f, "{}, children: {{", duration.as_micros())?;
+        write!(f, "{}], \"children\": [", duration.as_micros())?;
         let child_guard = self.children.lock().unwrap();
         let num_children = child_guard.len();
         if num_children > 0 {
             for index in 0..num_children - 1 {
-                write!(f, "[{}],", child_guard[index])?;
+                write!(f, "{},", child_guard[index])?;
             }
-            write!(f, "[{}]", child_guard[num_children - 1])?;
+            write!(f, "{}", child_guard[num_children - 1])?;
         }
-        write!(f, "}}")?;
+        write!(f, "]}}")?;
         Ok(())
     }
 }
