@@ -42,6 +42,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::{Builder, Runtime};
 use tokio::signal::unix::SignalKind;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::{self, Duration};
 use tokio::{io, try_join};
 
 // Stuff needed for mTLS
@@ -73,6 +74,9 @@ const PROXY_TLS_WORKER_CERT_FILENAME: &str = "worker.crt.pem";
 const PROXY_TLS_WORKER_KEY_FILENAME: &str = "worker.key.pem";
 const PROXY_TLS_CA_BUNDLE_FILENAME: &str = "ca.crt.pem";
 const PROXY_TLS_EXPECTED_SPIFFE_FILENAME: &str = "expected_data_plane_spiffe_id.txt";
+const ZIPKIN_CHANNEL_CAPACITY: usize = 4096;
+const ZIPKIN_SERVICE_NAME: &str = "anakonda-proxy";
+const ZIPKIN_SPAN_NAME: &str = "proxy.request_event";
 
 // ********* mTLS related functions *************
 // ************************************************
@@ -334,6 +338,172 @@ fn make_rate_limiting_key(
     bucket_start: u64,
 ) -> String {
     format!("rate_limiting:{}:{}", function_name, bucket_start)
+}
+
+#[derive(Clone)]
+struct ZipkinCtx {
+    tx: mpsc::Sender<ZipkinEvent>,
+}
+
+#[derive(Clone, Copy)]
+struct ZipkinEvent {
+    stream_id: i32,
+    outcome: &'static str,
+    ts_unix_us: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ZipkinEndpoint {
+    service_name: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ZipkinSpan {
+    trace_id: String,
+    id: String,
+    name: String,
+    timestamp: u64,
+    duration: u64,
+    local_endpoint: ZipkinEndpoint,
+    tags: HashMap<String, String>,
+}
+
+fn now_unix_microseconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros() as u64
+}
+
+fn emit_zipkin_event(
+    zipkin_ctx: Option<&Arc<ZipkinCtx>>,
+    stream_id: i32,
+    outcome: &'static str,
+) {
+    let Some(ctx) = zipkin_ctx else {
+        return;
+    };
+
+    let event = ZipkinEvent {
+        stream_id,
+        outcome,
+        ts_unix_us: now_unix_microseconds(),
+    };
+
+    if let Err(send_err) = ctx.tx.try_send(event) {
+        match send_err {
+            tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                debug!(
+                    "Dropping Zipkin event because queue is full (stream_id={}, outcome={})",
+                    stream_id, outcome
+                );
+            }
+            tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                debug!(
+                    "Dropping Zipkin event because publisher channel is closed (stream_id={}, outcome={})",
+                    stream_id, outcome
+                );
+            }
+        }
+    }
+}
+
+// utility that generates a traceID per event based on the event timestamp, stream_id and a sequence number.
+fn make_zipkin_ids(event: &ZipkinEvent, seq: u64) -> (String, String) {
+    let stream_bits = u64::from(event.stream_id as u32);
+    let lo = event.ts_unix_us ^ stream_bits.rotate_left(13) ^ seq;
+    let hi = event.ts_unix_us.rotate_left(29) ^ stream_bits.rotate_left(7) ^ seq.rotate_left(3);
+    (format!("{:016x}{:016x}", hi, lo), format!("{:016x}", lo))
+}
+
+async fn flush_zipkin_batch(
+    client: &reqwest::Client,
+    target_url: &str,
+    batch: &mut Vec<ZipkinEvent>,
+    span_seq: &mut u64,
+) {
+    if batch.is_empty() {
+        return;
+    }
+
+    let mut spans: Vec<ZipkinSpan> = Vec::with_capacity(batch.len());
+    for event in batch.drain(..) {
+        let this_seq = *span_seq;
+        *span_seq = (*span_seq).wrapping_add(1);
+        let (trace_id, id) = make_zipkin_ids(&event, this_seq);
+        let mut tags = HashMap::new();
+        tags.insert("stream_id".to_string(), event.stream_id.to_string());
+        tags.insert("outcome".to_string(), event.outcome.to_string());
+
+        spans.push(ZipkinSpan {
+            trace_id,
+            id,  //  this is unfortunately imposed by the zipkin api. At the moment we are not really benefitting from cluttering the span with this, but we must respect the API requirements. 
+            name: ZIPKIN_SPAN_NAME.to_string(),
+            timestamp: event.ts_unix_us,
+            duration: 1, //  this is apparently the standard to model "point events" in Zipkin
+            local_endpoint: ZipkinEndpoint {
+                service_name: ZIPKIN_SERVICE_NAME.to_string(),
+            },
+            tags,
+        });
+    }
+
+    match client.post(target_url).json(&spans).send().await {
+        Ok(resp) => {
+            if !resp.status().is_success() {
+                warn!(
+                    "Zipkin batch POST returned non-success status: {}",
+                    resp.status()
+                );
+            }
+        }
+        Err(err) => {
+            warn!("Zipkin batch POST failed: {}", err);
+        }
+    }
+}
+
+async fn zipkin_batch_publisher(
+    mut rx: mpsc::Receiver<ZipkinEvent>,
+    zipkin_addr: String,
+    zipkin_port: u16,
+    zipkin_batch_size: usize,
+    zipkin_flush_interval_ms: u64,
+) {
+    let batch_size = zipkin_batch_size.max(1);
+    let target_url = format!("http://{}:{}/api/v2/spans", zipkin_addr, zipkin_port);
+    let client = reqwest::Client::new();
+    let mut ticker = time::interval(Duration::from_millis(zipkin_flush_interval_ms.max(1)));
+    ticker.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+    let mut batch: Vec<ZipkinEvent> = Vec::with_capacity(batch_size);
+    let mut span_seq: u64 = 1;
+
+    loop {
+        tokio::select! {
+            maybe_event = rx.recv() => {
+                match maybe_event {
+                    Some(event) => {
+                        batch.push(event);
+                        if batch.len() >= batch_size {
+                            flush_zipkin_batch(&client, &target_url, &mut batch, &mut span_seq).await;
+                        }
+                    }
+                    None => {
+                        flush_zipkin_batch(&client, &target_url, &mut batch, &mut span_seq).await;
+                        debug!("Zipkin publisher exiting after channel close");
+                        return;
+                    }
+                }
+            }
+            _ = ticker.tick() => {
+                if !batch.is_empty() {
+                    flush_zipkin_batch(&client, &target_url, &mut batch, &mut span_seq).await;
+                }
+            }
+        }
+    }
 }
 
 
@@ -1836,6 +2006,7 @@ async fn stream_worker(
     enable_jwt_policy: bool,
     rate_limiting_policy_func_name: String,
     rate_limit_ctx: Option<Arc<RateLimitRedisCtx>>,
+    zipkin_ctx: Option<Arc<ZipkinCtx>>,
     rate_limiting_requests_per_time_unit: u32,
     rate_limiting_time_unit_in_seconds: u32,
 ) {
@@ -1843,6 +2014,7 @@ async fn stream_worker(
         "[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] A new stream worker",
         tcp_conn_local_addr, tcp_conn_peer_addr, stream_id
     );
+    emit_zipkin_event(zipkin_ctx.as_ref(), stream_id, "started");
 
     let header_pairs: Vec<(String, String)> = match parse_headers(&headers_received) {
         Ok(v) => {
@@ -1885,6 +2057,7 @@ async fn stream_worker(
                     body_to_send: Vec::new(),
                 })
                 .await;
+            emit_zipkin_event(zipkin_ctx.as_ref(), stream_id, "authorization_denied");
             return;
         }
     }
@@ -1918,6 +2091,7 @@ async fn stream_worker(
                     body_to_send: Vec::new(),
                 })
                 .await;
+            emit_zipkin_event(zipkin_ctx.as_ref(), stream_id, "jwt_denied");
             return;
         }
     }
@@ -1999,6 +2173,7 @@ async fn stream_worker(
                     body_to_send: Vec::new(),
                 })
                 .await;
+            emit_zipkin_event(zipkin_ctx.as_ref(), stream_id, "rate_limited");
             return;
         }
     }
@@ -2030,6 +2205,7 @@ async fn stream_worker(
                 ..Default::default()
             })
             .await;
+        emit_zipkin_event(zipkin_ctx.as_ref(), stream_id, "router_send_failed");
         return;
     }
 
@@ -2074,6 +2250,7 @@ async fn stream_worker(
                         ..Default::default()
                     })
                     .await;
+                emit_zipkin_event(zipkin_ctx.as_ref(), stream_id, "func_conn_send_failed");
                 return;
             }
 
@@ -2146,6 +2323,7 @@ async fn dp_connection_worker3<S: ProxyStream>(
     enable_jwt_policy: bool,
     rate_limiting_policy_func_name: String,
     rate_limit_ctx: Option<Arc<RateLimitRedisCtx>>,
+    zipkin_ctx: Option<Arc<ZipkinCtx>>,
     rate_limiting_requests_per_time_unit: u32,
     rate_limiting_time_unit_in_seconds: u32,
 ) where
@@ -2447,6 +2625,7 @@ async fn dp_connection_worker3<S: ProxyStream>(
                 enable_jwt_policy,
                 rate_limiting_policy_func_name.clone(),
                 rate_limit_ctx.clone(),
+                zipkin_ctx.clone(),
                 rate_limiting_requests_per_time_unit,
                 rate_limiting_time_unit_in_seconds
             ));
@@ -2480,6 +2659,11 @@ async fn create_proxy_server2(
     rate_limiting_redis_pass: String,
     rate_limiting_requests_per_time_unit: u32,
     rate_limiting_time_unit_in_seconds: u32,
+    enable_zipkin_logging: bool,
+    zipkin_addr: String,
+    zipkin_port: u16,
+    zipkin_batch_size: usize,
+    zipkin_flush_interval_ms: u64,
 ) {
     // ****** Before the loop actually starts, register some functions ******
 
@@ -2567,6 +2751,20 @@ async fn create_proxy_server2(
         None
     };
 
+    let zipkin_ctx: Option<Arc<ZipkinCtx>> = if enable_zipkin_logging {
+        let (zipkin_tx, zipkin_rx) = mpsc::channel::<ZipkinEvent>(ZIPKIN_CHANNEL_CAPACITY);
+        tokio::spawn(zipkin_batch_publisher(
+            zipkin_rx,
+            zipkin_addr,
+            zipkin_port,
+            zipkin_batch_size,
+            zipkin_flush_interval_ms,
+        ));
+        Some(Arc::new(ZipkinCtx { tx: zipkin_tx }))
+    } else {
+        None
+    };
+
     // ***** spawn the router ******
     let (stream_worker_to_router_tx, stream_worker_to_func_router_rx) =
         mpsc::channel::<StreamWorkerToRouterReq>(32);
@@ -2608,8 +2806,10 @@ async fn create_proxy_server2(
                 let jwt_policy_func_name = jwt_policy_func_name.clone();
                 let jwt_pem_context = Arc::clone(&jwt_pem_context);
                 let rate_limiting_policy_func_name = rate_limiting_policy_func_name.clone();
+                // let zipkin_ctx = zipkin_ctx.clone();
                 if enable_mtls {
                     let rate_limit_ctx = rate_limit_ctx.clone();
+                    let zipkin_ctx = zipkin_ctx.clone();
 
                     tokio::spawn(async move {
                         let mtls_paths = build_proxy_mtls_material_paths(&proxy_tls_material_dir);
@@ -2667,7 +2867,7 @@ async fn create_proxy_server2(
 
                                 let stream = DpStream::new(tls_stream, local_addr, peer_addr);
                                 let service_dispatcher_ptr = loop_dispatcher.clone();
-                                dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, rate_limiting_policy_func_name,rate_limit_ctx, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds).await;
+                                dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, rate_limiting_policy_func_name,rate_limit_ctx, zipkin_ctx, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds).await;
                             }
                             Err (err) => {
                                 warn!("mTLS handshake failed from {}: {:?}", peer_addr, err);
@@ -2677,9 +2877,10 @@ async fn create_proxy_server2(
                 }
                 else {
                     let rate_limit_ctx = rate_limit_ctx.clone();
+                    let zipkin_ctx = zipkin_ctx.clone();
                     tokio::spawn(async move {
                         let service_dispatcher_ptr = loop_dispatcher.clone();
-                        dp_connection_worker3(func_name, tcp_stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, rate_limiting_policy_func_name,rate_limit_ctx, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds).await;
+                        dp_connection_worker3(func_name, tcp_stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, rate_limiting_policy_func_name,rate_limit_ctx, zipkin_ctx, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds).await;
                     });
                 }
 
@@ -2714,7 +2915,12 @@ pub fn start_proxy_server2(
     rate_limiting_redis_port: u16,
     rate_limiting_redis_pass: String,
     rate_limiting_requests_per_time_unit: u32,
-    rate_limiting_time_unit_in_seconds: u32
+    rate_limiting_time_unit_in_seconds: u32,
+    enable_zipkin_logging: bool,
+    zipkin_addr: String,
+    zipkin_port: u16,
+    zipkin_batch_size: usize,
+    zipkin_flush_interval_ms: u64,
 ) {
     let runtime = if cfg!(feature = "unpin_proxy") {
         Runtime::new().unwrap() // The default runtime. Use all the cores it could use
@@ -2775,7 +2981,12 @@ pub fn start_proxy_server2(
                 rate_limiting_redis_port,
                 rate_limiting_redis_pass,
                 rate_limiting_requests_per_time_unit,
-                rate_limiting_time_unit_in_seconds
+                rate_limiting_time_unit_in_seconds,
+                enable_zipkin_logging,
+                zipkin_addr,
+                zipkin_port,
+                zipkin_batch_size,
+                zipkin_flush_interval_ms,
             )
             .await;
         });
