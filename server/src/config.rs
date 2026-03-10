@@ -12,10 +12,10 @@ const DEFAULT_DIRIGENT_SYNC_PORT: u16 = 8083;
 const DEFAULT_DIRIGENT_PROXY_PORT: u16 = 8084;
 const DEFAULT_RATE_LIMITING_REDIS_ADDR: &str = "127.0.0.1";
 const DEFAULT_RATE_LIMITING_REDIS_PORT: u16 = 10379;
-const DEFAULT_RATE_LIMITING_REDIS_PASS: &str = "";  //  By default, we assume no password, since it makes it easier to test the system. In production this should be overridden by the CLI argument.
+const DEFAULT_RATE_LIMITING_REDIS_PASS: &str = ""; //  By default, we assume no password, since it makes it easier to test the system. In production this should be overridden by the CLI argument.
 const DEFAULT_RATE_LIMITING_REQUESTS_PER_TIME_UNIT: u32 = 60000;
 const DEFAULT_RATE_LIMITING_TIME_UNIT_SECONDS: u32 = 1;
-const DEFAULT_ENABLE_ZIPKIN_LOGGING: bool = false;
+const DEFAULT_ENABLE_ZIPKIN_TELEMETRY: bool = false;
 const DEFAULT_ZIPKIN_ADDR: &str = "127.0.0.1";
 const DEFAULT_ZIPKIN_PORT: u16 = 10400;
 const DEFAULT_ZIPKIN_BATCH_SIZE: usize = 64;
@@ -49,7 +49,7 @@ const DEFAULT_NGHTTP2_CODEC_BIN_LOCAL_PATH: &str = "./nghttp2_codec3";
 const DEFAULT_AUTHORIZATION_POLICY_NAME: &str = "authorization_policy";
 const DEFAULT_JWT_POLICY_NAME: &str = "jwt_policy";
 const DEFAULT_RATE_LIMITING_POLICY_NAME: &str = "rate_limiting_policy";
-const DEFAULT_LOGGING_POLICY_NAME: &str = "logging_policy";
+const DEFAULT_TELEMETRY_POLICY_NAME: &str = "telemetry_policy";
 
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
@@ -133,9 +133,9 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = DEFAULT_RATE_LIMITING_TIME_UNIT_SECONDS)]
     #[serde(default)]
     pub rate_limiting_time_unit_seconds: u32,
-    #[arg(long, env, default_value_t = DEFAULT_ENABLE_ZIPKIN_LOGGING)]
+    #[arg(long, env, default_value_t = DEFAULT_ENABLE_ZIPKIN_TELEMETRY)]
     #[serde(default)]
-    pub enable_zipkin_logging: bool,
+    pub enable_zipkin_telemetry: bool,
     #[arg(long, env, default_value_t = String::from(DEFAULT_ZIPKIN_ADDR))]
     #[serde(default)]
     pub zipkin_addr: String,
@@ -148,10 +148,10 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = DEFAULT_ZIPKIN_FLUSH_INTERVAL_MS)]
     #[serde(default)]
     pub zipkin_flush_interval_ms: u64,
-    #[arg(long, env, default_value_t = String::from(DEFAULT_LOGGING_POLICY_NAME))]
-    pub logging_policy_name: String,
+    #[arg(long, env, default_value_t = String::from(DEFAULT_TELEMETRY_POLICY_NAME))]
+    pub telemetry_policy_name: String,
     #[arg(long, env)]
-    pub logging_policy_bin_local_path: String,
+    pub telemetry_policy_bin_local_path: String,
 }
 
 impl DandelionConfig {
@@ -207,13 +207,26 @@ impl DandelionConfig {
         );
         merge!(rate_limiting_redis_port, DEFAULT_RATE_LIMITING_REDIS_PORT);
         merge_clone!(rate_limiting_redis_pass, DEFAULT_RATE_LIMITING_REDIS_PASS);
-        merge!(rate_limiting_requests_per_time_unit, DEFAULT_RATE_LIMITING_REQUESTS_PER_TIME_UNIT);
-        merge!(rate_limiting_time_unit_seconds, DEFAULT_RATE_LIMITING_TIME_UNIT_SECONDS);
-        merge!(enable_zipkin_logging, DEFAULT_ENABLE_ZIPKIN_LOGGING);
+        merge!(
+            rate_limiting_requests_per_time_unit,
+            DEFAULT_RATE_LIMITING_REQUESTS_PER_TIME_UNIT
+        );
+        merge!(
+            rate_limiting_time_unit_seconds,
+            DEFAULT_RATE_LIMITING_TIME_UNIT_SECONDS
+        );
+        merge!(enable_zipkin_telemetry, DEFAULT_ENABLE_ZIPKIN_TELEMETRY);
         merge_clone!(zipkin_addr, String::from(DEFAULT_ZIPKIN_ADDR));
         merge!(zipkin_port, DEFAULT_ZIPKIN_PORT);
         merge!(zipkin_batch_size, DEFAULT_ZIPKIN_BATCH_SIZE);
         merge!(zipkin_flush_interval_ms, DEFAULT_ZIPKIN_FLUSH_INTERVAL_MS);
+
+        merge_clone!(nghttp2_codec_func_name, DEFAULT_NGHTTP2_CODEC_FUNC_NAME);
+        merge_clone!(nghttp2_codec_bin_local_path, DEFAULT_NGHTTP2_CODEC_BIN_LOCAL_PATH);
+        merge_clone!(authorization_policy_name, DEFAULT_AUTHORIZATION_POLICY_NAME);
+        merge_clone!(jwt_policy_name, DEFAULT_JWT_POLICY_NAME);
+        merge_clone!(rate_limiting_policy_name, DEFAULT_RATE_LIMITING_POLICY_NAME);
+        merge_clone!(telemetry_policy_name, DEFAULT_TELEMETRY_POLICY_NAME);
     }
 
     /// Get the config from the arguments, environment and possibly config file
