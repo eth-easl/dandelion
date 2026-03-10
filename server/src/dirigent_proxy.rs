@@ -23,7 +23,6 @@ use machine_interface::{
 };
 use serde::Deserialize;
 use serde::Serialize;
-use x509_parser::nom::number;
 use std::io::{BufReader, Cursor, Error, Read};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -43,6 +42,7 @@ use tokio::runtime::{Builder, Runtime};
 use tokio::signal::unix::SignalKind;
 use tokio::sync::{mpsc, oneshot};
 use tokio::{io, try_join};
+use x509_parser::nom::number;
 
 // Stuff needed for mTLS
 use anyhow::{anyhow, bail, Context as AnyhowContext, Result};
@@ -56,8 +56,8 @@ use tokio_rustls::{server::TlsStream, TlsAcceptor};
 use x509_parser::{extensions::GeneralName, parse_x509_certificate};
 
 // Stuff needed for rate limiting
-use std::time::{SystemTime, UNIX_EPOCH};
 use redis::{aio::MultiplexedConnection, Client, Script};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use core_affinity::{self, CoreId};
 use dandelion_server::config::DandelionConfig;
@@ -268,23 +268,46 @@ trait ProxyStream {
 }
 
 impl ProxyStream for TcpStream {
-    fn local_addr(&self) -> io::Result<SocketAddr> { self.local_addr() }
-    fn peer_addr(&self) -> io::Result<SocketAddr> { self.peer_addr() }
-    async fn wait_readable(&mut self) -> io::Result<()> { self.readable().await }
-    fn read_nonblocking(&mut self, out: &mut [u8]) -> io::Result<usize> { self.try_read(out) }
-    async fn send_all(&mut self, buf: &[u8]) -> io::Result<()> { tokio::io::AsyncWriteExt::write_all(self, buf).await }
-    async fn close_stream(&mut self) -> io::Result<()> { tokio::io::AsyncWriteExt::shutdown(self).await }
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.local_addr()
+    }
+    fn peer_addr(&self) -> io::Result<SocketAddr> {
+        self.peer_addr()
+    }
+    async fn wait_readable(&mut self) -> io::Result<()> {
+        self.readable().await
+    }
+    fn read_nonblocking(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        self.try_read(out)
+    }
+    async fn send_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        tokio::io::AsyncWriteExt::write_all(self, buf).await
+    }
+    async fn close_stream(&mut self) -> io::Result<()> {
+        tokio::io::AsyncWriteExt::shutdown(self).await
+    }
 }
 
 impl ProxyStream for DpStream {
-    fn local_addr(&self) -> io::Result<SocketAddr> { DpStream::local_addr(self) }
-    fn peer_addr(&self) -> io::Result<SocketAddr> { DpStream::peer_addr(self) }
-    async fn wait_readable(&mut self) -> io::Result<()> { DpStream::readable(self).await }
-    fn read_nonblocking(&mut self, out: &mut [u8]) -> io::Result<usize> { DpStream::try_read(self, out) }
-    async fn send_all(&mut self, buf: &[u8]) -> io::Result<()> { DpStream::write_all(self, buf).await }
-    async fn close_stream(&mut self) -> io::Result<()> { DpStream::shutdown(self).await }
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        DpStream::local_addr(self)
+    }
+    fn peer_addr(&self) -> io::Result<SocketAddr> {
+        DpStream::peer_addr(self)
+    }
+    async fn wait_readable(&mut self) -> io::Result<()> {
+        DpStream::readable(self).await
+    }
+    fn read_nonblocking(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        DpStream::try_read(self, out)
+    }
+    async fn send_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        DpStream::write_all(self, buf).await
+    }
+    async fn close_stream(&mut self) -> io::Result<()> {
+        DpStream::shutdown(self).await
+    }
 }
-
 
 // ********* rate_limiting related functions *************
 // ************************************************
@@ -303,9 +326,9 @@ async fn connect_redis(
 
 #[derive(Clone)]
 struct RateLimitRedisCtx {
-    conn: MultiplexedConnection,   // clone per command call/task
-    incr_with_expire: Script,      // immutable shared script
-    safe_rollback: Script,         // immutable shared script
+    conn: MultiplexedConnection, // clone per command call/task
+    incr_with_expire: Script,    // immutable shared script
+    safe_rollback: Script,       // immutable shared script
 }
 
 fn now_unix_seconds() -> u64 {
@@ -329,13 +352,9 @@ fn compute_bucket_start_and_end(
 }
 
 //  we prefix the keys with "rate_limiting" in case we end up using the same Redis instance for other purposes in the future
-fn make_rate_limiting_key(
-    function_name: &String,
-    bucket_start: u64,
-) -> String {
+fn make_rate_limiting_key(function_name: &String, bucket_start: u64) -> String {
     format!("rate_limiting:{}:{}", function_name, bucket_start)
 }
-
 
 // ********* Register/invoke Dandelion functions*************
 // ************************************************
@@ -700,7 +719,8 @@ async fn prepare_input_and_invoke_rate_limiting_policy(
     // For simplicity, we only pass the ":path" header to the rate limiting function as input for now
     let mut input_set0_items = Vec::new();
 
-    let number_of_requests_in_current_time_window = number_of_requests_in_current_time_window.to_ne_bytes();
+    let number_of_requests_in_current_time_window =
+        number_of_requests_in_current_time_window.to_ne_bytes();
     let rate_limiting_requests_per_time_unit = rate_limiting_requests_per_time_unit.to_ne_bytes();
     input_set0_items.push(InputItem {
         identifier: String::from(""),
@@ -1313,7 +1333,7 @@ async fn read_from_tcp_stream_until_blocking(
 }
 
 // a helper func used by the worker to read from a ProxyStream (which can be either a TCP or TLS stream) until blocking
-async fn read_from_stream_until_blocking<S:ProxyStream>(
+async fn read_from_stream_until_blocking<S: ProxyStream>(
     stream: &mut S,
     data_to_read: &mut Vec<u8>,
 ) -> bool {
@@ -1925,15 +1945,15 @@ async fn stream_worker(
     //  If we have a rate_limit_ctx, we want to apply rate limiting
     if let Some(rate_limit_ctx) = rate_limit_ctx.as_ref() {
         // unpack variables from redis context
-        let mut redis_con = rate_limit_ctx.conn.clone(); // cheap clone of multiplexed conn         
+        let mut redis_con = rate_limit_ctx.conn.clone(); // cheap clone of multiplexed conn
         let incr_script = &rate_limit_ctx.incr_with_expire;
         let rollback_script = &rate_limit_ctx.safe_rollback;
 
         // compute buckets and rate_limiting_key
         let now_secs = now_unix_seconds();
-        let (bucket_start, bucket_end) = compute_bucket_start_and_end(now_secs, rate_limiting_time_unit_in_seconds);
+        let (bucket_start, bucket_end) =
+            compute_bucket_start_and_end(now_secs, rate_limiting_time_unit_in_seconds);
 
-        
         let mut function_name: String = "".to_string();
         for (header_name, header_value) in header_pairs {
             if header_name == "function" {
@@ -1944,15 +1964,13 @@ async fn stream_worker(
 
         let rate_limiting_key = make_rate_limiting_key(&function_name, bucket_start);
 
-        let current_counter_value: u32  = match incr_script
+        let current_counter_value: u32 = match incr_script
             .key(&rate_limiting_key)
             .arg(bucket_end as i64)
             .invoke_async(&mut redis_con)
             .await
         {
-            Ok(v) => {
-                v
-            }
+            Ok(v) => v,
             Err(e) => {
                 error!("Redis INCR script failed: {}", e);
                 0 // If we don't manage to query redis, we decide to let the request go (i.e. assume that the request count for this function is 0)
@@ -1960,11 +1978,12 @@ async fn stream_worker(
         };
 
         let rate_limiting_verdict = prepare_input_and_invoke_rate_limiting_policy(
-            rate_limiting_policy_func_name, 
-            request_sender, 
-            current_counter_value, 
-            rate_limiting_requests_per_time_unit
-        ).await;
+            rate_limiting_policy_func_name,
+            request_sender,
+            current_counter_value,
+            rate_limiting_requests_per_time_unit,
+        )
+        .await;
 
         if rate_limiting_verdict == 0 {
             //  We want to rollback the counter in redis
@@ -1974,10 +1993,16 @@ async fn stream_worker(
                 .await
             {
                 Ok(_) => {
-                    debug!("Redis rollback script succeeded for key: {}", rate_limiting_key);
+                    debug!(
+                        "Redis rollback script succeeded for key: {}",
+                        rate_limiting_key
+                    );
                 }
                 Err(e) => {
-                    error!("Redis rollback script failed for key: {} with error: {}", rate_limiting_key, e);
+                    error!(
+                        "Redis rollback script failed for key: {} with error: {}",
+                        rate_limiting_key, e
+                    );
                 }
             }
 
@@ -2149,8 +2174,8 @@ async fn dp_connection_worker3<S: ProxyStream>(
     rate_limiting_requests_per_time_unit: u32,
     rate_limiting_time_unit_in_seconds: u32,
 ) where
-    S: ProxyStream + Send + Unpin + 'static {
-
+    S: ProxyStream + Send + Unpin + 'static,
+{
     let tcp_conn_local_addr = stream.local_addr().unwrap();
     let tcp_conn_peer_addr = stream.peer_addr().unwrap();
     info!(
@@ -2448,7 +2473,7 @@ async fn dp_connection_worker3<S: ProxyStream>(
                 rate_limiting_policy_func_name.clone(),
                 rate_limit_ctx.clone(),
                 rate_limiting_requests_per_time_unit,
-                rate_limiting_time_unit_in_seconds
+                rate_limiting_time_unit_in_seconds,
             ));
         }
     }
@@ -2538,19 +2563,26 @@ async fn create_proxy_server2(
     }
 
     let rate_limit_ctx: Option<Arc<RateLimitRedisCtx>> = if enable_rate_limiting {
-        let conn = connect_redis(&rate_limiting_redis_addr, rate_limiting_redis_port, &rate_limiting_redis_pass)
-            .await
-            .expect("failed to connect to the rate-limiting redis instance");
+        let conn = connect_redis(
+            &rate_limiting_redis_addr,
+            rate_limiting_redis_port,
+            &rate_limiting_redis_pass,
+        )
+        .await
+        .expect("failed to connect to the rate-limiting redis instance");
 
-        let incr_with_expire = Script::new(r#"
+        let incr_with_expire = Script::new(
+            r#"
             local v = redis.call("INCR", KEYS[1])
             if v == 1 then
                 redis.call("EXPIREAT", KEYS[1], tonumber(ARGV[1]))
             end
             return v
-        "#);
+        "#,
+        );
 
-        let safe_rollback = Script::new(r#"
+        let safe_rollback = Script::new(
+            r#"
             local v = redis.call("GET", KEYS[1])
             if not v then
                 return nil
@@ -2560,9 +2592,14 @@ async fn create_proxy_server2(
                 return v
             end
             return redis.call("DECR", KEYS[1])
-        "#);
+        "#,
+        );
 
-        Some(Arc::new(RateLimitRedisCtx { conn, incr_with_expire, safe_rollback }))
+        Some(Arc::new(RateLimitRedisCtx {
+            conn,
+            incr_with_expire,
+            safe_rollback,
+        }))
     } else {
         None
     };
@@ -2714,7 +2751,7 @@ pub fn start_proxy_server2(
     rate_limiting_redis_port: u16,
     rate_limiting_redis_pass: String,
     rate_limiting_requests_per_time_unit: u32,
-    rate_limiting_time_unit_in_seconds: u32
+    rate_limiting_time_unit_in_seconds: u32,
 ) {
     let runtime = if cfg!(feature = "unpin_proxy") {
         Runtime::new().unwrap() // The default runtime. Use all the cores it could use
@@ -2748,7 +2785,6 @@ pub fn start_proxy_server2(
         runtime_builder.build().unwrap()
     };
 
-
     let jwt_pem_bytes =
         std::fs::read(&jwt_policy_pem_file_local_path).expect("Failed to read JWT policy PEM file");
     let jwt_pem_context = make_single_item_context(0, "", "", 0, jwt_pem_bytes.into_boxed_slice());
@@ -2775,7 +2811,7 @@ pub fn start_proxy_server2(
                 rate_limiting_redis_port,
                 rate_limiting_redis_pass,
                 rate_limiting_requests_per_time_unit,
-                rate_limiting_time_unit_in_seconds
+                rate_limiting_time_unit_in_seconds,
             )
             .await;
         });
