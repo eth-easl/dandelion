@@ -12,7 +12,7 @@ const DEFAULT_DIRIGENT_SYNC_PORT: u16 = 8083;
 const DEFAULT_DIRIGENT_PROXY_PORT: u16 = 8084;
 const DEFAULT_RATE_LIMITING_REDIS_ADDR: &str = "127.0.0.1";
 const DEFAULT_RATE_LIMITING_REDIS_PORT: u16 = 10379;
-const DEFAULT_RATE_LIMITING_REDIS_PASS: &str = "";  //  By default we assume no password, since it makes it easier to test the system. In production this should be overriden by the CLI argument.
+const DEFAULT_RATE_LIMITING_REDIS_PASS: &str = "";  //  By default, we assume no password, since it makes it easier to test the system. In production this should be overridden by the CLI argument.
 const DEFAULT_RATE_LIMITING_REQUESTS_PER_TIME_UNIT: u32 = 60000;
 const DEFAULT_RATE_LIMITING_TIME_UNIT_SECONDS: u32 = 1;
 const DEFAULT_PROXY_TLS_MATERIAL_DIR: &str = "/var/lib/cluster_manager/worker-mtls";
@@ -161,7 +161,7 @@ impl DandelionConfig {
 
         // merge serde config into args config
         // -> any args defaults are overwritten by serde non-default values
-        // NOTE: config path is no further useful an can be ignored
+        // NOTE: config path is no further useful and can be ignored
         merge!(port, DEFAULT_PORT);
         merge!(single_core_mode, DEFAULT_SINGLE_CORE);
         merge_option!(total_cores);
@@ -181,6 +181,7 @@ impl DandelionConfig {
             String::from(DEFAULT_RATE_LIMITING_REDIS_ADDR)
         );
         merge!(rate_limiting_redis_port, DEFAULT_RATE_LIMITING_REDIS_PORT);
+        merge_clone!(rate_limiting_redis_pass, DEFAULT_RATE_LIMITING_REDIS_PASS);
         merge!(rate_limiting_requests_per_time_unit, DEFAULT_RATE_LIMITING_REQUESTS_PER_TIME_UNIT);
         merge!(rate_limiting_time_unit_seconds, DEFAULT_RATE_LIMITING_TIME_UNIT_SECONDS);
     }
