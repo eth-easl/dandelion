@@ -1173,6 +1173,12 @@ impl Default for StreamWorkerToDpConnReq {
     }
 }
 
+struct FuncConnTuple {
+    conn_id: u32, // used to distinguish connections to the same sandbox
+    func_conn_worker: mpsc::Sender<StreamWorkerToFuncConnReq>,
+    num_pending_reqs: usize,
+}
+
 // a helper func used by the worker to read from a tcp stream until blocking
 async fn read_from_tcp_stream_until_blocking(
     stream: &mut TcpStream,
@@ -1556,9 +1562,8 @@ async fn router(
     request_sender: mpsc::Sender<DispatcherCommand>,
     mut stream_worker_to_router_rx: mpsc::Receiver<StreamWorkerToRouterReq>,
 ) {
-    // ***TMP and TO DO***: currently we assume that for each user container/url, there will only be one connection
-    // key: url; value: the channel to the func_conn_worker, which handles the connection to that func container
-    let mut uc_connections: HashMap<String, mpsc::Sender<StreamWorkerToFuncConnReq>> =
+    // key: url; value: connection pool
+    let mut uc_connections2: HashMap<String, (u32, u32, Vec<FuncConnTuple>)> = 
         HashMap::new();
 
     // Process requests from stream workers
@@ -1582,21 +1587,46 @@ async fn router(
 
         // *** Check if there is a need to create a new connection ***
         let mut need_to_create_a_new_connection: bool = false;
-        if uc_connections.contains_key(&destination_url_string) {
-            if uc_connections
-                .get(&destination_url_string)
-                .unwrap()
-                .is_closed()
-            {
-                info!("[Router] The connection stored in the map is closed. Need to create a new connection to the uc");
+        let mut selected_conn_idx: usize = 0;
+        if uc_connections2.contains_key(&destination_url_string) {
+
+            let (num_consecutive_errors, _, vec_func_conn_tuple) = uc_connections2
+                .get_mut(&destination_url_string)
+                .unwrap();
+
+            let mut i = 0;
+
+            while i < vec_func_conn_tuple.len() {
+                // if the conn is already closed, remove it
+                if vec_func_conn_tuple[i].func_conn_worker.is_closed() {
+                    debug!("[Router] The func connection is already closed. Remove it from the pool");
+                    vec_func_conn_tuple.remove(i);
+                    continue;
+                }
+
+                // Check the num of pending reqs on ths conn
+                if vec_func_conn_tuple[i].num_pending_reqs < 50 {
+                    selected_conn_idx = i;
+                    break;
+                }
+
+                i += 1;
+            }
+
+            // all connections in the pool has a max num of pending reqs
+            if i >= vec_func_conn_tuple.len() {
                 need_to_create_a_new_connection = true;
-                uc_connections.remove(&destination_url_string);
             }
         } else {
             need_to_create_a_new_connection = true;
+            uc_connections2.insert(destination_url_string.clone(), (0, 0, Vec::new()));
         }
 
         if need_to_create_a_new_connection == true {
+            let (_, new_conn_id, vec_func_conn_tuple) = uc_connections2
+                .get_mut(&destination_url_string)
+                .unwrap();
+
             (
                 stream_worker_to_func_connection_worker_tx,
                 stream_worker_to_func_connection_worker_rx,
@@ -1617,10 +1647,12 @@ async fn router(
                         stream_worker_to_func_connection_worker_rx,
                     ));
 
-                    uc_connections.insert(
-                        destination_url_string,
-                        stream_worker_to_func_connection_worker_tx.clone(),
-                    );
+                    vec_func_conn_tuple.push(FuncConnTuple {
+                        conn_id: *new_conn_id,
+                        func_conn_worker: stream_worker_to_func_connection_worker_tx.clone(),
+                        num_pending_reqs: 0,
+                    });
+                    *new_conn_id = *new_conn_id + 1;
                 }
                 Err(e) => {
                     error!(
@@ -1629,13 +1661,19 @@ async fn router(
                     );
                 }
             }
-        } else {
+        } 
+        else {
             debug!(
                 "[Router] already has a connection to {}",
                 destination_url_string
             );
-            stream_worker_to_func_connection_worker_tx =
-                uc_connections.get(&destination_url_string).unwrap().clone();
+
+            let (_, _, vec_func_conn_tuple) = uc_connections2
+                .get_mut(&destination_url_string)
+                .unwrap();
+
+            stream_worker_to_func_connection_worker_tx = 
+                vec_func_conn_tuple[selected_conn_idx].func_conn_worker.clone();
         }
 
         // Send the answer to the stream worker
