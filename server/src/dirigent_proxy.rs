@@ -938,8 +938,8 @@ async fn prepare_input_and_invoke_rate_limiting_policy(
     rate_limiting_verdict
 }
 
-async fn prepare_input_and_invoke_logging_policy(
-    logging_policy_func_name: String,
+async fn prepare_input_and_invoke_telemetry_policy(
+    telemetry_policy_func_name: String,
     request_sender: mpsc::Sender<DispatcherCommand>,
     authorization_policy_start_ts_us: u64,
     authorization_policy_end_ts_us: u64,
@@ -1009,7 +1009,7 @@ async fn prepare_input_and_invoke_logging_policy(
     }];
 
     let (function_output, recorder) = invoke_dandelion_function(
-        String::from(logging_policy_func_name),
+        String::from(telemetry_policy_func_name),
         input_sets,
         request_sender.clone(),
     )
@@ -1020,13 +1020,13 @@ async fn prepare_input_and_invoke_logging_policy(
     let body: Bytes = response_dandelion_body.into_bytes();
     let response: DandelionDeserializeResponse = bson::from_slice(&body).unwrap();
 
-    let logging_message = response.sets[0].items[0]
+    let telemetry_message = response.sets[0].items[0]
         .data
         .iter()
         .map(|b| *b as char)
         .collect::<String>();
 
-    logging_message
+    telemetry_message
 }
 
 // ********* Invoke nghttp2 code func; Parse its output *************
@@ -2132,8 +2132,8 @@ async fn stream_worker(
     zipkin_ctx: Option<Arc<ZipkinCtx>>,
     rate_limiting_requests_per_time_unit: u32,
     rate_limiting_time_unit_in_seconds: u32,
-    logging_policy_name: String,
-    logging_policy_bin_local_path: String,
+    telemetry_policy_name: String,
+    telemetry_policy_bin_local_path: String,
 ) {
     info!(
         "[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] A new stream worker",
@@ -2440,11 +2440,11 @@ async fn stream_worker(
                     execution_engine_roundtrip_end_ts_us = now_unix_microseconds();
                     info!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] gets resp from the user func conn worker", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
 
-                    //  if we have zipkin enabled, we want to call the logging function and create the string log
+                    //  if we have zipkin enabled, we want to call the telemetry function and create the string log
                     //  then we want to make the call to zipkin to log it
                     if should_emit_zipkin {
-                        let string_log_for_zipkin = prepare_input_and_invoke_logging_policy(
-                            logging_policy_name,
+                        let string_log_for_zipkin = prepare_input_and_invoke_telemetry_policy(
+                            telemetry_policy_name,
                             request_sender.clone(),
                             authorization_policy_start_ts_us,
                             authorization_policy_end_ts_us,
@@ -2535,8 +2535,8 @@ async fn dp_connection_worker3<S: ProxyStream>(
     zipkin_ctx: Option<Arc<ZipkinCtx>>,
     rate_limiting_requests_per_time_unit: u32,
     rate_limiting_time_unit_in_seconds: u32,
-    logging_policy_name: String,
-    logging_policy_bin_local_path: String,
+    telemetry_policy_name: String,
+    telemetry_policy_bin_local_path: String,
 ) where
     S: ProxyStream + Send + Unpin + 'static,
 {
@@ -2839,8 +2839,8 @@ async fn dp_connection_worker3<S: ProxyStream>(
                 zipkin_ctx.clone(),
                 rate_limiting_requests_per_time_unit,
                 rate_limiting_time_unit_in_seconds,
-                logging_policy_name.clone(),
-                logging_policy_bin_local_path.clone(),
+                telemetry_policy_name.clone(),
+                telemetry_policy_bin_local_path.clone(),
             ));
         }
     }
@@ -2872,13 +2872,13 @@ async fn create_proxy_server2(
     rate_limiting_redis_pass: String,
     rate_limiting_requests_per_time_unit: u32,
     rate_limiting_time_unit_in_seconds: u32,
-    enable_zipkin_logging: bool,
+    enable_zipkin_telemetry: bool,
     zipkin_addr: String,
     zipkin_port: u16,
     zipkin_batch_size: usize,
     zipkin_flush_interval_ms: u64,
-    logging_policy_name: String,
-    logging_policy_bin_local_path: String,
+    telemetry_policy_name: String,
+    telemetry_policy_bin_local_path: String,
 ) {
     // ****** Before the loop actually starts, register some functions ******
 
@@ -2936,11 +2936,11 @@ async fn create_proxy_server2(
         .unwrap();
     }
 
-    if enable_zipkin_logging {
-        //  register the logging function
+    if enable_zipkin_telemetry {
+        //  register the telemetry function
         let _ = register_function_local(
-            logging_policy_bin_local_path.clone(),
-            logging_policy_name.clone(),
+            telemetry_policy_bin_local_path.clone(),
+            telemetry_policy_name.clone(),
             engine_type.clone(),
             request_sender.clone(),
         )
@@ -2990,7 +2990,7 @@ async fn create_proxy_server2(
         None
     };
 
-    let zipkin_ctx: Option<Arc<ZipkinCtx>> = if enable_zipkin_logging {
+    let zipkin_ctx: Option<Arc<ZipkinCtx>> = if enable_zipkin_telemetry {
         let (zipkin_tx, zipkin_rx) = mpsc::channel::<ZipkinEvent>(ZIPKIN_CHANNEL_CAPACITY);
         tokio::spawn(zipkin_batch_publisher(
             zipkin_rx,
@@ -3045,8 +3045,8 @@ async fn create_proxy_server2(
                 let jwt_policy_func_name = jwt_policy_func_name.clone();
                 let jwt_pem_context = Arc::clone(&jwt_pem_context);
                 let rate_limiting_policy_func_name = rate_limiting_policy_func_name.clone();
-                let logging_policy_name = logging_policy_name.clone();
-                let logging_policy_bin_local_path = logging_policy_bin_local_path.clone();
+                let telemetry_policy_name = telemetry_policy_name.clone();
+                let telemetry_policy_bin_local_path = telemetry_policy_bin_local_path.clone();
 
                 if enable_mtls {
                     let rate_limit_ctx = rate_limit_ctx.clone();
@@ -3108,7 +3108,7 @@ async fn create_proxy_server2(
 
                                 let stream = DpStream::new(tls_stream, local_addr, peer_addr);
                                 let service_dispatcher_ptr = loop_dispatcher.clone();
-                                dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, rate_limiting_policy_func_name,rate_limit_ctx, zipkin_ctx, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds, logging_policy_name, logging_policy_bin_local_path).await;
+                                dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, rate_limiting_policy_func_name,rate_limit_ctx, zipkin_ctx, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds, telemetry_policy_name, telemetry_policy_bin_local_path).await;
                             }
                             Err (err) => {
                                 warn!("mTLS handshake failed from {}: {:?}", peer_addr, err);
@@ -3121,7 +3121,7 @@ async fn create_proxy_server2(
                     let zipkin_ctx = zipkin_ctx.clone();
                     tokio::spawn(async move {
                         let service_dispatcher_ptr = loop_dispatcher.clone();
-                        dp_connection_worker3(func_name, tcp_stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, rate_limiting_policy_func_name,rate_limit_ctx, zipkin_ctx, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds, logging_policy_name, logging_policy_bin_local_path).await;
+                        dp_connection_worker3(func_name, tcp_stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, rate_limiting_policy_func_name,rate_limit_ctx, zipkin_ctx, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds, telemetry_policy_name, telemetry_policy_bin_local_path).await;
                     });
                 }
 
@@ -3157,13 +3157,13 @@ pub fn start_proxy_server2(
     rate_limiting_redis_pass: String,
     rate_limiting_requests_per_time_unit: u32,
     rate_limiting_time_unit_in_seconds: u32,
-    enable_zipkin_logging: bool,
+    enable_zipkin_telemetry: bool,
     zipkin_addr: String,
     zipkin_port: u16,
     zipkin_batch_size: usize,
     zipkin_flush_interval_ms: u64,
-    logging_policy_name: String,
-    logging_policy_bin_local_path: String,
+    telemetry_policy_name: String,
+    telemetry_policy_bin_local_path: String,
 ) {
     let runtime = if cfg!(feature = "unpin_proxy") {
         Runtime::new().unwrap() // The default runtime. Use all the cores it could use
@@ -3224,13 +3224,13 @@ pub fn start_proxy_server2(
                 rate_limiting_redis_pass,
                 rate_limiting_requests_per_time_unit,
                 rate_limiting_time_unit_in_seconds,
-                enable_zipkin_logging,
+                enable_zipkin_telemetry,
                 zipkin_addr,
                 zipkin_port,
                 zipkin_batch_size,
                 zipkin_flush_interval_ms,
-                logging_policy_name,
-                logging_policy_bin_local_path,
+                telemetry_policy_name,
+                telemetry_policy_bin_local_path,
             )
             .await;
         });

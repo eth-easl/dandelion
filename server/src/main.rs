@@ -717,13 +717,13 @@ fn main() -> () {
         config.rate_limiting_redis_pass,
         config.rate_limiting_requests_per_time_unit,
         config.rate_limiting_time_unit_seconds,
-        config.enable_zipkin_logging,
+        config.enable_zipkin_telemetry,
         config.zipkin_addr,
         config.zipkin_port,
         config.zipkin_batch_size,
         config.zipkin_flush_interval_ms,
-        config.logging_policy_name,
-        config.logging_policy_bin_local_path,
+        config.telemetry_policy_name,
+        config.telemetry_policy_bin_local_path,
     );
 
     if cfg!(feature = "use_service_loop") {
