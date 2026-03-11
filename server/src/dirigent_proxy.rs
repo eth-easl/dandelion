@@ -1522,6 +1522,9 @@ struct StreamWorkerToRouterReq {
 struct RouterToStreamWorkerResp {
     payload: String,
     stream_worker_to_func_connection_worker_tx: mpsc::Sender<StreamWorkerToFuncConnReq>,
+    circuit_break: bool,
+    cb_response_status: String,
+    cb_response_body: String,
 }
 
 struct FunctionConnToStreamWorkerResp {
@@ -1652,6 +1655,32 @@ async fn read_from_stream_until_blocking<S: ProxyStream>(
         }
     }
 }
+
+fn generate_circuit_break_resp (
+    cb_resp_status: String,
+    cb_resp_body: String,
+) -> (Vec<u8>, Vec<u8>) {
+    let mut headers: Vec<u8> = Vec::new();
+    let mut body_to_send: Vec<u8> = Vec::new();
+
+    let header_status_name_string = ":status\0";
+    let header_stauts_name_len = header_status_name_string.len();
+    let header_stauts_name_len_bytes = header_stauts_name_len.to_ne_bytes();
+    let header_status_value_string = cb_resp_status;
+    let header_stauts_value_len = header_status_value_string.len();
+    let header_stauts_value_len_bytes = header_stauts_value_len.to_ne_bytes();
+    headers.extend_from_slice(&header_stauts_name_len_bytes);
+    headers.extend_from_slice(header_status_name_string.as_bytes());
+    headers.extend_from_slice(&header_stauts_value_len_bytes);
+    headers.extend_from_slice(header_status_value_string.as_bytes());
+
+    let body_to_send_string = cb_resp_body;          
+    body_to_send.extend_from_slice(body_to_send_string.as_bytes());
+
+    return (headers, body_to_send);
+
+}
+
 // This handles the TCP/HTTP connection with user function container
 // Thus, it acts as a HTTP client
 async fn func_connection_worker3(
@@ -1975,6 +2004,11 @@ async fn router(
     request_sender: mpsc::Sender<DispatcherCommand>,
     mut stream_worker_to_router_rx: mpsc::Receiver<StreamWorkerToRouterReq>,
 ) {
+    let config = dandelion_server::config::DandelionConfig::get_config();
+    let max_tcp_connections = config.max_tcp_connections;
+    let max_http2_pending_requests = config.max_http2_pending_requests;
+    info!("[Router] max_tcp_connections: {}, max_http2_pending_requests: {}", max_tcp_connections, max_http2_pending_requests);
+
     // key: url; value: connection pool
     let mut uc_connections2: HashMap<String, (u32, u32, Vec<FuncConnTuple>)> = 
         HashMap::new();
@@ -2000,6 +2034,9 @@ async fn router(
 
         // *** Check if there is a need to create a new connection ***
         let mut need_to_create_a_new_connection: bool = false;
+        let mut circuit_break: bool = false;
+        let mut circuit_break_resp_status: String = String::from("");
+        let mut circuit_break_resp_body: String = String::from("");
         let mut selected_conn_idx: usize = 0;
         if uc_connections2.contains_key(&destination_url_string) {
 
@@ -2009,6 +2046,7 @@ async fn router(
 
             let mut i = 0;
 
+            // Iterate through the current connection pool
             while i < vec_func_conn_tuple.len() {
                 // if the conn is already closed, remove it
                 if vec_func_conn_tuple[i].stream_worker_to_func_connection_worker_tx.is_closed() {
@@ -2047,7 +2085,7 @@ async fn router(
                     }
                 }
 
-                if vec_func_conn_tuple[i].num_pending_reqs < 50 { // we pick this conn if the num of pending requests is less than the threshold
+                if vec_func_conn_tuple[i].num_pending_reqs < max_http2_pending_requests { // we pick this conn if the num of pending requests is less than the threshold
                     selected_conn_idx = i;
                     break;
                 }
@@ -2058,6 +2096,17 @@ async fn router(
             // all connections in the pool has a max num of pending reqs
             if i >= vec_func_conn_tuple.len() {
                 need_to_create_a_new_connection = true;
+            }
+
+            // Check if we have already achieved the max num of connections
+            if need_to_create_a_new_connection == true && vec_func_conn_tuple.len() >= max_tcp_connections {
+                info!("[Router] circuit breaking (url: {}), exceed max num of pending requests and connections", 
+                    destination_url_string, 
+                );
+                need_to_create_a_new_connection = false;
+                circuit_break = true;
+                circuit_break_resp_status = String::from("503\0");
+                circuit_break_resp_body = String::from("Service Unavailable: exceed max num of pending requests and connections");
             }
         } else {
             need_to_create_a_new_connection = true;
@@ -2130,6 +2179,9 @@ async fn router(
             payload: format!("router processed the request: {}", req.payload),
             stream_worker_to_func_connection_worker_tx: stream_worker_to_func_connection_worker_tx
                 .clone(),
+            circuit_break: circuit_break,
+            cb_response_status: circuit_break_resp_status,
+            cb_response_body: circuit_break_resp_body,
         };
         let _ = req
             .router_to_stream_worker_tx
@@ -2479,6 +2531,26 @@ async fn stream_worker(
     match router_to_stream_worker_rx.await {
         Ok(resp) => {
             debug!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] gets resp from the router", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
+
+            // From the router, we know if there is a circuit breaking
+            if resp.circuit_break == true { // If there is, directly return a error response
+                    let (cb_resp_headers, cb_resp_body) = generate_circuit_break_resp(resp.cb_response_status, resp.cb_response_body);
+                    let _ = stream_worker_to_dp_connection_worker_tx
+                        .send(StreamWorkerToDpConnReq {
+                            payload: format!(
+                                "[stream worker:{}] circuit breaking",
+                                stream_id,
+                            ),
+                            stream_id_to_send_response: stream_id,
+                            num_of_headers_to_send: 1,
+                            trailer_offset: -1,
+                            num_of_trailers_to_send: 0,                        
+                            headers: cb_resp_headers,
+                            body_to_send: cb_resp_body,
+                        })
+                        .await;
+                    return;
+            }
 
             // From the router, we now know which user-func connection to use
             let stream_worker_to_func_connection_worker_tx =
