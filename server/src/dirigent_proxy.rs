@@ -1568,9 +1568,14 @@ impl Default for StreamWorkerToDpConnReq {
     }
 }
 
+struct RouterToFuncConnReq {
+    function_connection_worker_to_router_tx: oneshot::Sender<usize>,
+}
+
 struct FuncConnTuple {
     conn_id: u32, // used to distinguish connections to the same sandbox
-    func_conn_worker: mpsc::Sender<StreamWorkerToFuncConnReq>,
+    stream_worker_to_func_connection_worker_tx: mpsc::Sender<StreamWorkerToFuncConnReq>,
+    router_to_func_connection_worker_tx: mpsc::Sender<RouterToFuncConnReq>,
     num_pending_reqs: usize,
 }
 
@@ -1654,6 +1659,7 @@ async fn func_connection_worker3(
     mut stream: TcpStream,
     request_sender: mpsc::Sender<DispatcherCommand>,
     mut stream_worker_to_func_connection_worker_rx: mpsc::Receiver<StreamWorkerToFuncConnReq>,
+    mut router_to_func_connection_worker_rx: mpsc::Receiver<RouterToFuncConnReq>
 ) {
     let tcp_conn_local_addr = stream.local_addr().unwrap();
     let tcp_conn_peer_addr = stream.peer_addr().unwrap();
@@ -1667,6 +1673,9 @@ async fn func_connection_worker3(
     // Value: Channel to the stream worker (to send the corresponding response)
     let mut stream_worker_map: HashMap<i32, oneshot::Sender<FunctionConnToStreamWorkerResp>> =
         HashMap::new();
+
+    // Some numbers to track
+    let mut num_pending_reqs: usize = 0;
 
     // Output (set_0) from the nghttp2 codec (other sets 1~n use local vars; each set is for one req or resp)
     let mut session_state: Vec<u8> = vec![0u8; 20 * 1024]; // Also the input
@@ -1812,6 +1821,12 @@ async fn func_connection_worker3(
                         channel_to_send_back_resp_list.push(Some(req.function_connection_worker_to_stream_worker_tx));
                     }
                 }
+                Some(req) = router_to_func_connection_worker_rx.recv() => { // 3) Req from the router to know the num of pending requests
+                    let _ = req.function_connection_worker_to_router_tx.send(num_pending_reqs);
+                    continue;
+                }
+
+
             }
         }
 
@@ -1873,6 +1888,9 @@ async fn func_connection_worker3(
         size_of_session_state = session_state.len();
 
         // ****** Operations triggered by output set 0 *******
+        num_pending_reqs = num_pending_reqs + num_of_req_or_resp_sent - num_of_req_or_res_received;
+        debug!("[func_connection_worker3. Local Addr: {}; Peer Addr: {}] num_pending_reqs {}", tcp_conn_local_addr, tcp_conn_peer_addr, num_pending_reqs);
+
         let mut stream_id_list_sent_requests_i32: Vec<i32> = Vec::new();
         for i in 0..num_of_req_or_resp_sent {
             // let arr: [u8; size_of::<usize>()]  =
@@ -1993,14 +2011,43 @@ async fn router(
 
             while i < vec_func_conn_tuple.len() {
                 // if the conn is already closed, remove it
-                if vec_func_conn_tuple[i].func_conn_worker.is_closed() {
-                    debug!("[Router] The func connection is already closed. Remove it from the pool");
+                if vec_func_conn_tuple[i].stream_worker_to_func_connection_worker_tx.is_closed() {
+                    info!("[Router] The func connection(url: {}, conn_id: {}) is already closed. Remove it from the pool", destination_url_string, vec_func_conn_tuple[i].conn_id);
                     vec_func_conn_tuple.remove(i);
                     continue;
                 }
 
                 // Check the num of pending reqs on ths conn
-                if vec_func_conn_tuple[i].num_pending_reqs < 50 {
+                let (func_conn_worker_to_router_tx, func_conn_worker_to_router_rx) =
+                    oneshot::channel::<usize>();
+
+                let _  = vec_func_conn_tuple[i].router_to_func_connection_worker_tx.send(
+                    RouterToFuncConnReq {
+                        function_connection_worker_to_router_tx: func_conn_worker_to_router_tx
+                    }
+                ).await;
+
+                match func_conn_worker_to_router_rx.await {
+                    Ok(num) => {
+                        vec_func_conn_tuple[i].num_pending_reqs = num;
+                        debug!(
+                            "[Router] gets the numbder of pending requests on func conn (url: {}, conn_id: {}): {}",
+                            destination_url_string, 
+                            vec_func_conn_tuple[i].conn_id,
+                            vec_func_conn_tuple[i].num_pending_reqs
+                        );  
+                    }
+                    Err(e) => {
+                        error!(
+                            "[Router] fails to get the num of pending requests on func conn (url: {}, conn_id: {}) with error: {}",
+                            destination_url_string, 
+                            vec_func_conn_tuple[i].conn_id,
+                            e
+                        );                           
+                    }
+                }
+
+                if vec_func_conn_tuple[i].num_pending_reqs < 50 { // we pick this conn if the num of pending requests is less than the threshold
                     selected_conn_idx = i;
                     break;
                 }
@@ -2027,6 +2074,11 @@ async fn router(
                 stream_worker_to_func_connection_worker_rx,
             ) = mpsc::channel::<StreamWorkerToFuncConnReq>(32);
 
+            let (
+                router_to_func_connection_worker_tx,
+                router_to_func_connection_worker_rx,
+            ) = mpsc::channel::<RouterToFuncConnReq>(32);
+
             match TcpStream::connect(&destination_url_string).await {
                 Ok(s) => {
                     info!(
@@ -2040,11 +2092,13 @@ async fn router(
                         stream,
                         request_sender.clone(),
                         stream_worker_to_func_connection_worker_rx,
+                        router_to_func_connection_worker_rx,
                     ));
 
                     vec_func_conn_tuple.push(FuncConnTuple {
                         conn_id: *new_conn_id,
-                        func_conn_worker: stream_worker_to_func_connection_worker_tx.clone(),
+                        stream_worker_to_func_connection_worker_tx: stream_worker_to_func_connection_worker_tx.clone(),
+                        router_to_func_connection_worker_tx: router_to_func_connection_worker_tx.clone(),
                         num_pending_reqs: 0,
                     });
                     *new_conn_id = *new_conn_id + 1;
@@ -2068,7 +2122,7 @@ async fn router(
                 .unwrap();
 
             stream_worker_to_func_connection_worker_tx = 
-                vec_func_conn_tuple[selected_conn_idx].func_conn_worker.clone();
+                vec_func_conn_tuple[selected_conn_idx].stream_worker_to_func_connection_worker_tx.clone();
         }
 
         // Send the answer to the stream worker
