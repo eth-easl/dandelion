@@ -39,6 +39,9 @@ const DEFAULT_NGHTTP2_CODEC_BIN_LOCAL_PATH: &str = "./nghttp2_codec3";
 const DEFAULT_AUTHORIZATION_POLICY_NAME: &str = "authorization_policy";
 const DEFAULT_JWT_POLICY_NAME: &str = "jwt_policy";
 
+const DEFAULT_MAX_TCP_CONNECTIONS: usize = 100;
+const DEFAULT_MAX_HTTP2_PENDING_REQUSTS: usize = 100;
+
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
     #[arg(long, env, default_value_t = String::from(DEFAULT_CONFIG_PATH))]
@@ -99,6 +102,10 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = String::from(DEFAULT_PROXY_TLS_MATERIAL_DIR))]
     #[serde(default)]
     pub proxy_tls_material_dir: String,
+    #[arg(long, env, default_value_t = DEFAULT_MAX_TCP_CONNECTIONS)]
+    pub max_tcp_connections: usize,
+    #[arg(long, env, default_value_t = DEFAULT_MAX_HTTP2_PENDING_REQUSTS)]
+    pub max_http2_pending_requests: usize,
 }
 
 impl DandelionConfig {
