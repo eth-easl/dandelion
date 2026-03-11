@@ -3,10 +3,15 @@ mod system_driver_tests {
     use crate::{
         composition::CompositionSet,
         function_driver::{
-            system_driver::{get_system_function_input_sets, get_system_function_output_sets},
+            functions::FunctionAlternative,
+            system_driver::{
+                get_system_function_input_sets, get_system_function_output_sets, SystemFunction,
+                SYS_FUNC_DEFAULT_CONTEXT_SIZE,
+            },
             test_queue::TestQueue,
-            ComputeResource, Driver, Metadata, SystemFunction, WorkToDo,
+            ComputeResource, Metadata, WorkToDo,
         },
+        machine_config::EngineType,
         memory_domain::{
             read_only::ReadOnlyContext, test_resource::get_resource, ContextTrait, MemoryDomain,
             MemoryResource,
@@ -87,12 +92,13 @@ mod system_driver_tests {
 
     fn get_http<Dom: MemoryDomain>(
         dom_init: MemoryResource,
-        driver: Box<dyn Driver>,
+        engine_type: EngineType,
         drv_init: ComputeResource,
     ) -> () {
         let domain =
             Arc::new(Dom::init(get_resource(dom_init)).expect("Should be able to get domain"));
         let queue = Box::new(TestQueue::new());
+        let driver = engine_type.get_driver();
         let _engine = driver
             .start_engine(drv_init, queue.clone())
             .expect("Should be able to get engine");
@@ -125,12 +131,18 @@ mod system_driver_tests {
                 .collect(),
             output_sets: get_system_function_output_sets(SystemFunction::HTTP),
         });
-        let promise = queue.enqueu(WorkToDo::FunctionArguments {
-            function,
+        let function_alternatives = vec![Arc::new(FunctionAlternative::new_loaded(
+            engine_type,
+            SYS_FUNC_DEFAULT_CONTEXT_SIZE,
+            String::new(),
             domain,
-            context_size: _CONTEXT_SIZE,
+            function,
+        ))];
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            function_alternatives,
             input_sets,
             metadata,
+            caching: true,
             recorder: recorder,
         });
         let result_context = tokio::runtime::Builder::new_current_thread()
@@ -184,12 +196,13 @@ mod system_driver_tests {
 
     fn post_http<Dom: MemoryDomain>(
         dom_init: MemoryResource,
-        driver: Box<dyn Driver>,
+        engine_type: EngineType,
         drv_init: ComputeResource,
     ) -> () {
         let queue = Box::new(TestQueue::new());
         let domain =
             Arc::new(Dom::init(get_resource(dom_init)).expect("Should be able to get domain"));
+        let driver = engine_type.get_driver();
         let _engine = driver
             .start_engine(drv_init, queue.clone())
             .expect("Should be able to get engine");
@@ -234,12 +247,18 @@ dolore magna aliquyam erat, sed diam voluptua."#
                 .collect(),
             output_sets: get_system_function_output_sets(SystemFunction::HTTP),
         });
-        let promise = queue.enqueu(WorkToDo::FunctionArguments {
-            function,
+        let function_alternatives = vec![Arc::new(FunctionAlternative::new_loaded(
+            engine_type,
+            SYS_FUNC_DEFAULT_CONTEXT_SIZE,
+            String::new(),
             domain,
-            context_size: _CONTEXT_SIZE,
+            function,
+        ))];
+        let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            function_alternatives,
             input_sets,
             metadata,
+            caching: true,
             recorder,
         });
         let result_context = tokio::runtime::Builder::new_current_thread()
@@ -274,30 +293,28 @@ dolore magna aliquyam erat, sed diam voluptua."#
     }
 
     macro_rules! driverTests {
-        ($name : ident; $domain: ty; $dom_init: expr; $driver : expr ; $drv_init : expr ) => {
+        ($name : ident; $domain: ty; $dom_init: expr; $engine_type : expr ; $drv_init : expr ) => {
             #[test_log::test]
             fn test_http_get() {
                 let _server = super::HttpServer::start("9000");
-                let driver = Box::new($driver);
-                super::get_http::<$domain>($dom_init, driver, $drv_init);
+                super::get_http::<$domain>($dom_init, $engine_type, $drv_init);
             }
 
             #[test_log::test]
             fn test_http_post() {
                 let _server = super::HttpServer::start("9001");
-                let driver = Box::new($driver);
-                super::post_http::<$domain>($dom_init, driver, $drv_init);
+                super::post_http::<$domain>($dom_init, $engine_type, $drv_init);
             }
         };
     }
 
     #[cfg(feature = "reqwest_io")]
     mod reqwest_io {
-        use crate::function_driver::system_driver::reqwest::ReqwestDriver;
         use crate::function_driver::ComputeResource;
+        use crate::machine_config::EngineType;
         // use crate::memory_domain::malloc::MallocMemoryDomain as domain;
         use crate::memory_domain::system_domain::SystemMemoryDomain as domain;
         // use crate::memory_domain::mmap::MmapMemoryDomain as domain;
-        driverTests!(reqwest_io; domain; crate::memory_domain::MemoryResource::Anonymous{size: (2<<22)}; ReqwestDriver{}; ComputeResource::CPU(1));
+        driverTests!(reqwest_io; domain; crate::memory_domain::MemoryResource::Anonymous{size: (2<<22)}; EngineType::Reqwest; ComputeResource::CPU(1));
     }
 }

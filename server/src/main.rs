@@ -19,7 +19,7 @@ use std::{
     fs::read_to_string,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        OnceLock,
+        Arc, OnceLock,
     },
     time::Instant,
 };
@@ -36,10 +36,10 @@ const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
 pub enum DispatcherCommand {
     FunctionRequest {
-        name: String,
+        function_id: Arc<String>,
         inputs: Vec<DispatcherInput>,
         is_cold: bool,
-        start_time: Instant,
+        recorder: Recorder,
         callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
     },
     FunctionRegistration {
@@ -71,6 +71,12 @@ pub enum DispatcherCommand {
         start_time: Instant,
         callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
     },
+    CompositionRequest {
+        composition: String,
+        inputs: Vec<DispatcherInput>,
+        recorder: Recorder,
+        callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
+    },
 }
 
 /// Recording setup
@@ -83,15 +89,15 @@ async fn dispatcher_loop(
     while let Some(dispatcher_args) = request_receiver.recv().await {
         match dispatcher_args {
             DispatcherCommand::FunctionRequest {
-                name,
+                function_id,
                 inputs,
                 is_cold,
-                start_time,
+                recorder,
                 mut callback,
             } => {
-                debug!("Handling function request for function {}", name);
+                debug!("Handling function request for function {}", function_id);
                 let function_future =
-                    dispatcher.queue_function_by_name(name, inputs, is_cold, start_time);
+                    dispatcher.queue_function_by_name(function_id, inputs, !is_cold, recorder);
                 spawn(async {
                     select! {
                         function_output = function_future => {
@@ -99,6 +105,28 @@ async fn dispatcher_loop(
                             // no need to handle ok, and nothing useful to do with data if we get it back
                             // drop it here to release resources
                             let _ = callback.send(function_output);
+                        }
+                        _ = callback.closed() => ()
+                    }
+                });
+            }
+            DispatcherCommand::CompositionRequest {
+                composition,
+                inputs,
+                recorder,
+                mut callback,
+            } => {
+                debug!("Handling composition request");
+                let future = dispatcher.queue_unregistered_composition(
+                    composition,
+                    inputs,
+                    false, // TODO
+                    recorder,
+                );
+                spawn(async {
+                    select! {
+                        output = future => {
+                            let _ = callback.send(output);
                         }
                         _ = callback.closed() => ()
                     }

@@ -4,7 +4,6 @@
 ))]
 mod server_tests {
 
-    use assert_cmd::prelude::*;
     use byteorder::{LittleEndian, ReadBytesExt};
     use dandelion_server::{DandelionDeserializeResponse, DandelionRequest, InputItem, InputSet};
     use reqwest::blocking::Client;
@@ -227,7 +226,7 @@ mod server_tests {
     #[test]
     #[serial]
     fn serve_matmul_http_2() {
-        let mut cmd = Command::cargo_bin("dandelion_server").unwrap();
+        let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!());
         let server = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -262,7 +261,7 @@ mod server_tests {
     #[test]
     #[serial]
     fn serve_matmul_http_2_local() {
-        let mut cmd = Command::cargo_bin("dandelion_server").unwrap();
+        let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!());
         let server = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -297,7 +296,7 @@ mod server_tests {
     #[test]
     #[serial]
     fn serve_matmul_http_1_1() {
-        let mut cmd = Command::cargo_bin("dandelion_server").unwrap();
+        let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!());
         let server = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

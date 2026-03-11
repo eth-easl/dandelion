@@ -453,7 +453,7 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
                 offset: 0,
                 size: data_len * core::mem::size_of::<u64>(),
             },
-            key: 1,
+            key: 0,
         }],
     })];
 

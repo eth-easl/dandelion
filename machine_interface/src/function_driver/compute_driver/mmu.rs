@@ -1,8 +1,9 @@
 use crate::{
     function_driver::{
+        functions::{ElfConfig, Function, FunctionConfig},
         load_utils::load_u8_from_file,
         thread_utils::{start_thread, EngineLoop},
-        ComputeResource, Driver, ElfConfig, EngineWorkQueue, Function, FunctionConfig,
+        ComputeResource, Driver, EngineWorkQueue,
     },
     interface::{read_output_structs, setup_input_structs},
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
@@ -178,6 +179,11 @@ impl EngineLoop for MmuLoop {
     fn init(core_id: u8) -> DandelionResult<Box<Self>> {
         return Ok(Box::new(MmuLoop { cpu_slot: core_id }));
     }
+
+    fn get_engine_type(&self) -> crate::machine_config::EngineType {
+        crate::machine_config::EngineType::Process
+    }
+
     fn run(
         &mut self,
         config: FunctionConfig,
@@ -257,7 +263,6 @@ impl Driver for MmuDriver {
         let function = load_u8_from_file(function_path)?;
         let elf = elf_parser::ParsedElf::new(&function)?;
         let system_data = elf.get_symbol_by_name(&function, "__dandelion_system_data")?;
-        //let return_offset = elf.get_symbol_by_name(&function, "__dandelion_return_address")?;
         let entry = elf.get_entry_point();
         let config = FunctionConfig::ElfConfig(ElfConfig {
             system_data_offset: system_data.0,

@@ -23,12 +23,9 @@ use machine_interface::{
     composition::{
         get_sharding, Composition, CompositionSet, InputSetDescriptor, JoinStrategy, ShardingMode,
     },
-    function_driver::{Driver, Function, Metadata, WorkToDo},
-    machine_config::{
-        get_available_domains, get_available_drivers, get_compatibilty_table, DomainType,
-        EngineType,
-    },
-    memory_domain::{Context, MemoryDomain, MemoryResource},
+    function_driver::{Metadata, WorkToDo},
+    machine_config::{get_available_domains, DomainType, EngineType, IntoEnumIterator},
+    memory_domain::{MemoryDomain, MemoryResource},
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -40,16 +37,12 @@ pub enum DispatcherInput {
 
 const MAX_QUEUE: usize = 4096;
 
-// TODO here and in registry can probably replace driver and loader function maps with fixed size arrays
-// That have compile time size and static indexing
 // TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
 // the entire execution time anyway
 pub struct Dispatcher {
     function_registry: FunctionRegistry,
     work_queue: WorkQueue,
-    type_map: BTreeMap<EngineType, DomainType>,
-    domains: BTreeMap<DomainType, Arc<Box<dyn MemoryDomain>>>,
-    drivers: BTreeMap<EngineType, &'static (dyn Driver + 'static)>,
+    domains: Vec<Arc<Box<dyn MemoryDomain>>>,
 }
 
 impl Dispatcher {
@@ -58,36 +51,27 @@ impl Dispatcher {
         memory_resources: BTreeMap<DomainType, MemoryResource>,
     ) -> DandelionResult<Dispatcher> {
         // get machine specific configurations
-        let type_map = get_compatibilty_table();
         let domains = get_available_domains(memory_resources);
-        let drivers = get_available_drivers();
 
         // TODO: get size from config?
         let work_queue = WorkQueue::init(MAX_QUEUE);
 
         // create an engine queue wrapper of the work queue for each engine and use up all engine resource available
-        let mut domain_map = BTreeMap::new();
-        let mut registry_drivers: BTreeMap<EngineType, &'static dyn Driver> = BTreeMap::new();
-        for (engine_type, driver) in drivers.into_iter() {
+        for engine_type in EngineType::iter() {
             let engine_queue = Box::new(EngineQueue::init(work_queue.clone(), engine_type));
+            let driver = engine_type.get_driver();
             while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(engine_type) {
                 driver.start_engine(resource, engine_queue.clone())?;
             }
-            let domain_type = type_map.get(&engine_type).unwrap();
-            let domain = domains.get(domain_type).unwrap().clone();
-            domain_map.insert(*domain_type, domain);
-            registry_drivers.insert(engine_type, driver as &'static dyn Driver);
         }
 
         // create the function registry
-        let function_registry = FunctionRegistry::new(&type_map, &registry_drivers, &domains);
+        let function_registry = FunctionRegistry::new(&domains);
 
         return Ok(Dispatcher {
             function_registry,
             work_queue,
-            type_map,
-            domains: domain_map,
-            drivers: registry_drivers,
+            domains,
         });
     }
 
@@ -100,15 +84,11 @@ impl Dispatcher {
         metadata: Metadata,
     ) -> DandelionResult<()> {
         let function_id = Arc::new(function_name);
-        let domain_type = self.type_map.get(&engine_type).unwrap();
-        let static_domain = self.domains.get(domain_type).unwrap();
-        let driver = *self.drivers.get(&engine_type).unwrap();
+        let domain_type = engine_type.get_domain_type();
         self.function_registry.insert_function(
             function_id,
             engine_type,
-            static_domain.clone(),
-            driver,
-            self.work_queue.clone(),
+            self.domains[domain_type as usize].clone(),
             ctx_size,
             path,
             metadata,
@@ -122,14 +102,13 @@ impl Dispatcher {
 
     pub async fn queue_function_by_name(
         &self,
-        function_name: String,
+        function_id: Arc<String>,
         inputs: Vec<DispatcherInput>,
         caching: bool,
-        start_time: std::time::Instant,
+        mut recorder: Recorder,
     ) -> DandelionResult<(Vec<Option<CompositionSet>>, Recorder)> {
-        debug!("Queuing function {}", function_name);
-        let function_id = Arc::new(function_name);
-        let recorder = Recorder::new(function_id.clone(), start_time);
+        debug!("Queuing function {}", function_id);
+        recorder.record(RecordPoint::EnterDispatcher);
 
         let mut input_vec = Vec::with_capacity(inputs.len());
         input_vec.resize(inputs.len(), None);
@@ -145,6 +124,53 @@ impl Dispatcher {
 
         let results = self
             .queue_function(function_id, input_vec, caching, recorder.get_sub_recorder())
+            .await?;
+
+        return Ok((results, recorder));
+    }
+
+    pub async fn queue_unregistered_composition(
+        &self,
+        composition_desc: String,
+        inputs: Vec<DispatcherInput>,
+        caching: bool,
+        recorder: Recorder,
+    ) -> DandelionResult<(Vec<Option<CompositionSet>>, Recorder)> {
+        debug!("Parsing single use composition");
+        let composition_meta_pairs = self
+            .function_registry
+            .parse_compositions(&composition_desc.as_str())?;
+        if composition_meta_pairs.len() != 1 {
+            debug!(
+                "Expected exactly one composition got {}",
+                composition_meta_pairs.len()
+            );
+            return Err(DandelionError::Dispatcher(
+                DispatcherError::InvalidComposition,
+            ));
+        }
+
+        debug!(
+            "Queuing single use composition {}",
+            composition_meta_pairs[0].0
+        );
+        let mut input_vec = Vec::with_capacity(inputs.len());
+        input_vec.resize(inputs.len(), None);
+        for (index, input) in inputs.into_iter().enumerate() {
+            match input {
+                DispatcherInput::None => (),
+                DispatcherInput::Set(set) => {
+                    input_vec[index] = Some(set);
+                }
+            }
+        }
+        let results = self
+            .queue_composition(
+                composition_meta_pairs[0].1.clone(),
+                input_vec,
+                caching,
+                recorder.get_sub_recorder(),
+            )
             .await?;
 
         return Ok((results, recorder));
@@ -446,65 +472,77 @@ impl Dispatcher {
     pub fn queue_function<'dispatcher>(
         &'dispatcher self,
         function_id: FunctionId,
-        inputs: Vec<Option<CompositionSet>>,
+        input_sets: Vec<Option<CompositionSet>>,
         caching: bool,
         mut recorder: Recorder,
     ) -> Pin<
         Box<dyn Future<Output = DandelionResult<Vec<Option<CompositionSet>>>> + 'dispatcher + Send>,
     > {
-        trace!("queueing function with id: {}", function_id);
+        debug!("Queueing function with id: {}", function_id);
         Box::pin(async move {
             // find an engine capable of running the function
             // TODO: think about more distinctions, that allow pushing chains of functions which can be executed by single engine,
             // or potentially or potentially even compositions that still need to be split.
             match self.function_registry.get_function(&function_id)? {
                 FunctionType::SystemFunction(func_info) | FunctionType::Function(func_info) => {
-                    // TODO: Scheduling policies:
-                    // - can insert the work with all possible engine alternatives into the queue
-                    // - not yet clear how this works with the function preparation steps
-                    // -> right now we pick the first alternative and insert it into the queue with
-                    //    only that engine
-                    let chosen_alternative = func_info
+                    let function_alternatives = func_info
                         .alternatives
                         .read()
-                        .expect("Function registry lock is poisoned!")[0]
+                        .expect("Function registry lock is poisoned!")
                         .clone();
-                    let engine_type = chosen_alternative.engine;
-                    let context_size = chosen_alternative.context_size;
-                    let driver = *self.drivers.get(&engine_type).unwrap();
-                    let domain = self
-                        .domains
-                        .get(self.type_map.get(&engine_type).unwrap())
-                        .unwrap()
-                        .clone();
-                    let function = chosen_alternative
-                        .load_function(
-                            driver,
-                            self.work_queue.clone(),
-                            domain,
-                            caching,
-                            recorder.get_sub_recorder(),
-                        )
-                        .await?;
 
                     let metadata = func_info.metadata;
                     // run on engine
-                    recorder.record(RecordPoint::GetEngineQueue);
-                    trace!("running function {} on {:?} type engine with input sets {:?} and output sets {:?}",
-                            function_id,
-                            engine_type,
-                            metadata.input_sets.iter().map(|(name, _)| name).collect_vec(),
-                            metadata.output_sets);
-                    let context = self
-                        .run_on_engine(
-                            engine_type,
-                            function,
-                            inputs,
-                            metadata.clone(),
-                            context_size,
-                            recorder,
-                        )
-                        .await?;
+                    trace!(
+                        "Running function {} with input sets {:?} and output sets {:?} and alternatives: {:?}",
+                        function_id,
+                        metadata
+                            .input_sets
+                            .iter()
+                            .map(|(name, _)| name)
+                            .collect_vec(),
+                        metadata.output_sets,
+                        function_alternatives
+                    );
+
+                    let subrecoder = recorder.get_sub_recorder();
+                    let args = WorkToDo::FunctionArguments {
+                        function_alternatives,
+                        input_sets,
+                        metadata,
+                        caching,
+                        recorder: subrecoder,
+                    };
+                    recorder.record(RecordPoint::ExecutionQueue);
+                    let context = self.work_queue.do_work(args).await?.get_context();
+                    recorder.record(RecordPoint::FutureReturn);
+
+                    #[cfg(feature = "log_function_stdio")]
+                    for opt in context.content.iter() {
+                        if opt.as_ref().is_some_and(|s| s.ident == "stdio") {
+                            for itm in opt.as_ref().unwrap().buffers.iter() {
+                                if itm.ident == "stderr" && itm.data.size > 0 {
+                                    let mut stderr_output: Vec<u8> = vec![0; itm.data.size];
+                                    context.context.read(itm.data.offset, &mut stderr_output)?;
+                                    warn!(
+                                        "Function result contains stderr output:\n{}",
+                                        std::str::from_utf8(stderr_output.as_slice())
+                                            .expect("Invalid stderr buffer")
+                                    );
+                                }
+                                if itm.ident == "stdout" && itm.data.size > 0 {
+                                    let mut stdout_output: Vec<u8> = vec![0; itm.data.size];
+                                    context.context.read(itm.data.offset, &mut stdout_output)?;
+                                    debug!(
+                                        "Function output:\n{}",
+                                        std::str::from_utf8(stdout_output.as_slice())
+                                            .expect("Invalid stdout buffer")
+                                    );
+                                }
+                            }
+                        }
+                    }
+
                     let context_arc = Arc::new(context);
                     let composition_sets = context_arc
                         .content
@@ -526,7 +564,7 @@ impl Dispatcher {
                     return self
                         .queue_composition(
                             (*comp_info.composition).clone(),
-                            inputs,
+                            input_sets,
                             caching,
                             recorder,
                         )
@@ -534,66 +572,5 @@ impl Dispatcher {
                 }
             };
         })
-    }
-
-    async fn run_on_engine(
-        &self,
-        engine_type: EngineType,
-        function: Arc<Function>,
-        input_sets: Vec<Option<CompositionSet>>,
-        metadata: Arc<Metadata>,
-        context_size: usize,
-        mut recorder: Recorder,
-    ) -> DandelionResult<Context> {
-        // preparation is done, get engine to receive engine
-        let domain_id = self.type_map.get(&engine_type).unwrap();
-        let domain = match self.domains.get(domain_id) {
-            Some(d) => d.clone(),
-            None => return Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
-        };
-        let subrecoder = recorder.get_sub_recorder();
-        let args = WorkToDo::FunctionArguments {
-            function,
-            domain,
-            context_size,
-            input_sets,
-            metadata,
-            recorder: subrecoder,
-        };
-        recorder.record(RecordPoint::ExecutionQueue);
-        let result = self
-            .work_queue
-            .do_work(args, vec![engine_type])
-            .await?
-            .get_context();
-        recorder.record(RecordPoint::FutureReturn);
-
-        #[cfg(feature = "log_function_stdio")]
-        for opt in result.content.iter() {
-            if opt.as_ref().is_some_and(|s| s.ident == "stdio") {
-                for itm in opt.as_ref().unwrap().buffers.iter() {
-                    if itm.ident == "stderr" && itm.data.size > 0 {
-                        let mut stderr_output: Vec<u8> = vec![0; itm.data.size];
-                        result.context.read(itm.data.offset, &mut stderr_output)?;
-                        warn!(
-                            "Function result contains stderr output:\n{}",
-                            std::str::from_utf8(stderr_output.as_slice())
-                                .expect("Invalid stderr buffer")
-                        );
-                    }
-                    if itm.ident == "stdout" && itm.data.size > 0 {
-                        let mut stdout_output: Vec<u8> = vec![0; itm.data.size];
-                        result.context.read(itm.data.offset, &mut stdout_output)?;
-                        debug!(
-                            "Function output:\n{}",
-                            std::str::from_utf8(stdout_output.as_slice())
-                                .expect("Invalid stdout buffer")
-                        );
-                    }
-                }
-            }
-        }
-
-        return Ok(result);
     }
 }

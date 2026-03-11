@@ -3,7 +3,7 @@ use std::{
 };
 
 use crate::{DispatcherCommand, FUNCTION_FOLDER_PATH, TRACING_ARCHIVE};
-use dandelion_commons::{DandelionError, DandelionResult, FrontendError};
+use dandelion_commons::{records::Recorder, DandelionError, DandelionResult, FrontendError};
 use dandelion_server::DandelionBody;
 use dispatcher::dispatcher::DispatcherInput;
 use http_body_util::BodyExt;
@@ -242,7 +242,13 @@ async fn handle_request(
     if request_context_result.is_err() {
         warn!("request parsing failed with: {:?}", request_context_result);
     }
-    let (function_name, request_context) = request_context_result.unwrap();
+
+    // TODO make single enum, so we cannot have the None None or Some Some case
+    let (function_name, composition, request_context) = request_context_result.unwrap();
+    let had_function_name = function_name.is_some();
+    let function_id = Arc::new(function_name.unwrap_or_else(|| String::from("Composition")));
+    let mut recorder = Recorder::new(function_id.clone(), start_time);
+    recorder.record(dandelion_commons::records::RecordPoint::DeserializationEnd);
     debug!("finished creating request context");
 
     // TODO match set names to assign sets to composition sets
@@ -259,16 +265,29 @@ async fn handle_request(
     // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
 
     let (callback, output_recevier) = tokio::sync::oneshot::channel();
-    dispatcher
-        .send(DispatcherCommand::FunctionRequest {
-            name: function_name,
-            inputs,
-            is_cold,
-            start_time: start_time.clone(),
-            callback,
-        })
-        .await
-        .unwrap();
+    if had_function_name {
+        dispatcher
+            .send(DispatcherCommand::FunctionRequest {
+                function_id,
+                inputs,
+                is_cold,
+                recorder,
+                callback,
+            })
+            .await
+            .unwrap();
+    } else {
+        dispatcher
+            .send(DispatcherCommand::CompositionRequest {
+                composition: composition
+                    .expect("Did not get a service name nor a composition description in request"),
+                inputs,
+                recorder,
+                callback,
+            })
+            .await
+            .unwrap();
+    }
     let (function_output, recorder) = output_recevier
         .await
         .unwrap()
@@ -279,6 +298,7 @@ async fn handle_request(
     debug!("finished creating response body");
     #[cfg(feature = "archive")]
     TRACING_ARCHIVE.get().unwrap().insert_recorder(recorder);
+
     Ok(response_body)
 }
 

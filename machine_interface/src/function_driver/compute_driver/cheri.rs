@@ -1,8 +1,9 @@
 use crate::{
     function_driver::{
+        functions::{ElfConfig, Function, FunctionConfig},
         load_utils::load_u8_from_file,
         thread_utils::{start_thread, EngineLoop},
-        ComputeResource, Driver, ElfConfig, EngineWorkQueue, Function, FunctionConfig,
+        ComputeResource, Driver, EngineWorkQueue,
     },
     interface::{read_output_structs, setup_input_structs},
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
@@ -31,6 +32,11 @@ impl EngineLoop for CheriLoop {
     fn init(_core_id: u8) -> DandelionResult<Box<Self>> {
         return Ok(Box::new(CheriLoop {}));
     }
+
+    fn get_engine_type(&self) -> crate::machine_config::EngineType {
+        crate::machine_config::EngineType::Cheri
+    }
+
     fn run(
         &mut self,
         config: FunctionConfig,
