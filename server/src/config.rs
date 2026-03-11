@@ -50,6 +50,9 @@ const DEFAULT_JWT_POLICY_NAME: &str = "jwt_policy";
 const DEFAULT_RATE_LIMITING_POLICY_NAME: &str = "rate_limiting_policy";
 const DEFAULT_TELEMETRY_POLICY_NAME: &str = "telemetry_policy";
 
+const DEFAULT_MAX_TCP_CONNECTIONS: usize = 100;
+const DEFAULT_MAX_HTTP2_PENDING_REQUSTS: usize = 100;
+
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
     #[arg(long, env, default_value_t = String::from(DEFAULT_CONFIG_PATH))]
@@ -149,6 +152,10 @@ pub struct DandelionConfig {
     pub telemetry_policy_name: String,
     #[arg(long, env)]
     pub telemetry_policy_bin_local_path: String,
+    #[arg(long, env, default_value_t = DEFAULT_MAX_TCP_CONNECTIONS)]
+    pub max_tcp_connections: usize,
+    #[arg(long, env, default_value_t = DEFAULT_MAX_HTTP2_PENDING_REQUSTS)]
+    pub max_http2_pending_requests: usize,
 }
 
 impl DandelionConfig {
