@@ -1,6 +1,6 @@
 use crate::{
     function_registry::{FunctionRegistry, FunctionType},
-    queue::{EngineQueue, WorkQueue},
+    queue::{EngineQueue, Priority, WorkQueue},
     resource_pool::ResourcePool,
 };
 use core::pin::Pin;
@@ -106,8 +106,9 @@ impl Dispatcher {
         inputs: Vec<DispatcherInput>,
         caching: bool,
         start_time: std::time::Instant,
+        priority: Priority,
     ) -> DandelionResult<(Vec<Option<CompositionSet>>, Recorder)> {
-        debug!("Queuing function {}", function_name);
+        debug!("Queuing function {} priority {:?}", function_name, priority);
         let function_id = Arc::new(function_name);
         let recorder = Recorder::new(function_id.clone(), start_time);
 
@@ -124,7 +125,7 @@ impl Dispatcher {
         }
 
         let results = self
-            .queue_function(function_id, input_vec, caching, recorder.get_sub_recorder())
+            .queue_function(function_id, input_vec, caching, recorder.get_sub_recorder(), priority)
             .await?;
 
         return Ok((results, recorder));
@@ -143,6 +144,7 @@ impl Dispatcher {
         inputs: Vec<Option<CompositionSet>>,
         caching: bool,
         mut recorder: Recorder,
+        priority: Priority,
     ) -> DandelionResult<Vec<Option<CompositionSet>>> {
         // build up ready sets
         trace!("queue composition");
@@ -229,6 +231,7 @@ impl Dispatcher {
                 args.output_mapping,
                 caching,
                 recorder.get_sub_recorder(),
+                priority,
             )));
         }
         let num_running_functions = awaited_sets.len();
@@ -299,6 +302,7 @@ impl Dispatcher {
                                 args.output_mapping,
                                 caching,
                                 recorder.get_sub_recorder(),
+                                priority,
                             )));
                             None
                         } else {
@@ -330,6 +334,7 @@ impl Dispatcher {
         output_mapping: Vec<Option<usize>>,
         caching: bool,
         recorder: Recorder,
+        priority: Priority,
     ) -> DandelionResult<(Vec<(usize, Option<CompositionSet>)>, Vec<Recorder>)> {
         trace!(
             "queue function {} sharded and input sets: {:?}",
@@ -357,6 +362,7 @@ impl Dispatcher {
                         ins,
                         caching,
                         new_recorder.get_sub_recorder(),
+                        priority,
                     ));
                     recorders.push(new_recorder);
                     future_box
@@ -373,6 +379,7 @@ impl Dispatcher {
                     vec![],
                     caching,
                     new_recorder.get_sub_recorder(),
+                    priority,
                 )
                 .await
                 .and_then(|result| Ok(vec![result]));
@@ -429,10 +436,11 @@ impl Dispatcher {
         input_sets: Vec<Option<CompositionSet>>,
         caching: bool,
         mut recorder: Recorder,
+        priority: Priority,
     ) -> Pin<
         Box<dyn Future<Output = DandelionResult<Vec<Option<CompositionSet>>>> + 'dispatcher + Send>,
     > {
-        trace!("queueing function with id: {}", function_id);
+        trace!("queueing function with id: {} priority: {:?}", function_id, priority);
         Box::pin(async move {
             // find an engine capable of running the function
             // TODO: think about more distinctions, that allow pushing chains of functions which can be executed by single engine,
@@ -469,7 +477,7 @@ impl Dispatcher {
                         recorder: subrecoder,
                     };
                     recorder.record(RecordPoint::ExecutionQueue);
-                    let context = self.work_queue.do_work(args).await?.get_context();
+                    let context = self.work_queue.do_work(args, priority).await?.get_context();
                     recorder.record(RecordPoint::FutureReturn);
 
                     #[cfg(feature = "log_function_stdio")]
@@ -522,6 +530,7 @@ impl Dispatcher {
                             input_sets,
                             caching,
                             recorder,
+                            priority,
                         )
                         .await;
                 }

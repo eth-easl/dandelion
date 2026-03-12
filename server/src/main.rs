@@ -6,6 +6,7 @@ use dandelion_commons::{
 use dandelion_server::DandelionBody;
 use dispatcher::{
     dispatcher::{Dispatcher, DispatcherInput},
+    queue::Priority,
     resource_pool::ResourcePool,
 };
 use http_body_util::BodyExt;
@@ -52,6 +53,7 @@ enum DispatcherCommand {
         name: String,
         inputs: Vec<DispatcherInput>,
         is_cold: bool,
+        priority: Priority,
         start_time: Instant,
         callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
     },
@@ -71,6 +73,7 @@ enum DispatcherCommand {
 
 async fn serve_request(
     is_cold: bool,
+    priority: Priority,
     req: Request<Incoming>,
     dispatcher: mpsc::Sender<DispatcherCommand>,
 ) -> Result<Response<DandelionBody>, Infallible> {
@@ -126,6 +129,7 @@ async fn serve_request(
             name: function_name,
             inputs,
             is_cold,
+            priority,
             start_time: start_time.clone(),
             callback,
         })
@@ -328,6 +332,7 @@ async fn service(
         // TODO rename to cold func and hot func, remove matmul, compute, io
         "/register/function" => register_function(req, dispatcher).await,
         "/register/composition" => register_composition(req, dispatcher).await,
+        // Best-effort priority (default, backward compatible)
         "/cold/matmul"
         | "/cold/matmulstore"
         | "/cold/compute"
@@ -335,7 +340,7 @@ async fn service(
         | "/cold/chain_scaling"
         | "/cold/middleware_app"
         | "/cold/compression_app"
-        | "/cold/python_app" => serve_request(true, req, dispatcher).await,
+        | "/cold/python_app" => serve_request(true, Priority::BestEffort, req, dispatcher).await,
         "/hot/matmul"
         | "/hot/matmulstore"
         | "/hot/compute"
@@ -343,7 +348,24 @@ async fn service(
         | "/hot/chain_scaling"
         | "/hot/middleware_app"
         | "/hot/compression_app"
-        | "/hot/python_app" => serve_request(false, req, dispatcher).await,
+        | "/hot/python_app" => serve_request(false, Priority::BestEffort, req, dispatcher).await,
+        // High priority
+        "/cold/high/matmul"
+        | "/cold/high/matmulstore"
+        | "/cold/high/compute"
+        | "/cold/high/io"
+        | "/cold/high/chain_scaling"
+        | "/cold/high/middleware_app"
+        | "/cold/high/compression_app"
+        | "/cold/high/python_app" => serve_request(true, Priority::High, req, dispatcher).await,
+        "/hot/high/matmul"
+        | "/hot/high/matmulstore"
+        | "/hot/high/compute"
+        | "/hot/high/io"
+        | "/hot/high/chain_scaling"
+        | "/hot/high/middleware_app"
+        | "/hot/high/compression_app"
+        | "/hot/high/python_app" => serve_request(false, Priority::High, req, dispatcher).await,
         "/stats" => serve_stats(req).await,
         other_uri => {
             trace!("Received request on {}", other_uri);
@@ -367,12 +389,13 @@ async fn dispatcher_loop(
                 name,
                 inputs,
                 is_cold,
+                priority,
                 start_time,
                 mut callback,
             } => {
-                debug!("Handling function request for function {}", name);
+                debug!("Handling function request for function {} with priority {:?}", name, priority);
                 let function_future =
-                    dispatcher.queue_function_by_name(name, inputs, is_cold, start_time);
+                    dispatcher.queue_function_by_name(name, inputs, is_cold, start_time, priority);
                 spawn(async {
                     select! {
                         function_output = function_future => {

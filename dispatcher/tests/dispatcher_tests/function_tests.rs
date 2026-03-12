@@ -1,6 +1,6 @@
 use super::{check_matrix, setup_dispatcher};
 use dandelion_commons::{records::Recorder, FunctionId};
-use dispatcher::dispatcher::Dispatcher;
+use dispatcher::{dispatcher::Dispatcher, queue::Priority};
 use machine_interface::{
     composition::{
         Composition, CompositionSet, FunctionDependencies, InputSetDescriptor, ShardingMode,
@@ -37,7 +37,7 @@ pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_function(function_id, Vec::new(), false, recorder));
+        .block_on(dispatcher.queue_function(function_id, Vec::new(), false, recorder, Priority::BestEffort));
     match result {
         Ok(_) => (),
         Err(err) => panic!("Failed with: {:?}", err),
@@ -86,7 +86,7 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_function(function_id, inputs, false, recorder));
+        .block_on(dispatcher.queue_function(function_id, inputs, false, recorder, Priority::BestEffort));
     let out_sets = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -152,7 +152,7 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder, Priority::BestEffort));
     let mut out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -179,7 +179,7 @@ fn composition_option_helper(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder, Priority::BestEffort));
     let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -399,7 +399,7 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder, Priority::BestEffort));
     let out_vec = match result {
         Ok(v) => v,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -489,7 +489,7 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder, Priority::BestEffort));
     let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -686,7 +686,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder, Priority::BestEffort));
     let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -826,7 +826,7 @@ pub fn composition_chain_large_matmac<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder, Priority::BestEffort));
     let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),

@@ -1,5 +1,6 @@
 use crate::dispatcher_tests::{check_matrix, setup_dispatcher};
 use dandelion_commons::records::Recorder;
+use dispatcher::queue::Priority;
 use machine_interface::{
     composition::CompositionSet,
     function_driver::{ComputeResource, Metadata},
@@ -103,7 +104,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(function_id.clone(), inputs, false, recorder));
+            .block_on(dispatcher.queue_function(function_id.clone(), inputs, false, recorder, Priority::BestEffort));
         recorder = Recorder::new(function_id.clone(), Instant::now());
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -113,6 +114,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
                 overwrite_inputs,
                 false,
                 recorder,
+                Priority::BestEffort,
             ));
         let out_sets = match result {
             Ok(composition_sets) => composition_sets,
@@ -208,7 +210,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(function_id.clone(), inputs, false, recorder));
+            .block_on(dispatcher.queue_function(function_id.clone(), inputs, false, recorder, Priority::BestEffort));
         recorder = Recorder::new(function_id.clone(), Instant::now());
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -218,6 +220,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
                 overwrite_inputs,
                 false,
                 recorder,
+                Priority::BestEffort,
             ));
         let out_sets = match result {
             Ok(composition_sets) => composition_sets,

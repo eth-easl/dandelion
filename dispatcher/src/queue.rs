@@ -13,6 +13,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[derive(Debug, Clone, Copy)]
+pub enum Priority {
+    High,
+    BestEffort,
+}
+
 pub enum QueueFlag {
     EngineReqwestIO = 0b1,
     EngineCheri = 0b10,
@@ -50,9 +56,11 @@ struct AtomicTickets {
 
 /// Producers can push new work to the end of the queue using the `push` function.
 /// Consumers can pop elements using the `aquire` function.
+/// check high-priority queue first, falls back to best-effort
 #[derive(Clone)]
 pub struct WorkQueue {
-    inner: Arc<Mutex<std::collections::LinkedList<QueueElement>>>,
+    high: Arc<Mutex<std::collections::LinkedList<QueueElement>>>,
+    best_effort: Arc<Mutex<std::collections::LinkedList<QueueElement>>>,
     promise_buffer: PromiseBuffer,
     #[cfg(feature = "spin_queue")]
     tickets: Arc<Box<[AtomicTickets]>>,
@@ -62,7 +70,8 @@ impl WorkQueue {
     /// Creates a new WorkQueue of given size.
     pub fn init(capacity: usize) -> Self {
         WorkQueue {
-            inner: Arc::new(Mutex::new(LinkedList::new())),
+            high: Arc::new(Mutex::new(LinkedList::new())),
+            best_effort: Arc::new(Mutex::new(LinkedList::new())),
             promise_buffer: PromiseBuffer::init(capacity),
             #[cfg(feature = "spin_queue")]
             tickets: Arc::new(
@@ -79,15 +88,33 @@ impl WorkQueue {
 
     /// Pushes the work and debt to the back of the queue and sets the flags accordingly.
     /// Returns an error if the queue is full.
-    fn push(&self, work: WorkToDo, debt: Debt, flags: u32) -> DandelionResult<()> {
-        let mut queue_guard = self.inner.lock().expect("Work queue lock poisoned");
-        queue_guard.push_back(QueueElement { flags, work, debt });
+    fn push(&self, work: WorkToDo, debt: Debt, flags: u32, priority: Priority) -> DandelionResult<()> {
+        let element = QueueElement { flags, work, debt };
+
+        match priority {
+            Priority::High => {
+                let mut queue = self.high.lock().expect("High priority queue lock poisoned");
+                queue.push_back(element);
+            }
+            Priority::BestEffort => {
+                let mut queue = self.best_effort.lock().expect("Best effort priority queue lock poisoned");
+                queue.push_back(element);
+            }
+        }
         Ok(())
+    }
+
+    // 
+    fn extract_matching(queue: &mut LinkedList<QueueElement>, engine_flags: u32,) -> Option<(WorkToDo, Debt)> {
+        queue
+            .extract_if(|queue_element| queue_element.flags & engine_flags == engine_flags)
+            .next()
+            .map(|queue_element| (queue_element.work, queue_element.debt))
     }
 
     /// Inserts the work into the queue setting the flags according to the supported engines and
     /// awaits the future before returning the result.
-    pub async fn do_work(&self, work: WorkToDo) -> DandelionResult<WorkDone> {
+    pub async fn do_work(&self, work: WorkToDo, priority: Priority) -> DandelionResult<WorkDone> {
         let flags = match &work {
             WorkToDo::Shutdown(engine_type) => get_engine_flag(*engine_type),
             WorkToDo::FunctionArguments {
@@ -108,10 +135,10 @@ impl WorkQueue {
                 flags
             }
         };
-        log::trace!("Enqueueing with flags: {}", flags);
+        log::trace!("Enqueueing with flags: {} priority: {:?}", flags, priority);
 
         let (promise, debt) = self.promise_buffer.get_promise()?;
-        self.push(work, debt, flags)?;
+        self.push(work, debt, flags, priority)?;
 
         return promise.await;
     }
@@ -122,13 +149,15 @@ impl WorkQueue {
         &self,
         work: WorkToDo,
         engine_flags: u32,
+        priority: Priority
     ) -> DandelionResult<WorkDone> {
         let (promise, debt) = self.promise_buffer.get_promise()?;
-        self.push(work, debt, engine_flags)?;
+        self.push(work, debt, engine_flags, priority)?;
         return promise.await;
     }
 
-    /// Tries to acquire some work that matches the given flags starting from the head of the queue.
+    /// Tries to acquire some work that matches the given flags
+    /// check high-prio queue first, falls back to best effort
     pub fn try_get_work(
         &self,
         engine_flags: u32,
@@ -153,11 +182,22 @@ impl WorkQueue {
             }
         }
         // May want to try lock here too, instead of lock, but since we have the ticket, should always succeed on locking
-        let mut queue_guard = self.inner.lock().unwrap();
-        let result = queue_guard
-            .extract_if(|queue_element| queue_element.flags & engine_flags == engine_flags)
-            .next()
-            .map(|queue_element| (queue_element.work, queue_element.debt));
+        // check high-priority first
+        {
+                let mut queue = self.high.lock().unwrap();
+                if let Some(result) = Self::extract_matching(&mut queue, engine_flags) {
+                    #[cfg(feature = "spin_queue")]
+                    self.tickets[engine_type as usize]
+                        .start
+                        .fetch_add(1, Ordering::AcqRel);
+                    return Some(result);
+                }
+        }
+        
+        let result = {
+            let mut queue = self.best_effort.lock().unwrap();
+            Self::extract_matching(&mut queue, engine_flags)
+        };
         #[cfg(feature = "spin_queue")]
         self.tickets[engine_type as usize]
             .start
@@ -181,20 +221,32 @@ impl WorkQueue {
                     core::hint::spin_loop();
                 }
             }
-            let mut queue_guard = self.inner.lock().unwrap();
-            // TODO: use the loading flag of the alternative to check if the function is being loaded and skip it.
-            // Also if we take one that needs to be loaded, mark it as loading in progress.
-            let result = queue_guard
-                .extract_if(|queue_element| queue_element.flags & engine_flags == engine_flags)
-                .next()
-                .map(|queue_element| (queue_element.work, queue_element.debt));
+            // Check high-priority queue first
+            {
+                let mut queue = self.high.lock().unwrap();
+                if let Some(result) = Self::extract_matching(&mut queue, engine_flags) {
+                    #[cfg(feature = "spin_queue")]
+                    self.tickets[engine_type as usize]
+                        .start
+                        .fetch_add(1, Ordering::Release);
+                    return result;
+                }
+            }
+            // Then check best-effort queue
+            {
+                let mut queue = self.best_effort.lock().unwrap();
+                if let Some(result) = Self::extract_matching(&mut queue, engine_flags) {
+                    #[cfg(feature = "spin_queue")]
+                    self.tickets[engine_type as usize]
+                        .start
+                        .fetch_add(1, Ordering::Release);
+                    return result;
+                }
+            }
             #[cfg(feature = "spin_queue")]
             self.tickets[engine_type as usize]
                 .start
                 .fetch_add(1, Ordering::Release);
-            if let Some(result_tupple) = result {
-                return result_tupple;
-            }
         }
     }
 }
@@ -203,8 +255,9 @@ impl fmt::Debug for WorkQueue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "WorkQueue{{ length: {} }}",
-            self.inner.lock().unwrap().len(),
+            "WorkQueue{{ high: {}, best_effort: {} }}",
+            self.high.lock().unwrap().len(),
+            self.best_effort.lock().unwrap().len(),
         )
     }
 }
@@ -228,8 +281,10 @@ impl EngineQueue {
     }
 
     /// Inserts the work into the queue and awaits the result.
-    pub async fn do_work(&self, work: WorkToDo) -> DandelionResult<WorkDone> {
-        self.work_queue.do_work_flags(work, self.engine_flags).await
+    pub async fn do_work(&self, work: WorkToDo, priority: Priority) -> DandelionResult<WorkDone> {
+        self.work_queue
+            .do_work_flags(work, self.engine_flags, priority)
+            .await
     }
 }
 
