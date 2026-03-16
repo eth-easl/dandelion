@@ -80,7 +80,7 @@ fn main() {
                 flags |= ProtFlags::PROT_WRITE
             }
             mprotect(
-                position.1.offset as *mut libc::c_void,
+                std::ptr::NonNull::new_unchecked(position.1.offset as *mut libc::c_void),
                 position.1.size,
                 flags,
             )

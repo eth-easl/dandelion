@@ -11,7 +11,7 @@ use log::{debug, error, info, warn};
 use machine_interface::{
     composition::CompositionSet,
     function_driver::{ComputeResource, Metadata},
-    machine_config::{DomainType, EngineType},
+    machine_config::{DomainType, EngineType, IntoEnumIterator},
     memory_domain::MemoryResource,
 };
 use multinode::client::register_as_remote;
@@ -313,23 +313,26 @@ fn main() -> () {
         .unwrap()
         * 1024;
 
-    let memory_pool = BTreeMap::from([
-        #[cfg(feature = "cheri")]
-        (
-            DomainType::Cheri,
-            MemoryResource::Anonymous { size: max_ram },
-        ),
-        #[cfg(feature = "kvm")]
-        (DomainType::Kvm, MemoryResource::Anonymous { size: max_ram }),
-        #[cfg(feature = "mmu")]
-        (
-            DomainType::Process,
-            MemoryResource::Shared {
-                id: 0,
-                size: max_ram,
-            },
-        ),
-    ]);
+    let memory_pool = match config.test_mode {
+        Some(dandelion_server::config::TestMode::NoEngine) => BTreeMap::new(),
+        Some(_) | None => BTreeMap::from([
+            #[cfg(feature = "cheri")]
+            (
+                DomainType::Cheri,
+                MemoryResource::Anonymous { size: max_ram },
+            ),
+            #[cfg(feature = "kvm")]
+            (DomainType::Kvm, MemoryResource::Anonymous { size: max_ram }),
+            #[cfg(feature = "mmu")]
+            (
+                DomainType::Process,
+                MemoryResource::Shared {
+                    id: 0,
+                    size: max_ram,
+                },
+            ),
+        ]),
+    };
 
     // Create an ARC pointer to the dispatcher for thread-safe access
     let dispatcher = Box::leak(Box::new(
@@ -406,13 +409,17 @@ fn main() -> () {
     let remotes_running = Arc::new(Mutex::new(BTreeMap::new()));
 
     // if there is a remote url register there
+
+    let available_engine_types = EngineType::iter()
+        .map(|engine_type| (engine_type, 1u32))
+        .collect();
     if let Some(remote_url) = config.remote_queue_url {
         runtime.spawn(async {
             register_as_remote(
                 String::from("localhost"),
                 8081,
                 remote_url,
-                vec![(EngineType::Kvm, 1)],
+                available_engine_types,
             )
             .await
             .unwrap()

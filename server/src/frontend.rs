@@ -334,8 +334,8 @@ async fn remote_work_queue(
     // create remote node
     let remote_node = multinode::client::create_client(host, port, remote_timeout).await;
     // poll work queue and relay work
-    // TODO add :wlogic for waiting for all engine types at the same time and book keeping the available resources
-    let engine_type = engine_type_ptod(engines[0].engine_type()).unwrap();
+    // TODO add logic for waiting for all engine types at the same time and book keeping the available resources
+    let engine_type = engine_type_ptod(engines[1].engine_type()).unwrap();
     let engine_flags = get_engine_flag(engine_type);
     loop {
         //  check if we need to stop using that node
