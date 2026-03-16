@@ -3,7 +3,10 @@ use log::{debug, error};
 use nix::{
     fcntl::OFlag,
     sys::{
-        mman::{madvise, mmap, munmap, shm_open, shm_unlink, MapFlags, MmapAdvise, ProtFlags},
+        mman::{
+            madvise, mmap, mmap_anonymous, munmap, shm_open, shm_unlink, MapFlags, MmapAdvise,
+            ProtFlags,
+        },
         stat::Mode,
     },
     unistd::{close, ftruncate},
@@ -11,7 +14,8 @@ use nix::{
 use std::{
     num::NonZeroUsize,
     ops::{Deref, DerefMut},
-    os::{fd::RawFd, raw::c_void},
+    os::{fd::OwnedFd, raw::c_void},
+    ptr::NonNull,
     sync::{Arc, Mutex},
 };
 
@@ -21,7 +25,7 @@ use std::{
 struct MmapMemPoolInternal {
     ptr: *mut u8,
     size: usize,
-    fd: RawFd,
+    fd: Option<OwnedFd>,
     filename: Option<String>,
     occupation: Mutex<RangePool<u32>>,
 }
@@ -31,10 +35,10 @@ unsafe impl Send for MmapMemPoolInternal {}
 impl Drop for MmapMemPoolInternal {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
-            unsafe { munmap(self.ptr as *mut _, self.size).unwrap() };
+            unsafe { munmap(NonNull::new_unchecked(self.ptr as *mut _), self.size).unwrap() };
         }
         if let Some(filename) = &self.filename {
-            close(self.fd).unwrap();
+            close(self.fd.take().unwrap()).unwrap();
             shm_unlink(filename.as_str()).unwrap();
         }
     }
@@ -67,16 +71,15 @@ impl MmapMemPool {
                 internal: Arc::new(MmapMemPoolInternal {
                     ptr: core::ptr::null_mut(),
                     size,
-                    fd: -1,
+                    fd: None,
                     filename: None,
                     occupation,
                 }),
             });
         }
-        let mut filename = None;
-        let (fd, map_flags) = if let Some(shared_id) = shared {
+        let (fd, ptr, filename) = if let Some(shared_id) = shared {
             let filename_string = format!("/shm_{:X}", shared_id);
-            log::trace!("ctx filename: {:?}", filename);
+            log::trace!("ctx filename: {:?}", filename_string);
             let fd = match shm_open(
                 filename_string.as_str(),
                 OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR,
@@ -89,7 +92,7 @@ impl MmapMemPool {
                 fd => fd.unwrap(),
             };
 
-            match ftruncate(fd, size as _) {
+            match ftruncate(&fd, size as _) {
                 Err(err) => {
                     close(fd).unwrap();
                     shm_unlink(filename_string.as_str()).unwrap();
@@ -98,32 +101,38 @@ impl MmapMemPool {
                 }
                 _ => {}
             };
-            filename = Some(filename_string);
-            (fd, MapFlags::MAP_SHARED)
-        } else {
-            (-1, MapFlags::MAP_PRIVATE | MapFlags::MAP_ANONYMOUS)
-        };
-
-        // Map the memory.
-        let ptr = unsafe {
-            match mmap(
-                None,
-                NonZeroUsize::new(size).unwrap(),
-                prot,
-                map_flags,
-                fd,
-                0,
-            ) {
-                Err(err) => {
-                    if let Some(filename_string) = filename {
+            // Map the memory.
+            let ptr = unsafe {
+                match mmap(
+                    None,
+                    NonZeroUsize::new(size).unwrap(),
+                    prot,
+                    MapFlags::MAP_SHARED,
+                    &fd,
+                    0,
+                ) {
+                    Err(err) => {
                         close(fd).unwrap();
                         shm_unlink(filename_string.as_str()).unwrap();
+                        error!("Error mapping memory: {}:{}", err, err.desc());
+                        return Err(DandelionError::DomainError(DomainError::Mapping));
                     }
-                    error!("Error mapping memory: {}:{}", err, err.desc());
-                    return Err(DandelionError::DomainError(DomainError::Mapping));
+                    Ok(ptr) => ptr.as_ptr() as *mut _,
                 }
-                Ok(ptr) => ptr as *mut _,
-            }
+            };
+            (Some(fd), ptr, Some(filename_string))
+        } else {
+            let ptr = unsafe {
+                mmap_anonymous(
+                    None,
+                    NonZeroUsize::new(size).unwrap(),
+                    prot,
+                    MapFlags::MAP_PRIVATE,
+                )
+                .or(Err(DandelionError::DomainError(DomainError::Mapping)))?
+                .as_ptr() as *mut u8
+            };
+            (None, ptr, None)
         };
 
         let backing_mem = Arc::new(MmapMemPoolInternal {
@@ -161,9 +170,16 @@ impl MmapMemPool {
         .unwrap();
         let start_address = unsafe { self.internal.ptr.add(start_slab * SLAB_SIZE) };
         // clean memory
-        unsafe { madvise(start_address as *mut c_void, lenght, cleaning_flags) }.or(Err(
-            DandelionError::DomainError(DomainError::CleaningFailure),
-        ))?;
+        unsafe {
+            madvise(
+                NonNull::new_unchecked(start_address as *mut c_void),
+                lenght,
+                cleaning_flags,
+            )
+        }
+        .or(Err(DandelionError::DomainError(
+            DomainError::CleaningFailure,
+        )))?;
         return Ok((
             MmapMem {
                 ptr: start_address,

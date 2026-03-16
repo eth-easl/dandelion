@@ -1,10 +1,10 @@
-use core_affinity::{self, CoreId};
 use dandelion_commons::{
     records::{Archive, Recorder},
     DandelionResult,
 };
 use dispatcher::{
     dispatcher::{Dispatcher, DispatcherInput},
+    queue::WorkQueue,
     resource_pool::ResourcePool,
 };
 use log::{debug, error, info, warn};
@@ -14,14 +14,12 @@ use machine_interface::{
     machine_config::{DomainType, EngineType},
     memory_domain::MemoryResource,
 };
+use multinode::client::register_as_remote;
+use nix::unistd::Pid;
 use std::{
     collections::BTreeMap,
     fs::read_to_string,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc, OnceLock,
-    },
-    time::Instant,
+    sync::{Arc, Mutex, OnceLock},
 };
 use tokio::{
     runtime::Builder,
@@ -30,9 +28,6 @@ use tokio::{
 };
 
 mod frontend;
-
-// TODO: move to config?
-const FUNCTION_FOLDER_PATH: &str = "/tmp/dandelion_server";
 
 pub enum DispatcherCommand {
     FunctionRequest {
@@ -55,20 +50,12 @@ pub enum DispatcherCommand {
         callback: oneshot::Sender<DandelionResult<()>>,
     },
     RemoteRegistration {
-        host: String,
-        port: u16,
-        engines: Vec<(EngineType, u32)>,
-        callback: oneshot::Sender<DandelionResult<()>>,
-    },
-    RemoteDeregistration {
-        host: String,
-        port: u16,
-        callback: oneshot::Sender<DandelionResult<()>>,
+        callback: oneshot::Sender<DandelionResult<WorkQueue>>,
     },
     RemoteFunctionRequest {
-        function_id: String,
+        function_id: Arc<String>,
         inputs: Vec<Option<CompositionSet>>,
-        start_time: Instant,
+        recorder: Recorder,
         callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
     },
     CompositionRequest {
@@ -157,37 +144,50 @@ async fn dispatcher_loop(
                     .send(insertion_res)
                     .expect("Composition registration callback failed!");
             }
-            DispatcherCommand::RemoteRegistration {
-                host,
-                port,
-                engines,
-                callback,
-            } => {
-                debug!(
-                    "Handling remote registration from host={}, port={}",
-                    host, port
-                );
-            }
-            DispatcherCommand::RemoteDeregistration {
-                host,
-                port,
-                callback,
-            } => {
-                debug!(
-                    "Handling remote deregistration from host={}, port={}",
-                    host, port
-                );
+            DispatcherCommand::RemoteRegistration { callback } => {
+                // get queue to poll on
+                let workqueue = dispatcher.get_work_queue();
+                callback
+                    .send(Ok(workqueue))
+                    .expect("Remote registration callback should not fail.");
             }
             DispatcherCommand::RemoteFunctionRequest {
                 function_id,
                 inputs,
-                start_time,
-                callback,
+                recorder,
+                mut callback,
             } => {
                 debug!(
                     "Handling remote function request for function_id={}",
                     function_id
                 );
+                let dispatcher_input = inputs
+                    .into_iter()
+                    .map(|input_option| {
+                        if let Some(input_set) = input_option {
+                            DispatcherInput::Set(input_set)
+                        } else {
+                            DispatcherInput::None
+                        }
+                    })
+                    .collect();
+                let function_future = dispatcher.queue_function_by_name(
+                    function_id,
+                    dispatcher_input,
+                    false,
+                    recorder,
+                );
+                spawn(async {
+                    select! {
+                        function_output = function_future => {
+                            // either get an ok, meaning the data was sent, or get the data back
+                            // no need to handle ok, and nothing useful to do with data if we get it back
+                            // drop it here to release resources
+                            let _ = callback.send(function_output);
+                        }
+                        _ = callback.closed() => ()
+                    }
+                });
             }
         };
     }
@@ -206,6 +206,9 @@ fn main() -> () {
     // check if there is a configuration file
     let config = dandelion_server::config::DandelionConfig::get_config();
     info!("Loaded configuration:\n{:?}", config);
+
+    // create globally available path to folder for data
+    let folder_path: &'static str = Box::leak(config.folder_path.clone().into_boxed_str());
 
     // Initilize metric collection
     match TRACING_ARCHIVE.set(Archive::init()) {
@@ -246,40 +249,31 @@ fn main() -> () {
 
     // make multithreaded front end runtime
     // set up tokio runtime, need io in any case
+    let frontent_core_num = frontend_cores.len();
+    let mut frontend_cpuset = nix::sched::CpuSet::new();
+    for cpu in frontend_cores {
+        frontend_cpuset.set(usize::from(cpu)).unwrap();
+    }
     let mut runtime_builder = Builder::new_multi_thread();
     runtime_builder.enable_io();
-    runtime_builder.worker_threads(frontend_cores.len());
+    runtime_builder.enable_time();
+    runtime_builder.worker_threads(frontent_core_num);
     runtime_builder.on_thread_start(move || {
-        static ATOMIC_INDEX: AtomicUsize = AtomicUsize::new(0);
-        let core_index = ATOMIC_INDEX.fetch_add(1, Ordering::SeqCst);
-        if !core_affinity::set_for_current(CoreId {
-            id: frontend_cores[core_index].into(),
-        }) {
-            return;
-        }
-        info!(
-            "Frontend thread running on core {}",
-            frontend_cores[core_index]
-        );
+        nix::sched::sched_setaffinity(Pid::from_raw(0), &frontend_cpuset).unwrap()
     });
     runtime_builder.global_queue_interval(10);
     runtime_builder.event_interval(10);
     let runtime = runtime_builder.build().unwrap();
 
+    let dispatcher_core_num = dispatcher_cores.len();
+    let mut dispatcher_coreset = nix::sched::CpuSet::new();
+    for cpu in dispatcher_cores {
+        dispatcher_coreset.set(usize::from(cpu)).unwrap();
+    }
     let dispatcher_runtime = Builder::new_multi_thread()
-        .worker_threads(dispatcher_cores.len())
+        .worker_threads(dispatcher_core_num)
         .on_thread_start(move || {
-            static ATOMIC_INDEX: AtomicUsize = AtomicUsize::new(0);
-            let core_index = ATOMIC_INDEX.fetch_add(1, Ordering::SeqCst);
-            if !core_affinity::set_for_current(CoreId {
-                id: dispatcher_cores[core_index].into(),
-            }) {
-                return;
-            }
-            info!(
-                "Dispatcher thread running on core {}",
-                dispatcher_cores[core_index]
-            );
+            nix::sched::sched_setaffinity(Pid::from_raw(0), &dispatcher_coreset).unwrap()
         })
         .build()
         .unwrap();
@@ -409,11 +403,33 @@ fn main() -> () {
     print!(" timestamp");
     print!("\n");
 
+    let remotes_running = Arc::new(Mutex::new(BTreeMap::new()));
+
+    // if there is a remote url register there
+    if let Some(remote_url) = config.remote_queue_url {
+        runtime.spawn(async {
+            register_as_remote(
+                String::from("localhost"),
+                8081,
+                remote_url,
+                vec![(EngineType::Kvm, 1)],
+            )
+            .await
+            .unwrap()
+        });
+    }
+
     // Run this server for... forever... unless I receive a signal!
-    runtime.block_on(frontend::service_loop(dispatcher_sender, config.port));
+    runtime.block_on(frontend::service_loop(
+        dispatcher_sender,
+        remotes_running,
+        folder_path,
+        config.port,
+        config.multinode_timeout_ms,
+    ));
 
     // clean up folder in tmp that is used for function storage
-    let removal_error = std::fs::remove_dir_all(FUNCTION_FOLDER_PATH);
+    let removal_error = std::fs::remove_dir_all(folder_path);
     if let Err(err) = removal_error {
         warn!("Removing function folder failed with: {}", err);
     }

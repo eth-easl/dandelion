@@ -5,9 +5,10 @@ use clap::Parser;
 use log::{error, warn};
 
 const DEFAULT_CONFIG_PATH: &str = "./dandelion.config";
+const DEFAULT_FOLDER_PATH: &str = "/tmp/dandelion_server";
 const DEFAULT_PORT: u16 = 8080;
-const DEFAULT_SINGLE_CORE: bool = false;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
+const DEFAULT_MULTINODE_TIMEOUT: u64 = 50;
 
 #[derive(serde::Deserialize, Debug)]
 pub struct PreloadFunc {
@@ -31,6 +32,12 @@ pub struct FuncMetadata {
     pub output_sets: Vec<String>,
 }
 
+#[derive(Clone, Copy, serde::Deserialize, Debug, clap::ValueEnum)]
+pub enum TestMode {
+    SingleCore,
+    NoEngine,
+}
+
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
     #[arg(long, env, default_value_t = String::from(DEFAULT_CONFIG_PATH))]
@@ -41,9 +48,6 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = DEFAULT_PORT)]
     #[serde(default)]
     pub port: u16,
-    #[arg(long,env, default_value_t = DEFAULT_SINGLE_CORE)]
-    #[serde(default)]
-    pub single_core_mode: bool,
     #[arg(long, env)]
     pub total_cores: Option<usize>,
     #[arg(long, env)]
@@ -60,12 +64,31 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value = "")]
     #[serde(default)]
     pub bin_preload_path: String,
+
+    /// Folder for dandelion to use to store data
+    #[arg(long, env, default_value_t = String::from(DEFAULT_FOLDER_PATH))]
+    #[serde(default)]
+    pub folder_path: String,
+
+    /// For multinode, add a remote host to register to
+    #[arg(long, env)]
+    #[serde(default)]
+    pub remote_queue_url: Option<String>,
+    /// Timeout for how long to try to establish a connection to another node
+    #[arg(long, env, default_value_t = DEFAULT_MULTINODE_TIMEOUT)]
+    #[serde(default)]
+    pub multinode_timeout_ms: u64,
+
+    /// Special modes for testing
+    #[arg(long, env, value_enum)]
+    #[serde(default)]
+    pub test_mode: Option<TestMode>,
 }
 
 impl DandelionConfig {
     /// Merge config generated from args into config read from serde, overwrite serde with non args value.
     /// If both serde and args give default values use the one from args
-    fn merge_serde_into_args(&mut self, serde_config: &Self) {
+    fn merge_serde_into_args(&mut self, mut serde_config: Self) {
         let default: Self = serde_json::from_slice("{}".as_bytes())
             .expect("Should have default values for all values in config");
 
@@ -86,7 +109,7 @@ impl DandelionConfig {
         }
         macro_rules! merge_option {
             ($field:ident) => {
-                if let Some(serde_val) = serde_config.$field {
+                if let Some(serde_val) = serde_config.$field.take() {
                     self.$field.get_or_insert(serde_val);
                 }
             };
@@ -96,13 +119,16 @@ impl DandelionConfig {
         // -> any args defaults are overwritten by serde non-default values
         // NOTE: config path is no further useful an can be ignored
         merge!(port, DEFAULT_PORT);
-        merge!(single_core_mode, DEFAULT_SINGLE_CORE);
+        merge_option!(test_mode);
         merge_option!(total_cores);
         merge_option!(dispatcher_cores);
         merge_option!(frontend_cores);
         merge_option!(io_cores);
         merge!(timestamp_count, DEFAULT_TIMESTAMP_COUNT);
         merge_clone!(bin_preload_path, String::from(""));
+        merge_clone!(folder_path, String::from(DEFAULT_FOLDER_PATH));
+        merge_option!(remote_queue_url);
+        merge!(multinode_timeout_ms, DEFAULT_MULTINODE_TIMEOUT);
     }
 
     /// Get the config from the arguments, environment and possibly config file
@@ -118,7 +144,7 @@ impl DandelionConfig {
                     cli_config.config_path, err
                 ),
                 Ok(config_file) => match serde_json::from_reader(config_file) {
-                    Ok(file_config) => cli_config.merge_serde_into_args(&file_config),
+                    Ok(file_config) => cli_config.merge_serde_into_args(file_config),
                     Err(err) => warn!("Could not load config file: {}", err),
                 },
             };
@@ -151,7 +177,7 @@ impl DandelionConfig {
         let total_cores = self
             .total_cores
             .expect("total_cores should be set after init");
-        let core_vec = if self.single_core_mode {
+        let core_vec = if self.test_mode.is_some() {
             vec![0]
         } else {
             if let Some(num_cores) = self.frontend_cores {
@@ -171,8 +197,11 @@ impl DandelionConfig {
     }
     /// TODO depricate as we move to dynamic allocation
     pub fn get_communication_cores(&self) -> Vec<u8> {
-        let core_vec = if self.single_core_mode {
-            vec![0]
+        let core_vec = if let Some(test_mode) = &self.test_mode {
+            match test_mode {
+                TestMode::SingleCore => vec![0],
+                TestMode::NoEngine => vec![],
+            }
         } else if let Some(comm_cores) = self.io_cores {
             let lower_end = self
                 .frontend_cores
@@ -194,8 +223,11 @@ impl DandelionConfig {
     }
     /// TODO depricate as we move to dynamic allocation
     pub fn get_computation_cores(&self) -> Vec<u8> {
-        let core_vec = if self.single_core_mode {
-            vec![0]
+        let core_vec = if let Some(test_mode) = &self.test_mode {
+            return match test_mode {
+                TestMode::SingleCore => vec![0],
+                TestMode::NoEngine => vec![],
+            };
         } else {
             let max_core = self
                 .total_cores

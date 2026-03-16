@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
+// For types which have the same name for prot and machine_interface,
+// use the full ones to make sure there is no mix ups
 use dandelion_commons::{DandelionError, DandelionResult, MultinodeError};
 use machine_interface::composition::CompositionSet;
 use machine_interface::memory_domain::bytes_context::BytesContext;
 use machine_interface::memory_domain::{Context, ContextType};
-use machine_interface::{machine_config, DataItem, DataSet, Position};
+use machine_interface::{machine_config, Position};
 use prost::bytes::Bytes;
 
 use crate::proto;
@@ -48,6 +50,8 @@ pub fn composition_set_to_proto(set: &CompositionSet) -> proto::DataSet {
         let (ident, key, data) = set.get_item(itm_idx);
         items.push(proto::DataItem { ident, key, data });
     }
+    // assigning name equal to index, as they are ignored on the receiver node anyway
+    // so the effort to get the correct name would be wasted.
     proto::DataSet {
         ident: format!("set_{}", set_idx),
         items,
@@ -73,25 +77,28 @@ pub fn composition_sets_to_proto(sets: &Vec<Option<CompositionSet>>) -> Vec<prot
 
 /// Takes a (reference to a) vector of protocol data sets and translates them into a `BytesContext`
 /// that contains all of the sets.
-pub fn proto_data_sets_to_context(protobuf_sets: &Vec<proto::DataSet>, buf: Bytes) -> Context {
+pub fn proto_data_sets_to_context(protobuf_sets: Vec<proto::DataSet>) -> Context {
     // create context sets with correct offsets to the buffer
-    let buf_base_ptr = buf.as_ptr();
-    let buf_size = buf.len();
     let mut sets = Vec::with_capacity(protobuf_sets.len());
-    for protobuf_set in protobuf_sets.iter() {
+    let mut frames = Vec::new();
+    let mut context_size = 0usize;
+    for protobuf_set in protobuf_sets.into_iter() {
         let mut items = Vec::with_capacity(protobuf_set.items.len());
-        for protobuf_itm in protobuf_set.items.iter() {
-            let data_ptr = protobuf_itm.data.as_ptr();
-            items.push(DataItem {
-                ident: protobuf_itm.ident.clone(),
+        for protobuf_itm in protobuf_set.items.into_iter() {
+            // let data_ptr = protobuf_itm.data.as_ptr();
+            let new_frame = protobuf_itm.data;
+            items.push(machine_interface::DataItem {
+                ident: protobuf_itm.ident,
                 data: Position {
-                    offset: unsafe { data_ptr.offset_from(buf_base_ptr) as usize },
-                    size: protobuf_itm.data.len(),
+                    offset: context_size,
+                    size: new_frame.len(),
                 },
                 key: protobuf_itm.key,
             });
+            context_size += new_frame.len();
+            frames.push(Bytes::from(new_frame));
         }
-        sets.push(Some(DataSet {
+        sets.push(Some(machine_interface::DataSet {
             ident: protobuf_set.ident.clone(),
             buffers: items,
         }));
@@ -99,8 +106,8 @@ pub fn proto_data_sets_to_context(protobuf_sets: &Vec<proto::DataSet>, buf: Byte
 
     // create context over the protobuf
     let mut context = Context::new(
-        ContextType::Bytes(Box::new(BytesContext::new(vec![buf]))),
-        buf_size,
+        ContextType::Bytes(Box::new(BytesContext::new(frames))),
+        context_size,
     );
     context.content = sets;
 
@@ -110,11 +117,10 @@ pub fn proto_data_sets_to_context(protobuf_sets: &Vec<proto::DataSet>, buf: Byte
 /// Takes a (reference to a) vector of protocol data sets, translates them into a `BytesContext`
 /// and returns a vector of optional `CompositionSet` that hold the reference to the context.
 pub fn proto_data_sets_to_composition_sets(
-    proto_sets: &Vec<proto::DataSet>,
-    buf: Bytes,
+    proto_sets: Vec<proto::DataSet>,
 ) -> Vec<Option<CompositionSet>> {
     let num_sets = proto_sets.len();
-    let context = proto_data_sets_to_context(proto_sets, buf);
+    let context = proto_data_sets_to_context(proto_sets);
     let context_arc = Arc::new(context);
     (0..num_sets)
         .map(|set_id| Some(CompositionSet::from((set_id, vec![context_arc.clone()]))))

@@ -1,5 +1,5 @@
 use dandelion_commons::{DandelionError, DandelionResult, FunctionId, MultinodeError};
-use log::warn;
+use log::{debug, warn};
 use machine_interface::{
     composition::CompositionSet, machine_config::EngineType, memory_domain::Context,
 };
@@ -23,9 +23,6 @@ use crate::{
 /// multinode api.
 #[derive(Debug)]
 pub struct RemoteNode {
-    /// Local connection info
-    local_host: String,
-    local_port: u16,
     /// Remote connection info
     remote_host: String,
     remote_port: u16,
@@ -62,16 +59,12 @@ async fn try_connect(
 /// Tries to establish connection with the given remote and returns the corresponding `RemoteNode`
 /// instance on success.
 pub async fn try_create_client(
-    local_host: String,
-    local_port: u16,
     remote_host: String,
     remote_port: u16,
 ) -> DandelionResult<RemoteNode> {
     let client = reqwest::Client::new();
     match try_connect(&client, &remote_host, remote_port).await {
         Ok(_) => Ok(RemoteNode {
-            local_host,
-            local_port,
             remote_host,
             remote_port,
             client,
@@ -83,8 +76,6 @@ pub async fn try_create_client(
 /// Creates a `RemoteNode` instance representing the given remote node by continuosly trying to
 /// establish a connection and retrying every `retry_timout_ms` ms on failure until success.
 pub async fn create_client(
-    local_host: String,
-    local_port: u16,
     remote_host: String,
     remote_port: u16,
     retry_timout_ms: u64,
@@ -94,8 +85,6 @@ pub async fn create_client(
         match try_connect(&client, &remote_host, remote_port).await {
             Ok(_) => {
                 return RemoteNode {
-                    local_host,
-                    local_port,
                     remote_host,
                     remote_port,
                     client,
@@ -132,75 +121,6 @@ impl RemoteNode {
                     format!("{:?}", err),
                 )))
             }
-        }
-    }
-
-    /// Registers this node at the remote node.
-    pub async fn register_at_remote(&self, engines: Vec<(EngineType, u32)>) -> DandelionResult<()> {
-        // prepare request
-        let proto_engines = engines
-            .iter()
-            .map(|(t, c)| proto::Engine {
-                engine_type: util::engine_type_dtop(*t) as i32,
-                engine_capacity: *c,
-            })
-            .collect();
-        let node_info = proto::NodeInfo {
-            host: self.local_host.clone(),
-            port: self.local_port as u32,
-            engines: proto_engines,
-        };
-        let request = super::serialize_node_info(node_info);
-
-        // execute
-        let response_body = self
-            .send_request(
-                format!(
-                    "http://{}:{}/multinode/register",
-                    self.remote_host, self.remote_port
-                ),
-                request,
-            )
-            .await?;
-
-        // process response
-        let action_status = super::deserialize_action_status(response_body)?;
-        match action_status.success {
-            true => Ok(()),
-            false => Err(DandelionError::Multinode(MultinodeError::RequestFailed(
-                action_status.message,
-            ))),
-        }
-    }
-
-    /// Deregisters this node at the remote node.
-    pub async fn deregister_at_remote(&self) -> DandelionResult<()> {
-        // prepare request
-        let node_info = proto::NodeInfo {
-            host: self.local_host.clone(),
-            port: self.local_port as u32,
-            engines: vec![],
-        };
-        let request = super::serialize_node_info(node_info);
-
-        // execute
-        let response_body = self
-            .send_request(
-                format!(
-                    "http://{}:{}/multinode/deregister",
-                    self.remote_host, self.remote_port
-                ),
-                request,
-            )
-            .await?;
-
-        // process response
-        let action_status = super::deserialize_action_status(response_body)?;
-        match action_status.success {
-            true => Ok(()),
-            false => Err(DandelionError::Multinode(MultinodeError::RequestFailed(
-                action_status.message,
-            ))),
         }
     }
 
@@ -247,9 +167,97 @@ impl RemoteNode {
                 inv_resp.error_msg,
             )));
         }
-        Ok(proto_data_sets_to_context(
-            &inv_resp.data_sets,
-            response_body,
-        ))
+        Ok(proto_data_sets_to_context(inv_resp.data_sets))
     }
 }
+
+// TODO: should this be another object, having a remote worker and a remote master?
+// Then can implement deregister on drop for example
+/// Registers this node at the remote node.
+pub async fn register_as_remote(
+    local_host: String,
+    local_port: u32,
+    remote_url: String,
+    engines: Vec<(EngineType, u32)>,
+) -> DandelionResult<()> {
+    debug!("Registering as remote on {}", remote_url);
+    // prepare request
+    let proto_engines = engines
+        .iter()
+        .map(|(t, c)| proto::Engine {
+            engine_type: util::engine_type_dtop(*t) as i32,
+            engine_capacity: *c,
+        })
+        .collect();
+    let node_info = proto::NodeInfo {
+        host: local_host,
+        port: local_port,
+        engines: proto_engines,
+    };
+    let request = super::serialize_node_info(node_info);
+
+    let response_body = match reqwest::Client::new()
+        .post(format!("http://{}/multinode/register", remote_url))
+        .body(request)
+        .send()
+        .await
+    {
+        Ok(response) => {
+            if !response.status().is_success() {
+                return Err(DandelionError::Multinode(MultinodeError::RequestFailed(
+                    format!("Response status {:?}", response.status()),
+                )));
+            } else {
+                response
+                    .bytes()
+                    .await
+                    .expect("Failed to collect response body")
+            }
+        }
+        Err(err) => {
+            return Err(DandelionError::Multinode(MultinodeError::RequestFailed(
+                format!("{:?}", err),
+            )))
+        }
+    };
+
+    // process response
+    let action_status = super::deserialize_action_status(response_body)?;
+    match action_status.success {
+        true => Ok(()),
+        false => Err(DandelionError::Multinode(MultinodeError::RequestFailed(
+            action_status.message,
+        ))),
+    }
+}
+
+// Deregisters this node at the remote node.
+// pub async fn deregister_at_remote(&self) -> DandelionResult<()> {
+//     // prepare request
+//     let node_info = proto::NodeInfo {
+//         host: self.local_host.clone(),
+//         port: self.local_port as u32,
+//         engines: vec![],
+//     };
+//     let request = super::serialize_node_info(node_info);
+
+//     // execute
+//     let response_body = self
+//         .send_request(
+//             format!(
+//                 "http://{}:{}/multinode/deregister",
+//                 self.remote_host, self.remote_port
+//             ),
+//             request,
+//         )
+//         .await?;
+
+//     // process response
+//     let action_status = super::deserialize_action_status(response_body)?;
+//     match action_status.success {
+//         true => Ok(()),
+//         false => Err(DandelionError::Multinode(MultinodeError::RequestFailed(
+//             action_status.message,
+//         ))),
+//     }
+// }

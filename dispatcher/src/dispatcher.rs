@@ -75,6 +75,10 @@ impl Dispatcher {
         });
     }
 
+    pub fn get_work_queue(&self) -> WorkQueue {
+        self.work_queue.clone()
+    }
+
     pub fn insert_function(
         &self,
         function_name: String,
@@ -507,6 +511,7 @@ impl Dispatcher {
 
                     let subrecoder = recorder.get_sub_recorder();
                     let args = WorkToDo::FunctionArguments {
+                        function_id,
                         function_alternatives,
                         input_sets,
                         metadata,

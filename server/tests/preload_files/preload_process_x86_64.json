@@ -1,0 +1,10 @@
+[{
+    "name": "matmul",
+    "engineType": "Process",
+    "ctxSize": 33554432,
+    "binaryPath": "../machine_interface/tests/data/test_elf_mmu_x86_64_matmul",
+    "metadata": {
+        "inputSets": ["matrix_in"],
+        "outputSets": ["matrix_out"]
+    }
+}]

@@ -96,13 +96,16 @@ impl CompositionSet {
         self.set_index
     }
 
+    /// Used for serializing the data to protobuf
     pub fn get_item(&self, idx: usize) -> (String, u32, Vec<u8>) {
         let item = &self.item_list[idx];
         let context_item = &item.2.content[self.set_index].as_ref().unwrap().buffers[item.1];
         let mut data_bytes = Vec::<u8>::with_capacity(context_item.data.size);
-        item.2
-            .read(context_item.data.offset, data_bytes.as_mut_slice())
+        let data_slice = item
+            .2
+            .get_chunk_ref(context_item.data.offset, context_item.data.size)
             .expect("Failed to read item!");
+        data_bytes.extend_from_slice(data_slice);
         (context_item.ident.clone(), context_item.key, data_bytes)
     }
 

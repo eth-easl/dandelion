@@ -36,6 +36,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
         let (args, debt) = queue.get_engine_args();
         match args {
             WorkToDo::FunctionArguments {
+                function_id: _,
                 function_alternatives,
                 input_sets,
                 metadata,

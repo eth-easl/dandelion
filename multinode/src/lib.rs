@@ -14,8 +14,7 @@ pub mod proto {
 
 macro_rules! serialize {
     ($proto_msg:ident) => {{
-        let mut buf = Vec::new();
-        buf.reserve($proto_msg.encoded_len());
+        let mut buf = Vec::with_capacity($proto_msg.encoded_len());
         $proto_msg.encode(&mut buf).unwrap();
         prost::bytes::Bytes::from(buf)
     }};
@@ -73,4 +72,200 @@ pub fn deserialize_invocation_response(buf: Bytes) -> DandelionResult<proto::Inv
             MultinodeError::DeserializationError(format!("{:?}", err)),
         )),
     }
+}
+
+#[test]
+fn test_serialize_invocation_request() {
+    // pub mod proto {
+    //     include!(concat!(env!("OUT_DIR"), "/multinode_proto.rs"));
+    // }
+    use machine_interface::memory_domain::ContextTrait;
+
+    // construct invocation data
+    let expected_id = String::from("TestName");
+    let item_0_0_name = "a";
+    let item_0_0_data = 123u64;
+    let item_1_0_name = "b";
+    let item_1_0_data = 987u64;
+    let item_1_1_name = "c";
+    let item_1_1_data = 123u128 | (456u128 << 64);
+    let mut data = vec![];
+    data.extend_from_slice(&item_0_0_data.to_le_bytes());
+    data.extend_from_slice(&item_1_0_data.to_le_bytes());
+    data.extend_from_slice(&item_1_1_data.to_le_bytes());
+    let mut in_context =
+        machine_interface::memory_domain::read_only::ReadOnlyContext::new(data.into_boxed_slice())
+            .expect("Should be able to create read only context");
+    in_context.content = vec![
+        Some(machine_interface::DataSet {
+            ident: String::from("Set 0"),
+            buffers: vec![machine_interface::DataItem {
+                ident: String::from(item_0_0_name),
+                data: machine_interface::Position {
+                    offset: 0,
+                    size: size_of::<u64>(),
+                },
+                key: 0,
+            }],
+        }),
+        Some(machine_interface::DataSet {
+            ident: String::from("Set 1"),
+            buffers: vec![
+                machine_interface::DataItem {
+                    ident: String::from(item_1_0_name),
+                    data: machine_interface::Position {
+                        offset: size_of::<u64>(),
+                        size: size_of::<u64>(),
+                    },
+                    key: 7,
+                },
+                machine_interface::DataItem {
+                    ident: String::from(item_1_1_name),
+                    data: machine_interface::Position {
+                        offset: 2 * size_of::<u64>(),
+                        size: size_of::<u128>(),
+                    },
+                    key: 14,
+                },
+            ],
+        }),
+    ];
+    let context_arc = std::sync::Arc::new(in_context);
+    let inputs = vec![
+        Some(machine_interface::composition::CompositionSet::from((
+            0,
+            vec![context_arc.clone()],
+        ))),
+        Some(machine_interface::composition::CompositionSet::from((
+            1,
+            vec![context_arc.clone()],
+        ))),
+    ];
+
+    // serialize
+    let serialized_sets = util::composition_sets_to_proto(&inputs);
+    println!("serialized set: {:?}", serialized_sets);
+    // not checking set names, as they are set arbitrarily, since they are ignored anyway
+    // check the items
+    assert_eq!(2, serialized_sets.len());
+
+    assert_eq!(1, serialized_sets[0].items.len());
+    assert_eq!(item_0_0_name, serialized_sets[0].items[0].ident);
+    assert_eq!(0, serialized_sets[0].items[0].key);
+    assert_eq!(size_of::<u64>(), serialized_sets[0].items[0].data.len());
+    assert_eq!(
+        item_0_0_data,
+        u64::from_le_bytes(
+            serialized_sets[0].items[0]
+                .data
+                .first_chunk::<{ size_of::<u64>() }>()
+                .cloned()
+                .unwrap()
+        )
+    );
+
+    assert_eq!(2, serialized_sets[1].items.len());
+    assert_eq!(item_1_0_name, serialized_sets[1].items[0].ident);
+    assert_eq!(7, serialized_sets[1].items[0].key);
+    assert_eq!(size_of::<u64>(), serialized_sets[1].items[0].data.len());
+    assert_eq!(
+        item_1_0_data,
+        u64::from_le_bytes(
+            serialized_sets[1].items[0]
+                .data
+                .first_chunk::<{ size_of::<u64>() }>()
+                .cloned()
+                .unwrap()
+        )
+    );
+    assert_eq!(item_1_1_name, serialized_sets[1].items[1].ident);
+    assert_eq!(14, serialized_sets[1].items[1].key);
+    assert_eq!(size_of::<u128>(), serialized_sets[1].items[1].data.len());
+    assert_eq!(
+        item_1_1_data,
+        u128::from_le_bytes(
+            serialized_sets[1].items[1]
+                .data
+                .first_chunk::<{ size_of::<u128>() }>()
+                .cloned()
+                .unwrap()
+        )
+    );
+
+    let request = crate::proto::InvocationRequest {
+        function_id: expected_id.clone(),
+        data_sets: serialized_sets.clone(),
+    };
+    let bytes = serialize_invocation_request(request);
+    let invocation = bytes.clone();
+    println!(
+        "bytes ptr: {:?}, invocation bytes ptr: {:?} with size: {}",
+        bytes.as_ptr(),
+        invocation.as_ptr(),
+        bytes.len()
+    );
+
+    // deserialize
+    let crate::proto::InvocationRequest {
+        function_id: deserialized_id,
+        data_sets: deserialized_sets,
+    } = deserialize_invocation_request(invocation).unwrap();
+    assert_eq!(expected_id, deserialized_id);
+    assert_eq!(serialized_sets, deserialized_sets);
+
+    // check the composition sets are as expected
+    let mut sets = util::proto_data_sets_to_composition_sets(deserialized_sets);
+    assert_eq!(2, sets.len());
+
+    let set_0 = sets[0].take().expect("Should have Some(_) for set 0");
+    assert_eq!(1, set_0.len());
+    let (item_0_0_set_index, item_0_0_item_index, item_0_0_context) =
+        set_0.into_iter().next().unwrap();
+    let item_0_0_item = &item_0_0_context.content[item_0_0_set_index]
+        .as_ref()
+        .unwrap()
+        .buffers[item_0_0_item_index];
+    assert_eq!(item_0_0_name, item_0_0_item.ident);
+    assert_eq!(0, item_0_0_item.key);
+    assert_eq!(size_of::<u64>(), item_0_0_item.data.size);
+    assert_eq!(
+        &item_0_0_data.to_le_bytes(),
+        item_0_0_context
+            .get_chunk_ref(item_0_0_item.data.offset, size_of::<u64>())
+            .unwrap()
+    );
+
+    let set_1 = sets[1].take().expect("Should have Some(_) for set 1");
+    assert_eq!(2, set_1.len());
+    let mut set_1_iterator = set_1.into_iter();
+    let (item_1_0_set_index, item_1_0_item_index, item_1_0_context) =
+        set_1_iterator.next().unwrap();
+    let item_1_0_item = &item_1_0_context.content[item_1_0_set_index]
+        .as_ref()
+        .unwrap()
+        .buffers[item_1_0_item_index];
+    assert_eq!(item_1_0_name, item_1_0_item.ident);
+    assert_eq!(7, item_1_0_item.key);
+    assert_eq!(size_of::<u64>(), item_1_0_item.data.size);
+    assert_eq!(
+        &item_1_0_data.to_le_bytes(),
+        item_1_0_context
+            .get_chunk_ref(item_1_0_item.data.offset, size_of::<u64>())
+            .unwrap()
+    );
+    let (item_1_1_set_index, item_1_1_item_index, item_1_1_context) =
+        set_1_iterator.next().unwrap();
+    let item_1_1_item = &item_1_1_context.content[item_1_1_set_index]
+        .as_ref()
+        .unwrap()
+        .buffers[item_1_1_item_index];
+    assert_eq!(item_1_1_name, item_1_1_item.ident);
+    assert_eq!(14, item_1_1_item.key);
+    assert_eq!(size_of::<u128>(), item_1_1_item.data.size);
+    assert_eq!(
+        &item_1_1_data.to_le_bytes(),
+        item_1_1_context
+            .get_chunk_ref(item_1_1_item.data.offset, size_of::<u128>())
+            .unwrap()
+    );
 }

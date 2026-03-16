@@ -36,7 +36,7 @@ dparser = {path = "../dparser"}
 
 # FFI dependencies
 libc = "0.2"
-nix = "0.26"
+nix = { version = "0.31", features = ["mman", "fs"] }
 
 # general dependencies
 serde = { version = "1.0", features = ["derive"] }

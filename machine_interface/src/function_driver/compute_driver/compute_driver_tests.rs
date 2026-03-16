@@ -92,6 +92,7 @@ mod compute_driver_tests {
             domain,
         ))];
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            function_id: Arc::new(String::new()),
             function_alternatives,
             input_sets: vec![],
             metadata,
@@ -134,6 +135,7 @@ mod compute_driver_tests {
             function,
         ))];
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            function_id: Arc::new(String::new()),
             function_alternatives,
             input_sets: vec![],
             metadata,
@@ -185,6 +187,7 @@ mod compute_driver_tests {
             domain,
         ))];
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            function_id: Arc::new(String::new()),
             function_alternatives,
             input_sets,
             metadata,
@@ -278,6 +281,7 @@ mod compute_driver_tests {
                 domain,
             ))];
             let promise = queue.enqueu(WorkToDo::FunctionArguments {
+                function_id: Arc::new(String::new()),
                 function_alternatives,
                 input_sets,
                 metadata,
@@ -385,6 +389,7 @@ mod compute_driver_tests {
             domain,
         ))];
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            function_id: Arc::new(String::new()),
             function_alternatives,
             input_sets,
             metadata,
@@ -551,6 +556,7 @@ mod compute_driver_tests {
             domain,
         ))];
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            function_id: Arc::new(String::new()),
             function_alternatives,
             input_sets,
             metadata,

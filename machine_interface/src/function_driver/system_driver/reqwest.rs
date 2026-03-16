@@ -679,6 +679,7 @@ async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
         };
         match args {
             WorkToDo::FunctionArguments {
+                function_id: _,
                 function_alternatives,
                 mut input_sets,
                 metadata,

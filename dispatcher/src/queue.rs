@@ -91,6 +91,7 @@ impl WorkQueue {
         let flags = match &work {
             WorkToDo::Shutdown(engine_type) => get_engine_flag(*engine_type),
             WorkToDo::FunctionArguments {
+                function_id: _,
                 function_alternatives,
                 input_sets: _,
                 metadata: _,

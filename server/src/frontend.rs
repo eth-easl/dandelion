@@ -1,27 +1,37 @@
 use std::{
-    convert::Infallible, io::Write, net::SocketAddr, path::PathBuf, sync::Arc, time::Instant,
+    collections::BTreeMap,
+    convert::Infallible,
+    io::Write,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Instant,
 };
 
-use crate::{DispatcherCommand, FUNCTION_FOLDER_PATH, TRACING_ARCHIVE};
+use crate::{DispatcherCommand, TRACING_ARCHIVE};
 use dandelion_commons::{records::Recorder, DandelionError, DandelionResult, FrontendError};
 use dandelion_server::DandelionBody;
-use dispatcher::dispatcher::DispatcherInput;
+use dispatcher::{
+    dispatcher::DispatcherInput,
+    queue::{get_engine_flag, WorkQueue},
+};
 use http_body_util::BodyExt;
 use hyper::{
     body::{Body, Incoming},
     service::service_fn,
     Request, Response, StatusCode,
 };
-use log::{debug, error, trace, warn};
+use log::{debug, error, warn};
 use machine_interface::{
     composition::CompositionSet,
-    function_driver::Metadata,
+    function_driver::{Metadata, WorkDone, WorkToDo},
     machine_config::EngineType,
     memory_domain::{bytes_context::BytesContext, read_only::ReadOnlyContext},
     DataItem, DataSet, Position,
 };
-use multinode::util::{
-    composition_sets_to_proto, engine_type_ptod, proto_data_sets_to_composition_sets,
+use multinode::{
+    proto::{Engine, NodeInfo},
+    util::{composition_sets_to_proto, engine_type_ptod, proto_data_sets_to_composition_sets},
 };
 use serde::Deserialize;
 use tokio::{
@@ -60,6 +70,7 @@ struct RegisterFunction {
 async fn handle_function_registration(
     req: Request<Incoming>,
     dispatcher: mpsc::Sender<DispatcherCommand>,
+    folder_path: &'static str,
 ) -> DandelionResult<DandelionBody> {
     let bytes = req
         .collect()
@@ -83,8 +94,8 @@ async fn handle_function_registration(
         request_map.local_path
     } else {
         // write function to file
-        std::fs::create_dir_all(FUNCTION_FOLDER_PATH).unwrap();
-        let mut path_buff = PathBuf::from(FUNCTION_FOLDER_PATH);
+        std::fs::create_dir_all(folder_path).unwrap();
+        let mut path_buff = PathBuf::from(folder_path);
         path_buff.push(request_map.name.clone());
         let mut function_file = std::fs::File::create(path_buff.clone())
             .expect("Failed to create file for registering function");
@@ -312,9 +323,59 @@ async fn handle_stats_collection(_req: Request<Incoming>) -> DandelionResult<Dan
 //-----------
 // multinode
 
+async fn remote_work_queue(
+    mut deregister: oneshot::Receiver<()>,
+    work_queue: WorkQueue,
+    engines: Vec<Engine>,
+    host: String,
+    port: u16,
+    remote_timeout: u64,
+) {
+    // create remote node
+    let remote_node = multinode::client::create_client(host, port, remote_timeout).await;
+    // poll work queue and relay work
+    // TODO add :wlogic for waiting for all engine types at the same time and book keeping the available resources
+    let engine_type = engine_type_ptod(engines[0].engine_type()).unwrap();
+    let engine_flags = get_engine_flag(engine_type);
+    loop {
+        //  check if we need to stop using that node
+        match deregister.try_recv() {
+            // If there is nothing to receive continue working
+            Err(oneshot::error::TryRecvError::Empty) => (),
+            // if there is a shutdown message or the channel broke, stop sending requests
+            Ok(()) | Err(oneshot::error::TryRecvError::Closed) => break,
+        }
+        // check if work is available
+        if let Some((work, debt)) = work_queue.try_get_work(engine_flags, engine_type) {
+            match work {
+                // TODO try to recover from remote failing if it is not a function failure
+                WorkToDo::FunctionArguments {
+                    function_id,
+                    function_alternatives: _,
+                    caching: _,
+                    input_sets,
+                    metadata: _,
+                    recorder: _,
+                } => {
+                    let results = remote_node
+                        .invoke_function(function_id, &input_sets)
+                        .await
+                        .and_then(|context| Ok(WorkDone::Context(context)));
+                    debt.fulfill(results);
+                }
+                WorkToDo::Shutdown(_) => panic!("Remote engine should not get shutdown request"),
+            };
+        } else {
+            tokio::task::yield_now().await;
+        }
+    }
+}
+
 async fn handle_remote_node_registration(
     req: Request<Incoming>,
     dispatcher: mpsc::Sender<DispatcherCommand>,
+    remote_nodes: Arc<Mutex<BTreeMap<(String, u16), oneshot::Sender<()>>>>,
+    remote_timeout: u64,
 ) -> DandelionResult<DandelionBody> {
     debug!("Received remote node registration");
 
@@ -331,33 +392,45 @@ async fn handle_remote_node_registration(
             )));
         }
     };
-    let engines = node_info
-        .engines
-        .iter()
-        .map(|e| {
-            (
-                engine_type_ptod(e.engine_type()).expect("Engine translation failed!"),
-                e.engine_capacity,
-            )
-        })
-        .collect();
+
+    debug!(
+        "Handling remote registration from host={}, port={} with engines {:?}",
+        node_info.host, node_info.port, node_info.engines,
+    );
+
+    let NodeInfo {
+        host,
+        port,
+        engines,
+    } = node_info;
 
     let (callback, receiver) = tokio::sync::oneshot::channel();
     dispatcher
-        .send(DispatcherCommand::RemoteRegistration {
-            host: node_info.host,
-            port: node_info.port as u16,
-            engines,
-            callback,
-        })
+        .send(DispatcherCommand::RemoteRegistration { callback })
         .await
         .unwrap();
 
     let action_status = match receiver.await.unwrap() {
-        Ok(()) => multinode::proto::ActionStatus {
-            success: true,
-            message: "".to_string(),
-        },
+        Ok(work_queue) => {
+            // create shutdown channel
+            let (deregister_sender, deregister_receiver) = tokio::sync::oneshot::channel();
+            tokio::spawn(remote_work_queue(
+                deregister_receiver,
+                work_queue,
+                engines,
+                host.clone(),
+                port as u16,
+                remote_timeout,
+            ));
+            remote_nodes
+                .lock()
+                .unwrap()
+                .insert((host, port as u16), deregister_sender);
+            multinode::proto::ActionStatus {
+                success: true,
+                message: "".to_string(),
+            }
+        }
         Err(err) => multinode::proto::ActionStatus {
             success: false,
             message: format!("Failed to register remote node: {}", err),
@@ -370,7 +443,7 @@ async fn handle_remote_node_registration(
 
 async fn handle_remote_node_deregistration(
     req: Request<Incoming>,
-    dispatcher: mpsc::Sender<DispatcherCommand>,
+    remote_nodes: Arc<Mutex<BTreeMap<(String, u16), oneshot::Sender<()>>>>,
 ) -> DandelionResult<DandelionBody> {
     debug!("Received remote node registration");
 
@@ -388,26 +461,24 @@ async fn handle_remote_node_deregistration(
         }
     };
 
-    let (callback, receiver) = tokio::sync::oneshot::channel();
-    dispatcher
-        .send(DispatcherCommand::RemoteDeregistration {
-            host: node_info.host,
-            port: node_info.port as u16,
-            callback,
-        })
-        .await
-        .unwrap();
+    let host_port = (node_info.host, node_info.port as u16);
+    let action_status =
+        if let Some(running_remote) = remote_nodes.lock().unwrap().remove(&host_port) {
+            running_remote.send(()).unwrap();
+            multinode::proto::ActionStatus {
+                success: true,
+                message: "".to_string(),
+            }
+        } else {
+            multinode::proto::ActionStatus {
+                success: false,
+                message: format!(
+                    "Failed to deregister remote node: {}:{}, not a registered remote node",
+                    host_port.0, host_port.1
+                ),
+            }
+        };
 
-    let action_status = match receiver.await.unwrap() {
-        Ok(()) => multinode::proto::ActionStatus {
-            success: true,
-            message: "".to_string(),
-        },
-        Err(err) => multinode::proto::ActionStatus {
-            success: false,
-            message: format!("Failed to register remote node: {}", err),
-        },
-    };
     Ok(DandelionBody::from_vec(
         multinode::serialize_action_status(action_status).to_vec(),
     ))
@@ -417,7 +488,7 @@ async fn handle_remote_node_request(
     req: Request<Incoming>,
     dispatcher: mpsc::Sender<DispatcherCommand>,
 ) -> DandelionResult<DandelionBody> {
-    println!("Parsing remote execution request");
+    debug!("Parsing remote execution request");
     let start_time = Instant::now();
 
     let req_bytes = req
@@ -426,7 +497,10 @@ async fn handle_remote_node_request(
         .expect("Failed to extract body from task request")
         .to_bytes();
 
-    let task_info = match multinode::deserialize_invocation_request(req_bytes.clone()) {
+    let multinode::proto::InvocationRequest {
+        function_id,
+        data_sets,
+    } = match multinode::deserialize_invocation_request(req_bytes.clone()) {
         Ok(task_info) => task_info,
         Err(err) => {
             return Err(DandelionError::RequestError(FrontendError::InvalidRequest(
@@ -435,17 +509,27 @@ async fn handle_remote_node_request(
         }
     };
 
-    let input_sets = proto_data_sets_to_composition_sets(&task_info.data_sets, req_bytes);
+    let function_id = Arc::new(function_id);
+
+    let mut recorder = Recorder::new(function_id.clone(), start_time);
+    recorder.record(dandelion_commons::records::RecordPoint::DeserializationEnd);
+
+    let input_sets = proto_data_sets_to_composition_sets(data_sets);
+
+    debug!("remote input sets: {:?}", input_sets);
+
     let (callback, output_recevier) = tokio::sync::oneshot::channel();
     dispatcher
         .send(DispatcherCommand::RemoteFunctionRequest {
-            function_id: task_info.function_id,
+            function_id: function_id,
             inputs: input_sets,
-            start_time,
+            recorder,
             callback,
         })
         .await
         .unwrap();
+
+    debug!("Remote function finished execution");
 
     let invocation_response = match output_recevier.await.unwrap() {
         // TODO: handle recorder
@@ -471,21 +555,24 @@ async fn handle_remote_node_request(
 async fn service(
     req: Request<Incoming>,
     dispatcher: mpsc::Sender<DispatcherCommand>,
+    folder_path: &'static str,
+    remote_nodes: Arc<Mutex<BTreeMap<(String, u16), oneshot::Sender<()>>>>,
+    remote_timeout: u64,
 ) -> Result<Response<DandelionBody>, Infallible> {
     // handle request
     let mut is_multinode_request = false;
     let res = match req.uri().path() {
-        "/register/function" => handle_function_registration(req, dispatcher).await,
+        "/register/function" => handle_function_registration(req, dispatcher, folder_path).await,
         "/register/composition" => handle_composition_registration(req, dispatcher).await,
         "/multinode/register" => {
             is_multinode_request = true;
-            handle_remote_node_registration(req, dispatcher).await
+            handle_remote_node_registration(req, dispatcher, remote_nodes, remote_timeout).await
         }
         "/multinode/deregister" => {
             is_multinode_request = true;
-            handle_remote_node_deregistration(req, dispatcher).await
+            handle_remote_node_deregistration(req, remote_nodes).await
         }
-        "/multinode/schedule" => {
+        "/multinode/invoke" => {
             is_multinode_request = true;
             handle_remote_node_request(req, dispatcher).await
         }
@@ -508,7 +595,7 @@ async fn service(
         | "/hot/python_app" => handle_request(false, req, dispatcher).await,
         "/stats" => handle_stats_collection(req).await,
         other_uri => {
-            trace!("Received request on {}", other_uri);
+            debug!("Received request on {}", other_uri);
             Ok(DandelionBody::from_vec(
                 format!("Hello, World\n").into_bytes(),
             ))
@@ -547,7 +634,13 @@ async fn service(
     }
 }
 
-pub async fn service_loop(request_sender: mpsc::Sender<DispatcherCommand>, port: u16) {
+pub async fn service_loop(
+    request_sender: mpsc::Sender<DispatcherCommand>,
+    remote_nodes: Arc<Mutex<BTreeMap<(String, u16), oneshot::Sender<()>>>>,
+    folder_path: &'static str,
+    port: u16,
+    remote_timeout: u64,
+) {
     // socket to listen to
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await.unwrap();
@@ -562,13 +655,15 @@ pub async fn service_loop(request_sender: mpsc::Sender<DispatcherCommand>, port:
             connection_pair = listener.accept() => {
                 let (stream,_) = connection_pair.unwrap();
                 let loop_dispatcher = request_sender.clone();
+                let loop_nodes = remote_nodes.clone();
                 let io = hyper_util::rt::TokioIo::new(stream);
                 tokio::task::spawn(async move {
                     let service_dispatcher_ptr = loop_dispatcher.clone();
+                    let service_nodes = loop_nodes.clone();
                     if let Err(err) = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
                         .serve_connection_with_upgrades(
                             io,
-                            service_fn(|req| service(req, service_dispatcher_ptr.clone())),
+                            service_fn(|req| service(req, service_dispatcher_ptr.clone(), folder_path, service_nodes.clone(),remote_timeout)),
                         )
                         .await
                     {

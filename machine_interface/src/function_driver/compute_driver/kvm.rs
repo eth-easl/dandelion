@@ -145,7 +145,7 @@ impl EngineLoop for KvmLoop {
                             NonZeroUsize::new_unchecked(overlay_size),
                             ProtFlags::all(),
                             MapFlags::MAP_PRIVATE | MapFlags::MAP_FIXED,
-                            overlay_kvm_context.fd,
+                            &overlay_kvm_context.fd,
                             file_offset as i64,
                         )
                         .unwrap()
