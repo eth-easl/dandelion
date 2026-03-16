@@ -75,7 +75,7 @@ impl fmt::Display for FunctionTimestamp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{{\"function_id\": {}, \"time_points\": [",
+            "{{\"function_id\": \"{}\", \"time_points\": [",
             self.function_id
         )?;
         // write own time points
