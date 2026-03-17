@@ -44,6 +44,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::{self, Duration};
 use tokio::{io, try_join};
 use x509_parser::nom::number;
+use tokio::time::{sleep};
 
 // Stuff needed for mTLS
 use anyhow::{anyhow, bail, Context as AnyhowContext, Result};
@@ -1290,6 +1291,7 @@ fn parse_nghttp2_codec_output(
     Vec<Vec<u8>>, // body_received_list
     Vec<String>,  // header_authority_value_string_list
     Vec<String>,  // header_x_anakonda_forward_value_string_list
+    Vec<String>,  // header_status_string_list
 ) {
     // ************************
     // *** parse the output ***
@@ -1365,6 +1367,7 @@ fn parse_nghttp2_codec_output(
     let mut body_received_list: Vec<Vec<u8>> = Vec::new();
     let mut header_authority_value_string_list: Vec<String> = Vec::new();
     let mut header_x_anakonda_forward_value_string_list: Vec<String> = Vec::new();
+    let mut header_status_value_string_list: Vec<String> = Vec::new();
     for idx_req_resp in 0..num_of_req_or_res_received {
         let set_idx = idx_req_resp + 1;
 
@@ -1378,6 +1381,8 @@ fn parse_nghttp2_codec_output(
         let header_authority_value_string;
         let mut header_x_anakonda_forward_value: Vec<u8> = Vec::new();
         let header_x_anakonda_forward_value_string;
+        let mut header_status_value: Vec<u8> = Vec::new();
+        let header_status_value_string;
 
         assert_eq!(10, response.sets[set_idx].items.len());
 
@@ -1423,6 +1428,15 @@ fn parse_nghttp2_codec_output(
                     debug!(
                         "codec header_authority_value length: {}",
                         header_authority_value.len()
+                    );
+                }
+                6 => {
+                    header_status_value.clear();
+                    header_status_value.extend_from_slice(output_item_data);
+
+                    debug!(
+                        "codec header_status_value length: {}",
+                        header_status_value.len()
                     );
                 }
                 7 => {
@@ -1473,6 +1487,13 @@ fn parse_nghttp2_codec_output(
             header_x_anakonda_forward_value_string
         );
         header_x_anakonda_forward_value_string_list.push(header_x_anakonda_forward_value_string);
+
+        header_status_value_string = String::from_utf8(header_status_value).unwrap();
+        debug!(
+            "codec header_status_value: {}",
+            header_status_value_string
+        );
+        header_status_value_string_list.push(header_status_value_string); 
     }
 
     // debug!("headers_received_list: {:?}", headers_received_list);
@@ -1500,6 +1521,7 @@ fn parse_nghttp2_codec_output(
         body_received_list,
         header_authority_value_string_list,
         header_x_anakonda_forward_value_string_list,
+        header_status_value_string_list,
     )
 }
 
@@ -1519,6 +1541,12 @@ struct StreamWorkerToRouterReq {
 }
 
 #[derive(Debug)]
+struct StreamWorkerToRouterReport5xxErrorReq {
+    header_x_anakonda_forward_value_string: String, // The url
+}
+
+
+#[derive(Debug)]
 struct RouterToStreamWorkerResp {
     payload: String,
     stream_worker_to_func_connection_worker_tx: mpsc::Sender<StreamWorkerToFuncConnReq>,
@@ -1529,6 +1557,7 @@ struct RouterToStreamWorkerResp {
 
 struct FunctionConnToStreamWorkerResp {
     payload: String,
+    resp_status: String,
     num_of_headers_to_send: usize,
     trailer_offset: i32,
     num_of_trailers_to_send: usize,
@@ -1896,6 +1925,7 @@ async fn func_connection_worker3(
         let mut body_received_list: Vec<Vec<u8>>;
         let mut header_authority_value_string_list: Vec<String>;
         let mut header_x_anakonda_forward_value_string_list: Vec<String>;
+        let mut header_status_value_string_list: Vec<String>;
 
         (
             // set 0
@@ -1913,6 +1943,7 @@ async fn func_connection_worker3(
             body_received_list,
             header_authority_value_string_list,
             header_x_anakonda_forward_value_string_list,
+            header_status_value_string_list,
         ) = parse_nghttp2_codec_output(function_output, recorder);
         size_of_session_state = session_state.len();
 
@@ -1970,6 +2001,7 @@ async fn func_connection_worker3(
             let num_of_trailers: usize = num_of_trailers_list[i];
             let headers_received: Vec<u8> = headers_received_list.remove(0);
             let body_received: Vec<u8> = body_received_list.remove(0);
+            let resp_status = header_status_value_string_list.remove(0);
             let channel_to_stream_worker = stream_worker_map.remove(&stream_id);
 
             info!("[func_connection_worker3. Local Addr: {}; Peer Addr: {}] receives a resp from uc with stream id: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
@@ -1980,6 +2012,7 @@ async fn func_connection_worker3(
 
                     c.send(FunctionConnToStreamWorkerResp {
                         payload: format!("get resp from user func"),
+                        resp_status: resp_status,
                         num_of_headers_to_send: num_of_headers,
                         trailer_offset: trailer_offset,
                         num_of_trailers_to_send: num_of_trailers,
@@ -2003,190 +2036,299 @@ async fn router(
     nghttp2_codec_func_name: String,
     request_sender: mpsc::Sender<DispatcherCommand>,
     mut stream_worker_to_router_rx: mpsc::Receiver<StreamWorkerToRouterReq>,
+    mut stream_worker_to_router_report_5xx_error_rx: mpsc::Receiver<StreamWorkerToRouterReport5xxErrorReq>,
 ) {
     let config = dandelion_server::config::DandelionConfig::get_config();
     let max_tcp_connections = config.max_tcp_connections;
     let max_http2_pending_requests = config.max_http2_pending_requests;
-    info!("[Router] max_tcp_connections: {}, max_http2_pending_requests: {}", max_tcp_connections, max_http2_pending_requests);
+    let max_consecutive_5xx_errors = config.consecutive_5xx_errors;
+    let outlier_check_interval = config.outlier_check_interval;
+    let base_ejection_time = config.base_ejection_time;
+    info!("[Router] max_tcp_connections: {}, max_http2_pending_requests: {}, max_consecutive_5xx_errors: {}", max_tcp_connections, max_http2_pending_requests, max_consecutive_5xx_errors);
 
-    // key: url; value: connection pool
-    let mut uc_connections2: HashMap<String, (u32, u32, Vec<FuncConnTuple>)> = 
+    // key: url; value: (ejected, already_achieve_max_num_consecutive_5xx_errors, previous_result_is_5xx, num_consecutive_5xx_errors, num_pending_reqs)
+    let mut uc_connections2: HashMap<String, (bool, bool, bool, usize, u32, Vec<FuncConnTuple>)> = 
         HashMap::new();
 
+    // If we receive sth from this channel, it's the time to check the outlier; (used within the router)
+    // If we have achieved the max num of consecutive 5xx errors in the last interval, eject the sandbox/url
+    let (time_to_check_outlier_tx, mut time_to_check_outlier_check_rx) = mpsc::channel::<u8>(32);
+    let time_to_check_outlier_tx_clone = time_to_check_outlier_tx.clone();
+    tokio::spawn(async move {
+        sleep(Duration::from_secs(outlier_check_interval)).await;
+        let _ = time_to_check_outlier_tx_clone.send(0).await;
+    });
+
+    // If we receive sth from this channel, put back the ejected url (used within the router)
+    let (put_back_ejected_url_tx, mut put_back_ejected_url_rx) = mpsc::channel::<String>(32);
+
+
     // Process requests from stream workers
-    while let Some(req) = stream_worker_to_router_rx.recv().await {
-        info!(
-            "[Router] receives the request with header authority: {} {}",
-            req.header_authority_value_string, req.header_x_anakonda_forward_value_string,
-        );
+    loop {
+        tokio::select! {
+            Some(_) = time_to_check_outlier_check_rx.recv() => {
+                // Check if we have achieved the max num of consecutive 5xx errors in the last interval
+                // itereate through the hashmap; check all the urls
+                for (destination_url_string, value) in uc_connections2.iter_mut() {
+                    let (
+                        ejected,
+                        already_achieve_max_num_consecutive_5xx_errors,
+                        _,
+                        _,
+                        _,
+                        _,
+                    ) = value;
 
-        // TODO: need to make sure that the user codec does not alter this header --> security concern
-        // ****** Based on the header_authority_value_sting, query the dirigent service to get the url ******
-        // ****** Based on the url, pick one connection and its corresponding func_conn_worker ******
-        let destination_url_string = req.header_x_anakonda_forward_value_string;
-        debug!(
-            "[Router] gets the url: {} from the dirigent service",
-            destination_url_string
-        );
+                    if *ejected == false && *already_achieve_max_num_consecutive_5xx_errors == true {
+                        *ejected = true;
 
-        let stream_worker_to_func_connection_worker_tx: mpsc::Sender<StreamWorkerToFuncConnReq>;
-        let stream_worker_to_func_connection_worker_rx: mpsc::Receiver<StreamWorkerToFuncConnReq>;
+                        info!("[Router] Eject the url: {}", destination_url_string);
 
-        // *** Check if there is a need to create a new connection ***
-        let mut need_to_create_a_new_connection: bool = false;
-        let mut circuit_break: bool = false;
-        let mut circuit_break_resp_status: String = String::from("");
-        let mut circuit_break_resp_body: String = String::from("");
-        let mut selected_conn_idx: usize = 0;
-        if uc_connections2.contains_key(&destination_url_string) {
+                        let destination_url_string_clone = (*destination_url_string).clone();
+                        let put_back_ejected_url_tx_clone = put_back_ejected_url_tx.clone();
+                        tokio::spawn(async move {
+                            sleep(Duration::from_secs(base_ejection_time)).await;
+                            let _ = put_back_ejected_url_tx_clone.send(destination_url_string_clone).await;
+                        });
 
-            let (num_consecutive_errors, _, vec_func_conn_tuple) = uc_connections2
-                .get_mut(&destination_url_string)
-                .unwrap();
-
-            let mut i = 0;
-
-            // Iterate through the current connection pool
-            while i < vec_func_conn_tuple.len() {
-                // if the conn is already closed, remove it
-                if vec_func_conn_tuple[i].stream_worker_to_func_connection_worker_tx.is_closed() {
-                    info!("[Router] The func connection(url: {}, conn_id: {}) is already closed. Remove it from the pool", destination_url_string, vec_func_conn_tuple[i].conn_id);
-                    vec_func_conn_tuple.remove(i);
-                    continue;
-                }
-
-                // Check the num of pending reqs on ths conn
-                let (func_conn_worker_to_router_tx, func_conn_worker_to_router_rx) =
-                    oneshot::channel::<usize>();
-
-                let _  = vec_func_conn_tuple[i].router_to_func_connection_worker_tx.send(
-                    RouterToFuncConnReq {
-                        function_connection_worker_to_router_tx: func_conn_worker_to_router_tx
-                    }
-                ).await;
-
-                match func_conn_worker_to_router_rx.await {
-                    Ok(num) => {
-                        vec_func_conn_tuple[i].num_pending_reqs = num;
-                        debug!(
-                            "[Router] gets the numbder of pending requests on func conn (url: {}, conn_id: {}): {}",
-                            destination_url_string, 
-                            vec_func_conn_tuple[i].conn_id,
-                            vec_func_conn_tuple[i].num_pending_reqs
-                        );  
-                    }
-                    Err(e) => {
-                        error!(
-                            "[Router] fails to get the num of pending requests on func conn (url: {}, conn_id: {}) with error: {}",
-                            destination_url_string, 
-                            vec_func_conn_tuple[i].conn_id,
-                            e
-                        );                           
                     }
                 }
+                
 
-                if vec_func_conn_tuple[i].num_pending_reqs < max_http2_pending_requests { // we pick this conn if the num of pending requests is less than the threshold
-                    selected_conn_idx = i;
-                    break;
-                }
-
-                i += 1;
+                let time_to_check_outlier_tx_clone = time_to_check_outlier_tx.clone();
+                tokio::spawn(async move {
+                    sleep(Duration::from_secs(outlier_check_interval)).await;
+                    let _ = time_to_check_outlier_tx_clone.send(0).await;
+                });                
             }
+            Some(destination_url_string) = put_back_ejected_url_rx.recv() => {
+                let (ejected, already_achieve_max_num_consecutive_5xx_errors, previous_result_is_5xx, current_num_consecutive_errors, _, _) = uc_connections2
+                    .get_mut(&destination_url_string)
+                    .unwrap();
+                *ejected = false;
+                *already_achieve_max_num_consecutive_5xx_errors = false;
+                *previous_result_is_5xx = false;
+                *current_num_consecutive_errors = 0;
+                *current_num_consecutive_errors = 0;
 
-            // all connections in the pool has a max num of pending reqs
-            if i >= vec_func_conn_tuple.len() {
-                need_to_create_a_new_connection = true;
+                info!("[Router] put back the ejected url {}", destination_url_string);
             }
-
-            // Check if we have already achieved the max num of connections
-            if need_to_create_a_new_connection == true && vec_func_conn_tuple.len() >= max_tcp_connections {
-                info!("[Router] circuit breaking (url: {}), exceed max num of pending requests and connections", 
-                    destination_url_string, 
+            Some(req) = stream_worker_to_router_rx.recv() => {
+                info!(
+                    "[Router] receives the request with header authority: {} {}",
+                    req.header_authority_value_string, req.header_x_anakonda_forward_value_string,
                 );
-                need_to_create_a_new_connection = false;
-                circuit_break = true;
-                circuit_break_resp_status = String::from("503\0");
-                circuit_break_resp_body = String::from("Service Unavailable: exceed max num of pending requests and connections");
-            }
-        } else {
-            need_to_create_a_new_connection = true;
-            uc_connections2.insert(destination_url_string.clone(), (0, 0, Vec::new()));
-        }
 
-        if need_to_create_a_new_connection == true {
-            let (_, new_conn_id, vec_func_conn_tuple) = uc_connections2
-                .get_mut(&destination_url_string)
-                .unwrap();
+                // TODO: need to make sure that the user codec does not alter this header --> security concern
+                // ****** Based on the header_authority_value_sting, query the dirigent service to get the url ******
+                // ****** Based on the url, pick one connection and its corresponding func_conn_worker ******
+                let destination_url_string = req.header_x_anakonda_forward_value_string;
+                debug!(
+                    "[Router] gets the url: {} from the dirigent service",
+                    destination_url_string
+                );
 
-            (
-                stream_worker_to_func_connection_worker_tx,
-                stream_worker_to_func_connection_worker_rx,
-            ) = mpsc::channel::<StreamWorkerToFuncConnReq>(32);
+                let stream_worker_to_func_connection_worker_tx: mpsc::Sender<StreamWorkerToFuncConnReq>;
+                let stream_worker_to_func_connection_worker_rx: mpsc::Receiver<StreamWorkerToFuncConnReq>;
 
-            let (
-                router_to_func_connection_worker_tx,
-                router_to_func_connection_worker_rx,
-            ) = mpsc::channel::<RouterToFuncConnReq>(32);
+                // *** Check if there is a need to create a new connection ***
+                let mut need_to_create_a_new_connection: bool = false;
+                let mut circuit_break: bool = false;
+                let mut circuit_break_resp_status: String = String::from("");
+                let mut circuit_break_resp_body: String = String::from("");
+                let mut selected_conn_idx: usize = 0;
+                if uc_connections2.contains_key(&destination_url_string) {
 
-            match TcpStream::connect(&destination_url_string).await {
-                Ok(s) => {
-                    info!(
-                        "[Router] creates a new connection to {}",
+                    let (ejected, already_achieve_max_num_consecutive_5xx_errors, _, num_consecutive_errors, _, vec_func_conn_tuple) = uc_connections2
+                        .get_mut(&destination_url_string)
+                        .unwrap();
+
+                    if *ejected == true { // If ejected
+                        info!("[Router] circuit breaking (url: {}), exceed max num of consecutive 5xx errors", 
+                            destination_url_string, 
+                        );
+                        need_to_create_a_new_connection = false;
+                        circuit_break = true;
+                        circuit_break_resp_status = String::from("504\0");
+                        circuit_break_resp_body = String::from("Service Unavailable: exceed max num of consecutive 5xx errors");
+                    }
+                    else {
+                        let mut i = 0;
+
+                        // Iterate through the current connection pool
+                        while i < vec_func_conn_tuple.len() {
+                            // if the conn is already closed, remove it
+                            if vec_func_conn_tuple[i].stream_worker_to_func_connection_worker_tx.is_closed() {
+                                info!("[Router] The func connection(url: {}, conn_id: {}) is already closed. Remove it from the pool", destination_url_string, vec_func_conn_tuple[i].conn_id);
+                                vec_func_conn_tuple.remove(i);
+                                continue;
+                            }
+
+                            // Check the num of pending reqs on ths conn
+                            let (func_conn_worker_to_router_tx, func_conn_worker_to_router_rx) =
+                                oneshot::channel::<usize>();
+
+                            let _  = vec_func_conn_tuple[i].router_to_func_connection_worker_tx.send(
+                                RouterToFuncConnReq {
+                                    function_connection_worker_to_router_tx: func_conn_worker_to_router_tx
+                                }
+                            ).await;
+
+                            match func_conn_worker_to_router_rx.await {
+                                Ok(num) => {
+                                    vec_func_conn_tuple[i].num_pending_reqs = num;
+                                    debug!(
+                                        "[Router] gets the numbder of pending requests on func conn (url: {}, conn_id: {}): {}",
+                                        destination_url_string, 
+                                        vec_func_conn_tuple[i].conn_id,
+                                        vec_func_conn_tuple[i].num_pending_reqs
+                                    );  
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "[Router] fails to get the num of pending requests on func conn (url: {}, conn_id: {}) with error: {}",
+                                        destination_url_string, 
+                                        vec_func_conn_tuple[i].conn_id,
+                                        e
+                                    );                           
+                                }
+                            }
+
+                            if vec_func_conn_tuple[i].num_pending_reqs < max_http2_pending_requests { // we pick this conn if the num of pending requests is less than the threshold
+                                selected_conn_idx = i;
+                                break;
+                            }
+
+                            i += 1;
+                        }
+
+                        // all connections in the pool has a max num of pending reqs
+                        if i >= vec_func_conn_tuple.len() {
+                            need_to_create_a_new_connection = true;
+                        }
+
+                        // Check if we have already achieved the max num of connections
+                        if need_to_create_a_new_connection == true && vec_func_conn_tuple.len() >= max_tcp_connections {
+                            info!("[Router] circuit breaking (url: {}), exceed max num of pending requests and connections", 
+                                destination_url_string, 
+                            );
+                            need_to_create_a_new_connection = false;
+                            circuit_break = true;
+                            circuit_break_resp_status = String::from("503\0");
+                            circuit_break_resp_body = String::from("Service Unavailable: exceed max num of pending requests and connections");
+                        }
+
+                    }
+                } else {
+                    need_to_create_a_new_connection = true;
+                    uc_connections2.insert(destination_url_string.clone(), (false, false, false, 0, 0, Vec::new()));
+                }
+
+                if need_to_create_a_new_connection == true {
+                    let (_,_,  _, _, new_conn_id, vec_func_conn_tuple) = uc_connections2
+                        .get_mut(&destination_url_string)
+                        .unwrap();
+
+                    (
+                        stream_worker_to_func_connection_worker_tx,
+                        stream_worker_to_func_connection_worker_rx,
+                    ) = mpsc::channel::<StreamWorkerToFuncConnReq>(32);
+
+                    let (
+                        router_to_func_connection_worker_tx,
+                        router_to_func_connection_worker_rx,
+                    ) = mpsc::channel::<RouterToFuncConnReq>(32);
+
+                    match TcpStream::connect(&destination_url_string).await {
+                        Ok(s) => {
+                            info!(
+                                "[Router] creates a new connection to {}",
+                                destination_url_string
+                            );
+                            let stream = s;
+
+                            tokio::spawn(func_connection_worker3(
+                                nghttp2_codec_func_name.clone(),
+                                stream,
+                                request_sender.clone(),
+                                stream_worker_to_func_connection_worker_rx,
+                                router_to_func_connection_worker_rx,
+                            ));
+
+                            vec_func_conn_tuple.push(FuncConnTuple {
+                                conn_id: *new_conn_id,
+                                stream_worker_to_func_connection_worker_tx: stream_worker_to_func_connection_worker_tx.clone(),
+                                router_to_func_connection_worker_tx: router_to_func_connection_worker_tx.clone(),
+                                num_pending_reqs: 0,
+                            });
+                            *new_conn_id = *new_conn_id + 1;
+                        }
+                        Err(e) => {
+                            error!(
+                                "[Router] establish connection to {} with  error: {}",
+                                destination_url_string, e
+                            );
+                        }
+                    }
+                } 
+                else {
+                    debug!(
+                        "[Router] already has a connection to {}",
                         destination_url_string
                     );
-                    let stream = s;
 
-                    tokio::spawn(func_connection_worker3(
-                        nghttp2_codec_func_name.clone(),
-                        stream,
-                        request_sender.clone(),
-                        stream_worker_to_func_connection_worker_rx,
-                        router_to_func_connection_worker_rx,
-                    ));
+                    let (_, _, _, _, _, vec_func_conn_tuple) = uc_connections2
+                        .get_mut(&destination_url_string)
+                        .unwrap();
 
-                    vec_func_conn_tuple.push(FuncConnTuple {
-                        conn_id: *new_conn_id,
-                        stream_worker_to_func_connection_worker_tx: stream_worker_to_func_connection_worker_tx.clone(),
-                        router_to_func_connection_worker_tx: router_to_func_connection_worker_tx.clone(),
-                        num_pending_reqs: 0,
-                    });
-                    *new_conn_id = *new_conn_id + 1;
+                    stream_worker_to_func_connection_worker_tx = 
+                        vec_func_conn_tuple[selected_conn_idx].stream_worker_to_func_connection_worker_tx.clone();
                 }
-                Err(e) => {
-                    error!(
-                        "[Router] establish connection to {} with  error: {}",
-                        destination_url_string, e
-                    );
-                }
+
+                // Send the answer to the stream worker
+                let router_to_stream_worker_reply = RouterToStreamWorkerResp {
+                    payload: format!("router processed the request: {}", req.payload),
+                    stream_worker_to_func_connection_worker_tx: stream_worker_to_func_connection_worker_tx
+                        .clone(),
+                    circuit_break: circuit_break,
+                    cb_response_status: circuit_break_resp_status,
+                    cb_response_body: circuit_break_resp_body,
+                };
+                let _ = req
+                    .router_to_stream_worker_tx
+                    .send(router_to_stream_worker_reply);           
             }
-        } 
-        else {
-            debug!(
-                "[Router] already has a connection to {}",
-                destination_url_string
-            );
+            Some(req) = stream_worker_to_router_report_5xx_error_rx.recv() => {
+                let destination_url_string = req.header_x_anakonda_forward_value_string;
+                if uc_connections2.contains_key(&destination_url_string) {
+                    let (ejected, already_achieve_max_num_consecutive_5xx_errors, previous_resp_is_5xx, current_num_consecutive_5xx_errors, _, _) = uc_connections2
+                        .get_mut(&destination_url_string)
+                        .unwrap();
 
-            let (_, _, vec_func_conn_tuple) = uc_connections2
-                .get_mut(&destination_url_string)
-                .unwrap();
+                    if *ejected == false && *already_achieve_max_num_consecutive_5xx_errors == false { // The sandbox is not ejected; we havn't achieved the max num of consecutive 5xx errors in the last interval
+                        if *previous_resp_is_5xx == true {
+                            *current_num_consecutive_5xx_errors = *current_num_consecutive_5xx_errors + 1;
+                        }
+                        else {
+                            *previous_resp_is_5xx = true;
+                            *current_num_consecutive_5xx_errors = 1;
+                        }
 
-            stream_worker_to_func_connection_worker_tx = 
-                vec_func_conn_tuple[selected_conn_idx].stream_worker_to_func_connection_worker_tx.clone();
+                        if *current_num_consecutive_5xx_errors >= max_consecutive_5xx_errors { // circuit break
+                            *already_achieve_max_num_consecutive_5xx_errors = true;
+
+                            debug!("[Router] url {} achieves the max consecutive 5xx errors", destination_url_string);
+                        }
+                    }
+                } else {
+                    error!("[Router] does not has the connection pool to the {}", destination_url_string);
+                }
+
+
+            }
         }
-
-        // Send the answer to the stream worker
-        let router_to_stream_worker_reply = RouterToStreamWorkerResp {
-            payload: format!("router processed the request: {}", req.payload),
-            stream_worker_to_func_connection_worker_tx: stream_worker_to_func_connection_worker_tx
-                .clone(),
-            circuit_break: circuit_break,
-            cb_response_status: circuit_break_resp_status,
-            cb_response_body: circuit_break_resp_body,
-        };
-        let _ = req
-            .router_to_stream_worker_tx
-            .send(router_to_stream_worker_reply);
     }
+ 
 
     debug!("[Router] all channels to the router are closed; Router stops working");
 }
@@ -2247,6 +2389,16 @@ pub fn parse_headers(buf: &[u8]) -> Result<Vec<(String, String)>, String> {
     Ok(out)
 }
 
+// Check is the :status string is a 5xx error
+fn is_5xx(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    bytes.len() == 3
+        && bytes[0] == b'5'
+        && bytes[1].is_ascii_digit()
+        && bytes[2].is_ascii_digit()
+}
+
+
 // It handles one HTTP2 req-resp pair
 // It is launched by the dp_conn worker
 // It receives the HTTP2 Request from the dp_conn_worker, query the router and forwards it to the func_conn_worker.
@@ -2262,6 +2414,7 @@ async fn stream_worker(
     body_received: Vec<u8>,
     stream_worker_to_dp_connection_worker_tx: mpsc::Sender<StreamWorkerToDpConnReq>,
     stream_worker_to_router_tx: mpsc::Sender<StreamWorkerToRouterReq>,
+    stream_worker_to_router_report_5xx_error_tx: mpsc::Sender<StreamWorkerToRouterReport5xxErrorReq>,
     stream_id: i32,
     tcp_conn_local_addr: SocketAddr, // just for log
     tcp_conn_peer_addr: SocketAddr,  // just for log
@@ -2499,7 +2652,7 @@ async fn stream_worker(
         .send(StreamWorkerToRouterReq {
             payload: format!("request from stream worker: {}", stream_id),
             header_authority_value_string: header_authority_value_string,
-            header_x_anakonda_forward_value_string: header_x_anakonda_forward_value_string,
+            header_x_anakonda_forward_value_string: header_x_anakonda_forward_value_string.clone(),
             router_to_stream_worker_tx: router_to_stream_worker_tx,
         })
         .await
@@ -2602,7 +2755,18 @@ async fn stream_worker(
             match function_connection_worker_to_stream_worker_rx.await {
                 Ok(resp) => {
                     execution_engine_roundtrip_end_ts_us = now_unix_microseconds();
-                    info!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] gets resp from the user func conn worker", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
+                    info!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] gets resp from the user func conn worker with status {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, &resp.resp_status);
+
+                    // Check the resp status: is it a 5xx error?
+                    let resp_status_is_5xx = is_5xx(&resp.resp_status);
+
+                    if resp_status_is_5xx == true {
+                        let _ = stream_worker_to_router_report_5xx_error_tx
+                            .send(StreamWorkerToRouterReport5xxErrorReq { 
+                                header_x_anakonda_forward_value_string 
+                            })
+                            .await;
+                    }
 
                     //  if we have zipkin enabled, we want to call the telemetry function and create the string log
                     //  then we want to make the call to zipkin to log it
@@ -2689,6 +2853,7 @@ async fn dp_connection_worker3<S: ProxyStream>(
     mut stream: S,
     request_sender: mpsc::Sender<DispatcherCommand>,
     stream_worker_to_router_tx: mpsc::Sender<StreamWorkerToRouterReq>,
+    stream_worker_to_router_report_5xx_error_tx: mpsc::Sender<StreamWorkerToRouterReport5xxErrorReq>,
     authorization_policy_func_name: String,
     jwt_policy_func_name: String,
     jwt_pem_context: Arc<Context>,
@@ -2928,6 +3093,7 @@ async fn dp_connection_worker3<S: ProxyStream>(
         let mut body_received_list: Vec<Vec<u8>>;
         let mut header_authority_value_string_list: Vec<String>;
         let mut header_x_anakonda_forward_value_string_list: Vec<String>;
+        let mut header_status_value_string_list: Vec<String>;
 
         (
             // set 0
@@ -2945,6 +3111,7 @@ async fn dp_connection_worker3<S: ProxyStream>(
             body_received_list,
             header_authority_value_string_list,
             header_x_anakonda_forward_value_string_list,
+            header_status_value_string_list,
         ) = parse_nghttp2_codec_output(function_output, recorder);
 
         size_of_session_state = session_state.len();
@@ -2989,6 +3156,7 @@ async fn dp_connection_worker3<S: ProxyStream>(
                 body_received,
                 stream_worker_to_dp_connection_worker_tx.clone(),
                 stream_worker_to_router_tx.clone(),
+                stream_worker_to_router_report_5xx_error_tx.clone(),
                 stream_id,
                 stream.local_addr().unwrap(),
                 stream.peer_addr().unwrap(),
@@ -3172,10 +3340,14 @@ async fn create_proxy_server2(
     let (stream_worker_to_router_tx, stream_worker_to_func_router_rx) =
         mpsc::channel::<StreamWorkerToRouterReq>(32);
 
+    let (stream_worker_to_router_report_5xx_error_tx, stream_worker_to_func_router_report_5xx_error_rx) =
+        mpsc::channel::<StreamWorkerToRouterReport5xxErrorReq>(32);
+
     tokio::spawn(router(
         nghttp2_codec_func_name.clone(),
         request_sender.clone(),
         stream_worker_to_func_router_rx,
+        stream_worker_to_func_router_report_5xx_error_rx,
     ));
 
     // ****** The listening socket (for the data plane connections)******
@@ -3202,6 +3374,7 @@ async fn create_proxy_server2(
                 let proxy_tls_material_dir = proxy_tls_material_dir.clone();
 
                 let stream_worker_to_router_tx_clone = stream_worker_to_router_tx.clone();
+                let stream_worker_to_router_report_5xx_error_tx_clone = stream_worker_to_router_report_5xx_error_tx.clone();
 
                 // for each new dp connection spawn a dp connection worker
                 let func_name = nghttp2_codec_func_name.clone();
@@ -3272,7 +3445,7 @@ async fn create_proxy_server2(
 
                                 let stream = DpStream::new(tls_stream, local_addr, peer_addr);
                                 let service_dispatcher_ptr = loop_dispatcher.clone();
-                                dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, rate_limiting_policy_func_name,rate_limit_ctx, zipkin_ctx, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds, telemetry_policy_name, telemetry_policy_bin_local_path).await;
+                                dp_connection_worker3(func_name, stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), stream_worker_to_router_report_5xx_error_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, rate_limiting_policy_func_name,rate_limit_ctx, zipkin_ctx, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds, telemetry_policy_name, telemetry_policy_bin_local_path).await;
                             }
                             Err (err) => {
                                 warn!("mTLS handshake failed from {}: {:?}", peer_addr, err);
@@ -3285,7 +3458,7 @@ async fn create_proxy_server2(
                     let zipkin_ctx = zipkin_ctx.clone();
                     tokio::spawn(async move {
                         let service_dispatcher_ptr = loop_dispatcher.clone();
-                        dp_connection_worker3(func_name, tcp_stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, rate_limiting_policy_func_name,rate_limit_ctx, zipkin_ctx, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds, telemetry_policy_name, telemetry_policy_bin_local_path).await;
+                        dp_connection_worker3(func_name, tcp_stream, service_dispatcher_ptr.clone(), stream_worker_to_router_tx_clone.clone(), stream_worker_to_router_report_5xx_error_tx_clone.clone(), authorization_policy_func_name, jwt_policy_func_name, jwt_pem_context, enable_authorization_policy, enable_jwt_policy, rate_limiting_policy_func_name,rate_limit_ctx, zipkin_ctx, rate_limiting_requests_per_time_unit, rate_limiting_time_unit_in_seconds, telemetry_policy_name, telemetry_policy_bin_local_path).await;
                     });
                 }
 

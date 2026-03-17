@@ -52,6 +52,9 @@ const DEFAULT_TELEMETRY_POLICY_NAME: &str = "telemetry_policy";
 
 const DEFAULT_MAX_TCP_CONNECTIONS: usize = 100;
 const DEFAULT_MAX_HTTP2_PENDING_REQUSTS: usize = 100;
+const DEFAULT_CONSECUTIVE_5XX_ERRORS: usize = 3;
+const DEFAULT_OUTLIER_CHECK_INTERVAL: u64 = 1; // second
+const DEFAULT_BASE_EJECTION_TIME: u64 = 10; // second
 
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
@@ -156,6 +159,12 @@ pub struct DandelionConfig {
     pub max_tcp_connections: usize,
     #[arg(long, env, default_value_t = DEFAULT_MAX_HTTP2_PENDING_REQUSTS)]
     pub max_http2_pending_requests: usize,
+    #[arg(long, env, default_value_t = DEFAULT_CONSECUTIVE_5XX_ERRORS)]
+    pub consecutive_5xx_errors: usize,
+    #[arg(long, env, default_value_t = DEFAULT_OUTLIER_CHECK_INTERVAL)]
+    pub outlier_check_interval: u64,
+    #[arg(long, env, default_value_t = DEFAULT_BASE_EJECTION_TIME)]
+    pub base_ejection_time: u64,
 }
 
 impl DandelionConfig {
