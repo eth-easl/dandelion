@@ -1878,8 +1878,6 @@ async fn func_connection_worker3(
                     let _ = req.function_connection_worker_to_router_tx.send(num_pending_reqs);
                     continue;
                 }
-
-
             }
         }
 
@@ -2044,8 +2042,8 @@ async fn router(
     let max_tcp_connections = config.max_tcp_connections;
     let max_http2_pending_requests = config.max_http2_pending_requests;
     let max_consecutive_5xx_errors = config.consecutive_5xx_errors;
-    let outlier_check_interval = config.outlier_check_interval;
-    let base_ejection_time = config.base_ejection_time;
+    let outlier_check_interval = config.outlier_check_interval_seconds;
+    let base_ejection_time = config.base_ejection_time_seconds;
     info!("[Router] max_tcp_connections: {}, max_http2_pending_requests: {}, max_consecutive_5xx_errors: {}", max_tcp_connections, max_http2_pending_requests, max_consecutive_5xx_errors);
 
     // key: url; value: (ejected, already_achieve_max_num_consecutive_5xx_errors, previous_result_is_5xx, num_consecutive_5xx_errors, num_pending_reqs)
@@ -2091,10 +2089,8 @@ async fn router(
                             sleep(Duration::from_secs(base_ejection_time)).await;
                             let _ = put_back_ejected_url_tx_clone.send(destination_url_string_clone).await;
                         });
-
                     }
                 }
-
 
                 let time_to_check_outlier_tx_clone = time_to_check_outlier_tx.clone();
                 tokio::spawn(async move {
@@ -2125,7 +2121,7 @@ async fn router(
                 // ****** Based on the url, pick one connection and its corresponding func_conn_worker ******
                 let destination_url_string = req.header_x_anakonda_forward_value_string;
                 debug!(
-                    "[Router] gets the url: {} from the dirigent service",
+                    "[Router] gets the url: {} from the X-Anakonda-Forward service",
                     destination_url_string
                 );
 
@@ -2139,7 +2135,6 @@ async fn router(
                 let mut circuit_break_resp_body: String = String::from("");
                 let mut selected_conn_idx: usize = 0;
                 if uc_connections2.contains_key(&destination_url_string) {
-
                     let (ejected, already_achieve_max_num_consecutive_5xx_errors, _, num_consecutive_errors, _, vec_func_conn_tuple) = uc_connections2
                         .get_mut(&destination_url_string)
                         .unwrap();
@@ -2324,8 +2319,6 @@ async fn router(
                 } else {
                     error!("[Router] does not has the connection pool to the {}", destination_url_string);
                 }
-
-
             }
         }
     }
@@ -2454,7 +2447,7 @@ async fn stream_worker(
     // config (retry)
     let config = dandelion_server::config::DandelionConfig::get_config();
     let max_retry_times = config.max_retry_times;
-    let per_retry_timeout = config.per_retry_timeout;
+    let per_retry_timeout = config.per_retry_timeout_milliseconds;
 
     let header_pairs: Vec<(String, String)> = match parse_headers(&headers_received) {
         Ok(v) => {
@@ -2660,6 +2653,7 @@ async fn stream_worker(
         // The channel used by the router to send resp back
         let (router_to_stream_worker_tx, router_to_stream_worker_rx) =
             oneshot::channel::<RouterToStreamWorkerResp>();
+        execution_engine_roundtrip_start_ts_us = now_unix_microseconds();
 
         // ****** send request to the router ******
         if let Err(e) = stream_worker_to_router_tx
@@ -2719,6 +2713,13 @@ async fn stream_worker(
                             body_to_send: cb_resp_body,
                         })
                         .await;
+                    execution_engine_roundtrip_end_ts_us = now_unix_microseconds();
+                    maybe_emit_zipkin_event(
+                        should_emit_zipkin,
+                        zipkin_ctx.as_ref(),
+                        stream_id,
+                        "func_conn_circuit_break",
+                    );
                     return;
                 }
 
@@ -2766,7 +2767,7 @@ async fn stream_worker(
                 // Reset the retry timeout timer
                 let time_to_retry_tx_clone = time_to_retry_tx.clone();
                 tokio::spawn(async move {
-                    sleep(Duration::from_secs(per_retry_timeout)).await;
+                    sleep(Duration::from_millis(per_retry_timeout)).await;
                     let _ = time_to_retry_tx_clone.send(current_retry_times).await;
                 });
 
@@ -2808,8 +2809,14 @@ async fn stream_worker(
                                         body_to_send: cb_resp_body,
                                     })
                                     .await;
+                                execution_engine_roundtrip_end_ts_us = now_unix_microseconds();
+                                maybe_emit_zipkin_event(
+                                    should_emit_zipkin,
+                                    zipkin_ctx.as_ref(),
+                                    stream_id,
+                                    "func_conn_max_retry_exceeded",
+                                );
                                 return;
-
                             }
                         }
 
