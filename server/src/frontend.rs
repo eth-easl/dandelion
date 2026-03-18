@@ -293,6 +293,7 @@ async fn handle_request(
                 composition: composition
                     .expect("Did not get a service name nor a composition description in request"),
                 inputs,
+                is_cold,
                 recorder,
                 callback,
             })
