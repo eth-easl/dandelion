@@ -41,10 +41,10 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::{Builder, Runtime};
 use tokio::signal::unix::SignalKind;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::sleep;
 use tokio::time::{self, Duration};
 use tokio::{io, try_join};
 use x509_parser::nom::number;
-use tokio::time::{sleep};
 
 // Stuff needed for mTLS
 use anyhow::{anyhow, bail, Context as AnyhowContext, Result};
@@ -1489,11 +1489,8 @@ fn parse_nghttp2_codec_output(
         header_x_anakonda_forward_value_string_list.push(header_x_anakonda_forward_value_string);
 
         header_status_value_string = String::from_utf8(header_status_value).unwrap();
-        debug!(
-            "codec header_status_value: {}",
-            header_status_value_string
-        );
-        header_status_value_string_list.push(header_status_value_string); 
+        debug!("codec header_status_value: {}", header_status_value_string);
+        header_status_value_string_list.push(header_status_value_string);
     }
 
     // debug!("headers_received_list: {:?}", headers_received_list);
@@ -1545,7 +1542,6 @@ struct StreamWorkerToRouterReport5xxErrorReq {
     header_x_anakonda_forward_value_string: String, // The url
 }
 
-
 #[derive(Debug)]
 struct RouterToStreamWorkerResp {
     payload: String,
@@ -1573,7 +1569,7 @@ struct StreamWorkerToFuncConnReq {
     num_of_trailers_to_send: usize,
     headers: Vec<u8>,
     body: Vec<u8>,
-    function_connection_worker_to_stream_worker_tx: oneshot::Sender<FunctionConnToStreamWorkerResp>,
+    function_connection_worker_to_stream_worker_tx: mpsc::Sender<FunctionConnToStreamWorkerResp>,
 }
 
 struct StreamWorkerToDpConnReq {
@@ -1685,7 +1681,7 @@ async fn read_from_stream_until_blocking<S: ProxyStream>(
     }
 }
 
-fn generate_circuit_break_resp (
+fn generate_circuit_break_retry_resp(
     cb_resp_status: String,
     cb_resp_body: String,
 ) -> (Vec<u8>, Vec<u8>) {
@@ -1703,11 +1699,10 @@ fn generate_circuit_break_resp (
     headers.extend_from_slice(&header_stauts_value_len_bytes);
     headers.extend_from_slice(header_status_value_string.as_bytes());
 
-    let body_to_send_string = cb_resp_body;          
+    let body_to_send_string = cb_resp_body;
     body_to_send.extend_from_slice(body_to_send_string.as_bytes());
 
     return (headers, body_to_send);
-
 }
 
 // This handles the TCP/HTTP connection with user function container
@@ -1717,7 +1712,7 @@ async fn func_connection_worker3(
     mut stream: TcpStream,
     request_sender: mpsc::Sender<DispatcherCommand>,
     mut stream_worker_to_func_connection_worker_rx: mpsc::Receiver<StreamWorkerToFuncConnReq>,
-    mut router_to_func_connection_worker_rx: mpsc::Receiver<RouterToFuncConnReq>
+    mut router_to_func_connection_worker_rx: mpsc::Receiver<RouterToFuncConnReq>,
 ) {
     let tcp_conn_local_addr = stream.local_addr().unwrap();
     let tcp_conn_peer_addr = stream.peer_addr().unwrap();
@@ -1729,7 +1724,7 @@ async fn func_connection_worker3(
     // Hash Map
     // Key: Stream id of the sent request
     // Value: Channel to the stream worker (to send the corresponding response)
-    let mut stream_worker_map: HashMap<i32, oneshot::Sender<FunctionConnToStreamWorkerResp>> =
+    let mut stream_worker_map: HashMap<i32, mpsc::Sender<FunctionConnToStreamWorkerResp>> =
         HashMap::new();
 
     // Some numbers to track
@@ -1789,7 +1784,7 @@ async fn func_connection_worker3(
         size_of_body_to_send_list = Vec::new();
 
         let mut channel_to_send_back_resp_list: Vec<
-            Option<oneshot::Sender<FunctionConnToStreamWorkerResp>>,
+            Option<mpsc::Sender<FunctionConnToStreamWorkerResp>>,
         > = Vec::new();
 
         // ****** If first create, we directly call the codec (as a client to initialize the connection) ******
@@ -1949,7 +1944,10 @@ async fn func_connection_worker3(
 
         // ****** Operations triggered by output set 0 *******
         num_pending_reqs = num_pending_reqs + num_of_req_or_resp_sent - num_of_req_or_res_received;
-        debug!("[func_connection_worker3. Local Addr: {}; Peer Addr: {}] num_pending_reqs {}", tcp_conn_local_addr, tcp_conn_peer_addr, num_pending_reqs);
+        debug!(
+            "[func_connection_worker3. Local Addr: {}; Peer Addr: {}] num_pending_reqs {}",
+            tcp_conn_local_addr, tcp_conn_peer_addr, num_pending_reqs
+        );
 
         let mut stream_id_list_sent_requests_i32: Vec<i32> = Vec::new();
         for i in 0..num_of_req_or_resp_sent {
@@ -2010,15 +2008,17 @@ async fn func_connection_worker3(
                 Some(c) => {
                     // debug!("[func conn worker] sends response to stream worker {}", stream_id);
 
-                    c.send(FunctionConnToStreamWorkerResp {
-                        payload: format!("get resp from user func"),
-                        resp_status: resp_status,
-                        num_of_headers_to_send: num_of_headers,
-                        trailer_offset: trailer_offset,
-                        num_of_trailers_to_send: num_of_trailers,
-                        headers: headers_received,
-                        body_to_send: body_received,
-                    });
+                    let _ = c
+                        .send(FunctionConnToStreamWorkerResp {
+                            payload: format!("get resp from user func"),
+                            resp_status: resp_status,
+                            num_of_headers_to_send: num_of_headers,
+                            trailer_offset: trailer_offset,
+                            num_of_trailers_to_send: num_of_trailers,
+                            headers: headers_received,
+                            body_to_send: body_received,
+                        })
+                        .await;
                 }
                 None => {
                     error!("[func_connection_worker3. Local Addr: {}; Peer Addr: {}] There is no channel in the hasp map to send back resp to stream worker! The send request (to the uc) stream id: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
@@ -2036,7 +2036,9 @@ async fn router(
     nghttp2_codec_func_name: String,
     request_sender: mpsc::Sender<DispatcherCommand>,
     mut stream_worker_to_router_rx: mpsc::Receiver<StreamWorkerToRouterReq>,
-    mut stream_worker_to_router_report_5xx_error_rx: mpsc::Receiver<StreamWorkerToRouterReport5xxErrorReq>,
+    mut stream_worker_to_router_report_5xx_error_rx: mpsc::Receiver<
+        StreamWorkerToRouterReport5xxErrorReq,
+    >,
 ) {
     let config = dandelion_server::config::DandelionConfig::get_config();
     let max_tcp_connections = config.max_tcp_connections;
@@ -2047,7 +2049,7 @@ async fn router(
     info!("[Router] max_tcp_connections: {}, max_http2_pending_requests: {}, max_consecutive_5xx_errors: {}", max_tcp_connections, max_http2_pending_requests, max_consecutive_5xx_errors);
 
     // key: url; value: (ejected, already_achieve_max_num_consecutive_5xx_errors, previous_result_is_5xx, num_consecutive_5xx_errors, num_pending_reqs)
-    let mut uc_connections2: HashMap<String, (bool, bool, bool, usize, u32, Vec<FuncConnTuple>)> = 
+    let mut uc_connections2: HashMap<String, (bool, bool, bool, usize, u32, Vec<FuncConnTuple>)> =
         HashMap::new();
 
     // If we receive sth from this channel, it's the time to check the outlier; (used within the router)
@@ -2061,7 +2063,6 @@ async fn router(
 
     // If we receive sth from this channel, put back the ejected url (used within the router)
     let (put_back_ejected_url_tx, mut put_back_ejected_url_rx) = mpsc::channel::<String>(32);
-
 
     // Process requests from stream workers
     loop {
@@ -2093,13 +2094,13 @@ async fn router(
 
                     }
                 }
-                
+
 
                 let time_to_check_outlier_tx_clone = time_to_check_outlier_tx.clone();
                 tokio::spawn(async move {
                     sleep(Duration::from_secs(outlier_check_interval)).await;
                     let _ = time_to_check_outlier_tx_clone.send(0).await;
-                });                
+                });
             }
             Some(destination_url_string) = put_back_ejected_url_rx.recv() => {
                 let (ejected, already_achieve_max_num_consecutive_5xx_errors, previous_result_is_5xx, current_num_consecutive_errors, _, _) = uc_connections2
@@ -2144,8 +2145,8 @@ async fn router(
                         .unwrap();
 
                     if *ejected == true { // If ejected
-                        info!("[Router] circuit breaking (url: {}), exceed max num of consecutive 5xx errors", 
-                            destination_url_string, 
+                        info!("[Router] circuit breaking (url: {}), exceed max num of consecutive 5xx errors",
+                            destination_url_string,
                         );
                         need_to_create_a_new_connection = false;
                         circuit_break = true;
@@ -2179,18 +2180,18 @@ async fn router(
                                     vec_func_conn_tuple[i].num_pending_reqs = num;
                                     debug!(
                                         "[Router] gets the numbder of pending requests on func conn (url: {}, conn_id: {}): {}",
-                                        destination_url_string, 
+                                        destination_url_string,
                                         vec_func_conn_tuple[i].conn_id,
                                         vec_func_conn_tuple[i].num_pending_reqs
-                                    );  
+                                    );
                                 }
                                 Err(e) => {
                                     error!(
                                         "[Router] fails to get the num of pending requests on func conn (url: {}, conn_id: {}) with error: {}",
-                                        destination_url_string, 
+                                        destination_url_string,
                                         vec_func_conn_tuple[i].conn_id,
                                         e
-                                    );                           
+                                    );
                                 }
                             }
 
@@ -2209,8 +2210,8 @@ async fn router(
 
                         // Check if we have already achieved the max num of connections
                         if need_to_create_a_new_connection == true && vec_func_conn_tuple.len() >= max_tcp_connections {
-                            info!("[Router] circuit breaking (url: {}), exceed max num of pending requests and connections", 
-                                destination_url_string, 
+                            info!("[Router] circuit breaking (url: {}), exceed max num of pending requests and connections",
+                                destination_url_string,
                             );
                             need_to_create_a_new_connection = false;
                             circuit_break = true;
@@ -2270,7 +2271,7 @@ async fn router(
                             );
                         }
                     }
-                } 
+                }
                 else {
                     debug!(
                         "[Router] already has a connection to {}",
@@ -2281,7 +2282,7 @@ async fn router(
                         .get_mut(&destination_url_string)
                         .unwrap();
 
-                    stream_worker_to_func_connection_worker_tx = 
+                    stream_worker_to_func_connection_worker_tx =
                         vec_func_conn_tuple[selected_conn_idx].stream_worker_to_func_connection_worker_tx.clone();
                 }
 
@@ -2296,7 +2297,7 @@ async fn router(
                 };
                 let _ = req
                     .router_to_stream_worker_tx
-                    .send(router_to_stream_worker_reply);           
+                    .send(router_to_stream_worker_reply);
             }
             Some(req) = stream_worker_to_router_report_5xx_error_rx.recv() => {
                 let destination_url_string = req.header_x_anakonda_forward_value_string;
@@ -2328,7 +2329,6 @@ async fn router(
             }
         }
     }
- 
 
     debug!("[Router] all channels to the router are closed; Router stops working");
 }
@@ -2392,12 +2392,8 @@ pub fn parse_headers(buf: &[u8]) -> Result<Vec<(String, String)>, String> {
 // Check is the :status string is a 5xx error
 fn is_5xx(s: &str) -> bool {
     let bytes = s.as_bytes();
-    bytes.len() == 3
-        && bytes[0] == b'5'
-        && bytes[1].is_ascii_digit()
-        && bytes[2].is_ascii_digit()
+    bytes.len() == 3 && bytes[0] == b'5' && bytes[1].is_ascii_digit() && bytes[2].is_ascii_digit()
 }
-
 
 // It handles one HTTP2 req-resp pair
 // It is launched by the dp_conn worker
@@ -2414,7 +2410,9 @@ async fn stream_worker(
     body_received: Vec<u8>,
     stream_worker_to_dp_connection_worker_tx: mpsc::Sender<StreamWorkerToDpConnReq>,
     stream_worker_to_router_tx: mpsc::Sender<StreamWorkerToRouterReq>,
-    stream_worker_to_router_report_5xx_error_tx: mpsc::Sender<StreamWorkerToRouterReport5xxErrorReq>,
+    stream_worker_to_router_report_5xx_error_tx: mpsc::Sender<
+        StreamWorkerToRouterReport5xxErrorReq,
+    >,
     stream_id: i32,
     tcp_conn_local_addr: SocketAddr, // just for log
     tcp_conn_peer_addr: SocketAddr,  // just for log
@@ -2452,6 +2450,11 @@ async fn stream_worker(
     let mut rate_limiting_policy_end_ts_us: u64 = 0;
     let mut execution_engine_roundtrip_start_ts_us: u64 = 0;
     let mut execution_engine_roundtrip_end_ts_us: u64 = 0;
+
+    // config (retry)
+    let config = dandelion_server::config::DandelionConfig::get_config();
+    let max_retry_times = config.max_retry_times;
+    let per_retry_timeout = config.per_retry_timeout;
 
     let header_pairs: Vec<(String, String)> = match parse_headers(&headers_received) {
         Ok(v) => {
@@ -2641,209 +2644,269 @@ async fn stream_worker(
         }
     }
 
-    // The stream worker would query the router to get the channel to the user_func_conn_worker
-    // The channel used by the router to send resp back
-    let (router_to_stream_worker_tx, router_to_stream_worker_rx) =
-        oneshot::channel::<RouterToStreamWorkerResp>();
-    execution_engine_roundtrip_start_ts_us = now_unix_microseconds();
+    // If we receive sth from this channel, it's the time to retry
+    let mut current_retry_times: usize = 0;
+    let (time_to_retry_tx, mut time_to_retry_rx) = mpsc::channel::<usize>(32);
 
-    // ****** send request to the router ******
-    if let Err(e) = stream_worker_to_router_tx
-        .send(StreamWorkerToRouterReq {
-            payload: format!("request from stream worker: {}", stream_id),
-            header_authority_value_string: header_authority_value_string,
-            header_x_anakonda_forward_value_string: header_x_anakonda_forward_value_string.clone(),
-            router_to_stream_worker_tx: router_to_stream_worker_tx,
-        })
-        .await
-    {
-        error!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] failed to send to router: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, e);
+    // Used to get resp(s) back from the func_conn_worker
+    let (
+        function_connection_worker_to_stream_worker_tx,
+        mut function_connection_worker_to_stream_worker_rx,
+    ) = mpsc::channel::<FunctionConnToStreamWorkerResp>(32);
 
-        // If we fail to send req to the router
-        let _ = stream_worker_to_dp_connection_worker_tx
-            .send(StreamWorkerToDpConnReq {
-                payload: format!(
-                    "[stream worker:{}] failed to send to router: {}",
-                    stream_id, e
-                ),
-                ..Default::default()
+    // The retry loop
+    loop {
+        // The stream worker would query the router to get the channel to the user_func_conn_worker
+        // The channel used by the router to send resp back
+        let (router_to_stream_worker_tx, router_to_stream_worker_rx) =
+            oneshot::channel::<RouterToStreamWorkerResp>();
+
+        // ****** send request to the router ******
+        if let Err(e) = stream_worker_to_router_tx
+            .send(StreamWorkerToRouterReq {
+                payload: format!("request from stream worker: {}", stream_id),
+                header_authority_value_string: header_authority_value_string.clone(),
+                header_x_anakonda_forward_value_string: header_x_anakonda_forward_value_string
+                    .clone(),
+                router_to_stream_worker_tx: router_to_stream_worker_tx,
             })
-            .await;
-        execution_engine_roundtrip_start_ts_us = 0;
-        execution_engine_roundtrip_end_ts_us = 0;
-        maybe_emit_zipkin_event(
-            should_emit_zipkin,
-            zipkin_ctx.as_ref(),
-            stream_id,
-            "router_send_failed",
-        );
-        return;
-    }
+            .await
+        {
+            error!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] failed to send to router: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, e);
 
-    // ****** Wait for router's resp ******
-    match router_to_stream_worker_rx.await {
-        Ok(resp) => {
-            debug!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] gets resp from the router", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
-
-            // From the router, we know if there is a circuit breaking
-            if resp.circuit_break == true { // If there is, directly return a error response
-                    let (cb_resp_headers, cb_resp_body) = generate_circuit_break_resp(resp.cb_response_status, resp.cb_response_body);
-                    let _ = stream_worker_to_dp_connection_worker_tx
-                        .send(StreamWorkerToDpConnReq {
-                            payload: format!(
-                                "[stream worker:{}] circuit breaking",
-                                stream_id,
-                            ),
-                            stream_id_to_send_response: stream_id,
-                            num_of_headers_to_send: 1,
-                            trailer_offset: -1,
-                            num_of_trailers_to_send: 0,                        
-                            headers: cb_resp_headers,
-                            body_to_send: cb_resp_body,
-                        })
-                        .await;
-                    return;
-            }
-
-            // From the router, we now know which user-func connection to use
-            let stream_worker_to_func_connection_worker_tx =
-                resp.stream_worker_to_func_connection_worker_tx;
-
-            // Used to get the resp back from the func_conn_worker
-            let (
-                function_connection_worker_to_stream_worker_tx,
-                function_connection_worker_to_stream_worker_rx,
-            ) = oneshot::channel::<FunctionConnToStreamWorkerResp>();
-            // send request to the func_conn worker
-            if let Err(e) = stream_worker_to_func_connection_worker_tx
-                .send(StreamWorkerToFuncConnReq {
-                    payload: format!("request from stream worker: {}", stream_id),
-                    stream_id: stream_id,
-                    num_of_headers_to_send: num_of_headers_received,
-                    trailer_offset: trailer_offset,
-                    num_of_trailers_to_send: num_of_trailers_received,
-                    headers: headers_received,
-                    body: body_received,
-                    function_connection_worker_to_stream_worker_tx:
-                        function_connection_worker_to_stream_worker_tx,
-                })
-                .await
-            {
-                error!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] failed to send to user func conn worker: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, e);
-
-                // If we fail to send to user func conn worker
-                let _ = stream_worker_to_dp_connection_worker_tx
-                    .send(StreamWorkerToDpConnReq {
-                        payload: format!(
-                            "[stream worker:{}] failed to send to user func conn worker: {}",
-                            stream_id, e
-                        ),
-                        ..Default::default()
-                    })
-                    .await;
-                execution_engine_roundtrip_end_ts_us = now_unix_microseconds();
-                maybe_emit_zipkin_event(
-                    should_emit_zipkin,
-                    zipkin_ctx.as_ref(),
-                    stream_id,
-                    "func_conn_send_failed",
-                );
-                return;
-            }
-
-            // *** Wait for the resp from the user func conn worker ***
-            match function_connection_worker_to_stream_worker_rx.await {
-                Ok(resp) => {
-                    execution_engine_roundtrip_end_ts_us = now_unix_microseconds();
-                    info!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] gets resp from the user func conn worker with status {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, &resp.resp_status);
-
-                    // Check the resp status: is it a 5xx error?
-                    let resp_status_is_5xx = is_5xx(&resp.resp_status);
-
-                    if resp_status_is_5xx == true {
-                        let _ = stream_worker_to_router_report_5xx_error_tx
-                            .send(StreamWorkerToRouterReport5xxErrorReq { 
-                                header_x_anakonda_forward_value_string 
-                            })
-                            .await;
-                    }
-
-                    //  if we have zipkin enabled, we want to call the telemetry function and create the string log
-                    //  then we want to make the call to zipkin to log it
-                    if should_emit_zipkin {
-                        let string_log_for_zipkin = prepare_input_and_invoke_telemetry_policy(
-                            telemetry_policy_name,
-                            request_sender.clone(),
-                            authorization_policy_start_ts_us,
-                            authorization_policy_end_ts_us,
-                            jwt_policy_start_ts_us,
-                            jwt_policy_end_ts_us,
-                            rate_limiting_policy_start_ts_us,
-                            rate_limiting_policy_end_ts_us,
-                            execution_engine_roundtrip_start_ts_us,
-                            execution_engine_roundtrip_end_ts_us,
-                        )
-                        .await;
-
-                        maybe_emit_zipkin_event(
-                            should_emit_zipkin,
-                            zipkin_ctx.as_ref(),
-                            stream_id,
-                            string_log_for_zipkin,
-                        );
-                    }
-
-                    let _ = stream_worker_to_dp_connection_worker_tx
-                        .send(StreamWorkerToDpConnReq {
-                            payload: format!(
-                                "[stream worker:{}] final response: {} ",
-                                stream_id, resp.payload
-                            ),
-                            stream_id_to_send_response: stream_id,
-                            num_of_headers_to_send: resp.num_of_headers_to_send,
-                            trailer_offset: resp.trailer_offset,
-                            num_of_trailers_to_send: resp.num_of_trailers_to_send,
-                            headers: resp.headers,
-                            body_to_send: resp.body_to_send,
-                        })
-                        .await;
-                }
-                Err(e) => {
-                    execution_engine_roundtrip_end_ts_us = now_unix_microseconds();
-                    error!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] fails to get resp from the func conn worker: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, e);
-
-                    let _ = stream_worker_to_dp_connection_worker_tx
-                        .send(
-                            StreamWorkerToDpConnReq {
-                                payload: format!("[stream worker:{}] fails to receive from the user func conn worker: {} ", stream_id, e),
-                                ..Default::default()
-                            }
-                        )
-                        .await;
-                }
-            }
-        }
-        Err(e) => {
-            execution_engine_roundtrip_start_ts_us = 0;
-            execution_engine_roundtrip_end_ts_us = 0;
-            error!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] failed to receive from the router: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, e);
-
+            // If we fail to send req to the router
             let _ = stream_worker_to_dp_connection_worker_tx
                 .send(StreamWorkerToDpConnReq {
                     payload: format!(
-                        "[stream worker:{}] failed to receive from router: {}",
+                        "[stream worker:{}] failed to send to router: {}",
                         stream_id, e
                     ),
                     ..Default::default()
                 })
                 .await;
-        }
-    }
 
-    debug!(
-        "[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] stops working!",
-        tcp_conn_local_addr, tcp_conn_peer_addr, stream_id
-    );
+            execution_engine_roundtrip_start_ts_us = 0;
+            execution_engine_roundtrip_end_ts_us = 0;
+            maybe_emit_zipkin_event(
+                should_emit_zipkin,
+                zipkin_ctx.as_ref(),
+                stream_id,
+                "router_send_failed",
+            );
+            return;
+        }
+
+        // ****** Wait for router's resp ******
+        match router_to_stream_worker_rx.await {
+            Ok(resp) => {
+                debug!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] gets resp from the router", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
+
+                // From the router, we know if there is a circuit breaking
+                if resp.circuit_break == true {
+                    // If there is, directly return a error response
+                    let (cb_resp_headers, cb_resp_body) = generate_circuit_break_retry_resp(
+                        resp.cb_response_status,
+                        resp.cb_response_body,
+                    );
+                    let _ = stream_worker_to_dp_connection_worker_tx
+                        .send(StreamWorkerToDpConnReq {
+                            payload: format!("[stream worker:{}] circuit breaking", stream_id,),
+                            stream_id_to_send_response: stream_id,
+                            num_of_headers_to_send: 1,
+                            trailer_offset: -1,
+                            num_of_trailers_to_send: 0,
+                            headers: cb_resp_headers,
+                            body_to_send: cb_resp_body,
+                        })
+                        .await;
+                    return;
+                }
+
+                // From the router, we now know which user-func connection to use
+                let stream_worker_to_func_connection_worker_tx =
+                    resp.stream_worker_to_func_connection_worker_tx;
+
+                // send request to the func_conn worker
+                if let Err(e) = stream_worker_to_func_connection_worker_tx
+                    .send(StreamWorkerToFuncConnReq {
+                        payload: format!("request from stream worker: {}", stream_id),
+                        stream_id: stream_id,
+                        num_of_headers_to_send: num_of_headers_received,
+                        trailer_offset: trailer_offset,
+                        num_of_trailers_to_send: num_of_trailers_received,
+                        headers: headers_received.clone(),
+                        body: body_received.clone(),
+                        function_connection_worker_to_stream_worker_tx:
+                            function_connection_worker_to_stream_worker_tx.clone(),
+                    })
+                    .await
+                {
+                    error!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] failed to send to user func conn worker: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, e);
+
+                    // If we fail to send to user func conn worker
+                    let _ = stream_worker_to_dp_connection_worker_tx
+                        .send(StreamWorkerToDpConnReq {
+                            payload: format!(
+                                "[stream worker:{}] failed to send to user func conn worker: {}",
+                                stream_id, e
+                            ),
+                            ..Default::default()
+                        })
+                        .await;
+                    execution_engine_roundtrip_end_ts_us = now_unix_microseconds();
+                    maybe_emit_zipkin_event(
+                        should_emit_zipkin,
+                        zipkin_ctx.as_ref(),
+                        stream_id,
+                        "func_conn_send_failed",
+                    );
+                    return;
+                }
+
+                // Reset the retry timeout timer
+                let time_to_retry_tx_clone = time_to_retry_tx.clone();
+                tokio::spawn(async move {
+                    sleep(Duration::from_secs(per_retry_timeout)).await;
+                    let _ = time_to_retry_tx_clone.send(current_retry_times).await;
+                });
+
+                // *** Wait for the resp from the user func conn worker ***
+                tokio::select! {
+                    Some(resp) = function_connection_worker_to_stream_worker_rx.recv() => { // 1) If we receive the resp from the function connection worker
+                        execution_engine_roundtrip_end_ts_us = now_unix_microseconds();
+                        debug!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] gets resp from the user func conn worker with status {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, &resp.resp_status);
+
+                        // Check the resp status: is it a 5xx error?
+                        let resp_status_is_5xx = is_5xx(&resp.resp_status);
+
+                        if resp_status_is_5xx == true {
+                            // Report the 5xx error to the router
+                            let _ = stream_worker_to_router_report_5xx_error_tx
+                                .send(StreamWorkerToRouterReport5xxErrorReq {
+                                    header_x_anakonda_forward_value_string: header_x_anakonda_forward_value_string.clone()
+                                })
+                                .await;
+
+                            if current_retry_times < max_retry_times {
+                                current_retry_times = current_retry_times + 1;
+                                debug!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] retry because receives the 5xx error. Already retry times: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, current_retry_times);
+                                continue; // start the next loop
+                            }
+                            else { // return an error response
+                                let (cb_resp_headers, cb_resp_body) = generate_circuit_break_retry_resp(String::from("505\0"), String::from("Service Unavailable: Exceed Max Retry Times"));
+                                let _ = stream_worker_to_dp_connection_worker_tx
+                                    .send(StreamWorkerToDpConnReq {
+                                        payload: format!(
+                                            "[stream worker:{}] Exceed Max Retry Times",
+                                            stream_id,
+                                        ),
+                                        stream_id_to_send_response: stream_id,
+                                        num_of_headers_to_send: 1,
+                                        trailer_offset: -1,
+                                        num_of_trailers_to_send: 0,
+                                        headers: cb_resp_headers,
+                                        body_to_send: cb_resp_body,
+                                    })
+                                    .await;
+                                return;
+
+                            }
+                        }
+
+                        //  if we have zipkin enabled, we want to call the telemetry function and create the string log
+                        //  then we want to make the call to zipkin to log it
+                        if should_emit_zipkin {
+                            let string_log_for_zipkin = prepare_input_and_invoke_telemetry_policy(
+                                telemetry_policy_name.clone(),
+                                request_sender.clone(),
+                                authorization_policy_start_ts_us,
+                                authorization_policy_end_ts_us,
+                                jwt_policy_start_ts_us,
+                                jwt_policy_end_ts_us,
+                                rate_limiting_policy_start_ts_us,
+                                rate_limiting_policy_end_ts_us,
+                                execution_engine_roundtrip_start_ts_us,
+                                execution_engine_roundtrip_end_ts_us,
+                            )
+                                .await;
+
+                            maybe_emit_zipkin_event(
+                                should_emit_zipkin,
+                                zipkin_ctx.as_ref(),
+                                stream_id,
+                                string_log_for_zipkin,
+                            );
+                        }
+
+                        let _ = stream_worker_to_dp_connection_worker_tx
+                            .send(StreamWorkerToDpConnReq {
+                                payload: format!(
+                                    "[stream worker:{}] final response: {} ",
+                                    stream_id, resp.payload
+                                ),
+                                stream_id_to_send_response: stream_id,
+                                num_of_headers_to_send: resp.num_of_headers_to_send,
+                                trailer_offset: resp.trailer_offset,
+                                num_of_trailers_to_send: resp.num_of_trailers_to_send,
+                                headers: resp.headers,
+                                body_to_send: resp.body_to_send,
+                            })
+                            .await;
+                    }
+                    Some(n) = time_to_retry_rx.recv() => {
+                        let next_retry_times = n + 1;
+
+                        if current_retry_times < next_retry_times {
+                            if current_retry_times < max_retry_times {
+                                current_retry_times = current_retry_times + 1;
+                                debug!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] retry because of the timeout. Already retry times: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, current_retry_times);
+                                continue; // start the next loop
+                            }
+                            else { // return an error response
+                                let (cb_resp_headers, cb_resp_body) = generate_circuit_break_retry_resp(String::from("505\0"), String::from("Service Unavailable: Exceed Max Retry Times"));
+                                let _ = stream_worker_to_dp_connection_worker_tx
+                                    .send(StreamWorkerToDpConnReq {
+                                        payload: format!(
+                                            "[stream worker:{}] Exceed Max Retry Times",
+                                            stream_id,
+                                        ),
+                                        stream_id_to_send_response: stream_id,
+                                        num_of_headers_to_send: 1,
+                                        trailer_offset: -1,
+                                        num_of_trailers_to_send: 0,
+                                        headers: cb_resp_headers,
+                                        body_to_send: cb_resp_body,
+                                    })
+                                    .await;
+                                return;
+
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                execution_engine_roundtrip_start_ts_us = 0;
+                execution_engine_roundtrip_end_ts_us = 0;
+                error!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] failed to receive from the router: {}", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id, e);
+
+                let _ = stream_worker_to_dp_connection_worker_tx
+                    .send(StreamWorkerToDpConnReq {
+                        payload: format!(
+                            "[stream worker:{}] failed to receive from router: {}",
+                            stream_id, e
+                        ),
+                        ..Default::default()
+                    })
+                    .await;
+            }
+        }
+
+        debug!(
+            "[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] stops working!",
+            tcp_conn_local_addr, tcp_conn_peer_addr, stream_id
+        );
+    }
 }
 
 // The task to handle one TCP/HTTP connection with the data plane
@@ -2853,7 +2916,9 @@ async fn dp_connection_worker3<S: ProxyStream>(
     mut stream: S,
     request_sender: mpsc::Sender<DispatcherCommand>,
     stream_worker_to_router_tx: mpsc::Sender<StreamWorkerToRouterReq>,
-    stream_worker_to_router_report_5xx_error_tx: mpsc::Sender<StreamWorkerToRouterReport5xxErrorReq>,
+    stream_worker_to_router_report_5xx_error_tx: mpsc::Sender<
+        StreamWorkerToRouterReport5xxErrorReq,
+    >,
     authorization_policy_func_name: String,
     jwt_policy_func_name: String,
     jwt_pem_context: Arc<Context>,
@@ -3340,8 +3405,10 @@ async fn create_proxy_server2(
     let (stream_worker_to_router_tx, stream_worker_to_func_router_rx) =
         mpsc::channel::<StreamWorkerToRouterReq>(32);
 
-    let (stream_worker_to_router_report_5xx_error_tx, stream_worker_to_func_router_report_5xx_error_rx) =
-        mpsc::channel::<StreamWorkerToRouterReport5xxErrorReq>(32);
+    let (
+        stream_worker_to_router_report_5xx_error_tx,
+        stream_worker_to_func_router_report_5xx_error_rx,
+    ) = mpsc::channel::<StreamWorkerToRouterReport5xxErrorReq>(32);
 
     tokio::spawn(router(
         nghttp2_codec_func_name.clone(),
