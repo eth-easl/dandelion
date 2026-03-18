@@ -16,7 +16,13 @@ use kvm_bindings::{kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES, KVM_MEM_L
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::debug;
 use nix::sys::mman::{mmap, MapFlags, ProtFlags};
-use std::{num::NonZeroUsize, sync::Arc};
+use std::{
+    num::NonZeroUsize,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
 #[cfg(target_arch = "x86_64")]
 mod x86_64;
@@ -61,9 +67,24 @@ struct KvmLoop {
     vm: VmFd,
     vcpu: VcpuFd,
     state: ResetState,
+    /// Flag that can be set from outside to request preemption of the running function.
+    /// When true, the run loop will exit at the next VM exit boundary and return DandelionError::Preempted.
+    preempt_flag: Arc<AtomicBool>,
 }
 
-impl EngineLoop for KvmLoop {
+impl KvmLoop {
+    /// Returns a clone of the preemption flag handle.
+    pub fn get_preempt_flag(&self) -> Arc<AtomicBool> {
+        self.preempt_flag.clone()
+    }
+
+    /// Request preemption of the currently running function.
+    pub fn request_preemption(&self) {
+        self.preempt_flag.store(true, Ordering::Release);
+    }
+}
+
+    impl EngineLoop for KvmLoop {
     fn init(_core_id: u8) -> DandelionResult<Box<Self>> {
         let kvm = Kvm::new().unwrap();
         assert_eq!(kvm.get_api_version(), 12);
@@ -78,12 +99,22 @@ impl EngineLoop for KvmLoop {
         }
 
         let state = ResetState::new(&vm, &vcpu);
+        let preempt_flag = Arc::new(AtomicBool::new(false));
 
-        return Ok(Box::new(KvmLoop { vm, vcpu, state }));
+        return Ok(Box::new(KvmLoop {
+            vm,
+            vcpu,
+            state,
+            preempt_flag,
+        }));
     }
 
     fn get_engine_type(&self) -> crate::machine_config::EngineType {
         crate::machine_config::EngineType::Kvm
+    }
+
+    fn get_preempt_flag(&self) -> Option<Arc<AtomicBool>> {
+        Some(self.preempt_flag.clone())
     }
 
     fn run(
@@ -208,9 +239,20 @@ impl EngineLoop for KvmLoop {
             dump_regs(&self.vcpu);
         }
 
+        // Clear the preemption flag before starting execution
+        self.preempt_flag.store(false, Ordering::Release);
+
         // start running the function
         // TODO: on unexpected break, mark function as failure
+        let mut preempted = false;
         loop {
+            // Check the preemption flag before each VM entry, catches requests arriving between VM exits
+            if self.preempt_flag.load(Ordering::Acquire) {
+                debug!("Preemption flag set before VM entry, preempting function");
+                preempted = true;
+                break;
+            }
+
             let reason = self.vcpu.run().unwrap();
             match reason {
                 #[cfg(feature = "backend_debug")]
@@ -233,6 +275,16 @@ impl EngineLoop for KvmLoop {
                 VcpuExit::Debug(info) => {
                     debug!("Debug stop: {:?}", info);
                     dump_regs(&self.vcpu);
+                }
+                // VcpuExit::Intr returned when KVM_RUN interrupted by a signal
+                VcpuExit::Intr => {
+                    if self.preempt_flag.load(Ordering::Acquire) {
+                        debug!("KVM_RUN interrupted by signal, preemption flag set — preempting");
+                        preempted = true;
+                        break;
+                    }
+                    // If the flag isn't set, this was a spurious signal — re-enter the guest.
+                    debug!("KVM_RUN interrupted by signal but no preemption requested, re-entering");
                 }
                 r => {
                     debug!("unexpected exit reason: {:?}", r);
@@ -297,6 +349,10 @@ impl EngineLoop for KvmLoop {
             let end = dirty_index * 64 * PAGE_SIZE;
             let start = end - contiguous_pages * PAGE_SIZE;
             kvm_context.insert_into_overlay(start, end, None);
+        }
+
+        if preempted {
+            return Err(DandelionError::Preempted);
         }
 
         read_output_structs::<u64, u64>(&mut context, elf_config.system_data_offset)?;

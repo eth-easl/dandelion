@@ -672,8 +672,8 @@ async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
     let worker_lock = Arc::new(RwLock::new(()));
     loop {
         (tuple, queue_ref) = queue_ref.into_future().await;
-        let (args, debt) = if let Some((tuple_args, tuple_debt)) = tuple {
-            (tuple_args, tuple_debt)
+        let (args, debt, _priority) = if let Some((tuple_args, tuple_debt, tuple_priority)) = tuple {
+            (tuple_args, tuple_debt, tuple_priority)
         } else {
             panic!("Workqueue poll next returned none")
         };

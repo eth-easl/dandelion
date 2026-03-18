@@ -5,6 +5,13 @@ pub mod records;
 
 pub type FunctionId = Arc<String>;
 
+/// Priority level for work items in the scheduling queue. 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Priority {
+    High,
+    BestEffort,
+}
+
 // TODO define error types, possibly better printing than debug
 // TODO make naming consistent and move groups to subtypes, e.g. DomainError -> Domain in main enum
 #[derive(Debug, Clone, PartialEq)]
@@ -103,6 +110,8 @@ pub enum DandelionError {
     OtherProctionError,
     /// Work queue from the dispatcher to the engines is full
     WorkQueueFull,
+    /// Function execution was preempted before completion
+    Preempted,
 }
 
 // Implement display to be compliant with core::error::Error

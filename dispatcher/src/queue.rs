@@ -1,8 +1,9 @@
-use dandelion_commons::DandelionResult;
+use dandelion_commons::{DandelionResult,Priority};
 use log::trace;
 use machine_interface::{
     function_driver::{EngineWorkQueue, WorkDone, WorkToDo},
     machine_config::{EngineType, EnumCount},
+    preemption::PreemptionRegistry, 
     promise::{Debt, PromiseBuffer},
 };
 #[cfg(feature = "spin_queue")]
@@ -12,12 +13,6 @@ use std::{
     fmt,
     sync::{Arc, Mutex},
 };
-
-#[derive(Debug, Clone, Copy)]
-pub enum Priority {
-    High,
-    BestEffort,
-}
 
 pub enum QueueFlag {
     EngineReqwestIO = 0b1,
@@ -46,6 +41,8 @@ struct QueueElement {
     work: WorkToDo,
     /// The Debt content of the queue element
     debt: Debt,
+    /// priority of the work item
+    priority: Priority
 }
 
 #[cfg(feature = "spin_queue")]
@@ -59,9 +56,10 @@ struct AtomicTickets {
 /// check high-priority queue first, falls back to best-effort
 #[derive(Clone)]
 pub struct WorkQueue {
-    high: Arc<Mutex<std::collections::LinkedList<QueueElement>>>,
-    best_effort: Arc<Mutex<std::collections::LinkedList<QueueElement>>>,
+    high: Arc<Mutex<LinkedList<QueueElement>>>,
+    best_effort: Arc<Mutex<LinkedList<QueueElement>>>,
     promise_buffer: PromiseBuffer,
+    preemption_registry: Arc<PreemptionRegistry>,
     #[cfg(feature = "spin_queue")]
     tickets: Arc<Box<[AtomicTickets]>>,
 }
@@ -73,6 +71,7 @@ impl WorkQueue {
             high: Arc::new(Mutex::new(LinkedList::new())),
             best_effort: Arc::new(Mutex::new(LinkedList::new())),
             promise_buffer: PromiseBuffer::init(capacity),
+            preemption_registry: Arc::new(PreemptionRegistry::new()), 
             #[cfg(feature = "spin_queue")]
             tickets: Arc::new(
                 (0..EngineType::COUNT)
@@ -89,12 +88,15 @@ impl WorkQueue {
     /// Pushes the work and debt to the back of the queue and sets the flags accordingly.
     /// Returns an error if the queue is full.
     fn push(&self, work: WorkToDo, debt: Debt, flags: u32, priority: Priority) -> DandelionResult<()> {
-        let element = QueueElement { flags, work, debt };
+        let element = QueueElement { flags, work, debt, priority };
 
         match priority {
             Priority::High => {
                 let mut queue = self.high.lock().expect("High priority queue lock poisoned");
                 queue.push_back(element);
+                drop(queue); // Release lock before signaling
+                // Try to preempt a best-effort thread so it can pick up this high-priority work
+                self.preemption_registry.preempt_one();
             }
             Priority::BestEffort => {
                 let mut queue = self.best_effort.lock().expect("Best effort priority queue lock poisoned");
@@ -105,11 +107,12 @@ impl WorkQueue {
     }
 
     // 
-    fn extract_matching(queue: &mut LinkedList<QueueElement>, engine_flags: u32,) -> Option<(WorkToDo, Debt)> {
+    fn extract_matching(queue: &mut LinkedList<QueueElement>, engine_flags: u32,) -> Option<(WorkToDo, Debt, Priority)> {
+
         queue
             .extract_if(|queue_element| queue_element.flags & engine_flags == engine_flags)
             .next()
-            .map(|queue_element| (queue_element.work, queue_element.debt))
+            .map(|queue_element| (queue_element.work, queue_element.debt, queue_element.priority))
     }
 
     /// Inserts the work into the queue setting the flags according to the supported engines and
@@ -162,7 +165,7 @@ impl WorkQueue {
         &self,
         engine_flags: u32,
         engine_type: EngineType,
-    ) -> Option<(WorkToDo, Debt)> {
+    ) -> Option<(WorkToDo, Debt, Priority)> {
         #[cfg(feature = "spin_queue")]
         {
             let queue_head = self.tickets[engine_type as usize]
@@ -206,7 +209,7 @@ impl WorkQueue {
     }
 
     /// Spins on the queue until it manages to acquire some work that matches the given flags.
-    pub fn get_work(&self, engine_flags: u32, engine_type: EngineType) -> (WorkToDo, Debt) {
+    pub fn get_work(&self, engine_flags: u32, engine_type: EngineType) -> (WorkToDo, Debt, Priority) {
         loop {
             #[cfg(feature = "spin_queue")]
             {
@@ -286,16 +289,25 @@ impl EngineQueue {
             .do_work_flags(work, self.engine_flags, priority)
             .await
     }
+    
+    /// Returns a reference to the preemption registry.
+    pub fn preemption_registry(&self) -> &Arc<PreemptionRegistry> {
+        &self.work_queue.preemption_registry
+    }
 }
 
 impl EngineWorkQueue for EngineQueue {
-    fn get_engine_args(&self) -> (WorkToDo, machine_interface::promise::Debt) {
+    fn get_engine_args(&self) -> (WorkToDo, machine_interface::promise::Debt, Priority) {
         self.work_queue
             .get_work(self.engine_flags, self.engine_type)
     }
 
-    fn try_get_engine_args(&self) -> Option<(WorkToDo, machine_interface::promise::Debt)> {
+    fn try_get_engine_args(&self) -> Option<(WorkToDo, machine_interface::promise::Debt, Priority)> {
         self.work_queue
             .try_get_work(self.engine_flags, self.engine_type)
+    }
+
+    fn preemption_registry(&self) -> &Arc<PreemptionRegistry> {
+        &self.work_queue.preemption_registry
     }
 }

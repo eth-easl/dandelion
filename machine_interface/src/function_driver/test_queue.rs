@@ -1,7 +1,9 @@
 use crate::{
     function_driver::{EngineWorkQueue, WorkToDo},
+    preemption::PreemptionRegistry,
     promise::{Debt, Promise, PromiseBuffer},
 };
+use dandelion_commons::Priority;
 use std::sync::{Arc, Condvar, Mutex};
 
 struct TestQueueInternal {
@@ -12,6 +14,7 @@ struct TestQueueInternal {
 pub struct TestQueue {
     internal: Arc<(Mutex<TestQueueInternal>, Condvar)>,
     promise_buffer: PromiseBuffer,
+    preemption_registry: Arc<PreemptionRegistry>,
 }
 
 impl TestQueue {
@@ -19,6 +22,7 @@ impl TestQueue {
         return TestQueue {
             internal: Arc::new((Mutex::new(TestQueueInternal { args: None }), Condvar::new())),
             promise_buffer: PromiseBuffer::init(128),
+            preemption_registry: Arc::new(PreemptionRegistry::new()),
         };
     }
     pub fn enqueu(&self, args: WorkToDo) -> Promise {
@@ -39,7 +43,7 @@ impl TestQueue {
 }
 
 impl EngineWorkQueue for TestQueue {
-    fn get_engine_args(&self) -> (WorkToDo, Debt) {
+    fn get_engine_args(&self) -> (WorkToDo, Debt, Priority) {
         let (lock, arg_var) = self.internal.as_ref();
         let mut lock_guard = lock
             .lock()
@@ -54,10 +58,15 @@ impl EngineWorkQueue for TestQueue {
             .take()
             .expect("Test queue tried to take args from empty queue");
         arg_var.notify_all();
-        return args;
+
+        return (args.0, args.1, Priority::BestEffort);
     }
 
-    fn try_get_engine_args(&self) -> Option<(WorkToDo, crate::promise::Debt)> {
+    fn try_get_engine_args(&self) -> Option<(WorkToDo, crate::promise::Debt, Priority)> {
         return Some(self.get_engine_args());
+    }
+
+    fn preemption_registry(&self) -> &Arc<PreemptionRegistry> {
+        &self.preemption_registry
     }
 }

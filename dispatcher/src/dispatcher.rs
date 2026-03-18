@@ -1,8 +1,9 @@
 use crate::{
     function_registry::{FunctionRegistry, FunctionType},
-    queue::{EngineQueue, Priority, WorkQueue},
+    queue::{EngineQueue, WorkQueue},
     resource_pool::ResourcePool,
 };
+use dandelion_commons::Priority; 
 use core::pin::Pin;
 use dandelion_commons::{
     records::{RecordPoint, Recorder},

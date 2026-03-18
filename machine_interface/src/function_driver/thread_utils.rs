@@ -4,11 +4,13 @@ use crate::{
     },
     machine_config::EngineType,
     memory_domain::{self, Context},
+    preemption,
 };
 use core::marker::Send;
 use dandelion_commons::{
-    records::RecordPoint, DandelionError, DandelionResult, FunctionRegistryError,
+    records::RecordPoint, DandelionError, DandelionResult, FunctionRegistryError, Priority,
 };
+use std::sync::{atomic::AtomicBool, Arc};
 use std::thread::spawn;
 
 extern crate alloc;
@@ -22,6 +24,10 @@ pub trait EngineLoop {
         output_sets: &Vec<String>,
     ) -> DandelionResult<Context>;
     fn get_engine_type(&self) -> EngineType;
+    /// Returns the preemption flag if this engine supports preemption, returns None otherwise
+    fn get_preempt_flag(&self) -> Option<Arc<AtomicBool>> {
+        None
+    }
 }
 
 fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
@@ -31,9 +37,20 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
         return;
     }
     let mut engine_state = E::init(core_id).expect("Failed to initialize thread state");
+
+    // Install signal handler for preemption SIGUSR1.
+    preemption::install_signal_handler();
+    let preempt_flag = engine_state.get_preempt_flag();
+
+    // Get the thread's pthread_t for signal delivery
+    let thread_id = unsafe { libc::pthread_self() };
+
+    // Get the preemption registry from the queue
+    let registry = queue.preemption_registry().clone();
+
     'engine: loop {
         // TODO catch unwind so we can always return an error or shut down gracefully
-        let (args, debt) = queue.get_engine_args();
+        let (args, debt, priority) = queue.get_engine_args();
         match args {
             WorkToDo::FunctionArguments {
                 function_alternatives,
@@ -42,6 +59,19 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
                 caching,
                 mut recorder,
             } => {
+                // If running best-effort work and engine supports preemption,
+                // register with the preemption registry so it can be interrupted
+                let registered = if priority == Priority::BestEffort {
+                    if let Some(ref flag) = preempt_flag {
+                        registry.register(thread_id, flag.clone());
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
                 let engine_type = engine_state.get_engine_type();
                 let alternative = match function_alternatives
                     .into_iter()
@@ -49,6 +79,9 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
                 {
                     Some(alt) => alt,
                     None => {
+                        if registered {
+                            registry.deregister(thread_id);
+                        }
                         drop(recorder);
                         debt.fulfill(Err(DandelionError::FunctionRegistry(
                             FunctionRegistryError::UnknownFunctionAlternative,
@@ -59,6 +92,9 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
                 let function = match alternative.load_function(caching, &mut recorder) {
                     Ok(func) => func,
                     Err(err) => {
+                        if registered {
+                            registry.deregister(thread_id);
+                        }
                         drop(recorder);
                         debt.fulfill(Err(err));
                         continue;
@@ -70,6 +106,9 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
                     match function.load(&alternative.domain, alternative.context_size) {
                         Ok(con) => con,
                         Err(err) => {
+                            if registered {
+                                registry.deregister(thread_id);
+                            }
                             drop(recorder);
                             debt.fulfill(Err(err));
                             continue;
@@ -106,6 +145,9 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
                             );
 
                             if let Err(transfer_error) = transfer_result {
+                                if registered {
+                                    registry.deregister(thread_id);
+                                }
                                 drop(recorder);
                                 debt.fulfill(Err(transfer_error));
                                 continue 'engine;
@@ -121,6 +163,11 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
                     function_context,
                     &metadata.output_sets,
                 );
+
+                // Deregister from preemption registry before fulfilling the debt
+                if registered {
+                    registry.deregister(thread_id);
+                }
 
                 if let Ok(ref context) = result {
                     log::debug!("content: {:?}", context.content);

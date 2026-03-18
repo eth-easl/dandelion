@@ -2,10 +2,11 @@ use crate::{
     composition::CompositionSet,
     machine_config::EngineType,
     memory_domain::{Context, MemoryDomain},
+    preemption::PreemptionRegistry,
 };
 extern crate alloc;
 use alloc::sync::Arc;
-use dandelion_commons::{records::Recorder, DandelionResult};
+use dandelion_commons::{records::Recorder, DandelionResult, Priority};
 
 pub mod compute_driver;
 pub mod functions;
@@ -57,12 +58,14 @@ impl WorkDone {
 }
 
 pub trait EngineWorkQueue {
-    fn get_engine_args(&self) -> (WorkToDo, crate::promise::Debt);
-    fn try_get_engine_args(&self) -> Option<(WorkToDo, crate::promise::Debt)>;
+    fn get_engine_args(&self) -> (WorkToDo, crate::promise::Debt, Priority);
+    fn try_get_engine_args(&self) -> Option<(WorkToDo, crate::promise::Debt, Priority)>;
+    /// Returns a reference to the preemption registry for engine thread registration.
+    fn preemption_registry(&self) -> &Arc<PreemptionRegistry>;
 }
 
 impl futures::stream::Stream for &mut (dyn EngineWorkQueue + Send) {
-    type Item = (WorkToDo, crate::promise::Debt);
+    type Item = (WorkToDo, crate::promise::Debt, Priority);
     /// By default the behaviour of the work queue on polling is to call try_get_engine_args()
     /// If the call returns Some(tuple), the poll will returns Ready(tuple)
     /// Otherwise the poll function will call the waker and return pending.

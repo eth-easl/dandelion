@@ -1,6 +1,7 @@
 pub mod composition;
 pub mod function_driver;
 pub mod memory_domain;
+pub mod preemption;
 pub mod promise;
 
 /// Module contains all the information needed about available engines,

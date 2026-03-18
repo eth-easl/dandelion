@@ -1,6 +1,5 @@
 use crate::dispatcher_tests::{check_matrix, setup_dispatcher};
-use dandelion_commons::records::Recorder;
-use dispatcher::queue::Priority;
+use dandelion_commons::{records::Recorder, Priority};
 use machine_interface::{
     composition::CompositionSet,
     function_driver::{ComputeResource, Metadata},

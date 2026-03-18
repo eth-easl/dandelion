@@ -1,12 +1,11 @@
 use core_affinity::{self, CoreId};
 use dandelion_commons::{
     records::{Archive, Recorder},
-    DandelionResult,
+    DandelionResult, Priority
 };
 use dandelion_server::DandelionBody;
 use dispatcher::{
     dispatcher::{Dispatcher, DispatcherInput},
-    queue::Priority,
     resource_pool::ResourcePool,
 };
 use http_body_util::BodyExt;

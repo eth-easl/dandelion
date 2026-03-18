@@ -1,6 +1,6 @@
 use super::{check_matrix, setup_dispatcher};
-use dandelion_commons::{records::Recorder, FunctionId};
-use dispatcher::{dispatcher::Dispatcher, queue::Priority};
+use dandelion_commons::{records::Recorder, FunctionId, Priority};
+use dispatcher::dispatcher::Dispatcher;
 use machine_interface::{
     composition::{
         Composition, CompositionSet, FunctionDependencies, InputSetDescriptor, ShardingMode,
