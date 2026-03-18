@@ -2042,8 +2042,8 @@ async fn router(
     let max_tcp_connections = config.max_tcp_connections;
     let max_http2_pending_requests = config.max_http2_pending_requests;
     let max_consecutive_5xx_errors = config.consecutive_5xx_errors;
-    let outlier_check_interval = config.outlier_check_interval;
-    let base_ejection_time = config.base_ejection_time;
+    let outlier_check_interval = config.outlier_check_interval_seconds;
+    let base_ejection_time = config.base_ejection_time_seconds;
     info!("[Router] max_tcp_connections: {}, max_http2_pending_requests: {}, max_consecutive_5xx_errors: {}", max_tcp_connections, max_http2_pending_requests, max_consecutive_5xx_errors);
 
     // key: url; value: (ejected, already_achieve_max_num_consecutive_5xx_errors, previous_result_is_5xx, num_consecutive_5xx_errors, num_pending_reqs)
