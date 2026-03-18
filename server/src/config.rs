@@ -50,11 +50,11 @@ const DEFAULT_JWT_POLICY_NAME: &str = "jwt_policy";
 const DEFAULT_RATE_LIMITING_POLICY_NAME: &str = "rate_limiting_policy";
 const DEFAULT_TELEMETRY_POLICY_NAME: &str = "telemetry_policy";
 
-const DEFAULT_MAX_TCP_CONNECTIONS: usize = 100;
-const DEFAULT_MAX_HTTP2_PENDING_REQUSTS: usize = 100;
-const DEFAULT_CONSECUTIVE_5XX_ERRORS: usize = 3;
-const DEFAULT_OUTLIER_CHECK_INTERVAL: u64 = 1; // second
-const DEFAULT_BASE_EJECTION_TIME: u64 = 10; // second
+const DEFAULT_MAX_TCP_CONNECTIONS: usize = usize::MAX;
+const DEFAULT_MAX_HTTP2_PENDING_REQUESTS: usize = usize::MAX;
+const DEFAULT_CONSECUTIVE_5XX_ERRORS: usize = 5;
+const DEFAULT_OUTLIER_CHECK_INTERVAL_SECONDS: u64 = 10;
+const DEFAULT_BASE_EJECTION_TIME_SECONDS: u64 = 30;
 
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
@@ -157,14 +157,14 @@ pub struct DandelionConfig {
     pub telemetry_policy_bin_local_path: String,
     #[arg(long, env, default_value_t = DEFAULT_MAX_TCP_CONNECTIONS)]
     pub max_tcp_connections: usize,
-    #[arg(long, env, default_value_t = DEFAULT_MAX_HTTP2_PENDING_REQUSTS)]
+    #[arg(long, env, default_value_t = DEFAULT_MAX_HTTP2_PENDING_REQUESTS)]
     pub max_http2_pending_requests: usize,
     #[arg(long, env, default_value_t = DEFAULT_CONSECUTIVE_5XX_ERRORS)]
     pub consecutive_5xx_errors: usize,
-    #[arg(long, env, default_value_t = DEFAULT_OUTLIER_CHECK_INTERVAL)]
-    pub outlier_check_interval: u64,
-    #[arg(long, env, default_value_t = DEFAULT_BASE_EJECTION_TIME)]
-    pub base_ejection_time: u64,
+    #[arg(long, env, default_value_t = DEFAULT_OUTLIER_CHECK_INTERVAL_SECONDS)]
+    pub outlier_check_interval_seconds: u64,
+    #[arg(long, env, default_value_t = DEFAULT_BASE_EJECTION_TIME_SECONDS)]
+    pub base_ejection_time_seconds: u64,
 }
 
 impl DandelionConfig {
@@ -239,6 +239,12 @@ impl DandelionConfig {
         merge_clone!(jwt_policy_name, DEFAULT_JWT_POLICY_NAME);
         merge_clone!(rate_limiting_policy_name, DEFAULT_RATE_LIMITING_POLICY_NAME);
         merge_clone!(telemetry_policy_name, DEFAULT_TELEMETRY_POLICY_NAME);
+
+        merge!(max_tcp_connections, DEFAULT_MAX_TCP_CONNECTIONS);
+        merge!(max_http2_pending_requests, DEFAULT_MAX_HTTP2_PENDING_REQUESTS);
+        merge!(consecutive_5xx_errors, DEFAULT_CONSECUTIVE_5XX_ERRORS);
+        merge!(outlier_check_interval_seconds, DEFAULT_OUTLIER_CHECK_INTERVAL_SECONDS);
+        merge!(base_ejection_time_seconds, DEFAULT_BASE_EJECTION_TIME_SECONDS);
     }
 
     /// Get the config from the arguments, environment and possibly config file
