@@ -45,6 +45,9 @@ const DEFAULT_CONSECUTIVE_5XX_ERRORS: usize = 3;
 const DEFAULT_OUTLIER_CHECK_INTERVAL: u64 = 1; // second
 const DEFAULT_BASE_EJECTION_TIME: u64 = 10; // second
 
+const DEFAULT_MAX_RETRY_TIMES: usize = 3;
+const DEFAULT_PER_RETRY_TIMEOUT: u64 = 2; // second
+
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
     #[arg(long, env, default_value_t = String::from(DEFAULT_CONFIG_PATH))]
@@ -115,6 +118,10 @@ pub struct DandelionConfig {
     pub outlier_check_interval: u64,
     #[arg(long, env, default_value_t = DEFAULT_BASE_EJECTION_TIME)]
     pub base_ejection_time: u64,
+    #[arg(long, env, default_value_t = DEFAULT_MAX_RETRY_TIMES)]
+    pub max_retry_times: usize,
+    #[arg(long, env, default_value_t = DEFAULT_PER_RETRY_TIMEOUT)]
+    pub per_retry_timeout: u64,
 }
 
 impl DandelionConfig {
