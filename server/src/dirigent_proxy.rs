@@ -41,10 +41,10 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::{Builder, Runtime};
 use tokio::signal::unix::SignalKind;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::sleep;
 use tokio::time::{self, Duration};
 use tokio::{io, try_join};
 use x509_parser::nom::number;
-use tokio::time::{sleep};
 
 // Stuff needed for mTLS
 use anyhow::{anyhow, bail, Context as AnyhowContext, Result};
@@ -1489,11 +1489,8 @@ fn parse_nghttp2_codec_output(
         header_x_anakonda_forward_value_string_list.push(header_x_anakonda_forward_value_string);
 
         header_status_value_string = String::from_utf8(header_status_value).unwrap();
-        debug!(
-            "codec header_status_value: {}",
-            header_status_value_string
-        );
-        header_status_value_string_list.push(header_status_value_string); 
+        debug!("codec header_status_value: {}", header_status_value_string);
+        header_status_value_string_list.push(header_status_value_string);
     }
 
     // debug!("headers_received_list: {:?}", headers_received_list);
@@ -1544,7 +1541,6 @@ struct StreamWorkerToRouterReq {
 struct StreamWorkerToRouterReport5xxErrorReq {
     header_x_anakonda_forward_value_string: String, // The url
 }
-
 
 #[derive(Debug)]
 struct RouterToStreamWorkerResp {
@@ -1685,10 +1681,7 @@ async fn read_from_stream_until_blocking<S: ProxyStream>(
     }
 }
 
-fn generate_circuit_break_resp (
-    cb_resp_status: String,
-    cb_resp_body: String,
-) -> (Vec<u8>, Vec<u8>) {
+fn generate_circuit_break_resp(cb_resp_status: String, cb_resp_body: String) -> (Vec<u8>, Vec<u8>) {
     let mut headers: Vec<u8> = Vec::new();
     let mut body_to_send: Vec<u8> = Vec::new();
 
@@ -1703,11 +1696,10 @@ fn generate_circuit_break_resp (
     headers.extend_from_slice(&header_stauts_value_len_bytes);
     headers.extend_from_slice(header_status_value_string.as_bytes());
 
-    let body_to_send_string = cb_resp_body;          
+    let body_to_send_string = cb_resp_body;
     body_to_send.extend_from_slice(body_to_send_string.as_bytes());
 
     return (headers, body_to_send);
-
 }
 
 // This handles the TCP/HTTP connection with user function container
@@ -1717,7 +1709,7 @@ async fn func_connection_worker3(
     mut stream: TcpStream,
     request_sender: mpsc::Sender<DispatcherCommand>,
     mut stream_worker_to_func_connection_worker_rx: mpsc::Receiver<StreamWorkerToFuncConnReq>,
-    mut router_to_func_connection_worker_rx: mpsc::Receiver<RouterToFuncConnReq>
+    mut router_to_func_connection_worker_rx: mpsc::Receiver<RouterToFuncConnReq>,
 ) {
     let tcp_conn_local_addr = stream.local_addr().unwrap();
     let tcp_conn_peer_addr = stream.peer_addr().unwrap();
@@ -1949,7 +1941,10 @@ async fn func_connection_worker3(
 
         // ****** Operations triggered by output set 0 *******
         num_pending_reqs = num_pending_reqs + num_of_req_or_resp_sent - num_of_req_or_res_received;
-        debug!("[func_connection_worker3. Local Addr: {}; Peer Addr: {}] num_pending_reqs {}", tcp_conn_local_addr, tcp_conn_peer_addr, num_pending_reqs);
+        debug!(
+            "[func_connection_worker3. Local Addr: {}; Peer Addr: {}] num_pending_reqs {}",
+            tcp_conn_local_addr, tcp_conn_peer_addr, num_pending_reqs
+        );
 
         let mut stream_id_list_sent_requests_i32: Vec<i32> = Vec::new();
         for i in 0..num_of_req_or_resp_sent {
@@ -2036,7 +2031,9 @@ async fn router(
     nghttp2_codec_func_name: String,
     request_sender: mpsc::Sender<DispatcherCommand>,
     mut stream_worker_to_router_rx: mpsc::Receiver<StreamWorkerToRouterReq>,
-    mut stream_worker_to_router_report_5xx_error_rx: mpsc::Receiver<StreamWorkerToRouterReport5xxErrorReq>,
+    mut stream_worker_to_router_report_5xx_error_rx: mpsc::Receiver<
+        StreamWorkerToRouterReport5xxErrorReq,
+    >,
 ) {
     let config = dandelion_server::config::DandelionConfig::get_config();
     let max_tcp_connections = config.max_tcp_connections;
@@ -2047,7 +2044,7 @@ async fn router(
     info!("[Router] max_tcp_connections: {}, max_http2_pending_requests: {}, max_consecutive_5xx_errors: {}", max_tcp_connections, max_http2_pending_requests, max_consecutive_5xx_errors);
 
     // key: url; value: (ejected, already_achieve_max_num_consecutive_5xx_errors, previous_result_is_5xx, num_consecutive_5xx_errors, num_pending_reqs)
-    let mut uc_connections2: HashMap<String, (bool, bool, bool, usize, u32, Vec<FuncConnTuple>)> = 
+    let mut uc_connections2: HashMap<String, (bool, bool, bool, usize, u32, Vec<FuncConnTuple>)> =
         HashMap::new();
 
     // If we receive sth from this channel, it's the time to check the outlier; (used within the router)
@@ -2061,7 +2058,6 @@ async fn router(
 
     // If we receive sth from this channel, put back the ejected url (used within the router)
     let (put_back_ejected_url_tx, mut put_back_ejected_url_rx) = mpsc::channel::<String>(32);
-
 
     // Process requests from stream workers
     loop {
@@ -2093,13 +2089,13 @@ async fn router(
 
                     }
                 }
-                
+
 
                 let time_to_check_outlier_tx_clone = time_to_check_outlier_tx.clone();
                 tokio::spawn(async move {
                     sleep(Duration::from_secs(outlier_check_interval)).await;
                     let _ = time_to_check_outlier_tx_clone.send(0).await;
-                });                
+                });
             }
             Some(destination_url_string) = put_back_ejected_url_rx.recv() => {
                 let (ejected, already_achieve_max_num_consecutive_5xx_errors, previous_result_is_5xx, current_num_consecutive_errors, _, _) = uc_connections2
@@ -2144,8 +2140,8 @@ async fn router(
                         .unwrap();
 
                     if *ejected == true { // If ejected
-                        info!("[Router] circuit breaking (url: {}), exceed max num of consecutive 5xx errors", 
-                            destination_url_string, 
+                        info!("[Router] circuit breaking (url: {}), exceed max num of consecutive 5xx errors",
+                            destination_url_string,
                         );
                         need_to_create_a_new_connection = false;
                         circuit_break = true;
@@ -2179,18 +2175,18 @@ async fn router(
                                     vec_func_conn_tuple[i].num_pending_reqs = num;
                                     debug!(
                                         "[Router] gets the numbder of pending requests on func conn (url: {}, conn_id: {}): {}",
-                                        destination_url_string, 
+                                        destination_url_string,
                                         vec_func_conn_tuple[i].conn_id,
                                         vec_func_conn_tuple[i].num_pending_reqs
-                                    );  
+                                    );
                                 }
                                 Err(e) => {
                                     error!(
                                         "[Router] fails to get the num of pending requests on func conn (url: {}, conn_id: {}) with error: {}",
-                                        destination_url_string, 
+                                        destination_url_string,
                                         vec_func_conn_tuple[i].conn_id,
                                         e
-                                    );                           
+                                    );
                                 }
                             }
 
@@ -2209,8 +2205,8 @@ async fn router(
 
                         // Check if we have already achieved the max num of connections
                         if need_to_create_a_new_connection == true && vec_func_conn_tuple.len() >= max_tcp_connections {
-                            info!("[Router] circuit breaking (url: {}), exceed max num of pending requests and connections", 
-                                destination_url_string, 
+                            info!("[Router] circuit breaking (url: {}), exceed max num of pending requests and connections",
+                                destination_url_string,
                             );
                             need_to_create_a_new_connection = false;
                             circuit_break = true;
@@ -2270,7 +2266,7 @@ async fn router(
                             );
                         }
                     }
-                } 
+                }
                 else {
                     debug!(
                         "[Router] already has a connection to {}",
@@ -2281,7 +2277,7 @@ async fn router(
                         .get_mut(&destination_url_string)
                         .unwrap();
 
-                    stream_worker_to_func_connection_worker_tx = 
+                    stream_worker_to_func_connection_worker_tx =
                         vec_func_conn_tuple[selected_conn_idx].stream_worker_to_func_connection_worker_tx.clone();
                 }
 
@@ -2296,7 +2292,7 @@ async fn router(
                 };
                 let _ = req
                     .router_to_stream_worker_tx
-                    .send(router_to_stream_worker_reply);           
+                    .send(router_to_stream_worker_reply);
             }
             Some(req) = stream_worker_to_router_report_5xx_error_rx.recv() => {
                 let destination_url_string = req.header_x_anakonda_forward_value_string;
@@ -2328,7 +2324,6 @@ async fn router(
             }
         }
     }
- 
 
     debug!("[Router] all channels to the router are closed; Router stops working");
 }
@@ -2392,12 +2387,8 @@ pub fn parse_headers(buf: &[u8]) -> Result<Vec<(String, String)>, String> {
 // Check is the :status string is a 5xx error
 fn is_5xx(s: &str) -> bool {
     let bytes = s.as_bytes();
-    bytes.len() == 3
-        && bytes[0] == b'5'
-        && bytes[1].is_ascii_digit()
-        && bytes[2].is_ascii_digit()
+    bytes.len() == 3 && bytes[0] == b'5' && bytes[1].is_ascii_digit() && bytes[2].is_ascii_digit()
 }
-
 
 // It handles one HTTP2 req-resp pair
 // It is launched by the dp_conn worker
@@ -2414,7 +2405,9 @@ async fn stream_worker(
     body_received: Vec<u8>,
     stream_worker_to_dp_connection_worker_tx: mpsc::Sender<StreamWorkerToDpConnReq>,
     stream_worker_to_router_tx: mpsc::Sender<StreamWorkerToRouterReq>,
-    stream_worker_to_router_report_5xx_error_tx: mpsc::Sender<StreamWorkerToRouterReport5xxErrorReq>,
+    stream_worker_to_router_report_5xx_error_tx: mpsc::Sender<
+        StreamWorkerToRouterReport5xxErrorReq,
+    >,
     stream_id: i32,
     tcp_conn_local_addr: SocketAddr, // just for log
     tcp_conn_peer_addr: SocketAddr,  // just for log
@@ -2686,23 +2679,22 @@ async fn stream_worker(
             debug!("[stream_worker. Local Addr: {}; Peer Addr: {}; Stream ID:{}] gets resp from the router", tcp_conn_local_addr, tcp_conn_peer_addr, stream_id);
 
             // From the router, we know if there is a circuit breaking
-            if resp.circuit_break == true { // If there is, directly return a error response
-                    let (cb_resp_headers, cb_resp_body) = generate_circuit_break_resp(resp.cb_response_status, resp.cb_response_body);
-                    let _ = stream_worker_to_dp_connection_worker_tx
-                        .send(StreamWorkerToDpConnReq {
-                            payload: format!(
-                                "[stream worker:{}] circuit breaking",
-                                stream_id,
-                            ),
-                            stream_id_to_send_response: stream_id,
-                            num_of_headers_to_send: 1,
-                            trailer_offset: -1,
-                            num_of_trailers_to_send: 0,                        
-                            headers: cb_resp_headers,
-                            body_to_send: cb_resp_body,
-                        })
-                        .await;
-                    return;
+            if resp.circuit_break == true {
+                // If there is, directly return a error response
+                let (cb_resp_headers, cb_resp_body) =
+                    generate_circuit_break_resp(resp.cb_response_status, resp.cb_response_body);
+                let _ = stream_worker_to_dp_connection_worker_tx
+                    .send(StreamWorkerToDpConnReq {
+                        payload: format!("[stream worker:{}] circuit breaking", stream_id,),
+                        stream_id_to_send_response: stream_id,
+                        num_of_headers_to_send: 1,
+                        trailer_offset: -1,
+                        num_of_trailers_to_send: 0,
+                        headers: cb_resp_headers,
+                        body_to_send: cb_resp_body,
+                    })
+                    .await;
+                return;
             }
 
             // From the router, we now know which user-func connection to use
@@ -2762,8 +2754,8 @@ async fn stream_worker(
 
                     if resp_status_is_5xx == true {
                         let _ = stream_worker_to_router_report_5xx_error_tx
-                            .send(StreamWorkerToRouterReport5xxErrorReq { 
-                                header_x_anakonda_forward_value_string 
+                            .send(StreamWorkerToRouterReport5xxErrorReq {
+                                header_x_anakonda_forward_value_string,
                             })
                             .await;
                     }
@@ -2853,7 +2845,9 @@ async fn dp_connection_worker3<S: ProxyStream>(
     mut stream: S,
     request_sender: mpsc::Sender<DispatcherCommand>,
     stream_worker_to_router_tx: mpsc::Sender<StreamWorkerToRouterReq>,
-    stream_worker_to_router_report_5xx_error_tx: mpsc::Sender<StreamWorkerToRouterReport5xxErrorReq>,
+    stream_worker_to_router_report_5xx_error_tx: mpsc::Sender<
+        StreamWorkerToRouterReport5xxErrorReq,
+    >,
     authorization_policy_func_name: String,
     jwt_policy_func_name: String,
     jwt_pem_context: Arc<Context>,
@@ -3340,8 +3334,10 @@ async fn create_proxy_server2(
     let (stream_worker_to_router_tx, stream_worker_to_func_router_rx) =
         mpsc::channel::<StreamWorkerToRouterReq>(32);
 
-    let (stream_worker_to_router_report_5xx_error_tx, stream_worker_to_func_router_report_5xx_error_rx) =
-        mpsc::channel::<StreamWorkerToRouterReport5xxErrorReq>(32);
+    let (
+        stream_worker_to_router_report_5xx_error_tx,
+        stream_worker_to_func_router_report_5xx_error_rx,
+    ) = mpsc::channel::<StreamWorkerToRouterReport5xxErrorReq>(32);
 
     tokio::spawn(router(
         nghttp2_codec_func_name.clone(),
