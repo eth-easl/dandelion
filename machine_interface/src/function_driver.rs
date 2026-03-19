@@ -33,6 +33,7 @@ pub struct Metadata {
 
 pub enum WorkToDo {
     FunctionArguments {
+        function_id: Arc<String>,
         function_alternatives: Vec<Arc<functions::FunctionAlternative>>,
         input_sets: Vec<Option<CompositionSet>>,
         metadata: Arc<Metadata>,

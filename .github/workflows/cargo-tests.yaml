@@ -38,6 +38,10 @@ jobs:
     steps:
     # check out the code
     - uses: actions/checkout@v3
+    - name: setup protobuf
+      run: |
+        sudo apt-get update
+        sudo apt-get install protobuf-compiler
     # set up feature specific prerequisits
     - name: mmu worker build
       if: ${{ matrix.compute_driver == 'mmu' }}

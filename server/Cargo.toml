@@ -10,15 +10,16 @@ ignored = ["openssl", "serde_bytes"]
 machine_interface = { path = "../machine_interface", features = ["bytes_context"] }
 dandelion_commons = { path = "../dandelion_commons" }
 dispatcher = { path = "../dispatcher" }
+multinode = { path = "../multinode" }
 futures = { version = "0.3.28", default-features=false}
 tokio = { version = "1.38.2", features = ["full"] }
 hyper = { version = "1.2", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
 http-body-util = "0.1"
-core_affinity = "0.8"
 num_cpus = "1.16.0"
-bytes = "1.6"
-log = { version = "0.4.20", features = ["serde", "release_max_level_warn"] }
+nix = { version = "0.31", features = ["sched"] }
+bytes = "1.11"
+log = { version = "0.4.20", features = ["serde", "release_max_level_debug"] }
 env_logger = "0.10.1"
 serde = "1.0.197"
 serde_json = "1.0.115"
@@ -31,17 +32,17 @@ clap = {version = "4.5", features = ["env","derive"]}
 openssl = { version = "0.10", features = ["vendored"], optional=true}
 
 [dev-dependencies]
-assert_cmd = "2.0"
+assert_cmd = "2.1"
 byteorder = "1.5"
 serial_test = "3.1.1"
 reqwest = { version = "0.12", features = ["blocking"] }
 
 [features]
 archive = []
-cheri = ["machine_interface/cheri"]
-mmu = ["machine_interface/mmu"]
-kvm = ["machine_interface/kvm"]
-reqwest_io = ["machine_interface/reqwest_io"]
+cheri = ["dispatcher/cheri", "multinode/cheri"]
+mmu = ["dispatcher/mmu", "multinode/mmu"]
+kvm = ["dispatcher/kvm", "multinode/kvm"]
+reqwest_io = ["dispatcher/reqwest_io", "multinode/reqwest_io"]
 timestamp = ["dispatcher/timestamp"]
 log_function_stdio = ["dispatcher/log_function_stdio"]
 vendored-ssl = ["dep:openssl"]

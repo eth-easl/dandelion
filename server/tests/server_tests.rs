@@ -14,10 +14,6 @@ mod server_tests {
         process::{Child, Command, Stdio},
     };
 
-    struct ServerKiller {
-        server: Child,
-    }
-
     #[derive(Serialize)]
     struct RegisterFunction {
         name: String,
@@ -43,6 +39,28 @@ mod server_tests {
         composition: String,
     }
 
+    struct ServerKiller {
+        name: &'static str,
+        server: Child,
+    }
+
+    impl ServerKiller {
+        fn check_for_start(&mut self) {
+            let mut reader = BufReader::new(self.server.stdout.take().unwrap());
+            loop {
+                let mut buf = String::new();
+                let len = reader.read_line(&mut buf).unwrap();
+                assert_ne!(len, 0, "Server exited unexpectedly");
+                if buf.contains("Server start") {
+                    break;
+                } else {
+                    print!("{} out: {}", self.name, buf);
+                }
+            }
+            let _ = self.server.stdout.insert(reader.into_inner());
+        }
+    }
+
     impl Drop for ServerKiller {
         fn drop(&mut self) {
             let mut kill = Command::new("kill")
@@ -58,7 +76,8 @@ mod server_tests {
                     .read_to_end(&mut outbuf)
                     .expect("should be able to read child output after killing it");
                 print!(
-                    "server output:\n{}",
+                    "{} output:\n{}",
+                    self.name,
                     String::from_utf8(outbuf)
                         .expect("Should be able to convert child stdout to string")
                 );
@@ -72,7 +91,8 @@ mod server_tests {
                 .read_to_end(&mut errbuf)
                 .expect("Should be able to read child stderr");
             print!(
-                "server stderr:\n{}",
+                "{} stderr:\n{}",
+                self.name,
                 String::from_utf8(errbuf).expect("Server stderr should be string")
             )
         }
@@ -232,19 +252,11 @@ mod server_tests {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        let mut server_killer = ServerKiller { server };
-        let mut reader = BufReader::new(server_killer.server.stdout.take().unwrap());
-        loop {
-            let mut buf = String::new();
-            let len = reader.read_line(&mut buf).unwrap();
-            assert_ne!(len, 0, "Server exited unexpectedly");
-            if buf.contains("Server start") {
-                break;
-            } else {
-                print!("{}", buf);
-            }
-        }
-        let _ = server_killer.server.stdout.insert(reader.into_inner());
+        let mut server_killer = ServerKiller {
+            name: "Server",
+            server,
+        };
+        server_killer.check_for_start();
 
         let client = reqwest::blocking::Client::builder()
             .http2_prior_knowledge()
@@ -267,19 +279,11 @@ mod server_tests {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        let mut server_killer = ServerKiller { server };
-        let mut reader = BufReader::new(server_killer.server.stdout.take().unwrap());
-        loop {
-            let mut buf = String::new();
-            let len = reader.read_line(&mut buf).unwrap();
-            assert_ne!(len, 0, "Server exited unexpectedly");
-            if buf.contains("Server start") {
-                break;
-            } else {
-                print!("{}", buf);
-            }
-        }
-        let _ = server_killer.server.stdout.insert(reader.into_inner());
+        let mut server_killer = ServerKiller {
+            name: "Server",
+            server,
+        };
+        server_killer.check_for_start();
 
         let client = reqwest::blocking::Client::builder()
             .http2_prior_knowledge()
@@ -302,25 +306,101 @@ mod server_tests {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        let mut server_killer = ServerKiller { server };
-        let mut reader = BufReader::new(server_killer.server.stdout.take().unwrap());
-        loop {
-            let mut buf = String::new();
-            let len = reader.read_line(&mut buf).unwrap();
-            assert_ne!(len, 0, "Server exited unexpectedly");
-            if buf.contains("Server start") {
-                break;
-            } else {
-                print!("{}", buf);
-            }
-        }
-        let _ = server_killer.server.stdout.insert(reader.into_inner());
+        let mut server_killer = ServerKiller {
+            name: "Server",
+            server,
+        };
+        server_killer.check_for_start();
 
         let client = reqwest::blocking::Client::new();
         register_and_request(reqwest::Version::HTTP_11, client, false);
 
         let status_result = server_killer.server.try_wait();
         drop(server_killer);
+        let status = status_result.unwrap();
+        assert_eq!(status, None, "Server exited unexpectedly");
+    }
+
+    #[test]
+    #[serial]
+    fn serve_multinode() {
+        let version;
+        #[cfg(feature = "mmu")]
+        {
+            version = format!("process_{}", std::env::consts::ARCH);
+        }
+        #[cfg(feature = "kvm")]
+        {
+            version = format!("kvm_{}", std::env::consts::ARCH);
+        }
+        #[cfg(feature = "cheri")]
+        {
+            version = "elf_cheri";
+        }
+        let preload_path = format!(
+            "{}/tests/preload_files/preload_{}.json",
+            env!("CARGO_MANIFEST_DIR"),
+            version
+        );
+        println!("Preload_path: {}", preload_path);
+
+        let mut master_cmd = Command::new(assert_cmd::cargo::cargo_bin!());
+        let master_server = master_cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env("RUST_LOG", "debug")
+            .arg("--bin-preload-path")
+            .arg(&preload_path)
+            .arg("--total-cores")
+            .arg("1")
+            .arg("--test-mode")
+            .arg("no-engine")
+            .spawn()
+            .unwrap();
+        let mut master_killer = ServerKiller {
+            name: "Master",
+            server: master_server,
+        };
+        master_killer.check_for_start();
+
+        let mut worker_cmd = Command::new(assert_cmd::cargo::cargo_bin!());
+        let worker_server = worker_cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env("RUST_LOG", "debug")
+            .arg("--bin-preload-path")
+            .arg(&preload_path)
+            .arg("--port")
+            .arg("8081")
+            .arg("--remote-queue-url")
+            .arg("localhost:8080")
+            .spawn()
+            .unwrap();
+        let mut worker_killer = ServerKiller {
+            name: "Worker",
+            server: worker_server,
+        };
+        worker_killer.check_for_start();
+
+        // perform the request
+        send_matrix_request(
+            "http://localhost:8080/hot/matmul",
+            String::from("matmul"),
+            reqwest::Version::HTTP_11,
+            Client::builder()
+                .timeout(Some(std::time::Duration::from_secs(5)))
+                .build()
+                .unwrap(),
+        );
+
+        // get the output of the servers
+        let status_result = master_killer.server.try_wait();
+        drop(master_killer);
+        let status = status_result.unwrap();
+        assert_eq!(status, None, "Server exited unexpectedly");
+
+        let status_result = worker_killer.server.try_wait();
+        drop(worker_killer);
         let status = status_result.unwrap();
         assert_eq!(status, None, "Server exited unexpectedly");
     }

@@ -164,7 +164,7 @@ fn mmu_run_static(
                 return Err(DandelionError::SegmentationFault);
             }
             s => {
-                warn!("detected {}", s);
+                warn!("detected {:?}", s);
                 return Err(DandelionError::OtherProctionError);
             }
         }

@@ -9,7 +9,7 @@ use dandelion_commons::{range_pool::RangePool, DandelionError, DandelionResult};
 use log::{debug, trace};
 use nix::{
     sys::{
-        memfd::{memfd_create, MemFdCreateFlag},
+        memfd::{memfd_create, MFdFlags},
         mman::{MapFlags, ProtFlags},
     },
     unistd::ftruncate,
@@ -17,11 +17,11 @@ use nix::{
 use std::{
     cmp::min,
     collections::BTreeMap,
-    ffi::{c_void, CString},
+    ffi::c_void,
     fmt::Debug,
     num::NonZeroUsize,
-    os::fd::RawFd,
-    str::FromStr,
+    os::fd::OwnedFd,
+    ptr::{self, NonNull},
     sync::{Arc, Mutex},
 };
 
@@ -57,7 +57,7 @@ pub struct KvmContext {
     /// the location the overlay covers.
     pub overlay: BTreeMap<usize, (usize, Option<OverlayItem>)>,
     pub storage: &'static mut [u8],
-    pub fd: RawFd,
+    pub fd: Arc<OwnedFd>,
     domain: Arc<Mutex<RangePool<u32>>>,
     pub rangepool_start: u32,
 }
@@ -395,8 +395,11 @@ impl ContextTrait for KvmContext {
 impl Drop for KvmContext {
     fn drop(&mut self) {
         unsafe {
-            nix::sys::mman::munmap(self.storage.as_mut_ptr() as *mut c_void, self.storage.len())
-                .unwrap();
+            nix::sys::mman::munmap(
+                NonNull::new_unchecked(self.storage.as_mut_ptr() as *mut c_void),
+                self.storage.len(),
+            )
+            .unwrap();
         };
         let size = u32::try_from(self.storage.len() / PAGE_SIZE).unwrap();
         self.domain
@@ -409,7 +412,7 @@ impl Drop for KvmContext {
 #[derive(Debug)]
 pub struct KvmMemoryDomain {
     occupation: Arc<Mutex<RangePool<u32>>>,
-    fd: RawFd,
+    fd: Arc<OwnedFd>,
 }
 
 impl MemoryDomain for KvmMemoryDomain {
@@ -427,13 +430,12 @@ impl MemoryDomain for KvmMemoryDomain {
         let upper_end = u32::try_from(size / PAGE_SIZE)
             .expect("Total memory pool should be smaller for current u32 setup");
         let occupation = Arc::new(Mutex::new(RangePool::new(0..upper_end)));
-        let fd = memfd_create(
-            &CString::from_str("KvmMemoryDomain").unwrap(),
-            MemFdCreateFlag::empty(),
-        )
-        .unwrap();
-        ftruncate(fd, i64::try_from(size).unwrap()).unwrap();
-        Ok(Box::new(KvmMemoryDomain { fd, occupation }))
+        let fd = memfd_create("KvmMemoryDomain", MFdFlags::empty()).unwrap();
+        ftruncate(&fd, i64::try_from(size).unwrap()).unwrap();
+        Ok(Box::new(KvmMemoryDomain {
+            fd: Arc::new(fd),
+            occupation,
+        }))
     }
 
     fn acquire_context(&self, mut size: usize) -> DandelionResult<Context> {
@@ -455,25 +457,29 @@ impl MemoryDomain for KvmMemoryDomain {
                 dandelion_commons::DomainError::ReachedCapacity,
             ))?;
         let file_offset = (page as usize) * PAGE_SIZE;
+        // TODO replace casting with NonNull::as_mut_ptr() when it stabilizes
         let mapping_pointer = unsafe {
-            nix::sys::mman::mmap(
-                None,
-                NonZeroUsize::new(size).unwrap(),
-                ProtFlags::all(),
-                MapFlags::MAP_SHARED,
-                self.fd,
-                i64::try_from(file_offset).unwrap(),
+            ptr::from_mut(
+                nix::sys::mman::mmap(
+                    None,
+                    NonZeroUsize::new(size).unwrap(),
+                    ProtFlags::all(),
+                    MapFlags::MAP_SHARED,
+                    &self.fd,
+                    i64::try_from(file_offset).unwrap(),
+                )
+                .or(Err(DandelionError::DomainError(
+                    dandelion_commons::DomainError::Mapping,
+                )))?
+                .as_mut(),
             )
-            .or(Err(DandelionError::DomainError(
-                dandelion_commons::DomainError::Mapping,
-            )))?
         } as *mut u8;
         let storage = unsafe { core::slice::from_raw_parts_mut(mapping_pointer, size) };
 
         let new_context = Box::new(KvmContext {
             overlay: BTreeMap::new(),
             storage,
-            fd: self.fd,
+            fd: self.fd.clone(),
             domain: self.occupation.clone(),
             rangepool_start: page,
         });

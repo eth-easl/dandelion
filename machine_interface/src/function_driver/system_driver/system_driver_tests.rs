@@ -139,6 +139,7 @@ mod system_driver_tests {
             function,
         ))];
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            function_id: Arc::new(String::new()),
             function_alternatives,
             input_sets,
             metadata,
@@ -255,6 +256,7 @@ dolore magna aliquyam erat, sed diam voluptua."#
             function,
         ))];
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            function_id: Arc::new(String::new()),
             function_alternatives,
             input_sets,
             metadata,
