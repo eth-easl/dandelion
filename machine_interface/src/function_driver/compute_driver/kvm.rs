@@ -72,7 +72,11 @@ impl EngineLoop for KvmLoop {
 
         let vm = kvm.create_vm().unwrap();
         let vcpu = vm.create_vcpu(0).unwrap();
-        vcpu.set_tsc_khz(1000).unwrap();
+
+        if kvm.check_extension(kvm_ioctls::Cap::TscControl) {
+            vcpu.set_tsc_khz(1_000_000).unwrap();
+        }
+
         #[cfg(target_arch = "x86_64")]
         {
             // enable all features the real cpu has on the vcpu
