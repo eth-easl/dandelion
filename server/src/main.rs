@@ -724,6 +724,10 @@ fn main() -> () {
         config.zipkin_flush_interval_ms,
         config.telemetry_policy_name,
         config.telemetry_policy_bin_local_path,
+        config.enable_circuit_breaking,
+        config.enable_retry_policy,
+        config.max_retry_times,
+        config.per_retry_timeout_milliseconds,
     );
 
     if cfg!(feature = "use_service_loop") {

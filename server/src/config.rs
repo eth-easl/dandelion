@@ -56,6 +56,9 @@ const DEFAULT_CONSECUTIVE_5XX_ERRORS: usize = 5;
 const DEFAULT_OUTLIER_CHECK_INTERVAL_SECONDS: u64 = 10;
 const DEFAULT_BASE_EJECTION_TIME_SECONDS: u64 = 30;
 
+const DEFAULT_MAX_RETRY_TIMES: usize = 3;
+const DEFAULT_PER_RETRY_TIMEOUT_MILLISECONDS: u64 = 250;
+
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
     #[arg(long, env, default_value_t = String::from(DEFAULT_CONFIG_PATH))]
@@ -84,36 +87,42 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value = "")]
     #[serde(default)]
     pub bin_preload_path: String,
+
     #[arg(long, env, default_value_t = DEFAULT_DIRIGENT_PROXY_PORT)]
     pub dirigent_proxy_port: u16,
+
     #[arg(long, env, default_value_t = String::from(DEFAULT_NGHTTP2_CODEC_FUNC_NAME))]
     #[serde(default)]
     pub nghttp2_codec_func_name: String,
     #[arg(long, env, default_value_t = String::from(DEFAULT_NGHTTP2_CODEC_BIN_LOCAL_PATH))]
     #[serde(default)]
     pub nghttp2_codec_bin_local_path: String,
+
+    #[arg(long, env, default_value_t = false)]
+    #[serde(default)]
+    pub enable_authorization_policy: bool,
     #[arg(long, env)]
     pub authorization_policy_bin_local_path: String,
     #[arg(long, env, default_value_t = String::from(DEFAULT_AUTHORIZATION_POLICY_NAME))]
     pub authorization_policy_name: String,
+
+    #[arg(long, env, default_value_t = false)]
+    #[serde(default)]
+    pub enable_jwt_policy: bool,
     #[arg(long, env)]
     pub jwt_policy_bin_local_path: String,
     #[arg(long, env, default_value_t = String::from(DEFAULT_JWT_POLICY_NAME))]
     pub jwt_policy_name: String,
     #[arg(long, env)]
     pub jwt_policy_pem_file_local_path: String,
-    #[arg(long, env, default_value_t = false)]
-    #[serde(default)]
-    pub enable_jwt_policy: bool,
-    #[arg(long, env, default_value_t = false)]
-    #[serde(default)]
-    pub enable_authorization_policy: bool,
+
     #[arg(long, env, default_value_t = false)]
     #[serde(default)]
     pub enable_mtls: bool,
     #[arg(long, env, default_value_t = String::from(DEFAULT_PROXY_TLS_MATERIAL_DIR))]
     #[serde(default)]
     pub proxy_tls_material_dir: String,
+
     #[arg(long, env, default_value_t = false)]
     #[serde(default)]
     pub enable_rate_limiting: bool,
@@ -136,6 +145,7 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = DEFAULT_RATE_LIMITING_TIME_UNIT_SECONDS)]
     #[serde(default)]
     pub rate_limiting_time_unit_seconds: u32,
+
     #[arg(long, env, default_value_t = DEFAULT_ENABLE_ZIPKIN_TELEMETRY)]
     #[serde(default)]
     pub enable_zipkin_telemetry: bool,
@@ -155,16 +165,28 @@ pub struct DandelionConfig {
     pub telemetry_policy_name: String,
     #[arg(long, env)]
     pub telemetry_policy_bin_local_path: String,
+
     #[arg(long, env, default_value_t = DEFAULT_MAX_TCP_CONNECTIONS)]
     pub max_tcp_connections: usize,
     #[arg(long, env, default_value_t = DEFAULT_MAX_HTTP2_PENDING_REQUESTS)]
     pub max_http2_pending_requests: usize,
+    #[arg(long, env, default_value_t = false)]
+    #[serde(default)]
+    pub enable_circuit_breaking: bool,
     #[arg(long, env, default_value_t = DEFAULT_CONSECUTIVE_5XX_ERRORS)]
     pub consecutive_5xx_errors: usize,
     #[arg(long, env, default_value_t = DEFAULT_OUTLIER_CHECK_INTERVAL_SECONDS)]
     pub outlier_check_interval_seconds: u64,
     #[arg(long, env, default_value_t = DEFAULT_BASE_EJECTION_TIME_SECONDS)]
     pub base_ejection_time_seconds: u64,
+
+    #[arg(long, env, default_value_t = false)]
+    #[serde(default)]
+    pub enable_retry_policy: bool,
+    #[arg(long, env, default_value_t = DEFAULT_MAX_RETRY_TIMES)]
+    pub max_retry_times: usize,
+    #[arg(long, env, default_value_t = DEFAULT_PER_RETRY_TIMEOUT_MILLISECONDS)]
+    pub per_retry_timeout_milliseconds: u64,
 }
 
 impl DandelionConfig {
@@ -245,6 +267,9 @@ impl DandelionConfig {
         merge!(consecutive_5xx_errors, DEFAULT_CONSECUTIVE_5XX_ERRORS);
         merge!(outlier_check_interval_seconds, DEFAULT_OUTLIER_CHECK_INTERVAL_SECONDS);
         merge!(base_ejection_time_seconds, DEFAULT_BASE_EJECTION_TIME_SECONDS);
+
+        merge!(max_retry_times, DEFAULT_MAX_RETRY_TIMES);
+        merge!(per_retry_timeout_milliseconds, DEFAULT_PER_RETRY_TIMEOUT_MILLISECONDS);
     }
 
     /// Get the config from the arguments, environment and possibly config file
