@@ -12,7 +12,9 @@ use crate::{
 };
 use core_affinity;
 use dandelion_commons::{DandelionError, DandelionResult, UserError};
-use kvm_bindings::{kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES, KVM_MEM_LOG_DIRTY_PAGES};
+use kvm_bindings::{
+    kvm_clock_data, kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES, KVM_MEM_LOG_DIRTY_PAGES,
+};
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::debug;
 use nix::sys::mman::{mmap, MapFlags, ProtFlags};
@@ -70,11 +72,14 @@ impl EngineLoop for KvmLoop {
 
         let vm = kvm.create_vm().unwrap();
         let vcpu = vm.create_vcpu(0).unwrap();
+        vcpu.set_tsc_khz(1000).unwrap();
         #[cfg(target_arch = "x86_64")]
         {
             // enable all features the real cpu has on the vcpu
             let cpuid = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).unwrap();
             vcpu.set_cpuid2(&cpuid).unwrap();
+            // check that the clock capability is avalilable, so the clock can be set bevore entry
+            assert!(kvm.check_extension(kvm_ioctls::Cap::KvmclockCtrl));
         }
 
         let state = ResetState::new(&vm, &vcpu);
@@ -179,6 +184,9 @@ impl EngineLoop for KvmLoop {
         unsafe {
             self.vm.set_user_memory_region(region).unwrap();
         }
+
+        #[cfg(target_arch = "x86_64")]
+        self.vm.set_clock(&mut kvm_clock_data::default()).unwrap();
 
         // initialize vCPU
         let page_fault_metadata = self.state.init_vcpu(
