@@ -61,6 +61,7 @@ pub enum DispatcherCommand {
     CompositionRequest {
         composition: String,
         inputs: Vec<DispatcherInput>,
+        is_cold: bool,
         recorder: Recorder,
         callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
     },
@@ -100,6 +101,7 @@ async fn dispatcher_loop(
             DispatcherCommand::CompositionRequest {
                 composition,
                 inputs,
+                is_cold,
                 recorder,
                 mut callback,
             } => {
@@ -107,7 +109,7 @@ async fn dispatcher_loop(
                 let future = dispatcher.queue_unregistered_composition(
                     composition,
                     inputs,
-                    false, // TODO
+                    !is_cold,
                     recorder,
                 );
                 spawn(async {
