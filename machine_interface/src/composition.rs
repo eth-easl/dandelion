@@ -1,7 +1,12 @@
 use crate::memory_domain::{Context, ContextTrait};
 use dandelion_commons::{DandelionError, DandelionResult, DispatcherError, FunctionId};
 use itertools::Itertools;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, vec};
+
+#[cfg(test)]
+use crate::memory_domain::bytes_context::BytesContext;
+#[cfg(test)]
+use libc::size_t;
 
 /// A composition has a composition wide id space that maps ids of
 /// the input and output sets to sets of individual functions to a unified
@@ -503,4 +508,139 @@ impl JoinIterator {
             }
         }
     }
+}
+
+// tests
+
+#[cfg(test)]
+fn create_dummy_set(keys: Vec<u32>) -> CompositionSet {
+    let dummy_context: Arc<Context> = Arc::new(Context::new(
+        crate::memory_domain::ContextType::Bytes(Box::new(BytesContext::new(vec![]))),
+        0,
+    ));
+    let items = keys
+        .into_iter()
+        .enumerate()
+        .map(|(i, k)| (k, i, dummy_context.clone()))
+        .collect();
+    CompositionSet {
+        item_list: items,
+        set_index: 0,
+    }
+}
+
+#[cfg(test)]
+fn check_sharding(actual: &Vec<Vec<Option<CompositionSet>>>, expected: &Vec<Vec<Vec<size_t>>>) {
+    assert!(actual.len() == expected.len());
+    for inv_sets in actual.iter() {
+        assert!(inv_sets.len() == expected[0].len());
+        for (set_idx, set) in inv_sets.iter().enumerate() {
+            assert!(set.is_some());
+            let actual_items = &set.as_ref().unwrap().item_list;
+            assert!(actual_items.len() > 0);
+            let key = actual_items[0].0;
+            let expected_items = &expected[key as size_t][set_idx];
+            assert!(expected_items.len() == actual_items.len());
+            assert!(actual_items
+                .iter()
+                .all(|(_, x, _)| expected_items.contains(x)));
+        }
+    }
+}
+
+#[cfg(test)]
+fn print_sharding(actual: &Vec<Vec<Option<CompositionSet>>>) {
+    println!("Got sharding:");
+    for inv_sets in actual.iter() {
+        println!("[");
+        for (set_idx, set) in inv_sets.iter().enumerate() {
+            if set.is_none() {
+                println!("  set {}: [None]", set_idx);
+            } else {
+                print!("  set {}: [ ", set_idx);
+                for (key, itm, _) in set.as_ref().unwrap().item_list.iter() {
+                    print!("({}, {}) ", key, itm);
+                }
+                println!("]");
+            }
+        }
+        println!("]");
+    }
+}
+
+#[test]
+fn join_it_inner_test() {
+    let sets = vec![
+        Some((ShardingMode::Key, create_dummy_set(vec![0]))),
+        Some((ShardingMode::Key, create_dummy_set(vec![0]))),
+    ];
+
+    let join_order = vec![0, 1];
+    let join_strategies = vec![JoinStrategy::Outer, JoinStrategy::Inner];
+
+    let sharding = get_sharding(sets, join_order, join_strategies);
+    let expected = vec![vec![vec![0], vec![0]]];
+
+    print_sharding(&sharding);
+    check_sharding(&sharding, &expected);
+}
+
+#[test]
+fn join_it_inner_test2() {
+    let sets = vec![
+        Some((ShardingMode::Key, create_dummy_set(vec![0, 1]))),
+        Some((ShardingMode::Key, create_dummy_set(vec![0, 1, 1, 2]))),
+    ];
+
+    let join_order = vec![0, 1];
+    let join_strategies = vec![JoinStrategy::Outer, JoinStrategy::Inner];
+
+    let sharding = get_sharding(sets, join_order, join_strategies);
+    let expected = vec![vec![vec![0], vec![0]], vec![vec![1], vec![1, 2]]];
+
+    print_sharding(&sharding);
+    assert!(false);
+    check_sharding(&sharding, &expected);
+}
+
+#[test]
+fn join_it_left_test() {
+    let sets = vec![
+        Some((ShardingMode::Key, create_dummy_set(vec![0, 1, 2]))),
+        Some((ShardingMode::Key, create_dummy_set(vec![0, 1, 1]))),
+    ];
+
+    let join_order = vec![0, 1];
+    let join_strategies = vec![JoinStrategy::Outer, JoinStrategy::Left];
+
+    let sharding = get_sharding(sets, join_order, join_strategies);
+    let expected = vec![
+        vec![vec![0], vec![0]],
+        vec![vec![1], vec![1, 2]],
+        vec![vec![2], vec![]],
+    ];
+
+    print_sharding(&sharding);
+    check_sharding(&sharding, &expected);
+}
+
+#[test]
+fn join_it_right_test() {
+    let sets = vec![
+        Some((ShardingMode::Key, create_dummy_set(vec![0, 1, 2]))),
+        Some((ShardingMode::Key, create_dummy_set(vec![0, 1, 1, 3]))),
+    ];
+
+    let join_order = vec![0, 1];
+    let join_strategies = vec![JoinStrategy::Outer, JoinStrategy::Right];
+
+    let sharding = get_sharding(sets, join_order, join_strategies);
+    let expected = vec![
+        vec![vec![0], vec![0]],
+        vec![vec![1], vec![1, 2]],
+        vec![vec![], vec![3]],
+    ];
+
+    print_sharding(&sharding);
+    check_sharding(&sharding, &expected);
 }
