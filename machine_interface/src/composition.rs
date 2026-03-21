@@ -24,7 +24,7 @@ pub enum ShardingMode {
     Key,
 }
 
-// TODO remove left to simplify handling, push switching order into the parsing layer
+// TODO remove  one of left/right to simplify handling, push switching order into the parsing layer
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum JoinStrategy {
     Inner,
@@ -461,42 +461,69 @@ impl JoinIterator {
                     println!("left:  {:?}", left.right);
                     let current_self_key = right[self.right_index].item_list[0].0;
                     let right_can_be_advanced = self.right_index + 1 < right.len();
-                    // check if should try to advance both or only left or right
-                    if self.key == current_self_key && self.key == left.key
-                    {
-                        // if the keys are equal should try to advance both
-                        let left_advance_success = left.advance();
-                        if right_can_be_advanced {
-                            self.right_index += 1;
-                        }
-                        match (right_can_be_advanced, left_advance_success) {
-                            (true, true) =>  {self.key = u32::min(right[self.right_index].item_list[0].0, left.key); true}
-                            (true, false) => {
-
-                                self.key = right[self.right_index].item_list[0].0;
-                                true
-                            }
-                            (false, true) => {self.key = left.key; true}
-                            (false, false) => {self.right_index = right.len(); false}
-                        }
-                    } else if self.key < left.key {
+                    // check if one of the already known keys is bigger, if so we know we can adavance
+                    if self.key < left.key {
                         // last key was set from right, since left is bigger
-                        // if right can be advance it should be advanced, otherwise just set key to left one
                         debug_assert_eq!(self.key, current_self_key);
+                        // if right can be advance it should be advanced, otherwise just set key to left one
                         if right_can_be_advanced {
                             self.right_index += 1;
+                            // new right might still be smaller than left key
                             self.key = u32::min(right[self.right_index].item_list[0].0, left.key);
                         } else {
                             self.key = left.key;
                         }
                         true
-                    } else if self.key < {
-                        // last key was set from left, should advance it if possible, otherwise set key to right
+                    } else if self.key < current_self_key {
+                        // the last key was set from left, since right is bigger
+                        debug_assert_eq!(self.key, left.key);
+                        // if left can be adnvanced it should be, if not move
                         if left.advance() {
+                            // new left key might still be smaller than right
                             self.key = u32::min(right[self.right_index].item_list[0].0, left.key);
                         } else {
+                            //  left did not advance, so set key to current right key
+                            self.key = current_self_key;
                         }
                         true
+                    } else if self.key == left.key && self.key == current_self_key {
+                        // both keys are the same, so advance any that are possible to advance and take new key from there
+                        let left_advance_success = left.advance();
+                        if right_can_be_advanced {
+                            self.right_index += 1;
+                        }
+                        match (right_can_be_advanced, left_advance_success) {
+                            (true, true) => {
+                                self.key =
+                                    u32::min(right[self.right_index].item_list[0].0, left.key);
+                                true
+                            }
+                            (true, false) => {
+                                self.key = right[self.right_index].item_list[0].0;
+                                true
+                            }
+                            (false, true) => {
+                                self.key = left.key;
+                                true
+                            }
+                            (false, false) => {
+                                self.right_index = right.len();
+                                false
+                            }
+                        }
+                    } else {
+                        // the key is already set to the bigger of the two current keys, try to advance that one
+                        if current_self_key == left.key {
+                            let did_advance = left.advance();
+                            self.key = left.key;
+                            did_advance
+                        } else {
+                            if right_can_be_advanced {
+                                self.right_index += 1;
+                                self.key = right[self.right_index].item_list[0].0;
+                            }
+                            right_can_be_advanced
+                        }
                     }
                 }
                 JoinStrategy::Cross => {
