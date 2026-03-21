@@ -457,8 +457,6 @@ impl JoinIterator {
                     true
                 }
                 JoinStrategy::Outer => {
-                    println!("right: {:?}", right);
-                    println!("left:  {:?}", left.right);
                     let current_self_key = right[self.right_index].item_list[0].0;
                     let right_can_be_advanced = self.right_index + 1 < right.len();
                     // check if one of the already known keys is bigger, if so we know we can adavance
@@ -632,7 +630,11 @@ fn check_sharding(actual: Vec<Vec<Option<CompositionSet>>>, expected: Vec<SetGro
             for ((expected_key, expected_index), (actual_key, actual_index, _)) in
                 expected_set.into_iter().zip(actual_set.item_list)
             {
-                assert_eq!(expected_index, actual_index);
+                assert_eq!(
+                    expected_index, actual_index,
+                    "for keys {}, {}",
+                    expected_key, actual_key
+                );
                 assert_eq!(expected_key, actual_key);
             }
         }
@@ -764,6 +766,97 @@ fn join_it_cross_test() {
         vec![Some(vec![(2, 2)]), Some(vec![(0, 2)])],
         vec![Some(vec![(2, 2)]), Some(vec![(1, 1), (1, 3)])],
         vec![Some(vec![(2, 2)]), Some(vec![(3, 0)])],
+    ];
+
+    print_sharding(&sharding);
+    check_sharding(sharding, expected);
+}
+
+#[test]
+fn join_it_order_test() {
+    let sets = vec![
+        Some((ShardingMode::Key, create_dummy_set(vec![3, 1, 0, 1]))),
+        Some((ShardingMode::Key, create_dummy_set(vec![0, 1, 2]))),
+    ];
+
+    let join_order = vec![1, 0];
+    let join_strategies = vec![JoinStrategy::Left];
+
+    let sharding = get_sharding(sets, join_order, join_strategies);
+    let expected = vec![
+        vec![Some(vec![(0, 2)]), Some(vec![(0, 0)])],
+        vec![Some(vec![(1, 1), (1, 3)]), Some(vec![(1, 1)])],
+        vec![None, Some(vec![(2, 2)])],
+    ];
+
+    print_sharding(&sharding);
+    check_sharding(sharding, expected);
+}
+
+#[test]
+fn join_it_chain_test() {
+    let sets = vec![
+        Some((
+            ShardingMode::Key,
+            create_dummy_set(vec![1, 1234, 123, 124, 134]),
+        )),
+        Some((
+            ShardingMode::Key,
+            create_dummy_set(vec![2, 234, 1234, 123, 124]),
+        )),
+        Some((
+            ShardingMode::Key,
+            create_dummy_set(vec![3, 134, 234, 1234, 123]),
+        )),
+        Some((
+            ShardingMode::Key,
+            create_dummy_set(vec![4, 124, 134, 234, 1234]),
+        )),
+    ];
+
+    let join_order = vec![0, 1, 2, 3];
+    let join_strategies = vec![
+        JoinStrategy::Outer,
+        JoinStrategy::Outer,
+        JoinStrategy::Outer,
+    ];
+
+    let sharding = get_sharding(sets, join_order, join_strategies);
+    let expected = vec![
+        vec![Some(vec![(1, 0)]), None, None, None],
+        vec![None, Some(vec![(2, 0)]), None, None],
+        vec![None, None, Some(vec![(3, 0)]), None],
+        vec![None, None, None, Some(vec![(4, 0)])],
+        vec![
+            Some(vec![(123, 2)]),
+            Some(vec![(123, 3)]),
+            Some(vec![(123, 4)]),
+            None,
+        ],
+        vec![
+            Some(vec![(124, 3)]),
+            Some(vec![(124, 4)]),
+            None,
+            Some(vec![(124, 1)]),
+        ],
+        vec![
+            Some(vec![(134, 4)]),
+            None,
+            Some(vec![(134, 1)]),
+            Some(vec![(134, 2)]),
+        ],
+        vec![
+            None,
+            Some(vec![(234, 1)]),
+            Some(vec![(234, 2)]),
+            Some(vec![(234, 3)]),
+        ],
+        vec![
+            Some(vec![(1234, 1)]),
+            Some(vec![(1234, 2)]),
+            Some(vec![(1234, 3)]),
+            Some(vec![(1234, 4)]),
+        ],
     ];
 
     print_sharding(&sharding);
