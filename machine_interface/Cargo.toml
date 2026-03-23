@@ -61,6 +61,9 @@ bytes = { version = "1.6", optional = true}
 # This sets it for the other dependencies we have that use it.
 openssl = { version = "0.10", features = ["vendored"], optional = true }
 
+[patch.crates-io]
+bytes = { path = "../bytes" }
+
 # disable benchmarks in library, to not run all unit tests on every benchmark
 # also needs to be disabled for criterion flags to work that are not available for tests
 [lib]
