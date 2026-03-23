@@ -1,7 +1,10 @@
 use crate::memory_domain::{Context, ContextTrait};
 use dandelion_commons::{DandelionError, DandelionResult, DispatcherError, FunctionId};
 use itertools::Itertools;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, vec};
+
+#[cfg(test)]
+use crate::memory_domain::read_only::ReadOnlyContext;
 
 /// A composition has a composition wide id space that maps ids of
 /// the input and output sets to sets of individual functions to a unified
@@ -21,12 +24,15 @@ pub enum ShardingMode {
     Key,
 }
 
+// TODO remove  one of left/right to simplify handling, push switching order into the parsing layer
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum JoinStrategy {
     Inner,
     Left,
     Right,
     Outer,
+    /// Produces the cross product of each set on both sides of the join.
+    /// If this is used for further joins, the keys of the right set of the cross join are used.
     Cross,
 }
 
@@ -109,6 +115,7 @@ impl CompositionSet {
         (context_item.ident.clone(), context_item.key, data_bytes)
     }
 
+    // TODO: we are just slicing a vec, should be able to do this via slice references or iters instead of Vecs
     pub fn shard(self, mode: ShardingMode) -> Vec<CompositionSet> {
         return match mode {
             ShardingMode::All => {
@@ -116,24 +123,16 @@ impl CompositionSet {
             }
             ShardingMode::Key => {
                 let CompositionSet {
-                    mut item_list,
+                    item_list,
                     set_index,
                 } = self;
-                let mut keyed_vec = Vec::new();
-                while !item_list.is_empty() {
-                    let (last_key, _, _) = item_list.last().unwrap();
-                    let mut position = item_list.len() - 1;
-                    while position > 0 && item_list[position - 1].0 == *last_key {
-                        position -= 1;
-                    }
-                    let new_list = item_list.split_off(position);
-                    let new_composition = CompositionSet {
-                        item_list: new_list,
-                        set_index,
-                    };
-                    keyed_vec.push(new_composition);
-                }
-                keyed_vec
+                item_list
+                    .chunk_by(|(key_a, _, _), (key_b, _, _)| key_a == key_b)
+                    .map(|new_item_list| CompositionSet {
+                        item_list: new_item_list.to_vec(),
+                        set_index: set_index,
+                    })
+                    .collect()
             }
             ShardingMode::Each => self
                 .item_list
@@ -261,9 +260,13 @@ pub fn get_sharding(
     final_sharding
 }
 
+/// Structure to hold join iterator
+#[derive(Debug)]
 struct JoinIterator {
     left: Option<Box<JoinIterator>>,
     right: Vec<CompositionSet>,
+    /// Index of the current interator into it's compositon set vector
+    /// The current index points to the element set by the last successful advance call
     right_index: usize,
     write_index: usize,
     mode: JoinStrategy,
@@ -282,6 +285,10 @@ impl JoinIterator {
         }
         let (set_mode, set) = right_opt.unwrap();
         let right = set.shard(set_mode);
+
+        // we assume the keys of the sets are in descending order
+        debug_assert!(right.is_sorted_by_key(|set| set.item_list[0].0));
+
         if right.is_empty() {
             return left_opt;
         }
@@ -345,24 +352,46 @@ impl JoinIterator {
         }))
     }
 
-    fn fill_in(&mut self, to_fill: &mut Vec<Option<CompositionSet>>) -> bool {
-        let left_filled = if let Some(left) = &mut self.left {
-            left.fill_in(to_fill)
-        } else {
-            false
-        };
-        let right_filled = if self.right_index < self.right.len()
-            && self.key == self.right[self.right_index].item_list[0].0
-        {
+    fn fill_in(&mut self, to_fill: &mut Vec<Option<CompositionSet>>) {
+        let right_filled = self.right_index < self.right.len()
+            && self.key == self.right[self.right_index].item_list[0].0;
+        if right_filled {
             to_fill[self.write_index] = Some(self.right[self.right_index].clone());
-            true
-        } else {
-            false
+        }
+        if let Some(left) = &mut self.left {
+            match self.mode {
+                // modes for which always want left to fill in
+                JoinStrategy::Cross | JoinStrategy::Left => left.fill_in(to_fill),
+                // Only want to fill left if it is the one with the current key
+                JoinStrategy::Outer => {
+                    if self.key == left.key {
+                        left.fill_in(to_fill)
+                    }
+                }
+                // Only want left to fill if right has filled something in
+                JoinStrategy::Inner => {
+                    if right_filled {
+                        left.fill_in(to_fill)
+                    }
+                }
+                // Only want left to fill if right has filled and the keys match
+                JoinStrategy::Right => {
+                    if right_filled && self.key == left.key {
+                        left.fill_in(to_fill)
+                    }
+                }
+            }
         };
-        left_filled || right_filled
     }
 
+    /// Advance the iterator by one.
+    /// Another advance call after a advance that returned false always returns false
+    /// A fill_in call after a advance that called false is undefined behaviour.
     fn advance(&mut self) -> bool {
+        // set this when there is no more adavnce calls to be had to shortcut evaluation
+        if self.right_index == self.right.len() {
+            return false;
+        }
         let right = &mut self.right;
         if let Some(left) = &mut self.left {
             match self.mode {
@@ -370,37 +399,40 @@ impl JoinIterator {
                     // advance both at least once for inner
                     // left is advanced on checking (after checking right can stil be advanced)
                     // right is advanced after
-                    if self.right_index >= right.len() || left.advance() {
+                    if self.right_index + 1 >= right.len() || !left.advance() {
+                        self.right_index = right.len();
                         return false;
                     }
                     self.right_index += 1;
                     self.key = right[self.right_index].item_list[0].0;
-                    loop {
+                    while self.key != left.key {
                         if self.key > left.key {
                             if !left.advance() {
+                                self.right_index = right.len();
                                 return false;
                             }
+                        // need to advance right and are able to do so
                         } else if self.key < left.key {
-                            self.right_index += 1;
-                            if self.right_index < right.len() {
-                                self.key = right[self.right_index].item_list[0].0;
-                            } else {
+                            if self.right_index + 1 >= right.len() {
+                                self.right_index = right.len();
                                 return false;
+                            } else {
+                                self.right_index += 1;
+                                self.key = right[self.right_index].item_list[0].0;
                             }
-                        } else {
-                            return true;
                         }
                     }
+                    true
                 }
                 JoinStrategy::Left => {
                     // advance left and see if we can match
                     if left.advance() {
-                        while self.right_index < right.len()
+                        while self.right_index + 1 < right.len()
                             && right[self.right_index].item_list[0].0 < left.key
                         {
                             self.right_index += 1;
                         }
-                        // after this they key is guaranteed to be equal to the left key or bigger
+                        // after this the key is guaranteed to be equal to the left key or bigger
                         // so if the keys match that will be fine for copy in, otherwise this will be skipped
                         // if the key already equal or bigger, it was not advanced
                         self.key = left.key;
@@ -411,38 +443,59 @@ impl JoinIterator {
                     }
                 }
                 JoinStrategy::Right => {
-                    if !(self.right_index < right.len()) {
+                    if self.right_index + 1 >= right.len() {
+                        self.right_index = right.len();
                         return false;
                     }
                     self.right_index += 1;
-                    if self.right_index < right.len() {
-                        self.key = right[self.right_index].item_list[0].0;
-                        while self.key > left.key {
-                            if !left.advance() {
-                                break;
-                            }
+                    self.key = right[self.right_index].item_list[0].0;
+                    while self.key > left.key {
+                        if !left.advance() {
+                            break;
                         }
-                        true
-                    } else {
-                        false
                     }
+                    true
                 }
                 JoinStrategy::Outer => {
-                    // could be that right has no more items to contribute,
-                    // but left still can advance
-                    if !(self.right_index < right.len()) {
-                        if left.advance() {
-                            self.key = left.key;
-                            return true;
+                    let current_self_key = right[self.right_index].item_list[0].0;
+                    let right_can_be_advanced = self.right_index + 1 < right.len();
+                    // check if one of the already known keys is bigger, if so we know we can adavance
+                    if self.key < left.key {
+                        // last key was set from right, since left is bigger
+                        debug_assert_eq!(self.key, current_self_key);
+                        // if right can be advance it should be advanced, otherwise just set key to left one
+                        if right_can_be_advanced {
+                            self.right_index += 1;
+                            // new right might still be smaller than left key
+                            self.key = u32::min(right[self.right_index].item_list[0].0, left.key);
                         } else {
-                            return false;
+                            self.key = left.key;
                         }
-                    }
-                    // right still has items to contribute, check if both, right or left should be advanced
-                    if left.key == right[self.right_index].item_list[0].0 {
-                        let left_advance = left.advance();
-                        self.right_index += 1;
-                        match (self.right_index < right.len(), left_advance) {
+                        true
+                    } else if self.key < current_self_key {
+                        // the last key was set from left, since right is bigger
+                        debug_assert_eq!(self.key, left.key);
+                        // if left can be adnvanced it should be, if not move
+                        if left.advance() {
+                            // new left key might still be smaller than right
+                            self.key = u32::min(right[self.right_index].item_list[0].0, left.key);
+                        } else {
+                            //  left did not advance, so set key to current right key
+                            self.key = current_self_key;
+                        }
+                        true
+                    } else if self.key == left.key && self.key == current_self_key {
+                        // both keys are the same, so advance any that are possible to advance and take new key from there
+                        let left_advance_success = left.advance();
+                        if right_can_be_advanced {
+                            self.right_index += 1;
+                        }
+                        match (right_can_be_advanced, left_advance_success) {
+                            (true, true) => {
+                                self.key =
+                                    u32::min(right[self.right_index].item_list[0].0, left.key);
+                                true
+                            }
                             (true, false) => {
                                 self.key = right[self.right_index].item_list[0].0;
                                 true
@@ -451,19 +504,24 @@ impl JoinIterator {
                                 self.key = left.key;
                                 true
                             }
-                            (true, true) => {
-                                let possible_key = right[self.right_index].item_list[0].0;
-                                self.key = if possible_key < left.key {
-                                    possible_key
-                                } else {
-                                    left.key
-                                };
-                                true
+                            (false, false) => {
+                                self.right_index = right.len();
+                                false
                             }
-                            (false, false) => false,
                         }
                     } else {
-                        false
+                        // the key is already set to the bigger of the two current keys, try to advance that one
+                        if current_self_key == left.key {
+                            let did_advance = left.advance();
+                            self.key = left.key;
+                            did_advance
+                        } else {
+                            if right_can_be_advanced {
+                                self.right_index += 1;
+                                self.key = right[self.right_index].item_list[0].0;
+                            }
+                            right_can_be_advanced
+                        }
                     }
                 }
                 JoinStrategy::Cross => {
@@ -483,24 +541,324 @@ impl JoinIterator {
                 }
             }
         } else {
-            if !(self.right_index < right.len()) {
-                return false;
-            }
-            // advancing only makes sense for certain modes here
-            if self.mode == JoinStrategy::Right
-                || self.mode == JoinStrategy::Outer
-                || self.mode == JoinStrategy::Cross
-            {
-                self.right_index += 1;
-                if self.right_index < right.len() {
+            if self.right_index + 1 >= right.len() {
+                self.right_index = right.len();
+                false
+            } else {
+                // advancing only makes sense for certain modes here
+                if self.mode == JoinStrategy::Right
+                    || self.mode == JoinStrategy::Outer
+                    || self.mode == JoinStrategy::Cross
+                {
+                    self.right_index += 1;
                     self.key = right[self.right_index].item_list[0].0;
                     true
                 } else {
-                    false
+                    panic!("Should never have join iterator with left or inner that has None for the left value");
                 }
-            } else {
-                panic!("Should never have join iterator with left or inner that has None for the left value");
             }
         }
     }
+}
+
+// tests
+
+/// Create a dummy set from a vector of keys
+/// The item indexes in the composition set are qual to the index of the key in the input.
+/// Keys do not need to be in correct order, but they will be sorted after producing.
+/// This is to allow to have keys with lower item indexes but higher keys and vice versa.
+#[cfg(test)]
+fn create_dummy_set(keys: Vec<u32>) -> CompositionSet {
+    let dummy_context: Arc<Context> = Arc::new(ReadOnlyContext::new_static::<u8>(&mut []));
+    let items = keys
+        .into_iter()
+        .enumerate()
+        .map(|(i, k)| (k, i, dummy_context.clone()))
+        .sorted_by_key(|tuple| tuple.0)
+        .collect();
+    CompositionSet {
+        item_list: items,
+        set_index: 0,
+    }
+}
+
+/// An array of options for expected sets in the input set vec produced by a sharing
+#[cfg(test)]
+type SetGroup = Vec<Option<ExpectedSet>>;
+
+/// An array of tuples with the expected keys and item indexes for the items in a set
+#[cfg(test)]
+type ExpectedSet = Vec<(u32, usize)>;
+
+#[cfg(test)]
+/// The expected is a list of all vectors of generated sets
+fn check_sharding(actual: Vec<Vec<Option<CompositionSet>>>, expected: Vec<SetGroup>) {
+    assert_eq!(
+        expected.len(),
+        actual.len(),
+        "Not the number of set groups that were expected"
+    );
+    for (set_group_index, (actual_sets, expected_sets)) in
+        actual.into_iter().zip(expected.into_iter()).enumerate()
+    {
+        assert_eq!(
+            expected_sets.len(),
+            actual_sets.len(),
+            "Sets not matching for index {}, ",
+            set_group_index
+        );
+        for (set_index, (expected_set_opt, actual_set_opt)) in expected_sets
+            .into_iter()
+            .zip(actual_sets.into_iter())
+            .enumerate()
+        {
+            if expected_set_opt.is_none() {
+                assert!(
+                    actual_set_opt.is_none(),
+                    "Expexted none, but found a set for index {}",
+                    set_index
+                );
+                continue;
+            }
+            let mut expected_set = expected_set_opt.unwrap();
+            let mut actual_set = actual_set_opt.unwrap();
+            assert_eq!(expected_set.len(), actual_set.item_list.len());
+            // sort both lists by item index, since that one should be unique, since we only have a single context
+            expected_set.sort_by_key(|item| item.1);
+            actual_set.item_list.sort_by_key(|item| item.1);
+            // have two sorted lists, check that each item index is the expected one and that it has the correct key
+            for ((expected_key, expected_index), (actual_key, actual_index, _)) in
+                expected_set.into_iter().zip(actual_set.item_list)
+            {
+                assert_eq!(
+                    expected_index, actual_index,
+                    "for keys {}, {}",
+                    expected_key, actual_key
+                );
+                assert_eq!(expected_key, actual_key);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn print_sharding(actual: &Vec<Vec<Option<CompositionSet>>>) {
+    println!("Got sharding:");
+    for inv_sets in actual.iter() {
+        println!("[");
+        for (set_idx, set) in inv_sets.iter().enumerate() {
+            if set.is_none() {
+                println!("  set {}: [None]", set_idx);
+            } else {
+                print!("  set {}: [ ", set_idx);
+                for (key, itm, _) in set.as_ref().unwrap().item_list.iter() {
+                    print!("({}, {}) ", key, itm);
+                }
+                println!("]");
+            }
+        }
+        println!("]");
+    }
+}
+
+#[test]
+fn join_it_inner_test() {
+    let sets = vec![
+        Some((ShardingMode::Key, create_dummy_set(vec![3, 0, 1]))),
+        Some((ShardingMode::Key, create_dummy_set(vec![1, 0, 1, 2]))),
+    ];
+
+    let join_order = vec![0, 1];
+    let join_strategies = vec![JoinStrategy::Inner];
+
+    let sharding = get_sharding(sets, join_order, join_strategies);
+    let expected = vec![
+        vec![Some(vec![(0, 1)]), Some(vec![(0, 1)])],
+        vec![Some(vec![(1, 2)]), Some(vec![(1, 0), (1, 2)])],
+    ];
+
+    print_sharding(&sharding);
+    check_sharding(sharding, expected);
+}
+
+#[test]
+fn join_it_left_test() {
+    let sets = vec![
+        Some((ShardingMode::Key, create_dummy_set(vec![0, 1, 2]))),
+        Some((ShardingMode::Key, create_dummy_set(vec![3, 1, 0, 1]))),
+    ];
+
+    let join_order = vec![0, 1];
+    let join_strategies = vec![JoinStrategy::Left];
+
+    let sharding = get_sharding(sets, join_order, join_strategies);
+    let expected = vec![
+        vec![Some(vec![(0, 0)]), Some(vec![(0, 2)])],
+        vec![Some(vec![(1, 1)]), Some(vec![(1, 1), (1, 3)])],
+        vec![Some(vec![(2, 2)]), None],
+    ];
+
+    print_sharding(&sharding);
+    check_sharding(sharding, expected);
+}
+
+#[test]
+fn join_it_right_test() {
+    let sets = vec![
+        Some((ShardingMode::Key, create_dummy_set(vec![3, 1, 0, 1]))),
+        Some((ShardingMode::Key, create_dummy_set(vec![0, 1, 2]))),
+    ];
+
+    let join_order = vec![0, 1];
+    let join_strategies = vec![JoinStrategy::Right];
+
+    let sharding = get_sharding(sets, join_order, join_strategies);
+    let expected = vec![
+        vec![Some(vec![(0, 2)]), Some(vec![(0, 0)])],
+        vec![Some(vec![(1, 1), (1, 3)]), Some(vec![(1, 1)])],
+        vec![None, Some(vec![(2, 2)])],
+    ];
+
+    print_sharding(&sharding);
+    check_sharding(sharding, expected);
+}
+
+#[test]
+fn join_it_outer_test() {
+    let sets = vec![
+        Some((ShardingMode::Key, create_dummy_set(vec![0, 1, 2]))),
+        Some((ShardingMode::Key, create_dummy_set(vec![3, 1, 0, 1]))),
+    ];
+
+    let join_order = vec![0, 1];
+    let join_strategies = vec![JoinStrategy::Outer];
+
+    let sharding = get_sharding(sets, join_order, join_strategies);
+    let expected = vec![
+        vec![Some(vec![(0, 0)]), Some(vec![(0, 2)])],
+        vec![Some(vec![(1, 1)]), Some(vec![(1, 1), (1, 3)])],
+        vec![Some(vec![(2, 2)]), None],
+        vec![None, Some(vec![(3, 0)])],
+    ];
+
+    print_sharding(&sharding);
+    check_sharding(sharding, expected);
+}
+
+#[test]
+fn join_it_cross_test() {
+    let sets = vec![
+        Some((ShardingMode::Key, create_dummy_set(vec![0, 1, 2]))),
+        Some((ShardingMode::Key, create_dummy_set(vec![3, 1, 0, 1]))),
+    ];
+
+    let join_order = vec![0, 1];
+    let join_strategies = vec![JoinStrategy::Cross];
+
+    let sharding = get_sharding(sets, join_order, join_strategies);
+    let expected = vec![
+        vec![Some(vec![(0, 0)]), Some(vec![(0, 2)])],
+        vec![Some(vec![(0, 0)]), Some(vec![(1, 1), (1, 3)])],
+        vec![Some(vec![(0, 0)]), Some(vec![(3, 0)])],
+        vec![Some(vec![(1, 1)]), Some(vec![(0, 2)])],
+        vec![Some(vec![(1, 1)]), Some(vec![(1, 1), (1, 3)])],
+        vec![Some(vec![(1, 1)]), Some(vec![(3, 0)])],
+        vec![Some(vec![(2, 2)]), Some(vec![(0, 2)])],
+        vec![Some(vec![(2, 2)]), Some(vec![(1, 1), (1, 3)])],
+        vec![Some(vec![(2, 2)]), Some(vec![(3, 0)])],
+    ];
+
+    print_sharding(&sharding);
+    check_sharding(sharding, expected);
+}
+
+#[test]
+fn join_it_order_test() {
+    let sets = vec![
+        Some((ShardingMode::Key, create_dummy_set(vec![3, 1, 0, 1]))),
+        Some((ShardingMode::Key, create_dummy_set(vec![0, 1, 2]))),
+    ];
+
+    let join_order = vec![1, 0];
+    let join_strategies = vec![JoinStrategy::Left];
+
+    let sharding = get_sharding(sets, join_order, join_strategies);
+    let expected = vec![
+        vec![Some(vec![(0, 2)]), Some(vec![(0, 0)])],
+        vec![Some(vec![(1, 1), (1, 3)]), Some(vec![(1, 1)])],
+        vec![None, Some(vec![(2, 2)])],
+    ];
+
+    print_sharding(&sharding);
+    check_sharding(sharding, expected);
+}
+
+#[test]
+fn join_it_chain_test() {
+    let sets = vec![
+        Some((
+            ShardingMode::Key,
+            create_dummy_set(vec![1, 1234, 123, 124, 134]),
+        )),
+        Some((
+            ShardingMode::Key,
+            create_dummy_set(vec![2, 234, 1234, 123, 124]),
+        )),
+        Some((
+            ShardingMode::Key,
+            create_dummy_set(vec![3, 134, 234, 1234, 123]),
+        )),
+        Some((
+            ShardingMode::Key,
+            create_dummy_set(vec![4, 124, 134, 234, 1234]),
+        )),
+    ];
+
+    let join_order = vec![0, 1, 2, 3];
+    let join_strategies = vec![
+        JoinStrategy::Outer,
+        JoinStrategy::Outer,
+        JoinStrategy::Outer,
+    ];
+
+    let sharding = get_sharding(sets, join_order, join_strategies);
+    let expected = vec![
+        vec![Some(vec![(1, 0)]), None, None, None],
+        vec![None, Some(vec![(2, 0)]), None, None],
+        vec![None, None, Some(vec![(3, 0)]), None],
+        vec![None, None, None, Some(vec![(4, 0)])],
+        vec![
+            Some(vec![(123, 2)]),
+            Some(vec![(123, 3)]),
+            Some(vec![(123, 4)]),
+            None,
+        ],
+        vec![
+            Some(vec![(124, 3)]),
+            Some(vec![(124, 4)]),
+            None,
+            Some(vec![(124, 1)]),
+        ],
+        vec![
+            Some(vec![(134, 4)]),
+            None,
+            Some(vec![(134, 1)]),
+            Some(vec![(134, 2)]),
+        ],
+        vec![
+            None,
+            Some(vec![(234, 1)]),
+            Some(vec![(234, 2)]),
+            Some(vec![(234, 3)]),
+        ],
+        vec![
+            Some(vec![(1234, 1)]),
+            Some(vec![(1234, 2)]),
+            Some(vec![(1234, 3)]),
+            Some(vec![(1234, 4)]),
+        ],
+    ];
+
+    print_sharding(&sharding);
+    check_sharding(sharding, expected);
 }
