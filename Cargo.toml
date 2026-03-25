@@ -2,3 +2,6 @@
 [workspace]
 members = ["dandelion_commons", "dispatcher", "machine_interface", "server", "dparser", "multinode"]
 resolver = "2"
+
+[patch.crates-io]
+bytes = { git = "ssh://git@github.com/eth-easl/bytes.git", branch = "zero-copy" }
