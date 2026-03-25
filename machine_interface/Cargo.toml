@@ -62,7 +62,7 @@ bytes = { version = "1.6", optional = true}
 openssl = { version = "0.10", features = ["vendored"], optional = true }
 
 [patch.crates-io]
-bytes = { path = "../bytes" }
+bytes = { git = "ssh://git@github.com/eth-easl/bytes.git", branch = "zero-copy" }
 
 # disable benchmarks in library, to not run all unit tests on every benchmark
 # also needs to be disabled for criterion flags to work that are not available for tests

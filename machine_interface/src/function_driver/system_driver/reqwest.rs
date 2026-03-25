@@ -1,19 +1,11 @@
 use crate::{
-    composition::CompositionSet,
-    function_driver::{
-        functions::{Function, FunctionConfig},
-        system_driver::SystemFunction,
-        ComputeResource, Driver, EngineWorkQueue, Metadata, WorkDone, WorkToDo,
-    },
-    machine_config::EngineType,
-    memory_domain::{
-        system_domain::{system_context_write_from_bytes, SystemContext},
-        Context, ContextTrait, ContextType,
-    },
-    promise::Debt,
-    DataItem, DataSet, Position,
+    DataItem, DataSet, Position, composition::CompositionSet, function_driver::{
+        ComputeResource, Driver, EngineWorkQueue, Metadata, WorkDone, WorkToDo, functions::{Function, FunctionConfig}, system_driver::SystemFunction
+    }, machine_config::EngineType, memory_domain::{
+        Context, ContextTrait, ContextType, bytes_context::BytesContext,
+    }, promise::Debt
 };
-use bytes::{Buf, Bytes};
+use bytes::{Bytes};
 use core_affinity::set_for_current;
 use dandelion_commons::{
     dandelion_err, err_dandelion,
@@ -25,7 +17,7 @@ use http::{version::Version as HttpVersion, HeaderName, HeaderValue, Method as H
 use log::{debug, error, warn};
 use memcache::Client as MemcachedClient;
 use reqwest::{header::HeaderMap, Client as HttpClient};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{sync::Arc};
 use tokio::{runtime::Builder, sync::RwLock};
 
 trait Request
@@ -465,51 +457,28 @@ async fn memcached_request(request_info: MemcachedRequest) -> DandelionResult<Re
     return Ok(response_info);
 }
 
-fn response_write(context: &mut Context, response: ResponseInformation) -> DandelionResult<()> {
+fn response_write_to_bytes(context: &mut Context, response: ResponseInformation, offset: &mut usize) -> DandelionResult<()> {
     let ResponseInformation {
         item_name,
         item_key,
         preamble,
-        mut body,
+        body,
     } = response;
 
     let preamble_len = preamble.len();
     let body_len = body.len();
     let response_len = preamble_len + body_len;
-    // allocate space in the context for the entire response
-    let response_start = context.get_free_space(response_len, 128)?;
+    
+    let preamble_bytes = bytes::Bytes::from(preamble.into_bytes());
 
     match &mut context.context {
-        ContextType::System(destination_ctxt) => {
-            let preamble_bytes = bytes::Bytes::from(preamble.into_bytes());
-            system_context_write_from_bytes(
-                destination_ctxt,
-                preamble_bytes,
-                response_start,
-                preamble_len,
-            );
-            system_context_write_from_bytes(
-                destination_ctxt,
-                body.clone(),
-                response_start + preamble_len,
-                body_len,
-            );
-        }
+        ContextType::Bytes(destination_ctxt) => {
+            destination_ctxt.frames.push(preamble_bytes);
+            destination_ctxt.frames.push(body);
+        },
         _ => {
-            context.write(response_start, preamble.as_bytes())?;
-            let mut bytes_read = 0;
-            while bytes_read < body_len {
-                let chunk = body.chunk();
-                let reading = chunk.len();
-                context.write(response_start + preamble_len + bytes_read, chunk)?;
-                body.advance(reading);
-                bytes_read += reading;
-            }
-            assert_eq!(
-                0,
-                body.remaining(),
-                "Body should have non remaining as we have read the amount given as len in the beginning"
-            );
+            error!("Invalid context type in reponse write");
+            return Err(dandelion_commons::DandelionError::ContextMissmatch);
         }
     }
 
@@ -518,7 +487,7 @@ fn response_write(context: &mut Context, response: ResponseInformation) -> Dande
             ident: item_name.clone(),
             key: item_key,
             data: Position {
-                offset: response_start,
+                offset: *offset,
                 size: response_len,
             },
         })
@@ -528,13 +497,16 @@ fn response_write(context: &mut Context, response: ResponseInformation) -> Dande
             ident: item_name,
             key: item_key,
             data: Position {
-                offset: response_start + preamble_len,
+                offset: *offset + preamble_len,
                 size: response_len - preamble_len,
             },
         })
     }
 
+    *offset += response_len;
+
     return Ok(());
+    
 }
 
 fn responses_write(
@@ -545,12 +517,11 @@ fn responses_write(
     responses: Vec<ResponseInformation>,
 ) {
     let mut out_context = Context::new(
-        ContextType::System(Box::new(SystemContext {
-            local_offset_to_data_position: BTreeMap::new(),
-            size: context_size,
-        })),
-        context_size,
+        ContextType::Bytes(Box::new(BytesContext::new(Vec::new()))),
+        context_size
     );
+
+    let mut offset = 0;
 
     if !output_set_names.is_empty() {
         out_context.content = vec![None, None];
@@ -568,7 +539,7 @@ fn responses_write(
         }
         let write_results: DandelionResult<Vec<_>> = responses
             .into_iter()
-            .map(|response| response_write(&mut out_context, response))
+            .map(|response| response_write_to_bytes(&mut out_context, response, &mut offset))
             .collect();
         if let Err(err) = write_results {
             drop(recorder);

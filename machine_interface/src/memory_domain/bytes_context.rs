@@ -8,7 +8,7 @@ use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, Frontend
 use log::{debug, error};
 
 pub struct BytesContext {
-    frames: Vec<Bytes>,
+    pub frames: Vec<Bytes>,
 }
 
 impl BytesContext {
