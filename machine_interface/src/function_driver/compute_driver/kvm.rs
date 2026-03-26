@@ -246,9 +246,6 @@ struct KvmLoop {
             dump_regs(&self.vcpu);
         }
 
-        // Clear the preemption flag before starting execution
-        self.preempt_flag.store(false, Ordering::Release);
-
         // start running the function
         // TODO: on unexpected break, mark function as failure
         let mut preempted = false;
@@ -260,7 +257,20 @@ struct KvmLoop {
                 break;
             }
 
-            let reason = self.vcpu.run().unwrap();
+            let reason = match self.vcpu.run() {
+                Ok(exit) => exit,
+                Err(e) if e.errno() == libc::EINTR => {
+                    if self.preempt_flag.load(Ordering::Acquire) {
+                        debug!("vcpu.run() returned EINTR with preemption flag set — preempting");
+                        preempted = true;
+                        break;
+                    }
+                    debug!("vcpu.run() returned EINTR but no preemption requested, re-entering");
+                    continue;
+                }
+                Err(e) => panic!("vcpu.run() failed unexpectedly: {:?}", e),
+            };
+
             match reason {
                 #[cfg(feature = "backend_debug")]
                 VcpuExit::IoOut(14, _) => {
@@ -417,7 +427,20 @@ impl KvmLoop {
                 break;
             }
 
-            let reason = self.vcpu.run().unwrap();
+            let reason = match self.vcpu.run() {
+                Ok(exit) => exit,
+                Err(e) if e.errno() == libc::EINTR => {
+                    if self.preempt_flag.load(Ordering::Acquire) {
+                        debug!("vcpu.run() returned EINTR with preemption flag set — preempting");
+                        preempted = true;
+                        break;
+                    }
+                    debug!("vcpu.run() returned EINTR but no preemption requested, re-entering");
+                    continue;
+                }
+                Err(e) => panic!("vcpu.run() failed unexpectedly: {:?}", e),
+            };
+
             match reason {
                 VcpuExit::IoOut(32, _) => {
                     break;

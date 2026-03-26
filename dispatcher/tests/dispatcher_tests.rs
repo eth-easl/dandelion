@@ -1,6 +1,7 @@
 #[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "kvm")))]
 mod dispatcher_tests {
     mod function_tests;
+    mod preemption_tests;
     mod registry_tests;
 
     use dandelion_commons::FunctionId;
