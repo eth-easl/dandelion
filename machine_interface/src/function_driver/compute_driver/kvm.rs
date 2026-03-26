@@ -63,6 +63,16 @@ fn step_debug(vcpu: &VcpuFd) {
     })
     .unwrap();
 }
+/// State saved when a function is preempted mid-execution, allowing it to be resumed later.
+/// The VM memory remains attached and the vCPU registers are preserved by KVM,
+/// so resuming just means re-entering the vcpu.run() loop.
+struct SuspendedState {
+    /// The context containing guest memory — kept alive so the VM mapping remains valid.
+    context: Context,
+    /// ELF config needed to read outputs on completion.
+    elf_config: ElfConfig,
+}
+
 struct KvmLoop {
     vm: VmFd,
     vcpu: VcpuFd,
@@ -70,19 +80,11 @@ struct KvmLoop {
     /// Flag that can be set from outside to request preemption of the running function.
     /// When true, the run loop will exit at the next VM exit boundary and return DandelionError::Preempted.
     preempt_flag: Arc<AtomicBool>,
+    /// When a function is preempted, its execution state is saved here so it can be resumed.
+    suspended: Option<SuspendedState>,
 }
 
-impl KvmLoop {
-    /// Returns a clone of the preemption flag handle.
-    pub fn get_preempt_flag(&self) -> Arc<AtomicBool> {
-        self.preempt_flag.clone()
-    }
 
-    /// Request preemption of the currently running function.
-    pub fn request_preemption(&self) {
-        self.preempt_flag.store(true, Ordering::Release);
-    }
-}
 
     impl EngineLoop for KvmLoop {
     fn init(_core_id: u8) -> DandelionResult<Box<Self>> {
@@ -106,6 +108,7 @@ impl KvmLoop {
             vcpu,
             state,
             preempt_flag,
+            suspended: None,
         }));
     }
 
@@ -115,6 +118,10 @@ impl KvmLoop {
 
     fn get_preempt_flag(&self) -> Option<Arc<AtomicBool>> {
         Some(self.preempt_flag.clone())
+    }
+
+    fn resume(&mut self) -> DandelionResult<Context> {
+        KvmLoop::resume(self)
     }
 
     fn run(
@@ -200,7 +207,7 @@ impl KvmLoop {
         }
 
         // attach VM memory
-        let mut region = kvm_userspace_memory_region {
+        let region = kvm_userspace_memory_region {
             slot: 0,
             flags: KVM_MEM_LOG_DIRTY_PAGES,
             guest_phys_addr: 0x0,
@@ -294,12 +301,47 @@ impl KvmLoop {
             }
         }
 
-        let dirty_log = self.vm.get_dirty_log(0, kvm_context.storage.len()).unwrap();
+        // If preempted, save the suspended state so we can resume later.
+        // Keep VM memory attached — the vCPU state is preserved by KVM.
+        if preempted {
+            debug!("Saving suspended state for later resume");
+            self.suspended = Some(SuspendedState {
+                context,
+                elf_config,
+            });
+            return Err(DandelionError::Preempted);
+        }
+
+        // Normal completion — do cleanup and read outputs
+        Self::finish_run(&self.vm, context, elf_config)
+    }
+}
+
+impl KvmLoop {
+    /// Complete a function execution: process dirty log, detach VM memory, read outputs.
+    /// Used both after normal completion and after resuming a preempted function.
+    fn finish_run(
+        vm: &VmFd,
+        mut context: Context,
+        elf_config: ElfConfig,
+    ) -> DandelionResult<Context> {
+        let kvm_context = match &mut context.context {
+            ContextType::Kvm(kvm_context) => kvm_context,
+            _ => return Err(DandelionError::ContextMissmatch),
+        };
+
+        let dirty_log = vm.get_dirty_log(0, kvm_context.storage.len()).unwrap();
 
         // detach VM memory
-        region.memory_size = 0;
+        let region = kvm_userspace_memory_region {
+            slot: 0,
+            flags: KVM_MEM_LOG_DIRTY_PAGES,
+            guest_phys_addr: 0x0,
+            memory_size: 0,
+            userspace_addr: kvm_context.storage.as_ptr() as u64,
+        };
         unsafe {
-            self.vm.set_user_memory_region(region).unwrap();
+            vm.set_user_memory_region(region).unwrap();
         }
 
         let mut dirty_index = 0;
@@ -325,14 +367,12 @@ impl KvmLoop {
                     contiguous_pages = 0;
                 }
                 while trailing_zeros < 64 {
-                    // can always do this, sice if the last one is not a zero it will simply shift by 0
                     local_dirty = local_dirty >> trailing_zeros;
                     bits_processed += trailing_zeros;
                     let trailing_ones = local_dirty.trailing_ones() as usize;
                     contiguous_pages += trailing_ones;
                     local_dirty = local_dirty >> trailing_ones;
                     bits_processed += trailing_ones;
-                    // if the trailing ones were until the end of the u64, break and continue with the next u64
                     if bits_processed >= 64 {
                         break;
                     }
@@ -351,13 +391,72 @@ impl KvmLoop {
             kvm_context.insert_into_overlay(start, end, None);
         }
 
-        if preempted {
-            return Err(DandelionError::Preempted);
-        }
-
         read_output_structs::<u64, u64>(&mut context, elf_config.system_data_offset)?;
         return Ok(context);
     }
+
+    /// Resume a previously preempted function. Re-enters the vcpu.run() loop
+    /// with the VM memory still attached and vCPU state preserved from the last run.
+    /// Returns the completed context on success.
+    pub fn resume(&mut self) -> DandelionResult<Context> {
+        let suspended = self.suspended.take().ok_or_else(|| {
+            debug!("resume() called but no suspended state");
+            DandelionError::EngineError
+        })?;
+
+        debug!("Resuming preempted function");
+
+        // Clear the preemption flag before re-entering
+        self.preempt_flag.store(false, Ordering::Release);
+
+        let mut preempted = false;
+        loop {
+            if self.preempt_flag.load(Ordering::Acquire) {
+                debug!("Preemption flag set before VM re-entry, preempting again");
+                preempted = true;
+                break;
+            }
+
+            let reason = self.vcpu.run().unwrap();
+            match reason {
+                VcpuExit::IoOut(32, _) => {
+                    break;
+                }
+                VcpuExit::SystemEvent(_type, _data) => {
+                    debug!("System Event during resume, type: {}", _type);
+                    break;
+                }
+                VcpuExit::Debug(info) => {
+                    debug!("Debug stop during resume: {:?}", info);
+                    dump_regs(&self.vcpu);
+                }
+                VcpuExit::Intr => {
+                    if self.preempt_flag.load(Ordering::Acquire) {
+                        debug!("KVM_RUN interrupted during resume, preemption flag set — preempting again");
+                        preempted = true;
+                        break;
+                    }
+                    debug!("Spurious signal during resume, re-entering");
+                }
+                r => {
+                    debug!("unexpected exit reason during resume: {:?}", r);
+                    dump_regs(&self.vcpu);
+                    break;
+                }
+            }
+        }
+
+        if preempted {
+            // Preempted again — save state again for another resume later
+            debug!("Function preempted again during resume, saving state");
+            self.suspended = Some(suspended);
+            return Err(DandelionError::Preempted);
+        }
+
+        // Normal completion after resume — do cleanup
+        Self::finish_run(&self.vm, suspended.context, suspended.elf_config)
+    }
+
 }
 
 pub struct KvmDriver {}
