@@ -8,4 +8,4 @@ pub mod mmu;
 pub mod kvm;
 
 #[cfg(test)]
-mod compute_driver_tests;
+pub(self) mod compute_driver_tests;

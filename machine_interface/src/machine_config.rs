@@ -103,3 +103,12 @@ pub fn get_available_domains(
         })
         .collect();
 }
+
+pub(crate) const PAGE_SHIFT: usize = 12;
+pub(crate) const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
+pub(crate) const PAGE_MASK: u64 = (PAGE_SIZE - 1) as u64;
+
+const _: () = assert!(PAGE_SIZE.is_power_of_two());
+pub fn round_down_to_page(address: usize) -> usize {
+    address & !(PAGE_SIZE - 1)
+}

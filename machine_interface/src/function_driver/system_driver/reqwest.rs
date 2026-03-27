@@ -1,11 +1,16 @@
 use crate::{
-    DataItem, DataSet, Position, composition::CompositionSet, function_driver::{
-        ComputeResource, Driver, EngineWorkQueue, Metadata, WorkDone, WorkToDo, functions::{Function, FunctionConfig}, system_driver::SystemFunction
-    }, machine_config::EngineType, memory_domain::{
-        Context, ContextTrait, ContextType, bytes_context::BytesContext,
-    }, promise::Debt
+    composition::CompositionSet,
+    function_driver::{
+        functions::{Function, FunctionConfig},
+        system_driver::SystemFunction,
+        ComputeResource, Driver, EngineWorkQueue, Metadata, WorkDone, WorkToDo,
+    },
+    machine_config::{EngineType, PAGE_SIZE},
+    memory_domain::{bytes_context::BytesContext, Context, ContextTrait, ContextType},
+    promise::Debt,
+    DataItem, DataSet, Position,
 };
-use bytes::{Bytes};
+use bytes::{Bytes, BytesMut};
 use core_affinity::set_for_current;
 use dandelion_commons::{
     dandelion_err, err_dandelion,
@@ -17,7 +22,7 @@ use http::{version::Version as HttpVersion, HeaderName, HeaderValue, Method as H
 use log::{debug, error, warn};
 use memcache::Client as MemcachedClient;
 use reqwest::{header::HeaderMap, Client as HttpClient};
-use std::{sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 use tokio::{runtime::Builder, sync::RwLock};
 
 trait Request
@@ -63,7 +68,7 @@ struct ResponseInformation {
     // key of the original request data item
     item_key: u32,
     /// contains both the status line as well as all headers
-    preamble: String,
+    preamble: bytes::Bytes,
     body: bytes::Bytes,
 }
 
@@ -321,11 +326,15 @@ async fn http_request(
     };
 
     // write the status line
-    let mut preamble = format!(
-        "{:?} {} {}\n",
-        response.version(),
-        response.status().as_str(),
-        response.status().canonical_reason().unwrap_or("")
+    let mut preamble = BytesMut::new();
+    preamble.extend_from_slice(
+        format!(
+            "{:?} {} {}\n",
+            response.version(),
+            response.status().as_str(),
+            response.status().canonical_reason().unwrap_or("")
+        )
+        .as_bytes(),
     );
 
     // read the content length in the header
@@ -336,10 +345,8 @@ async fn http_request(
         .and_then(|len_str| len_str.parse::<usize>().ok());
 
     for (key, value) in response.headers() {
-        preamble.push_str(&format!("{}:{}\n", key, value.to_str().unwrap()));
+        preamble.extend_from_slice(format!("{}:{}\n", key, value.to_str().unwrap()).as_bytes());
     }
-
-    preamble.push('\n');
 
     let body = match response.bytes().await {
         Ok(bytes) => bytes,
@@ -351,13 +358,13 @@ async fn http_request(
             return err_dandelion!(DandelionError::SystemFuncResponseError);
         }
     }
-    let response_info = ResponseInformation {
+
+    Ok(ResponseInformation {
         item_name,
         item_key,
-        preamble,
+        preamble: preamble.freeze(),
         body,
-    };
-    return Ok(response_info);
+    })
 }
 
 async fn memcached_request(request_info: MemcachedRequest) -> DandelionResult<ResponseInformation> {
@@ -382,10 +389,8 @@ async fn memcached_request(request_info: MemcachedRequest) -> DandelionResult<Re
     };
 
     // Preamble is SUCCESS for success. For non successfull functions, error message will be stored there
-    let mut preamble: String;
-    let response_body: bytes::Bytes;
     // Default item size limit is 1MB. If item is larger, we ignore it
-    match method {
+    let (preamble, body) = match method {
         MemcachedMethod::SET => {
             // Assemble value to set
             // TODO Make timeout a parameter
@@ -396,10 +401,7 @@ async fn memcached_request(request_info: MemcachedRequest) -> DandelionResult<Re
             .await;
 
             match result {
-                Ok(Ok(_)) => {
-                    preamble = String::from("SUCCESS");
-                    response_body = Bytes::from(vec![0u8]);
-                }
+                Ok(Ok(_)) => (Bytes::from("SUCCESS"), Bytes::from(vec![0u8])),
                 Ok(Err(e)) => {
                     // TODO: Use better error
                     warn!("Memcached_request set failed with: {:?}", e);
@@ -419,20 +421,10 @@ async fn memcached_request(request_info: MemcachedRequest) -> DandelionResult<Re
             .await;
 
             match result {
-                Ok(Ok(Some(response))) => {
-                    preamble = String::from("SUCCESS");
-                    // preamble.push_str(&format!(", {:?}", response.key));
-                    // match response.cas {
-                    //     Some(value) => preamble.push_str(&format!(", {}", value)),
-                    //     None => preamble.push_str(", None"),
-                    // }
-                    // preamble.push_str(&format!(", {}", response.flags.to_string()));
-                    response_body = Bytes::from(response);
-                }
+                Ok(Ok(Some(response))) => (Bytes::from("SUCCESS"), Bytes::from(response)),
                 Ok(Ok(None)) => {
                     debug!("Key {} did not exist on memcached server", item_key);
-                    preamble = String::from("ABSENT");
-                    response_body = Bytes::from(vec![0u8]);
+                    (Bytes::from("ABSENT"), Bytes::from(vec![0u8]))
                 }
                 Ok(Err(e)) => {
                     debug!("Memcached_request get failed with: {:?}", e);
@@ -446,18 +438,19 @@ async fn memcached_request(request_info: MemcachedRequest) -> DandelionResult<Re
         }
     };
 
-    preamble.push('\n');
-
-    let response_info = ResponseInformation {
+    Ok(ResponseInformation {
         item_name,
         item_key,
         preamble,
-        body: response_body,
-    };
-    return Ok(response_info);
+        body,
+    })
 }
 
-fn response_write_to_bytes(context: &mut Context, response: ResponseInformation, offset: &mut usize) -> DandelionResult<()> {
+fn response_write_to_bytes(
+    context: &mut Context,
+    response: ResponseInformation,
+    offset: &mut usize,
+) -> DandelionResult<()> {
     let ResponseInformation {
         item_name,
         item_key,
@@ -465,20 +458,25 @@ fn response_write_to_bytes(context: &mut Context, response: ResponseInformation,
         body,
     } = response;
 
-    let preamble_len = preamble.len();
-    let body_len = body.len();
-    let response_len = preamble_len + body_len;
-    
-    let preamble_bytes = bytes::Bytes::from(preamble.into_bytes());
+    // let (_, base_ptr, _) = bytes::mm::memory_domain::get_mmap_details();
+
+    // want preable item offset to be the same page alignment as the allocation used for it.
+    let preamble_offset = *offset + preamble.as_ptr().addr() % PAGE_SIZE;
+    let preamble_length = preamble.len();
+    let preamble_end = (preamble_offset + preamble_offset).next_multiple_of(PAGE_SIZE);
+    // want body offset to be the first correct page aligned offset after preamble end
+    let body_offset = body.as_ptr().addr() % PAGE_SIZE + preamble_end;
+    let body_length = body.len();
 
     match &mut context.context {
         ContextType::Bytes(destination_ctxt) => {
-            destination_ctxt.frames.push(preamble_bytes);
-            destination_ctxt.frames.push(body);
-        },
+            // find the preamble offset
+            destination_ctxt.frames.insert(preamble_offset, preamble);
+            destination_ctxt.frames.insert(body_offset, body);
+        }
         _ => {
             error!("Invalid context type in reponse write");
-            return Err(dandelion_commons::DandelionError::ContextMissmatch);
+            return err_dandelion!(DandelionError::ContextMissmatch);
         }
     }
 
@@ -487,8 +485,8 @@ fn response_write_to_bytes(context: &mut Context, response: ResponseInformation,
             ident: item_name.clone(),
             key: item_key,
             data: Position {
-                offset: *offset,
-                size: response_len,
+                offset: preamble_offset,
+                size: preamble_length,
             },
         })
     }
@@ -497,16 +495,15 @@ fn response_write_to_bytes(context: &mut Context, response: ResponseInformation,
             ident: item_name,
             key: item_key,
             data: Position {
-                offset: *offset + preamble_len,
-                size: response_len - preamble_len,
+                offset: body_offset,
+                size: body_length,
             },
         })
     }
 
-    *offset += response_len;
+    *offset = (body_offset + body_length).next_multiple_of(PAGE_SIZE);
 
     return Ok(());
-    
 }
 
 fn responses_write(
@@ -517,17 +514,17 @@ fn responses_write(
     responses: Vec<ResponseInformation>,
 ) {
     let mut out_context = Context::new(
-        ContextType::Bytes(Box::new(BytesContext::new(Vec::new()))),
-        context_size
+        ContextType::Bytes(Box::new(BytesContext::new(BTreeMap::new()))),
+        context_size,
     );
 
     let mut offset = 0;
 
     if !output_set_names.is_empty() {
         out_context.content = vec![None, None];
-        if output_set_names.iter().any(|elem| elem == "response") {
+        if output_set_names.iter().any(|elem| elem == "header") {
             out_context.content[0] = Some(DataSet {
-                ident: String::from("response"),
+                ident: String::from("header"),
                 buffers: vec![],
             })
         }

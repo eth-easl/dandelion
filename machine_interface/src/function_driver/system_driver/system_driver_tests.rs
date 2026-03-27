@@ -76,20 +76,6 @@ mod system_driver_tests {
             .to_string();
     }
 
-    fn get_body_size(response_buffer: &Vec<u8>) -> usize {
-        // find two consecutive '\n' that implied headers are finished
-        let first_endl = response_buffer
-            .windows(2)
-            .position(|window| window == b"\n\n")
-            .unwrap_or(response_buffer.len());
-        let body_start = first_endl + 2;
-        return if body_start < response_buffer.len() {
-            response_buffer.len() - body_start
-        } else {
-            0
-        };
-    }
-
     fn get_http<Dom: MemoryDomain>(
         dom_init: MemoryResource,
         engine_type: EngineType,
@@ -157,22 +143,22 @@ mod system_driver_tests {
             .iter()
             .find(|set_opt| {
                 if let Some(set) = set_opt {
-                    return set.ident == "response";
+                    return set.ident == "header";
                 } else {
                     return false;
                 }
             })
-            .expect("Should have response set")
+            .expect("Should have header set")
             .as_ref()
-            .expect("Should have response set");
+            .expect("Should have header set");
         assert_eq!(1, response_set.buffers.len());
         let status_item = &response_set.buffers[0];
-        let mut response_buffer = Vec::<u8>::new();
-        response_buffer.resize(status_item.data.size, 0);
+        let mut header_buffer = Vec::<u8>::new();
+        header_buffer.resize(status_item.data.size, 0);
         result_context
-            .read(status_item.data.offset, &mut response_buffer)
+            .read(status_item.data.offset, &mut header_buffer)
             .expect("Should be able to read status");
-        let status = read_status(&response_buffer);
+        let status = read_status(&header_buffer);
         assert_eq!("HTTP/1.1 200 OK", status);
 
         // check body
@@ -190,9 +176,8 @@ mod system_driver_tests {
             .as_ref()
             .expect("Should have body set");
         assert_eq!(1, body_set.buffers.len());
-        let expected_body_len = get_body_size(&response_buffer);
         // debug!("expected_body_len: {}", expected_body_len);
-        assert_eq!(expected_body_len, body_set.buffers[0].data.size);
+        assert_eq!(6, body_set.buffers[0].data.size);
     }
 
     fn post_http<Dom: MemoryDomain>(
@@ -275,14 +260,14 @@ dolore magna aliquyam erat, sed diam voluptua."#
             .iter()
             .find(|set_opt| {
                 if let Some(set) = set_opt {
-                    return set.ident == "response";
+                    return set.ident == "header";
                 } else {
                     return false;
                 }
             })
-            .expect("Should have response set")
+            .expect("Should have header set")
             .as_ref()
-            .expect("Should have response set");
+            .expect("Should have header set");
         assert_eq!(1, response.buffers.len());
         let response_item = &response.buffers[0];
         let mut response_buffer = Vec::<u8>::new();

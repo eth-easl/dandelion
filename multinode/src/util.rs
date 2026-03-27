@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 // For types which have the same name for prot and machine_interface,
 // use the full ones to make sure there is no mix ups
@@ -7,7 +7,7 @@ use machine_interface::composition::CompositionSet;
 use machine_interface::memory_domain::bytes_context::BytesContext;
 use machine_interface::memory_domain::{Context, ContextType};
 use machine_interface::{machine_config, Position};
-use prost::bytes::Bytes;
+use prost::bytes::BytesMut;
 
 use crate::proto;
 
@@ -80,23 +80,22 @@ pub fn composition_sets_to_proto(sets: &Vec<Option<CompositionSet>>) -> Vec<prot
 pub fn proto_data_sets_to_context(protobuf_sets: Vec<proto::DataSet>) -> Context {
     // create context sets with correct offsets to the buffer
     let mut sets = Vec::with_capacity(protobuf_sets.len());
-    let mut frames = Vec::new();
+    let mut frame = BytesMut::new();
     let mut context_size = 0usize;
     for protobuf_set in protobuf_sets.into_iter() {
         let mut items = Vec::with_capacity(protobuf_set.items.len());
         for protobuf_itm in protobuf_set.items.into_iter() {
-            // let data_ptr = protobuf_itm.data.as_ptr();
-            let new_frame = protobuf_itm.data;
+            let frame_length = protobuf_itm.data.len();
             items.push(machine_interface::DataItem {
                 ident: protobuf_itm.ident,
                 data: Position {
                     offset: context_size,
-                    size: new_frame.len(),
+                    size: frame_length,
                 },
                 key: protobuf_itm.key,
             });
-            context_size += new_frame.len();
-            frames.push(Bytes::from(new_frame));
+            frame.extend_from_slice(&protobuf_itm.data);
+            context_size += frame_length;
         }
         sets.push(Some(machine_interface::DataSet {
             ident: protobuf_set.ident.clone(),
@@ -104,6 +103,7 @@ pub fn proto_data_sets_to_context(protobuf_sets: Vec<proto::DataSet>) -> Context
         }));
     }
 
+    let frames = BTreeMap::from([(0, frame.freeze())]);
     // create context over the protobuf
     let mut context = Context::new(
         ContextType::Bytes(Box::new(BytesContext::new(frames))),

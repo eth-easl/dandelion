@@ -377,8 +377,8 @@ pub fn transfer_data_item(
     let destination_offset = match destination.context {
         #[cfg(feature = "kvm")]
         // if we have more than 2 PAGE sizes, there is a least one page that can be zero copied
-        ContextType::Kvm(_)
-            if source_item.data.size > 2 * kvm::PAGE_SIZE
+        ContextType::Bytes(_) | ContextType::Kvm(_)
+            if source_item.data.size > 2 * crate::machine_config::PAGE_SIZE
                 && source_item.data.offset % destination_allignment == 0 =>
         {
             let (index, start_address) = kvm::get_transfer_offset(

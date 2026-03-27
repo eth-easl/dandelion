@@ -1,3 +1,4 @@
+use crate::machine_config::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult};
 use kvm_bindings::{kvm_fpu, kvm_regs, kvm_segment, kvm_sregs, kvm_xcrs};
 use kvm_ioctls::{VcpuFd, VmFd};
@@ -82,9 +83,7 @@ pub(super) const PDE64_IS_PAGE: u64 = 1 << 7;
 // The direcotry pointer table entries are either 1GB pages or directory table pointers
 // Directory table entries are either 2MB pages or tables
 // Table entries are always 4KB pages
-pub(super) const PAGE_SHIFT: usize = 12;
-pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
-pub(super) const PAGE_MASK: u64 = (PAGE_SIZE - 1) as u64;
+const _: () = assert!(PAGE_SIZE == 4096);
 const LARGE_PAGE_SHIFT: usize = 21;
 pub const LARGE_PAGE: usize = 1 << LARGE_PAGE_SHIFT;
 pub(super) const HUGE_PAGE_SHIFT: usize = 30;

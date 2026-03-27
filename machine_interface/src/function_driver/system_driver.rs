@@ -9,16 +9,21 @@ use crate::{function_driver::functions::SystemFunction, machine_config::EngineTy
 /// After a line break the headers are one line each with the formatting of key ':' value
 /// ex.: "host: www.google.com"
 /// After all headers and an empty line the body which can be arbitrary binary data
+// TODO: think if we want to also separate this into two sets, one with header one with bodies.
+// If we separate, need a way to deal with non matching numbers of bodies and headers and duplicate names.
+// Could offer automatic pairing for example for giving a header that can be used with any number of bodies.
+// Do not want to overcomplicate things.
 const HTTP_INPUT_SETS: [&str; 1] = ["request"];
 
-/// HTTP outputs one set with response for each request that was in the input set
-/// The reponses start with a status line containing the protocol used, the response code and possible the reason
+/// HTTP outputs two sets with response header and bodies for each request that was in the input set
+/// The reponse headers start with a status line containing the protocol used, the response code and possible the reason
 /// ex.: "HTTP/1.1 200 OK"
 /// On the following lines there are the headers in key value formatted with ':' as separator
 /// ex.: "Content-Type: text/html; charset=utf-8"
-/// After all headers and one empty line is the body, which is arbitrary data
-/// Additionally there is a set that only contains the bodies with the same item names as the requests.
-const HTTP_OUTPUT_SETS: [&str; 2] = ["response", "body"];
+/// The header and body items all carry the names and keys of the corresponding requests.
+/// The user is responsible for ensuring, that requests have names and the names are unique, if they need them to associate
+/// the headers with the bodies.
+const HTTP_OUTPUT_SETS: [&str; 2] = ["header", "body"];
 
 /// Provides the input set names for a given system function
 pub fn get_system_function_input_sets(function: SystemFunction) -> Vec<String> {

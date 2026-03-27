@@ -1,6 +1,5 @@
-use super::x86_64::{
-    LARGE_PAGE, PAGE_SIZE, PDE64_ALL_ALLOWED, PDE64_IS_PAGE, PDE64_PRESENT, PDE64_USER,
-};
+use super::x86_64::{LARGE_PAGE, PDE64_ALL_ALLOWED, PDE64_IS_PAGE, PDE64_PRESENT, PDE64_USER};
+use crate::machine_config::PAGE_SIZE;
 use core::arch::global_asm;
 
 global_asm!("

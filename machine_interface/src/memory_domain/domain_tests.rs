@@ -734,7 +734,7 @@ systemsDomainTests!(cheri_system; cheriType; MemoryResource::Anonymous { size: (
 #[cfg(feature = "kvm")]
 use super::kvm::KvmMemoryDomain as kvmType;
 #[cfg(feature = "kvm")]
-use super::kvm::PAGE_SIZE as page_size;
+use crate::machine_config::PAGE_SIZE as page_size;
 #[cfg(feature = "kvm")]
 domainTests!(kvm; kvmType; MemoryResource::Anonymous { size: (2<<22) }; page_size);
 #[cfg(feature = "kvm")]

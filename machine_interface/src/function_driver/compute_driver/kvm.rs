@@ -6,6 +6,7 @@ use crate::{
         ComputeResource, Driver, EngineWorkQueue,
     },
     interface::{read_output_structs, setup_input_structs, write_heap_end},
+    machine_config::PAGE_SIZE,
     memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
     DataItem, DataRequirement, DataRequirementList, DataSet, Position,
@@ -18,14 +19,12 @@ use kvm_bindings::{
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::debug;
 use nix::sys::mman::{mmap, MapFlags, ProtFlags};
-use std::{num::NonZeroUsize, sync::Arc};
+use std::{num::NonZeroUsize, ops::Add, os::fd::BorrowedFd, sync::Arc};
 
 #[cfg(target_arch = "x86_64")]
 mod x86_64;
 #[cfg(target_arch = "x86_64")]
 mod x86_64_asm;
-#[cfg(target_arch = "x86_64")]
-pub use x86_64::PAGE_SIZE;
 #[cfg(target_arch = "x86_64")]
 pub(self) use x86_64::*;
 
@@ -33,11 +32,6 @@ pub(self) use x86_64::*;
 mod aarch64;
 #[cfg(target_arch = "aarch64")]
 use aarch64::*;
-
-const _: () = assert!(PAGE_SIZE.is_power_of_two());
-pub fn round_down_to_page(address: usize) -> usize {
-    address & !(PAGE_SIZE - 1)
-}
 
 #[cfg(feature = "backend_debug")]
 fn dump_memory(data: &[u8]) {
@@ -128,48 +122,91 @@ impl EngineLoop for KvmLoop {
         for (&overlay_end, (overlay_start, overlay_context)) in kvm_context.overlay.iter_mut() {
             // map from back if it is a kvm context
             let original = if let Some(context_item) = overlay_context {
-                if let ContextType::Kvm(overlay_kvm_context) = &context_item.context.context {
-                    let overlay_size = overlay_end - *overlay_start + 1;
-                    // map to end of context
-                    let mut mappig_start = stack_start - overlay_size;
-                    // make sure that the virtual and physical address have the same allignment with regards to large pages
-                    // for this mapping start needs to have the same distance to the next large page boundry as the virtual
-                    let virtual_large_offset =
-                        overlay_start.next_multiple_of(LARGE_PAGE) - *overlay_start;
-                    let mapping_large_offset =
-                        mappig_start.next_multiple_of(LARGE_PAGE) - mappig_start;
-                    let additional_offset = if virtual_large_offset >= mapping_large_offset {
-                        virtual_large_offset - mapping_large_offset
-                    } else {
-                        virtual_large_offset + LARGE_PAGE - mapping_large_offset
-                    };
-                    mappig_start -= additional_offset;
-                    stack_start = mappig_start;
-                    let start_address = kvm_context.storage.as_ptr().addr() + stack_start;
-                    let file_offset = (overlay_kvm_context.rangepool_start as usize) * PAGE_SIZE
-                        + context_item.offset;
-                    unsafe {
-                        mmap(
-                            NonZeroUsize::new(start_address),
-                            NonZeroUsize::new_unchecked(overlay_size),
-                            ProtFlags::all(),
-                            MapFlags::MAP_PRIVATE | MapFlags::MAP_FIXED,
-                            &overlay_kvm_context.fd,
-                            file_offset as i64,
-                        )
-                        .unwrap()
-                    };
-
-                    log::debug!(
-                        "zero copy pages at physical: {}, virtual {}, with size {}",
-                        mappig_start,
-                        *overlay_start,
-                        overlay_size
-                    );
-                    Some(mappig_start)
+                let overlay_size = overlay_end - *overlay_start + 1;
+                // map to end of context
+                let mut mappig_start = stack_start - overlay_size;
+                // make sure that the virtual and physical address have the same allignment with regards to large pages
+                // for this mapping start needs to have the same distance to the next large page boundry as the virtual
+                let virtual_large_offset =
+                    overlay_start.next_multiple_of(LARGE_PAGE) - *overlay_start;
+                let mapping_large_offset = mappig_start.next_multiple_of(LARGE_PAGE) - mappig_start;
+                let additional_offset = if virtual_large_offset >= mapping_large_offset {
+                    virtual_large_offset - mapping_large_offset
                 } else {
-                    panic!("KVM context overlay should not contain context reference that is not remappable");
+                    virtual_large_offset + LARGE_PAGE - mapping_large_offset
+                };
+                mappig_start -= additional_offset;
+                stack_start = mappig_start;
+                log::debug!(
+                    "zero copy pages at physical: {}, virtual {}, with size {}",
+                    mappig_start,
+                    *overlay_start,
+                    overlay_size
+                );
+                let start_address = kvm_context.storage.as_ptr().addr() + stack_start;
+                match &context_item.context.context {
+                    ContextType::Kvm(overlay_kvm_context) => {
+                        let file_offset = (overlay_kvm_context.rangepool_start as usize)
+                            * PAGE_SIZE
+                            + context_item.offset;
+                        unsafe {
+                            mmap(
+                                NonZeroUsize::new(start_address),
+                                NonZeroUsize::new_unchecked(overlay_size),
+                                ProtFlags::all(),
+                                MapFlags::MAP_PRIVATE | MapFlags::MAP_FIXED,
+                                &overlay_kvm_context.fd,
+                                file_offset as i64,
+                            )
+                            .unwrap()
+                        };
+                    }
+                    ContextType::Bytes(bytes_context) => {
+                        let (frame_offset, frame) = bytes_context
+                            .frames
+                            .range(..=context_item.offset)
+                            .next_back()
+                            .unwrap();
+                        // at the moment assume it is in a single frame check that assumption holds
+                        debug_assert!(frame_offset + overlay_size < frame.len());
+                        // now map that part of the frame
+                        let (fd, bytes_base_ptr, bytes_size) =
+                            bytes::mm::memory_domain::get_mmap_details();
+                        let frame_address = frame.as_ptr().addr().add(frame_offset);
+                        debug_assert!(
+                            frame_address >= bytes_base_ptr,
+                            "frame_address: {}, bytes_base_ptr:  {}",
+                            frame_address,
+                            bytes_base_ptr
+                        );
+                        debug_assert!(
+                            frame_address + overlay_size < bytes_base_ptr + bytes_size,
+                            "frame address: {}, overlay_size: {}, bytes pointer {} and size {}",
+                            frame_address,
+                            overlay_size,
+                            bytes_base_ptr,
+                            bytes_size
+                        );
+                        let file_offset = frame_address - bytes_base_ptr;
+                        unsafe {
+                            let file = BorrowedFd::borrow_raw(fd);
+                            mmap(
+                                NonZeroUsize::new(start_address),
+                                NonZeroUsize::new_unchecked(overlay_size),
+                                ProtFlags::all(),
+                                MapFlags::MAP_PRIVATE | MapFlags::MAP_FIXED,
+                                file,
+                                file_offset as i64,
+                            )
+                            .unwrap()
+                        };
+                    }
+                    _ => {
+                        log::warn!("KVM context overlay should not contain context reference that is not remappable");
+                        return err_dandelion!(DandelionError::EngineResourceError);
+                    }
                 }
+                Some(mappig_start)
             } else {
                 None
             };
@@ -411,3 +448,6 @@ impl Driver for KvmDriver {
         });
     }
 }
+
+#[cfg(test)]
+mod test;

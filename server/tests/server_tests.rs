@@ -101,13 +101,18 @@ mod server_tests {
     fn send_matrix_request(
         endpoint: &str,
         function_name: String,
+        chain: bool,
         http_version: reqwest::Version,
         client: Client,
     ) {
         // call into function
         let mut data = Vec::new();
-        data.extend_from_slice(&i64::to_le_bytes(1));
-        data.extend_from_slice(&i64::to_le_bytes(1));
+        // Use a matrix big enough to potentially get split into multiple frames
+        let matrix_dim = 3;
+        data.extend_from_slice(&u64::to_le_bytes(matrix_dim));
+        for _ in 0..matrix_dim * matrix_dim {
+            data.extend_from_slice(&u64::to_le_bytes(1));
+        }
         let mat_request = DandelionRequest {
             name: function_name,
             sets: vec![InputSet {
@@ -133,12 +138,19 @@ mod server_tests {
         assert_eq!(1, response.sets.len());
         assert_eq!(1, response.sets[0].items.len());
         let response_data = response.sets[0].items[0].data;
-        assert_eq!(response_data.len(), 16);
+        assert_eq!(
+            (matrix_dim * matrix_dim + 1) as usize * size_of::<u64>(),
+            response_data.len()
+        );
         let mut reader = Cursor::new(response_data);
         let mat_size = reader.read_u64::<LittleEndian>().unwrap();
-        assert_eq!(1, mat_size);
+        assert_eq!(matrix_dim, mat_size);
         let checksum = reader.read_u64::<LittleEndian>().unwrap();
-        assert_eq!(1, checksum);
+        if chain {
+            assert_eq!(matrix_dim * matrix_dim * matrix_dim, checksum)
+        } else {
+            assert_eq!(matrix_dim, checksum);
+        }
     }
 
     fn register_and_request(http_version: reqwest::Version, client: Client, local: bool) {
@@ -232,12 +244,14 @@ mod server_tests {
         send_matrix_request(
             "http://localhost:8080/hot/matmul",
             function_name,
+            false,
             http_version,
             client.clone(),
         );
         send_matrix_request(
             "http://localhost:8080/hot/matmul",
             chain_name,
+            true,
             http_version,
             client,
         );
@@ -386,6 +400,7 @@ mod server_tests {
         send_matrix_request(
             "http://localhost:8080/hot/matmul",
             String::from("matmul"),
+            false,
             reqwest::Version::HTTP_11,
             Client::builder()
                 .timeout(Some(std::time::Duration::from_secs(5)))

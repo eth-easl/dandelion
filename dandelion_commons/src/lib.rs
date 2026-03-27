@@ -7,6 +7,7 @@ pub type FunctionId = Arc<String>;
 
 // TODO define error types, possibly better printing than debug
 // TODO make naming consistent and move groups to subtypes, e.g. DomainError -> Domain in main enum
+// TODO for error type add the origin file and line number to make it easy to find, can now do this via core::file! and core::line!
 #[derive(Debug, Clone, PartialEq)]
 pub enum DandelionError {
     /// errors related to the dispatcher

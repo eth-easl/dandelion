@@ -1,5 +1,5 @@
 #[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "kvm")))]
-mod compute_driver_tests {
+pub(super) mod compute_driver_tests {
     use crate::{
         composition::CompositionSet,
         function_driver::{
@@ -17,10 +17,10 @@ mod compute_driver_tests {
     use dandelion_commons::{records::Recorder, DandelionError, FunctionId};
     use std::{sync::Arc, time::Instant};
 
-    const DEFAULT_CONTEXT_SIZE: usize = 0x800_0000; // 128MiB
+    pub(in crate::function_driver::compute_driver) const DEFAULT_CONTEXT_SIZE: usize = 0x800_0000; // 128MiB
 
     #[inline]
-    fn zero_id() -> FunctionId {
+    pub(in crate::function_driver::compute_driver) fn zero_id() -> FunctionId {
         Arc::new(0.to_string())
     }
 
@@ -56,7 +56,9 @@ mod compute_driver_tests {
         }
     }
 
-    fn prepare_engine_and_domain<Dom: MemoryDomain>(
+    pub(in crate::function_driver::compute_driver) fn prepare_engine_and_domain<
+        Dom: MemoryDomain,
+    >(
         dom_init: MemoryResource,
         driver: &dyn Driver,
         drv_init: Vec<ComputeResource>,
@@ -217,7 +219,7 @@ mod compute_driver_tests {
         assert_eq!(4, read_buffer[1]);
     }
 
-    fn get_expected_mat(size: usize) -> Vec<i64> {
+    pub(in crate::function_driver::compute_driver) fn get_expected_mat(size: usize) -> Vec<i64> {
         let mut in_mat_vec = Vec::<i64>::new();
         for i in 0..(size * size) {
             in_mat_vec.push(i as i64);
