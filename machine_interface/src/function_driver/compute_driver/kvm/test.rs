@@ -13,32 +13,37 @@ use crate::{
     },
     DataItem, DataSet, Position,
 };
-use bytes::BytesMut;
+use bytes::{BufMut, BytesMut};
 use dandelion_commons::records::Recorder;
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
 #[test_log::test]
 fn zero_copy_from_bytes() {
     // create bytes context with data in it
-    let mat_size = 32;
+    let mat_size = 33;
     let item_size = (mat_size * mat_size + 1) * core::mem::size_of::<i64>();
     let mut bytes = BytesMut::new();
-    bytes.extend_from_slice(&i64::to_ne_bytes(mat_size as i64));
+    // add some random data at the front to make sure there is a header
+    let header_numbers = 3968;
+    for _ in 0..header_numbers {
+        bytes.put_u8(0xF);
+    }
+    bytes.put_i64_ne(mat_size as i64);
     for i in 0..(mat_size * mat_size) {
-        bytes.extend_from_slice(&i64::to_ne_bytes(i as i64));
+        bytes.put_i64_ne(i as i64);
     }
     let mut input_context = Context::new(
         ContextType::Bytes(Box::new(BytesContext {
             frames: BTreeMap::from([(0, bytes.freeze())]),
         })),
-        item_size,
+        item_size + header_numbers,
     );
     input_context.content = vec![Some(DataSet {
-        ident: "".to_string(),
+        ident: "MatrixSet".to_string(),
         buffers: vec![DataItem {
-            ident: "".to_string(),
+            ident: "matrix".to_string(),
             data: Position {
-                offset: 0,
+                offset: header_numbers,
                 size: item_size,
             },
             key: 0,

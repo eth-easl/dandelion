@@ -80,6 +80,8 @@ mod system_driver_tests {
         dom_init: MemoryResource,
         engine_type: EngineType,
         drv_init: ComputeResource,
+        uri: &'static str,
+        expected_size: usize,
     ) -> () {
         let domain =
             Arc::new(Dom::init(get_resource(dom_init)).expect("Should be able to get domain"));
@@ -90,7 +92,7 @@ mod system_driver_tests {
             .expect("Should be able to get engine");
         let function = Arc::new(driver.parse_function(String::from(""), &domain).unwrap());
 
-        let request = "GET http://127.0.0.1:9000/get HTTP/1.1".as_bytes().to_vec();
+        let request = format!("GET {} HTTP/1.1", uri).as_bytes().to_vec();
         let request_length = request.len();
         let mut input_context = ReadOnlyContext::new(request.into_boxed_slice()).unwrap();
         input_context.content.push(Some(DataSet {
@@ -177,7 +179,7 @@ mod system_driver_tests {
             .expect("Should have body set");
         assert_eq!(1, body_set.buffers.len());
         // debug!("expected_body_len: {}", expected_body_len);
-        assert_eq!(6, body_set.buffers[0].data.size);
+        assert_eq!(expected_size, body_set.buffers[0].data.size);
     }
 
     fn post_http<Dom: MemoryDomain>(
@@ -194,7 +196,7 @@ mod system_driver_tests {
             .expect("Should be able to get engine");
         let function = Arc::new(driver.parse_function(String::from(""), &domain).unwrap());
 
-        let request = r#"POST http://127.0.0.1:9001/post HTTP/1.1
+        let request = r#"POST http://127.0.0.1:9002/post HTTP/1.1
 Content-Type: text/plain
 
 Lorem ipsum dolor sit amet, consetetur sadipscing elitr,
@@ -284,12 +286,30 @@ dolore magna aliquyam erat, sed diam voluptua."#
             #[test_log::test]
             fn test_http_get() {
                 let _server = super::HttpServer::start("9000");
-                super::get_http::<$domain>($dom_init, $engine_type, $drv_init);
+                super::get_http::<$domain>(
+                    $dom_init,
+                    $engine_type,
+                    $drv_init,
+                    "http://127.0.0.1:9000/get",
+                    6,
+                );
+            }
+
+            #[test_log::test]
+            fn test_http_get_large() {
+                let _server = super::HttpServer::start("9001");
+                super::get_http::<$domain>(
+                    $dom_init,
+                    $engine_type,
+                    $drv_init,
+                    "http://127.0.0.1:9001/get_large",
+                    8192,
+                );
             }
 
             #[test_log::test]
             fn test_http_post() {
-                let _server = super::HttpServer::start("9001");
+                let _server = super::HttpServer::start("9002");
                 super::post_http::<$domain>($dom_init, $engine_type, $drv_init);
             }
         };

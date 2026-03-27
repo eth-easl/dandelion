@@ -172,7 +172,10 @@ impl EngineLoop for KvmLoop {
                         // now map that part of the frame
                         let (fd, bytes_base_ptr, bytes_size) =
                             bytes::mm::memory_domain::get_mmap_details();
-                        let frame_address = frame.as_ptr().addr().add(frame_offset);
+                        let frame_address = frame
+                            .as_ptr()
+                            .addr()
+                            .add(context_item.offset - frame_offset);
                         debug_assert!(
                             frame_address >= bytes_base_ptr,
                             "frame_address: {}, bytes_base_ptr:  {}",
