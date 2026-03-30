@@ -162,20 +162,19 @@ impl EngineLoop for KvmLoop {
                         };
                     }
                     ContextType::Bytes(bytes_context) => {
-                        let (frame_offset, frame) = bytes_context
+                        let (frame_end, frame) = bytes_context
                             .frames
-                            .range(..=context_item.offset)
-                            .next_back()
+                            .range(context_item.offset..)
+                            .next()
                             .unwrap();
+                        let frame_start = frame_end + 1 - frame.len();
                         // at the moment assume it is in a single frame check that assumption holds
-                        debug_assert!(frame_offset + overlay_size < frame.len());
+                        debug_assert!(frame_start + overlay_size < frame.len());
                         // now map that part of the frame
                         let (fd, bytes_base_ptr, bytes_size) =
                             bytes::mm::memory_domain::get_mmap_details();
-                        let frame_address = frame
-                            .as_ptr()
-                            .addr()
-                            .add(context_item.offset - frame_offset);
+                        let frame_address =
+                            frame.as_ptr().addr().add(context_item.offset - frame_start);
                         debug_assert!(
                             frame_address >= bytes_base_ptr,
                             "frame_address: {}, bytes_base_ptr:  {}",

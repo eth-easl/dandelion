@@ -9,9 +9,9 @@ use log::{debug, error};
 use std::collections::BTreeMap;
 
 pub struct BytesContext {
-    /// Mapping a starting offset to a bytes backing the chunk starting from offset
-    /// with the length of Bytes. Inserting overlapping frames is probibited.
-    /// At the moment expect that items are always within a single frame and do not span accross them.
+    /// Mapping the address of the last byte in a frame to the frame.
+    /// The start is computed as (key - (frame.len() - 1)), since the key is the address of the last byte, not last + 1
+    /// Inserting overlapping frames is probibited.
     pub frames: BTreeMap<usize, Bytes>,
 }
 
@@ -52,21 +52,21 @@ impl ContextTrait for BytesContext {
                 read_buffer.len() * core::mem::size_of::<T>(),
             )
         };
-        // TODO replace with lower_bound once it stabilizes
+        // TODO replace with lower_bound once it stabilizes, then we can use frame start as index instead of end to make handling more intuitive
         let bytes_to_read = byte_buffer.len();
         let mut bytes_read = 0;
-        for (&frame_offset, frame) in self.frames.iter() {
-            // check if frame ends before the frame we are looking for
-            if frame_offset + frame.len() <= offset {
-                continue;
-            }
-            // check if frame is after the the frame we are looking for
-            if frame_offset > offset {
+        for (&frame_end, frame) in self.frames.range(offset..) {
+            // start at the frame with the smallest end higher than offset
+            // to check if there is overlap between the frame we found and the read range,
+            // need to check that the frame starts before the offset
+            let frame_start = frame_end + 1 - frame.len();
+            // if the frame start
+            if frame_start > offset {
                 break;
             }
-            // know that frame_offset <= offset < frame_offset + frame.len()
+            // know that frame_start <= offset <= frame_end (last byte in the frame)
             // read eveything we need from this frame
-            let read_start = offset - frame_offset;
+            let read_start = offset - frame_start;
             let read_end = usize::min(read_start + bytes_to_read - bytes_read, frame.len());
             let additiona_bytes = read_end - read_start;
             // copy over the data
@@ -82,14 +82,15 @@ impl ContextTrait for BytesContext {
     }
 
     fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
-        if let Some((frame_offset, frame)) = self.frames.range(..=offset).next_back() {
-            // know that the frame offset is bigger or equal to offset
-            // check that some part of the frame is actually overlapping with the offset
-            if offset >= frame_offset + frame.len() {
+        if let Some((frame_end, frame)) = self.frames.range(offset..).next() {
+            // know that the frame ends at or after the offset
+            // need to check that is also starts before it
+            let frame_start = (frame_end + 1) - frame.len();
+            if offset < frame_start {
                 return err_dandelion!(DandelionError::InvalidRead);
             }
             // copy over the data
-            let read_start = offset - frame_offset;
+            let read_start = offset - frame_start;
             let read_end = usize::min(read_start + length, frame.len());
             Ok(&frame[read_start..read_end])
         } else {
@@ -478,9 +479,8 @@ impl BytesContext {
         // create context
         let mut current_offset = 0;
         let frame_tree = BTreeMap::from_iter(frame_data.into_iter().map(|item| {
-            let offset = current_offset;
             current_offset += item.len();
-            (offset, item)
+            (current_offset - 1, item)
         }));
         let mut context = Context::new(
             crate::memory_domain::ContextType::Bytes(Box::new(BytesContext { frames: frame_tree })),
@@ -496,15 +496,15 @@ impl BytesContext {
 #[test]
 fn read_test() {
     let first = vec![1u8, 2u8, 3u8, 4u8];
-    let second = vec![];
+    // let second = vec![];
     let third = vec![5u8, 6u8, 7u8];
     let fourth = vec![8u8];
     let mut offset = 0;
     let mut frames = BTreeMap::new();
-    for frame in [first, second, third, fourth].into_iter() {
-        let frame_size = frame.len();
-        frames.insert(offset, Bytes::from(frame));
-        offset += frame_size;
+    for frame in [first, third, fourth].into_iter() {
+        offset += frame.len();
+        println!("offset: {}", offset);
+        frames.insert(offset - 1, Bytes::from(frame));
     }
     let read_context = BytesContext { frames };
     let expected_data = vec![1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8];

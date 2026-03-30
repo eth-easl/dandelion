@@ -471,8 +471,12 @@ fn response_write_to_bytes(
     match &mut context.context {
         ContextType::Bytes(destination_ctxt) => {
             // find the preamble offset
-            destination_ctxt.frames.insert(preamble_offset, preamble);
-            destination_ctxt.frames.insert(body_offset, body);
+            destination_ctxt
+                .frames
+                .insert(preamble_offset + preamble_length - 1, preamble);
+            destination_ctxt
+                .frames
+                .insert(body_offset + body_length - 1, body);
         }
         _ => {
             error!("Invalid context type in reponse write");

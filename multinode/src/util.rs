@@ -102,8 +102,8 @@ pub fn proto_data_sets_to_context(protobuf_sets: Vec<proto::DataSet>) -> Context
             buffers: items,
         }));
     }
-
-    let frames = BTreeMap::from([(0, frame.freeze())]);
+    let frame_end = frame.len() - 1;
+    let frames = BTreeMap::from([(frame_end, frame.freeze())]);
     // create context over the protobuf
     let mut context = Context::new(
         ContextType::Bytes(Box::new(BytesContext::new(frames))),

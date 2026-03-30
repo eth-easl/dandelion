@@ -26,17 +26,21 @@ fn zero_copy_from_bytes() {
     // add some random data at the front to make sure there is a header
     let header_numbers = 3968;
     for _ in 0..header_numbers {
-        bytes.put_u8(0xF);
+        bytes.put_u8(0b0101);
     }
     bytes.put_i64_ne(mat_size as i64);
     for i in 0..(mat_size * mat_size) {
         bytes.put_i64_ne(i as i64);
     }
+    let footer_numbers = 400;
+    for _ in 0..footer_numbers {
+        bytes.put_u8(0b1010);
+    }
     let mut input_context = Context::new(
         ContextType::Bytes(Box::new(BytesContext {
-            frames: BTreeMap::from([(0, bytes.freeze())]),
+            frames: BTreeMap::from([(bytes.len() - 1, bytes.freeze())]),
         })),
-        item_size + header_numbers,
+        header_numbers + item_size + footer_numbers,
     );
     input_context.content = vec![Some(DataSet {
         ident: "MatrixSet".to_string(),
