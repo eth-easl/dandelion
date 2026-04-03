@@ -16,6 +16,7 @@ use crate::{
 use bytes::{Buf, Bytes};
 use core_affinity::set_for_current;
 use dandelion_commons::{
+    dandelion_err, err_dandelion,
     records::{RecordPoint, Recorder},
     DandelionError, DandelionResult, FunctionRegistryError,
 };
@@ -88,7 +89,7 @@ impl Request for HttpRequest {
         let request_line = match std::str::from_utf8(&raw_request[0..request_index]) {
             Ok(line) => line,
             Err(_) => {
-                return Err(DandelionError::InvalidSystemFuncArg(String::from(
+                return err_dandelion!(DandelionError::InvalidSystemFuncArg(String::from(
                     "Request line not utf8",
                 )));
             }
@@ -101,21 +102,21 @@ impl Request for HttpRequest {
             Some(method_string) if method_string == "POST" => HttpMethod::POST,
             Some(method_string) if method_string == "PUT" => HttpMethod::PUT,
             Some(method_string) => {
-                return Err(DandelionError::InvalidSystemFuncArg(format!(
+                return err_dandelion!(DandelionError::InvalidSystemFuncArg(format!(
                     "Unsupported Method: {}",
                     method_string
                 )))
             }
             _ => {
-                return Err(DandelionError::MalformedSystemFuncArg(String::from(
+                return err_dandelion!(DandelionError::MalformedSystemFuncArg(String::from(
                     "No method found",
                 )))
             }
         };
 
-        let uri = String::from(request_iter.next().ok_or(
-            DandelionError::MalformedSystemFuncArg(String::from("No uri in request")),
-        )?);
+        let uri = String::from(request_iter.next().ok_or(dandelion_err!(
+            DandelionError::MalformedSystemFuncArg(String::from("No uri in request"))
+        ))?);
 
         let version = match request_iter.next() {
             Some(version_string) if version_string == "HTTP/0.9" => HttpVersion::HTTP_09,
@@ -124,13 +125,13 @@ impl Request for HttpRequest {
             Some(version_string) if version_string == "HTTP/2.0" => HttpVersion::HTTP_2,
             Some(version_string) if version_string == "HTTP/3.0" => HttpVersion::HTTP_3,
             Some(version_string) => {
-                return Err(DandelionError::InvalidSystemFuncArg(format!(
+                return err_dandelion!(DandelionError::InvalidSystemFuncArg(format!(
                     "Unkown http version: {}",
                     version_string,
                 )))
             }
             None => {
-                return Err(DandelionError::MalformedSystemFuncArg(String::from(
+                return err_dandelion!(DandelionError::MalformedSystemFuncArg(String::from(
                     "No http version found",
                 )))
             }
@@ -155,17 +156,17 @@ impl Request for HttpRequest {
             let split_index = header_line
                 .iter()
                 .position(|character| *character == b':')
-                .ok_or(DandelionError::MalformedSystemFuncArg(String::from(
-                    "Header line does not contain \':\'",
+                .ok_or(dandelion_err!(DandelionError::MalformedSystemFuncArg(
+                    String::from("Header line does not contain \':\'",)
                 )))?;
             let (key, value) = header_line.split_at(split_index);
-            let header_key = HeaderName::from_bytes(key).or(Err(
-                DandelionError::MalformedSystemFuncArg(String::from("Header key not utf-8")),
+            let header_key = HeaderName::from_bytes(key).or(err_dandelion!(
+                DandelionError::MalformedSystemFuncArg(String::from("Header key not utf-8"))
             ))?;
-            let header_value = HeaderValue::from_bytes(&value[1..]).or(Err(
+            let header_value = HeaderValue::from_bytes(&value[1..]).or(err_dandelion!(
                 DandelionError::MalformedSystemFuncArg(String::from(
                     "Header value not utf-8 conformant",
-                )),
+                ))
             ))?;
             match headermap.entry(header_key) {
                 http::header::Entry::Occupied(mut occupied) => occupied.append(header_value),
@@ -210,7 +211,7 @@ impl Request for MemcachedRequest {
         let request_line = match std::str::from_utf8(&raw_request[0..request_index]) {
             Ok(line) => line,
             Err(_) => {
-                return Err(DandelionError::InvalidSystemFuncArg(String::from(
+                return err_dandelion!(DandelionError::InvalidSystemFuncArg(String::from(
                     "Request line not utf8",
                 )));
             }
@@ -222,25 +223,25 @@ impl Request for MemcachedRequest {
             Some(method_string) if method_string == "MEMCACHED_GET" => MemcachedMethod::GET,
             Some(method_string) if method_string == "MEMCACHED_SET" => MemcachedMethod::SET,
             Some(method_string) => {
-                return Err(DandelionError::InvalidSystemFuncArg(format!(
+                return err_dandelion!(DandelionError::InvalidSystemFuncArg(format!(
                     "Unsupported Method: {}",
                     method_string
                 )))
             }
             _ => {
-                return Err(DandelionError::MalformedSystemFuncArg(String::from(
+                return err_dandelion!(DandelionError::MalformedSystemFuncArg(String::from(
                     "No method found",
                 )))
             }
         };
 
-        let uri = String::from(request_iter.next().ok_or(
-            DandelionError::MalformedSystemFuncArg(String::from("No uri in request")),
-        )?);
+        let uri = String::from(request_iter.next().ok_or(dandelion_err!(
+            DandelionError::MalformedSystemFuncArg(String::from("No uri in request"))
+        ))?);
         let memcached_identifier = match request_iter.next() {
             Some(identifier) => identifier.to_string(),
             None => {
-                return Err(DandelionError::MalformedSystemFuncArg(String::from(
+                return err_dandelion!(DandelionError::MalformedSystemFuncArg(String::from(
                     "No memcached identifier found",
                 )))
             }
@@ -301,7 +302,7 @@ async fn http_request(
         HttpMethod::POST => client.post(uri.clone()),
         HttpMethod::GET => client.get(uri.clone()),
         _ => {
-            return Err(DandelionError::MalformedSystemFuncArg(String::from(
+            return err_dandelion!(DandelionError::MalformedSystemFuncArg(String::from(
                 "Unsupported Method",
             )))
         }
@@ -316,7 +317,7 @@ async fn http_request(
         Ok(req) => req,
         Err(http_error) => {
             error!("URI: {}", uri);
-            return Err(DandelionError::MalformedSystemFuncArg(format!(
+            return err_dandelion!(DandelionError::MalformedSystemFuncArg(format!(
                 "{:?}",
                 http_error
             )));
@@ -324,7 +325,7 @@ async fn http_request(
     };
     let response = match client.execute(request).await {
         Ok(resp) => resp,
-        Err(_) => return Err(DandelionError::SystemFuncResponseError),
+        Err(_) => return err_dandelion!(DandelionError::SystemFuncResponseError),
     };
 
     // write the status line
@@ -350,12 +351,12 @@ async fn http_request(
 
     let body = match response.bytes().await {
         Ok(bytes) => bytes,
-        Err(_) => return Err(DandelionError::SystemFuncResponseError),
+        Err(_) => return err_dandelion!(DandelionError::SystemFuncResponseError),
     };
 
     if let Some(content_len) = content_length {
         if content_len != body.len() {
-            return Err(DandelionError::SystemFuncResponseError);
+            return err_dandelion!(DandelionError::SystemFuncResponseError);
         }
     }
     let response_info = ResponseInformation {
@@ -385,7 +386,7 @@ async fn memcached_request(request_info: MemcachedRequest) -> DandelionResult<Re
     let ip = format!("memcache://{}", uri.clone());
     let memcached_client = match MemcachedClient::connect(ip) {
         Ok(client) => client,
-        Err(_) => return Err(DandelionError::MemcachedError),
+        Err(_) => return err_dandelion!(DandelionError::MemcachedError),
     };
 
     // Preamble is SUCCESS for success. For non successfull functions, error message will be stored there
@@ -410,11 +411,11 @@ async fn memcached_request(request_info: MemcachedRequest) -> DandelionResult<Re
                 Ok(Err(e)) => {
                     // TODO: Use better error
                     warn!("Memcached_request set failed with: {:?}", e);
-                    return Err(DandelionError::MemcachedError);
+                    return err_dandelion!(DandelionError::MemcachedError);
                 }
                 Err(e) => {
                     debug!("Failed to start Memcached_request task with: {:?}", e);
-                    return Err(DandelionError::MemcachedError);
+                    return err_dandelion!(DandelionError::MemcachedError);
                 }
             }
         }
@@ -443,11 +444,11 @@ async fn memcached_request(request_info: MemcachedRequest) -> DandelionResult<Re
                 }
                 Ok(Err(e)) => {
                     debug!("Memcached_request get failed with: {:?}", e);
-                    return Err(DandelionError::MemcachedError);
+                    return err_dandelion!(DandelionError::MemcachedError);
                 }
                 Err(e) => {
                     debug!("Failed to start Memcached_request task with: {:?}", e);
-                    return Err(DandelionError::MemcachedError);
+                    return err_dandelion!(DandelionError::MemcachedError);
                 }
             }
         }
@@ -695,7 +696,7 @@ async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
                     Some(alt) => alt,
                     None => {
                         drop(recorder);
-                        debt.fulfill(Err(DandelionError::FunctionRegistry(
+                        debt.fulfill(err_dandelion!(DandelionError::FunctionRegistry(
                             FunctionRegistryError::UnknownFunctionAlternative,
                         )));
                         continue;
@@ -710,7 +711,7 @@ async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
                     FunctionConfig::SysConfig(sys_func) => sys_func,
                     _ => {
                         drop(recorder);
-                        debt.fulfill(Err(DandelionError::ConfigMissmatch));
+                        debt.fulfill(err_dandelion!(DandelionError::ConfigMissmatch));
                         continue;
                     }
                 };
@@ -744,14 +745,14 @@ async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
                         #[allow(unreachable_patterns)]
                         _ => {
                             drop(recorder);
-                            debt.fulfill(Err(DandelionError::MalformedConfig));
+                            debt.fulfill(err_dandelion!(DandelionError::MalformedConfig));
                         }
                     };
                 } else {
                     drop(recorder);
-                    debt.fulfill(Err(DandelionError::MalformedSystemFuncArg(String::from(
-                        "No request set",
-                    ))));
+                    debt.fulfill(err_dandelion!(DandelionError::MalformedSystemFuncArg(
+                        String::from("No request set",)
+                    )));
                 }
                 continue;
             }
@@ -778,7 +779,7 @@ fn outer_engine(core_id: u8, queue: Box<dyn EngineWorkQueue + Send>) {
         .worker_threads(1)
         .enable_all()
         .build()
-        .or(Err(DandelionError::EngineError))
+        .or(err_dandelion!(DandelionError::EngineError))
         .unwrap();
     let debt = runtime.block_on(engine_loop(queue));
     drop(runtime);
@@ -796,11 +797,11 @@ impl Driver for ReqwestDriver {
         log::debug!("Starting hyper engine");
         let core_id = match resource {
             ComputeResource::CPU(core) => core,
-            _ => return Err(DandelionError::EngineResourceError),
+            _ => return err_dandelion!(DandelionError::EngineResourceError),
         };
         // check that core is available
         let available_cores = match core_affinity::get_core_ids() {
-            None => return Err(DandelionError::EngineResourceError),
+            None => return err_dandelion!(DandelionError::EngineResourceError),
             Some(cores) => cores,
         };
         if !available_cores
@@ -808,7 +809,7 @@ impl Driver for ReqwestDriver {
             .find(|x| x.id == usize::from(core_id))
             .is_some()
         {
-            return Err(DandelionError::EngineResourceError);
+            return err_dandelion!(DandelionError::EngineResourceError);
         }
         std::thread::spawn(move || outer_engine(core_id, queue));
         return Ok(());
@@ -820,7 +821,7 @@ impl Driver for ReqwestDriver {
         static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
     ) -> DandelionResult<Function> {
         if function_path.len() != 0 {
-            return Err(DandelionError::CalledSystemFuncParser);
+            return err_dandelion!(DandelionError::CalledSystemFuncParser);
         }
         return Ok(Function {
             requirements: crate::DataRequirementList {

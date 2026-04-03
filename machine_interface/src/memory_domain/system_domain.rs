@@ -1,6 +1,6 @@
 use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource};
 use bytes::{Buf, Bytes};
-use dandelion_commons::{DandelionError, DandelionResult};
+use dandelion_commons::{err_dandelion, DandelionError, DandelionResult};
 use log::{debug, warn};
 use std::{
     cmp::min,
@@ -68,7 +68,7 @@ impl ContextTrait for SystemContext {
         if offset + read_buffer_size > self.size {
             debug!("Offset + read_buffer_size are larger than context size (read). Offset: {}, buffer_size: {}, context size: {}",
             offset, read_buffer_size, self.size);
-            return Err(DandelionError::InvalidRead);
+            return err_dandelion!(DandelionError::InvalidRead);
         }
 
         while total_bytes_read < read_buffer_size {
@@ -93,7 +93,7 @@ impl ContextTrait for SystemContext {
 
                             if offset % core::mem::align_of::<T>() != 0 {
                                 debug!("Misaligned write at offset {}", offset);
-                                return Err(DandelionError::ReadMisaligned);
+                                return err_dandelion!(DandelionError::ReadMisaligned);
                             }
 
                             let read_memory = unsafe {
@@ -106,7 +106,7 @@ impl ContextTrait for SystemContext {
                             while bytes_read < read_buffer_size && bytes_read < body_len {
                                 let chunk = cloned_body.chunk();
                                 if chunk.is_empty() {
-                                    return Err(DandelionError::InvalidRead);
+                                    return err_dandelion!(DandelionError::InvalidRead);
                                 }
                                 let reading = min(
                                     read_buffer_size - (bytes_read + total_bytes_read),
@@ -143,7 +143,7 @@ impl ContextTrait for SystemContext {
         if offset + length > self.size {
             debug!("Offset + length are larger than context size (get_chunk_ref). Offset: {}, length: {}, context size: {}",
             offset, length, self.size);
-            return Err(DandelionError::InvalidRead);
+            return err_dandelion!(DandelionError::InvalidRead);
         }
         let mut range = self
             .local_offset_to_data_position
@@ -172,7 +172,7 @@ impl ContextTrait for SystemContext {
             "Read offset not stored in SystemContext (get_chunk_ref). Offset: {}",
             offset
         );
-        return Err(DandelionError::InvalidRead);
+        return err_dandelion!(DandelionError::InvalidRead);
     }
 }
 
@@ -234,7 +234,7 @@ pub fn system_context_transfer(
                 "Read offset not stored in SystemContext (system_context_transfer). Offset: {}",
                 source_offset + transfered_bytes
             );
-            return Err(DandelionError::InvalidRead);
+            return err_dandelion!(DandelionError::InvalidRead);
         };
 
         if transfered_bytes + item_size > size {
@@ -243,7 +243,7 @@ pub fn system_context_transfer(
                 destination_offset: {}, transfered_bytes: {}, total_size: {}, item_size: {}",
                 destination_offset, transfered_bytes, size, item_size
             );
-            return Err(DandelionError::InvalidRead);
+            return err_dandelion!(DandelionError::InvalidRead);
         }
 
         match data_position {
@@ -284,7 +284,7 @@ pub fn into_system_context_transfer(
 ) -> DandelionResult<()> {
     if source_offset + size > source.size {
         debug!("Source_offset+size > source.size (into_system_context_transfer)");
-        return Err(DandelionError::InvalidRead);
+        return err_dandelion!(DandelionError::InvalidRead);
     }
     destination.local_offset_to_data_position.insert(
         destination_offset,
@@ -313,7 +313,7 @@ pub fn out_of_system_context_transfer(
             .get(&(source_offset + transfered_bytes))
         else {
             warn!("Read offset not stored in SystemContext (out_of_system_context_transfer). Offset: {}", source_offset + transfered_bytes);
-            return Err(DandelionError::InvalidRead);
+            return err_dandelion!(DandelionError::InvalidRead);
         };
 
         if transfered_bytes + item_size > size {
@@ -322,7 +322,7 @@ pub fn out_of_system_context_transfer(
                 destination_offset: {}, transfered_bytes: {}, total_size: {}, item_size: {}",
                 destination_offset, transfered_bytes, size, item_size
             );
-            return Err(DandelionError::InvalidRead);
+            return err_dandelion!(DandelionError::InvalidRead);
         }
 
         match data_position {

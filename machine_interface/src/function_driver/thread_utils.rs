@@ -7,7 +7,7 @@ use crate::{
 };
 use core::marker::Send;
 use dandelion_commons::{
-    records::RecordPoint, DandelionError, DandelionResult, FunctionRegistryError,
+    err_dandelion, records::RecordPoint, DandelionError, DandelionResult, FunctionRegistryError,
 };
 use std::thread::spawn;
 
@@ -51,7 +51,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
                     Some(alt) => alt,
                     None => {
                         drop(recorder);
-                        debt.fulfill(Err(DandelionError::FunctionRegistry(
+                        debt.fulfill(err_dandelion!(DandelionError::FunctionRegistry(
                             FunctionRegistryError::UnknownFunctionAlternative,
                         )));
                         continue;

@@ -50,7 +50,7 @@ impl MemoryDomain for MmuMemoryDomain {
         let (id, size) = match config {
             MemoryResource::Shared { id, size } => (id, size),
             _ => {
-                return Err(DandelionError::DomainError(
+                return err_dandelion!(DandelionError::DomainError(
                     dandelion_commons::DomainError::ConfigMissmatch,
                 ))
             }
@@ -80,10 +80,10 @@ pub fn mmu_transfer(
 ) -> DandelionResult<()> {
     // check if there is space in both contexts
     if source.storage.size() < source_offset + size {
-        return Err(DandelionError::InvalidRead);
+        return err_dandelion!(DandelionError::InvalidRead));
     }
     if destination.storage.size() < destination_offset + size {
-        return Err(DandelionError::InvalidWrite);
+        return err_dandelion!(DandelionError::InvalidWrite));
     }
     unsafe {
         destination.storage.as_slice_mut()[destination_offset..destination_offset + size]
@@ -102,7 +102,7 @@ pub fn bytest_to_mmu_transfer(
 ) -> DandelionResult<()> {
     // check if bounds for mmu context
     if destination.storage.size() < destination_offset + size {
-        return Err(DandelionError::InvalidWrite);
+        return err_dandelion!(DandelionError::InvalidWrite));
     }
     let mmu_slice = &mut destination.storage[destination_offset..destination_offset + size];
     source.read(source_offset, mmu_slice)?;

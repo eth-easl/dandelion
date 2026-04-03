@@ -2,21 +2,21 @@ use crate::{
     memory_domain::{transfer_memory, Context, MemoryDomain},
     DataRequirementList,
 };
-use dandelion_commons::{DandelionError, DandelionResult};
+use dandelion_commons::{dandelion_err, err_dandelion, DandelionError, DandelionResult};
 use std::sync::Arc;
 
 #[cfg(any(feature = "cheri", feature = "mmu", feature = "kvm"))]
 pub fn load_u8_from_file(full_path: String) -> DandelionResult<Vec<u8>> {
     let mut file = match std::fs::File::open(full_path) {
         Ok(f) => f,
-        Err(_) => return Err(DandelionError::FileError),
+        Err(_) => return err_dandelion!(DandelionError::FileError),
     };
 
     let mut buffer = Vec::<u8>::new();
     use std::io::Read;
     let _file_size = match file.read_to_end(&mut buffer) {
         Ok(s) => s,
-        Err(_) => return Err(DandelionError::FileError),
+        Err(_) => return err_dandelion!(DandelionError::FileError),
     };
     return Ok(buffer);
 }
@@ -30,14 +30,14 @@ pub fn load_static(
     let mut function_context = domain.acquire_context(ctx_size)?;
 
     if static_context.content.len() != 1 {
-        return Err(DandelionError::ConfigMissmatch);
+        return err_dandelion!(DandelionError::ConfigMissmatch);
     }
     // copy sections to the new context
     let static_set = static_context.content[0]
         .as_ref()
-        .ok_or(DandelionError::ConfigMissmatch)?;
+        .ok_or(dandelion_err!(DandelionError::ConfigMissmatch))?;
     if static_set.buffers.len() != requirement_list.static_requirements.len() {
-        return Err(DandelionError::ConfigMissmatch);
+        return err_dandelion!(DandelionError::ConfigMissmatch);
     }
     let layout = &static_set.buffers;
     let static_pairs = layout
@@ -47,7 +47,7 @@ pub fn load_static(
     for (item, requirement) in static_pairs {
         let position = item.data;
         if requirement.size < position.size {
-            return Err(DandelionError::ConfigMissmatch);
+            return err_dandelion!(DandelionError::ConfigMissmatch);
         }
         transfer_memory(
             &mut function_context,

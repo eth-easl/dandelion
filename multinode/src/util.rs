@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 // For types which have the same name for prot and machine_interface,
 // use the full ones to make sure there is no mix ups
-use dandelion_commons::{DandelionError, DandelionResult, MultinodeError};
+use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, MultinodeError};
 use machine_interface::composition::CompositionSet;
 use machine_interface::memory_domain::bytes_context::BytesContext;
 use machine_interface::memory_domain::{Context, ContextType};
@@ -36,7 +36,7 @@ pub fn engine_type_ptod(t: proto::EngineType) -> DandelionResult<machine_config:
         proto::EngineType::EngineProcess => Ok(machine_config::EngineType::Process),
         #[cfg(feature = "kvm")]
         proto::EngineType::EngineKvm => Ok(machine_config::EngineType::Kvm),
-        _ => Err(DandelionError::Multinode(MultinodeError::ConfigError(
+        _ => err_dandelion!(DandelionError::Multinode(MultinodeError::ConfigError(
             "Unknown engine type!".to_string(),
         ))),
     }

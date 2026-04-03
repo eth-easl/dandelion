@@ -1,7 +1,7 @@
 extern crate alloc;
 use crate::memory_domain::{Context, ContextTrait};
 use alloc::alloc::Layout;
-use dandelion_commons::{DandelionError, DandelionResult};
+use dandelion_commons::{err_dandelion, DandelionError, DandelionResult};
 use log::error;
 
 pub struct ReadOnlyContext {
@@ -28,17 +28,17 @@ impl std::fmt::Debug for ReadOnlyContext {
 impl ContextTrait for ReadOnlyContext {
     fn write<T>(&mut self, _offset: usize, _data: &[T]) -> DandelionResult<()> {
         error!("Tried to write to read only context");
-        return Err(DandelionError::InvalidWrite);
+        return err_dandelion!(DandelionError::InvalidWrite);
     }
 
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         if offset % core::mem::align_of::<T>() != 0 {
-            return Err(DandelionError::ReadMisaligned);
+            return err_dandelion!(DandelionError::ReadMisaligned);
         }
 
         let read_size = core::mem::size_of::<T>() * read_buffer.len();
         if offset + read_size > self.storage.len() {
-            return Err(DandelionError::InvalidRead);
+            return err_dandelion!(DandelionError::InvalidRead);
         }
         let byte_buffer = unsafe {
             core::slice::from_raw_parts_mut(
@@ -52,7 +52,7 @@ impl ContextTrait for ReadOnlyContext {
 
     fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
         if offset + length > self.storage.len() {
-            return Err(DandelionError::InvalidRead);
+            return err_dandelion!(DandelionError::InvalidRead);
         }
         return Ok(&self.storage[offset..offset + length]);
     }
@@ -62,7 +62,7 @@ impl ReadOnlyContext {
     pub fn new<T>(reference: Box<[T]>) -> DandelionResult<Context> {
         let ref_len = core::mem::size_of::<T>() * reference.len();
         let layout = core::alloc::Layout::from_size_align(ref_len, core::mem::align_of::<T>())
-            .or(Err(DandelionError::ContextReadOnlyLayout))?;
+            .or(err_dandelion!(DandelionError::ContextReadOnlyLayout))?;
         let new_ref = unsafe {
             core::slice::from_raw_parts_mut(Box::leak(reference).as_mut_ptr() as *mut u8, ref_len)
         };

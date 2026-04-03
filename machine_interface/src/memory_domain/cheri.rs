@@ -45,7 +45,7 @@ impl MemoryDomain for CheriMemoryDomain {
         let size = match config {
             MemoryResource::Anonymous { size } => size,
             _ => {
-                return Err(DandelionError::DomainError(
+                return err_dandelion!(DandelionError::DomainError(
                     dandelion_commons::DomainError::ConfigMissmatch,
                 ))
             }
@@ -97,7 +97,7 @@ pub fn cheri_transfer(
             source_offset,
             size
         );
-        return Err(DandelionError::InvalidRead);
+        return err_dandelion!(DandelionError::InvalidRead);
     }
     if destination.storage.size() < destination_offset + size {
         debug!(
@@ -106,7 +106,7 @@ pub fn cheri_transfer(
             destination_offset,
             size
         );
-        return Err(DandelionError::InvalidWrite);
+        return err_dandelion!(DandelionError::InvalidWrite);
     }
     unsafe {
         destination.storage.as_slice_mut()[destination_offset..destination_offset + size]

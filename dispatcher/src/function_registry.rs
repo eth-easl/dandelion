@@ -1,5 +1,6 @@
 use dandelion_commons::{
-    CompositionError, DandelionError, DandelionResult, FunctionId, FunctionRegistryError,
+    dandelion_err, err_dandelion, CompositionError, DandelionError, DandelionResult, FunctionId,
+    FunctionRegistryError,
 };
 use dparser::print_errors;
 use itertools::Itertools;
@@ -43,7 +44,7 @@ impl FunctionInfo {
             .expect("Function registry lock poisoned!");
         match alternatives_locked.iter().find(|alt| alt.engine == engine) {
             Some(alt) => Ok(alt.clone()),
-            None => Err(DandelionError::FunctionRegistry(
+            None => err_dandelion!(DandelionError::FunctionRegistry(
                 FunctionRegistryError::UnknownFunctionAlternative,
             )),
         }
@@ -86,7 +87,7 @@ fn fmap_insert_function(
             let func_info = match entry {
                 FunctionType::SystemFunction(info) => {
                     if !is_system {
-                        return Err(DandelionError::FunctionRegistry(
+                        return err_dandelion!(DandelionError::FunctionRegistry(
                             FunctionRegistryError::InvalidSystemInsert((*key).clone()),
                         ));
                     }
@@ -94,14 +95,14 @@ fn fmap_insert_function(
                 }
                 FunctionType::Function(info) => {
                     if is_system {
-                        return Err(DandelionError::FunctionRegistry(
+                        return err_dandelion!(DandelionError::FunctionRegistry(
                             FunctionRegistryError::InvalidUserInsert((*key).clone()),
                         ));
                     }
                     info
                 }
                 FunctionType::Composition(_) => {
-                    return Err(DandelionError::FunctionRegistry(
+                    return err_dandelion!(DandelionError::FunctionRegistry(
                         FunctionRegistryError::TypeConflictInsert((*key).clone()),
                     ));
                 }
@@ -113,7 +114,7 @@ fn fmap_insert_function(
                 .write()
                 .expect("Function registry lock poisoned!");
             if lock_guard.iter().any(|alt| alt.engine == func_alt.engine) {
-                return Err(DandelionError::FunctionRegistry(
+                return err_dandelion!(DandelionError::FunctionRegistry(
                     FunctionRegistryError::DuplicateInsert((*key).clone()),
                 ));
             }
@@ -144,7 +145,7 @@ fn fmap_insert_composition(
 ) -> DandelionResult<()> {
     match fmap.get(&(*key)) {
         Some(_) => {
-            return Err(DandelionError::FunctionRegistry(
+            return err_dandelion!(DandelionError::FunctionRegistry(
                 FunctionRegistryError::DuplicateInsert((*key).clone()),
             ))
         }
@@ -232,7 +233,7 @@ impl FunctionRegistry {
             .expect("Function registry lock poisoned!");
         match lock_guard.get(&(**function_id)) {
             Some(x) => Ok(x.clone()),
-            None => Err(DandelionError::FunctionRegistry(
+            None => err_dandelion!(DandelionError::FunctionRegistry(
                 FunctionRegistryError::UnknownFunction((**function_id).clone()),
             )),
         }
@@ -250,7 +251,7 @@ impl FunctionRegistry {
                 FunctionType::Function(func_info) => Ok(func_info.metadata.clone()),
                 FunctionType::Composition(comp_info) => Ok(comp_info.metadata.clone()),
             },
-            None => Err(DandelionError::FunctionRegistry(
+            None => err_dandelion!(DandelionError::FunctionRegistry(
                 FunctionRegistryError::UnknownFunction((**function_id).clone()),
             )),
         }
@@ -269,7 +270,7 @@ impl FunctionRegistry {
     ) -> DandelionResult<()> {
         // check that path exists
         if !Path::new(&path).exists() {
-            return Err(DandelionError::FunctionRegistry(
+            return err_dandelion!(DandelionError::FunctionRegistry(
                 FunctionRegistryError::BinaryNotFound,
             ));
         }
@@ -309,7 +310,7 @@ impl FunctionRegistry {
             match item {
                 dparser::Item::FunctionDecl(fdecl) => {
                     if !self.exists_name(&fdecl.v.name) {
-                        return Err(DandelionError::Composition(
+                        return err_dandelion!(DandelionError::Composition(
                             CompositionError::ContainsInvalidFunction(fdecl.v.name.clone()),
                         ));
                     }
@@ -318,7 +319,7 @@ impl FunctionRegistry {
                 dparser::Item::Composition(comp) => {
                     // check if composition name is already taken
                     if self.exists_name(&comp.v.name) || composition_ids.contains(&comp.v.name) {
-                        return Err(DandelionError::Composition(
+                        return err_dandelion!(DandelionError::Composition(
                             CompositionError::DuplicateIdentifier(comp.v.name.clone()),
                         ));
                     }
@@ -331,7 +332,7 @@ impl FunctionRegistry {
                         match set_numbers.entry(input_set_name.clone()) {
                             Entry::Vacant(v) => v.insert(set_counter),
                             Entry::Occupied(_) => {
-                                return Err(DandelionError::Composition(
+                                return err_dandelion!(DandelionError::Composition(
                                     CompositionError::DuplicateSetName,
                                 ))
                             }
@@ -377,7 +378,7 @@ impl FunctionRegistry {
                                 if output_sets_start <= *o.get() && *o.get() < output_sets_end {
                                     continue;
                                 } else {
-                                    return Err(DandelionError::Composition(
+                                    return err_dandelion!(DandelionError::Composition(
                                         CompositionError::DuplicateSetName,
                                     ));
                                 }
@@ -394,17 +395,17 @@ impl FunctionRegistry {
                             dparser::Statement::FunctionApplication(function_application) => {
                                 let function_decl = known_functions
                                     .get(&function_application.v.name)
-                                    .ok_or_else(|| DandelionError::Composition(CompositionError::ContainsInvalidFunction(function_application.v.name.clone())))?;
+                                    .ok_or_else(|| dandelion_err!(DandelionError::Composition(CompositionError::ContainsInvalidFunction(function_application.v.name.clone()))))?;
                                 if function_decl.v.params.len() < function_application.v.args.len()
                                     || function_decl.v.returns.len()
                                         < function_application.v.rets.len()
                                 {
-                                    return Err(DandelionError::Composition(CompositionError::ContainsInvalidFunction(function_application.v.name.clone())));
+                                    return err_dandelion!(DandelionError::Composition(CompositionError::ContainsInvalidFunction(function_application.v.name.clone())));
                                 }
                                 // find the indeces of the sets in the function application by looking though the definition
                                 let mut input_set_ids = Vec::new();
                                 input_set_ids
-                                    .try_reserve(function_decl.v.params.len()).map_err(|_| DandelionError::OutOfMemory)?;
+                                    .try_reserve(function_decl.v.params.len()).map_err(|_| dandelion_err!(DandelionError::OutOfMemory))?;
                                 input_set_ids.resize(function_decl.v.params.len(), None);
                                 for argument in function_application.v.args.iter() {
                                     if let Some(index) =
@@ -413,10 +414,10 @@ impl FunctionRegistry {
                                         )
                                     {
                                         let set_id = set_numbers.get(&argument.v.ident).ok_or_else(
-                                            ||DandelionError::Composition(CompositionError::FunctionInvalidIdentifier(
+                                            ||dandelion_err!(DandelionError::Composition(CompositionError::FunctionInvalidIdentifier(
                                                 format!("Could not find compositon set for argument {} of function {}",
                                                 argument.v.ident, function_application.v.name)
-                                            )),
+                                            ))),
                                         )?;
                                         input_set_ids[index] = Some(InputSetDescriptor {
                                             composition_id: *set_id,
@@ -427,11 +428,11 @@ impl FunctionRegistry {
                                             optional: argument.v.optional }
                                         );
                                     } else {
-                                        return Err(
+                                        return err_dandelion!(
                                             DandelionError::Composition(CompositionError::FunctionInvalidIdentifier(
                                                 format!("could not find index for input set {} for function {}",
                                                 argument.v.name, function_application.v.name)
-                                            )),
+                                            ))
                                         );
                                     }
                                 }
@@ -442,17 +443,17 @@ impl FunctionRegistry {
                                     .map(|index| Some(index)).collect();
                                 let mut join_set_order = Vec::new();
                                 join_set_order.try_reserve(function_decl.v.params.len())
-                                    .or(Err(DandelionError::OutOfMemory))?;
+                                    .or(err_dandelion!(DandelionError::OutOfMemory))?;
                                 let mut join_strategies = Vec::new();
                                 join_strategies.try_reserve(function_decl.v.params.len())
-                                    .or(Err(DandelionError::OutOfMemory))?;
+                                    .or(err_dandelion!(DandelionError::OutOfMemory))?;
                                 if let Some(strategy) = function_application.v.join_strategy.as_ref().and_then(|strategy| if strategy.join_strategy_order.is_empty() || strategy.join_strategies.is_empty() {None} else {Some(strategy)}) {
                                     for set_name in strategy.join_strategy_order.iter() {
                                         let set_index = function_decl.v.params.iter()
                                             .position(|param_name| *param_name == *set_name)
-                                            .ok_or_else(|| DandelionError::Composition(CompositionError::FunctionInvalidIdentifier(
+                                            .ok_or_else(|| dandelion_err!(DandelionError::Composition(CompositionError::FunctionInvalidIdentifier(
                                                 format!("Join order for {} contains invalid set name: {}", function_application.v.name, set_name))
-                                            ))?;
+                                            )))?;
                                         all_sets[set_index] = None;
                                         join_set_order.push(set_index);
                                     }
@@ -465,7 +466,7 @@ impl FunctionRegistry {
                                 let mut output_set_ids = Vec::new();
                                 output_set_ids
                                     .try_reserve(function_decl.v.returns.len())
-                                    .or(Err(DandelionError::OutOfMemory))?;
+                                    .or(err_dandelion!(DandelionError::OutOfMemory))?;
                                 output_set_ids.resize(function_decl.v.returns.len(), None);
                                 for return_set in function_application.v.rets.iter() {
                                     if let Some(index) =
@@ -475,18 +476,17 @@ impl FunctionRegistry {
                                             },
                                         )
                                     {
-                                        let set_id = set_numbers.get(&return_set.v.ident).ok_or(
+                                        let set_id = set_numbers.get(&return_set.v.ident).ok_or(dandelion_err!(
                                             DandelionError::Composition(CompositionError::FunctionInvalidIdentifier(
                                                 return_set.v.ident.clone(),
-                                            )),
+                                            ))),
                                         )?;
                                         output_set_ids[index] = Some(*set_id);
                                     } else {
-                                        return Err(
+                                        return err_dandelion!(
                                             DandelionError::Composition(CompositionError::FunctionInvalidIdentifier(
                                                 return_set.v.ident.clone(),
-                                            )),
-                                        );
+                                            )));
                                     }
                                 }
                                 Ok(FunctionDependencies {
@@ -537,7 +537,7 @@ impl FunctionRegistry {
         // TODO: might want to return the parsing issue back to the user in a better way
         let module = dparser::parse(composition_desc).map_err(|parse_error| {
             print_errors(composition_desc, parse_error);
-            DandelionError::Composition(CompositionError::ParsingError)
+            dandelion_err!(DandelionError::Composition(CompositionError::ParsingError))
         })?;
         let comp_vec = self.composition_from_module(module)?;
         let mut lock_guard = self
@@ -558,7 +558,7 @@ impl FunctionRegistry {
         // TODO: might want to return the parsing issue back to the user in a better way
         let module = dparser::parse(composition_desc).map_err(|parse_error| {
             print_errors(composition_desc, parse_error);
-            DandelionError::Composition(CompositionError::ParsingError)
+            dandelion_err!(DandelionError::Composition(CompositionError::ParsingError))
         })?;
         self.composition_from_module(module)
     }

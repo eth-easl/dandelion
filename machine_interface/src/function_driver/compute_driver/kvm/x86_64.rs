@@ -1,4 +1,4 @@
-use dandelion_commons::{DandelionError, DandelionResult};
+use dandelion_commons::{err_dandelion, DandelionError, DandelionResult};
 use kvm_bindings::{kvm_fpu, kvm_regs, kvm_segment, kvm_sregs, kvm_xcrs};
 use kvm_ioctls::{VcpuFd, VmFd};
 use log::{debug, trace};
@@ -539,7 +539,7 @@ fn set_page_table(
         debug_assert_ne!(0, present_pages[0].0 >> PAGE_SHIFT);
         if let Some((_, virtual_end, _)) = present_pages.last() {
             if stack_start <= *virtual_end {
-                return Err(DandelionError::ContextFull);
+                return err_dandelion!(DandelionError::ContextFull);
             }
         }
     }

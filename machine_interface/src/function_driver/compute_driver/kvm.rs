@@ -11,7 +11,7 @@ use crate::{
     DataItem, DataRequirement, DataRequirementList, DataSet, Position,
 };
 use core_affinity;
-use dandelion_commons::{DandelionError, DandelionResult, UserError};
+use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, UserError};
 use kvm_bindings::{
     kvm_clock_data, kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES, KVM_MEM_LOG_DIRTY_PAGES,
 };
@@ -103,13 +103,13 @@ impl EngineLoop for KvmLoop {
     ) -> DandelionResult<Context> {
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
-            _ => return Err(DandelionError::ConfigMissmatch),
+            _ => return err_dandelion!(DandelionError::ConfigMissmatch),
         };
         setup_input_structs::<u64, u64>(&mut context, elf_config.system_data_offset, &output_sets)?;
         let min_stack_start = context.get_last_item_end();
         let kvm_context = match &mut context.context {
             ContextType::Kvm(kvm_context) => kvm_context,
-            _ => return Err(DandelionError::ContextMissmatch),
+            _ => return err_dandelion!(DandelionError::ContextMissmatch),
         };
 
         #[cfg(feature = "backend_debug")]
@@ -210,7 +210,7 @@ impl EngineLoop for KvmLoop {
             stack_start as u64,
         )?;
         if min_stack_start >= stack_start {
-            return Err(DandelionError::UserError(UserError::SmallContext));
+            return err_dandelion!(DandelionError::UserError(UserError::SmallContext));
         }
 
         #[cfg(feature = "backend_debug")]
@@ -326,10 +326,10 @@ impl Driver for KvmDriver {
     ) -> DandelionResult<()> {
         let cpu_slot = match resource {
             ComputeResource::CPU(core) => core,
-            _ => return Err(DandelionError::EngineResourceError),
+            _ => return err_dandelion!(DandelionError::EngineResourceError),
         };
         let available_cores = match core_affinity::get_core_ids() {
-            None => return Err(DandelionError::EngineError),
+            None => return err_dandelion!(DandelionError::EngineError),
             Some(cores) => cores,
         };
         if !available_cores
@@ -337,7 +337,7 @@ impl Driver for KvmDriver {
             .find(|x| x.id == usize::from(cpu_slot))
             .is_some()
         {
-            return Err(DandelionError::EngineResourceError);
+            return err_dandelion!(DandelionError::EngineResourceError);
         }
         start_thread::<KvmLoop>(cpu_slot, queue);
         return Ok(());

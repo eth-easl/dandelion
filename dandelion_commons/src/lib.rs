@@ -107,6 +107,56 @@ pub enum DandelionError {
     WorkQueueFull,
 }
 
+#[derive(Clone, PartialEq)]
+pub struct DError {
+    pub error: DandelionError,
+    origin_file: &'static str,
+    origin_line: u32,
+    origin_column: u32,
+}
+
+impl DError {
+    pub fn new(error: DandelionError, file: &'static str, line: u32, column: u32) -> Self {
+        DError {
+            error,
+            origin_file: file,
+            origin_line: line,
+            origin_column: column,
+        }
+    }
+}
+
+impl PartialEq<DError> for DandelionError {
+    fn eq(&self, other: &DError) -> bool {
+        self.eq(&other.error)
+    }
+
+    fn ne(&self, other: &DError) -> bool {
+        self.ne(&other.error)
+    }
+}
+
+/// Construct an error from the given error
+#[macro_export]
+macro_rules! dandelion_err {
+    ($error: expr) => {
+        $crate::DError::new($error, core::file!(), core::line!(), core::column!())
+    };
+}
+
+/// Construct an Err() with the given dandelion error
+#[macro_export]
+macro_rules! err_dandelion {
+    ($error: expr) => {
+        Err($crate::DError::new(
+            $error,
+            core::file!(),
+            core::line!(),
+            core::column!(),
+        ))
+    };
+}
+
 // Implement display to be compliant with core::error::Error
 impl core::fmt::Display for DandelionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -114,9 +164,25 @@ impl core::fmt::Display for DandelionError {
     }
 }
 
-impl std::error::Error for DandelionError {}
+impl core::fmt::Debug for DError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return f.write_fmt(format_args!(
+            "{}:{}:{} {}",
+            self.origin_file, self.origin_line, self.origin_column, self.error
+        ));
+    }
+}
 
-pub type DandelionResult<T> = std::result::Result<T, DandelionError>;
+impl core::fmt::Display for DError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return f.write_fmt(format_args!("{:?}", self));
+    }
+}
+
+impl std::error::Error for DandelionError {}
+impl std::error::Error for DError {}
+
+pub type DandelionResult<T> = std::result::Result<T, DError>;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DomainError {

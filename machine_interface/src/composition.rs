@@ -1,5 +1,7 @@
 use crate::memory_domain::{Context, ContextTrait};
-use dandelion_commons::{DandelionError, DandelionResult, DispatcherError, FunctionId};
+use dandelion_commons::{
+    err_dandelion, DandelionError, DandelionResult, DispatcherError, FunctionId,
+};
 use itertools::Itertools;
 use std::{collections::BTreeMap, sync::Arc, vec};
 
@@ -151,7 +153,7 @@ impl CompositionSet {
             set_index,
         } = additional;
         if self.set_index != set_index {
-            return Err(DandelionError::Dispatcher(
+            return err_dandelion!(DandelionError::Dispatcher(
                 DispatcherError::CompositionCombine,
             ));
         }

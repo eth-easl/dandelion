@@ -156,16 +156,16 @@ fn mmu_run_static(
                     warn!("detected unauthorized syscall with id {}", syscall_id);
                     worker.kill().map_err(|_e| DandelionError::MmuWorkerError)?;
                     warn!("worker killed");
-                    return Err(DandelionError::UnauthorizedSyscall);
+                    return err_dandelion!(DandelionError::UnauthorizedSyscall);
                 }
             },
             Signal::SIGSEGV => {
                 warn!("detected segmentation fault");
-                return Err(DandelionError::SegmentationFault);
+                return err_dandelion!(DandelionError::SegmentationFault);
             }
             s => {
                 warn!("detected {:?}", s);
-                return Err(DandelionError::OtherProctionError);
+                return err_dandelion!(DandelionError::OtherProctionError);
             }
         }
     }
@@ -192,7 +192,7 @@ impl EngineLoop for MmuLoop {
     ) -> DandelionResult<Context> {
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
-            _ => return Err(DandelionError::ConfigMissmatch),
+            _ => return err_dandelion!(DandelionError::ConfigMissmatch),
         };
 
         setup_input_structs::<usize, usize>(
@@ -203,7 +203,7 @@ impl EngineLoop for MmuLoop {
 
         let mmu_context = match &context.context {
             ContextType::Mmu(mmu_context) => mmu_context,
-            _ => return Err(DandelionError::ContextMissmatch),
+            _ => return err_dandelion!(DandelionError::ContextMissmatch),
         };
 
         let offset = mmu_context.storage.offset();
@@ -234,11 +234,11 @@ impl Driver for MmuDriver {
     ) -> DandelionResult<()> {
         let cpu_slot = match resource {
             ComputeResource::CPU(core) => core,
-            _ => return Err(DandelionError::EngineResourceError),
+            _ => return err_dandelion!(DandelionError::EngineResourceError),
         };
         // check that core is available
         let available_cores = match core_affinity::get_core_ids() {
-            None => return Err(DandelionError::EngineError),
+            None => return err_dandelion!(DandelionError::EngineError),
             Some(cores) => cores,
         };
         if !available_cores
@@ -246,7 +246,7 @@ impl Driver for MmuDriver {
             .find(|x| x.id == usize::from(cpu_slot))
             .is_some()
         {
-            return Err(DandelionError::EngineResourceError);
+            return err_dandelion!(DandelionError::EngineResourceError);
         }
         start_thread::<MmuLoop>(cpu_slot, queue);
         return Ok(());
