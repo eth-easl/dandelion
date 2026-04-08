@@ -472,8 +472,6 @@ fn response_write_to_bytes(
         frames,
     } = response;
 
-    // let (_, base_ptr, _) = bytes::mm::memory_domain::get_mmap_details();
-
     // want preable item offset to be the same page alignment as the allocation used for it.
     let preamble_offset = *offset + preamble.as_ptr().addr() % PAGE_SIZE;
     let preamble_length = preamble.len();
