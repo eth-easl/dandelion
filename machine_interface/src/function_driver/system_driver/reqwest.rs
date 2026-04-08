@@ -69,7 +69,7 @@ struct ResponseInformation {
     item_key: u32,
     /// contains both the status line as well as all headers
     preamble: bytes::Bytes,
-    body: bytes::Bytes,
+    frames: Vec<bytes::Bytes>,
 }
 
 impl Request for HttpRequest {
@@ -320,7 +320,7 @@ async fn http_request(
             )));
         }
     };
-    let response = match client.execute(request).await {
+    let mut response = match client.execute(request).await {
         Ok(resp) => resp,
         Err(_) => return err_dandelion!(DandelionError::SystemFuncResponseError),
     };
@@ -348,13 +348,24 @@ async fn http_request(
         preamble.extend_from_slice(format!("{}:{}\n", key, value.to_str().unwrap()).as_bytes());
     }
 
-    let body = match response.bytes().await {
-        Ok(bytes) => bytes,
-        Err(_) => return err_dandelion!(DandelionError::SystemFuncResponseError),
-    };
+    let mut body_length = 0;
+    let mut frames = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(frame)) => {
+                body_length += frame.len();
+                frames.push(frame)
+            }
+            Ok(None) => break,
+            Err(_) => return err_dandelion!(DandelionError::SystemFuncResponseError),
+        }
+    }
+    // let body = match response.bytes().await {
+    //     Ok(bytes) => bytes,
+    // };
 
     if let Some(content_len) = content_length {
-        if content_len != body.len() {
+        if content_len != body_length {
             return err_dandelion!(DandelionError::SystemFuncResponseError);
         }
     }
@@ -363,7 +374,7 @@ async fn http_request(
         item_name,
         item_key,
         preamble: preamble.freeze(),
-        body,
+        frames,
     })
 }
 
@@ -442,7 +453,7 @@ async fn memcached_request(request_info: MemcachedRequest) -> DandelionResult<Re
         item_name,
         item_key,
         preamble,
-        body,
+        frames: vec![body],
     })
 }
 
@@ -455,7 +466,7 @@ fn response_write_to_bytes(
         item_name,
         item_key,
         preamble,
-        body,
+        frames,
     } = response;
 
     // let (_, base_ptr, _) = bytes::mm::memory_domain::get_mmap_details();
@@ -465,8 +476,13 @@ fn response_write_to_bytes(
     let preamble_length = preamble.len();
     let preamble_end = (preamble_offset + preamble_offset).next_multiple_of(PAGE_SIZE);
     // want body offset to be the first correct page aligned offset after preamble end
-    let body_offset = body.as_ptr().addr() % PAGE_SIZE + preamble_end;
-    let body_length = body.len();
+    // need to align on the first frame in the body if there are multiple frames
+    let body_offset = if let Some(frame) = frames.get(0) {
+        frame.as_ptr().addr() % PAGE_SIZE + preamble_end
+    } else {
+        preamble_end
+    };
+    let mut body_length = 0;
 
     match &mut context.context {
         ContextType::Bytes(destination_ctxt) => {
@@ -474,9 +490,12 @@ fn response_write_to_bytes(
             destination_ctxt
                 .frames
                 .insert(preamble_offset + preamble_length - 1, preamble);
-            destination_ctxt
-                .frames
-                .insert(body_offset + body_length - 1, body);
+            for frame in frames.into_iter() {
+                body_length += frame.len();
+                destination_ctxt
+                    .frames
+                    .insert(body_offset + body_length - 1, frame);
+            }
         }
         _ => {
             error!("Invalid context type in reponse write");
