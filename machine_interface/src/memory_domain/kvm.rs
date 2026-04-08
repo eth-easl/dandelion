@@ -5,7 +5,9 @@ use crate::{
 };
 
 use super::MemoryResource;
-use dandelion_commons::{range_pool::RangePool, DandelionError, DandelionResult};
+use dandelion_commons::{
+    dandelion_err, err_dandelion, range_pool::RangePool, DandelionError, DandelionResult,
+};
 use log::{debug, trace};
 use nix::{
     sys::{
@@ -160,7 +162,7 @@ impl ContextTrait for KvmContext {
         // check alignment
         if offset % core::mem::align_of::<T>() != 0 {
             debug!("Misaligned write at offset {}", offset);
-            return Err(DandelionError::WriteMisaligned);
+            return err_dandelion!(DandelionError::WriteMisaligned);
         }
 
         // check if the write is within bounds
@@ -173,7 +175,7 @@ impl ContextTrait for KvmContext {
                 bytes_to_write,
                 self.storage.len()
             );
-            return Err(DandelionError::InvalidWrite);
+            return err_dandelion!(DandelionError::InvalidWrite);
         }
         trace!(
             "Write into kvm context at offset: {}, size: {}",
@@ -299,13 +301,13 @@ impl ContextTrait for KvmContext {
         // check that buffer has proper allighment
         if offset % core::mem::align_of::<T>() != 0 {
             log::debug!("Misaligned write at offset {}", offset);
-            return Err(DandelionError::ReadMisaligned);
+            return err_dandelion!(DandelionError::ReadMisaligned);
         }
 
         let read_size = core::mem::size_of::<T>() * read_buffer.len();
         if offset + read_size > self.storage.len() {
             log::debug!("Read out of bounds at offset {}", offset);
-            return Err(DandelionError::InvalidRead);
+            return err_dandelion!(DandelionError::InvalidRead);
         }
         let mut read_memory = unsafe {
             core::slice::from_raw_parts_mut(read_buffer.as_mut_ptr() as *mut u8, read_size)
@@ -325,7 +327,7 @@ impl ContextTrait for KvmContext {
         let mut overlay_range = self.overlay.range(offset..);
         while let Some((overlay_end, (overlay_start, overlay_option))) = overlay_range.next() {
             if *overlay_start > offset {
-                return Err(DandelionError::InvalidRead);
+                return err_dandelion!(DandelionError::InvalidRead);
             }
 
             // check how much to read from the overlay, know that offset >= overlay start or that read buffer is empty
@@ -351,12 +353,12 @@ impl ContextTrait for KvmContext {
                 return Ok(());
             }
         }
-        return Err(DandelionError::InvalidRead);
+        return err_dandelion!(DandelionError::InvalidRead);
     }
 
     fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
         if offset + length > self.storage.len() {
-            return Err(DandelionError::InvalidRead);
+            return err_dandelion!(DandelionError::InvalidRead);
         }
 
         // check if the offset is into an overlayed object
@@ -384,10 +386,10 @@ impl ContextTrait for KvmContext {
                     Ok(&self.storage[offset..chunk_end])
                 }
             } else {
-                Err(DandelionError::InvalidRead)
+                err_dandelion!(DandelionError::InvalidRead)
             }
         } else {
-            Err(DandelionError::InvalidRead)
+            err_dandelion!(DandelionError::InvalidRead)
         }
     }
 }
@@ -420,7 +422,7 @@ impl MemoryDomain for KvmMemoryDomain {
         let size = match config {
             MemoryResource::Anonymous { size } => size,
             _ => {
-                return Err(DandelionError::DomainError(
+                return err_dandelion!(DandelionError::DomainError(
                     dandelion_commons::DomainError::ConfigMissmatch,
                 ))
             }
@@ -441,7 +443,7 @@ impl MemoryDomain for KvmMemoryDomain {
     fn acquire_context(&self, mut size: usize) -> DandelionResult<Context> {
         // round up to next page size
         if size > (u32::MAX as usize) * PAGE_SIZE {
-            return Err(DandelionError::DomainError(
+            return err_dandelion!(DandelionError::DomainError(
                 dandelion_commons::DomainError::InvalidMemorySize,
             ));
         }
@@ -453,9 +455,9 @@ impl MemoryDomain for KvmMemoryDomain {
             .lock()
             .unwrap()
             .get(number_of_pages, u32::MIN)
-            .ok_or(DandelionError::DomainError(
+            .ok_or(dandelion_err!(DandelionError::DomainError(
                 dandelion_commons::DomainError::ReachedCapacity,
-            ))?;
+            )))?;
         let file_offset = (page as usize) * PAGE_SIZE;
         // TODO replace casting with NonNull::as_mut_ptr() when it stabilizes
         let mapping_pointer = unsafe {
@@ -468,7 +470,7 @@ impl MemoryDomain for KvmMemoryDomain {
                     &self.fd,
                     i64::try_from(file_offset).unwrap(),
                 )
-                .or(Err(DandelionError::DomainError(
+                .or(err_dandelion!(DandelionError::DomainError(
                     dandelion_commons::DomainError::Mapping,
                 )))?
                 .as_mut(),
@@ -523,7 +525,7 @@ pub fn get_transfer_offset(
         context_size
     );
     if context_size + 1 == space_size {
-        return Err(DandelionError::ContextFull);
+        return err_dandelion!(DandelionError::ContextFull);
     }
     return Ok((index, start_address));
 }
@@ -542,7 +544,7 @@ pub fn transfer_into(
 
     // check there is space and there is no overlap
     if source_offset + size > source.size {
-        return Err(DandelionError::InvalidRead);
+        return err_dandelion!(DandelionError::InvalidRead);
     }
     if destination_offset + size > destination.storage.len() {
         debug!(
@@ -551,7 +553,7 @@ pub fn transfer_into(
             size,
             destination.storage.len()
         );
-        return Err(DandelionError::InvalidWrite);
+        return err_dandelion!(DandelionError::InvalidWrite);
     }
     // don't need to check if transfers may partially overlap, since the occupation checks for that.
     // if occupation check was fine, can overwrite here (may happen because of planned overwrite or

@@ -1,4 +1,4 @@
-use dandelion_commons::{DandelionError, DandelionResult, DispatcherError};
+use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, DispatcherError};
 use futures::lock::Mutex;
 use machine_interface::{function_driver::ComputeResource, machine_config::EngineType};
 use std::collections::BTreeMap;
@@ -38,7 +38,7 @@ impl ResourcePool {
                 pool.push(resource);
                 Ok(())
             }
-            None => Err(DandelionError::Dispatcher(DispatcherError::ConfigError)),
+            None => err_dandelion!(DandelionError::Dispatcher(DispatcherError::ConfigError)),
         }
     }
 }

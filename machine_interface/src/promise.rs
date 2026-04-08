@@ -8,7 +8,7 @@ use core::{
     sync::atomic::{AtomicPtr, AtomicU8, Ordering},
     task::{Poll, Waker},
 };
-use dandelion_commons::{DandelionError, DandelionResult, PromiseError};
+use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, PromiseError};
 use std::sync::Arc;
 
 static WAKER_INDEX: u8 = 0b0000_0001;
@@ -65,7 +65,7 @@ impl PromiseBufferInternal {
     pub fn get_promise_data(&self) -> DandelionResult<*mut DataWrapper> {
         let mut current = self.head.load(Ordering::Acquire);
         if current.is_null() {
-            return Err(DandelionError::PromiseError(PromiseError::NoneAvailable));
+            return err_dandelion!(DandelionError::PromiseError(PromiseError::NoneAvailable));
         }
         let mut new_head = unsafe { (*current).next };
         while let Err(current_stored) =
@@ -74,7 +74,7 @@ impl PromiseBufferInternal {
         {
             current = current_stored;
             if current.is_null() {
-                return Err(DandelionError::PromiseError(PromiseError::NoneAvailable));
+                return err_dandelion!(DandelionError::PromiseError(PromiseError::NoneAvailable));
             }
             new_head = unsafe { (*current).next };
         }
@@ -118,7 +118,9 @@ impl PromiseBuffer {
         let data = unsafe { &mut (&mut *data_ptr).data };
         let default = ManuallyDrop::new(PromiseData {
             abort_handle: AtomicPtr::new(ptr::null_mut()),
-            results: Cell::new(Err(DandelionError::PromiseError(PromiseError::Default))),
+            results: Cell::new(err_dandelion!(DandelionError::PromiseError(
+                PromiseError::Default
+            ))),
             wakers: [Cell::new(None), Cell::new(None)],
             flags: AtomicU8::new(DEBT_ALIVE | PROMISE_ALIVE),
         });
@@ -184,9 +186,9 @@ impl futures::future::Future for Promise {
         // the only changes the debt ever does is set the content or get dropped, which also sets content
         // if there was an error it could only have been seting the content.
         if current_flags & CONTENT_SET != 0 {
-            return Poll::Ready(data.results.replace(Err(DandelionError::PromiseError(
-                PromiseError::TakenPromise,
-            ))));
+            return Poll::Ready(data.results.replace(err_dandelion!(
+                DandelionError::PromiseError(PromiseError::TakenPromise,)
+            )));
         } else {
             return Poll::Pending;
         }
@@ -242,7 +244,9 @@ impl Drop for Debt {
             // always pay your debts
             if flags & CONTENT_SET == 0 {
                 data.results
-                    .set(Err(DandelionError::PromiseError(PromiseError::DroppedDebt)));
+                    .set(err_dandelion!(DandelionError::PromiseError(
+                        PromiseError::DroppedDebt
+                    )));
                 data.flags.fetch_or(CONTENT_SET, Ordering::SeqCst);
             }
             let waker_index = data.flags.load(Ordering::SeqCst) & WAKER_INDEX;

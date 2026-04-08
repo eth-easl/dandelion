@@ -9,7 +9,9 @@ use std::{
 };
 
 use crate::{DispatcherCommand, TRACING_ARCHIVE};
-use dandelion_commons::{records::Recorder, DandelionError, DandelionResult, FrontendError};
+use dandelion_commons::{
+    err_dandelion, records::Recorder, DandelionError, DandelionResult, FrontendError,
+};
 use dandelion_server::DandelionBody;
 use dispatcher::{
     dispatcher::DispatcherInput,
@@ -86,7 +88,7 @@ async fn handle_function_registration(
     let path_string = if !request_map.local_path.is_empty() {
         // check that file exists
         if let Err(err) = std::fs::File::open(&request_map.local_path) {
-            return Err(DandelionError::RequestError(FrontendError::InvalidRequest(
+            return err_dandelion!(DandelionError::RequestError(FrontendError::InvalidRequest(
                 format!("Tried to register function with local path, but failed to open file with error {}",
                 err),
             )));
@@ -202,7 +204,7 @@ async fn handle_composition_registration(
         .unwrap();
 
     if let Err(insertion_err) = confirmation.await.unwrap() {
-        return Err(DandelionError::RequestError(FrontendError::InternalError(
+        return err_dandelion!(DandelionError::RequestError(FrontendError::InternalError(
             format!(
                 "Failed to insert composition into dispatcher: {:?}",
                 insertion_err
@@ -388,7 +390,7 @@ async fn handle_remote_node_registration(
     let node_info = match multinode::deserialize_node_info(req_bytes) {
         Ok(node_info) => node_info,
         Err(err) => {
-            return Err(DandelionError::RequestError(FrontendError::InvalidRequest(
+            return err_dandelion!(DandelionError::RequestError(FrontendError::InvalidRequest(
                 format!("Failed to register remote node: {:?}", err),
             )));
         }
@@ -456,7 +458,7 @@ async fn handle_remote_node_deregistration(
     let node_info = match multinode::deserialize_node_info(req_bytes) {
         Ok(node_info) => node_info,
         Err(err) => {
-            return Err(DandelionError::RequestError(FrontendError::InvalidRequest(
+            return err_dandelion!(DandelionError::RequestError(FrontendError::InvalidRequest(
                 format!("Failed to register remote node: {:?}", err),
             )));
         }
@@ -504,7 +506,7 @@ async fn handle_remote_node_request(
     } = match multinode::deserialize_invocation_request(req_bytes.clone()) {
         Ok(task_info) => task_info,
         Err(err) => {
-            return Err(DandelionError::RequestError(FrontendError::InvalidRequest(
+            return err_dandelion!(DandelionError::RequestError(FrontendError::InvalidRequest(
                 format!("Failed to deserialize invocation request: {:?}", err),
             )));
         }
@@ -622,7 +624,7 @@ async fn service(
                 let mut response = Response::new(DandelionBody::from_vec(
                     format!("Failed to serve request: {}", err).into_bytes(),
                 ));
-                *response.status_mut() = match err {
+                *response.status_mut() = match err.error {
                     DandelionError::RequestError(FrontendError::InvalidRequest(_)) => {
                         StatusCode::BAD_REQUEST
                     }

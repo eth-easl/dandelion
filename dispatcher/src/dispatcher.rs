@@ -5,6 +5,7 @@ use crate::{
 };
 use core::pin::Pin;
 use dandelion_commons::{
+    err_dandelion,
     records::{RecordPoint, Recorder},
     DandelionError, DandelionResult, DispatcherError, FunctionId,
 };
@@ -149,7 +150,7 @@ impl Dispatcher {
                 "Expected exactly one composition got {}",
                 composition_meta_pairs.len()
             );
-            return Err(DandelionError::Dispatcher(
+            return err_dandelion!(DandelionError::Dispatcher(
                 DispatcherError::InvalidComposition,
             ));
         }

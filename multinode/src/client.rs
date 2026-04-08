@@ -1,4 +1,6 @@
-use dandelion_commons::{DandelionError, DandelionResult, FunctionId, MultinodeError};
+use dandelion_commons::{
+    err_dandelion, DandelionError, DandelionResult, FunctionId, MultinodeError,
+};
 use log::{debug, warn};
 use machine_interface::{
     composition::CompositionSet, machine_config::EngineType, memory_domain::Context,
@@ -45,12 +47,15 @@ async fn try_connect(
             if resp.status().is_success() {
                 return Ok(());
             } else {
-                return Err(DandelionError::Multinode(MultinodeError::ConnectionFailed(
-                    format!("Probe returned status code {}", resp.status()),
-                )));
+                return err_dandelion!(DandelionError::Multinode(
+                    MultinodeError::ConnectionFailed(format!(
+                        "Probe returned status code {}",
+                        resp.status()
+                    ),)
+                ));
             }
         }
-        Err(err) => Err(DandelionError::Multinode(MultinodeError::ConnectionFailed(
+        Err(err) => err_dandelion!(DandelionError::Multinode(MultinodeError::ConnectionFailed(
             format!("Probe request failed: {:?}", err),
         ))),
     }
@@ -106,9 +111,12 @@ impl RemoteNode {
         match self.client.post(url).body(request).send().await {
             Ok(response) => {
                 if !response.status().is_success() {
-                    return Err(DandelionError::Multinode(MultinodeError::RequestFailed(
-                        format!("Response status {:?}", response.status()),
-                    )));
+                    return err_dandelion!(DandelionError::Multinode(
+                        MultinodeError::RequestFailed(format!(
+                            "Response status {:?}",
+                            response.status()
+                        ),)
+                    ));
                 }
                 let body = response
                     .bytes()
@@ -117,7 +125,7 @@ impl RemoteNode {
                 Ok(body)
             }
             Err(err) => {
-                return Err(DandelionError::Multinode(MultinodeError::RequestFailed(
+                return err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
                     format!("{:?}", err),
                 )))
             }
@@ -157,13 +165,13 @@ impl RemoteNode {
                 // might also return a non-successful ActionStatus on internal errors
                 let action_status = super::deserialize_action_status(response_body.clone())?;
                 assert!(!action_status.success);
-                return Err(DandelionError::Multinode(MultinodeError::RequestFailed(
+                return err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
                     action_status.message,
                 )));
             }
         };
         if !inv_resp.success {
-            return Err(DandelionError::Multinode(MultinodeError::RequestFailed(
+            return err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
                 inv_resp.error_msg,
             )));
         }
@@ -204,7 +212,7 @@ pub async fn register_as_remote(
     {
         Ok(response) => {
             if !response.status().is_success() {
-                return Err(DandelionError::Multinode(MultinodeError::RequestFailed(
+                return err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
                     format!("Response status {:?}", response.status()),
                 )));
             } else {
@@ -215,7 +223,7 @@ pub async fn register_as_remote(
             }
         }
         Err(err) => {
-            return Err(DandelionError::Multinode(MultinodeError::RequestFailed(
+            return err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
                 format!("{:?}", err),
             )))
         }
@@ -225,7 +233,7 @@ pub async fn register_as_remote(
     let action_status = super::deserialize_action_status(response_body)?;
     match action_status.success {
         true => Ok(()),
-        false => Err(DandelionError::Multinode(MultinodeError::RequestFailed(
+        false => err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
             action_status.message,
         ))),
     }
@@ -256,7 +264,7 @@ pub async fn register_as_remote(
 //     let action_status = super::deserialize_action_status(response_body)?;
 //     match action_status.success {
 //         true => Ok(()),
-//         false => Err(DandelionError::Multinode(MultinodeError::RequestFailed(
+//         false => err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
 //             action_status.message,
 //         ))),
 //     }

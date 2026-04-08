@@ -1,5 +1,5 @@
 use crate::function_registry::FunctionRegistry;
-use dandelion_commons::{CompositionError, DandelionError, FunctionId};
+use dandelion_commons::{CompositionError, DError, DandelionError, FunctionId};
 use dparser::Module;
 use itertools::Itertools;
 use machine_interface::{
@@ -242,7 +242,10 @@ fn test_from_module_non_registered_function() {
     let function_registry = create_test_function_registry(&[]);
     let module = get_module(unregistered_function);
     match function_registry.composition_from_module(module) {
-        Err(DandelionError::Composition(CompositionError::ContainsInvalidFunction(_))) => (),
+        Err(DError {
+            error: DandelionError::Composition(CompositionError::ContainsInvalidFunction(_)),
+            ..
+        }) => (),
         Err(err) => panic!(
             "Found wrong error on composition with invalid function: {:?}",
             err

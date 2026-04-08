@@ -1,5 +1,5 @@
 use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource};
-use dandelion_commons::{DandelionError, DandelionResult};
+use dandelion_commons::{err_dandelion, DandelionError, DandelionResult};
 use std::alloc::{alloc_zeroed, Layout};
 
 #[derive(Debug)]
@@ -12,14 +12,14 @@ impl ContextTrait for MallocContext {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
         // check alignment
         if offset % core::mem::align_of::<T>() != 0 {
-            return Err(DandelionError::WriteMisaligned);
+            return err_dandelion!(DandelionError::WriteMisaligned);
         }
 
         // check if the write is within bounds
         let write_length = data.len() * core::mem::size_of::<T>();
         let length = self.layout.size();
         if write_length + offset > length {
-            return Err(DandelionError::InvalidWrite);
+            return err_dandelion!(DandelionError::InvalidWrite);
         }
         let buffer =
             unsafe { core::slice::from_raw_parts(data.as_ptr() as *const u8, write_length) };
@@ -34,13 +34,13 @@ impl ContextTrait for MallocContext {
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         // check that buffer has proper allighment
         if offset % core::mem::align_of::<T>() != 0 {
-            return Err(DandelionError::ReadMisaligned);
+            return err_dandelion!(DandelionError::ReadMisaligned);
         }
 
         let length = self.layout.size();
         let read_size = core::mem::size_of::<T>() * read_buffer.len();
         if offset + read_size > length {
-            return Err(DandelionError::InvalidRead);
+            return err_dandelion!(DandelionError::InvalidRead);
         }
 
         let read_memory = unsafe {
@@ -56,7 +56,7 @@ impl ContextTrait for MallocContext {
     }
     fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
         if offset + length > self.layout.size() {
-            return Err(DandelionError::InvalidRead);
+            return err_dandelion!(DandelionError::InvalidRead);
         }
         return Ok(unsafe {
             &core::slice::from_raw_parts(self.storage.as_ref(), self.layout.size())
@@ -75,12 +75,12 @@ impl MemoryDomain for MallocMemoryDomain {
     fn acquire_context(&self, size: usize) -> DandelionResult<Context> {
         let layout = match Layout::from_size_align(size, 64) {
             Ok(layout) => layout,
-            Err(_) => return Err(DandelionError::MemoryAllocationError),
+            Err(_) => return err_dandelion!(DandelionError::MemoryAllocationError),
         };
 
         let mem_space: *mut u8 = unsafe { alloc_zeroed(layout) };
         if mem_space.is_null() {
-            return Err(DandelionError::MemoryAllocationError);
+            return err_dandelion!(DandelionError::MemoryAllocationError);
         }
         return Ok(Context::new(
             ContextType::Malloc(Box::new(MallocContext {
@@ -101,10 +101,10 @@ pub fn malloc_transfer(
 ) -> DandelionResult<()> {
     // check if there is space in both contexts
     if source.layout.size() < source_offset + size {
-        return Err(DandelionError::InvalidRead);
+        return err_dandelion!(DandelionError::InvalidRead);
     }
     if destination.layout.size() < destination_offset + size {
-        return Err(DandelionError::InvalidWrite);
+        return err_dandelion!(DandelionError::InvalidWrite);
     }
 
     let dst_slice = unsafe {

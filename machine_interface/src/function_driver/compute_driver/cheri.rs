@@ -45,12 +45,12 @@ impl EngineLoop for CheriLoop {
     ) -> DandelionResult<Context> {
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
-            _ => return Err(DandelionError::ConfigMissmatch),
+            _ => return err_dandelion!((DandelionError::ConfigMissmatch)),
         };
         setup_input_structs::<u64, u64>(&mut context, elf_config.system_data_offset, &output_sets)?;
         let cheri_context = match &context.context {
             ContextType::Cheri(cheri_context) => cheri_context,
-            _ => return Err(DandelionError::ContextMissmatch),
+            _ => return err_dandelion!((DandelionError::ContextMissmatch)),
         };
         let cap_offset = cheri_context.cap_offset;
         let stack_end = cheri_context.storage.size() - cap_offset - 32;
@@ -65,8 +65,8 @@ impl EngineLoop for CheriLoop {
         };
         match cheri_error {
             0 => Ok(()),
-            1 => Err(DandelionError::OutOfMemory),
-            _ => Err(DandelionError::NotImplemented),
+            1 => err_dandelion!(DandelionError::OutOfMemory),
+            _ => err_dandelion!(DandelionError::NotImplemented),
         }?;
         read_output_structs::<u64, u64>(&mut context, elf_config.system_data_offset)?;
         return Ok(context);
@@ -84,11 +84,11 @@ impl Driver for CheriDriver {
     ) -> DandelionResult<()> {
         let cpu_slot = match resource {
             ComputeResource::CPU(core) => core,
-            _ => return Err(DandelionError::EngineResourceError),
+            _ => return err_dandelion!(DandelionError::EngineResourceError),
         };
         // check that core is available
         let available_cores = match core_affinity::get_core_ids() {
-            None => return Err(DandelionError::EngineError),
+            None => return err_dandelion!(DandelionError::EngineError),
             Some(cores) => cores,
         };
         if !available_cores
@@ -96,7 +96,7 @@ impl Driver for CheriDriver {
             .find(|x| x.id == usize::from(cpu_slot))
             .is_some()
         {
-            return Err(DandelionError::EngineResourceError);
+            return err_dandelion!(DandelionError::EngineResourceError);
         }
         start_thread::<CheriLoop>(cpu_slot, queue);
         return Ok(());

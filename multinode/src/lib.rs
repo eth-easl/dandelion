@@ -1,4 +1,4 @@
-use dandelion_commons::{DandelionError, DandelionResult, MultinodeError};
+use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, MultinodeError};
 use prost::bytes::Bytes;
 use prost::Message;
 
@@ -41,7 +41,7 @@ pub fn serialize_invocation_response(invocation_response: proto::InvocationRespo
 pub fn deserialize_action_status(buf: Bytes) -> DandelionResult<proto::ActionStatus> {
     match proto::ActionStatus::decode(buf) {
         Ok(action_status) => Ok(action_status),
-        Err(err) => Err(DandelionError::Multinode(
+        Err(err) => err_dandelion!(DandelionError::Multinode(
             MultinodeError::DeserializationError(format!("{:?}", err)),
         )),
     }
@@ -50,7 +50,7 @@ pub fn deserialize_action_status(buf: Bytes) -> DandelionResult<proto::ActionSta
 pub fn deserialize_node_info(buf: Bytes) -> DandelionResult<proto::NodeInfo> {
     match proto::NodeInfo::decode(buf) {
         Ok(node_info) => Ok(node_info),
-        Err(err) => Err(DandelionError::Multinode(
+        Err(err) => err_dandelion!(DandelionError::Multinode(
             MultinodeError::DeserializationError(format!("{:?}", err)),
         )),
     }
@@ -59,7 +59,7 @@ pub fn deserialize_node_info(buf: Bytes) -> DandelionResult<proto::NodeInfo> {
 pub fn deserialize_invocation_request(buf: Bytes) -> DandelionResult<proto::InvocationRequest> {
     match proto::InvocationRequest::decode(buf) {
         Ok(req) => Ok(req),
-        Err(err) => Err(DandelionError::Multinode(
+        Err(err) => err_dandelion!(DandelionError::Multinode(
             MultinodeError::DeserializationError(format!("{:?}", err)),
         )),
     }
@@ -68,7 +68,7 @@ pub fn deserialize_invocation_request(buf: Bytes) -> DandelionResult<proto::Invo
 pub fn deserialize_invocation_response(buf: Bytes) -> DandelionResult<proto::InvocationResponse> {
     match proto::InvocationResponse::decode(buf) {
         Ok(resp) => Ok(resp),
-        Err(err) => Err(DandelionError::Multinode(
+        Err(err) => err_dandelion!(DandelionError::Multinode(
             MultinodeError::DeserializationError(format!("{:?}", err)),
         )),
     }

@@ -12,7 +12,7 @@ pub mod read_only;
 pub(crate) mod system_domain;
 
 use crate::{DataItem, DataSet, Position};
-use dandelion_commons::{DandelionError, DandelionResult};
+use dandelion_commons::{dandelion_err, err_dandelion, DandelionError, DandelionResult};
 use std::sync::Arc;
 
 pub trait ContextTrait: Send + Sync {
@@ -169,7 +169,7 @@ impl Context {
     /// Make sure all space between offset and size is marked as occupied, ignoring overlap with previous occupation
     pub fn occupy_space(&mut self, offset: usize, size: usize) -> DandelionResult<()> {
         if offset + size > self.size {
-            return Err(DandelionError::InvalidWrite);
+            return err_dandelion!(DandelionError::InvalidWrite);
         }
         let insertion_index = self
             .occupation
@@ -205,7 +205,7 @@ impl Context {
             }
         }
         if self.size + 1 == space_size {
-            return Err(DandelionError::ContextFull);
+            return err_dandelion!(DandelionError::ContextFull);
         }
         self.insert(index, start_address, size);
         return Ok(start_address);
@@ -348,13 +348,13 @@ pub fn transfer_data_item(
 ) -> DandelionResult<()> {
     // check if source has item
     if source.content.len() <= source_set_index {
-        return Err(DandelionError::TransferInputNoSetAvailable);
+        return err_dandelion!(DandelionError::TransferInputNoSetAvailable);
     }
     let source_set = source.content[source_set_index]
         .as_ref()
-        .ok_or(DandelionError::EmptyDataSet)?;
+        .ok_or(dandelion_err!(DandelionError::EmptyDataSet))?;
     if source_set.buffers.len() <= source_item_index {
-        return Err(DandelionError::TransferInputNoSetAvailable);
+        return err_dandelion!(DandelionError::TransferInputNoSetAvailable);
     }
 
     if destination.content.len() <= destination_set_index {

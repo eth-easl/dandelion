@@ -2,7 +2,7 @@ use crate::{
     memory_domain::{Context, ContextState, ContextTrait},
     DataItem, DataSet, Position,
 };
-use dandelion_commons::{DandelionError, DandelionResult};
+use dandelion_commons::{dandelion_err, err_dandelion, DandelionError, DandelionResult};
 use libc::{c_int, size_t, uintptr_t};
 use log::trace;
 extern crate alloc;
@@ -46,10 +46,11 @@ pub mod _32_bit {
 
     impl SizedIntTrait for u32 {
         fn from_native(ptr: usize) -> DandelionResult<u32> {
-            u32::try_from(ptr).map_err(|_| DandelionError::UsizeTypeConversionError)
+            u32::try_from(ptr).map_err(|_| dandelion_err!(DandelionError::UsizeTypeConversionError))
         }
         fn to_native(self) -> DandelionResult<usize> {
-            usize::try_from(self).map_err(|_| DandelionError::UsizeTypeConversionError)
+            usize::try_from(self)
+                .map_err(|_| dandelion_err!(DandelionError::UsizeTypeConversionError))
         }
     }
 
@@ -62,10 +63,11 @@ pub mod _64_bit {
 
     impl SizedIntTrait for u64 {
         fn from_native(ptr: usize) -> DandelionResult<u64> {
-            u64::try_from(ptr).map_err(|_| DandelionError::UsizeTypeConversionError)
+            u64::try_from(ptr).map_err(|_| dandelion_err!(DandelionError::UsizeTypeConversionError))
         }
         fn to_native(self) -> DandelionResult<usize> {
-            usize::try_from(self).map_err(|_| DandelionError::UsizeTypeConversionError)
+            usize::try_from(self)
+                .map_err(|_| dandelion_err!(DandelionError::UsizeTypeConversionError))
         }
     }
 
@@ -144,7 +146,7 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
         .try_reserve_exact(input_buffer_number)
         .is_err()
     {
-        return Err(DandelionError::OutOfMemory);
+        return err_dandelion!(DandelionError::OutOfMemory);
     }
 
     let mut input_sets: Vec<IoSetInfo<PtrT, SizeT>> = Vec::new();
@@ -152,7 +154,7 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
         .try_reserve_exact(context.content.len() + 1)
         .is_err()
     {
-        return Err(DandelionError::OutOfMemory);
+        return err_dandelion!(DandelionError::OutOfMemory);
     }
     // start writing input set info structs
     for c in 0..context.content.len() {
@@ -212,7 +214,7 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
         .try_reserve_exact(output_set_names.len() + 1)
         .is_err()
     {
-        return Err(DandelionError::OutOfMemory);
+        return err_dandelion!(DandelionError::OutOfMemory);
     }
 
     // start writing output set info structs
@@ -303,7 +305,7 @@ pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     // load output set info, + 1 to include sentinel set
     let mut output_set_info = vec![];
     if output_set_info.try_reserve(output_set_number + 1).is_err() {
-        return Err(DandelionError::OutOfMemory);
+        return err_dandelion!(DandelionError::OutOfMemory);
     }
     let empty_output_set = IoSetInfo::<PtrT, SizeT> {
         ident: ptr_t!(0),
@@ -315,14 +317,14 @@ pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
 
     let mut output_sets = vec![];
     if output_sets.try_reserve(output_set_number).is_err() {
-        return Err(DandelionError::OutOfMemory);
+        return err_dandelion!(DandelionError::OutOfMemory);
     }
 
     let output_buffer_number: usize = usize!(output_set_info[output_set_number].offset);
 
     let mut output_buffers = vec![];
     if output_buffers.try_reserve(output_buffer_number).is_err() {
-        return Err(DandelionError::OutOfMemory);
+        return err_dandelion!(DandelionError::OutOfMemory);
     }
     let empty_output_buffer = IoBufferDescriptor::<PtrT, SizeT> {
         ident: ptr_t!(0),
@@ -362,7 +364,7 @@ pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
         let set_ident_string = if ident_length > 0 {
             let mut set_ident = vec![0u8; ident_length];
             context.read(ident_offset, &mut set_ident)?;
-            String::from_utf8(set_ident).or(Err(DandelionError::UserError(
+            String::from_utf8(set_ident).or(err_dandelion!(DandelionError::UserError(
                 dandelion_commons::UserError::InvalidIdentifier,
             )))?
         } else {
@@ -371,7 +373,7 @@ pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
         let buffer_number = one_past_last_buffer - first_buffer;
         let mut buffers = Vec::new();
         if buffers.try_reserve(buffer_number).is_err() {
-            return Err(DandelionError::OutOfMemory);
+            return err_dandelion!(DandelionError::OutOfMemory);
         }
         for buffer_index in first_buffer..one_past_last_buffer {
             let buffer_ident_offset = usize_ptr!(output_buffers[buffer_index].ident);
@@ -382,7 +384,7 @@ pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
             let ident_string = if ident_length > 0 {
                 let mut buffer_ident = vec![0u8; buffer_ident_length];
                 context.read(buffer_ident_offset, &mut buffer_ident)?;
-                String::from_utf8(buffer_ident).or(Err(DandelionError::UserError(
+                String::from_utf8(buffer_ident).or(err_dandelion!(DandelionError::UserError(
                     dandelion_commons::UserError::InvalidIdentifier,
                 )))?
             } else {

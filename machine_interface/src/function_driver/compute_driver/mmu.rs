@@ -11,7 +11,7 @@ use crate::{
     DataItem, DataRequirement, DataRequirementList, DataSet, Position,
 };
 use core_affinity;
-use dandelion_commons::{DandelionError, DandelionResult};
+use dandelion_commons::{dandelion_err, err_dandelion, DandelionError, DandelionResult};
 use log::{debug, warn};
 use nix::{
     sys::{
@@ -123,18 +123,22 @@ fn mmu_run_static(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .map_err(|_e| DandelionError::MmuWorkerError)?;
+        .map_err(|_e| dandelion_err!(DandelionError::MmuWorkerError))?;
 
     // intercept worker's syscalls by ptrace
     let pid = Pid::from_raw(worker.id() as i32);
-    let status = wait::waitpid(pid, None).map_err(|_e| DandelionError::MmuWorkerError)?;
+    let status =
+        wait::waitpid(pid, None).map_err(|_e| dandelion_err!(DandelionError::MmuWorkerError))?;
     if status != WaitStatus::Stopped(pid, Signal::SIGSTOP) {
-        worker.kill().map_err(|_e| DandelionError::MmuWorkerError)?;
+        worker
+            .kill()
+            .map_err(|_e| dandelion_err!(DandelionError::MmuWorkerError))?;
     }
     ptrace_syscall(pid.as_raw());
 
     loop {
-        let status = wait::waitpid(pid, None).map_err(|_e| DandelionError::MmuWorkerError)?;
+        let status = wait::waitpid(pid, None)
+            .map_err(|_e| dandelion_err!(DandelionError::MmuWorkerError))?;
         let WaitStatus::Stopped(pid, sig) = status else {
             panic!("worker should be stopped (status = {:?})", status);
         };
@@ -143,7 +147,9 @@ fn mmu_run_static(
                 SyscallType::Exit => {
                     debug!("detected exit syscall");
                     ptrace_syscall(pid.as_raw());
-                    let status = worker.wait().map_err(|_e| DandelionError::MmuWorkerError)?;
+                    let status = worker
+                        .wait()
+                        .map_err(|_e| dandelion_err!(DandelionError::MmuWorkerError))?;
                     debug!("worker exited with code {}", status.code().unwrap());
                     return Ok(());
                 }
@@ -154,18 +160,20 @@ fn mmu_run_static(
                 }
                 SyscallType::Unauthorized(syscall_id) => {
                     warn!("detected unauthorized syscall with id {}", syscall_id);
-                    worker.kill().map_err(|_e| DandelionError::MmuWorkerError)?;
+                    worker
+                        .kill()
+                        .map_err(|_e| dandelion_err!(DandelionError::MmuWorkerError))?;
                     warn!("worker killed");
-                    return Err(DandelionError::UnauthorizedSyscall);
+                    return err_dandelion!(DandelionError::UnauthorizedSyscall);
                 }
             },
             Signal::SIGSEGV => {
                 warn!("detected segmentation fault");
-                return Err(DandelionError::SegmentationFault);
+                return err_dandelion!(DandelionError::SegmentationFault);
             }
             s => {
                 warn!("detected {:?}", s);
-                return Err(DandelionError::OtherProctionError);
+                return err_dandelion!(DandelionError::OtherProctionError);
             }
         }
     }
@@ -192,7 +200,7 @@ impl EngineLoop for MmuLoop {
     ) -> DandelionResult<Context> {
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
-            _ => return Err(DandelionError::ConfigMissmatch),
+            _ => return err_dandelion!(DandelionError::ConfigMissmatch),
         };
 
         setup_input_structs::<usize, usize>(
@@ -203,7 +211,7 @@ impl EngineLoop for MmuLoop {
 
         let mmu_context = match &context.context {
             ContextType::Mmu(mmu_context) => mmu_context,
-            _ => return Err(DandelionError::ContextMissmatch),
+            _ => return err_dandelion!(DandelionError::ContextMissmatch),
         };
 
         let offset = mmu_context.storage.offset();
@@ -234,11 +242,11 @@ impl Driver for MmuDriver {
     ) -> DandelionResult<()> {
         let cpu_slot = match resource {
             ComputeResource::CPU(core) => core,
-            _ => return Err(DandelionError::EngineResourceError),
+            _ => return err_dandelion!(DandelionError::EngineResourceError),
         };
         // check that core is available
         let available_cores = match core_affinity::get_core_ids() {
-            None => return Err(DandelionError::EngineError),
+            None => return err_dandelion!(DandelionError::EngineError),
             Some(cores) => cores,
         };
         if !available_cores
@@ -246,7 +254,7 @@ impl Driver for MmuDriver {
             .find(|x| x.id == usize::from(cpu_slot))
             .is_some()
         {
-            return Err(DandelionError::EngineResourceError);
+            return err_dandelion!(DandelionError::EngineResourceError);
         }
         start_thread::<MmuLoop>(cpu_slot, queue);
         return Ok(());

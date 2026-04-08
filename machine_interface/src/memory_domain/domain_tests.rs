@@ -2,7 +2,7 @@ use crate::memory_domain::{
     test_resource::get_resource, transfer_data_item, transfer_memory, Context, ContextTrait,
     ContextType, MemoryDomain, MemoryResource,
 };
-use dandelion_commons::{DandelionError, DandelionResult, DomainError};
+use dandelion_commons::{DError, DandelionError, DandelionResult, DomainError};
 use std::sync::Arc;
 
 #[cfg(any(feature = "cheri", feature = "kvm", feature = "mmu"))]
@@ -22,21 +22,30 @@ fn try_acquire<D: MemoryDomain>(
     let init_result = D::init(resource);
     let domain = init_result.expect("should have initialized memory domain");
     let context_result = domain.acquire_context(acquisition_size);
-    match (expect_success, context_result) {
-        (true, Ok(_))
-        | (false, Err(DandelionError::OutOfMemory))
-        | (false, Err(DandelionError::DomainError(DomainError::InvalidMemorySize)))
-        | (false, Err(DandelionError::MemoryAllocationError)) => assert!(true),
-        (false, Ok(_)) => assert!(
-            false,
-            "Got okay for allocating context with size {}",
-            acquisition_size
-        ),
-        (_, Err(err)) => assert!(
-            false,
-            "Encountered unexpected error when acquireing context: {:?}",
-            err
-        ),
+    if expect_success {
+        if !context_result.is_ok() {
+            panic!(
+                "Got okay for allocating context with size {}",
+                acquisition_size
+            );
+        }
+    } else {
+        if context_result.is_ok() {
+            panic!(
+                "Encountered unexpected error when acquireing context: {:?}",
+                context_result.unwrap_err()
+            );
+        } else {
+            match context_result.unwrap_err().error {
+                DandelionError::OutOfMemory
+                | DandelionError::DomainError(DomainError::InvalidMemorySize)
+                | DandelionError::MemoryAllocationError => (),
+                err => panic!(
+                    "Encountered unexpected error when acquireing context: {:?}",
+                    err
+                ),
+            }
+        }
     }
 }
 
@@ -61,7 +70,14 @@ fn init_domain<D: MemoryDomain>(arg: MemoryResource) -> Box<dyn MemoryDomain> {
 fn write(ctx: &mut Context, offset: usize, size: usize, expect_success: bool) {
     let write_error = ctx.write(offset, &vec![BYTEPATTERN; size]);
     match (expect_success, write_error) {
-        (false, Err(DandelionError::InvalidWrite)) | (true, Ok(())) => (),
+        (
+            false,
+            Err(DError {
+                error: DandelionError::InvalidWrite,
+                ..
+            }),
+        )
+        | (true, Ok(())) => (),
         (false, Ok(())) => panic!("Unexpected write success"),
         (_, Err(err)) => panic!("Unexpected write error: {:?}", err),
     }
@@ -75,7 +91,7 @@ fn read(ctx: &mut Context, offset: usize, size: usize, expect_success: bool) {
     match (expect_success, read_error) {
         (true, Ok(())) => assert_eq!(vec![BYTEPATTERN; size], read_buffer),
         (false, Ok(())) => panic!("Unexpected ok from read that should fail with context size: {}, read offset: {}, read size: {}", ctx.size, offset, size),
-        (false, Err(DandelionError::InvalidRead)) => (),
+        (false, Err(DError {error:DandelionError::InvalidRead, ..})) => (),
         (_, Err(err)) => panic!("Unexpected error while reading: {:?}", err),
     }
 }
@@ -95,7 +111,7 @@ fn read_system_context(
     match (expect_success, read_error) {
         (true, Ok(())) => assert_eq!(vec![BYTEPATTERN; size], read_buffer),
         (false, Ok(())) => panic!("Unexpected ok from read that should fail with context size: {}, read offset: {}, read size: {}", system_ctx.size, offset, size),
-        (false, Err(DandelionError::InvalidRead)) => (),
+        (false, Err(DError{error: DandelionError::InvalidRead, ..})) => (),
         (_, Err(err)) => panic!("Unexpected error while reading: {:?}", err),
     }
 }
@@ -115,7 +131,13 @@ fn get_chunks(ctx: &mut Context, offset: usize, size: usize, expect_success: boo
                 total_read += chunk_ref.len()
             }
             (false, Ok(_)) => panic!("Unexpected ok from get_chunk_ref"),
-            (false, Err(DandelionError::InvalidRead)) => return,
+            (
+                false,
+                Err(DError {
+                    error: DandelionError::InvalidRead,
+                    ..
+                }),
+            ) => return,
             (_, Err(err)) => panic!("Unexpected error from get_chunk_ref {:?}", err),
         }
     }
@@ -141,7 +163,13 @@ fn get_chunks_system_context(
                 total_read += chunk_ref.len()
             }
             (false, Ok(_)) => panic!("Unexpected ok from get_chunk_ref"),
-            (false, Err(DandelionError::InvalidRead)) => return,
+            (
+                false,
+                Err(DError {
+                    error: DandelionError::InvalidRead,
+                    ..
+                }),
+            ) => return,
             (_, Err(err)) => panic!("Unexpected error from get_chunk_ref {:?}", err),
         }
     }
@@ -627,7 +655,10 @@ macro_rules! systemsDomainTests {
                     Ok(chunk_ref) => {
                         assert_eq!(&vec![BYTEPATTERN; 128], chunk_ref);
                     }
-                    Err(DandelionError::InvalidRead) => panic!("Invalid read"),
+                    Err(DError {
+                        error: DandelionError::InvalidRead,
+                        ..
+                    }) => panic!("Invalid read"),
                     Err(err) => panic!("Unexpected error from get_chunk_ref {:?}", err),
                 }
             }
