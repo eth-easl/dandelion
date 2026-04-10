@@ -10,7 +10,7 @@ use crate::{
     promise::Debt,
     DataItem, DataSet, Position,
 };
-use bytes::{Buf, Bytes};
+use bytes::Bytes;
 use core_affinity::set_for_current;
 use dandelion_commons::{
     dandelion_err, err_dandelion,
@@ -457,7 +457,6 @@ async fn memcached_request(request_info: MemcachedRequest) -> DandelionResult<Re
 }
 
 fn responses_write(
-    context_size: usize,
     output_set_names: &Vec<String>,
     debt: Debt,
     mut recorder: Recorder,
@@ -514,18 +513,17 @@ fn responses_write(
 
     let mut out_context = Context::new(
         ContextType::Bytes(Box::new(BytesContext::new(frames))),
-        context_size,
+        context_offset,
     );
     out_context.content = vec![Some(header_set), Some(body_set)];
 
-    let context = recorder.record(RecordPoint::EngineEnd);
+    recorder.record(RecordPoint::EngineEnd);
     drop(recorder);
     debt.fulfill(Ok(WorkDone::Context(out_context)));
     return;
 }
 
 async fn run_http_request(
-    context_size: usize,
     composition_set: CompositionSet,
     client: HttpClient,
     metadata: Arc<Metadata>,
@@ -554,17 +552,10 @@ async fn run_http_request(
         }
     };
 
-    responses_write(
-        context_size,
-        &metadata.output_sets,
-        debt,
-        recorder,
-        responses,
-    )
+    responses_write(&metadata.output_sets, debt, recorder, responses)
 }
 
 async fn run_memcached_request(
-    context_size: usize,
     composition_set: CompositionSet,
     metadata: Arc<Metadata>,
     debt: Debt,
@@ -595,13 +586,7 @@ async fn run_memcached_request(
         }
     };
 
-    responses_write(
-        context_size,
-        &metadata.output_sets,
-        debt,
-        recorder,
-        responses,
-    );
+    responses_write(&metadata.output_sets, debt, recorder, responses)
 }
 
 async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
@@ -666,7 +651,6 @@ async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
                     match system_function {
                         SystemFunction::HTTP => {
                             tokio::spawn(run_http_request(
-                                alternative.context_size,
                                 request_set,
                                 http_client.clone(),
                                 metadata,
@@ -676,7 +660,6 @@ async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
                         }
                         SystemFunction::MEMCACHED => {
                             tokio::spawn(run_memcached_request(
-                                alternative.context_size,
                                 request_set,
                                 metadata,
                                 debt,

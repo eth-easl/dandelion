@@ -45,8 +45,11 @@ pub fn get_system_function_output_sets(function: SystemFunction) -> Vec<String> 
     .to_vec();
 }
 
+/// The system context only holds references to other contexts, so the size does not matter.
+/// System functions can create new contexts to return with appropriate sizes, so this does
+/// not matter to them either.
 #[cfg(any(feature = "reqwest_io"))]
-const SYS_FUNC_DEFAULT_CONTEXT_SIZE: usize = 0x1_0000_0000;
+const SYS_FUNC_DEFAULT_CONTEXT_SIZE: usize = usize::MAX;
 
 pub const SYSTEM_FUNCTIONS: &[(EngineType, SystemFunction, usize)] = &[
     #[cfg(feature = "reqwest_io")]
