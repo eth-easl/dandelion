@@ -17,6 +17,9 @@ class BasicHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/get':
             self._send_response("ok get")
+        elif self.path == '/get_large':
+            message = 'a' * 8192
+            self._send_response(message)
         else:
             self.send_response(404)
 
