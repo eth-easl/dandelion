@@ -23,7 +23,10 @@ use log::{debug, error, warn};
 use memcache::Client as MemcachedClient;
 use reqwest::{header::HeaderMap, Client as HttpClient};
 use std::sync::Arc;
-use tokio::{runtime::Builder, sync::RwLock};
+use tokio::{
+    runtime::Builder,
+    sync::{RwLock, Semaphore},
+};
 
 trait Request
 where
@@ -596,8 +599,10 @@ async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
     // TODO FIX! This should not be necessary!
     let mut queue_ref = Box::leak(queue);
     let mut tuple;
+    let semaphore = Arc::new(Semaphore::new(15));
     let worker_lock = Arc::new(RwLock::new(()));
     loop {
+        let ticket = semaphore.clone().acquire_owned().await.unwrap();
         (tuple, queue_ref) = queue_ref.into_future().await;
         let (args, debt) = if let Some((tuple_args, tuple_debt)) = tuple {
             (tuple_args, tuple_debt)
@@ -650,21 +655,24 @@ async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
                 if let Some(request_set) = input_option {
                     match system_function {
                         SystemFunction::HTTP => {
-                            tokio::spawn(run_http_request(
-                                request_set,
-                                http_client.clone(),
-                                metadata,
-                                debt,
-                                recorder,
-                            ));
+                            let client_clone = http_client.clone();
+                            tokio::spawn(async move {
+                                run_http_request(
+                                    request_set,
+                                    client_clone,
+                                    metadata,
+                                    debt,
+                                    recorder,
+                                )
+                                .await;
+                                drop(ticket);
+                            });
                         }
                         SystemFunction::MEMCACHED => {
-                            tokio::spawn(run_memcached_request(
-                                request_set,
-                                metadata,
-                                debt,
-                                recorder,
-                            ));
+                            tokio::spawn(async move {
+                                run_memcached_request(request_set, metadata, debt, recorder).await;
+                                drop(ticket);
+                            });
                         }
                         #[allow(unreachable_patterns)]
                         _ => {
