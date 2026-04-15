@@ -106,14 +106,24 @@ impl CompositionSet {
 
     /// Used for serializing the data to protobuf
     pub fn get_item(&self, idx: usize) -> (String, u32, Vec<u8>) {
-        let item = &self.item_list[idx];
-        let context_item = &item.2.content[self.set_index].as_ref().unwrap().buffers[item.1];
-        let mut data_bytes = Vec::<u8>::with_capacity(context_item.data.size);
-        let data_slice = item
-            .2
-            .get_chunk_ref(context_item.data.offset, context_item.data.size)
-            .expect("Failed to read item!");
-        data_bytes.extend_from_slice(data_slice);
+        let (_, item_index, item_context) = &self.item_list[idx];
+        let context_item = &item_context.content[self.set_index]
+            .as_ref()
+            .unwrap()
+            .buffers[*item_index];
+        let item_size = context_item.data.size;
+        let mut data_bytes = Vec::<u8>::with_capacity(item_size);
+        let mut bytes_read = 0;
+        while bytes_read < item_size {
+            let data_slice = item_context
+                .get_chunk_ref(
+                    context_item.data.offset + bytes_read,
+                    item_size - bytes_read,
+                )
+                .expect("Failed to read item!");
+            bytes_read += data_slice.len();
+            data_bytes.extend_from_slice(data_slice);
+        }
         (context_item.ident.clone(), context_item.key, data_bytes)
     }
 
