@@ -346,7 +346,7 @@ async fn http_request(
         .and_then(|len_str| len_str.parse::<usize>().ok());
 
     for (key, value) in response.headers() {
-        preamble.push_str(&format!("{}:{}", key, value.to_str().unwrap()));
+        preamble.push_str(&format!("{}:{}\n", key, value.to_str().unwrap()));
     }
 
     let mut body_length = 0;
@@ -592,6 +592,9 @@ async fn run_memcached_request(
     responses_write(&metadata.output_sets, debt, recorder, responses)
 }
 
+/// Number of concurrent requests a single IO core should be handling
+const CONCURRENCY_LIMIT: usize = 15;
+
 async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
     log::debug!("Reqwest engine Init");
     let http_client = HttpClient::new();
@@ -599,7 +602,7 @@ async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
     // TODO FIX! This should not be necessary!
     let mut queue_ref = Box::leak(queue);
     let mut tuple;
-    let semaphore = Arc::new(Semaphore::new(15));
+    let semaphore = Arc::new(Semaphore::new(CONCURRENCY_LIMIT));
     let worker_lock = Arc::new(RwLock::new(()));
     loop {
         let ticket = semaphore.clone().acquire_owned().await.unwrap();
