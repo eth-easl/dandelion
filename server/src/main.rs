@@ -7,11 +7,15 @@ use dispatcher::{
     queue::WorkQueue,
     resource_pool::ResourcePool,
 };
+use futures::{
+    task::{AtomicWaker, Context, Poll},
+    Stream,
+};
 use log::{debug, error, info, warn};
 use machine_interface::{
     composition::CompositionSet,
     function_driver::{ComputeResource, Metadata},
-    machine_config::{DomainType, EngineType, IntoEnumIterator},
+    machine_config::{DomainType, EngineType},
     memory_domain::MemoryResource,
 };
 use multinode::client::register_as_remote;
@@ -19,7 +23,10 @@ use nix::unistd::Pid;
 use std::{
     collections::BTreeMap,
     fs::read_to_string,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, OnceLock,
+    },
 };
 use tokio::{
     runtime::Builder,
@@ -195,6 +202,55 @@ async fn dispatcher_loop(
     }
 }
 
+static CHANGE_WAKER: AtomicWaker = AtomicWaker::new();
+struct ChangePoller {}
+impl Stream for ChangePoller {
+    type Item = ();
+
+    // Required method
+    fn poll_next(
+        self: core::pin::Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        CHANGE_WAKER.register(cx.waker());
+        let updated = UPDATED_COUNT.load(Ordering::Acquire);
+        if updated {
+            UPDATED_COUNT.store(false, Ordering::Release);
+            Poll::Ready(Some(()))
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+// TODO make into array with all relevant engines
+static IDLE_COUNT: AtomicUsize = AtomicUsize::new(0);
+static UPDATED_COUNT: AtomicBool = AtomicBool::new(false);
+
+fn add_idle_send() {
+    IDLE_COUNT.fetch_add(1, Ordering::AcqRel);
+    UPDATED_COUNT.store(true, Ordering::Release);
+    CHANGE_WAKER.wake();
+}
+
+fn remove_idle_send() {
+    IDLE_COUNT.fetch_sub(1, Ordering::AcqRel);
+    UPDATED_COUNT.store(true, Ordering::Release);
+    CHANGE_WAKER.wake();
+}
+
+// TODO generalize to multiple remotes
+// TODO think about additional frontend request to add or remove a remote from the list
+async fn remote_managent_loop(remote_url: String) {
+    // array with currently idle engines
+    use futures::StreamExt;
+    let mut change_poller = ChangePoller {};
+    while let Some(()) = change_poller.next().await {
+        let idle_cores = IDLE_COUNT.load(Ordering::Acquire);
+        println!("New number of idle cores: {}", idle_cores);
+    }
+}
+
 fn main() -> () {
     let default_warn_level = if cfg!(debug_assertions) {
         "debug"
@@ -336,9 +392,10 @@ fn main() -> () {
         ]),
     };
 
-    // Create an ARC pointer to the dispatcher for thread-safe access
+    let work_queue = WorkQueue::init(add_idle_send, remove_idle_send);
     let dispatcher = Box::leak(Box::new(
-        Dispatcher::init(resource_pool, memory_pool).expect("Should be able to start dispatcher"),
+        Dispatcher::init(resource_pool, memory_pool, work_queue)
+            .expect("Should be able to start dispatcher"),
     ));
     // start dispatcher
     dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
@@ -408,33 +465,27 @@ fn main() -> () {
     print!(" timestamp");
     print!("\n");
 
-    let remotes_running = Arc::new(Mutex::new(BTreeMap::new()));
-
+    // initialize the sender functions
     // if there is a remote url register there
-
-    let available_engine_types = EngineType::iter()
-        .map(|engine_type| (engine_type, 1u32))
-        .collect();
+    // let available_engine_types = EngineType::iter()
+    //     .map(|engine_type| (engine_type, 6u32))
+    //     .collect();
     if let Some(remote_url) = config.remote_queue_url {
-        runtime.spawn(async {
-            register_as_remote(
-                String::from("localhost"),
-                8081,
-                remote_url,
-                available_engine_types,
-            )
-            .await
-            .unwrap()
-        });
+        // let local_port = config.port as u32;
+        // let local_host = config.host_url.unwrap_or_else(|| String::from("localhost"));
+        runtime.spawn(remote_managent_loop(remote_url));
+        // runtime.spawn(async move {
+        //     register_as_remote(local_host, local_port, remote_url, available_engine_types)
+        //         .await
+        //         .unwrap()
+        // });
     }
 
     // Run this server for... forever... unless I receive a signal!
     runtime.block_on(frontend::service_loop(
         dispatcher_sender,
-        remotes_running,
         folder_path,
         config.port,
-        config.multinode_timeout_ms,
     ));
 
     // clean up folder in tmp that is used for function storage

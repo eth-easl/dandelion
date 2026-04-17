@@ -105,6 +105,7 @@ impl CompositionSet {
     }
 
     /// Used for serializing the data to protobuf
+    /// TODO remove once the serialization is move to work on top of get_chunk_ref directly
     pub fn get_item(&self, idx: usize) -> (String, u32, Vec<u8>) {
         let (_, item_index, item_context) = &self.item_list[idx];
         let context_item = &item_context.content[self.set_index]

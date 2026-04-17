@@ -358,12 +358,13 @@ async fn remote_work_queue(
                     caching: _,
                     input_sets,
                     metadata: _,
-                    recorder: _,
+                    recorder,
                 } => {
                     let results = remote_node
                         .invoke_function(function_id, &input_sets)
                         .await
                         .and_then(|context| Ok(WorkDone::Context(context)));
+                    drop(recorder);
                     debt.fulfill(results);
                 }
                 WorkToDo::Shutdown(_) => panic!("Remote engine should not get shutdown request"),
@@ -559,26 +560,12 @@ async fn service(
     req: Request<Incoming>,
     dispatcher: mpsc::Sender<DispatcherCommand>,
     folder_path: &'static str,
-    remote_nodes: Arc<Mutex<BTreeMap<(String, u16), oneshot::Sender<()>>>>,
-    remote_timeout: u64,
 ) -> Result<Response<DandelionBody>, Infallible> {
     // handle request
     let mut is_multinode_request = false;
     let res = match req.uri().path() {
         "/register/function" => handle_function_registration(req, dispatcher, folder_path).await,
         "/register/composition" => handle_composition_registration(req, dispatcher).await,
-        "/multinode/register" => {
-            is_multinode_request = true;
-            handle_remote_node_registration(req, dispatcher, remote_nodes, remote_timeout).await
-        }
-        "/multinode/deregister" => {
-            is_multinode_request = true;
-            handle_remote_node_deregistration(req, remote_nodes).await
-        }
-        "/multinode/invoke" => {
-            is_multinode_request = true;
-            handle_remote_node_request(req, dispatcher).await
-        }
         // TODO: rename to cold func and hot func, remove matmul, compute, io
         "/cold/matmul"
         | "/cold/matmulstore"
@@ -639,10 +626,8 @@ async fn service(
 
 pub async fn service_loop(
     request_sender: mpsc::Sender<DispatcherCommand>,
-    remote_nodes: Arc<Mutex<BTreeMap<(String, u16), oneshot::Sender<()>>>>,
     folder_path: &'static str,
     port: u16,
-    remote_timeout: u64,
 ) {
     // socket to listen to
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -658,15 +643,13 @@ pub async fn service_loop(
             connection_pair = listener.accept() => {
                 let (stream,_) = connection_pair.unwrap();
                 let loop_dispatcher = request_sender.clone();
-                let loop_nodes = remote_nodes.clone();
                 let io = hyper_util::rt::TokioIo::new(stream);
                 tokio::task::spawn(async move {
                     let service_dispatcher_ptr = loop_dispatcher.clone();
-                    let service_nodes = loop_nodes.clone();
                     if let Err(err) = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
                         .serve_connection_with_upgrades(
                             io,
-                            service_fn(|req| service(req, service_dispatcher_ptr.clone(), folder_path, service_nodes.clone(),remote_timeout)),
+                            service_fn(|req| service(req, service_dispatcher_ptr.clone(), folder_path)),
                         )
                         .await
                     {

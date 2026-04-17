@@ -48,22 +48,29 @@ struct AtomicTickets {
     end: AtomicUsize,
 }
 
+const MAX_QUEUE: usize = 4096;
+
 /// Producers can push new work to the end of the queue using the `push` function.
 /// Consumers can pop elements using the `aquire` function.
 #[derive(Clone)]
 pub struct WorkQueue {
     inner: Arc<Mutex<std::collections::LinkedList<QueueElement>>>,
     promise_buffer: PromiseBuffer,
+    /// This is used to notify that the number of idle threads has increased or decreased
+    add_idle: fn(),
+    remove_idle: fn(),
     #[cfg(feature = "spin_queue")]
     tickets: Arc<Box<[AtomicTickets]>>,
 }
 
 impl WorkQueue {
     /// Creates a new WorkQueue of given size.
-    pub fn init(capacity: usize) -> Self {
+    pub fn init(add_idle: fn(), remove_idle: fn()) -> Self {
         WorkQueue {
             inner: Arc::new(Mutex::new(LinkedList::new())),
-            promise_buffer: PromiseBuffer::init(capacity),
+            promise_buffer: PromiseBuffer::init(MAX_QUEUE),
+            add_idle,
+            remove_idle,
             #[cfg(feature = "spin_queue")]
             tickets: Arc::new(
                 (0..EngineType::COUNT)
@@ -168,6 +175,7 @@ impl WorkQueue {
 
     /// Spins on the queue until it manages to acquire some work that matches the given flags.
     pub fn get_work(&self, engine_flags: u32, engine_type: EngineType) -> (WorkToDo, Debt) {
+        let mut first_loop = true;
         loop {
             #[cfg(feature = "spin_queue")]
             {
@@ -194,7 +202,12 @@ impl WorkQueue {
                 .start
                 .fetch_add(1, Ordering::Release);
             if let Some(result_tupple) = result {
+                (self.remove_idle)();
                 return result_tupple;
+            }
+            if first_loop {
+                (self.add_idle)();
+                first_loop = false;
             }
         }
     }

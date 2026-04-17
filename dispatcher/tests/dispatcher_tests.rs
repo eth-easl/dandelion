@@ -4,7 +4,7 @@ mod dispatcher_tests {
     mod registry_tests;
 
     use dandelion_commons::FunctionId;
-    use dispatcher::{dispatcher::Dispatcher, resource_pool::ResourcePool};
+    use dispatcher::{dispatcher::Dispatcher, queue::WorkQueue, resource_pool::ResourcePool};
     use machine_interface::{
         composition::CompositionSet,
         function_driver::{ComputeResource, Metadata},
@@ -46,7 +46,9 @@ mod dispatcher_tests {
                 )
             })
             .collect();
-        let dispatcher = Dispatcher::init(resource_pool, memory_resources)
+        let stub = || {};
+        let work_queue = WorkQueue::init(stub, stub);
+        let dispatcher = Dispatcher::init(resource_pool, memory_resources, work_queue)
             .expect("Should have initialized dispatcher");
         let function_id = Arc::new(String::from("test_function"));
         dispatcher

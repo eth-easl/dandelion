@@ -36,8 +36,6 @@ pub enum DispatcherInput {
     Set(CompositionSet),
 }
 
-const MAX_QUEUE: usize = 4096;
-
 // TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
 // the entire execution time anyway
 pub struct Dispatcher {
@@ -50,12 +48,10 @@ impl Dispatcher {
     pub fn init(
         mut resource_pool: ResourcePool,
         memory_resources: BTreeMap<DomainType, MemoryResource>,
-    ) -> DandelionResult<Dispatcher> {
+        work_queue: WorkQueue,
+    ) -> DandelionResult<Self> {
         // get machine specific configurations
         let domains = get_available_domains(memory_resources);
-
-        // TODO: get size from config?
-        let work_queue = WorkQueue::init(MAX_QUEUE);
 
         // create an engine queue wrapper of the work queue for each engine and use up all engine resource available
         for engine_type in EngineType::iter() {
@@ -76,6 +72,7 @@ impl Dispatcher {
         });
     }
 
+    // TODO remove
     pub fn get_work_queue(&self) -> WorkQueue {
         self.work_queue.clone()
     }
