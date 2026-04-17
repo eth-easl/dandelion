@@ -416,9 +416,10 @@ impl KvmLoop {
 
         debug!("Resuming preempted function");
 
-        // Clear the preemption flag before re-entering
-        self.preempt_flag.store(false, Ordering::Release);
-
+        // Do not clear the preemption flag here.
+        // The caller clears stale flags after deregistering; clearing in resume() would
+        // lose a fresh preemption request that arrives after re-registration but before
+        // the next VM entry.
         let mut preempted = false;
         loop {
             if self.preempt_flag.load(Ordering::Acquire) {
