@@ -7,7 +7,6 @@ edition = "2021"
 dandelion_commons = { path = "../dandelion_commons" }
 machine_interface = { path = "../machine_interface" }
 tokio = { version = "1", features = ["time"] }
-reqwest = { version = "0.12", features = ["json", "blocking"] }
 prost = "0.14.1"
 log = "0.4.20"
 

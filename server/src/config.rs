@@ -7,6 +7,7 @@ use log::{error, warn};
 const DEFAULT_CONFIG_PATH: &str = "./dandelion.config";
 const DEFAULT_FOLDER_PATH: &str = "/tmp/dandelion_server";
 const DEFAULT_PORT: u16 = 8080;
+const DEFAULT_QUEUE_PORT: u16 = 7070;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
 const DEFAULT_MULTINODE_TIMEOUT: u64 = 50;
 
@@ -70,6 +71,10 @@ pub struct DandelionConfig {
     #[serde(default)]
     pub folder_path: String,
 
+    /// Port on which to listen to remote node connections which want to poll
+    /// the work queue
+    #[arg(long, env, default_value_t = DEFAULT_QUEUE_PORT)]
+    pub q_port: u16,
     /// For multinode, add a remote host to register to
     #[arg(long, env)]
     #[serde(default)]

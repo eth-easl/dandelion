@@ -241,13 +241,33 @@ fn remove_idle_send() {
 
 // TODO generalize to multiple remotes
 // TODO think about additional frontend request to add or remove a remote from the list
-async fn remote_managent_loop(remote_url: String) {
+// TODO think if we may want to fuse client and server to make them bidirectional
+async fn remote_queue_client(remote_url: String) {
     // array with currently idle engines
     use futures::StreamExt;
     let mut change_poller = ChangePoller {};
     while let Some(()) = change_poller.next().await {
         let idle_cores = IDLE_COUNT.load(Ordering::Acquire);
         println!("New number of idle cores: {}", idle_cores);
+        if idle_cores > 0 {}
+    }
+}
+
+async fn remote_queue_server(queue_port: u16) {
+    // socket to listen to
+    let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+
+    loop {
+        // wait for new connection to arrive
+        let accept_result = listener.accept().await;
+        let socket = if accept_result.is_ok() {
+            let (socket, _address) = accept_result.unwrap();
+            remote_queue_handler(socket);
+        } else {
+            // TODO handle errors on incomming request
+            continue;
+        };
     }
 }
 
@@ -465,20 +485,12 @@ fn main() -> () {
     print!(" timestamp");
     print!("\n");
 
-    // initialize the sender functions
-    // if there is a remote url register there
-    // let available_engine_types = EngineType::iter()
-    //     .map(|engine_type| (engine_type, 6u32))
-    //     .collect();
+    // listen for other nodes trying to poll from local work queue
+    runtime.spawn(remote_queue_server(config.q_port));
+
+    // start a thread to check if we should be checking remote queues
     if let Some(remote_url) = config.remote_queue_url {
-        // let local_port = config.port as u32;
-        // let local_host = config.host_url.unwrap_or_else(|| String::from("localhost"));
-        runtime.spawn(remote_managent_loop(remote_url));
-        // runtime.spawn(async move {
-        //     register_as_remote(local_host, local_port, remote_url, available_engine_types)
-        //         .await
-        //         .unwrap()
-        // });
+        runtime.spawn(remote_queue_client(remote_url));
     }
 
     // Run this server for... forever... unless I receive a signal!

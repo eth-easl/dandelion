@@ -1,5 +1,5 @@
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, MultinodeError};
-use prost::bytes::Bytes;
+use prost::bytes::{Buf, Bytes};
 use prost::Message;
 
 pub mod client;
@@ -47,7 +47,7 @@ pub fn deserialize_action_status(buf: Bytes) -> DandelionResult<proto::ActionSta
     }
 }
 
-pub fn deserialize_node_info(buf: Bytes) -> DandelionResult<proto::NodeInfo> {
+pub fn deserialize_node_info(buf: impl Buf) -> DandelionResult<proto::NodeInfo> {
     match proto::NodeInfo::decode(buf) {
         Ok(node_info) => Ok(node_info),
         Err(err) => err_dandelion!(DandelionError::Multinode(

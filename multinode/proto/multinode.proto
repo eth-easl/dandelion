@@ -21,12 +21,15 @@ message Engine {
 }
 
 message NodeInfo {
-    string host = 1;
-    uint32 port = 2;
-    repeated Engine engines = 3;
+    uint32 version = 1;
+    repeated Engine engines = 2;
 }
 
 // Task Invocation
+
+message AvailableWork {
+    repeated Inocation = 1;
+}
 
 message DataItem {
     string ident = 1;
@@ -39,7 +42,7 @@ message DataSet {
     repeated DataItem items = 2;
 }
 
-message InvocationRequest {
+message Invocation {
     string function_id = 1;
     repeated DataSet data_sets = 2;
 }
