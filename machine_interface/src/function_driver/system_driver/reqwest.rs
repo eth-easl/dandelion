@@ -22,7 +22,7 @@ use http::{version::Version as HttpVersion, HeaderName, HeaderValue, Method as H
 use log::{debug, error, warn};
 use memcache::Client as MemcachedClient;
 use reqwest::{header::HeaderMap, Client as HttpClient};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::{
     runtime::Builder,
     sync::{RwLock, Semaphore},
@@ -593,7 +593,8 @@ async fn run_memcached_request(
 }
 
 /// Number of concurrent requests a single IO core should be handling
-const CONCURRENCY_LIMIT: usize = 15;
+pub const DEFAULT_CONCURRENCY_LIMIT: usize = 15;
+pub static CONCURRENCY_LIMIT: OnceLock<usize> = OnceLock::new();
 
 async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
     log::debug!("Reqwest engine Init");
@@ -602,7 +603,8 @@ async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
     // TODO FIX! This should not be necessary!
     let mut queue_ref = Box::leak(queue);
     let mut tuple;
-    let semaphore = Arc::new(Semaphore::new(CONCURRENCY_LIMIT));
+    let concurrency_limit = CONCURRENCY_LIMIT.get_or_init(|| DEFAULT_CONCURRENCY_LIMIT);
+    let semaphore = Arc::new(Semaphore::new(*concurrency_limit));
     let worker_lock = Arc::new(RwLock::new(()));
     loop {
         let ticket = semaphore.clone().acquire_owned().await.unwrap();
