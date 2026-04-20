@@ -15,7 +15,7 @@ use crate::{function_driver::functions::SystemFunction, machine_config::EngineTy
 // Do not want to overcomplicate things.
 const HTTP_INPUT_SETS: [&str; 1] = ["requests"];
 
-/// HTTP outputs two set with response headers and bodies for each request that was in the input set
+/// HTTP outputs two set with response headers and bodies for each request that was in the input set. The response items have the same key as the corresponding request input item.
 /// The headers start with a status line containing the protocol used, the response code and possible the reason
 /// ex.: "HTTP/1.1 200 OK"
 /// On the following lines there are the headers in key value formatted with ':' as separator
