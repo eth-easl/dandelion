@@ -6,14 +6,11 @@ use crate::{
         ComputeResource, Driver, EngineWorkQueue, Metadata, WorkDone, WorkToDo,
     },
     machine_config::EngineType,
-    memory_domain::{
-        system_domain::{system_context_write_from_bytes, SystemContext},
-        Context, ContextTrait, ContextType,
-    },
+    memory_domain::{bytes_context::BytesContext, Context, ContextTrait, ContextType},
     promise::Debt,
     DataItem, DataSet, Position,
 };
-use bytes::{Buf, Bytes};
+use bytes::Bytes;
 use core_affinity::set_for_current;
 use dandelion_commons::{
     dandelion_err, err_dandelion,
@@ -25,8 +22,11 @@ use http::{version::Version as HttpVersion, HeaderName, HeaderValue, Method as H
 use log::{debug, error, warn};
 use memcache::Client as MemcachedClient;
 use reqwest::{header::HeaderMap, Client as HttpClient};
-use std::{collections::BTreeMap, sync::Arc};
-use tokio::{runtime::Builder, sync::RwLock};
+use std::sync::{Arc, OnceLock};
+use tokio::{
+    runtime::Builder,
+    sync::{RwLock, Semaphore},
+};
 
 trait Request
 where
@@ -72,7 +72,9 @@ struct ResponseInformation {
     item_key: u32,
     /// contains both the status line as well as all headers
     preamble: String,
-    body: bytes::Bytes,
+    body: Vec<bytes::Bytes>,
+    /// Total number of bytes the body contains
+    body_length: usize,
 }
 
 impl Request for HttpRequest {
@@ -323,7 +325,7 @@ async fn http_request(
             )));
         }
     };
-    let response = match client.execute(request).await {
+    let mut response = match client.execute(request).await {
         Ok(resp) => resp,
         Err(_) => return err_dandelion!(DandelionError::SystemFuncResponseError),
     };
@@ -347,15 +349,21 @@ async fn http_request(
         preamble.push_str(&format!("{}:{}\n", key, value.to_str().unwrap()));
     }
 
-    preamble.push('\n');
-
-    let body = match response.bytes().await {
-        Ok(bytes) => bytes,
-        Err(_) => return err_dandelion!(DandelionError::SystemFuncResponseError),
-    };
+    let mut body_length = 0;
+    let mut body = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(frame)) => {
+                body_length += frame.len();
+                body.push(frame)
+            }
+            Ok(None) => break,
+            Err(_) => return err_dandelion!(DandelionError::SystemFuncResponseError),
+        }
+    }
 
     if let Some(content_len) = content_length {
-        if content_len != body.len() {
+        if content_len != body_length {
             return err_dandelion!(DandelionError::SystemFuncResponseError);
         }
     }
@@ -364,6 +372,7 @@ async fn http_request(
         item_key,
         preamble,
         body,
+        body_length,
     };
     return Ok(response_info);
 }
@@ -390,10 +399,8 @@ async fn memcached_request(request_info: MemcachedRequest) -> DandelionResult<Re
     };
 
     // Preamble is SUCCESS for success. For non successfull functions, error message will be stored there
-    let mut preamble: String;
-    let response_body: bytes::Bytes;
     // Default item size limit is 1MB. If item is larger, we ignore it
-    match method {
+    let (preamble, response_body) = match method {
         MemcachedMethod::SET => {
             // Assemble value to set
             // TODO Make timeout a parameter
@@ -404,10 +411,7 @@ async fn memcached_request(request_info: MemcachedRequest) -> DandelionResult<Re
             .await;
 
             match result {
-                Ok(Ok(_)) => {
-                    preamble = String::from("SUCCESS");
-                    response_body = Bytes::from(vec![0u8]);
-                }
+                Ok(Ok(_)) => (String::from("SUCCESS"), Bytes::from(vec![0u8])),
                 Ok(Err(e)) => {
                     // TODO: Use better error
                     warn!("Memcached_request set failed with: {:?}", e);
@@ -427,20 +431,10 @@ async fn memcached_request(request_info: MemcachedRequest) -> DandelionResult<Re
             .await;
 
             match result {
-                Ok(Ok(Some(response))) => {
-                    preamble = String::from("SUCCESS");
-                    // preamble.push_str(&format!(", {:?}", response.key));
-                    // match response.cas {
-                    //     Some(value) => preamble.push_str(&format!(", {}", value)),
-                    //     None => preamble.push_str(", None"),
-                    // }
-                    // preamble.push_str(&format!(", {}", response.flags.to_string()));
-                    response_body = Bytes::from(response);
-                }
+                Ok(Ok(Some(response))) => (String::from("SUCCESS"), Bytes::from(response)),
                 Ok(Ok(None)) => {
                     debug!("Key {} did not exist on memcached server", item_key);
-                    preamble = String::from("ABSENT");
-                    response_body = Bytes::from(vec![0u8]);
+                    (String::from("ABSENT"), Bytes::from(vec![0u8]))
                 }
                 Ok(Err(e)) => {
                     debug!("Memcached_request get failed with: {:?}", e);
@@ -454,128 +448,77 @@ async fn memcached_request(request_info: MemcachedRequest) -> DandelionResult<Re
         }
     };
 
-    preamble.push('\n');
-
+    let body_length = response_body.len();
     let response_info = ResponseInformation {
         item_name,
         item_key,
         preamble,
-        body: response_body,
+        body: vec![response_body],
+        body_length,
     };
     return Ok(response_info);
 }
 
-fn response_write(context: &mut Context, response: ResponseInformation) -> DandelionResult<()> {
-    let ResponseInformation {
-        item_name,
-        item_key,
-        preamble,
-        mut body,
-    } = response;
-
-    let preamble_len = preamble.len();
-    let body_len = body.len();
-    let response_len = preamble_len + body_len;
-    // allocate space in the context for the entire response
-    let response_start = context.get_free_space(response_len, 128)?;
-
-    match &mut context.context {
-        ContextType::System(destination_ctxt) => {
-            let preamble_bytes = bytes::Bytes::from(preamble.into_bytes());
-            system_context_write_from_bytes(
-                destination_ctxt,
-                preamble_bytes,
-                response_start,
-                preamble_len,
-            );
-            system_context_write_from_bytes(
-                destination_ctxt,
-                body.clone(),
-                response_start + preamble_len,
-                body_len,
-            );
-        }
-        _ => {
-            context.write(response_start, preamble.as_bytes())?;
-            let mut bytes_read = 0;
-            while bytes_read < body_len {
-                let chunk = body.chunk();
-                let reading = chunk.len();
-                context.write(response_start + preamble_len + bytes_read, chunk)?;
-                body.advance(reading);
-                bytes_read += reading;
-            }
-            assert_eq!(
-                0,
-                body.remaining(),
-                "Body should have non remaining as we have read the amount given as len in the beginning"
-            );
-        }
-    }
-
-    if let Some(response_set) = &mut context.content[0] {
-        response_set.buffers.push(DataItem {
-            ident: item_name.clone(),
-            key: item_key,
-            data: Position {
-                offset: response_start,
-                size: response_len,
-            },
-        })
-    }
-    if let Some(body_set) = &mut context.content[1] {
-        body_set.buffers.push(DataItem {
-            ident: item_name,
-            key: item_key,
-            data: Position {
-                offset: response_start + preamble_len,
-                size: response_len - preamble_len,
-            },
-        })
-    }
-
-    return Ok(());
-}
-
 fn responses_write(
-    context_size: usize,
     output_set_names: &Vec<String>,
     debt: Debt,
     mut recorder: Recorder,
     responses: Vec<ResponseInformation>,
 ) {
-    let mut out_context = Context::new(
-        ContextType::System(Box::new(SystemContext {
-            local_offset_to_data_position: BTreeMap::new(),
-            size: context_size,
-        })),
-        context_size,
-    );
+    let mut header_set = DataSet {
+        ident: "headers".to_string(),
+        buffers: vec![],
+    };
+    let mut body_set = DataSet {
+        ident: "bodies".to_string(),
+        buffers: vec![],
+    };
+    let mut frames = Vec::new();
+    // since output sets are taken from the function registration and not the composition,
+    // always expect the ones we define
+    assert_eq!(2, output_set_names.len());
+    assert_eq!("headers", output_set_names[0]);
+    assert_eq!("bodies", output_set_names[1]);
+    let mut context_offset = 0;
+    for response in responses.into_iter() {
+        let ResponseInformation {
+            item_name,
+            item_key,
+            preamble,
+            mut body,
+            body_length,
+        } = response;
 
-    if !output_set_names.is_empty() {
-        out_context.content = vec![None, None];
-        if output_set_names.iter().any(|elem| elem == "response") {
-            out_context.content[0] = Some(DataSet {
-                ident: String::from("response"),
-                buffers: vec![],
-            })
-        }
-        if output_set_names.iter().any(|elem| elem == "body") {
-            out_context.content[1] = Some(DataSet {
-                ident: String::from("body"),
-                buffers: vec![],
-            })
-        }
-        let write_results: DandelionResult<Vec<_>> = responses
-            .into_iter()
-            .map(|response| response_write(&mut out_context, response))
-            .collect();
-        if let Err(err) = write_results {
-            drop(recorder);
-            debt.fulfill(Err(err));
-            return;
-        }
+        let preamble_len = preamble.len();
+        header_set.buffers.push(DataItem {
+            ident: item_name.clone(),
+            data: Position {
+                offset: context_offset,
+                size: preamble_len,
+            },
+            key: item_key,
+        });
+        context_offset += preamble_len;
+        let preamble_bytes = bytes::Bytes::from(preamble.into_bytes());
+        frames.push(preamble_bytes);
+
+        body_set.buffers.push(DataItem {
+            ident: item_name,
+            data: Position {
+                offset: context_offset,
+                size: body_length,
+            },
+            key: item_key,
+        });
+        frames.append(&mut body);
+        context_offset += body_length;
     }
+
+    let mut out_context = Context::new(
+        ContextType::Bytes(Box::new(BytesContext::new(frames))),
+        context_offset,
+    );
+    out_context.content = vec![Some(header_set), Some(body_set)];
 
     recorder.record(RecordPoint::EngineEnd);
     drop(recorder);
@@ -584,7 +527,6 @@ fn responses_write(
 }
 
 async fn run_http_request(
-    context_size: usize,
     composition_set: CompositionSet,
     client: HttpClient,
     metadata: Arc<Metadata>,
@@ -613,17 +555,10 @@ async fn run_http_request(
         }
     };
 
-    responses_write(
-        context_size,
-        &metadata.output_sets,
-        debt,
-        recorder,
-        responses,
-    );
+    responses_write(&metadata.output_sets, debt, recorder, responses)
 }
 
 async fn run_memcached_request(
-    context_size: usize,
     composition_set: CompositionSet,
     metadata: Arc<Metadata>,
     debt: Debt,
@@ -654,14 +589,12 @@ async fn run_memcached_request(
         }
     };
 
-    responses_write(
-        context_size,
-        &metadata.output_sets,
-        debt,
-        recorder,
-        responses,
-    );
+    responses_write(&metadata.output_sets, debt, recorder, responses)
 }
+
+/// Number of concurrent requests a single IO core should be handling
+pub const DEFAULT_CONCURRENCY_LIMIT: usize = 15;
+pub static CONCURRENCY_LIMIT: OnceLock<usize> = OnceLock::new();
 
 async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
     log::debug!("Reqwest engine Init");
@@ -670,8 +603,11 @@ async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
     // TODO FIX! This should not be necessary!
     let mut queue_ref = Box::leak(queue);
     let mut tuple;
+    let concurrency_limit = CONCURRENCY_LIMIT.get_or_init(|| DEFAULT_CONCURRENCY_LIMIT);
+    let semaphore = Arc::new(Semaphore::new(*concurrency_limit));
     let worker_lock = Arc::new(RwLock::new(()));
     loop {
+        let ticket = semaphore.clone().acquire_owned().await.unwrap();
         (tuple, queue_ref) = queue_ref.into_future().await;
         let (args, debt) = if let Some((tuple_args, tuple_debt)) = tuple {
             (tuple_args, tuple_debt)
@@ -724,23 +660,24 @@ async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
                 if let Some(request_set) = input_option {
                     match system_function {
                         SystemFunction::HTTP => {
-                            tokio::spawn(run_http_request(
-                                alternative.context_size,
-                                request_set,
-                                http_client.clone(),
-                                metadata,
-                                debt,
-                                recorder,
-                            ));
+                            let client_clone = http_client.clone();
+                            tokio::spawn(async move {
+                                run_http_request(
+                                    request_set,
+                                    client_clone,
+                                    metadata,
+                                    debt,
+                                    recorder,
+                                )
+                                .await;
+                                drop(ticket);
+                            });
                         }
                         SystemFunction::MEMCACHED => {
-                            tokio::spawn(run_memcached_request(
-                                alternative.context_size,
-                                request_set,
-                                metadata,
-                                debt,
-                                recorder,
-                            ));
+                            tokio::spawn(async move {
+                                run_memcached_request(request_set, metadata, debt, recorder).await;
+                                drop(ticket);
+                            });
                         }
                         #[allow(unreachable_patterns)]
                         _ => {

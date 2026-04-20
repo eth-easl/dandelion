@@ -9,6 +9,7 @@ const DEFAULT_FOLDER_PATH: &str = "/tmp/dandelion_server";
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
 const DEFAULT_MULTINODE_TIMEOUT: u64 = 50;
+use machine_interface::function_driver::system_driver::reqwest::DEFAULT_CONCURRENCY_LIMIT;
 
 #[derive(serde::Deserialize, Debug)]
 pub struct PreloadFunc {
@@ -56,6 +57,9 @@ pub struct DandelionConfig {
     pub frontend_cores: Option<usize>,
     #[arg(long, env)]
     pub io_cores: Option<usize>,
+    /// Number of concurrent requests to run per IO core
+    #[arg(long, env, default_value_t = DEFAULT_CONCURRENCY_LIMIT)]
+    pub io_concurrency: usize,
     #[arg(long, env, default_value_t = DEFAULT_TIMESTAMP_COUNT)]
     #[serde(default)]
     pub timestamp_count: usize,
@@ -124,6 +128,7 @@ impl DandelionConfig {
         merge_option!(dispatcher_cores);
         merge_option!(frontend_cores);
         merge_option!(io_cores);
+        merge!(io_concurrency, DEFAULT_CONCURRENCY_LIMIT);
         merge!(timestamp_count, DEFAULT_TIMESTAMP_COUNT);
         merge_clone!(bin_preload_path, String::from(""));
         merge_clone!(folder_path, String::from(DEFAULT_FOLDER_PATH));

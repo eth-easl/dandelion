@@ -218,6 +218,11 @@ fn main() -> () {
         Err(_) => panic!("Failed to initialize tracing archive"),
     }
 
+    // set the reqwest engine concurrency limit if it is available
+    #[cfg(feature = "reqwest_io")]
+    let _ = machine_interface::function_driver::system_driver::reqwest::CONCURRENCY_LIMIT
+        .set(config.io_concurrency);
+
     // find available resources
     let num_phyiscal_cores = u8::try_from(num_cpus::get_physical()).unwrap();
     let num_virt_cores = u8::try_from(num_cpus::get()).unwrap();
