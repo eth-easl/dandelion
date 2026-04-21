@@ -512,7 +512,7 @@ impl Dispatcher {
 
                     let subrecoder = recorder.get_sub_recorder();
                     let args = WorkToDo::FunctionArguments {
-                        function_id,
+                        function_id: function_id.clone(),
                         function_alternatives,
                         input_sets,
                         metadata,
@@ -531,7 +531,8 @@ impl Dispatcher {
                                     let mut stderr_output: Vec<u8> = vec![0; itm.data.size];
                                     context.context.read(itm.data.offset, &mut stderr_output)?;
                                     warn!(
-                                        "Function result contains stderr output:\n{}",
+                                        "Function '{}' result contains stderr output:\n{}",
+                                        function_id,
                                         std::str::from_utf8(stderr_output.as_slice())
                                             .expect("Invalid stderr buffer")
                                     );
@@ -540,7 +541,8 @@ impl Dispatcher {
                                     let mut stdout_output: Vec<u8> = vec![0; itm.data.size];
                                     context.context.read(itm.data.offset, &mut stdout_output)?;
                                     debug!(
-                                        "Function output:\n{}",
+                                        "Function '{}' output:\n{}",
+                                        function_id,
                                         std::str::from_utf8(stdout_output.as_slice())
                                             .expect("Invalid stdout buffer")
                                     );

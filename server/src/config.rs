@@ -59,6 +59,7 @@ pub struct DandelionConfig {
     pub io_cores: Option<usize>,
     /// Number of concurrent requests to run per IO core
     #[arg(long, env, default_value_t = DEFAULT_CONCURRENCY_LIMIT)]
+    #[serde(default)]
     pub io_concurrency: usize,
     #[arg(long, env, default_value_t = DEFAULT_TIMESTAMP_COUNT)]
     #[serde(default)]
