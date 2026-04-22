@@ -58,27 +58,10 @@ impl WorkDone {
 }
 
 pub trait EngineWorkQueue {
-    fn get_engine_args(&self) -> (WorkToDo, crate::promise::Debt);
+    fn get_engine_args(
+        &self,
+    ) -> impl std::future::Future<Output = (WorkToDo, crate::promise::Debt)> + Send;
     fn try_get_engine_args(&self) -> Option<(WorkToDo, crate::promise::Debt)>;
-}
-
-impl futures::stream::Stream for &mut (dyn EngineWorkQueue + Send) {
-    type Item = (WorkToDo, crate::promise::Debt);
-    /// By default the behaviour of the work queue on polling is to call try_get_engine_args()
-    /// If the call returns Some(tuple), the poll will returns Ready(tuple)
-    /// Otherwise the poll function will call the waker and return pending.
-    /// The waker is called, because the queue does not know when it becomes ready, it signals to be polled again.
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> core::task::Poll<Option<Self::Item>> {
-        if let Some(tuple) = self.try_get_engine_args() {
-            return core::task::Poll::Ready(Some(tuple));
-        } else {
-            cx.waker().wake_by_ref();
-            return core::task::Poll::Pending;
-        }
-    }
 }
 
 pub trait Driver: Send + Sync {
@@ -87,7 +70,7 @@ pub trait Driver: Send + Sync {
         &self,
         resource: ComputeResource,
         // TODO check out why this can't be impl instead of Box<dyn
-        queue: Box<dyn EngineWorkQueue + Send>,
+        queue: impl EngineWorkQueue + Send + 'static,
     ) -> DandelionResult<()>;
 
     // parses an executable,

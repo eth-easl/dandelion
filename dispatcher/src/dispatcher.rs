@@ -55,10 +55,9 @@ impl Dispatcher {
 
         // create an engine queue wrapper of the work queue for each engine and use up all engine resource available
         for engine_type in EngineType::iter() {
-            let engine_queue = Box::new(EngineQueue::init(work_queue.clone(), engine_type));
-            let driver = engine_type.get_driver();
+            let engine_queue = EngineQueue::init(work_queue.clone(), engine_type);
             while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(engine_type) {
-                driver.start_engine(resource, engine_queue.clone())?;
+                engine_type.start_engine(resource, engine_queue.clone())?;
             }
         }
 

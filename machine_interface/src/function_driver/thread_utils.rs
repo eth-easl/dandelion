@@ -4,12 +4,18 @@ use crate::{
     },
     machine_config::EngineType,
     memory_domain::{self, Context},
+    promise::Debt,
 };
 use core::marker::Send;
 use dandelion_commons::{
     err_dandelion, records::RecordPoint, DandelionError, DandelionResult, FunctionRegistryError,
 };
-use std::thread::spawn;
+use std::{
+    future::Future,
+    sync::atomic::{AtomicBool, Ordering},
+    task::{Poll, RawWaker, RawWakerVTable, Waker},
+    thread::spawn,
+};
 
 extern crate alloc;
 
@@ -24,7 +30,50 @@ pub trait EngineLoop {
     fn get_engine_type(&self) -> EngineType;
 }
 
-fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
+// Either use a local atomic bool as a waker or a channel if we want blocking
+
+// TODO: make sencond blocking waker
+// functions for the waker
+fn waker_clone(data: *const ()) -> RawWaker {
+    RawWaker::new(data, &WAKER_TABLE)
+}
+
+fn waker_wake(data: *const ()) {
+    let atomic = unsafe { &*(data as *const AtomicBool) };
+    atomic.store(true, Ordering::Release);
+}
+
+unsafe fn waker_wake_by_ref(data: *const ()) {
+    waker_wake(data);
+}
+
+unsafe fn waker_drop(_: *const ()) {}
+
+const WAKER_TABLE: RawWakerVTable =
+    RawWakerVTable::new(waker_clone, waker_wake, waker_wake_by_ref, waker_drop);
+
+fn manual_pull(queue: &mut impl EngineWorkQueue) -> (WorkToDo, Debt) {
+    let mut queue_future = core::pin::pin!(queue.get_engine_args());
+    //
+    let new_atomic = AtomicBool::new(false);
+    let raw_waker = RawWaker::new(new_atomic.as_ptr() as *const (), &WAKER_TABLE);
+    let waker = unsafe { Waker::from_raw(raw_waker) };
+    let mut context = std::task::Context::from_waker(&waker);
+    loop {
+        if let Poll::Ready(work) = queue_future.as_mut().poll(&mut context) {
+            return work;
+        }
+        // means it is still pending, wait for waker to be woken
+        while new_atomic
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
     // set core affinity
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
         log::error!("core received core id that could not be set");
@@ -33,7 +82,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
     let mut engine_state = E::init(core_id).expect("Failed to initialize thread state");
     'engine: loop {
         // TODO catch unwind so we can always return an error or shut down gracefully
-        let (args, debt) = queue.get_engine_args();
+        let (args, debt) = manual_pull(&mut queue);
         match args {
             WorkToDo::FunctionArguments {
                 function_id: _,
@@ -141,6 +190,9 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
     }
 }
 
-pub fn start_thread<E: EngineLoop>(cpu_slot: u8, queue: Box<dyn EngineWorkQueue + Send>) -> () {
+pub fn start_thread<E: EngineLoop>(
+    cpu_slot: u8,
+    queue: impl EngineWorkQueue + Send + 'static,
+) -> () {
     spawn(move || run_thread::<E>(cpu_slot, queue));
 }

@@ -238,7 +238,7 @@ impl Driver for MmuDriver {
     fn start_engine(
         &self,
         resource: ComputeResource,
-        queue: Box<dyn EngineWorkQueue + Send>,
+        queue: impl EngineWorkQueue + Send + 'static,
     ) -> DandelionResult<()> {
         let cpu_slot = match resource {
             ComputeResource::CPU(core) => core,

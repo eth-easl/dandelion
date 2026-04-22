@@ -85,12 +85,15 @@ mod system_driver_tests {
     ) -> () {
         let domain =
             Arc::new(Dom::init(get_resource(dom_init)).expect("Should be able to get domain"));
-        let queue = Box::new(TestQueue::new());
-        let driver = engine_type.get_driver();
-        let _engine = driver
+        let queue = TestQueue::new();
+        let _engine = engine_type
             .start_engine(drv_init, queue.clone())
             .expect("Should be able to get engine");
-        let function = Arc::new(driver.parse_function(String::from(""), &domain).unwrap());
+        let function = Arc::new(
+            engine_type
+                .parse_function(String::from(""), &domain)
+                .unwrap(),
+        );
 
         let request = format!("GET {} HTTP/1.1", uri).as_bytes().to_vec();
         let request_length = request.len();
@@ -164,14 +167,17 @@ mod system_driver_tests {
         drv_init: ComputeResource,
         port: u16,
     ) -> () {
-        let queue = Box::new(TestQueue::new());
+        let queue = TestQueue::new();
         let domain =
             Arc::new(Dom::init(get_resource(dom_init)).expect("Should be able to get domain"));
-        let driver = engine_type.get_driver();
-        let _engine = driver
+        let _engine = engine_type
             .start_engine(drv_init, queue.clone())
             .expect("Should be able to get engine");
-        let function = Arc::new(driver.parse_function(String::from(""), &domain).unwrap());
+        let function = Arc::new(
+            engine_type
+                .parse_function(String::from(""), &domain)
+                .unwrap(),
+        );
 
         let request = format!(
             r#"POST http://127.0.0.1:{}/post HTTP/1.1

@@ -3,8 +3,8 @@ mod compute_driver_tests {
     use crate::{
         composition::CompositionSet,
         function_driver::{
-            functions::FunctionAlternative, test_queue::TestQueue, ComputeResource, Driver,
-            Metadata, WorkToDo,
+            functions::FunctionAlternative, test_queue::TestQueue, ComputeResource, Metadata,
+            WorkToDo,
         },
         machine_config::EngineType,
         memory_domain::{
@@ -25,11 +25,10 @@ mod compute_driver_tests {
     }
 
     fn loader_empty<Dom: MemoryDomain>(dom_init: MemoryResource, engine_type: EngineType) {
-        let driver = engine_type.get_driver();
         // load elf file
         let elf_path = String::new();
         let domain = Dom::init(get_resource(dom_init)).expect("Should be able to get domain");
-        driver
+        engine_type
             .parse_function(elf_path, &domain)
             .expect("Empty string should return error");
     }
@@ -39,10 +38,8 @@ mod compute_driver_tests {
         init: Vec<ComputeResource>,
         wrong_init: Vec<ComputeResource>,
     ) {
-        let driver = engine_type.get_driver();
         for wronge_resource in wrong_init {
-            let queue_box = Box::new(TestQueue::new());
-            let wrong_resource_engine = driver.start_engine(wronge_resource, queue_box);
+            let wrong_resource_engine = engine_type.start_engine(wronge_resource, TestQueue::new());
             match wrong_resource_engine {
                 Ok(_) => panic!("Should not be able to get engine"),
                 Err(err) => assert_eq!(DandelionError::EngineResourceError, err),
@@ -50,21 +47,20 @@ mod compute_driver_tests {
         }
 
         for resource in init {
-            let queue_box = Box::new(TestQueue::new());
-            let engine = driver.start_engine(resource, queue_box);
+            let engine = engine_type.start_engine(resource, TestQueue::new());
             engine.expect("Should be able to get engine");
         }
     }
 
     fn prepare_engine_and_domain<Dom: MemoryDomain>(
         dom_init: MemoryResource,
-        driver: &dyn Driver,
+        engine_type: EngineType,
         drv_init: Vec<ComputeResource>,
-    ) -> (Arc<Box<dyn MemoryDomain>>, Box<TestQueue>) {
-        let queue = Box::new(TestQueue::new());
+    ) -> (Arc<Box<dyn MemoryDomain>>, TestQueue) {
+        let queue = TestQueue::new();
         let domain =
             Arc::new(Dom::init(get_resource(dom_init)).expect("Should have initialized domain"));
-        driver
+        engine_type
             .start_engine(drv_init[0], queue.clone())
             .expect("Should be able to start engine");
         return (domain, queue);
@@ -76,8 +72,7 @@ mod compute_driver_tests {
         engine_type: EngineType,
         drv_init: Vec<ComputeResource>,
     ) {
-        let driver = engine_type.get_driver();
-        let (domain, queue) = prepare_engine_and_domain::<Dom>(dom_init, driver, drv_init);
+        let (domain, queue) = prepare_engine_and_domain::<Dom>(dom_init, engine_type, drv_init);
 
         let metadata = Arc::new(Metadata {
             input_sets: vec![],
@@ -112,11 +107,10 @@ mod compute_driver_tests {
         engine_type: EngineType,
         drv_init: Vec<ComputeResource>,
     ) {
-        let driver = engine_type.get_driver();
-        let (domain, queue) = prepare_engine_and_domain::<Dom>(dom_init, driver, drv_init);
+        let (domain, queue) = prepare_engine_and_domain::<Dom>(dom_init, engine_type, drv_init);
 
         let function = Arc::new(
-            driver
+            engine_type
                 .parse_function(filename.to_string(), &domain)
                 .expect("Should be able to parse function"),
         );
@@ -155,8 +149,7 @@ mod compute_driver_tests {
         engine_type: EngineType,
         drv_init: Vec<ComputeResource>,
     ) {
-        let driver = engine_type.get_driver();
-        let (domain, queue) = prepare_engine_and_domain::<Dom>(dom_init, driver, drv_init);
+        let (domain, queue) = prepare_engine_and_domain::<Dom>(dom_init, engine_type, drv_init);
         // add inputs
         let in_data = vec![1i64, 2i64];
         let mut input_context = ReadOnlyContext::new(in_data.into_boxed_slice()).unwrap();
@@ -242,10 +235,9 @@ mod compute_driver_tests {
     ) {
         const LOWER_SIZE_BOUND: usize = 2;
         const UPPER_SIZE_BOUND: usize = 16;
-        let driver = engine_type.get_driver();
         for mat_size in LOWER_SIZE_BOUND..UPPER_SIZE_BOUND {
             let (domain, queue) =
-                prepare_engine_and_domain::<Dom>(dom_init.clone(), driver, drv_init.clone());
+                prepare_engine_and_domain::<Dom>(dom_init.clone(), engine_type, drv_init.clone());
             // add inputs
             let mut mat_vec = Vec::<i64>::new();
             mat_vec.push(mat_size as i64);
@@ -324,8 +316,7 @@ mod compute_driver_tests {
         engine_type: EngineType,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (domain, queue) =
-            prepare_engine_and_domain::<Dom>(dom_init, engine_type.get_driver(), drv_init);
+        let (domain, queue) = prepare_engine_and_domain::<Dom>(dom_init, engine_type, drv_init);
 
         let mut in_data = String::new();
         let mut content = Vec::new();
@@ -460,8 +451,7 @@ mod compute_driver_tests {
         engine_type: EngineType,
         drv_init: Vec<ComputeResource>,
     ) {
-        let (domain, queue) =
-            prepare_engine_and_domain::<Dom>(dom_init, engine_type.get_driver(), drv_init);
+        let (domain, queue) = prepare_engine_and_domain::<Dom>(dom_init, engine_type, drv_init);
         let mut in_data = String::new();
         let mut content = Vec::new();
         let in_file_content = "Test file 0\n line 2\n";
