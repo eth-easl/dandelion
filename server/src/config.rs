@@ -8,6 +8,7 @@ const DEFAULT_CONFIG_PATH: &str = "./dandelion.config";
 const DEFAULT_FOLDER_PATH: &str = "/tmp/dandelion_server";
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
+const DEFAULT_VIRTUAL_MAX_RAM_MULTIPLIER: usize = 2;
 const DEFAULT_MULTINODE_TIMEOUT: u64 = 50;
 use machine_interface::function_driver::system_driver::reqwest::DEFAULT_CONCURRENCY_LIMIT;
 
@@ -59,10 +60,14 @@ pub struct DandelionConfig {
     pub io_cores: Option<usize>,
     /// Number of concurrent requests to run per IO core
     #[arg(long, env, default_value_t = DEFAULT_CONCURRENCY_LIMIT)]
+    #[serde(default)]
     pub io_concurrency: usize,
     #[arg(long, env, default_value_t = DEFAULT_TIMESTAMP_COUNT)]
     #[serde(default)]
     pub timestamp_count: usize,
+    #[arg(long, env, default_value_t = DEFAULT_VIRTUAL_MAX_RAM_MULTIPLIER)]
+    #[serde(default)]
+    pub virtual_max_ram_multiplier: usize,
 
     // (optional) preload config
     #[arg(long, env, default_value = "")]
@@ -130,6 +135,10 @@ impl DandelionConfig {
         merge_option!(io_cores);
         merge!(io_concurrency, DEFAULT_CONCURRENCY_LIMIT);
         merge!(timestamp_count, DEFAULT_TIMESTAMP_COUNT);
+        merge!(
+            virtual_max_ram_multiplier,
+            DEFAULT_VIRTUAL_MAX_RAM_MULTIPLIER
+        );
         merge_clone!(bin_preload_path, String::from(""));
         merge_clone!(folder_path, String::from(DEFAULT_FOLDER_PATH));
         merge_option!(remote_queue_url);
