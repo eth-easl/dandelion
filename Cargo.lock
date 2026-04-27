@@ -1405,11 +1405,13 @@ name = "multinode"
 version = "1.0.0"
 dependencies = [
  "dandelion_commons",
+ "dispatcher",
+ "futures",
  "log",
  "machine_interface",
  "prost",
  "prost-build",
- "reqwest",
+ "test-log",
  "tokio",
 ]
 

@@ -28,24 +28,32 @@ pub fn serialize_node_info(node_info: proto::NodeInfo) -> Bytes {
     serialize!(node_info)
 }
 
-pub fn serialize_invocation_request(invocation_request: proto::InvocationRequest) -> Bytes {
-    serialize!(invocation_request)
+pub fn serialize_remote_message(worker_message: proto::RemoteMessage) -> Bytes {
+    serialize!(worker_message)
 }
 
-pub fn serialize_invocation_response(invocation_response: proto::InvocationResponse) -> Bytes {
-    serialize!(invocation_response)
+pub fn serialize_queue_message(queue_message: proto::QueueMessage) -> Bytes {
+    serialize!(queue_message)
 }
+
+// pub fn serialize_invocation(invocation_request: proto::Invocation) -> Bytes {
+//     serialize!(invocation_request)
+// }
+
+// pub fn serialize_response(invocation_response: proto::Response) -> Bytes {
+//     serialize!(invocation_response)
+// }
 
 // deserialization
 
-pub fn deserialize_action_status(buf: Bytes) -> DandelionResult<proto::ActionStatus> {
-    match proto::ActionStatus::decode(buf) {
-        Ok(action_status) => Ok(action_status),
-        Err(err) => err_dandelion!(DandelionError::Multinode(
-            MultinodeError::DeserializationError(format!("{:?}", err)),
-        )),
-    }
-}
+// pub fn deserialize_action_status(buf: Bytes) -> DandelionResult<proto::ActionStatus> {
+//     match proto::ActionStatus::decode(buf) {
+//         Ok(action_status) => Ok(action_status),
+//         Err(err) => err_dandelion!(DandelionError::Multinode(
+//             MultinodeError::DeserializationError(format!("{:?}", err)),
+//         )),
+//     }
+// }
 
 pub fn deserialize_node_info(buf: impl Buf) -> DandelionResult<proto::NodeInfo> {
     match proto::NodeInfo::decode(buf) {
@@ -56,18 +64,36 @@ pub fn deserialize_node_info(buf: impl Buf) -> DandelionResult<proto::NodeInfo> 
     }
 }
 
-pub fn deserialize_invocation_request(buf: Bytes) -> DandelionResult<proto::InvocationRequest> {
-    match proto::InvocationRequest::decode(buf) {
-        Ok(req) => Ok(req),
+// pub fn deserialize_invocation_request(buf: Bytes) -> DandelionResult<proto::Invocation> {
+//     match proto::Invocation::decode(buf) {
+//         Ok(req) => Ok(req),
+//         Err(err) => err_dandelion!(DandelionError::Multinode(
+//             MultinodeError::DeserializationError(format!("{:?}", err)),
+//         )),
+//     }
+// }
+
+// pub fn deserialize_invocation_response(buf: Bytes) -> DandelionResult<proto::Response> {
+//     match proto::Response::decode(buf) {
+//         Ok(resp) => Ok(resp),
+//         Err(err) => err_dandelion!(DandelionError::Multinode(
+//             MultinodeError::DeserializationError(format!("{:?}", err)),
+//         )),
+//     }
+// }
+
+pub fn deserialize_remote_message(buf: Bytes) -> DandelionResult<proto::RemoteMessage> {
+    match proto::RemoteMessage::decode(buf) {
+        Ok(resp) => Ok(resp),
         Err(err) => err_dandelion!(DandelionError::Multinode(
             MultinodeError::DeserializationError(format!("{:?}", err)),
         )),
     }
 }
 
-pub fn deserialize_invocation_response(buf: Bytes) -> DandelionResult<proto::InvocationResponse> {
-    match proto::InvocationResponse::decode(buf) {
-        Ok(resp) => Ok(resp),
+pub fn deserialize_queue_message(buf: Bytes) -> DandelionResult<proto::QueueMessage> {
+    match proto::QueueMessage::decode(buf) {
+        Ok(message) => Ok(message),
         Err(err) => err_dandelion!(DandelionError::Multinode(
             MultinodeError::DeserializationError(format!("{:?}", err)),
         )),
@@ -76,9 +102,7 @@ pub fn deserialize_invocation_response(buf: Bytes) -> DandelionResult<proto::Inv
 
 #[test]
 fn test_serialize_invocation_request() {
-    // pub mod proto {
-    //     include!(concat!(env!("OUT_DIR"), "/multinode_proto.rs"));
-    // }
+    use crate::proto::{queue_message, Invocation, QueueMessage};
     use machine_interface::memory_domain::ContextTrait;
 
     // construct invocation data
@@ -192,26 +216,35 @@ fn test_serialize_invocation_request() {
         )
     );
 
-    let request = crate::proto::InvocationRequest {
-        function_id: expected_id.clone(),
-        data_sets: serialized_sets.clone(),
+    let request = QueueMessage {
+        queue_message: Some(proto::queue_message::QueueMessage::Invocation(
+            crate::proto::Invocation {
+                function_id: expected_id.clone(),
+                data_sets: serialized_sets.clone(),
+                invocation_id: 7,
+            },
+        )),
     };
-    let bytes = serialize_invocation_request(request);
+    let bytes = serialize_queue_message(request);
     let invocation = bytes.clone();
-    println!(
-        "bytes ptr: {:?}, invocation bytes ptr: {:?} with size: {}",
-        bytes.as_ptr(),
-        invocation.as_ptr(),
-        bytes.len()
-    );
 
     // deserialize
-    let crate::proto::InvocationRequest {
+    let message = deserialize_queue_message(invocation)
+        .unwrap()
+        .queue_message
+        .unwrap();
+    let Invocation {
+        invocation_id,
         function_id: deserialized_id,
         data_sets: deserialized_sets,
-    } = deserialize_invocation_request(invocation).unwrap();
+    } = if let queue_message::QueueMessage::Invocation(invocation) = message {
+        invocation
+    } else {
+        panic!("Should have deserialized an invocation");
+    };
     assert_eq!(expected_id, deserialized_id);
     assert_eq!(serialized_sets, deserialized_sets);
+    assert_eq!(invocation_id, 7);
 
     // check the composition sets are as expected
     let mut sets = util::proto_data_sets_to_composition_sets(deserialized_sets);

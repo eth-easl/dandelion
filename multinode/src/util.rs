@@ -26,8 +26,8 @@ pub fn engine_type_dtop(t: machine_config::EngineType) -> proto::EngineType {
 }
 
 /// Translates protocol engine types to dandelion engine types.
-pub fn engine_type_ptod(t: proto::EngineType) -> DandelionResult<machine_config::EngineType> {
-    match t {
+pub fn engine_type_ptod(t: i32) -> DandelionResult<machine_config::EngineType> {
+    match proto::EngineType::from_i32(t).unwrap() {
         #[cfg(feature = "reqwest_io")]
         proto::EngineType::EngineReqwest => Ok(machine_config::EngineType::Reqwest),
         #[cfg(feature = "cheri")]

@@ -6,15 +6,20 @@ edition = "2021"
 [dependencies]
 dandelion_commons = { path = "../dandelion_commons" }
 machine_interface = { path = "../machine_interface" }
+dispatcher = { path = "../dispatcher" }
 tokio = { version = "1", features = ["time"] }
+futures = "0.3.32"
 prost = "0.14.1"
 log = "0.4.20"
 
 [build-dependencies]
 prost-build = { version = "0.14.1"}
 
+[dev-dependencies]
+test-log = "0.2.16"
+
 [features]
-cheri = ["machine_interface/cheri"]
-mmu = ["machine_interface/mmu"]
-kvm = ["machine_interface/kvm"]
-reqwest_io = ["machine_interface/reqwest_io"]
+cheri = ["dispatcher/cheri", "machine_interface/cheri"]
+mmu = ["dispatcher/mmu", "machine_interface/mmu"]
+kvm = ["dispatcher/kvm", "machine_interface/kvm"]
+reqwest_io = ["dispatcher/reqwest_io", "machine_interface/reqwest_io"]

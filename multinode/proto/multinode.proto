@@ -25,12 +25,6 @@ message NodeInfo {
     repeated Engine engines = 2;
 }
 
-// Task Invocation
-
-message AvailableWork {
-    repeated Inocation = 1;
-}
-
 message DataItem {
     string ident = 1;
     uint32 key = 2;
@@ -43,12 +37,41 @@ message DataSet {
 }
 
 message Invocation {
-    string function_id = 1;
-    repeated DataSet data_sets = 2;
+    uint32 invocation_id = 1;
+    string function_id = 2;
+    repeated DataSet data_sets = 3;
 }
 
-message InvocationResponse {
-    bool success = 1;
-    string error_msg = 2;
-    repeated DataSet data_sets = 3;
+message RepeatedDataSets {
+    repeated DataSet data_sets = 1;
+}
+
+message Response {
+    uint32 invocation_id = 1;
+    oneof response {
+        string error_msg = 2;
+        RepeatedDataSets data_sets = 3;
+    }
+}
+
+// Message from remote node to get work or return completed tasks
+message RemoteMessage {
+    oneof remote_message {
+        // Message to ask for more work, containing currently vailable resources
+        NodeInfo work_request = 1;
+        // Message containing the response for a specific function that was run 
+        Response response = 2;
+    }
+}
+
+// Messages to the remote node that asked for work
+// Either responding with 
+message QueueMessage {
+   oneof queue_message {
+        // Message to indicate that there currently is no work
+        bool no_work = 1;
+        // Message containing the work for one function
+        Invocation invocation = 2;
+        // TODO add message to cancel invocation
+   }
 }

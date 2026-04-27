@@ -68,17 +68,25 @@ struct WaitFuture<'list> {
     flags: u32,
     queues: &'list Arc<Mutex<(LinkedList<QueueElement>, LinkedList<WakerElement>)>>,
     lock: MutexLockFuture<'list, (LinkedList<QueueElement>, LinkedList<WakerElement>)>,
+    add_idle: fn(),
+    remove_idle: fn(),
+    was_set_idle: bool,
 }
 
 impl<'list> WaitFuture<'list> {
     fn new(
         flags: u32,
         queues: &'list Arc<Mutex<(LinkedList<QueueElement>, LinkedList<WakerElement>)>>,
+        add_idle: fn(),
+        remove_idle: fn(),
     ) -> WaitFuture<'list> {
         Self {
             flags,
             queues,
             lock: queues.lock(),
+            add_idle,
+            remove_idle,
+            was_set_idle: false,
         }
     }
 }
@@ -100,7 +108,9 @@ impl Future for WaitFuture<'_> {
                 .map(|queue_element| (queue_element.work, queue_element.debt));
             if let Some(result_tupple) = result {
                 // Found some work, so core is not idle
-                // (self.remove_idle)();
+                if self.was_set_idle {
+                    (self.remove_idle)();
+                }
                 Poll::Ready(result_tupple)
             } else {
                 // Did not find any work, so need to add to waker queue
@@ -108,6 +118,9 @@ impl Future for WaitFuture<'_> {
                     flags: self.flags,
                     waker: cx.waker().clone(),
                 };
+                if !self.was_set_idle {
+                    (self.add_idle)();
+                }
                 lock_guard.1.push_back(waker_element);
                 // lock was ready once, need to set new one
                 self.lock = self.queues.lock();
@@ -174,7 +187,6 @@ impl WorkQueue {
 
         let (promise, debt) = self.promise_buffer.get_promise()?;
         self.push(work, debt, flags).await;
-
         return promise.await;
     }
 
@@ -190,10 +202,29 @@ impl WorkQueue {
         })
     }
 
+    /// Tries to acquire some work that matches the given flags starting from the head of the queue.
+    /// Ignores shutdown (to use for remote nodes for example)
+    pub fn try_get_work_no_shutdown(&self, engine_flags: u32) -> Option<(WorkToDo, Debt)> {
+        // May want to try lock here too, instead of lock, but since we have the ticket, should always succeed on locking
+        self.queues.try_lock().and_then(|mut guard| {
+            guard
+                .0
+                .extract_if(|queue_element| {
+                    if let WorkToDo::Shutdown(_) = queue_element.work {
+                        false
+                    } else {
+                        queue_element.flags & engine_flags == engine_flags
+                    }
+                })
+                .next()
+                .map(|queue_element| (queue_element.work, queue_element.debt))
+        })
+    }
+
     /// Spins on the queue until it manages to acquire some work that matches the given flags.
     pub async fn get_work(&self, engine_flags: u32) -> (WorkToDo, Debt) {
         // try to get work, if there is none, insert self into waker and try again
-        WaitFuture::new(engine_flags, &self.queues).await
+        WaitFuture::new(engine_flags, &self.queues, self.add_idle, self.remove_idle).await
     }
 }
 
