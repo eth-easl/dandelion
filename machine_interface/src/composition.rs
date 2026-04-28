@@ -3,7 +3,11 @@ use dandelion_commons::{
     err_dandelion, DandelionError, DandelionResult, DispatcherError, FunctionId,
 };
 use itertools::Itertools;
-use std::{collections::BTreeMap, sync::Arc, vec};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    sync::Arc,
+    vec,
+};
 
 #[cfg(test)]
 use crate::memory_domain::read_only::ReadOnlyContext;
@@ -24,6 +28,8 @@ pub enum ShardingMode {
     All,
     Each,
     Key,
+    AnyEach,
+    AnyKey,
 }
 
 // TODO remove  one of left/right to simplify handling, push switching order into the parsing layer
@@ -100,6 +106,17 @@ impl CompositionSet {
         self.item_list.len()
     }
 
+    pub fn sharded_len(&self, mode: ShardingMode) -> usize {
+        match mode {
+            ShardingMode::Each => self.len(),
+            ShardingMode::Key => self
+                .item_list
+                .chunk_by(|(key_a, _, _), (key_b, _, _)| key_a == key_b)
+                .count(),
+            ShardingMode::All | _ => 1, // any are resource dependent so return 1
+        }
+    }
+
     pub fn get_set_idx(&self) -> usize {
         self.set_index
     }
@@ -123,20 +140,15 @@ impl CompositionSet {
             ShardingMode::All => {
                 vec![self]
             }
-            ShardingMode::Key => {
-                let CompositionSet {
-                    item_list,
-                    set_index,
-                } = self;
-                item_list
-                    .chunk_by(|(key_a, _, _), (key_b, _, _)| key_a == key_b)
-                    .map(|new_item_list| CompositionSet {
-                        item_list: new_item_list.to_vec(),
-                        set_index: set_index,
-                    })
-                    .collect()
-            }
-            ShardingMode::Each => self
+            ShardingMode::Key | ShardingMode::AnyKey => self
+                .item_list
+                .chunk_by(|(key_a, _, _), (key_b, _, _)| key_a == key_b)
+                .map(|new_item_list| CompositionSet {
+                    item_list: new_item_list.to_vec(),
+                    set_index: self.set_index,
+                })
+                .collect(),
+            ShardingMode::Each | ShardingMode::AnyEach => self
                 .item_list
                 .into_iter()
                 .map(|item| CompositionSet {
@@ -144,6 +156,54 @@ impl CompositionSet {
                     set_index: self.set_index,
                 })
                 .collect(),
+            // ShardingMode::AnyEach => {
+            //     // TODO: currently assume roughly equally sized elements -> could also sort
+            //     //       elements by size in descending order then use a heap queue to assign the
+            //     //       next smallest element to the smallest current set group
+            //     let mut out_sets = Vec::with_capacity(num_sets);
+            //     let base_size = self.item_list.len() / num_sets;
+            //     let remainder = self.item_list.len() % num_sets;
+            //     let mut start_idx = 0;
+            //     for i in 0..num_sets {
+            //         let extra = if i < remainder { 1 } else { 0 };
+            //         let end_idx = start_idx + base_size + extra;
+            //         out_sets.push(CompositionSet {
+            //             item_list: self.item_list[start_idx..end_idx].to_vec(),
+            //             set_index: self.set_index,
+            //         });
+            //         start_idx = end_idx;
+            //     }
+            //     out_sets
+            // }
+            // ShardingMode::AnyKey => {
+            //     // TODO: we probably want to distribute the key groups equally based on the total size
+            //     let mut key_groups: Vec<CompositionSet> = self
+            //         .item_list
+            //         .chunk_by(|(key_a, _, _), (key_b, _, _)| key_a == key_b)
+            //         .map(|new_item_list| CompositionSet {
+            //             item_list: new_item_list.to_vec(),
+            //             set_index: self.set_index,
+            //         })
+            //         .collect();
+            //     let mut out_sets = Vec::with_capacity(num_sets);
+            //     let base_size = key_groups.len() / num_sets;
+            //     let remainder = key_groups.len() % num_sets;
+            //     let mut start_idx = 0;
+            //     for i in 0..num_sets {
+            //         let extra = if i < remainder { 1 } else { 0 };
+            //         let end_idx = start_idx + base_size + extra;
+            //         let mut group_items = Vec::new();
+            //         for curr_idx in start_idx..end_idx {
+            //             group_items.append(key_groups[curr_idx].item_list.as_mut());
+            //         }
+            //         out_sets.push(CompositionSet {
+            //             item_list: group_items,
+            //             set_index: self.set_index,
+            //         });
+            //         start_idx = end_idx;
+            //     }
+            //     out_sets
+            // }
         };
     }
 
@@ -160,6 +220,20 @@ impl CompositionSet {
         self.item_list.extend(item_list.into_iter());
         self.item_list.sort_unstable_by_key(|a| a.0);
         return Ok(());
+    }
+
+    pub fn combine_keys_with_set(&self, other: &mut HashSet<u32>, intersect: bool) {
+        if intersect {
+            for (key, _, _) in self.item_list.iter() {
+                if !other.contains(key) {
+                    other.remove(key);
+                }
+            }
+        } else {
+            for (key, _, _) in self.item_list.iter() {
+                other.insert(*key);
+            }
+        }
     }
 }
 
@@ -211,6 +285,179 @@ impl<'origin> IntoIterator for &'origin CompositionSet {
     }
 }
 
+// NOTE: assumes at least one element
+fn compute_any_parallelism(
+    sets: &Vec<Option<(ShardingMode, CompositionSet)>>,
+    join_order: &Vec<usize>,
+    join_strategies: &Vec<JoinStrategy>,
+    target_parallelism: usize,
+) -> HashMap<usize, usize> {
+    debug_assert!(sets.len() > 0);
+    let mut curr_join_keys: HashSet<u32> = HashSet::new();
+    let mut curr_any_group: Option<Vec<usize>> = None;
+    let mut any_groups: Vec<(Vec<usize>, usize)> = Vec::new();
+    let mut fixed_parallelism = 1;
+    for (set_index, strategy) in join_order[1..].iter().zip_eq(join_strategies) {
+        if sets[*set_index].is_none() {
+            match strategy {
+                JoinStrategy::Left | JoinStrategy::Outer => {
+                    // for left and outer joins this set may be none
+                    if let Some(idx_list) = curr_any_group.as_mut() {
+                        idx_list.push(*set_index);
+                    }
+                }
+                _ => {
+                    curr_any_group = None;
+                    curr_join_keys.clear();
+                }
+            }
+        }
+        let (sharding, set) = sets[*set_index].as_ref().unwrap();
+        match *sharding {
+            ShardingMode::AnyEach => {
+                // push current group or add parallelism of current join
+                if let Some(idx_list) = curr_any_group.take() {
+                    any_groups.push((idx_list, curr_join_keys.len()));
+                } else if !curr_join_keys.is_empty() {
+                    fixed_parallelism *= curr_join_keys.len();
+                    curr_join_keys.clear();
+                }
+
+                // push this group (each cannot be joined)
+                any_groups.push((vec![*set_index], set.len()));
+            }
+            ShardingMode::AnyKey => {
+                match strategy {
+                    JoinStrategy::Left => {
+                        // only add the set index to the list
+                        if let Some(idx_list) = curr_any_group.as_mut() {
+                            idx_list.push(*set_index);
+                        }
+                    }
+                    JoinStrategy::Right => {
+                        // only use this set's keys
+                        curr_join_keys.clear();
+                        set.combine_keys_with_set(&mut curr_join_keys, true);
+                        if let Some(idx_list) = curr_any_group.as_mut() {
+                            idx_list.push(*set_index);
+                        } else {
+                            curr_any_group = Some(vec![*set_index]);
+                        }
+                    }
+                    JoinStrategy::Inner => {
+                        // use key intersection
+                        set.combine_keys_with_set(&mut curr_join_keys, true);
+                        if let Some(idx_list) = curr_any_group.as_mut() {
+                            idx_list.push(*set_index);
+                        }
+                    }
+                    JoinStrategy::Outer => {
+                        // use key union
+                        set.combine_keys_with_set(&mut curr_join_keys, false);
+                        if let Some(idx_list) = curr_any_group.as_mut() {
+                            idx_list.push(*set_index);
+                        } else {
+                            curr_any_group = Some(vec![*set_index]);
+                        }
+                    }
+                    JoinStrategy::Cross => {
+                        // push current group or add parallelism of current join
+                        if let Some(idx_list) = curr_any_group.take() {
+                            any_groups.push((idx_list, curr_join_keys.len()));
+                        } else if !curr_join_keys.is_empty() {
+                            fixed_parallelism *= curr_join_keys.len();
+                            curr_join_keys.clear();
+                        }
+                        // create next group
+                        curr_join_keys.clear();
+                        set.combine_keys_with_set(&mut curr_join_keys, true);
+                        curr_any_group = Some(vec![*set_index]);
+                    }
+                }
+            }
+            ShardingMode::Key => {
+                // if an AnyKey is joined with a normal Key it becomes invalid except for cross joins
+                if *strategy == JoinStrategy::Cross {
+                    if let Some(idx_list) = curr_any_group.take() {
+                        any_groups.push((idx_list, curr_join_keys.len()));
+                    }
+                    curr_join_keys.clear();
+                } else {
+                    curr_any_group = None;
+                    if *strategy == JoinStrategy::Right {
+                        curr_join_keys.clear(); // -> for right we only care about this set's keys
+                    }
+                    if *strategy != JoinStrategy::Left {
+                        set.combine_keys_with_set(
+                            &mut curr_join_keys,
+                            *strategy != JoinStrategy::Outer,
+                        );
+                    }
+                }
+            }
+            _ => {
+                // push current group or add parallelism of current join
+                if let Some(idx_list) = curr_any_group.take() {
+                    any_groups.push((idx_list, curr_join_keys.len()));
+                } else if !curr_join_keys.is_empty() {
+                    fixed_parallelism *= curr_join_keys.len();
+                    curr_join_keys.clear();
+                }
+                // add parallelism of this set
+                fixed_parallelism *= set.sharded_len(*sharding);
+            }
+        }
+    }
+
+    // push current group or add parallelism of current join
+    if let Some(idx_list) = curr_any_group.take() {
+        any_groups.push((idx_list, curr_join_keys.len()));
+    } else if !curr_join_keys.is_empty() {
+        fixed_parallelism *= curr_join_keys.len();
+        curr_join_keys.clear();
+    }
+
+    // determine the parallelism of
+    let mut any_set_parallelism: HashMap<usize, usize> = HashMap::new();
+    if fixed_parallelism < target_parallelism {
+        let mut leftover_parallelism = target_parallelism / fixed_parallelism;
+        loop {
+            let mut best_idx = 0;
+            let mut best_dist = 0.0;
+            for (i, (_, max_p)) in any_groups.iter().enumerate() {
+                let remainder = leftover_parallelism % max_p;
+                if remainder == 0 {
+                    best_idx = i;
+                    break;
+                }
+                let dist = (remainder) as f64 / (*max_p) as f64;
+                if best_dist == 0.0 || dist < best_dist {
+                    best_idx = i;
+                    best_dist = dist;
+                }
+            }
+
+            // if the best set has fewer elements than the leftover parallelization we continue and
+            // check if we can find another set to parallelize over in addition to the found one
+            if best_dist >= 1.0 {
+                for set_idx in any_groups[best_idx].0.iter() {
+                    any_set_parallelism.insert(*set_idx, any_groups[best_idx].1);
+                }
+                leftover_parallelism /= any_groups[best_idx].1;
+                if leftover_parallelism <= 1 {
+                    break;
+                }
+            } else {
+                for set_idx in any_groups[best_idx].0.iter() {
+                    any_set_parallelism.insert(*set_idx, leftover_parallelism);
+                }
+                break;
+            }
+        }
+    }
+    any_set_parallelism
+}
+
 pub fn get_sharding(
     mut sets: Vec<Option<(ShardingMode, CompositionSet)>>,
     mut join_order: Vec<usize>,
@@ -222,6 +469,13 @@ pub fn get_sharding(
     if set_num == 0 {
         return final_sharding;
     }
+
+    let target_parallelism = 10; // TODO: move to arg
+    let any_set_parallelism =
+        compute_any_parallelism(&sets, &join_order, &join_strategies, target_parallelism);
+
+    // TODO: how do we best use this in the join iterators? -> using the old sharding approach
+    //       probably doesn't work anymore
 
     // make sure every set is in the order and has a strategy
     let mut missing_sets: Vec<_> = (0..set_num).map(|index| Some(index)).collect();
