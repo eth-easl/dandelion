@@ -13,6 +13,8 @@ use std::{
 #[cfg(test)]
 use crate::memory_domain::read_only::ReadOnlyContext;
 
+mod join_iterator;
+
 /// A composition has a composition wide id space that maps ids of
 /// the input and output sets to sets of individual functions to a unified
 /// namespace. The ids in this namespace are used to find out which
