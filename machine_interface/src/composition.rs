@@ -326,6 +326,7 @@ fn compute_any_parallelism(
                 // push current group or add parallelism of current join
                 if let Some(idx_list) = curr_any_group.take() {
                     any_groups.push((idx_list, curr_join_keys.len()));
+                    curr_join_keys.clear();
                 } else if !curr_join_keys.is_empty() {
                     fixed_parallelism *= curr_join_keys.len();
                     curr_join_keys.clear();
@@ -372,6 +373,7 @@ fn compute_any_parallelism(
                         // push current group or add parallelism of current join
                         if let Some(idx_list) = curr_any_group.take() {
                             any_groups.push((idx_list, curr_join_keys.len()));
+                            curr_join_keys.clear();
                         } else if !curr_join_keys.is_empty() {
                             fixed_parallelism *= curr_join_keys.len();
                             curr_join_keys.clear();
@@ -407,6 +409,7 @@ fn compute_any_parallelism(
                 // push current group or add parallelism of current join
                 if let Some(idx_list) = curr_any_group.take() {
                     any_groups.push((idx_list, curr_join_keys.len()));
+                    curr_join_keys.clear();
                 } else if !curr_join_keys.is_empty() {
                     fixed_parallelism *= curr_join_keys.len();
                     curr_join_keys.clear();
@@ -420,6 +423,7 @@ fn compute_any_parallelism(
     // push current group or add parallelism of current join
     if let Some(idx_list) = curr_any_group.take() {
         any_groups.push((idx_list, curr_join_keys.len()));
+        curr_join_keys.clear();
     } else if !curr_join_keys.is_empty() {
         fixed_parallelism *= curr_join_keys.len();
         curr_join_keys.clear();
@@ -1276,4 +1280,56 @@ fn any_parallelism_test_5() {
     let any_set_parallelism_inner =
         compute_any_parallelism(&sets, &join_order, &join_strategies_inner, 10);
     assert_eq!(any_set_parallelism_inner.len(), 0);
+}
+
+#[test]
+fn any_parallelism_test_6() {
+    let sets = vec![Some((
+        ShardingMode::AnyKey,
+        create_dummy_set(vec![0, 2, 0, 1, 3]),
+    ))];
+
+    let join_order = vec![0];
+    let join_strategies = vec![];
+
+    let any_set_parallelism_2 = compute_any_parallelism(&sets, &join_order, &join_strategies, 2);
+    assert_eq!(any_set_parallelism_2.len(), 1);
+    assert!(any_set_parallelism_2.contains_key(&0));
+    assert_eq!(any_set_parallelism_2[&0], 2);
+
+    let any_set_parallelism_4 = compute_any_parallelism(&sets, &join_order, &join_strategies, 4);
+    assert_eq!(any_set_parallelism_4.len(), 1);
+    assert!(any_set_parallelism_4.contains_key(&0));
+    assert_eq!(any_set_parallelism_4[&0], 4);
+}
+
+#[test]
+fn any_parallelism_test_7() {
+    let sets = vec![
+        Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 1, 4]))),
+        Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 2, 0, 3]))),
+        Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 1, 1]))),
+        Some((ShardingMode::AnyEach, create_dummy_set(vec![0, 0]))),
+    ];
+
+    let join_order = vec![1, 2, 0, 3];
+    let join_strategies = vec![
+        JoinStrategy::Inner,
+        JoinStrategy::Right,
+        JoinStrategy::Cross,
+    ];
+
+    let any_set_parallelism_2 = compute_any_parallelism(&sets, &join_order, &join_strategies, 2);
+    assert_eq!(any_set_parallelism_2.len(), 1);
+    assert!(any_set_parallelism_2.contains_key(&3));
+    assert_eq!(any_set_parallelism_2[&3], 2);
+
+    let any_set_parallelism_3 = compute_any_parallelism(&sets, &join_order, &join_strategies, 3);
+    assert_eq!(any_set_parallelism_3.len(), 3);
+    assert!(any_set_parallelism_3.contains_key(&0));
+    assert!(any_set_parallelism_3.contains_key(&1));
+    assert!(any_set_parallelism_3.contains_key(&2));
+    assert_eq!(any_set_parallelism_3[&0], 3);
+    assert_eq!(any_set_parallelism_3[&1], 3);
+    assert_eq!(any_set_parallelism_3[&2], 3);
 }
