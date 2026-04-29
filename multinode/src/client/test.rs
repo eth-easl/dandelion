@@ -198,6 +198,7 @@ async fn test_queue_server(mut socket: tokio::io::DuplexStream, progress_point: 
     });
     send_message(&work_message, &mut socket).await;
     yield_now().await;
+    *progress_point.lock().unwrap() = 3;
 }
 
 #[test]
@@ -251,7 +252,7 @@ fn test_remote_queue_poller() {
     assert_eq!(Poll::Pending, poller_future.as_mut().poll(&mut context));
     // poll the test server to check that the message was received and send back an invocation
     assert_eq!(
-        Poll::Ready(()),
+        Poll::Pending,
         test_server_future.as_mut().poll(&mut context)
     );
     assert_eq!(2, *progress.lock().unwrap());
@@ -280,4 +281,10 @@ fn test_remote_queue_poller() {
     } else {
         panic!("Should find work in queue");
     }
+
+    assert_eq!(
+        Poll::Ready(()),
+        test_server_future.as_mut().poll(&mut context)
+    );
+    assert_eq!(2, *progress.lock().unwrap());
 }
