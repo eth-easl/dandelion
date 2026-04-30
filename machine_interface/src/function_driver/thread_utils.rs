@@ -8,7 +8,8 @@ use crate::{
 };
 use core::marker::Send;
 use dandelion_commons::{
-    records::RecordPoint, DandelionError, DandelionResult, FunctionRegistryError, Priority,
+    records::{RecordPoint, Recorder},
+    DandelionError, DandelionResult, FunctionRegistryError, Priority,
 };
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -191,6 +192,7 @@ fn finish_preempted_best_effort<E: EngineLoop>(
     registry: &Arc<preemption::PreemptionRegistry>,
     thread_id: libc::pthread_t,
     preempt_flag: &Option<Arc<AtomicBool>>,
+    mut recorder: Recorder,
 ) {
     loop {
         log::debug!("Best-effort function preempted, handling high-priority work");
@@ -220,6 +222,9 @@ fn finish_preempted_best_effort<E: EngineLoop>(
         log::debug!("Resuming preempted best-effort function");
 
         let resume_registered = register_preemptible_thread(registry, thread_id, preempt_flag);
+        // Re-stamp EngineStart so EngineEnd-EngineStart reflects only the last
+        // (resumed) execution segment instead of the fragment-before-preemption.
+        recorder.record(RecordPoint::EngineStart);
         let resume_result = engine_state.resume();
         deregister_preemptible_thread(
             registry,
@@ -241,6 +246,8 @@ fn finish_preempted_best_effort<E: EngineLoop>(
             }
         }
 
+        recorder.record(RecordPoint::EngineEnd);
+        drop(recorder);
         let resume_results = resume_result.map(|ctx| WorkDone::Context(ctx));
         debt.fulfill(resume_results);
         return;
@@ -399,7 +406,8 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
                     Err(DandelionError::Preempted) => {
                         // Function was preempted — don't fulfill the debt yet.
                         // The engine_state holds the suspended VM state internally.
-                        drop(recorder);
+                        // recorder is moved into finish_preempted_best_effort so the
+                        // resume cycle can re-record EngineStart/EngineEnd.
                         finish_preempted_best_effort(
                             &mut engine_state,
                             queue.as_ref(),
@@ -408,6 +416,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
                             &registry,
                             thread_id,
                             &preempt_flag,
+                            recorder,
                         );
                     }
                     Ok(ref context) => {
@@ -650,6 +659,7 @@ mod tests {
         let registry = queue.preemption_registry().clone();
 
         let preempt_flag_option = Some(preempt_flag.clone());
+        let recorder = Recorder::new(Arc::new(0.to_string()), std::time::Instant::now());
         finish_preempted_best_effort(
             &mut engine_state,
             queue.as_ref(),
@@ -658,6 +668,7 @@ mod tests {
             &registry,
             thread_id,
             &preempt_flag_option,
+            recorder,
         );
 
         assert_eq!(2, state.resume_calls.load(Ordering::SeqCst));
