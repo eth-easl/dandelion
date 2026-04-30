@@ -25,32 +25,32 @@ message NodeInfo {
     repeated Engine engines = 2;
 }
 
-message DataItem {
+message MetadataItem {
     string ident = 1;
     uint32 key = 2;
-    bytes data = 3;
+    uint64 end_offset = 3;
 }
 
-message DataSet {
+message MetadataSet {
     string ident = 1;
-    repeated DataItem items = 2;
+    repeated MetadataItem items = 2;
 }
 
 message Invocation {
     uint32 invocation_id = 1;
     string function_id = 2;
-    repeated DataSet data_sets = 3;
+    repeated MetadataSet metadata_sets = 3;
 }
 
-message RepeatedDataSets {
-    repeated DataSet data_sets = 1;
+message RepeatedMetadataSet {
+    repeated MetadataSet metadata_sets = 1;
 }
 
 message Response {
     uint32 invocation_id = 1;
     oneof response {
         string error_msg = 2;
-        RepeatedDataSets data_sets = 3;
+        RepeatedMetadataSet metadata_sets = 3;
     }
 }
 

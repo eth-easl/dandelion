@@ -1,5 +1,5 @@
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, MultinodeError};
-use prost::bytes::{Buf, Bytes};
+use prost::bytes::{Buf, Bytes, BytesMut};
 use prost::Message;
 
 pub mod client;
@@ -167,51 +167,55 @@ fn test_serialize_invocation_request() {
     ];
 
     // serialize
-    let serialized_sets = util::composition_sets_to_proto(&inputs);
-    println!("serialized set: {:?}", serialized_sets);
+    let (serialized_metadata_sets, (mut serialized_data_sets, total_data_size)) = util::composition_sets_to_proto(&inputs);
+    println!("serialized set: {:?}", serialized_metadata_sets);
     // not checking set names, as they are set arbitrarily, since they are ignored anyway
     // check the items
-    assert_eq!(2, serialized_sets.len());
+    assert_eq!(2, serialized_metadata_sets.len());
+    assert_eq!(3, serialized_data_sets.len());
+    assert_eq!(size_of::<u64>() as u64 + size_of::<u64>() as u64 + size_of::<u128>() as u64, total_data_size);
 
-    assert_eq!(1, serialized_sets[0].items.len());
-    assert_eq!(item_0_0_name, serialized_sets[0].items[0].ident);
-    assert_eq!(0, serialized_sets[0].items[0].key);
-    assert_eq!(size_of::<u64>(), serialized_sets[0].items[0].data.len());
+    let mut data_buf = BytesMut::with_capacity(total_data_size as usize);
+    for data_set in serialized_data_sets.iter_mut() {
+        while let Some(data_slice) = data_set.read_next_chunk() {
+            data_buf.extend_from_slice(data_slice);
+        }
+    }
+    
+
+    assert_eq!(1, serialized_metadata_sets[0].items.len());
+    assert_eq!(item_0_0_name, serialized_metadata_sets[0].items[0].ident);
+    assert_eq!(0, serialized_metadata_sets[0].items[0].key);
+    assert_eq!(size_of::<u64>() as u64, serialized_metadata_sets[0].items[0].end_offset);
     assert_eq!(
         item_0_0_data,
         u64::from_le_bytes(
-            serialized_sets[0].items[0]
-                .data
-                .first_chunk::<{ size_of::<u64>() }>()
-                .cloned()
+            data_buf[0..size_of::<u64>()]
+                .try_into()
                 .unwrap()
         )
     );
 
-    assert_eq!(2, serialized_sets[1].items.len());
-    assert_eq!(item_1_0_name, serialized_sets[1].items[0].ident);
-    assert_eq!(7, serialized_sets[1].items[0].key);
-    assert_eq!(size_of::<u64>(), serialized_sets[1].items[0].data.len());
+    assert_eq!(2, serialized_metadata_sets[1].items.len());
+    assert_eq!(item_1_0_name, serialized_metadata_sets[1].items[0].ident);
+    assert_eq!(7, serialized_metadata_sets[1].items[0].key);
+    assert_eq!(2 * size_of::<u64>() as u64, serialized_metadata_sets[1].items[0].end_offset);
     assert_eq!(
         item_1_0_data,
         u64::from_le_bytes(
-            serialized_sets[1].items[0]
-                .data
-                .first_chunk::<{ size_of::<u64>() }>()
-                .cloned()
+            data_buf[size_of::<u64>()..2 * size_of::<u64>()]
+                .try_into()
                 .unwrap()
         )
     );
-    assert_eq!(item_1_1_name, serialized_sets[1].items[1].ident);
-    assert_eq!(14, serialized_sets[1].items[1].key);
-    assert_eq!(size_of::<u128>(), serialized_sets[1].items[1].data.len());
+    assert_eq!(item_1_1_name, serialized_metadata_sets[1].items[1].ident);
+    assert_eq!(14, serialized_metadata_sets[1].items[1].key);
+    assert_eq!(2 * size_of::<u64>() as u64 + size_of::<u128>() as u64, serialized_metadata_sets[1].items[1].end_offset);
     assert_eq!(
         item_1_1_data,
         u128::from_le_bytes(
-            serialized_sets[1].items[1]
-                .data
-                .first_chunk::<{ size_of::<u128>() }>()
-                .cloned()
+            data_buf[2 * size_of::<u64>()..(2 * size_of::<u64>() + size_of::<u128>())]
+                .try_into()
                 .unwrap()
         )
     );
@@ -220,7 +224,7 @@ fn test_serialize_invocation_request() {
         queue_message: Some(proto::queue_message::QueueMessage::Invocation(
             crate::proto::Invocation {
                 function_id: expected_id.clone(),
-                data_sets: serialized_sets.clone(),
+                metadata_sets: serialized_metadata_sets.clone(),
                 invocation_id: 7,
             },
         )),
@@ -236,18 +240,18 @@ fn test_serialize_invocation_request() {
     let Invocation {
         invocation_id,
         function_id: deserialized_id,
-        data_sets: deserialized_sets,
+        metadata_sets: deserialized_metadata_sets,
     } = if let queue_message::QueueMessage::Invocation(invocation) = message {
         invocation
     } else {
         panic!("Should have deserialized an invocation");
     };
     assert_eq!(expected_id, deserialized_id);
-    assert_eq!(serialized_sets, deserialized_sets);
+    assert_eq!(serialized_metadata_sets, deserialized_metadata_sets);
     assert_eq!(invocation_id, 7);
 
     // check the composition sets are as expected
-    let mut sets = util::proto_data_sets_to_composition_sets(deserialized_sets);
+    let mut sets = util::proto_data_sets_to_composition_sets(deserialized_metadata_sets, Some(data_buf.freeze()));
     assert_eq!(2, sets.len());
 
     let set_0 = sets[0].take().expect("Should have Some(_) for set 0");

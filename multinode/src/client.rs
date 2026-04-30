@@ -7,7 +7,9 @@ use crate::{
     },
     serialize_node_info, serialize_queue_message,
     util::{
-        composition_sets_to_proto, engine_type_dtop, engine_type_ptod, proto_data_sets_to_context,
+        composition_sets_to_proto, engine_type_dtop, engine_type_ptod,
+        pack_metadata_size_and_flags, proto_data_sets_to_context, unpack_metadata_size_and_flags,
+        ADDITIONAL_DATA_BUFFER, NO_FLAGS,
     },
 };
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, MultinodeError};
@@ -19,6 +21,7 @@ use futures::{
 };
 use log::{debug, warn};
 use machine_interface::{
+    composition::CompositionSetData,
     function_driver::{WorkDone, WorkToDo},
     machine_config::EngineType,
 };
@@ -42,25 +45,65 @@ const _: () = assert!(size_of::<u64>() == size_of::<usize>());
 // TODO handle connection failure
 /// To send a message between nodes, always first send the length of the message,
 /// then the message, so the other side knows when one message ends.
-async fn send_message(buffer: &Bytes, mut sender: impl AsyncWriteExt + std::marker::Unpin) {
-    let message_size = buffer.len() as u64;
-    sender.write_u64(message_size).await.unwrap();
-    sender.write_all(buffer).await.unwrap();
+async fn send_message(
+    metadata_buffer: &Bytes,
+    mut sender: impl AsyncWriteExt + std::marker::Unpin,
+    data_buffer: Option<(Vec<CompositionSetData>, u64)>,
+) {
+    let metadata_size: u32 = metadata_buffer.len().try_into().unwrap();
+    let data_buffer_present = match data_buffer {
+        Some((_, total_size)) => total_size > 0,
+        None => false,
+    };
+
+    let flags = data_buffer_present
+        .then(|| ADDITIONAL_DATA_BUFFER)
+        .unwrap_or(NO_FLAGS);
+    let packed_metadata = pack_metadata_size_and_flags(metadata_size, flags);
+
+    sender.write_u64(packed_metadata).await.unwrap();
+    sender.write_all(metadata_buffer).await.unwrap();
+
+    if let Some((data_set, total_size)) = data_buffer {
+        if total_size > 0 {
+            sender.write_u64(total_size).await.unwrap();
+        }
+        for mut data in data_set {
+            if data.size > 0 {
+                sender.write_u64(data.size as u64).await.unwrap();
+                while let Some(data_slice) = data.read_next_chunk() {
+                    sender.write_all(data_slice).await.unwrap();
+                }
+            }
+        }
+    }
+
     sender.flush().await.unwrap();
 }
 
 // TODO handle connection failure
 // For small messages we are expecting repeteatly, could have spezial read function with permanent preallocated buffers
 // Issue: serialization does not give constant sizes, so would need to find an upper bound first
-async fn receive_message(mut receiver: impl AsyncReadExt + std::marker::Unpin) -> Bytes {
-    let message_size = receiver.read_u64().await.unwrap();
+async fn receive_message(
+    mut receiver: impl AsyncReadExt + std::marker::Unpin,
+) -> (Bytes, Option<Bytes>) {
+    let packed_metadata = receiver.read_u64().await.unwrap();
+    let (metadata_size, flags) = unpack_metadata_size_and_flags(packed_metadata);
+
     // new buffer with size of message
-    let mut new_buffer = BytesMut::with_capacity(message_size as usize);
-    let mut bytes_read = 0;
-    while bytes_read < message_size as usize {
-        bytes_read += receiver.read_buf(&mut new_buffer).await.unwrap();
+    let mut metadata_buffer = BytesMut::zeroed(metadata_size as usize);
+    // Using read_exact here to ensure that we do not read a part of the next message,
+    // which could happen if we use read_buf here.
+    assert_eq!(metadata_size as usize, receiver.read_exact(&mut metadata_buffer).await.unwrap());
+
+    if (flags & ADDITIONAL_DATA_BUFFER) != 0 {
+        let total_data_size = receiver.read_u64().await.unwrap();
+        let mut data_buffer = BytesMut::zeroed(total_data_size as usize);
+        assert_eq!(total_data_size as usize, receiver.read_exact(&mut data_buffer).await.unwrap());
+        return (metadata_buffer.freeze(), Some(data_buffer.freeze()));
+    } else {
+        return (metadata_buffer.freeze(), None);
     }
-    new_buffer.freeze()
 }
 
 /// Handler for one remote node, polling the local queue for them.
@@ -76,7 +119,8 @@ pub async fn remote_queue_handler<Stream: AsyncReadExt + AsyncWriteExt + std::ma
     queue: WorkQueue,
 ) {
     // first ask for the information about the other node
-    let node_info_buffer = receive_message(&mut socket).await;
+    let (node_info_buffer, data_buf) = receive_message(&mut socket).await;
+    assert_eq!(data_buf, None);
 
     // Currently not using engine information
     let NodeInfo {
@@ -91,10 +135,12 @@ pub async fn remote_queue_handler<Stream: AsyncReadExt + AsyncWriteExt + std::ma
 
     // are ready, wait for the remote to ask for work or return completed tasks
     loop {
-        let message_buffer = receive_message(&mut socket).await;
+        let (message_buffer, data_buf) = receive_message(&mut socket).await;
         let message = deserialize_remote_message(message_buffer).unwrap();
         match message.remote_message {
             Some(RemoteMessage::WorkRequest(work_request)) => {
+                assert_eq!(data_buf, None);
+
                 // For now just send one matching function
                 let NodeInfo {
                     version: _,
@@ -104,8 +150,9 @@ pub async fn remote_queue_handler<Stream: AsyncReadExt + AsyncWriteExt + std::ma
                 for engine in engines {
                     engine_flags |= get_engine_flag(engine_type_ptod(engine.engine_type).unwrap());
                 }
+
                 // poll work
-                let queue_message =
+                let (queue_message, data) =
                     if let Some((work, debt)) = queue.try_get_work_no_shutdown(engine_flags) {
                         // there is some work so send it out
                         // find the local function id to use
@@ -131,24 +178,32 @@ pub async fn remote_queue_handler<Stream: AsyncReadExt + AsyncWriteExt + std::ma
                                 panic!("Should never get shutdown in remote engine queue")
                             }
                         };
-                        QueueMessage {
-                            queue_message: Some(proto::queue_message::QueueMessage::Invocation(
-                                Invocation {
-                                    data_sets: composition_sets_to_proto(&data_sets),
-                                    function_id: function_id.to_string(),
-                                    invocation_id: promise_id,
-                                },
-                            )),
-                        }
+                        let (metadata_sets, data) = composition_sets_to_proto(&data_sets);
+                        (
+                            QueueMessage {
+                                queue_message: Some(
+                                    proto::queue_message::QueueMessage::Invocation(Invocation {
+                                        metadata_sets,
+                                        function_id: function_id.to_string(),
+                                        invocation_id: promise_id,
+                                    }),
+                                ),
+                            },
+                            Some(data),
+                        )
                     } else {
                         // there is no work, so send message accordingly
-                        QueueMessage {
-                            queue_message: Some(queue_message::QueueMessage::NoWork(false)),
-                        }
+                        (
+                            QueueMessage {
+                                queue_message: Some(queue_message::QueueMessage::NoWork(false)),
+                            },
+                            None,
+                        )
                     };
                 let message_bytes = serialize_queue_message(queue_message);
-                send_message(&message_bytes, &mut socket).await;
+                send_message(&message_bytes, &mut socket, data).await;
             }
+
             Some(RemoteMessage::Response(response)) => {
                 let Response {
                     invocation_id,
@@ -159,9 +214,12 @@ pub async fn remote_queue_handler<Stream: AsyncReadExt + AsyncWriteExt + std::ma
                     .remove(&invocation_id)
                     .expect("Should always get back function response for a present debt");
                 let result = match response.unwrap() {
-                    proto::response::Response::DataSets(datasets) => Ok(WorkDone::Context(
-                        proto_data_sets_to_context(datasets.data_sets),
-                    )),
+                    proto::response::Response::MetadataSets(metadata_sets) => {
+                        Ok(WorkDone::Context(proto_data_sets_to_context(
+                            metadata_sets.metadata_sets,
+                            data_buf,
+                        )))
+                    }
                     proto::response::Response::ErrorMsg(error_message) => {
                         err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
                             error_message
@@ -176,7 +234,7 @@ pub async fn remote_queue_handler<Stream: AsyncReadExt + AsyncWriteExt + std::ma
 }
 
 enum PollingOption<Stream: AsyncReadExt + std::marker::Unpin> {
-    Message(Stream, DandelionResult<QueueMessage>),
+    Message(Stream, DandelionResult<QueueMessage>, Option<Bytes>),
     PollFor(
         Receiver<(machine_interface::machine_config::EngineType, u32)>,
         EngineType,
@@ -187,8 +245,9 @@ enum PollingOption<Stream: AsyncReadExt + std::marker::Unpin> {
 async fn poll_message<Stream: AsyncReadExt + std::marker::Unpin>(
     mut receiver: Stream,
 ) -> PollingOption<Stream> {
-    let new_message = deserialize_queue_message(receive_message(&mut receiver).await);
-    PollingOption::Message(receiver, new_message)
+    let (message_buffer, data_buf) = receive_message(&mut receiver).await;
+    let new_message = deserialize_queue_message(message_buffer);
+    PollingOption::Message(receiver, new_message, data_buf)
 }
 
 async fn poll_idle_core<Stream: AsyncReadExt + std::marker::Unpin>(
@@ -248,7 +307,7 @@ async fn remote_queue_poller<Stream: AsyncReadExt + AsyncWriteExt + std::marker:
 
     let (mut read_socket, mut write_socket) = split(socket);
 
-    send_message(&node_info_buffer, &mut write_socket).await;
+    send_message(&node_info_buffer, &mut write_socket, None).await;
 
     // stream for the promises of the local requests wait for them to resolve
     // Once stream interfaces stabilize would be nice to move this to merged streams, but for now this seems
@@ -259,7 +318,7 @@ async fn remote_queue_poller<Stream: AsyncReadExt + AsyncWriteExt + std::marker:
 
     while let Some(current_future) = merged_stream.next().await {
         match current_future {
-            PollingOption::Message(read_socket, message) => {
+            PollingOption::Message(read_socket, message, data_buf) => {
                 merged_stream.push(Either::Left(poll_message(read_socket)));
             }
             // getting a notification so should poll the queue
@@ -272,7 +331,7 @@ async fn remote_queue_poller<Stream: AsyncReadExt + AsyncWriteExt + std::marker:
                         engine_capacity: number,
                     }],
                 });
-                send_message(&node_info_buffer, &mut write_socket).await;
+                send_message(&node_info_buffer, &mut write_socket, None).await;
                 merged_stream.push(Either::Right(poll_idle_core(receiver)));
             }
         }

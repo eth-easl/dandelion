@@ -38,7 +38,7 @@ async fn test_client(mut client: tokio::io::DuplexStream) {
         }],
     };
     let node_info_serial = serialize_node_info(node_info.clone());
-    send_message(&node_info_serial, &mut client).await;
+    send_message(&node_info_serial, &mut client, None).await;
     // yield so the registration can be handled
     yield_now().await;
 
@@ -46,8 +46,8 @@ async fn test_client(mut client: tokio::io::DuplexStream) {
     let remote_message = serialize_remote_message(RemoteMessage {
         remote_message: Some(remote_message::RemoteMessage::WorkRequest(node_info)),
     });
-    send_message(&remote_message, &mut client).await;
-    let work_bytes = receive_message(&mut client).await;
+    send_message(&remote_message, &mut client, None).await;
+    let (work_bytes, _) = receive_message(&mut client).await;
     let invocation_id = match deserialize_queue_message(work_bytes)
         .unwrap()
         .queue_message
@@ -56,7 +56,7 @@ async fn test_client(mut client: tokio::io::DuplexStream) {
         queue_message::QueueMessage::Invocation(Invocation {
             invocation_id,
             function_id,
-            data_sets: _,
+            metadata_sets: _,
         }) => {
             assert_eq!("dummy_function", function_id);
             invocation_id
@@ -65,8 +65,8 @@ async fn test_client(mut client: tokio::io::DuplexStream) {
     };
 
     // ask for work again, but expect there to be none
-    send_message(&remote_message, &mut client).await;
-    let work_bytes = receive_message(&mut client).await;
+    send_message(&remote_message, &mut client, None).await;
+    let (work_bytes, _) = receive_message(&mut client).await;
     match deserialize_queue_message(work_bytes)
         .unwrap()
         .queue_message
@@ -83,7 +83,7 @@ async fn test_client(mut client: tokio::io::DuplexStream) {
             response: Some(response::Response::ErrorMsg(EXPECTED_ERROR.to_string())),
         })),
     });
-    send_message(&function_result, &mut client).await;
+    send_message(&function_result, &mut client, None).await;
 
     // yield so the message buffer is not dropped while the handler is still polled
     yield_now().await;
@@ -180,12 +180,14 @@ fn test_remote_queue_handler() {
 
 async fn test_queue_server(mut socket: tokio::io::DuplexStream, progress_point: Arc<Mutex<usize>>) {
     // receive first message, expect node info to register node
-    let registration_messge = deserialize_node_info(receive_message(&mut socket).await).unwrap();
+    let (node_info_buffer, _) = receive_message(&mut socket).await;
+    let registration_messge = deserialize_node_info(node_info_buffer).unwrap();
     assert_eq!(1, registration_messge.version);
     *progress_point.lock().unwrap() = 1;
 
     // wait for second message asking for work
-    let registration_messge = deserialize_node_info(receive_message(&mut socket).await).unwrap();
+    let (node_info_buffer, _) = receive_message(&mut socket).await;
+    let registration_messge = deserialize_node_info(node_info_buffer).unwrap();
     assert_eq!(1, registration_messge.version);
     *progress_point.lock().unwrap() = 2;
     // send back a message with work
@@ -193,10 +195,10 @@ async fn test_queue_server(mut socket: tokio::io::DuplexStream, progress_point: 
         queue_message: Some(queue_message::QueueMessage::Invocation(Invocation {
             invocation_id: 1,
             function_id: "dummy name".to_string(),
-            data_sets: vec![],
+            metadata_sets: vec![],
         })),
     });
-    send_message(&work_message, &mut socket).await;
+    send_message(&work_message, &mut socket, None).await;
     yield_now().await;
 }
 
