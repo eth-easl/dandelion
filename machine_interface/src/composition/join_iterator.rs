@@ -411,11 +411,130 @@ impl JoinIterator for SetKeyIterator {
 }
 
 /// Implements the JoinIterator for the `any` shardings.
-/// TODO
 struct AnyIterator {
     left: Option<Box<dyn JoinIterator>>,
-    set: CompositionSet,
-    set_idx: usize,
-    key: u32,
-    write_index: usize,
+    set_groups: Vec<Vec<Option<CompositionSet>>>,
+    set_groups_idx: usize,
+    write_idcs: Vec<usize>,
+}
+
+impl AnyIterator {
+    fn new(
+        left: Option<Box<dyn JoinIterator>>,
+        sets: Vec<CompositionSet>,
+        strategies: Vec<JoinStrategy>,
+        write_idcs: Vec<usize>,
+        num_groups: usize,
+        sharding: ShardingMode,
+    ) -> Option<Box<dyn JoinIterator>> {
+        debug_assert!(num_groups > 1); // for one group directly use a SetAllIterator
+        let num_sets = sets.len();
+
+        // build the iterators to generate all sets so we can then group them
+        let mut inner_join_it = None;
+        for (i, set) in sets.into_iter().enumerate() {
+            if sharding == ShardingMode::AnyEach {
+                inner_join_it = SetEachIterator::new(inner_join_it, set, i);
+            } else {
+                debug_assert!(sharding == ShardingMode::AnyKey);
+                let strategy = if i > 0 {
+                    strategies[i - 1]
+                } else {
+                    JoinStrategy::Cross
+                };
+                inner_join_it = SetKeyIterator::new(inner_join_it, set, strategy, i);
+            }
+        }
+
+        if let Some(mut it) = inner_join_it {
+            let mut inner_sharding = Vec::new();
+
+            // generate all sets
+            let mut first_sets = Vec::with_capacity(num_sets);
+            first_sets.resize(num_sets, None);
+            it.fill_in(&mut first_sets);
+            inner_sharding.push(first_sets);
+            while it.advance() {
+                let mut next_sets = Vec::with_capacity(num_sets);
+                next_sets.resize(num_sets, None);
+                it.fill_in(&mut next_sets);
+                inner_sharding.push(next_sets);
+            }
+
+            // split them into even groups
+            let mut set_groups = Vec::with_capacity(num_groups);
+            let base_size = inner_sharding.len() / num_groups;
+            let remainder = inner_sharding.len() % num_groups;
+            let mut start_idx = 0;
+            for group_idx in 0..num_groups {
+                let extra = if group_idx < remainder { 1 } else { 0 };
+                let end_idx = start_idx + base_size + extra;
+
+                let mut set_group = Vec::with_capacity(num_sets);
+                for set_idx in 0..num_sets {
+                    let mut curr_set: Option<CompositionSet> = None;
+                    for i in start_idx..end_idx {
+                        if let Some(set) = &mut curr_set {
+                            if let Some(next_set) = inner_sharding[i][set_idx].take() {
+                                set.combine(next_set).unwrap();
+                            }
+                        } else {
+                            curr_set = inner_sharding[i][set_idx].take();
+                        }
+                    }
+                    set_group.push(curr_set);
+                }
+                set_groups.push(set_group);
+                start_idx = end_idx;
+            }
+
+            Some(Box::new(Self {
+                left,
+                set_groups,
+                set_groups_idx: 0,
+                write_idcs,
+            }))
+        } else {
+            // we failed to build the inner join iterators...
+            None
+        }
+    }
+}
+
+impl JoinIterator for AnyIterator {
+    fn fill_in(&mut self, to_fill: &mut Vec<Option<CompositionSet>>) {
+        if self.set_groups_idx < self.set_groups.len() {
+            for (i, write_idx) in self.write_idcs.iter().enumerate() {
+                // TODO: taking (i.e. moving) should be ok here but check if that is actually correct
+                to_fill[*write_idx] = self.set_groups[self.set_groups_idx][i].take();
+            }
+        }
+        if let Some(left) = &mut self.left {
+            left.fill_in(to_fill);
+        }
+    }
+
+    fn advance(&mut self) -> bool {
+        if self.set_groups_idx + 1 < self.set_groups.len() {
+            self.set_groups_idx += 1;
+            true
+        } else {
+            if let Some(left) = &mut self.left {
+                if left.advance() {
+                    self.set_groups_idx = 0;
+                    true
+                } else {
+                    // set sets_idx to len so we can't accidentally copy something
+                    self.set_groups_idx = self.set_groups.len();
+                    false
+                }
+            } else {
+                false
+            }
+        }
+    }
+
+    fn get_key(&self) -> u32 {
+        panic!("get_key should not be called on AnyIterator.");
+    }
 }
