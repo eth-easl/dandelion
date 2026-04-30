@@ -1,20 +1,29 @@
 use crate::composition::{CompositionSet, JoinStrategy, ShardingMode};
 
-trait JoinIterator {
+pub(super) trait JoinIterator {
+    /// Fills the given composition set vector with the current iterator state.
+    /// This is undefined behaviour if the previous `advance` call returned `false`.
     fn fill_in(&mut self, to_fill: &mut Vec<Option<CompositionSet>>);
+
+    /// Advances the iterator by one.
+    /// An `advance` call following an `advance` that returned `false` always returns `false`.
+    /// A `fill_in` call after an `advance` that called `false` is undefined behaviour.
     fn advance(&mut self) -> bool;
+
+    /// Used to get the key from the left iterator for joining operations. Only supported by the
+    /// `SetKeyIterator` and panics otherwise.
     fn get_key(&self) -> u32;
 }
 
 /// Implements the JoinIterator for the `all` sharding.
-struct SetAllIterator {
+pub(super) struct SetAllIterator {
     left: Option<Box<dyn JoinIterator>>,
     set: CompositionSet,
     write_idx: usize,
 }
 
 impl SetAllIterator {
-    fn new(
+    pub(super) fn new(
         left: Option<Box<dyn JoinIterator>>,
         set: CompositionSet,
         write_idx: usize,
@@ -53,7 +62,7 @@ impl JoinIterator for SetAllIterator {
 }
 
 /// Implements the JoinIterator for the `each` sharding.
-struct SetEachIterator {
+pub(super) struct SetEachIterator {
     left: Option<Box<dyn JoinIterator>>,
     sets: Vec<CompositionSet>,
     sets_idx: usize,
@@ -61,7 +70,7 @@ struct SetEachIterator {
 }
 
 impl SetEachIterator {
-    fn new(
+    pub(super) fn new(
         left: Option<Box<dyn JoinIterator>>,
         set: CompositionSet,
         write_idx: usize,
@@ -116,7 +125,7 @@ impl JoinIterator for SetEachIterator {
 }
 
 /// Implements the JoinIterator for the `keyed` sharding.
-struct SetKeyIterator {
+pub(super) struct SetKeyIterator {
     left: Option<Box<dyn JoinIterator>>,
     sets: Vec<CompositionSet>,
     sets_idx: usize,
@@ -126,7 +135,7 @@ struct SetKeyIterator {
 }
 
 impl SetKeyIterator {
-    fn new(
+    pub(super) fn new(
         mut left: Option<Box<dyn JoinIterator>>,
         set: CompositionSet,
         strategy: JoinStrategy,
@@ -323,7 +332,7 @@ impl JoinIterator for SetKeyIterator {
                             self.key =
                                 u32::min(self.sets[self.sets_idx].item_list[0].0, left.get_key());
                         } else {
-                            //  left did not advance, so set key to current right key
+                            // left did not advance, so set key to current right key
                             self.key = current_self_key;
                         }
                         true
@@ -410,8 +419,9 @@ impl JoinIterator for SetKeyIterator {
     }
 }
 
-/// Implements the JoinIterator for the `any` shardings.
-struct AnyIterator {
+/// Implements the JoinIterator for the `any` shardings. This could be a single `AnyEach`/`AnyKey`
+/// sharding or a chain of joined `AnyKey` shardings.
+pub(super) struct AnyIterator {
     left: Option<Box<dyn JoinIterator>>,
     set_groups: Vec<Vec<Option<CompositionSet>>>,
     set_groups_idx: usize,
@@ -419,7 +429,7 @@ struct AnyIterator {
 }
 
 impl AnyIterator {
-    fn new(
+    pub(super) fn new(
         left: Option<Box<dyn JoinIterator>>,
         sets: Vec<CompositionSet>,
         strategies: Vec<JoinStrategy>,
