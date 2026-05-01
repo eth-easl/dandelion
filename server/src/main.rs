@@ -36,44 +36,6 @@ use tokio::{
 
 mod frontend;
 
-pub enum DispatcherCommand {
-    FunctionRequest {
-        function_id: Arc<String>,
-        inputs: Vec<DispatcherInput>,
-        is_cold: bool,
-        recorder: Recorder,
-        callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
-    },
-    FunctionRegistration {
-        name: String,
-        engine_type: EngineType,
-        context_size: usize,
-        path: String,
-        metadata: Metadata,
-        callback: oneshot::Sender<DandelionResult<()>>,
-    },
-    CompositionRegistration {
-        composition: String,
-        callback: oneshot::Sender<DandelionResult<()>>,
-    },
-    RemoteRegistration {
-        callback: oneshot::Sender<DandelionResult<WorkQueue>>,
-    },
-    RemoteFunctionRequest {
-        function_id: Arc<String>,
-        inputs: Vec<Option<CompositionSet>>,
-        recorder: Recorder,
-        callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
-    },
-    CompositionRequest {
-        composition: String,
-        inputs: Vec<DispatcherInput>,
-        is_cold: bool,
-        recorder: Recorder,
-        callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
-    },
-}
-
 /// Recording setup
 static TRACING_ARCHIVE: OnceLock<Archive> = OnceLock::new();
 

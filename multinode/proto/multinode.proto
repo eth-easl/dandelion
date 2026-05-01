@@ -40,6 +40,7 @@ message Invocation {
     uint32 invocation_id = 1;
     string function_id = 2;
     repeated DataSet data_sets = 3;
+    bool caching = 4;
 }
 
 message RepeatedDataSets {

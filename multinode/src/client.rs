@@ -4,13 +4,20 @@ use crate::{
         self, queue_message, remote_message, Engine, Invocation, NodeInfo, QueueMessage,
         RemoteMessage, Response,
     },
-    serialize_node_info, serialize_queue_message,
+    serialize_node_info, serialize_queue_message, serialize_remote_message,
     util::{
-        composition_sets_to_proto, engine_type_dtop, engine_type_ptod, proto_data_sets_to_context,
+        composition_sets_to_proto, engine_type_dtop, engine_type_ptod,
+        proto_data_sets_to_composition_sets, proto_data_sets_to_context,
     },
+    DispatcherCommand,
 };
-use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, MultinodeError};
-use dispatcher::queue::{get_engine_flag, WorkQueue};
+use dandelion_commons::{
+    err_dandelion, records::Recorder, DandelionError, DandelionResult, MultinodeError,
+};
+use dispatcher::{
+    dispatcher::Dispatcher,
+    queue::{get_engine_flag, WorkQueue},
+};
 use futures::{
     future::Either,
     stream::{repeat_with, select_all, FuturesUnordered},
@@ -29,10 +36,14 @@ use std::{
     process::Output,
     sync::Arc,
     task::Poll,
+    time::Instant,
 };
 use tokio::{
     io::{split, AsyncReadExt, AsyncWriteExt},
-    sync::mpsc::{channel, Receiver},
+    sync::{
+        mpsc::{self, channel, Receiver},
+        oneshot,
+    },
 };
 
 #[cfg(test)]
@@ -126,7 +137,7 @@ pub async fn remote_queue_handler<Stream: AsyncReadExt + AsyncWriteExt + std::ma
                             function_alternatives: _,
                             input_sets,
                             metadata: _,
-                            caching: _,
+                            caching,
                             recorder: _,
                         } => (function_id, input_sets),
                         WorkToDo::Shutdown(_) => {
@@ -138,6 +149,7 @@ pub async fn remote_queue_handler<Stream: AsyncReadExt + AsyncWriteExt + std::ma
                             data_sets: composition_sets_to_proto(&data_sets),
                             function_id: function_id.to_string(),
                             invocation_id: promise_id,
+                            caching: true,
                         })),
                     }
                 } else {
@@ -200,37 +212,26 @@ async fn poll_idle_core<Stream: AsyncReadExt + std::marker::Unpin>(
 }
 
 async fn poll_results<Stream: AsyncReadExt + std::marker::Unpin>(
-    result_future: impl Future<Output = DandelionResult<WorkDone>>,
+    result_receiver: oneshot::Receiver<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
+    invocation_id: u32,
 ) -> PollingOption<Stream> {
-    let response = match result_future.await {
-        Ok(WorkDone::Context(context)) => {
-            let context_arc = Arc::new(context);
-            let composition_sets = context_arc
-                .content
-                .iter()
-                .enumerate()
-                .map(|(function_set_id, data_option)| {
-                    data_option.as_ref().and_then(|_| {
-                        Some(CompositionSet::from((
-                            function_set_id,
-                            vec![context_arc.clone()],
-                        )))
-                    })
-                })
-                .collect();
-            Response::DataSets(composition_sets_to_proto(&composition_sets))
-        }
-        Ok(WorkDone::Resources(_)) => panic!("Should never receive resources at the remote queue"),
-        Err(err) => Response::ErrorMsg(err.error.to_string()),
+    let response = match result_receiver.await.unwrap() {
+        Ok((sets, _)) => proto::response::Response::DataSets(proto::RepeatedDataSets {
+            data_sets: composition_sets_to_proto(&sets),
+        }),
+        Err(err) => proto::response::Response::ErrorMsg(err.error.to_string()),
     };
-    PollingOption::Response(RemoteMessage {
-        remote_message: Some(remote_message::RemoteMessage(response)),
+    PollingOption::Results(RemoteMessage {
+        remote_message: Some(proto::remote_message::RemoteMessage::Response(Response {
+            invocation_id,
+            response: Some(response),
+        })),
     })
 }
 
 async fn remote_queue_poller<Stream: AsyncReadExt + AsyncWriteExt + std::marker::Unpin>(
     socket: Stream,
-    queue: WorkQueue,
+    sender: mpsc::Sender<DispatcherCommand>,
     // TODO: change to receive the number of nodes to ask work for
     mut local_available: Receiver<(machine_interface::machine_config::EngineType, u32)>,
     engines: Vec<(EngineType, usize)>,
@@ -259,7 +260,6 @@ async fn remote_queue_poller<Stream: AsyncReadExt + AsyncWriteExt + std::marker:
         local_available,
     ))));
     merged_stream.push(Either::Right(poll_message(read_socket).left_future()));
-    // let debt_stream = FuturesUnordered::new();
 
     while let Some(current_future) = merged_stream.next().await {
         match current_future {
@@ -272,23 +272,33 @@ async fn remote_queue_poller<Stream: AsyncReadExt + AsyncWriteExt + std::marker:
                             invocation_id,
                             function_id,
                             data_sets,
+                            caching,
                         } = invocation;
-                        merged_stream.push(Either::Left(poll_results(queue.do_work(
-                            WorkToDo::FunctionArguments {
-                                function_id,
-                                function_alternatives: (),
-                                input_sets: (),
-                                metadata: (),
-                                caching: (),
-                                recorder: (),
-                            },
-                        ))))
+                        let function_arc = Arc::new(function_id);
+                        let inputs = proto_data_sets_to_composition_sets(data_sets);
+                        let recorder = Recorder::new(function_arc.clone(), Instant::now());
+                        let (callback_sender, callback_receriver) = oneshot::channel();
+                        sender
+                            .send(DispatcherCommand::RemoteFunctionRequest {
+                                function_id: function_arc,
+                                inputs,
+                                recorder,
+                                callback: callback_sender,
+                            })
+                            .await;
+                        merged_stream.push(Either::Left(poll_results(
+                            callback_receriver,
+                            invocation_id,
+                        )));
                     }
                 }
                 merged_stream.push(Either::Right(Either::Left(poll_message(read_socket))));
             }
             PollingOption::Message(read_socket, Err(error)) => {
                 merged_stream.push(Either::Right(Either::Left(poll_message(read_socket))));
+            }
+            PollingOption::Results(results) => {
+                send_message(&serialize_remote_message(results), &mut write_socket).await;
             }
             // getting a notification so should poll the queue
             PollingOption::PollFor(receiver, engine_type, number) => {

@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     future::Future,
     sync::{Arc, Mutex, RwLock},
     task::Poll,
@@ -12,10 +13,13 @@ use crate::{
         queue_message, remote_message, response, Engine, EngineType, Invocation, NodeInfo,
         QueueMessage, RemoteMessage, Response,
     },
-    serialize_node_info, serialize_queue_message, serialize_remote_message,
+    serialize_node_info, serialize_queue_message, serialize_remote_message, DispatcherCommand,
 };
 use dandelion_commons::{err_dandelion, records::Recorder, DandelionError};
-use dispatcher::queue::{get_engine_flag, WorkQueue};
+use dispatcher::{
+    dispatcher::Dispatcher,
+    queue::{get_engine_flag, WorkQueue},
+};
 use futures::{
     channel,
     task::{Context, Waker},
@@ -24,7 +28,7 @@ use machine_interface::{
     function_driver::{functions::FunctionAlternative, Metadata, WorkToDo},
     memory_domain::malloc::MallocMemoryDomain,
 };
-use tokio::task::yield_now;
+use tokio::{sync::mpsc, task::yield_now};
 
 const EXPECTED_ERROR: &str = "test message";
 
@@ -57,6 +61,7 @@ async fn test_client(mut client: tokio::io::DuplexStream) {
             invocation_id,
             function_id,
             data_sets: _,
+            caching: _,
         }) => {
             assert_eq!("dummy_function", function_id);
             invocation_id
@@ -194,6 +199,7 @@ async fn test_queue_server(mut socket: tokio::io::DuplexStream, progress_point: 
             invocation_id: 1,
             function_id: "dummy name".to_string(),
             data_sets: vec![],
+            caching: true,
         })),
     });
     send_message(&work_message, &mut socket).await;
@@ -207,20 +213,19 @@ fn test_remote_queue_poller() {
     let (client, server) = tokio::io::duplex(4096);
 
     let stub = || {};
-    let work_queue = WorkQueue::init(stub, stub);
+    let (dispatcher_sender, mut dispatcher_receiver) = mpsc::channel(1);
     let (poll_sender, poll_receiver) =
-        tokio::sync::mpsc::channel::<(machine_interface::machine_config::EngineType, u32)>(1);
+        mpsc::channel::<(machine_interface::machine_config::EngineType, u32)>(1);
     let engines = vec![(machine_interface::machine_config::EngineType::Kvm, 3)];
     let progress = Arc::new(Mutex::new(0));
 
     let mut context = Context::from_waker(Waker::noop());
     let mut poller_future = Box::pin(remote_queue_poller(
         client,
-        work_queue.clone(),
+        dispatcher_sender,
         poll_receiver,
         engines,
     ));
-
     let mut test_server_future = Box::pin(test_queue_server(server, progress.clone()));
 
     // poll the poller to check if it registered
@@ -259,32 +264,21 @@ fn test_remote_queue_poller() {
 
     // poll the server to receive work
     assert_eq!(Poll::Pending, poller_future.as_mut().poll(&mut context));
-    // should now have work in the work queue
-    let mut work_queue_future = Box::pin(work_queue.get_work(get_engine_flag(
-        machine_interface::machine_config::EngineType::Kvm,
-    )));
-    if let Poll::Ready((work, debt)) = work_queue_future.as_mut().poll(&mut context) {
-        match work {
-            WorkToDo::FunctionArguments {
-                function_id,
-                function_alternatives,
-                input_sets,
-                metadata,
-                caching,
-                recorder,
-            } => (),
-            WorkToDo::Shutdown(_) => panic!("Should not receive shutdown from remote"),
-        }
-        debt.fulfill(err_dandelion!(DandelionError::UserError(
-            dandelion_commons::UserError::FunctionError(-1)
-        )));
-    } else {
-        panic!("Should find work in queue");
-    }
+    // should now have work in the receiver
+    let work_sender = match dispatcher_receiver.poll_recv(&mut context) {
+        Poll::Ready(Some(DispatcherCommand::RemoteFunctionRequest {
+            function_id,
+            inputs,
+            recorder,
+            callback,
+        })) => (),
+        Poll::Pending | Poll::Ready(None) => panic!("Should receive work now"),
+        Poll::Ready(Some(_)) => panic!("Received unexpected command"),
+    };
 
     assert_eq!(
         Poll::Ready(()),
         test_server_future.as_mut().poll(&mut context)
     );
-    assert_eq!(2, *progress.lock().unwrap());
+    assert_eq!(3, *progress.lock().unwrap());
 }
