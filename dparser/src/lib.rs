@@ -42,6 +42,8 @@ pub enum Sharding {
     All,
     Keyed,
     Each,
+    AnyKeyed,
+    AnyEach,
 }
 
 pub type ALoopCond = Rc<Spanned<LoopCond>>;
@@ -217,14 +219,20 @@ fn parser() -> impl Parser<char, Module, Error = Simple<char>> {
         .then_ignore(just('=').padded())
         .then(just("optional").padded().or_not())
         .then(
-            (just("all").or(just("keyed")).or(just("each")))
-                .map(|sharding| match sharding {
-                    "all" => Sharding::All,
-                    "keyed" => Sharding::Keyed,
-                    "each" => Sharding::Each,
-                    _ => unreachable!(),
-                })
-                .padded(),
+            (just("all")
+                .or(just("keyed"))
+                .or(just("each"))
+                .or(just("anyKeyed"))
+                .or(just("anyEach")))
+            .map(|sharding| match sharding {
+                "all" => Sharding::All,
+                "keyed" => Sharding::Keyed,
+                "each" => Sharding::Each,
+                "anyKeyed" => Sharding::AnyKeyed,
+                "anyEach" => Sharding::AnyEach,
+                _ => unreachable!(),
+            })
+            .padded(),
         )
         .then(text::ident().padded())
         .map(|(((name, optional), sharding), ident)| InputDescriptor {
@@ -457,8 +465,8 @@ fn sharding_test() {
     
         FunB (
             A = keyed InputA,
-            B = keyed InputB,
-            C = keyed InputC
+            B = anyKeyed InputB,
+            C = anyEach InputC
         ) => (
             InterD = D
         );

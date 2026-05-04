@@ -76,6 +76,8 @@ impl ShardingMode {
             dparser::Sharding::All => Self::All,
             dparser::Sharding::Keyed => Self::Key,
             dparser::Sharding::Each => Self::Each,
+            dparser::Sharding::AnyKeyed => Self::AnyKey,
+            dparser::Sharding::AnyEach => Self::AnyEach,
         }
     }
 }
