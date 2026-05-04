@@ -35,6 +35,7 @@ pub enum DispatcherCommand {
     RemoteFunctionRequest {
         function_id: std::sync::Arc<String>,
         inputs: Vec<Option<CompositionSet>>,
+        is_cold: bool,
         recorder: Recorder,
         callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
     },

@@ -14,36 +14,22 @@ use crate::{
 use dandelion_commons::{
     err_dandelion, records::Recorder, DandelionError, DandelionResult, MultinodeError,
 };
-use dispatcher::{
-    dispatcher::Dispatcher,
-    queue::{get_engine_flag, WorkQueue},
-};
-use futures::{
-    future::Either,
-    stream::{repeat_with, select_all, FuturesUnordered},
-    FutureExt, Stream, StreamExt,
-};
-use log::{debug, warn};
+use dispatcher::queue::{get_engine_flag, WorkQueue};
+use futures::{future::Either, stream::FuturesUnordered, FutureExt, StreamExt};
 use machine_interface::{
     composition::CompositionSet,
     function_driver::{WorkDone, WorkToDo},
-    machine_config::EngineType,
+    machine_config::{EngineType, IntoEnumIterator},
 };
 use prost::bytes::{Bytes, BytesMut};
 use std::{
     collections::{BTreeMap, BinaryHeap},
-    future::Future,
-    process::Output,
     sync::Arc,
-    task::Poll,
     time::Instant,
 };
 use tokio::{
     io::{split, AsyncReadExt, AsyncWriteExt},
-    sync::{
-        mpsc::{self, channel, Receiver},
-        oneshot,
-    },
+    sync::{mpsc, oneshot, watch},
 };
 
 #[cfg(test)]
@@ -130,7 +116,7 @@ pub async fn remote_queue_handler<Stream: AsyncReadExt + AsyncWriteExt + std::ma
                         promise_id
                     };
                     debt_map.insert(promise_id, debt);
-                    let (function_id, data_sets) = match work {
+                    let (function_id, data_sets, caching) = match work {
                         // Todo send along relevant information, like caching bool and recorder start time
                         WorkToDo::FunctionArguments {
                             function_id,
@@ -139,7 +125,7 @@ pub async fn remote_queue_handler<Stream: AsyncReadExt + AsyncWriteExt + std::ma
                             metadata: _,
                             caching,
                             recorder: _,
-                        } => (function_id, input_sets),
+                        } => (function_id, input_sets, caching),
                         WorkToDo::Shutdown(_) => {
                             panic!("Should never get shutdown in remote engine queue")
                         }
@@ -149,7 +135,7 @@ pub async fn remote_queue_handler<Stream: AsyncReadExt + AsyncWriteExt + std::ma
                             data_sets: composition_sets_to_proto(&data_sets),
                             function_id: function_id.to_string(),
                             invocation_id: promise_id,
-                            caching: true,
+                            caching,
                         })),
                     }
                 } else {
@@ -190,9 +176,8 @@ pub async fn remote_queue_handler<Stream: AsyncReadExt + AsyncWriteExt + std::ma
 enum PollingOption<Stream: AsyncReadExt + std::marker::Unpin> {
     Message(Stream, DandelionResult<QueueMessage>),
     PollFor(
-        Receiver<(machine_interface::machine_config::EngineType, u32)>,
-        EngineType,
-        u32,
+        watch::Receiver<Vec<(EngineType, u32)>>,
+        Vec<(EngineType, u32)>,
     ),
     Results(RemoteMessage),
 }
@@ -205,10 +190,17 @@ async fn poll_message<Stream: AsyncReadExt + std::marker::Unpin>(
 }
 
 async fn poll_idle_core<Stream: AsyncReadExt + std::marker::Unpin>(
-    mut receiver: Receiver<(machine_interface::machine_config::EngineType, u32)>,
+    mut engines: Vec<(EngineType, u32)>,
+    mut receiver: watch::Receiver<Vec<(EngineType, u32)>>,
 ) -> PollingOption<Stream> {
-    let (engine_type, engine_numer) = receiver.recv().await.unwrap();
-    PollingOption::PollFor(receiver, engine_type, engine_numer)
+    receiver.changed().await.unwrap();
+    {
+        let engine_state = receiver.borrow_and_update();
+        for engine_index in 0..engine_state.len() {
+            engines[engine_index] = engine_state[engine_index];
+        }
+    }
+    PollingOption::PollFor(receiver, engines)
 }
 
 async fn poll_results<Stream: AsyncReadExt + std::marker::Unpin>(
@@ -232,10 +224,16 @@ async fn poll_results<Stream: AsyncReadExt + std::marker::Unpin>(
 async fn remote_queue_poller<Stream: AsyncReadExt + AsyncWriteExt + std::marker::Unpin>(
     socket: Stream,
     sender: mpsc::Sender<DispatcherCommand>,
-    // TODO: change to receive the number of nodes to ask work for
-    mut local_available: Receiver<(machine_interface::machine_config::EngineType, u32)>,
-    engines: Vec<(EngineType, usize)>,
+    // TODO: might want a differnet mechanism, to wake them one after each other to go check
+    // But each poller also needs to be able to check if there are still cores available,
+    // in case the remote sends a message that there is work available
+    local_available: watch::Receiver<Vec<(EngineType, u32)>>,
+    engines: Vec<(EngineType, u32)>,
 ) {
+    // local state keeping variables
+    let mut remote_had_work = true;
+    let available_engines = local_available.borrow().clone();
+
     // set up the connection by sending a single node info
     let proto_engines = engines
         .into_iter()
@@ -249,7 +247,7 @@ async fn remote_queue_poller<Stream: AsyncReadExt + AsyncWriteExt + std::marker:
         engines: proto_engines,
     });
 
-    let (mut read_socket, mut write_socket) = split(socket);
+    let (read_socket, mut write_socket) = split(socket);
 
     send_message(&node_info_buffer, &mut write_socket).await;
 
@@ -257,7 +255,8 @@ async fn remote_queue_poller<Stream: AsyncReadExt + AsyncWriteExt + std::marker:
     // Once stream interfaces stabilize would be nice to move this to merged streams, but for now this seems
     let mut merged_stream = FuturesUnordered::new();
     merged_stream.push(Either::Right(Either::Right(poll_idle_core(
-        local_available,
+        available_engines,
+        local_available.clone(),
     ))));
     merged_stream.push(Either::Right(poll_message(read_socket).left_future()));
 
@@ -265,8 +264,32 @@ async fn remote_queue_poller<Stream: AsyncReadExt + AsyncWriteExt + std::marker:
         match current_future {
             PollingOption::Message(read_socket, Ok(message)) => {
                 match message.queue_message.unwrap() {
-                    // Should notify that this remote does not have work, should ask another one
-                    queue_message::QueueMessage::NoWork(_) => (),
+                    // remote did not have work, can ignore local capacity to work until we get a message the more is available
+                    queue_message::QueueMessage::NoWork(true) => remote_had_work = false,
+                    // remote signals it may have work so can ask for it, if we have capacity
+                    queue_message::QueueMessage::NoWork(false) => {
+                        remote_had_work = true;
+                        let engines = local_available
+                            .borrow()
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(engine_index, (engine_type, engine_capacity))| {
+                                if *engine_capacity > 0 {
+                                    Some(proto::Engine {
+                                        engine_type: engine_type_dtop(*engine_type) as i32,
+                                        engine_capacity: *engine_capacity,
+                                    })
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        let request_buffer = serialize_node_info(NodeInfo {
+                            version: 1,
+                            engines,
+                        });
+                        send_message(&request_buffer, &mut write_socket).await;
+                    }
                     queue_message::QueueMessage::Invocation(invocation) => {
                         let Invocation {
                             invocation_id,
@@ -282,10 +305,12 @@ async fn remote_queue_poller<Stream: AsyncReadExt + AsyncWriteExt + std::marker:
                             .send(DispatcherCommand::RemoteFunctionRequest {
                                 function_id: function_arc,
                                 inputs,
+                                is_cold: !caching,
                                 recorder,
                                 callback: callback_sender,
                             })
-                            .await;
+                            .await
+                            .unwrap();
                         merged_stream.push(Either::Left(poll_results(
                             callback_receriver,
                             invocation_id,
@@ -294,24 +319,41 @@ async fn remote_queue_poller<Stream: AsyncReadExt + AsyncWriteExt + std::marker:
                 }
                 merged_stream.push(Either::Right(Either::Left(poll_message(read_socket))));
             }
-            PollingOption::Message(read_socket, Err(error)) => {
-                merged_stream.push(Either::Right(Either::Left(poll_message(read_socket))));
+            PollingOption::Message(_, Err(error)) => {
+                // TODO: recover from message reception failure
+                panic!("Receiving remote queue message faied with: {}", error);
             }
             PollingOption::Results(results) => {
                 send_message(&serialize_remote_message(results), &mut write_socket).await;
             }
             // getting a notification so should poll the queue
-            PollingOption::PollFor(receiver, engine_type, number) => {
-                // send message to get work
-                let request_buffer = serialize_node_info(NodeInfo {
-                    version: 1,
-                    engines: vec![proto::Engine {
-                        engine_type: engine_type_dtop(engine_type) as i32,
-                        engine_capacity: number,
-                    }],
-                });
-                send_message(&node_info_buffer, &mut write_socket).await;
-                merged_stream.push(Either::Right(Either::Right(poll_idle_core(receiver))));
+            PollingOption::PollFor(receiver, available_engines) => {
+                // send message to get work if we have not asked already
+                if remote_had_work {
+                    let engines = available_engines
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(engine_index, (engine_type, engine_capacity))| {
+                            if *engine_capacity > 0 {
+                                Some(proto::Engine {
+                                    engine_type: engine_type_dtop(*engine_type) as i32,
+                                    engine_capacity: *engine_capacity,
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    let request_buffer = serialize_node_info(NodeInfo {
+                        version: 1,
+                        engines,
+                    });
+                    send_message(&request_buffer, &mut write_socket).await;
+                }
+                merged_stream.push(Either::Right(Either::Right(poll_idle_core(
+                    available_engines,
+                    receiver,
+                ))));
             }
         }
     }
