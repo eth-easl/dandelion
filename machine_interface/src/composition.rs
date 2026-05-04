@@ -2,7 +2,6 @@ use crate::memory_domain::{Context, ContextTrait};
 use dandelion_commons::{
     err_dandelion, DandelionError, DandelionResult, DispatcherError, FunctionId,
 };
-use itertools::Itertools;
 use std::{
     cmp,
     collections::{BTreeMap, HashMap, HashSet},
@@ -12,6 +11,8 @@ use std::{
 
 #[cfg(test)]
 use crate::memory_domain::read_only::ReadOnlyContext;
+#[cfg(test)]
+use itertools::Itertools;
 
 mod join_iterator;
 
@@ -388,6 +389,12 @@ fn compute_any_parallelism(
         curr_join_keys.clear();
     }
 
+    log::trace!(
+        "Found fixed_parallelism: {} (target_parallelism: {})",
+        fixed_parallelism,
+        target_parallelism
+    );
+
     // find the best suitable any set(s) and determine their parallelism
     if fixed_parallelism < target_parallelism && !any_groups.is_empty() {
         let mut leftover_parallelism = target_parallelism / fixed_parallelism;
@@ -464,6 +471,7 @@ pub fn get_sharding(
     // compute the parallelism of the any sets
     let any_set_parallelism =
         compute_any_parallelism(&sets, &join_order, &join_strategies, target_parallelism);
+    log::trace!("Computed any_set_parallelism: {:?}", any_set_parallelism);
 
     // create the iterators later used to generate the final sharding
     let mut join_iter = None;
@@ -541,8 +549,8 @@ pub fn get_sharding(
                     }
                 }
             }
-            i += 1;
         }
+        i += 1;
     }
 
     // generate the sharding sets
