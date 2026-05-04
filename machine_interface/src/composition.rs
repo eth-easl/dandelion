@@ -140,31 +140,6 @@ impl CompositionSet {
         (context_item.ident.clone(), context_item.key, data_bytes)
     }
 
-    // TODO: we are just slicing a vec, should be able to do this via slice references or iters instead of Vecs
-    pub fn shard(self, mode: ShardingMode) -> Vec<CompositionSet> {
-        return match mode {
-            ShardingMode::All => {
-                vec![self]
-            }
-            ShardingMode::Key | ShardingMode::AnyKey => self
-                .item_list
-                .chunk_by(|(key_a, _, _), (key_b, _, _)| key_a == key_b)
-                .map(|new_item_list| CompositionSet {
-                    item_list: new_item_list.to_vec(),
-                    set_index: self.set_index,
-                })
-                .collect(),
-            ShardingMode::Each | ShardingMode::AnyEach => self
-                .item_list
-                .into_iter()
-                .map(|item| CompositionSet {
-                    item_list: vec![item],
-                    set_index: self.set_index,
-                })
-                .collect(),
-        };
-    }
-
     pub fn combine(&mut self, additional: CompositionSet) -> DandelionResult<()> {
         let CompositionSet {
             item_list,

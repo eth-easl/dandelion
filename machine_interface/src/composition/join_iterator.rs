@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use crate::composition::{CompositionSet, JoinStrategy, ShardingMode};
 
 pub(super) trait JoinIterator {
@@ -64,8 +66,8 @@ impl JoinIterator for SetAllIterator {
 /// Implements the JoinIterator for the `each` sharding.
 pub(super) struct SetEachIterator {
     left: Option<Box<dyn JoinIterator>>,
-    sets: Vec<CompositionSet>,
-    sets_idx: usize,
+    set: CompositionSet,
+    item_idx: usize,
     write_idx: usize,
 }
 
@@ -75,15 +77,14 @@ impl SetEachIterator {
         set: CompositionSet,
         write_idx: usize,
     ) -> Option<Box<dyn JoinIterator>> {
-        let sets = set.shard(ShardingMode::Each);
-        if sets.is_empty() {
+        if set.is_empty() {
             return left;
         }
 
         Some(Box::new(Self {
             left,
-            sets,
-            sets_idx: 0,
+            set,
+            item_idx: 0,
             write_idx,
         }))
     }
@@ -91,8 +92,11 @@ impl SetEachIterator {
 
 impl JoinIterator for SetEachIterator {
     fn fill_in(&mut self, to_fill: &mut Vec<Option<CompositionSet>>) {
-        if self.sets_idx < self.sets.len() {
-            to_fill[self.write_idx] = Some(self.sets[self.sets_idx].clone());
+        if self.item_idx < self.set.item_list.len() {
+            to_fill[self.write_idx] = Some(CompositionSet {
+                item_list: vec![self.set.item_list[self.item_idx].clone()],
+                set_index: self.set.set_index,
+            });
         }
         if let Some(left) = &mut self.left {
             left.fill_in(to_fill);
@@ -100,17 +104,17 @@ impl JoinIterator for SetEachIterator {
     }
 
     fn advance(&mut self) -> bool {
-        if self.sets_idx + 1 < self.sets.len() {
-            self.sets_idx += 1;
+        if self.item_idx + 1 < self.set.item_list.len() {
+            self.item_idx += 1;
             true
         } else {
             if let Some(left) = &mut self.left {
                 if left.advance() {
-                    self.sets_idx = 0;
+                    self.item_idx = 0;
                     true
                 } else {
                     // set sets_idx to len so we can't accidentally copy something
-                    self.sets_idx = self.sets.len();
+                    self.item_idx = self.set.item_list.len();
                     false
                 }
             } else {
@@ -127,8 +131,9 @@ impl JoinIterator for SetEachIterator {
 /// Implements the JoinIterator for the `keyed` sharding.
 pub(super) struct SetKeyIterator {
     left: Option<Box<dyn JoinIterator>>,
-    sets: Vec<CompositionSet>,
-    sets_idx: usize,
+    set: CompositionSet,
+    key_groups: Vec<(u32, Range<usize>)>,
+    key_groups_idx: usize,
     key: u32,
     strategy: JoinStrategy,
     write_idx: usize,
@@ -141,39 +146,47 @@ impl SetKeyIterator {
         strategy: JoinStrategy,
         write_idx: usize,
     ) -> Option<Box<dyn JoinIterator>> {
-        let sets = set.shard(ShardingMode::Key);
-        if sets.is_empty() {
+        let mut key_groups = Vec::new();
+        let mut start_idx = 0;
+        for chunk in set.item_list.chunk_by(|a, b| a.0 == b.0) {
+            let key = chunk[0].0;
+            let end_idx = start_idx + chunk.len();
+            key_groups.push((key, start_idx..end_idx));
+            start_idx = end_idx;
+        }
+        if key_groups.is_empty() {
             return left;
         }
 
-        let mut sets_idx = 0;
-        let mut key = sets[0].item_list[0].0;
+        let mut key_groups_idx = 0;
+        let mut key = key_groups[0].0;
         if let Some(left_it) = &mut left {
             match strategy {
                 JoinStrategy::Inner => {
-                    while sets_idx < sets.len() && key != left_it.get_key() {
+                    while key_groups_idx < key_groups.len() && key != left_it.get_key() {
                         if key < left_it.get_key() {
-                            sets_idx += 1;
-                            if sets_idx < sets.len() {
-                                key = sets[sets_idx].item_list[0].0;
+                            key_groups_idx += 1;
+                            if key_groups_idx < key_groups.len() {
+                                key = key_groups[key_groups_idx].0;
                             }
                         } else {
                             if !left_it.advance() {
-                                sets_idx = sets.len();
+                                key_groups_idx = key_groups.len();
                             }
                         }
                     }
-                    if sets_idx == sets.len() {
+                    if key_groups_idx == key_groups.len() {
                         return None;
                     }
                 }
                 JoinStrategy::Left => {
-                    while sets_idx < sets.len() && sets[sets_idx].item_list[0].0 < left_it.get_key()
+                    while key_groups_idx < key_groups.len()
+                        && key_groups[key_groups_idx].0 < left_it.get_key()
                     {
-                        sets_idx += 1;
+                        key_groups_idx += 1;
                     }
                     key = left_it.get_key();
-                    if sets_idx == sets.len() {
+                    if key_groups_idx == key_groups.len() {
                         return left;
                     }
                 }
@@ -196,8 +209,9 @@ impl SetKeyIterator {
 
         Some(Box::new(Self {
             left,
-            sets,
-            sets_idx,
+            set,
+            key_groups,
+            key_groups_idx,
             key,
             strategy,
             write_idx,
@@ -207,10 +221,14 @@ impl SetKeyIterator {
 
 impl JoinIterator for SetKeyIterator {
     fn fill_in(&mut self, to_fill: &mut Vec<Option<CompositionSet>>) {
-        let has_filled =
-            self.sets_idx < self.sets.len() && self.key == self.sets[self.sets_idx].item_list[0].0;
+        let has_filled = self.key_groups_idx < self.key_groups.len()
+            && self.key == self.key_groups[self.key_groups_idx].0;
         if has_filled {
-            to_fill[self.write_idx] = Some(self.sets[self.sets_idx].clone());
+            to_fill[self.write_idx] = Some(CompositionSet {
+                item_list: self.set.item_list[self.key_groups[self.key_groups_idx].1.clone()]
+                    .to_vec(),
+                set_index: self.set.set_index,
+            });
         }
         if let Some(left) = &mut self.left {
             match self.strategy {
@@ -239,7 +257,7 @@ impl JoinIterator for SetKeyIterator {
     }
 
     fn advance(&mut self) -> bool {
-        if self.sets_idx == self.sets.len() {
+        if self.key_groups_idx == self.key_groups.len() {
             return false;
         }
 
@@ -249,26 +267,26 @@ impl JoinIterator for SetKeyIterator {
                     // advance both at least once for inner
                     // left is advanced on checking (after checking right can stil be advanced)
                     // right is advanced after
-                    if self.sets_idx + 1 >= self.sets.len() || !left.advance() {
-                        self.sets_idx = self.sets.len();
+                    if self.key_groups_idx + 1 >= self.key_groups.len() || !left.advance() {
+                        self.key_groups_idx = self.key_groups.len();
                         return false;
                     }
-                    self.sets_idx += 1;
-                    self.key = self.sets[self.sets_idx].item_list[0].0;
+                    self.key_groups_idx += 1;
+                    self.key = self.key_groups[self.key_groups_idx].0;
                     while self.key != left.get_key() {
                         if self.key > left.get_key() {
                             if !left.advance() {
-                                self.sets_idx = self.sets.len();
+                                self.key_groups_idx = self.key_groups.len();
                                 return false;
                             }
                         // need to advance right and are able to do so
                         } else if self.key < left.get_key() {
-                            if self.sets_idx + 1 >= self.sets.len() {
-                                self.sets_idx = self.sets.len();
+                            if self.key_groups_idx + 1 >= self.key_groups.len() {
+                                self.key_groups_idx = self.key_groups.len();
                                 return false;
                             } else {
-                                self.sets_idx += 1;
-                                self.key = self.sets[self.sets_idx].item_list[0].0;
+                                self.key_groups_idx += 1;
+                                self.key = self.key_groups[self.key_groups_idx].0;
                             }
                         }
                     }
@@ -277,10 +295,10 @@ impl JoinIterator for SetKeyIterator {
                 JoinStrategy::Left => {
                     // advance left and see if we can match
                     if left.advance() {
-                        while self.sets_idx + 1 < self.sets.len()
-                            && self.sets[self.sets_idx].item_list[0].0 < left.get_key()
+                        while self.key_groups_idx + 1 < self.key_groups.len()
+                            && self.key_groups[self.key_groups_idx].0 < left.get_key()
                         {
-                            self.sets_idx += 1;
+                            self.key_groups_idx += 1;
                         }
                         // after this the key is guaranteed to be equal to the left key or bigger
                         // so if the keys match that will be fine for copy in, otherwise this will be skipped
@@ -288,17 +306,17 @@ impl JoinIterator for SetKeyIterator {
                         self.key = left.get_key();
                         true
                     } else {
-                        self.sets_idx = self.sets.len();
+                        self.key_groups_idx = self.key_groups.len();
                         false
                     }
                 }
                 JoinStrategy::Right => {
-                    if self.sets_idx + 1 >= self.sets.len() {
-                        self.sets_idx = self.sets.len();
+                    if self.key_groups_idx + 1 >= self.key_groups.len() {
+                        self.key_groups_idx = self.key_groups.len();
                         return false;
                     }
-                    self.sets_idx += 1;
-                    self.key = self.sets[self.sets_idx].item_list[0].0;
+                    self.key_groups_idx += 1;
+                    self.key = self.key_groups[self.key_groups_idx].0;
                     while self.key > left.get_key() {
                         if !left.advance() {
                             break;
@@ -307,18 +325,18 @@ impl JoinIterator for SetKeyIterator {
                     true
                 }
                 JoinStrategy::Outer => {
-                    let current_self_key = self.sets[self.sets_idx].item_list[0].0;
-                    let right_can_be_advanced = self.sets_idx + 1 < self.sets.len();
+                    let current_self_key = self.key_groups[self.key_groups_idx].0;
+                    let right_can_be_advanced = self.key_groups_idx + 1 < self.key_groups.len();
                     // check if one of the already known keys is bigger, if so we know we can adavance
                     if self.key < left.get_key() {
                         // last key was set from right, since left is bigger
                         debug_assert_eq!(self.key, current_self_key);
                         // if right can be advance it should be advanced, otherwise just set key to left one
                         if right_can_be_advanced {
-                            self.sets_idx += 1;
+                            self.key_groups_idx += 1;
                             // new right might still be smaller than left key
                             self.key =
-                                u32::min(self.sets[self.sets_idx].item_list[0].0, left.get_key());
+                                u32::min(self.key_groups[self.key_groups_idx].0, left.get_key());
                         } else {
                             self.key = left.get_key();
                         }
@@ -330,7 +348,7 @@ impl JoinIterator for SetKeyIterator {
                         if left.advance() {
                             // new left key might still be smaller than right
                             self.key =
-                                u32::min(self.sets[self.sets_idx].item_list[0].0, left.get_key());
+                                u32::min(self.key_groups[self.key_groups_idx].0, left.get_key());
                         } else {
                             // left did not advance, so set key to current right key
                             self.key = current_self_key;
@@ -340,18 +358,18 @@ impl JoinIterator for SetKeyIterator {
                         // both keys are the same, so advance any that are possible to advance and take new key from there
                         let left_advance_success = left.advance();
                         if right_can_be_advanced {
-                            self.sets_idx += 1;
+                            self.key_groups_idx += 1;
                         }
                         match (right_can_be_advanced, left_advance_success) {
                             (true, true) => {
                                 self.key = u32::min(
-                                    self.sets[self.sets_idx].item_list[0].0,
+                                    self.key_groups[self.key_groups_idx].0,
                                     left.get_key(),
                                 );
                                 true
                             }
                             (true, false) => {
-                                self.key = self.sets[self.sets_idx].item_list[0].0;
+                                self.key = self.key_groups[self.key_groups_idx].0;
                                 true
                             }
                             (false, true) => {
@@ -359,7 +377,7 @@ impl JoinIterator for SetKeyIterator {
                                 true
                             }
                             (false, false) => {
-                                self.sets_idx = self.sets.len();
+                                self.key_groups_idx = self.key_groups.len();
                                 false
                             }
                         }
@@ -371,32 +389,32 @@ impl JoinIterator for SetKeyIterator {
                             did_advance
                         } else {
                             if right_can_be_advanced {
-                                self.sets_idx += 1;
-                                self.key = self.sets[self.sets_idx].item_list[0].0;
+                                self.key_groups_idx += 1;
+                                self.key = self.key_groups[self.key_groups_idx].0;
                             }
                             right_can_be_advanced
                         }
                     }
                 }
                 JoinStrategy::Cross => {
-                    if self.sets_idx + 1 < self.sets.len() {
-                        self.sets_idx += 1;
-                        self.key = self.sets[self.sets_idx].item_list[0].0;
+                    if self.key_groups_idx + 1 < self.key_groups.len() {
+                        self.key_groups_idx += 1;
+                        self.key = self.key_groups[self.key_groups_idx].0;
                         true
                     } else if left.advance() {
-                        self.sets_idx = 0;
-                        self.key = self.sets[0].item_list[0].0;
+                        self.key_groups_idx = 0;
+                        self.key = self.key_groups[0].0;
                         true
                     } else {
                         // set right index to len so we can't accidentally copy something
-                        self.sets_idx = self.sets.len();
+                        self.key_groups_idx = self.key_groups.len();
                         false
                     }
                 }
             }
         } else {
-            if self.sets_idx + 1 >= self.sets.len() {
-                self.sets_idx = self.sets.len();
+            if self.key_groups_idx + 1 >= self.key_groups.len() {
+                self.key_groups_idx = self.key_groups.len();
                 false
             } else {
                 // advancing only makes sense for certain modes here
@@ -404,8 +422,8 @@ impl JoinIterator for SetKeyIterator {
                     || self.strategy == JoinStrategy::Outer
                     || self.strategy == JoinStrategy::Cross
                 {
-                    self.sets_idx += 1;
-                    self.key = self.sets[self.sets_idx].item_list[0].0;
+                    self.key_groups_idx += 1;
+                    self.key = self.key_groups[self.key_groups_idx].0;
                     true
                 } else {
                     panic!("Should never have join iterator with left or inner that has None for the left value");
@@ -534,7 +552,7 @@ impl JoinIterator for AnyIterator {
                     self.set_groups_idx = 0;
                     true
                 } else {
-                    // set sets_idx to len so we can't accidentally copy something
+                    // set key_groups_idx to len so we can't accidentally copy something
                     self.set_groups_idx = self.set_groups.len();
                     false
                 }
