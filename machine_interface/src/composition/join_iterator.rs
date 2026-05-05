@@ -92,12 +92,11 @@ impl SetEachIterator {
 
 impl JoinIterator for SetEachIterator {
     fn fill_in(&mut self, to_fill: &mut Vec<Option<CompositionSet>>) {
-        if self.item_idx < self.set.item_list.len() {
-            to_fill[self.write_idx] = Some(CompositionSet {
-                item_list: vec![self.set.item_list[self.item_idx].clone()],
-                set_index: self.set.set_index,
-            });
-        }
+        debug_assert!(self.item_idx < self.set.item_list.len());
+        to_fill[self.write_idx] = Some(CompositionSet {
+            item_list: vec![self.set.item_list[self.item_idx].clone()],
+            set_index: self.set.set_index,
+        });
         if let Some(left) = &mut self.left {
             left.fill_in(to_fill);
         }
@@ -221,15 +220,12 @@ impl SetKeyIterator {
 
 impl JoinIterator for SetKeyIterator {
     fn fill_in(&mut self, to_fill: &mut Vec<Option<CompositionSet>>) {
-        let has_filled = self.key_groups_idx < self.key_groups.len()
-            && self.key == self.key_groups[self.key_groups_idx].0;
-        if has_filled {
-            to_fill[self.write_idx] = Some(CompositionSet {
-                item_list: self.set.item_list[self.key_groups[self.key_groups_idx].1.clone()]
-                    .to_vec(),
-                set_index: self.set.set_index,
-            });
-        }
+        debug_assert!(self.key_groups_idx < self.key_groups.len());
+        debug_assert!(self.key == self.key_groups[self.key_groups_idx].0);
+        to_fill[self.write_idx] = Some(CompositionSet {
+            item_list: self.set.item_list[self.key_groups[self.key_groups_idx].1.clone()].to_vec(),
+            set_index: self.set.set_index,
+        });
         if let Some(left) = &mut self.left {
             match self.strategy {
                 // modes for which always want left to fill in
@@ -241,14 +237,10 @@ impl JoinIterator for SetKeyIterator {
                     }
                 }
                 // Only want left to fill if this iterator has filled something in
-                JoinStrategy::Inner => {
-                    if has_filled {
-                        left.fill_in(to_fill)
-                    }
-                }
+                JoinStrategy::Inner => left.fill_in(to_fill),
                 // Only want left to fill if this iterator has filled and the keys match
                 JoinStrategy::Right => {
-                    if has_filled && self.key == left.get_key() {
+                    if self.key == left.get_key() {
                         left.fill_in(to_fill)
                     }
                 }
@@ -257,7 +249,7 @@ impl JoinIterator for SetKeyIterator {
     }
 
     fn advance(&mut self) -> bool {
-        if self.key_groups_idx == self.key_groups.len() {
+        if self.key_groups_idx >= self.key_groups.len() {
             return false;
         }
 
@@ -267,11 +259,11 @@ impl JoinIterator for SetKeyIterator {
                     // advance both at least once for inner
                     // left is advanced on checking (after checking right can stil be advanced)
                     // right is advanced after
-                    if self.key_groups_idx + 1 >= self.key_groups.len() || !left.advance() {
+                    self.key_groups_idx += 1;
+                    if self.key_groups_idx >= self.key_groups.len() || !left.advance() {
                         self.key_groups_idx = self.key_groups.len();
                         return false;
                     }
-                    self.key_groups_idx += 1;
                     self.key = self.key_groups[self.key_groups_idx].0;
                     while self.key != left.get_key() {
                         if self.key > left.get_key() {
@@ -281,11 +273,11 @@ impl JoinIterator for SetKeyIterator {
                             }
                         // need to advance right and are able to do so
                         } else if self.key < left.get_key() {
-                            if self.key_groups_idx + 1 >= self.key_groups.len() {
+                            self.key_groups_idx += 1;
+                            if self.key_groups_idx >= self.key_groups.len() {
                                 self.key_groups_idx = self.key_groups.len();
                                 return false;
                             } else {
-                                self.key_groups_idx += 1;
                                 self.key = self.key_groups[self.key_groups_idx].0;
                             }
                         }
@@ -344,7 +336,7 @@ impl JoinIterator for SetKeyIterator {
                     } else if self.key < current_self_key {
                         // the last key was set from left, since right is bigger
                         debug_assert_eq!(self.key, left.get_key());
-                        // if left can be adnvanced it should be, if not move
+                        // if left can be advanced it should be, if not move
                         if left.advance() {
                             // new left key might still be smaller than right
                             self.key =
@@ -352,6 +344,7 @@ impl JoinIterator for SetKeyIterator {
                         } else {
                             // left did not advance, so set key to current right key
                             self.key = current_self_key;
+                            self.left = None; // asserts that left.advance() is not called again
                         }
                         true
                     } else if self.key == left.get_key() && self.key == current_self_key {
@@ -531,11 +524,10 @@ impl AnyIterator {
 
 impl JoinIterator for AnyIterator {
     fn fill_in(&mut self, to_fill: &mut Vec<Option<CompositionSet>>) {
-        if self.set_groups_idx < self.set_groups.len() {
-            for (i, write_idx) in self.write_idcs.iter().enumerate() {
-                // TODO: taking (i.e. moving) should be ok here but check if that is actually correct
-                to_fill[*write_idx] = self.set_groups[self.set_groups_idx][i].take();
-            }
+        debug_assert!(self.set_groups_idx < self.set_groups.len());
+        for (i, write_idx) in self.write_idcs.iter().enumerate() {
+            // TODO: taking (i.e. moving) should be ok here but check if that is actually correct
+            to_fill[*write_idx] = self.set_groups[self.set_groups_idx][i].take();
         }
         if let Some(left) = &mut self.left {
             left.fill_in(to_fill);

@@ -256,6 +256,7 @@ fn compute_any_parallelism(
                     curr_join_keys.clear();
                 }
             }
+            continue;
         }
         let (sharding, set) = sets[*set_index].as_ref().unwrap();
         match *sharding {
