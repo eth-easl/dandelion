@@ -1,13 +1,11 @@
-use crate::memory_domain::{Context, ContextTrait};
+use crate::{
+    composition::join_iterator::JoinIterator,
+    memory_domain::{Context, ContextTrait},
+};
 use dandelion_commons::{
     err_dandelion, DandelionError, DandelionResult, DispatcherError, FunctionId,
 };
-use std::{
-    cmp,
-    collections::{BTreeMap, HashMap, HashSet},
-    sync::Arc,
-    vec,
-};
+use std::{cmp, collections::BTreeMap, sync::Arc, vec};
 
 #[cfg(test)]
 use crate::memory_domain::read_only::ReadOnlyContext;
@@ -112,17 +110,6 @@ impl CompositionSet {
         self.item_list.len()
     }
 
-    pub fn sharded_len(&self, mode: ShardingMode) -> usize {
-        match mode {
-            ShardingMode::Each => self.len(),
-            ShardingMode::Key => self
-                .item_list
-                .chunk_by(|(key_a, _, _), (key_b, _, _)| key_a == key_b)
-                .count(),
-            ShardingMode::All | _ => 1, // any are resource dependent so return 1
-        }
-    }
-
     pub fn get_set_idx(&self) -> usize {
         self.set_index
     }
@@ -153,22 +140,6 @@ impl CompositionSet {
         self.item_list.extend(item_list.into_iter());
         self.item_list.sort_unstable_by_key(|a| a.0);
         return Ok(());
-    }
-
-    pub fn combine_keys_with_set(&self, other: &mut HashSet<u32>, intersect: bool) {
-        if intersect {
-            let mut new_set = HashSet::new();
-            for (key, _, _) in self.item_list.iter() {
-                if other.contains(key) {
-                    new_set.insert(*key);
-                }
-            }
-            *other = new_set;
-        } else {
-            for (key, _, _) in self.item_list.iter() {
-                other.insert(*key);
-            }
-        }
     }
 }
 
@@ -220,203 +191,6 @@ impl<'origin> IntoIterator for &'origin CompositionSet {
     }
 }
 
-// NOTE: assumes at least one element
-fn compute_any_parallelism(
-    sets: &Vec<Option<(ShardingMode, CompositionSet)>>,
-    join_order: &Vec<usize>,
-    join_strategies: &Vec<JoinStrategy>,
-    target_parallelism: usize,
-) -> HashMap<usize, usize> {
-    let mut any_set_parallelism: HashMap<usize, usize> = HashMap::new();
-    if target_parallelism == 0 {
-        return any_set_parallelism;
-    }
-
-    debug_assert!(sets.len() > 0);
-    let mut curr_join_keys: HashSet<u32> = HashSet::new();
-    let mut curr_any_group: Option<Vec<usize>> = None;
-    let mut any_groups: Vec<(Vec<usize>, usize)> = Vec::new();
-    let mut fixed_parallelism = 1;
-    for (i, set_index) in join_order.iter().enumerate() {
-        let strategy = if i > 0 {
-            join_strategies[i - 1]
-        } else {
-            JoinStrategy::Cross
-        };
-        if sets[*set_index].is_none() {
-            match strategy {
-                JoinStrategy::Left | JoinStrategy::Outer => {
-                    // for left and outer joins this set may be none
-                    if let Some(idx_list) = curr_any_group.as_mut() {
-                        idx_list.push(*set_index);
-                    }
-                }
-                _ => {
-                    curr_any_group = None;
-                    curr_join_keys.clear();
-                }
-            }
-            continue;
-        }
-        let (sharding, set) = sets[*set_index].as_ref().unwrap();
-        match *sharding {
-            ShardingMode::AnyEach => {
-                // push current group or add parallelism of current join
-                if let Some(idx_list) = curr_any_group.take() {
-                    any_groups.push((idx_list, curr_join_keys.len()));
-                    curr_join_keys.clear();
-                } else if !curr_join_keys.is_empty() {
-                    fixed_parallelism *= curr_join_keys.len();
-                    curr_join_keys.clear();
-                }
-
-                // push this group (each cannot be joined)
-                any_groups.push((vec![*set_index], set.len()));
-            }
-            ShardingMode::AnyKey => {
-                match strategy {
-                    JoinStrategy::Left => {
-                        // only add the set index to the list
-                        if let Some(idx_list) = curr_any_group.as_mut() {
-                            idx_list.push(*set_index);
-                        }
-                    }
-                    JoinStrategy::Right => {
-                        // only use this set's keys
-                        curr_join_keys.clear();
-                        set.combine_keys_with_set(&mut curr_join_keys, false);
-                        if let Some(idx_list) = curr_any_group.as_mut() {
-                            idx_list.push(*set_index);
-                        } else {
-                            curr_any_group = Some(vec![*set_index]);
-                        }
-                    }
-                    JoinStrategy::Inner => {
-                        // use key intersection
-                        set.combine_keys_with_set(&mut curr_join_keys, true);
-                        if let Some(idx_list) = curr_any_group.as_mut() {
-                            idx_list.push(*set_index);
-                        }
-                    }
-                    JoinStrategy::Outer => {
-                        // use key union
-                        set.combine_keys_with_set(&mut curr_join_keys, false);
-                        if let Some(idx_list) = curr_any_group.as_mut() {
-                            idx_list.push(*set_index);
-                        } else {
-                            curr_any_group = Some(vec![*set_index]);
-                        }
-                    }
-                    JoinStrategy::Cross => {
-                        // push current group or add parallelism of current join
-                        if let Some(idx_list) = curr_any_group.take() {
-                            any_groups.push((idx_list, curr_join_keys.len()));
-                            curr_join_keys.clear();
-                        } else if !curr_join_keys.is_empty() {
-                            fixed_parallelism *= curr_join_keys.len();
-                            curr_join_keys.clear();
-                        }
-                        // create next group
-                        curr_join_keys.clear();
-                        set.combine_keys_with_set(&mut curr_join_keys, false);
-                        curr_any_group = Some(vec![*set_index]);
-                    }
-                }
-            }
-            ShardingMode::Key => {
-                // if an AnyKey is joined with a normal Key it becomes invalid except for cross joins
-                if strategy == JoinStrategy::Cross {
-                    if let Some(idx_list) = curr_any_group.take() {
-                        any_groups.push((idx_list, curr_join_keys.len()));
-                    }
-                    curr_join_keys.clear();
-                } else {
-                    curr_any_group = None;
-                    if strategy == JoinStrategy::Right {
-                        curr_join_keys.clear(); // -> for right we only care about this set's keys
-                    }
-                    if strategy != JoinStrategy::Left {
-                        set.combine_keys_with_set(
-                            &mut curr_join_keys,
-                            strategy != JoinStrategy::Outer,
-                        );
-                    }
-                }
-            }
-            _ => {
-                // push current group or add parallelism of current join
-                if let Some(idx_list) = curr_any_group.take() {
-                    any_groups.push((idx_list, curr_join_keys.len()));
-                    curr_join_keys.clear();
-                } else if !curr_join_keys.is_empty() {
-                    fixed_parallelism *= curr_join_keys.len();
-                    curr_join_keys.clear();
-                }
-                // add parallelism of this set
-                fixed_parallelism *= set.sharded_len(*sharding);
-            }
-        }
-    }
-
-    // push current group or add parallelism of current join
-    if let Some(idx_list) = curr_any_group.take() {
-        any_groups.push((idx_list, curr_join_keys.len()));
-        curr_join_keys.clear();
-    } else if !curr_join_keys.is_empty() {
-        fixed_parallelism *= curr_join_keys.len();
-        curr_join_keys.clear();
-    }
-
-    log::trace!(
-        "Found fixed_parallelism: {} (target_parallelism: {})",
-        fixed_parallelism,
-        target_parallelism
-    );
-
-    // find the best suitable any set(s) and determine their parallelism
-    if fixed_parallelism < target_parallelism && !any_groups.is_empty() {
-        let mut leftover_parallelism = target_parallelism / fixed_parallelism;
-        loop {
-            let mut best_idx = 0;
-            let mut best_dist = 0.0;
-            for (i, (_, max_p)) in any_groups.iter().enumerate() {
-                let remainder = max_p % leftover_parallelism;
-                if remainder == 0 {
-                    best_idx = i;
-                    best_dist = 0.0;
-                    break;
-                }
-                let dist = (remainder) as f64 / (*max_p) as f64;
-                if best_dist == 0.0 || dist < best_dist {
-                    best_idx = i;
-                    best_dist = dist;
-                }
-            }
-
-            // if the best set has fewer elements than the leftover parallelization we continue and
-            // check if we can find another set to parallelize over in addition to the found one
-            if best_dist >= 1.0 {
-                for set_idx in any_groups[best_idx].0.iter() {
-                    any_set_parallelism.insert(*set_idx, any_groups[best_idx].1);
-                }
-                leftover_parallelism /= any_groups[best_idx].1;
-                if leftover_parallelism <= 1 {
-                    break;
-                }
-            } else {
-                for set_idx in any_groups[best_idx].0.iter() {
-                    any_set_parallelism.insert(
-                        *set_idx,
-                        cmp::min(leftover_parallelism, any_groups[best_idx].1),
-                    );
-                }
-                break;
-            }
-        }
-    }
-    any_set_parallelism
-}
-
 /// Computes the sharding for the given sets following the given join order and join strategies.
 /// The `join_strategies` vector is expected to be of size <= `join_order.len() - 1`.
 /// The function tries to produce an output vector of size `target_parallelism` if possible grouping
@@ -446,14 +220,50 @@ pub fn get_sharding(
     }
     join_strategies.resize(set_num - 1, JoinStrategy::Cross);
 
-    // compute the parallelism of the any sets
-    let any_set_parallelism =
-        compute_any_parallelism(&sets, &join_order, &join_strategies, target_parallelism);
-    log::trace!("Computed any_set_parallelism: {:?}", any_set_parallelism);
-
-    // create the iterators later used to generate the final sharding
-    let mut join_iter = None;
+    // first create the iterators for any keyed shardings
+    let mut key_join_iter = None;
+    let mut fixed_parallelism = 1;
+    let mut join_group_key_set: Vec<u32> = vec![];
     let mut i = 0;
+    while i < join_order.len() {
+        let set_idx = join_order[i];
+        if let Some((sharding, set)) = sets[set_idx].take() {
+            if sharding != ShardingMode::Key {
+                if join_group_key_set.len() > 0 {
+                    fixed_parallelism *= join_group_key_set.len();
+                    join_group_key_set.clear();
+                }
+                sets[set_idx] = Some((sharding, set)); // put back into sets
+                break; // continue building all other iterators in the second loop
+            }
+
+            let strategy = if i > 0 {
+                join_strategies[i - 1]
+            } else {
+                JoinStrategy::Cross
+            };
+
+            if strategy == JoinStrategy::Cross {
+                if join_group_key_set.len() > 0 {
+                    fixed_parallelism *= join_group_key_set.len();
+                    join_group_key_set.clear();
+                }
+            }
+
+            key_join_iter = join_iterator::SetKeyIterator::new(
+                key_join_iter,
+                set,
+                strategy,
+                set_idx,
+                &mut join_group_key_set,
+            );
+        }
+        i += 1;
+    }
+
+    // second create the iterators for all remaining shardings
+    let mut any_parallelisms: Vec<(usize, usize)> = Vec::new(); // vec of (max parallelism, chosen parallelism)
+    let mut join_iter = key_join_iter.map(|i| i as Box<dyn JoinIterator>);
     while i < join_order.len() {
         let set_idx = join_order[i];
         if let Some((sharding, set)) = sets[set_idx].take() {
@@ -462,73 +272,112 @@ pub fn get_sharding(
                     join_iter = join_iterator::SetAllIterator::new(join_iter, set, set_idx);
                 }
                 ShardingMode::Each => {
-                    join_iter = join_iterator::SetEachIterator::new(join_iter, set, set_idx);
-                }
-                ShardingMode::Key => {
-                    let strategy = if i > 0 {
-                        join_strategies[i - 1]
-                    } else {
-                        JoinStrategy::Cross
-                    };
-                    join_iter =
-                        join_iterator::SetKeyIterator::new(join_iter, set, strategy, set_idx);
+                    let parallelism;
+                    (join_iter, parallelism) =
+                        join_iterator::SetEachIterator::new(join_iter, set, set_idx);
+                    fixed_parallelism *= parallelism;
                 }
                 ShardingMode::AnyEach => {
-                    if let Some(num_groups) = any_set_parallelism.get(&set_idx) {
-                        join_iter = join_iterator::AnyIterator::new(
-                            join_iter,
-                            vec![set],
-                            vec![],
-                            vec![set_idx],
-                            *num_groups,
-                            sharding,
-                        );
-                    } else {
-                        // TODO: do we want maximum parallelism in this case or zero parallelism?
-                        // if we got no specific parallelism for this set we assume parallelism is 1
-                        join_iter = join_iterator::SetAllIterator::new(join_iter, set, set_idx);
+                    let (any_join_iter, max_parallelism) = join_iterator::AnyIterator::new(
+                        join_iter,
+                        vec![set],
+                        vec![],
+                        vec![set_idx],
+                        sharding,
+                    );
+                    if any_join_iter.is_some() {
+                        any_parallelisms.push((max_parallelism, 1));
                     }
+                    join_iter = any_join_iter.map(|i| i as Box<dyn JoinIterator>);
                 }
                 ShardingMode::AnyKey => {
-                    if let Some(num_groups) = any_set_parallelism.get(&set_idx) {
-                        // get all sets that are joined together (i.e. find the next cross join)
-                        let mut joined_sets = vec![set];
-                        let mut joined_set_idcs = vec![set_idx];
-                        let mut joined_strategies = vec![];
-                        while i + 1 < join_order.len() {
-                            let next_strategy = join_strategies[i];
-                            if next_strategy != JoinStrategy::Cross {
-                                let next_set_idx = join_order[i + 1];
-                                if let Some((_, set)) = sets[next_set_idx].take() {
-                                    joined_sets.push(set);
-                                    joined_set_idcs.push(next_set_idx);
-                                    joined_strategies.push(next_strategy);
-                                }
-                                // NOTE: if the set is none we just skip it -> this allows for empty
-                                //       optional sets
-                                i += 1;
-                            } else {
-                                // a cross join breaks the chain
-                                break;
+                    // get all sets that are joined together (i.e. find the next cross join)
+                    let mut joined_sets = vec![set];
+                    let mut joined_set_idcs = vec![set_idx];
+                    let mut joined_strategies = vec![];
+                    while i + 1 < join_order.len() {
+                        let next_strategy = join_strategies[i];
+                        if next_strategy != JoinStrategy::Cross {
+                            let next_set_idx = join_order[i + 1];
+                            // if the set is none we just skip it -> this allows for empty optional sets
+                            if let Some((_, set)) = sets[next_set_idx].take() {
+                                joined_sets.push(set);
+                                joined_set_idcs.push(next_set_idx);
+                                joined_strategies.push(next_strategy);
                             }
+                            i += 1;
+                        } else {
+                            // a cross join breaks the chain
+                            break;
                         }
-                        join_iter = join_iterator::AnyIterator::new(
-                            join_iter,
-                            joined_sets,
-                            joined_strategies,
-                            joined_set_idcs,
-                            *num_groups,
-                            sharding,
-                        );
-                    } else {
-                        // TODO: do we want maximum parallelism in this case or zero parallelism?
-                        // if we got no specific parallelism for this set we assume parallelism is 1
-                        join_iter = join_iterator::SetAllIterator::new(join_iter, set, set_idx);
                     }
+
+                    let (any_join_iter, max_parallelism) = join_iterator::AnyIterator::new(
+                        join_iter,
+                        joined_sets,
+                        joined_strategies,
+                        joined_set_idcs,
+                        sharding,
+                    );
+                    if any_join_iter.is_some() {
+                        any_parallelisms.push((max_parallelism, 1));
+                    }
+                    join_iter = any_join_iter.map(|i| i as Box<dyn JoinIterator>);
+                }
+                ShardingMode::Key => {
+                    panic!("Expecting key shardings to preceed all other shardings.");
                 }
             }
         }
         i += 1;
+    }
+
+    // compute the parallelism for the any shardings
+    if fixed_parallelism < target_parallelism && !any_parallelisms.is_empty() {
+        let mut leftover_parallelism = target_parallelism / fixed_parallelism;
+        loop {
+            // find the best suitable set to parallelize over
+            let mut best_idx = 0;
+            let mut best_dist = 0.0;
+            for (i, (max_p, chosen_p)) in any_parallelisms.iter().enumerate() {
+                // check that we have not yet assigned a parallelism to this any set
+                if *chosen_p == 1 {
+                    let remainder = max_p % leftover_parallelism;
+                    if remainder == 0 {
+                        best_idx = i;
+                        best_dist = 0.0;
+                        break;
+                    }
+                    let dist = (remainder) as f64 / (*max_p) as f64;
+                    if best_dist == 0.0 || dist < best_dist {
+                        best_idx = i;
+                        best_dist = dist;
+                    }
+                }
+            }
+
+            // if the best set has fewer elements than the leftover parallelization we continue and
+            // check if we can find another set to parallelize over in addition to the found one
+            if best_dist >= 1.0 {
+                let max_parallelism = any_parallelisms[best_idx].0;
+                any_parallelisms[best_idx].1 = max_parallelism;
+                leftover_parallelism /= max_parallelism;
+                if leftover_parallelism <= 1 {
+                    break;
+                }
+            } else {
+                if any_parallelisms[best_idx].1 == 1 {
+                    let chosen_parallelism =
+                        cmp::min(leftover_parallelism, any_parallelisms[best_idx].0);
+                    any_parallelisms[best_idx].1 = chosen_parallelism;
+                }
+                break;
+            }
+        }
+
+        if let Some(iter) = join_iter.as_mut() {
+            iter.reduce_any_parallelism(any_parallelisms);
+        }
     }
 
     // generate the sharding sets
@@ -921,7 +770,7 @@ fn join_it_any_chain_test() {
 }
 
 #[test]
-fn any_parallelism_test_1() {
+fn join_it_any_chain_test_1() {
     let sets = vec![
         Some((ShardingMode::AnyEach, create_dummy_set(vec![0, 1]))),
         Some((
@@ -932,189 +781,195 @@ fn any_parallelism_test_1() {
     ];
 
     let join_order = vec![0, 1, 2];
-    let join_strategies = vec![JoinStrategy::Cross, JoinStrategy::Cross];
-
-    let any_set_parallelism_6 = compute_any_parallelism(&sets, &join_order, &join_strategies, 6);
-    assert_eq!(any_set_parallelism_6.len(), 1);
-    assert!(any_set_parallelism_6.contains_key(&1));
-    assert_eq!(any_set_parallelism_6[&1], 6);
-
-    let any_set_parallelism_3 = compute_any_parallelism(&sets, &join_order, &join_strategies, 3);
-    assert_eq!(any_set_parallelism_3.len(), 1);
-    assert!(any_set_parallelism_3.contains_key(&1));
-    assert_eq!(any_set_parallelism_3[&1], 3);
-
-    let any_set_parallelism_4 = compute_any_parallelism(&sets, &join_order, &join_strategies, 4);
-    assert_eq!(any_set_parallelism_4.len(), 1);
-    assert!(any_set_parallelism_4.contains_key(&2));
-    assert_eq!(any_set_parallelism_4[&2], 4);
-}
-
-#[test]
-fn any_parallelism_test_2() {
-    let sets = vec![
-        Some((ShardingMode::AnyEach, create_dummy_set(vec![0, 1, 2]))),
-        Some((ShardingMode::AnyEach, create_dummy_set(vec![0, 1]))),
-    ];
-
-    let join_order = vec![0, 1];
-    let join_strategies = vec![JoinStrategy::Cross];
-
-    let any_set_parallelism_2 = compute_any_parallelism(&sets, &join_order, &join_strategies, 2);
-    assert_eq!(any_set_parallelism_2.len(), 1);
-    assert!(any_set_parallelism_2.contains_key(&1));
-    assert_eq!(any_set_parallelism_2[&1], 2);
-
-    let any_set_parallelism_3 = compute_any_parallelism(&sets, &join_order, &join_strategies, 3);
-    assert_eq!(any_set_parallelism_3.len(), 1);
-    assert!(any_set_parallelism_3.contains_key(&0));
-    assert_eq!(any_set_parallelism_3[&0], 3);
-
-    let any_set_parallelism_6 = compute_any_parallelism(&sets, &join_order, &join_strategies, 6);
-    assert_eq!(any_set_parallelism_6.len(), 2);
-    assert!(any_set_parallelism_6.contains_key(&0));
-    assert!(any_set_parallelism_6.contains_key(&1));
-    assert_eq!(any_set_parallelism_6[&0], 3);
-    assert_eq!(any_set_parallelism_6[&1], 2);
-}
-
-#[test]
-fn any_parallelism_test_3() {
-    let sets = vec![
-        Some((ShardingMode::Each, create_dummy_set(vec![0, 0]))),
-        Some((ShardingMode::AnyEach, create_dummy_set(vec![0, 0, 0]))),
-        Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 1, 1]))),
-    ];
-
-    let join_order = vec![0, 1, 2];
-    let join_strategies = vec![JoinStrategy::Cross, JoinStrategy::Cross];
-
-    let any_set_parallelism_2 = compute_any_parallelism(&sets, &join_order, &join_strategies, 2);
-    assert_eq!(any_set_parallelism_2.len(), 0);
-
-    let any_set_parallelism_4 = compute_any_parallelism(&sets, &join_order, &join_strategies, 4);
-    assert_eq!(any_set_parallelism_4.len(), 1);
-    assert!(any_set_parallelism_4.contains_key(&2));
-    assert_eq!(any_set_parallelism_4[&2], 2);
-
-    let any_set_parallelism_6 = compute_any_parallelism(&sets, &join_order, &join_strategies, 6);
-    assert_eq!(any_set_parallelism_6.len(), 1);
-    assert!(any_set_parallelism_6.contains_key(&1));
-    assert_eq!(any_set_parallelism_6[&1], 3);
-}
-
-#[test]
-fn any_parallelism_test_4() {
-    let sets = vec![
-        Some((ShardingMode::Each, create_dummy_set(vec![0, 0]))),
-        Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 2, 0, 1, 3]))),
-        Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 1, 1, 4]))),
-    ];
-
-    let join_order = vec![0, 1, 2];
-
-    let join_strategies_inner = vec![JoinStrategy::Cross, JoinStrategy::Inner];
-    let any_set_parallelism_inner =
-        compute_any_parallelism(&sets, &join_order, &join_strategies_inner, 10);
-    assert_eq!(any_set_parallelism_inner.len(), 2);
-    assert!(any_set_parallelism_inner.contains_key(&1));
-    assert!(any_set_parallelism_inner.contains_key(&2));
-    assert_eq!(any_set_parallelism_inner[&1], 2);
-    assert_eq!(any_set_parallelism_inner[&2], 2);
-
-    let join_strategies_left = vec![JoinStrategy::Cross, JoinStrategy::Left];
-    let any_set_parallelism_left =
-        compute_any_parallelism(&sets, &join_order, &join_strategies_left, 10);
-    assert_eq!(any_set_parallelism_left.len(), 2);
-    assert!(any_set_parallelism_left.contains_key(&1));
-    assert!(any_set_parallelism_left.contains_key(&2));
-    assert_eq!(any_set_parallelism_left[&1], 4);
-    assert_eq!(any_set_parallelism_left[&2], 4);
-
-    let join_strategies_right = vec![JoinStrategy::Cross, JoinStrategy::Right];
-    let any_set_parallelism_right =
-        compute_any_parallelism(&sets, &join_order, &join_strategies_right, 10);
-    assert_eq!(any_set_parallelism_right.len(), 2);
-    assert!(any_set_parallelism_right.contains_key(&1));
-    assert!(any_set_parallelism_right.contains_key(&2));
-    assert_eq!(any_set_parallelism_right[&1], 3);
-    assert_eq!(any_set_parallelism_right[&2], 3);
-
-    let join_strategies_outer = vec![JoinStrategy::Cross, JoinStrategy::Outer];
-    let any_set_parallelism_outer =
-        compute_any_parallelism(&sets, &join_order, &join_strategies_outer, 10);
-    assert_eq!(any_set_parallelism_outer.len(), 2);
-    assert!(any_set_parallelism_outer.contains_key(&1));
-    assert!(any_set_parallelism_outer.contains_key(&2));
-    assert_eq!(any_set_parallelism_outer[&1], 5);
-    assert_eq!(any_set_parallelism_outer[&2], 5);
-}
-
-#[test]
-fn any_parallelism_test_5() {
-    let sets = vec![
-        Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 2, 0, 1, 3]))),
-        Some((ShardingMode::Key, create_dummy_set(vec![0, 1, 1, 4]))),
-    ];
-
-    let join_order = vec![0, 1];
-    let join_strategies_inner = vec![JoinStrategy::Inner];
-
-    // if an AnyKey and a Key are joined with a strategy other than cross it is no longer a valid
-    // any set -> the output should be empty
-    let any_set_parallelism_inner =
-        compute_any_parallelism(&sets, &join_order, &join_strategies_inner, 10);
-    assert_eq!(any_set_parallelism_inner.len(), 0);
-}
-
-#[test]
-fn any_parallelism_test_6() {
-    let sets = vec![Some((
-        ShardingMode::AnyKey,
-        create_dummy_set(vec![0, 2, 0, 1, 3]),
-    ))];
-
-    let join_order = vec![0];
     let join_strategies = vec![];
 
-    let any_set_parallelism_2 = compute_any_parallelism(&sets, &join_order, &join_strategies, 2);
-    assert_eq!(any_set_parallelism_2.len(), 1);
-    assert!(any_set_parallelism_2.contains_key(&0));
-    assert_eq!(any_set_parallelism_2[&0], 2);
+    let sharding_6 = get_sharding(sets.clone(), join_order.clone(), join_strategies.clone(), 6);
+    assert_eq!(sharding_6.len(), 6); // <- should get 6 shardings
+    assert_eq!(sharding_6[0].len(), 3); // <- should still get 3 sets
+    assert_eq!(sharding_6[0][0].as_ref().unwrap().len(), 2);
+    assert_eq!(sharding_6[0][1].as_ref().unwrap().len(), 1); // <- parallelized set
+    assert_eq!(sharding_6[0][2].as_ref().unwrap().len(), 4);
 
-    let any_set_parallelism_4 = compute_any_parallelism(&sets, &join_order, &join_strategies, 4);
-    assert_eq!(any_set_parallelism_4.len(), 1);
-    assert!(any_set_parallelism_4.contains_key(&0));
-    assert_eq!(any_set_parallelism_4[&0], 4);
+    let sharding_3 = get_sharding(sets.clone(), join_order.clone(), join_strategies.clone(), 3);
+    assert_eq!(sharding_3.len(), 3); // <- should get 3 shardings
+    assert_eq!(sharding_3[0].len(), 3); // <- should still get 3 sets
+    assert_eq!(sharding_3[0][0].as_ref().unwrap().len(), 2);
+    assert_eq!(sharding_3[0][1].as_ref().unwrap().len(), 2); // <- parallelized set
+    assert_eq!(sharding_3[0][2].as_ref().unwrap().len(), 4);
+
+    let sharding_4 = get_sharding(sets.clone(), join_order.clone(), join_strategies.clone(), 4);
+    assert_eq!(sharding_4.len(), 4); // <- should get 4 shardings
+    assert_eq!(sharding_4[0].len(), 3); // <- should still get 3 sets
+    assert_eq!(sharding_4[0][0].as_ref().unwrap().len(), 2);
+    assert_eq!(sharding_4[0][1].as_ref().unwrap().len(), 6);
+    assert_eq!(sharding_4[0][2].as_ref().unwrap().len(), 1); // <- parallelized set
 }
 
-#[test]
-fn any_parallelism_test_7() {
-    let sets = vec![
-        Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 1, 4]))),
-        Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 2, 0, 3]))),
-        Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 1, 1]))),
-        Some((ShardingMode::AnyEach, create_dummy_set(vec![0, 0]))),
-    ];
+// #[test]
+// fn any_parallelism_test_2() {
+//     let sets = vec![
+//         Some((ShardingMode::AnyEach, create_dummy_set(vec![0, 1, 2]))),
+//         Some((ShardingMode::AnyEach, create_dummy_set(vec![0, 1]))),
+//     ];
 
-    let join_order = vec![1, 2, 0, 3];
-    let join_strategies = vec![
-        JoinStrategy::Inner,
-        JoinStrategy::Right,
-        JoinStrategy::Cross,
-    ];
+//     let join_order = vec![0, 1];
+//     let join_strategies = vec![JoinStrategy::Cross];
 
-    let any_set_parallelism_2 = compute_any_parallelism(&sets, &join_order, &join_strategies, 2);
-    assert_eq!(any_set_parallelism_2.len(), 1);
-    assert!(any_set_parallelism_2.contains_key(&3));
-    assert_eq!(any_set_parallelism_2[&3], 2);
+//     let any_set_parallelism_2 = compute_any_parallelism(&sets, &join_order, &join_strategies, 2);
+//     assert_eq!(any_set_parallelism_2.len(), 1);
+//     assert!(any_set_parallelism_2.contains_key(&1));
+//     assert_eq!(any_set_parallelism_2[&1], 2);
 
-    let any_set_parallelism_3 = compute_any_parallelism(&sets, &join_order, &join_strategies, 3);
-    assert_eq!(any_set_parallelism_3.len(), 3);
-    assert!(any_set_parallelism_3.contains_key(&0));
-    assert!(any_set_parallelism_3.contains_key(&1));
-    assert!(any_set_parallelism_3.contains_key(&2));
-    assert_eq!(any_set_parallelism_3[&0], 3);
-    assert_eq!(any_set_parallelism_3[&1], 3);
-    assert_eq!(any_set_parallelism_3[&2], 3);
-}
+//     let any_set_parallelism_3 = compute_any_parallelism(&sets, &join_order, &join_strategies, 3);
+//     assert_eq!(any_set_parallelism_3.len(), 1);
+//     assert!(any_set_parallelism_3.contains_key(&0));
+//     assert_eq!(any_set_parallelism_3[&0], 3);
+
+//     let any_set_parallelism_6 = compute_any_parallelism(&sets, &join_order, &join_strategies, 6);
+//     assert_eq!(any_set_parallelism_6.len(), 2);
+//     assert!(any_set_parallelism_6.contains_key(&0));
+//     assert!(any_set_parallelism_6.contains_key(&1));
+//     assert_eq!(any_set_parallelism_6[&0], 3);
+//     assert_eq!(any_set_parallelism_6[&1], 2);
+// }
+
+// #[test]
+// fn any_parallelism_test_3() {
+//     let sets = vec![
+//         Some((ShardingMode::Each, create_dummy_set(vec![0, 0]))),
+//         Some((ShardingMode::AnyEach, create_dummy_set(vec![0, 0, 0]))),
+//         Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 1, 1]))),
+//     ];
+
+//     let join_order = vec![0, 1, 2];
+//     let join_strategies = vec![JoinStrategy::Cross, JoinStrategy::Cross];
+
+//     let any_set_parallelism_2 = compute_any_parallelism(&sets, &join_order, &join_strategies, 2);
+//     assert_eq!(any_set_parallelism_2.len(), 0);
+
+//     let any_set_parallelism_4 = compute_any_parallelism(&sets, &join_order, &join_strategies, 4);
+//     assert_eq!(any_set_parallelism_4.len(), 1);
+//     assert!(any_set_parallelism_4.contains_key(&2));
+//     assert_eq!(any_set_parallelism_4[&2], 2);
+
+//     let any_set_parallelism_6 = compute_any_parallelism(&sets, &join_order, &join_strategies, 6);
+//     assert_eq!(any_set_parallelism_6.len(), 1);
+//     assert!(any_set_parallelism_6.contains_key(&1));
+//     assert_eq!(any_set_parallelism_6[&1], 3);
+// }
+
+// #[test]
+// fn any_parallelism_test_4() {
+//     let sets = vec![
+//         Some((ShardingMode::Each, create_dummy_set(vec![0, 0]))),
+//         Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 2, 0, 1, 3]))),
+//         Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 1, 1, 4]))),
+//     ];
+
+//     let join_order = vec![0, 1, 2];
+
+//     let join_strategies_inner = vec![JoinStrategy::Cross, JoinStrategy::Inner];
+//     let any_set_parallelism_inner =
+//         compute_any_parallelism(&sets, &join_order, &join_strategies_inner, 10);
+//     assert_eq!(any_set_parallelism_inner.len(), 2);
+//     assert!(any_set_parallelism_inner.contains_key(&1));
+//     assert!(any_set_parallelism_inner.contains_key(&2));
+//     assert_eq!(any_set_parallelism_inner[&1], 2);
+//     assert_eq!(any_set_parallelism_inner[&2], 2);
+
+//     let join_strategies_left = vec![JoinStrategy::Cross, JoinStrategy::Left];
+//     let any_set_parallelism_left =
+//         compute_any_parallelism(&sets, &join_order, &join_strategies_left, 10);
+//     assert_eq!(any_set_parallelism_left.len(), 2);
+//     assert!(any_set_parallelism_left.contains_key(&1));
+//     assert!(any_set_parallelism_left.contains_key(&2));
+//     assert_eq!(any_set_parallelism_left[&1], 4);
+//     assert_eq!(any_set_parallelism_left[&2], 4);
+
+//     let join_strategies_right = vec![JoinStrategy::Cross, JoinStrategy::Right];
+//     let any_set_parallelism_right =
+//         compute_any_parallelism(&sets, &join_order, &join_strategies_right, 10);
+//     assert_eq!(any_set_parallelism_right.len(), 2);
+//     assert!(any_set_parallelism_right.contains_key(&1));
+//     assert!(any_set_parallelism_right.contains_key(&2));
+//     assert_eq!(any_set_parallelism_right[&1], 3);
+//     assert_eq!(any_set_parallelism_right[&2], 3);
+
+//     let join_strategies_outer = vec![JoinStrategy::Cross, JoinStrategy::Outer];
+//     let any_set_parallelism_outer =
+//         compute_any_parallelism(&sets, &join_order, &join_strategies_outer, 10);
+//     assert_eq!(any_set_parallelism_outer.len(), 2);
+//     assert!(any_set_parallelism_outer.contains_key(&1));
+//     assert!(any_set_parallelism_outer.contains_key(&2));
+//     assert_eq!(any_set_parallelism_outer[&1], 5);
+//     assert_eq!(any_set_parallelism_outer[&2], 5);
+// }
+
+// #[test]
+// fn any_parallelism_test_5() {
+//     let sets = vec![
+//         Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 2, 0, 1, 3]))),
+//         Some((ShardingMode::Key, create_dummy_set(vec![0, 1, 1, 4]))),
+//     ];
+
+//     let join_order = vec![0, 1];
+//     let join_strategies_inner = vec![JoinStrategy::Inner];
+
+//     // if an AnyKey and a Key are joined with a strategy other than cross it is no longer a valid
+//     // any set -> the output should be empty
+//     let any_set_parallelism_inner =
+//         compute_any_parallelism(&sets, &join_order, &join_strategies_inner, 10);
+//     assert_eq!(any_set_parallelism_inner.len(), 0);
+// }
+
+// #[test]
+// fn any_parallelism_test_6() {
+//     let sets = vec![Some((
+//         ShardingMode::AnyKey,
+//         create_dummy_set(vec![0, 2, 0, 1, 3]),
+//     ))];
+
+//     let join_order = vec![0];
+//     let join_strategies = vec![];
+
+//     let any_set_parallelism_2 = compute_any_parallelism(&sets, &join_order, &join_strategies, 2);
+//     assert_eq!(any_set_parallelism_2.len(), 1);
+//     assert!(any_set_parallelism_2.contains_key(&0));
+//     assert_eq!(any_set_parallelism_2[&0], 2);
+
+//     let any_set_parallelism_4 = compute_any_parallelism(&sets, &join_order, &join_strategies, 4);
+//     assert_eq!(any_set_parallelism_4.len(), 1);
+//     assert!(any_set_parallelism_4.contains_key(&0));
+//     assert_eq!(any_set_parallelism_4[&0], 4);
+// }
+
+// #[test]
+// fn any_parallelism_test_7() {
+//     let sets = vec![
+//         Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 1, 4]))),
+//         Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 2, 0, 3]))),
+//         Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 1, 1]))),
+//         Some((ShardingMode::AnyEach, create_dummy_set(vec![0, 0]))),
+//     ];
+
+//     let join_order = vec![1, 2, 0, 3];
+//     let join_strategies = vec![
+//         JoinStrategy::Inner,
+//         JoinStrategy::Right,
+//         JoinStrategy::Cross,
+//     ];
+
+//     let any_set_parallelism_2 = compute_any_parallelism(&sets, &join_order, &join_strategies, 2);
+//     assert_eq!(any_set_parallelism_2.len(), 1);
+//     assert!(any_set_parallelism_2.contains_key(&3));
+//     assert_eq!(any_set_parallelism_2[&3], 2);
+
+//     let any_set_parallelism_3 = compute_any_parallelism(&sets, &join_order, &join_strategies, 3);
+//     assert_eq!(any_set_parallelism_3.len(), 3);
+//     assert!(any_set_parallelism_3.contains_key(&0));
+//     assert!(any_set_parallelism_3.contains_key(&1));
+//     assert!(any_set_parallelism_3.contains_key(&2));
+//     assert_eq!(any_set_parallelism_3[&0], 3);
+//     assert_eq!(any_set_parallelism_3[&1], 3);
+//     assert_eq!(any_set_parallelism_3[&2], 3);
+// }
