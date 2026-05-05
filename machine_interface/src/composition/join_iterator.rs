@@ -221,11 +221,14 @@ impl SetKeyIterator {
 impl JoinIterator for SetKeyIterator {
     fn fill_in(&mut self, to_fill: &mut Vec<Option<CompositionSet>>) {
         debug_assert!(self.key_groups_idx < self.key_groups.len());
-        debug_assert!(self.key == self.key_groups[self.key_groups_idx].0);
-        to_fill[self.write_idx] = Some(CompositionSet {
-            item_list: self.set.item_list[self.key_groups[self.key_groups_idx].1.clone()].to_vec(),
-            set_index: self.set.set_index,
-        });
+        let fill_this_set = self.key == self.key_groups[self.key_groups_idx].0;
+        if fill_this_set {
+            to_fill[self.write_idx] = Some(CompositionSet {
+                item_list: self.set.item_list[self.key_groups[self.key_groups_idx].1.clone()]
+                    .to_vec(),
+                set_index: self.set.set_index,
+            });
+        }
         if let Some(left) = &mut self.left {
             match self.strategy {
                 // modes for which always want left to fill in
@@ -237,10 +240,14 @@ impl JoinIterator for SetKeyIterator {
                     }
                 }
                 // Only want left to fill if this iterator has filled something in
-                JoinStrategy::Inner => left.fill_in(to_fill),
+                JoinStrategy::Inner => {
+                    if fill_this_set {
+                        left.fill_in(to_fill)
+                    }
+                }
                 // Only want left to fill if this iterator has filled and the keys match
                 JoinStrategy::Right => {
-                    if self.key == left.get_key() {
+                    if fill_this_set && self.key == left.get_key() {
                         left.fill_in(to_fill)
                     }
                 }
