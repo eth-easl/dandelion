@@ -82,6 +82,36 @@ impl JoinStrategy {
     }
 }
 
+/// Struct to hold the data of a composition set item, that is read in chunks via the context reference.
+/// This is used to transfer the data of a composition set item from one node to another.
+/// The data can only be read once, as the context reference is shared and the offset is updated on each read.
+#[derive(Clone, Debug)]
+pub struct CompositionSetData {
+    pub start_offset: usize,
+    pub bytes_read: usize,
+    pub size: usize,
+    pub context: Arc<Context>,
+}
+
+impl CompositionSetData {
+    /// Reads the next chunk of data for this composition set data, returns None if all data has been read.
+    pub fn read_next_chunk(&mut self) -> Option<&[u8]> {
+        if self.bytes_read >= self.size {
+            return None;
+        }
+
+        let data_slice = self
+            .context
+            .get_chunk_ref(
+                self.start_offset + self.bytes_read,
+                self.size - self.bytes_read
+            )
+            .expect("Failed to read item!");
+        self.bytes_read += data_slice.len();
+        Some(data_slice)
+    }
+}
+
 /// Struct that has all locations belonging to one set, that is potentially spread over multiple contexts.
 #[derive(Clone, Debug)]
 pub struct CompositionSet {
@@ -106,26 +136,19 @@ impl CompositionSet {
 
     /// Used for serializing the data to protobuf
     /// TODO remove once the serialization is move to work on top of get_chunk_ref directly
-    pub fn get_item(&self, idx: usize) -> (String, u32, Vec<u8>) {
+    pub fn get_item_metadata(&self, idx: usize) -> (String, u32, CompositionSetData) {
         let (_, item_index, item_context) = &self.item_list[idx];
         let context_item = &item_context.content[self.set_index]
             .as_ref()
             .unwrap()
             .buffers[*item_index];
-        let item_size = context_item.data.size;
-        let mut data_bytes = Vec::<u8>::with_capacity(item_size);
-        let mut bytes_read = 0;
-        while bytes_read < item_size {
-            let data_slice = item_context
-                .get_chunk_ref(
-                    context_item.data.offset + bytes_read,
-                    item_size - bytes_read,
-                )
-                .expect("Failed to read item!");
-            bytes_read += data_slice.len();
-            data_bytes.extend_from_slice(data_slice);
-        }
-        (context_item.ident.clone(), context_item.key, data_bytes)
+        let composition_data = CompositionSetData {
+            start_offset: context_item.data.offset,
+            bytes_read: 0,
+            size: context_item.data.size,
+            context: Arc::clone(item_context),
+        };
+        (context_item.ident.clone(), context_item.key, composition_data)
     }
 
     // TODO: we are just slicing a vec, should be able to do this via slice references or iters instead of Vecs
