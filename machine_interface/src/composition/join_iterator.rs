@@ -206,6 +206,8 @@ fn key_set_union(curr_keys: &mut Vec<u32>, new_key_groups: &Vec<(u32, Range<usiz
 }
 
 impl SetKeyIterator {
+    /// Computes the key_groups (index ranges) that combine all items with the same key and sets the
+    /// index to the first valid element based on the join strategy.
     pub(super) fn new(
         mut left: Option<Box<SetKeyIterator>>,
         set: CompositionSet,
@@ -305,8 +307,11 @@ impl JoinIterator for SetKeyIterator {
     }
 
     fn fill_in(&mut self, to_fill: &mut Vec<Option<CompositionSet>>) {
-        debug_assert!(self.key_groups_idx < self.key_groups.len());
-        let fill_this_set = self.key == self.key_groups[self.key_groups_idx].0;
+        // NOTE: for this iterator `self.key_groups_idx` may be equals to `self.key_groups.len()`
+        //       (e.g. a right join might advance the left to this point if there is no matching
+        //       left key for the right one)
+        let fill_this_set = self.key_groups_idx < self.key_groups.len()
+            && self.key == self.key_groups[self.key_groups_idx].0;
         if fill_this_set {
             to_fill[self.write_idx] = Some(CompositionSet {
                 item_list: self.set.item_list[self.key_groups[self.key_groups_idx].1.clone()]
@@ -318,19 +323,19 @@ impl JoinIterator for SetKeyIterator {
             match self.strategy {
                 // modes for which always want left to fill in
                 JoinStrategy::Cross | JoinStrategy::Left => left.fill_in(to_fill),
-                // Only want to fill left if it is the one with the current key
+                // only want to fill left if it is the one with the current key
                 JoinStrategy::Outer => {
                     if self.key == left.key {
                         left.fill_in(to_fill)
                     }
                 }
-                // Only want left to fill if this iterator has filled something in
+                // only want left to fill if this iterator has filled something in
                 JoinStrategy::Inner => {
                     if fill_this_set {
                         left.fill_in(to_fill)
                     }
                 }
-                // Only want left to fill if this iterator has filled and the keys match
+                // only want left to fill if this iterator has filled and the keys match
                 JoinStrategy::Right => {
                     if fill_this_set && self.key == left.key {
                         left.fill_in(to_fill)
@@ -395,11 +400,11 @@ impl JoinIterator for SetKeyIterator {
                     }
                 }
                 JoinStrategy::Right => {
-                    if self.key_groups_idx + 1 >= self.key_groups.len() {
+                    self.key_groups_idx += 1;
+                    if self.key_groups_idx >= self.key_groups.len() {
                         self.key_groups_idx = self.key_groups.len();
                         return false;
                     }
-                    self.key_groups_idx += 1;
                     self.key = self.key_groups[self.key_groups_idx].0;
                     while self.key > left.key {
                         if !left.advance() {
@@ -516,6 +521,11 @@ impl JoinIterator for SetKeyIterator {
 
 /// Implements the JoinIterator for the `any` shardings. This could be a single `AnyEach` sharding
 /// or a chain of joined `AnyKey` shardings.
+///
+/// Under the hood we first generate all sets using the `SetEachIterator` or `SetKeyIterators` and
+/// save them in the `set_groups`. Once we know the degree to which this any sharding should be
+/// parallelized we combine the sets into equally distributed groups using the
+/// `reduce_any_parallelism` function.
 ///
 /// NOTE: The `AnyIterator` assumes none of its sets that are cross-joined. For two cross-joined
 ///       `any` sets create two separate `AnyIterator` instances, one for each of the sets.
