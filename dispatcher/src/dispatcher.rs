@@ -396,7 +396,9 @@ impl Dispatcher {
                 .iter()
                 .any(|opt| opt.is_some() && !opt.as_ref().unwrap().1.is_empty());
         let composition_results: DandelionResult<Vec<_>> = if is_sharded {
-            let sharded = get_sharding(input_sets, join_order, join_strategies);
+            // TODO: check how to best compute the target parallelism
+            let target_parallelism = usize::MAX;
+            let sharded = get_sharding(input_sets, join_order, join_strategies, target_parallelism);
             let size_hint = sharded.len();
             recorders = Vec::with_capacity(size_hint);
             let resutls: Vec<_> = sharded
