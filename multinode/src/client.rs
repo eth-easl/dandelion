@@ -1,8 +1,8 @@
 use crate::{
     deserialize_node_info, deserialize_queue_message, deserialize_remote_message,
     proto::{
-        self, queue_message, remote_message, Engine, Invocation, NodeInfo, QueueMessage,
-        RemoteMessage, Response,
+        self, queue_message, remote_message, Invocation, NodeInfo, QueueMessage, RemoteMessage,
+        RepeatedEngines, Response,
     },
     serialize_node_info, serialize_queue_message, serialize_remote_message,
     util::{
@@ -16,6 +16,7 @@ use dandelion_commons::{
 };
 use dispatcher::queue::{get_engine_flag, WorkQueue};
 use futures::{future::Either, stream::FuturesUnordered, FutureExt, StreamExt};
+use log::{trace, warn};
 use machine_interface::{
     composition::CompositionSet,
     function_driver::{WorkDone, WorkToDo},
@@ -29,7 +30,7 @@ use std::{
 };
 use tokio::{
     io::{split, AsyncReadExt, AsyncWriteExt},
-    sync::{mpsc, oneshot, watch},
+    sync::{mpsc, oneshot, watch, Notify},
 };
 
 #[cfg(test)]
@@ -63,7 +64,7 @@ async fn receive_message(mut receiver: impl AsyncReadExt + std::marker::Unpin) -
 
 enum QueueOption<Stream: AsyncReadExt + std::marker::Unpin> {
     Message(Stream, remote_message::RemoteMessage),
-    WorkAvailable(mpsc::Receiver<()>),
+    WorkAvailable(Arc<Notify>),
 }
 
 async fn receive_client_message<Stream: AsyncReadExt + std::marker::Unpin>(
@@ -77,9 +78,9 @@ async fn receive_client_message<Stream: AsyncReadExt + std::marker::Unpin>(
 }
 
 async fn receive_work_available_notification<Stream: AsyncReadExt + std::marker::Unpin>(
-    mut receiver: mpsc::Receiver<()>,
+    receiver: Arc<Notify>,
 ) -> QueueOption<Stream> {
-    receiver.recv().await.unwrap();
+    receiver.notified().await;
     QueueOption::WorkAvailable(receiver)
 }
 
@@ -94,18 +95,18 @@ async fn receive_work_available_notification<Stream: AsyncReadExt + std::marker:
 pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::marker::Unpin>(
     socket: Stream,
     queue: WorkQueue,
-    work_available: mpsc::Receiver<()>,
+    work_available: Arc<Notify>,
 ) {
     let mut waiting_for_work = false;
     let (mut read_socket, mut write_socket) = split(socket);
 
     // First ask for the information about the other node
     // Currently not using engine information
-    let NodeInfo {
-        version,
-        engines: _,
-    } = deserialize_node_info(receive_message(&mut read_socket).await).unwrap();
+    trace!("Queue Server wait for initial message");
+    let NodeInfo { version } =
+        deserialize_node_info(receive_message(&mut read_socket).await).unwrap();
     assert_eq!(version, 1);
+    trace!("Queue Server received initial message");
 
     let mut debt_map = BTreeMap::new();
     let mut free_debt_ids = BinaryHeap::new();
@@ -124,15 +125,16 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                 match message {
                     remote_message::RemoteMessage::WorkRequest(work_request) => {
                         // For now just send one matching function
-                        let NodeInfo {
-                            version: _,
-                            engines,
-                        } = work_request;
+                        let engines = work_request.engines;
                         let mut engine_flags = 0;
                         for engine in engines {
                             engine_flags |=
                                 get_engine_flag(engine_type_ptod(engine.engine_type).unwrap());
                         }
+                        trace!(
+                            "Queue Server received work request for engine flags: {}",
+                            engine_flags
+                        );
                         // poll work
                         let queue_message = if let Some((work, debt)) =
                             queue.try_get_work_no_shutdown(engine_flags)
@@ -182,6 +184,7 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                         send_message(&message_bytes, &mut write_socket).await;
                     }
                     remote_message::RemoteMessage::Response(response) => {
+                        trace!("Queue Server received response");
                         let Response {
                             invocation_id,
                             response,
@@ -206,6 +209,7 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                 merged_stream.push(Either::Right(receive_client_message(read_socket)));
             }
             QueueOption::WorkAvailable(receiver) => {
+                trace!("Queue Server received work available notification");
                 if waiting_for_work {
                     waiting_for_work = false;
                     let message = serialize_queue_message(QueueMessage {
@@ -222,8 +226,8 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
 enum PollingOption<Stream: AsyncReadExt + std::marker::Unpin> {
     Message(Stream, DandelionResult<queue_message::QueueMessage>),
     PollFor(
-        watch::Receiver<Vec<(EngineType, u32)>>,
-        Vec<(EngineType, u32)>,
+        watch::Receiver<Box<[(EngineType, u32)]>>,
+        Box<[(EngineType, u32)]>,
     ),
     Results(RemoteMessage),
 }
@@ -237,8 +241,8 @@ async fn receive_queue_message<Stream: AsyncReadExt + std::marker::Unpin>(
 }
 
 async fn poll_idle_core<Stream: AsyncReadExt + std::marker::Unpin>(
-    mut engines: Vec<(EngineType, u32)>,
-    mut receiver: watch::Receiver<Vec<(EngineType, u32)>>,
+    mut engines: Box<[(EngineType, u32)]>,
+    mut receiver: watch::Receiver<Box<[(EngineType, u32)]>>,
 ) -> PollingOption<Stream> {
     receiver.changed().await.unwrap();
     {
@@ -268,42 +272,42 @@ async fn poll_results<Stream: AsyncReadExt + std::marker::Unpin>(
     })
 }
 
+/// Client to ask for work from a remote queue.
+/// Whenever the local idle engine number changes, if there are idle engines send out request for work.
+/// There is no request for work when the remote has not replied with work (or not replied yet).
+/// Expect a single invocation. The change in idle cores going down 1 (from the work that was enqueued),
+/// should retrigger asking for more work if there are more idle cores.
 pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::marker::Unpin>(
     socket: Stream,
     sender: mpsc::Sender<DispatcherCommand>,
     // TODO: might want a differnet mechanism, to wake them one after each other to go check
     // But each poller also needs to be able to check if there are still cores available,
     // in case the remote sends a message that there is work available
-    local_available: watch::Receiver<Vec<(EngineType, u32)>>,
-    engines: Vec<(EngineType, u32)>,
+    local_available: watch::Receiver<Box<[(EngineType, u32)]>>,
 ) {
     // local state keeping variables
     let mut remote_had_work = true;
     let available_engines = local_available.borrow().clone();
 
     // set up the connection by sending a single node info
-    let proto_engines = engines
-        .into_iter()
-        .map(|(dandelion_type, number)| Engine {
-            engine_type: engine_type_dtop(dandelion_type) as i32,
-            engine_capacity: number as u32,
-        })
-        .collect();
-    let node_info_buffer = serialize_node_info(NodeInfo {
-        version: 1,
-        engines: proto_engines,
-    });
+    let node_info_buffer = serialize_node_info(NodeInfo { version: 1 });
 
     let (read_socket, mut write_socket) = split(socket);
 
     send_message(&node_info_buffer, &mut write_socket).await;
+    trace!("Queue Client sent out initial message");
+
+    // Create a second copy of the watcher to wait on asynchronously, marke changed to check once in the beginning,
+    // in case there are already idle cores
+    let mut new_local_available = local_available.clone();
+    new_local_available.mark_changed();
 
     // stream for the promises of the local requests wait for them to resolve
     // Once stream interfaces stabilize would be nice to move this to merged streams, but for now this seems
     let mut merged_stream = FuturesUnordered::new();
     merged_stream.push(Either::Right(Either::Right(poll_idle_core(
         available_engines,
-        local_available.clone(),
+        new_local_available,
     ))));
     merged_stream.push(Either::Right(
         receive_queue_message(read_socket).left_future(),
@@ -314,9 +318,13 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
             PollingOption::Message(read_socket, Ok(message)) => {
                 match message {
                     // remote did not have work, can ignore local capacity to work until we get a message the more is available
-                    queue_message::QueueMessage::NoWork(true) => remote_had_work = false,
+                    queue_message::QueueMessage::NoWork(true) => {
+                        trace!("Queue Client recieved NoWork(true)");
+                        remote_had_work = false
+                    }
                     // remote signals it may have work so can ask for it, if we have capacity
                     queue_message::QueueMessage::NoWork(false) => {
+                        trace!("Queue Client recieved NoWork(false)");
                         remote_had_work = true;
                         let engines = local_available
                             .borrow()
@@ -334,15 +342,16 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                             .collect();
                         let request_buffer = serialize_remote_message(RemoteMessage {
                             remote_message: Some(remote_message::RemoteMessage::WorkRequest(
-                                NodeInfo {
-                                    version: 1,
-                                    engines,
-                                },
+                                RepeatedEngines { engines },
                             )),
                         });
                         send_message(&request_buffer, &mut write_socket).await;
                     }
                     queue_message::QueueMessage::Invocation(invocation) => {
+                        trace!("Queue Client recieved invocation");
+                        // mark remote as having work, so we ask for more as idle cores change
+                        remote_had_work = true;
+
                         let Invocation {
                             invocation_id,
                             function_id,
@@ -378,13 +387,18 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                 panic!("Receiving remote queue message faied with: {}", error);
             }
             PollingOption::Results(results) => {
+                trace!("Queue Client sending out result");
                 send_message(&serialize_remote_message(results), &mut write_socket).await;
             }
             // getting a notification so should poll the queue
             PollingOption::PollFor(receiver, available_engines) => {
+                trace!(
+                    "Queue Client checking updated idle state: {:?}",
+                    available_engines
+                );
                 // send message to get work if we have not asked already
                 if remote_had_work {
-                    let engines = available_engines
+                    let engines: Vec<_> = available_engines
                         .iter()
                         .filter_map(|(engine_type, engine_capacity)| {
                             if *engine_capacity > 0 {
@@ -397,15 +411,17 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                             }
                         })
                         .collect();
-                    let request_buffer = serialize_remote_message(RemoteMessage {
-                        remote_message: Some(remote_message::RemoteMessage::WorkRequest(
-                            NodeInfo {
-                                version: 1,
-                                engines,
-                            },
-                        )),
-                    });
-                    send_message(&request_buffer, &mut write_socket).await;
+                    // avoid sending empty messages
+                    if engines.len() > 0 {
+                        let request_buffer = serialize_remote_message(RemoteMessage {
+                            remote_message: Some(remote_message::RemoteMessage::WorkRequest(
+                                RepeatedEngines { engines },
+                            )),
+                        });
+                        send_message(&request_buffer, &mut write_socket).await;
+                        // set false, to avoid double sending if multiple cores become idle, but did not have a response in between
+                        remote_had_work = false;
+                    }
                 }
                 merged_stream.push(Either::Right(Either::Right(poll_idle_core(
                     available_engines,
@@ -414,4 +430,5 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
             }
         }
     }
+    warn!("Exited queue client loop");
 }

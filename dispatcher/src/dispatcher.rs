@@ -71,11 +71,6 @@ impl Dispatcher {
         });
     }
 
-    // TODO remove
-    pub fn get_work_queue(&self) -> WorkQueue {
-        self.work_queue.clone()
-    }
-
     pub fn insert_function(
         &self,
         function_name: String,

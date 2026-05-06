@@ -1,28 +1,9 @@
 syntax = "proto3";
 package multinode_proto;
 
-message ActionStatus {
-    bool success = 1;
-    string message = 2;
-}
-
-// Node Information
-
-enum EngineType {
-    ENGINE_REQWEST = 0;
-    ENGINE_CHERI = 1;
-    ENGINE_PROCESS = 2;
-    ENGINE_KVM = 3;
-}
-
-message Engine {
-    EngineType engine_type = 1;
-    uint32 engine_capacity = 2;
-}
-
+// Node Information, sent to register new client on server
 message NodeInfo {
     uint32 version = 1;
-    repeated Engine engines = 2;
 }
 
 message DataItem {
@@ -43,6 +24,22 @@ message Invocation {
     bool caching = 4;
 }
 
+enum EngineType {
+    ENGINE_REQWEST = 0;
+    ENGINE_CHERI = 1;
+    ENGINE_PROCESS = 2;
+    ENGINE_KVM = 3;
+}
+
+message Engine {
+    EngineType engine_type = 1;
+    uint32 engine_capacity = 2;
+}
+
+message RepeatedEngines {
+    repeated Engine engines = 1;
+}
+
 message RepeatedDataSets {
     repeated DataSet data_sets = 1;
 }
@@ -59,7 +56,7 @@ message Response {
 message RemoteMessage {
     oneof remote_message {
         // Message to ask for more work, containing currently vailable resources
-        NodeInfo work_request = 1;
+        RepeatedEngines work_request = 1;
         // Message containing the response for a specific function that was run 
         Response response = 2;
     }

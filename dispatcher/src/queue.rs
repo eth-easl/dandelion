@@ -62,6 +62,7 @@ pub struct WorkQueue {
     /// This is used to notify that the number of idle threads has increased or decreased
     add_idle: fn(),
     remove_idle: fn(),
+    notify_queueing: fn(),
 }
 
 struct WaitFuture<'list> {
@@ -103,7 +104,7 @@ impl Future for WaitFuture<'_> {
             // check if there is any work with the flags we are looking for
             let result = lock_guard
                 .0
-                .extract_if(|queue_element| queue_element.flags & self.flags == self.flags)
+                .extract_if(|queue_element| queue_element.flags & self.flags != 0)
                 .next()
                 .map(|queue_element| (queue_element.work, queue_element.debt));
             if let Some(result_tupple) = result {
@@ -134,12 +135,13 @@ impl Future for WaitFuture<'_> {
 
 impl WorkQueue {
     /// Creates a new WorkQueue of given size.
-    pub fn init(add_idle: fn(), remove_idle: fn()) -> Self {
+    pub fn init(add_idle: fn(), remove_idle: fn(), notify_queueing: fn()) -> Self {
         WorkQueue {
             queues: Arc::new(Mutex::new((LinkedList::new(), LinkedList::new()))),
             promise_buffer: PromiseBuffer::init(MAX_QUEUE),
             add_idle,
             remove_idle,
+            notify_queueing,
         }
     }
 
@@ -156,6 +158,8 @@ impl WorkQueue {
             .next()
         {
             waker_to_call.waker.wake();
+        } else {
+            (self.notify_queueing)()
         }
     }
 
@@ -196,7 +200,7 @@ impl WorkQueue {
         self.queues.try_lock().and_then(|mut guard| {
             guard
                 .0
-                .extract_if(|queue_element| queue_element.flags & engine_flags == engine_flags)
+                .extract_if(|queue_element| queue_element.flags & engine_flags != 0)
                 .next()
                 .map(|queue_element| (queue_element.work, queue_element.debt))
         })
@@ -213,7 +217,7 @@ impl WorkQueue {
                     if let WorkToDo::Shutdown(_) = queue_element.work {
                         false
                     } else {
-                        queue_element.flags & engine_flags == engine_flags
+                        queue_element.flags & engine_flags != 0
                     }
                 })
                 .next()
