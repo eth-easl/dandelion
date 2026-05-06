@@ -192,9 +192,11 @@ impl<'origin> IntoIterator for &'origin CompositionSet {
 }
 
 /// Computes the sharding for the given sets following the given join order and join strategies.
-/// The `join_strategies` vector is expected to be of size <= `join_order.len() - 1`.
+/// The `join_order` vector is expected to be of length `sets.len()`, the `join_strategies` vector
+/// is expected to be of size `sets.len() - 1`.
 /// The function tries to produce an output vector of size `target_parallelism` if possible grouping
-/// `AnyEach` and `AnyKey` sets accordingly or use a value of 0 to disable this.
+/// `AnyEach` and `AnyKey` sets accordingly. If a `target_parallelism` of 0 is given it will use
+/// maximum possible parallellism.
 pub fn get_sharding(
     mut sets: Vec<Option<(ShardingMode, CompositionSet)>>,
     join_order: Vec<usize>,
@@ -368,8 +370,10 @@ pub fn get_sharding(
             }
         }
     }
-    if let Some(iter) = join_iter.as_mut() {
-        iter.reduce_any_parallelism(any_parallelisms);
+    if target_parallelism > 0 {
+        if let Some(iter) = join_iter.as_mut() {
+            iter.reduce_any_parallelism(any_parallelisms);
+        }
     }
 
     // generate the sharding sets
