@@ -152,7 +152,7 @@ fn register_preemptible_thread(
     preempt_flag: &Option<Arc<AtomicBool>>,
 ) -> bool {
     if let Some(flag) = preempt_flag {
-        registry.register(thread_id, flag.clone());
+        registry.register(thread_id, flag.clone(), std::time::Instant::now());
         true
     } else {
         false
