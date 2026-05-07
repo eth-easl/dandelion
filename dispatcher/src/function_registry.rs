@@ -1,6 +1,6 @@
 use dandelion_commons::{
-    dandelion_err, err_dandelion, CompositionError, DandelionError, DandelionResult, FunctionId,
-    FunctionRegistryError,
+    dandelion_err, err_dandelion, try_with_capacity, CompositionError, DandelionError,
+    DandelionResult, FunctionId, FunctionRegistryError,
 };
 use dparser::print_errors;
 use itertools::Itertools;
@@ -339,9 +339,10 @@ impl FunctionRegistry {
                         };
                         set_counter += 1;
                     }
+
+                    // add composition output sets
                     let mut output_map = BTreeMap::new();
                     let output_sets_start = set_counter;
-                    // add composition output sets
                     for (output_index, output_set_name) in comp.v.returns.iter().enumerate() {
                         match set_numbers.entry(output_set_name.clone()) {
                             Entry::Vacant(v) => {
@@ -356,6 +357,7 @@ impl FunctionRegistry {
                         };
                     }
                     let output_sets_end = set_counter;
+
                     // add all return sets from functions
                     let composition_set_identifiers = comp
                         .v
@@ -403,9 +405,7 @@ impl FunctionRegistry {
                                     return err_dandelion!(DandelionError::Composition(CompositionError::ContainsInvalidFunction(function_application.v.name.clone())));
                                 }
                                 // find the indeces of the sets in the function application by looking though the definition
-                                let mut input_set_ids = Vec::new();
-                                input_set_ids
-                                    .try_reserve(function_decl.v.params.len()).map_err(|_| dandelion_err!(DandelionError::OutOfMemory))?;
+                                let mut input_set_ids = try_with_capacity!(Vec, function_decl.v.params.len())?;
                                 input_set_ids.resize(function_decl.v.params.len(), None);
                                 for argument in function_application.v.args.iter() {
                                     if let Some(index) =
@@ -438,35 +438,98 @@ impl FunctionRegistry {
                                 }
 
                                 // find the join order
-                                let mut all_sets: Vec<_> =
-                                    (0..function_decl.v.params.len())
-                                    .map(|index| Some(index)).collect();
-                                let mut join_set_order = Vec::new();
-                                join_set_order.try_reserve(function_decl.v.params.len())
-                                    .or(err_dandelion!(DandelionError::OutOfMemory))?;
-                                let mut join_strategies = Vec::new();
-                                join_strategies.try_reserve(function_decl.v.params.len())
-                                    .or(err_dandelion!(DandelionError::OutOfMemory))?;
+                                let num_params = function_decl.v.params.len();
+                                let mut processed_set = try_with_capacity!(Vec, num_params)?;
+                                processed_set.resize(function_decl.v.params.len(), false);
+                                let mut join_set_order = try_with_capacity!(Vec, num_params)?;
+                                let mut join_strategies = try_with_capacity!(Vec, num_params)?;
+                                let mut tmp_any_join_set_order = try_with_capacity!(Vec, num_params)?;
+                                let mut tmp_any_join_strategies = try_with_capacity!(Vec, num_params)?;
+                                let mut curr_join_chain_any = None;
                                 if let Some(strategy) = function_application.v.join_strategy.as_ref().and_then(|strategy| if strategy.join_strategy_order.is_empty() || strategy.join_strategies.is_empty() {None} else {Some(strategy)}) {
-                                    for set_name in strategy.join_strategy_order.iter() {
+                                    for (i, set_name) in strategy.join_strategy_order.iter().enumerate() {
+                                        // find set index
                                         let set_index = function_decl.v.params.iter()
                                             .position(|param_name| *param_name == *set_name)
                                             .ok_or_else(|| dandelion_err!(DandelionError::Composition(CompositionError::FunctionInvalidIdentifier(
                                                 format!("Join order for {} contains invalid set name: {}", function_application.v.name, set_name))
                                             )))?;
-                                        all_sets[set_index] = None;
-                                        join_set_order.push(set_index);
+
+                                        // check that this set has not already been processed
+                                        if processed_set[set_index] {
+                                            return err_dandelion!(DandelionError::Composition(CompositionError::InvalidSecondJoin(
+                                                format!("Joining set '{}' twice.", set_name)
+                                            )));
+                                        }
+                                        processed_set[set_index] = true;
+
+                                        // get strategy and add to the corresponding join order
+                                        if i > 0 {
+                                            let strategy = JoinStrategy::from_parser_strategy(&strategy.join_strategies[i-1]);
+                                            join_strategies.push(strategy);
+                                            if strategy == JoinStrategy::Cross {
+                                                curr_join_chain_any = None;
+                                            }
+                                        };
+                                        if let Some(set_id) = input_set_ids[set_index] {
+                                            match set_id.sharding {
+                                                ShardingMode::Key => {
+                                                    if let Some(is_any) = curr_join_chain_any {
+                                                        if is_any {
+                                                            return err_dandelion!(DandelionError::Composition(CompositionError::InvalidJoinSharding(
+                                                                format!("Mixing keyed and anyKeyed shardings: Encountered keyed while processing any chain for index {}", set_index)
+                                                            )));
+                                                        }
+                                                    }
+                                                    curr_join_chain_any = Some(false);
+                                                    join_set_order.push(set_index);
+                                                }
+                                                ShardingMode::AnyKey => {
+                                                    if let Some(is_any) = curr_join_chain_any {
+                                                        if !is_any {
+                                                            return err_dandelion!(DandelionError::Composition(CompositionError::InvalidJoinSharding(
+                                                                format!("Mixing keyed and anyKeyed shardings: Encountered anyKeyed while processing non-any chain for index {}", set_index)
+                                                            )));
+                                                        }
+                                                    }
+                                                    curr_join_chain_any = Some(true);
+                                                    tmp_any_join_set_order.push(set_index);
+                                                }
+                                                _ => return err_dandelion!(DandelionError::Composition(CompositionError::InvalidJoinSharding(
+                                                    format!("Joining set with non-keyed sharding (set_index: {}, sharding: {:?}", set_index, set_id.sharding)
+                                                ))),
+                                            }
+                                        }
                                     }
-                                    for join_strategy in strategy.join_strategies.iter() {
-                                        join_strategies.push(JoinStrategy::from_parser_strategy(&join_strategy))
+                                }
+                                // add remaining sets with keyed shardings that have no specific join order
+                                for (set_idx, set_id_opt) in input_set_ids.iter().enumerate() {
+                                    if processed_set[set_idx] {
+                                        continue;
                                     }
+                                    if let Some(set_id) = set_id_opt {
+                                        if set_id.sharding == ShardingMode::Key {
+                                            processed_set[set_idx] = true;
+                                            join_strategies.push(JoinStrategy::Cross);
+                                            join_set_order.push(set_idx);
+                                        }
+                                    }
+                                }
+                                // add joined any sets
+                                join_strategies.append(&mut tmp_any_join_strategies);
+                                join_set_order.append(&mut tmp_any_join_set_order);
+                                // fill up the remaining join order/strategy
+                                for (set_idx, is_processed) in processed_set.iter().enumerate() {
+                                    if !is_processed {
+                                        join_set_order.push(set_idx);
+                                    }
+                                }
+                                if join_set_order.len() > 0 {
+                                    join_strategies.resize(join_set_order.len() - 1, JoinStrategy::Cross);
                                 }
 
                                 // find the index set index in the original definition for each return set in the application
-                                let mut output_set_ids = Vec::new();
-                                output_set_ids
-                                    .try_reserve(function_decl.v.returns.len())
-                                    .or(err_dandelion!(DandelionError::OutOfMemory))?;
+                                let mut output_set_ids = try_with_capacity!(Vec, function_decl.v.returns.len())?;
                                 output_set_ids.resize(function_decl.v.returns.len(), None);
                                 for return_set in function_application.v.rets.iter() {
                                     if let Some(index) =

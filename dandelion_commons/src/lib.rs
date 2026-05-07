@@ -157,6 +157,19 @@ macro_rules! err_dandelion {
     };
 }
 
+/// Tries to create a new instance of the given type with given capacity and returns a
+/// `DandelionError::OutOfMemory` if it fails.
+#[macro_export]
+macro_rules! try_with_capacity {
+    ($type:ident, $size:expr) => {{
+        let mut container = $type::new();
+        container
+            .try_reserve($size)
+            .map(|_| container)
+            .map_err(|_| dandelion_err!(DandelionError::OutOfMemory))
+    }};
+}
+
 // Implement display to be compliant with core::error::Error
 impl core::fmt::Display for DandelionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -276,6 +289,10 @@ pub enum CompositionError {
     FunctionInvalidIdentifier(String),
     /// Set indentifier is produced by multiple functions in a composition
     DuplicateSetName,
+    /// Joining a set twice
+    InvalidSecondJoin(String),
+    /// Set joins (non cross join) either an all/each sharding or an anyKeyed with a keyed sharding.
+    InvalidJoinSharding(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

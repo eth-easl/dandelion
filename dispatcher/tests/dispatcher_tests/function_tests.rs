@@ -3,7 +3,8 @@ use dandelion_commons::{records::Recorder, FunctionId};
 use dispatcher::dispatcher::Dispatcher;
 use machine_interface::{
     composition::{
-        Composition, CompositionSet, FunctionDependencies, InputSetDescriptor, ShardingMode,
+        Composition, CompositionSet, FunctionDependencies, InputSetDescriptor, JoinStrategy,
+        ShardingMode,
     },
     function_driver::ComputeResource,
     machine_config::{DomainType, EngineType},
@@ -135,7 +136,7 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
     let composition = Composition {
         dependencies: vec![FunctionDependencies {
             function: function_id,
-            join_info: (vec![], vec![]),
+            join_info: (vec![0], vec![]),
             input_set_ids: vec![Some(InputSetDescriptor {
                 composition_id: 0,
                 sharding: ShardingMode::All,
@@ -207,7 +208,7 @@ pub fn composition_optional<Domain: MemoryDomain>(
     let composition1 = Composition {
         dependencies: vec![FunctionDependencies {
             function: function_id.clone(),
-            join_info: (vec![], vec![]),
+            join_info: (vec![0], vec![]),
             input_set_ids: vec![Some(InputSetDescriptor {
                 composition_id: 0,
                 sharding: ShardingMode::All,
@@ -226,7 +227,7 @@ pub fn composition_optional<Domain: MemoryDomain>(
     let composition2 = Composition {
         dependencies: vec![FunctionDependencies {
             function: function_id.clone(),
-            join_info: (vec![], vec![]),
+            join_info: (vec![0], vec![]),
             input_set_ids: vec![Some(InputSetDescriptor {
                 composition_id: 0,
                 sharding: ShardingMode::All,
@@ -245,7 +246,7 @@ pub fn composition_optional<Domain: MemoryDomain>(
     let composition3 = Composition {
         dependencies: vec![FunctionDependencies {
             function: function_id.clone(),
-            join_info: (vec![], vec![]),
+            join_info: (vec![0], vec![]),
             input_set_ids: vec![Some(InputSetDescriptor {
                 composition_id: 0,
                 sharding: ShardingMode::All,
@@ -264,7 +265,7 @@ pub fn composition_optional<Domain: MemoryDomain>(
     let composition4 = Composition {
         dependencies: vec![FunctionDependencies {
             function: function_id.clone(),
-            join_info: (vec![], vec![]),
+            join_info: (vec![0], vec![]),
             input_set_ids: vec![Some(InputSetDescriptor {
                 composition_id: 0,
                 sharding: ShardingMode::All,
@@ -290,7 +291,7 @@ pub fn composition_optional<Domain: MemoryDomain>(
             },
             FunctionDependencies {
                 function: function_id.clone(),
-                join_info: (vec![], vec![]),
+                join_info: (vec![0], vec![]),
                 input_set_ids: vec![Some(InputSetDescriptor {
                     composition_id: 1,
                     sharding: ShardingMode::All,
@@ -317,7 +318,7 @@ pub fn composition_optional<Domain: MemoryDomain>(
             },
             FunctionDependencies {
                 function: function_id.clone(),
-                join_info: (vec![], vec![]),
+                join_info: (vec![0], vec![]),
                 input_set_ids: vec![Some(InputSetDescriptor {
                     composition_id: 1,
                     sharding: ShardingMode::All,
@@ -382,7 +383,7 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
     let composition = Composition {
         dependencies: vec![FunctionDependencies {
             function: function_id,
-            join_info: (vec![], vec![]),
+            join_info: (vec![0], vec![]),
             input_set_ids: vec![Some(InputSetDescriptor {
                 composition_id: 0,
                 sharding: ShardingMode::Each,
@@ -461,7 +462,7 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
         dependencies: vec![
             FunctionDependencies {
                 function: function_id.clone(),
-                join_info: (vec![], vec![]),
+                join_info: (vec![0], vec![]),
                 input_set_ids: vec![Some(InputSetDescriptor {
                     composition_id: 0,
                     sharding: ShardingMode::All,
@@ -471,7 +472,7 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
             },
             FunctionDependencies {
                 function: function_id,
-                join_info: (vec![], vec![]),
+                join_info: (vec![0], vec![]),
                 input_set_ids: vec![Some(InputSetDescriptor {
                     composition_id: 1,
                     sharding: ShardingMode::All,
@@ -575,7 +576,10 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             // C = A*B
             FunctionDependencies {
                 function: function_id.clone(),
-                join_info: (vec![], vec![]),
+                join_info: (
+                    vec![0, 1, 2],
+                    vec![JoinStrategy::Cross, JoinStrategy::Cross],
+                ),
                 input_set_ids: vec![
                     Some(InputSetDescriptor {
                         composition_id: 0,
@@ -594,7 +598,10 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             // D = B^T*A
             FunctionDependencies {
                 function: function_id.clone(),
-                join_info: (vec![], vec![]),
+                join_info: (
+                    vec![0, 1, 2],
+                    vec![JoinStrategy::Cross, JoinStrategy::Cross],
+                ),
                 input_set_ids: vec![
                     Some(InputSetDescriptor {
                         composition_id: 2,
@@ -613,7 +620,10 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             // E = B + C
             FunctionDependencies {
                 function: function_id.clone(),
-                join_info: (vec![], vec![]),
+                join_info: (
+                    vec![0, 1, 2],
+                    vec![JoinStrategy::Cross, JoinStrategy::Cross],
+                ),
                 input_set_ids: vec![
                     None,
                     Some(InputSetDescriptor {
@@ -632,7 +642,10 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             // G = D * C
             FunctionDependencies {
                 function: function_id.clone(),
-                join_info: (vec![], vec![]),
+                join_info: (
+                    vec![0, 1, 2],
+                    vec![JoinStrategy::Cross, JoinStrategy::Cross],
+                ),
                 input_set_ids: vec![
                     Some(InputSetDescriptor {
                         composition_id: 4,
@@ -651,7 +664,10 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             // Result = D*E + G
             FunctionDependencies {
                 function: function_id.clone(),
-                join_info: (vec![], vec![]),
+                join_info: (
+                    vec![0, 1, 2],
+                    vec![JoinStrategy::Cross, JoinStrategy::Cross],
+                ),
                 input_set_ids: vec![
                     Some(InputSetDescriptor {
                         composition_id: 4,
@@ -767,7 +783,10 @@ pub fn composition_chain_large_matmac<Domain: MemoryDomain>(
         // C+C, should be a matrix filled with 2s
         // also test that we can use the same set as mutliple input set for one function
         function: function_id.clone(),
-        join_info: (vec![], vec![]),
+        join_info: (
+            vec![0, 1, 2],
+            vec![JoinStrategy::Cross, JoinStrategy::Cross],
+        ),
         input_set_ids: vec![
             None,
             Some(InputSetDescriptor {
@@ -793,7 +812,10 @@ pub fn composition_chain_large_matmac<Domain: MemoryDomain>(
         };
         dependencies.push(FunctionDependencies {
             function: function_id.clone(),
-            join_info: (vec![], vec![]),
+            join_info: (
+                vec![0, 1, 2],
+                vec![JoinStrategy::Cross, JoinStrategy::Cross],
+            ),
             input_set_ids: vec![
                 None,
                 Some(InputSetDescriptor {
