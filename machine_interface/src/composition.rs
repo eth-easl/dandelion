@@ -2,9 +2,11 @@ use crate::{
     composition::join_iterator::JoinIterator,
     memory_domain::{Context, ContextTrait},
 };
+use core::fmt;
 use dandelion_commons::{
     err_dandelion, DandelionError, DandelionResult, DispatcherError, FunctionId,
 };
+use log::trace;
 use std::{cmp, collections::BTreeMap, sync::Arc, vec};
 
 #[cfg(test)]
@@ -191,6 +193,21 @@ impl<'origin> IntoIterator for &'origin CompositionSet {
     }
 }
 
+/// A more concise display for the composition set that does not print the entire Context contents.
+impl fmt::Display for CompositionSet {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "item_index: [")?;
+        for (key, itm_idx, ctx) in self.item_list.iter() {
+            write!(
+                f,
+                "(key: {}, idx: {}, context: {{ type: {:?}, size: {}, state: {:?} }})",
+                key, itm_idx, ctx.context, ctx.size, ctx.state
+            )?;
+        }
+        write!(f, "], set_index: {}", self.set_index)
+    }
+}
+
 /// Computes the sharding for the given sets following the given join order and join strategies.
 /// The `join_order` vector is expected to be of length `sets.len()`, the `join_strategies` vector
 /// is expected to be of size `sets.len() - 1`.
@@ -210,8 +227,15 @@ pub fn get_sharding(
         if set_num == 0 { 0 } else { set_num - 1 }
     );
 
+    trace!(
+        "Computing sharding using sets: {:?}, join_order: {:?}, join_strategies: {:?}.",
+        sets,
+        join_order,
+        join_strategies
+    );
     let mut final_sharding = Vec::new();
     if set_num == 0 {
+        trace!("Found empty sharding.");
         return final_sharding;
     }
 
@@ -257,7 +281,7 @@ pub fn get_sharding(
     }
 
     // second create the iterators for all remaining shardings
-    let mut any_parallelisms: Vec<(usize, usize)> = Vec::new(); // vec of (max parallelism, chosen parallelism)
+    let mut any_parallelisms: Vec<(usize, usize, bool)> = Vec::new(); // vec of (max parallelism, chosen parallelism)
     let mut join_iter = key_join_iter.map(|i| i as Box<dyn JoinIterator>);
     while i < join_order.len() {
         let set_idx = join_order[i];
@@ -281,7 +305,7 @@ pub fn get_sharding(
                         sharding,
                     );
                     if any_join_iter.is_some() {
-                        any_parallelisms.push((max_parallelism, 1));
+                        any_parallelisms.push((max_parallelism, 1, false));
                     }
                     join_iter = any_join_iter.map(|i| i as Box<dyn JoinIterator>);
                 }
@@ -315,7 +339,7 @@ pub fn get_sharding(
                         sharding,
                     );
                     if any_join_iter.is_some() {
-                        any_parallelisms.push((max_parallelism, 1));
+                        any_parallelisms.push((max_parallelism, 1, false));
                     }
                     join_iter = any_join_iter.map(|i| i as Box<dyn JoinIterator>);
                 }
@@ -326,6 +350,11 @@ pub fn get_sharding(
         }
         i += 1;
     }
+    trace!(
+        "Found fixed_parallelism: {} (target_parallelism: {}",
+        fixed_parallelism,
+        target_parallelism
+    );
 
     // compute the parallelism for the any shardings
     if fixed_parallelism < target_parallelism && !any_parallelisms.is_empty() {
@@ -334,9 +363,9 @@ pub fn get_sharding(
             // find the best suitable set to parallelize over
             let mut best_idx = 0;
             let mut best_dist = 0.0;
-            for (i, (max_p, chosen_p)) in any_parallelisms.iter().enumerate() {
+            for (i, (max_p, _, processed)) in any_parallelisms.iter().enumerate() {
                 // check that we have not yet assigned a parallelism to this any set
-                if *chosen_p == 1 {
+                if !*processed {
                     let remainder = max_p % leftover_parallelism;
                     if remainder == 0 {
                         best_idx = i;
@@ -360,8 +389,9 @@ pub fn get_sharding(
                 if leftover_parallelism <= 1 {
                     break;
                 }
+                any_parallelisms[best_idx].2 = true;
             } else {
-                if any_parallelisms[best_idx].1 == 1 {
+                if !any_parallelisms[best_idx].2 {
                     let chosen_parallelism =
                         cmp::min(leftover_parallelism, any_parallelisms[best_idx].0);
                     any_parallelisms[best_idx].1 = chosen_parallelism;
@@ -371,6 +401,7 @@ pub fn get_sharding(
         }
     }
     if target_parallelism > 0 {
+        trace!("Using any parallelism: {:?}", any_parallelisms);
         if let Some(iter) = join_iter.as_mut() {
             iter.reduce_any_parallelism(any_parallelisms);
         }
@@ -390,6 +421,7 @@ pub fn get_sharding(
         }
     }
 
+    trace!("Computed sharding: {:?}", final_sharding);
     final_sharding
 }
 
@@ -991,4 +1023,30 @@ fn join_it_any_chain_test_6() {
     assert_eq!(sharding_3[0][2].as_ref().unwrap().item_list[0].0, 0);
     assert_eq!(sharding_3[0][3].as_ref().unwrap().item_list[0].0, 5);
     assert_eq!(sharding_3[0][3].as_ref().unwrap().item_list[1].0, 5);
+}
+
+#[test]
+fn join_it_any_chain_test_7() {
+    let sets = vec![
+        Some((ShardingMode::Each, create_dummy_set(vec![0]))),
+        Some((ShardingMode::AnyEach, create_dummy_set(vec![0]))),
+        None,
+    ];
+
+    let join_order = vec![0, 1, 2];
+    let join_strategies = vec![JoinStrategy::Cross, JoinStrategy::Cross];
+
+    let sharding = get_sharding(
+        sets.clone(),
+        join_order.clone(),
+        join_strategies.clone(),
+        usize::MAX,
+    );
+    assert_eq!(sharding.len(), 1); // <- should get 1 sharding
+    assert_eq!(sharding[0].len(), 3); // <- should still get 3 sets
+    assert_eq!(sharding[0][0].as_ref().unwrap().len(), 1);
+    assert_eq!(sharding[0][1].as_ref().unwrap().len(), 1);
+    assert!(sharding[0][2].is_none());
+    assert_eq!(sharding[0][0].as_ref().unwrap().item_list[0].0, 0);
+    assert_eq!(sharding[0][1].as_ref().unwrap().item_list[0].0, 0);
 }

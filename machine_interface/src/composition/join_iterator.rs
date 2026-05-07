@@ -6,7 +6,7 @@ pub(super) trait JoinIterator {
     /// Reduces the parallelism of all `AnyIterators` in the iterator chain by combining some sets.
     /// We expect this function is only called once, otherwise, we could end up with unevenly
     /// distributed or completely messed up groups.
-    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<(usize, usize)>);
+    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<(usize, usize, bool)>);
 
     /// Fills the given composition set vector with the current iterator state.
     /// This is undefined behaviour if the previous `advance` call returned `false`.
@@ -44,7 +44,7 @@ impl SetAllIterator {
 }
 
 impl JoinIterator for SetAllIterator {
-    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<(usize, usize)>) {
+    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<(usize, usize, bool)>) {
         if let Some(left) = self.left.as_mut() {
             left.reduce_any_parallelism(any_parallelisms);
         } else {
@@ -98,7 +98,7 @@ impl SetEachIterator {
 }
 
 impl JoinIterator for SetEachIterator {
-    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<(usize, usize)>) {
+    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<(usize, usize, bool)>) {
         if let Some(left) = self.left.as_mut() {
             left.reduce_any_parallelism(any_parallelisms);
         } else {
@@ -302,7 +302,7 @@ impl SetKeyIterator {
 }
 
 impl JoinIterator for SetKeyIterator {
-    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<(usize, usize)>) {
+    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<(usize, usize, bool)>) {
         debug_assert!(any_parallelisms.len() == 0);
     }
 
@@ -601,8 +601,8 @@ impl AnyIterator {
 }
 
 impl JoinIterator for AnyIterator {
-    fn reduce_any_parallelism(&mut self, mut any_parallelisms: Vec<(usize, usize)>) {
-        let (_, parallelism) = any_parallelisms
+    fn reduce_any_parallelism(&mut self, mut any_parallelisms: Vec<(usize, usize, bool)>) {
+        let (_, parallelism, _) = any_parallelisms
             .pop()
             .expect("Ran out of any_parallelisms.");
 
