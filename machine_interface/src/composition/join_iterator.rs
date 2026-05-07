@@ -543,7 +543,7 @@ impl AnyIterator {
         strategies: Vec<JoinStrategy>,
         write_idcs: Vec<usize>,
         sharding: ShardingMode,
-    ) -> (Option<Box<AnyIterator>>, usize) {
+    ) -> (Option<Box<dyn JoinIterator>>, usize) {
         let num_sets = sets.len();
         debug_assert!(num_sets > 0);
 
@@ -594,8 +594,8 @@ impl AnyIterator {
                 max_parallelism,
             )
         } else {
-            // we failed to build the inner join iterators...
-            (None, 0)
+            // no inner join iterator was built -> this iterator will no produce any sets
+            (left, 0)
         }
     }
 }

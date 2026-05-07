@@ -304,7 +304,7 @@ pub fn get_sharding(
                         vec![set_idx],
                         sharding,
                     );
-                    if any_join_iter.is_some() {
+                    if max_parallelism > 0 {
                         any_parallelisms.push((max_parallelism, 1, false));
                     }
                     join_iter = any_join_iter.map(|i| i as Box<dyn JoinIterator>);
@@ -338,7 +338,7 @@ pub fn get_sharding(
                         joined_set_idcs,
                         sharding,
                     );
-                    if any_join_iter.is_some() {
+                    if max_parallelism > 0 {
                         any_parallelisms.push((max_parallelism, 1, false));
                     }
                     join_iter = any_join_iter.map(|i| i as Box<dyn JoinIterator>);
