@@ -200,7 +200,7 @@ fn key_set_union(curr_keys: &mut Vec<u32>, new_key_groups: &Vec<(u32, Range<usiz
 
     // push remaining elements from whichever vec isn't empty
     result.extend_from_slice(&curr_keys[i..]);
-    result.extend(new_key_groups.iter().skip(j).map(|(k, _)| k));
+    result.extend(new_key_groups[j..].iter().map(|(k, _)| k));
 
     *curr_keys = result;
 }
