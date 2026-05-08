@@ -1,4 +1,5 @@
 use dandelion_commons::records::Archive;
+use dandelion_server::config::{FuncMetadata, PreloadFunc};
 use dispatcher::{
     dispatcher::{Dispatcher, DispatcherInput},
     queue::WorkQueue,
@@ -405,15 +406,31 @@ fn main() -> () {
     dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
 
     // register preload functions
-    let preload_func = config.get_preload_functions();
-    if preload_func.len() > 0 {
-        Builder::new_multi_thread()
-            .enable_all()
+    let (preload_functions, preload_compositions) = config.get_preload_functions();
+    debug!(
+        "Preloading {} functions and {} compositions",
+        preload_functions.len(),
+        preload_compositions.len()
+    );
+    if preload_functions.len() > 0 {
+        Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(async {
-                for pf in preload_func.iter() {
-                    let engine_type = match pf.engine_type_id.to_lowercase().as_str() {
+                for pf in preload_functions.into_iter() {
+                    let PreloadFunc {
+                        name,
+                        engine_type_id,
+                        metadata:
+                            FuncMetadata {
+                                input_sets,
+                                output_sets,
+                            },
+                        ctx_size,
+                        bin_path,
+                    } = pf;
+                    debug!("Inserting preload function: {}", name);
+                    let engine_type = match engine_type_id.to_lowercase().as_str() {
                         #[cfg(feature = "mmu")]
                         "process" => EngineType::Process,
                         #[cfg(feature = "kvm")]
@@ -423,31 +440,40 @@ fn main() -> () {
                         _ => {
                             error!(
                                 "Failed to preload function {}: Unkown engine type string {}",
-                                pf.name, pf.engine_type_id
+                                name, engine_type_id
                             );
                             continue;
                         }
                     };
-                    let input_sets: Vec<(String, Option<CompositionSet>)> = pf
-                        .metadata
-                        .input_sets
-                        .iter()
-                        .map(|s| (s.clone(), None))
-                        .collect();
-                    let output_sets = pf.metadata.output_sets.clone();
+
+                    let input_sets: Vec<(String, Option<CompositionSet>)> =
+                        input_sets.into_iter().map(|s| (s, None)).collect();
                     let metadata = Metadata {
                         input_sets: input_sets,
                         output_sets: output_sets,
                     };
                     match dispatcher.insert_function(
-                        pf.name.clone(),
+                        name.clone(),
                         engine_type,
-                        pf.ctx_size,
-                        pf.bin_path.clone(),
+                        ctx_size,
+                        bin_path.clone(),
                         metadata,
                     ) {
-                        Err(err) => warn!("Failed to preload function {}: {}", pf.name, err),
-                        Ok(_) => info!("Inserted preload function {}", pf.name),
+                        Err(err) => warn!("Failed to preload function {}: {}", name, err),
+                        Ok(_) => info!("Inserted preload function {}", name),
+                    }
+                }
+            });
+    }
+    if preload_compositions.len() > 0 {
+        Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(async {
+                for preload_composition in preload_compositions.into_iter() {
+                    match dispatcher.insert_compositions(preload_composition) {
+                        Err(err) => warn!("Failed to preload composition {}", err),
+                        Ok(()) => info!("Inserted preload composition"),
                     }
                 }
             });

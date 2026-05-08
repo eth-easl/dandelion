@@ -120,6 +120,7 @@ impl Future for WaitFuture<'_> {
                     waker: cx.waker().clone(),
                 };
                 if !self.was_set_idle {
+                    self.was_set_idle = true;
                     (self.add_idle)();
                 }
                 lock_guard.1.push_back(waker_element);

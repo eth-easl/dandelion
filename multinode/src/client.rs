@@ -418,6 +418,7 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                                 RepeatedEngines { engines },
                             )),
                         });
+                        trace!("Asking for more work, after seeing more idle engines");
                         send_message(&request_buffer, &mut write_socket).await;
                         // set false, to avoid double sending if multiple cores become idle, but did not have a response in between
                         remote_had_work = false;
