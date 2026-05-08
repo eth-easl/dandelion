@@ -203,7 +203,8 @@ impl Dispatcher {
         // And potentially Rc / RefCell to make a proper graph
         struct FunctionArgs {
             function_id: FunctionId,
-            inptut_sets: Vec<Option<(ShardingMode, CompositionSet)>>,
+            composition_idx: usize,
+            input_sets: Vec<Option<(ShardingMode, CompositionSet)>>,
             join_info: (Vec<usize>, Vec<JoinStrategy>),
             output_mapping: Vec<Option<usize>>,
             missing_sets: BTreeMap<(usize, usize), (ShardingMode, bool)>,
@@ -224,7 +225,8 @@ impl Dispatcher {
         let (ready_functions, mut non_ready_functions): (Vec<_>, Vec<_>) = composition
             .dependencies
             .into_iter()
-            .filter_map(|deps| {
+            .enumerate()
+            .filter_map(|(idx, deps)| {
                 let mut missing_map = BTreeMap::new();
                 let input_set_number: usize = deps.input_set_ids.len();
                 let mut ready_inputs = Vec::with_capacity(input_set_number);
@@ -262,7 +264,8 @@ impl Dispatcher {
                 }
                 Some(FunctionArgs {
                     function_id: deps.function,
-                    inptut_sets: ready_inputs,
+                    composition_idx: idx,
+                    input_sets: ready_inputs,
                     join_info: deps.join_info,
                     output_mapping: deps.output_set_ids,
                     missing_sets: missing_map,
@@ -274,7 +277,8 @@ impl Dispatcher {
         for args in ready_functions.into_iter() {
             awaited_sets.push(Either::Right(self.queue_function_sharded(
                 args.function_id,
-                args.inptut_sets,
+                args.composition_idx,
+                args.input_sets,
                 args.join_info.0,
                 args.join_info.1,
                 args.output_mapping,
@@ -326,7 +330,7 @@ impl Dispatcher {
                                         .push(Either::Left(ready(Ok((new_sets, Vec::new())))));
                                     None
                                 } else {
-                                    args.inptut_sets[*function_index] = composition_set_option
+                                    args.input_sets[*function_index] = composition_set_option
                                         .clone()
                                         .and_then(|set| Some((*mode, set)));
                                     Some((*comp_index, *function_index))
@@ -344,7 +348,8 @@ impl Dispatcher {
                         if args.missing_sets.is_empty() {
                             awaited_sets.push(Either::Right(self.queue_function_sharded(
                                 args.function_id,
-                                args.inptut_sets,
+                                args.composition_idx,
+                                args.input_sets,
                                 args.join_info.0,
                                 args.join_info.1,
                                 args.output_mapping,
@@ -375,6 +380,7 @@ impl Dispatcher {
     async fn queue_function_sharded<'context>(
         &self,
         function_id: FunctionId,
+        composition_idx: usize,
         input_sets: Vec<Option<(ShardingMode, CompositionSet)>>,
         join_order: Vec<usize>,
         join_strategies: Vec<JoinStrategy>,
@@ -383,8 +389,9 @@ impl Dispatcher {
         recorder: Recorder,
     ) -> DandelionResult<(Vec<(usize, Option<CompositionSet>)>, Vec<Recorder>)> {
         trace!(
-            "queue function {} sharded and input sets: {:?}",
+            "Queueing function '{}' (idx: {}) sharded and input sets: {:?}",
             function_id,
+            composition_idx,
             input_sets
         );
         let mut recorders;
@@ -422,7 +429,7 @@ impl Dispatcher {
             let new_recorder = Recorder::new_from_parent(function_id.clone(), &recorder);
             let future_box = self
                 .queue_function(
-                    function_id,
+                    function_id.clone(),
                     vec![],
                     caching,
                     new_recorder.get_sub_recorder(),
@@ -432,6 +439,11 @@ impl Dispatcher {
             recorders = vec![new_recorder];
             future_box
         };
+        trace!(
+            "Sharded function '{}' (idx: {}) finished.",
+            function_id,
+            composition_idx
+        );
 
         // collect vec of vec of shards into vec of sets
         // TODO: collect vector of sets and rewrite combine to do it in one go instead of calling it over and over again
