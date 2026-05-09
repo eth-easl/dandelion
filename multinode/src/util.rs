@@ -3,16 +3,18 @@ use std::sync::Arc;
 // For types which have the same name for prot and machine_interface,
 // use the full ones to make sure there is no mix ups
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, MultinodeError};
-use machine_interface::composition::{CompositionSet, CompositionSetData};
-use machine_interface::memory_domain::bytes_context::BytesContext;
-use machine_interface::memory_domain::{Context, ContextType};
-use machine_interface::{machine_config, Position};
+use machine_interface::{
+    composition::CompositionSet,
+    machine_config,
+    memory_domain::{bytes_context::BytesContext, Context, ContextType},
+    Position,
+};
 use prost::bytes::{Bytes, BytesMut};
 
 use crate::proto;
 
 /// Translates dandelion engine types to protocol engine types.
-pub fn engine_type_dtop(t: machine_config::EngineType) -> proto::EngineType {
+pub(crate) fn engine_type_dtop(t: machine_config::EngineType) -> proto::EngineType {
     match t {
         #[cfg(feature = "reqwest_io")]
         machine_config::EngineType::Reqwest => proto::EngineType::EngineReqwest,
@@ -26,8 +28,8 @@ pub fn engine_type_dtop(t: machine_config::EngineType) -> proto::EngineType {
 }
 
 /// Translates protocol engine types to dandelion engine types.
-pub fn engine_type_ptod(t: i32) -> DandelionResult<machine_config::EngineType> {
-    match proto::EngineType::from_i32(t).unwrap() {
+pub(crate) fn engine_type_ptod(t: i32) -> DandelionResult<machine_config::EngineType> {
+    match proto::EngineType::try_from(t).unwrap() {
         #[cfg(feature = "reqwest_io")]
         proto::EngineType::EngineReqwest => Ok(machine_config::EngineType::Reqwest),
         #[cfg(feature = "cheri")]
@@ -43,43 +45,42 @@ pub fn engine_type_ptod(t: i32) -> DandelionResult<machine_config::EngineType> {
 }
 
 /// Takes a `CompositionSet` reference and translates it into a protocol data set.
-pub fn composition_set_to_proto(
-    set: &CompositionSet,
-    offset: &mut u64,
-    data_set: &mut Vec<CompositionSetData>,
-) -> proto::MetadataSet {
-    let set_idx = set.get_set_idx();
+fn composition_set_to_proto(set: &CompositionSet, offset: &mut u64) -> proto::MetadataSet {
     let mut items = Vec::with_capacity(set.len());
-    for itm_idx in 0..set.len() {
-        let (ident, key, data) = set.get_item_metadata(itm_idx);
-        *offset += data.size as u64;
-        items.push(proto::MetadataItem {
-            ident,
-            key,
-            end_offset: *offset,
-        });
-        data_set.push(data);
+    for (set_index, item_index, context) in set {
+        // don't need to send items with no size
+        let item = &context.content[set_index].as_ref().unwrap().buffers[item_index];
+        if item.data.size > 0 {
+            *offset += item.data.size as u64;
+            items.push(proto::MetadataItem {
+                ident: item.ident.clone(),
+                key: item.key,
+                end_offset: *offset,
+            });
+        }
     }
     // assigning name equal to index, as they are ignored on the receiver node anyway
     // so the effort to get the correct name would be wasted.
     proto::MetadataSet {
-        ident: format!("set_{}", set_idx),
+        ident: format!("set"),
         items,
     }
 }
 
 /// Takes a (reference to a) vector of optional `CompositionSet` instances and translates each of
 /// them into the corresponding protocol data set.
-pub fn composition_sets_to_proto(
-    sets: &Vec<Option<CompositionSet>>,
-) -> (Vec<proto::MetadataSet>, (Vec<CompositionSetData>, u64)) {
+pub(crate) fn composition_sets_to_proto(
+    sets: Vec<Option<CompositionSet>>,
+) -> (
+    Vec<proto::MetadataSet>,
+    Option<(Vec<Option<CompositionSet>>, u64)>,
+) {
     let mut metadata_sets = Vec::with_capacity(sets.len());
-    let mut data_set = Vec::with_capacity(sets.len());
     let mut offset: u64 = 0;
 
     for set in sets.iter() {
         if let Some(s) = set {
-            metadata_sets.push(composition_set_to_proto(s, &mut offset, &mut data_set));
+            metadata_sets.push(composition_set_to_proto(s, &mut offset));
         } else {
             metadata_sets.push(proto::MetadataSet {
                 ident: format!("empty_set"),
@@ -87,12 +88,16 @@ pub fn composition_sets_to_proto(
             });
         }
     }
-    (metadata_sets, (data_set, offset))
+    if offset > 0 {
+        (metadata_sets, Some((sets, offset)))
+    } else {
+        (metadata_sets, None)
+    }
 }
 
 /// Takes a (reference to a) vector of protocol data sets and translates them into a `BytesContext`
 /// that contains all of the sets.
-pub fn proto_data_sets_to_context(
+pub(crate) fn proto_data_sets_to_context(
     protobuf_sets: Vec<proto::MetadataSet>,
     data_buf: Option<Bytes>,
 ) -> Context {
@@ -150,7 +155,7 @@ pub fn proto_data_sets_to_context(
 
 /// Takes a (reference to a) vector of protocol data sets, translates them into a `BytesContext`
 /// and returns a vector of optional `CompositionSet` that hold the reference to the context.
-pub fn proto_data_sets_to_composition_sets(
+pub(crate) fn proto_data_sets_to_composition_sets(
     proto_sets: Vec<proto::MetadataSet>,
     data_buf: Option<Bytes>,
 ) -> Vec<Option<CompositionSet>> {

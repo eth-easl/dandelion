@@ -26,6 +26,12 @@ pub struct PreloadFunc {
 }
 
 #[derive(serde::Deserialize, Debug)]
+struct PreloadFile {
+    functions: Vec<PreloadFunc>,
+    compositions: Vec<String>,
+}
+
+#[derive(serde::Deserialize, Debug)]
 pub struct FuncMetadata {
     #[serde(rename = "inputSets")]
     pub input_sets: Vec<String>,
@@ -249,42 +255,53 @@ impl DandelionConfig {
         return core_vec;
     }
 
-    pub fn get_preload_functions(&self) -> Vec<PreloadFunc> {
+    pub fn get_preload_functions(&self) -> (Vec<PreloadFunc>, Vec<String>) {
+        let default_value = (vec![], vec![]);
         if self.bin_preload_path.is_empty() {
-            return vec![];
+            return default_value;
         }
 
         // read + parse json file
         let reader = match File::open(Path::new(&self.bin_preload_path)) {
             Err(err) => {
                 error!("Failed to read preload json file: {}", err);
-                return vec![];
+                return default_value;
             }
             Ok(f) => f,
         };
-        let json: Vec<PreloadFunc> = match serde_json::from_reader(reader) {
+        let PreloadFile {
+            functions,
+            compositions,
+        } = match serde_json::from_reader(reader) {
             Err(err) => {
                 error!("Failed to read preload json file: {}", err);
-                return vec![];
+                return default_value;
             }
             Ok(json) => json,
         };
 
         // sanity checks
-        json.into_iter()
-            .filter(|pf| {
-                let valid = !pf.name.is_empty()
-                    && pf.ctx_size > 0
-                    && !pf.engine_type_id.is_empty()
-                    && !pf.bin_path.is_empty();
-                if !valid {
-                    warn!(
-                        "Ignoring preload function {}: does not match specification!",
-                        pf.name
-                    )
-                };
-                valid
-            })
-            .collect()
+        if !functions.iter().all(|pf| {
+            let valid = !pf.name.is_empty()
+                && pf.ctx_size > 0
+                && !pf.engine_type_id.is_empty()
+                && !pf.bin_path.is_empty();
+            if !valid {
+                warn!(
+                    "Ignoring preload because function {}: does not match specification!",
+                    pf.name
+                )
+            };
+            valid
+        }) || !compositions.iter().all(|composition| {
+            let valid = !composition.is_empty();
+            if !valid {
+                warn!("Ignoring preload because of empty composition");
+            }
+            valid
+        }) {
+            return default_value;
+        }
+        (functions, compositions)
     }
 }

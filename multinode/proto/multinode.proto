@@ -1,28 +1,9 @@
 syntax = "proto3";
 package multinode_proto;
 
-message ActionStatus {
-    bool success = 1;
-    string message = 2;
-}
-
-// Node Information
-
-enum EngineType {
-    ENGINE_REQWEST = 0;
-    ENGINE_CHERI = 1;
-    ENGINE_PROCESS = 2;
-    ENGINE_KVM = 3;
-}
-
-message Engine {
-    EngineType engine_type = 1;
-    uint32 engine_capacity = 2;
-}
-
+// Node Information, sent to register new client on server
 message NodeInfo {
     uint32 version = 1;
-    repeated Engine engines = 2;
 }
 
 message MetadataItem {
@@ -40,6 +21,23 @@ message Invocation {
     uint32 invocation_id = 1;
     string function_id = 2;
     repeated MetadataSet metadata_sets = 3;
+    bool caching = 4;
+}
+
+enum EngineType {
+    ENGINE_REQWEST = 0;
+    ENGINE_CHERI = 1;
+    ENGINE_PROCESS = 2;
+    ENGINE_KVM = 3;
+}
+
+message Engine {
+    EngineType engine_type = 1;
+    uint32 engine_capacity = 2;
+}
+
+message RepeatedEngines {
+    repeated Engine engines = 1;
 }
 
 message RepeatedMetadataSet {
@@ -58,7 +56,7 @@ message Response {
 message RemoteMessage {
     oneof remote_message {
         // Message to ask for more work, containing currently vailable resources
-        NodeInfo work_request = 1;
+        RepeatedEngines work_request = 1;
         // Message containing the response for a specific function that was run 
         Response response = 2;
     }
@@ -68,7 +66,7 @@ message RemoteMessage {
 // Either responding with 
 message QueueMessage {
    oneof queue_message {
-        // Message to indicate that there currently is no work
+        // Message to indicate that there currently is no work, if true, if false, signify that there would be work to ask for
         bool no_work = 1;
         // Message containing the work for one function
         Invocation invocation = 2;

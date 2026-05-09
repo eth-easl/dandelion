@@ -358,17 +358,22 @@ mod server_tests {
         );
         println!("Preload_path: {}", preload_path);
 
+        let remote_port = 8081;
+        let queue_port = 8082;
+
         let mut master_cmd = Command::new(assert_cmd::cargo::cargo_bin!());
         let master_server = master_cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .env("RUST_LOG", "debug")
+            .env("RUST_LOG", "debug,multinode=trace")
             .arg("--bin-preload-path")
             .arg(&preload_path)
             .arg("--total-cores")
             .arg("1")
             .arg("--test-mode")
             .arg("no-engine")
+            .arg("--q-port")
+            .arg(queue_port.to_string())
             .spawn()
             .unwrap();
         let mut master_killer = ServerKiller {
@@ -381,13 +386,13 @@ mod server_tests {
         let worker_server = worker_cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .env("RUST_LOG", "debug")
+            .env("RUST_LOG", "debug,multinode=trace")
             .arg("--bin-preload-path")
             .arg(&preload_path)
             .arg("--port")
-            .arg("8081")
+            .arg(remote_port.to_string())
             .arg("--remote-queue-url")
-            .arg("localhost:8080")
+            .arg(format!("localhost:{}", queue_port))
             .spawn()
             .unwrap();
         let mut worker_killer = ServerKiller {
