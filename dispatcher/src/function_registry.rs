@@ -298,7 +298,6 @@ impl FunctionRegistry {
     /// For each composition the composition set indexes start enumerating the input sets from 0.
     /// The output sets are enumerated starting with the number directly after the highest input set index.
     /// For internal numbering there are no guarnatees.
-    /// TODO: add validation for the function input / output set names against the locally registered meta data (or at least the number)
     pub(super) fn composition_from_module(
         &self,
         module: dparser::Module,

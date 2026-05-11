@@ -17,6 +17,8 @@ use machine_interface::{
 
 use crate::function_registry::{FunctionRegistry, FunctionType};
 
+/// Builds the compositions from the parser outputs validating them and building the correct join
+/// orders required by the JoinIterators (that compute the shardings) in the process.
 pub(super) struct CompositionBuilder<'reg> {
     registry: &'reg FunctionRegistry,
     composition_ids: BTreeSet<String>,
@@ -25,6 +27,7 @@ pub(super) struct CompositionBuilder<'reg> {
 }
 
 impl<'reg> CompositionBuilder<'reg> {
+    /// Creates a new builder using the given function registry.
     pub(super) fn new(registry: &'reg FunctionRegistry) -> Self {
         Self {
             registry,
@@ -34,6 +37,7 @@ impl<'reg> CompositionBuilder<'reg> {
         }
     }
 
+    /// Adds a declaration checking that it matches the registered function.
     pub(super) fn add_declaration(
         &mut self,
         decl: Rc<Spanned<FunctionDecl>>,
@@ -98,6 +102,7 @@ impl<'reg> CompositionBuilder<'reg> {
         Ok(())
     }
 
+    /// Validates and creates the join order of a single function application
     fn parse_and_check_function_application(
         &mut self,
         fappl: &FunctionApplication,
@@ -296,6 +301,8 @@ impl<'reg> CompositionBuilder<'reg> {
         })
     }
 
+    /// Adds a composition of function applications validating them and computing their join
+    /// order in the process.
     pub(super) fn add_composition(&mut self, comp: &dparser::Composition) -> DandelionResult<()> {
         // check if composition name is already taken
         if self.registry.exists_name(&comp.name) || self.composition_ids.contains(&comp.name) {
@@ -400,6 +407,7 @@ impl<'reg> CompositionBuilder<'reg> {
         Ok(())
     }
 
+    /// Finish the building process and get back the compositions. Consumes the builder instance.
     pub(super) fn finish(self) -> Vec<(FunctionId, composition::Composition, Metadata)> {
         self.compositions
     }
