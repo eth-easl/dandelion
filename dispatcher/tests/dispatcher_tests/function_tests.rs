@@ -151,12 +151,12 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
         .build()
         .unwrap()
         .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
-    let mut out_contexts = match result {
+    let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
     };
     assert_eq!(1, out_contexts.len());
-    let out_context_list = out_contexts[0].as_mut().expect("Should have set");
+    let out_context_list = out_contexts[0].as_ref().expect("Should have set");
 
     let mut out_context_iter = out_context_list.into_iter();
     let (item, out_context) = out_context_iter.next().unwrap();

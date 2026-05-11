@@ -49,8 +49,8 @@ struct ItemData {
 }
 
 fn encode_item(
-    data_item: &DataItem,
-    context: &Arc<Context>,
+    data_item: DataItem,
+    context: Arc<Context>,
     response: &mut Vec<u8>,
     data_items: &mut Vec<ItemData>,
     array_index: usize,
@@ -89,8 +89,8 @@ fn encode_item(
     data_items.push(ItemData {
         response_offset: response.len(),
         reponse_size: item_size,
-        data_item: data_item.clone(),
-        context: context.clone(),
+        data_item,
+        context,
     });
 
     // end doc and set length

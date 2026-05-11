@@ -269,7 +269,7 @@ impl Request for MemcachedRequest {
 }
 
 fn parse_requests<RequestType: Request>(
-    composition_set: &CompositionSet,
+    composition_set: CompositionSet,
 ) -> DandelionResult<Vec<RequestType>> {
     let request_info: DandelionResult<Vec<RequestType>> = composition_set
         .into_iter()
@@ -278,7 +278,7 @@ fn parse_requests<RequestType: Request>(
             request_buffer.resize(data_item.data.size, 0);
             context.read(data_item.data.offset, &mut request_buffer)?;
             // TODO: from raw may also take the vec of refs from the context (via the get_chunk interface), so we don't need to copy the request
-            RequestType::from_raw(request_buffer, data_item.ident.clone(), data_item.key)
+            RequestType::from_raw(request_buffer, data_item.ident, data_item.key)
         })
         .collect();
     return request_info;
@@ -532,7 +532,7 @@ async fn run_http_request(
     debt: Debt,
     recorder: Recorder,
 ) -> () {
-    let request_vec = match parse_requests(&composition_set) {
+    let request_vec = match parse_requests(composition_set) {
         Ok(request) => request,
         Err(err) => {
             debt.fulfill(Err(err));
@@ -563,16 +563,13 @@ async fn run_memcached_request(
     debt: Debt,
     recorder: Recorder,
 ) -> () {
-    let request_vec = match parse_requests(&composition_set) {
+    let request_vec = match parse_requests(composition_set) {
         Ok(request) => request,
         Err(err) => {
             debt.fulfill(Err(err));
             return;
         }
     };
-
-    // get rid of systems context to drop references to old contexts before starting to do requests
-    drop(composition_set);
 
     let responses = match futures::future::try_join_all(
         request_vec

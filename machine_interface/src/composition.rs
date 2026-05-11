@@ -98,7 +98,8 @@ impl JoinStrategy {
 /// By construction, empty sets should not be allowed to exist, as they should return None instead on construction
 #[derive(Clone, Debug)]
 pub struct CompositionSet {
-    /// items identfied by tuple of key, item index and the context reference
+    /// Each tuple in the list contains the DataItem with the metadata and the Context in which the item is stored.
+    /// The data: Position of the DataItem refers to offset and size within the Context.
     item_list: Vec<(DataItem, Arc<Context>)>,
     set_name: String,
 }
@@ -190,26 +191,21 @@ impl CompositionSet {
     }
 }
 
-pub struct CompositionSetTransferIterator<'origin> {
-    /// set for which this iterator is implemented
-    set_iterator: std::slice::Iter<'origin, (DataItem, Arc<Context>)>,
-}
-
-impl<'origin> Iterator for CompositionSetTransferIterator<'origin> {
+/// Iterator over a reference of the composition set, not taking ownership
+impl<'origin> IntoIterator for &'origin CompositionSet {
     type Item = &'origin (DataItem, Arc<Context>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.set_iterator.next()
+    type IntoIter = std::slice::Iter<'origin, (DataItem, Arc<Context>)>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.item_list.iter()
     }
 }
 
-impl<'origin> IntoIterator for &'origin CompositionSet {
-    type Item = &'origin (DataItem, Arc<Context>);
-    type IntoIter = CompositionSetTransferIterator<'origin>;
+/// Iterator taking ownership of the Compositon set
+impl IntoIterator for CompositionSet {
+    type Item = (DataItem, Arc<Context>);
+    type IntoIter = std::vec::IntoIter<(DataItem, Arc<Context>)>;
     fn into_iter(self) -> Self::IntoIter {
-        Self::IntoIter {
-            set_iterator: self.item_list.iter(),
-        }
+        self.item_list.into_iter()
     }
 }
 
