@@ -195,8 +195,8 @@ mod server_tests {
                 local_path: matmul_path,
                 binary: Vec::new(),
                 engine_type,
-                input_sets: vec![(String::from(""), None)],
-                output_sets: vec![String::from("")],
+                input_sets: vec![(String::from("InMats"), None)],
+                output_sets: vec![String::from("OutMats")],
             })
             .unwrap()
         } else {
@@ -205,8 +205,8 @@ mod server_tests {
                 context_size: 0x802_0000,
                 binary: std::fs::read(matmul_path).unwrap(),
                 engine_type,
-                input_sets: vec![(String::from(""), None)],
-                output_sets: vec![String::from("")],
+                input_sets: vec![(String::from("InMats"), None)],
+                output_sets: vec![String::from("OutMats")],
             })
             .unwrap()
         };

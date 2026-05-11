@@ -37,7 +37,7 @@ fn get_some_engine_type() -> EngineType {
     compile_error!("Need to enable at least one engine type!");
 }
 
-fn create_test_function_registry(functions: &[&str]) -> FunctionRegistry {
+fn create_test_function_registry(functions: &[(&str, &[&str], &[&str])]) -> FunctionRegistry {
     let domains: Vec<Arc<Box<dyn MemoryDomain>>> = get_available_domains(BTreeMap::new());
     let function_reg = FunctionRegistry::new(&domains);
 
@@ -48,14 +48,14 @@ fn create_test_function_registry(functions: &[&str]) -> FunctionRegistry {
     let mut dummy_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     dummy_path.pop();
     dummy_path.push("machine_interface/tests/data/test_elf_mmu_aarch64_basic");
-    for f in functions {
+    for (name, inputs, outputs) in functions {
         let metadata = Metadata {
-            input_sets: vec![],
-            output_sets: vec![],
+            input_sets: inputs.iter().map(|s| (s.to_string(), None)).collect(),
+            output_sets: outputs.iter().map(|s| s.to_string()).collect(),
         };
         function_reg
             .insert_function(
-                Arc::new(f.to_string()),
+                Arc::new(name.to_string()),
                 dummy_engine_type,
                 dummy_domain.clone(),
                 0,
@@ -243,7 +243,7 @@ fn test_from_module_non_registered_function() {
     let module = get_module(unregistered_function);
     match function_registry.composition_from_module(module) {
         Err(DError {
-            error: DandelionError::Composition(CompositionError::ContainsInvalidFunction(_)),
+            error: DandelionError::Composition(CompositionError::InvalidFunctionDeclaration(_)),
             ..
         }) => (),
         Err(err) => panic!(
@@ -259,7 +259,7 @@ fn test_from_module_single_registered_function() {
     let unregistered_function = r#"
         function registered () => ();
     "#;
-    let function_registry = create_test_function_registry(&["registered"]);
+    let function_registry = create_test_function_registry(&[("registered", &[], &[])]);
     let module = get_module(unregistered_function);
     match function_registry.composition_from_module(module) {
         Ok(_) => (),
@@ -275,7 +275,7 @@ fn test_from_module_minmal_composition() {
             Function () => ();
         }
     "#;
-    let function_registry = create_test_function_registry(&["Function"]);
+    let function_registry = create_test_function_registry(&[("Function", &[], &[])]);
     let module = get_module(composition_string);
     let compositions = match function_registry.composition_from_module(module) {
         Ok(c) => c,
@@ -307,7 +307,7 @@ fn test_from_module_minmal_composition_with_inputs() {
             Function (Fin = all Cin) => (Cout = Fout);
         }
     "#;
-    let function_registry = create_test_function_registry(&["Function"]);
+    let function_registry = create_test_function_registry(&[("Function", &["Fin"], &["Fout"])]);
     let module = get_module(composition_string);
     let compositions = match function_registry.composition_from_module(module) {
         Ok(c) => c,
@@ -343,7 +343,8 @@ fn test_from_module_minmal_composition_function_with_unused_input() {
             Function (Fin = all Cin) => (Cout = Fout);
         }
     "#;
-    let function_registry = create_test_function_registry(&["Function"]);
+    let function_registry =
+        create_test_function_registry(&[("Function", &["Fin", "Unused"], &["Fout"])]);
     let module = get_module(composition_string);
     let compositions = match function_registry.composition_from_module(module) {
         Ok(c) => c,
@@ -382,7 +383,8 @@ fn test_from_module_minmal_composition_function_with_unused_output() {
             Function (Fin = all Cin) => (Cout = Fout);
         }
     "#;
-    let function_registry = create_test_function_registry(&["Function"]);
+    let function_registry =
+        create_test_function_registry(&[("Function", &["Fin"], &["Fout", "Unused"])]);
     let module = get_module(composition_string);
     let compositions = match function_registry.composition_from_module(module) {
         Ok(c) => c,
@@ -419,7 +421,7 @@ fn test_from_module_minmal_composition_with_missing_input() {
             Function (Fin = all NonExistent) => (Cout = Fout);
         }
     "#;
-    let function_registry = create_test_function_registry(&["Function"]);
+    let function_registry = create_test_function_registry(&[("Function", &["Fin"], &["Fout"])]);
     let module = get_module(composition_string);
     let compositions = match function_registry.composition_from_module(module) {
         Ok(c) => c,
@@ -456,7 +458,7 @@ fn test_from_module_minmal_composition_missing_output() {
             Function (Fin = all Cin) => ();
         }
     "#;
-    let function_registry = create_test_function_registry(&["Function"]);
+    let function_registry = create_test_function_registry(&[("Function", &["Fin"], &[])]);
     let module = get_module(composition_string);
     let compositions = match function_registry.composition_from_module(module) {
         Ok(c) => c,

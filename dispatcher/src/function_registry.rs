@@ -1,14 +1,11 @@
 use dandelion_commons::{
-    dandelion_err, err_dandelion, try_with_capacity, CompositionError, DandelionError,
-    DandelionResult, FunctionId, FunctionRegistryError,
+    dandelion_err, err_dandelion, CompositionError, DandelionError, DandelionResult, FunctionId,
+    FunctionRegistryError,
 };
 use dparser::print_errors;
-use itertools::Itertools;
 use log::error;
 use machine_interface::{
-    composition::{
-        Composition, FunctionDependencies, InputSetDescriptor, JoinStrategy, ShardingMode,
-    },
+    composition::Composition,
     function_driver::{
         functions::{FunctionAlternative, FunctionConfig},
         system_driver::{
@@ -20,10 +17,14 @@ use machine_interface::{
     memory_domain::MemoryDomain,
 };
 use std::{
-    collections::{btree_map::Entry, BTreeMap, BTreeSet},
+    collections::BTreeMap,
     path::Path,
     sync::{Arc, RwLock},
 };
+
+use crate::function_registry::composition_builder::CompositionBuilder;
+
+mod composition_builder;
 
 /// Struct holding all engine alternatives to run a function and the constant metadata. This struct
 /// can be cloned cheaply and given to the scheduler for function execution.
@@ -302,296 +303,18 @@ impl FunctionRegistry {
         &self,
         module: dparser::Module,
     ) -> DandelionResult<Vec<(FunctionId, Composition, Metadata)>> {
-        let mut composition_ids = BTreeSet::new();
-        let mut known_functions = BTreeMap::new();
-        let mut compositions = Vec::new();
+        let mut builder = CompositionBuilder::new(self);
         for item in module.0.iter() {
             match item {
                 dparser::Item::FunctionDecl(fdecl) => {
-                    if !self.exists_name(&fdecl.v.name) {
-                        return err_dandelion!(DandelionError::Composition(
-                            CompositionError::ContainsInvalidFunction(fdecl.v.name.clone()),
-                        ));
-                    }
-                    known_functions.insert(fdecl.v.name.clone(), fdecl);
+                    builder.add_declaration(fdecl.clone())?;
                 }
                 dparser::Item::Composition(comp) => {
-                    // check if composition name is already taken
-                    if self.exists_name(&comp.v.name) || composition_ids.contains(&comp.v.name) {
-                        return err_dandelion!(DandelionError::Composition(
-                            CompositionError::DuplicateIdentifier(comp.v.name.clone()),
-                        ));
-                    }
-                    composition_ids.insert(comp.v.name.clone());
-
-                    // add composition input sets
-                    let mut set_counter = 0usize;
-                    let mut set_numbers = BTreeMap::new();
-                    for input_set_name in comp.v.params.iter() {
-                        match set_numbers.entry(input_set_name.clone()) {
-                            Entry::Vacant(v) => v.insert(set_counter),
-                            Entry::Occupied(_) => {
-                                return err_dandelion!(DandelionError::Composition(
-                                    CompositionError::DuplicateSetName,
-                                ))
-                            }
-                        };
-                        set_counter += 1;
-                    }
-
-                    // add composition output sets
-                    let mut output_map = BTreeMap::new();
-                    let output_sets_start = set_counter;
-                    for (output_index, output_set_name) in comp.v.returns.iter().enumerate() {
-                        match set_numbers.entry(output_set_name.clone()) {
-                            Entry::Vacant(v) => {
-                                v.insert(set_counter);
-                                output_map.insert(set_counter, output_index);
-                                set_counter += 1;
-                            }
-                            // output set is input set
-                            Entry::Occupied(occupied) => {
-                                output_map.insert(*occupied.get(), output_index);
-                            }
-                        };
-                    }
-                    let output_sets_end = set_counter;
-
-                    // add all return sets from functions
-                    let composition_set_identifiers = comp
-                        .v
-                        .statements
-                        .iter()
-                        .flat_map(|statement| match statement {
-                            dparser::Statement::FunctionApplication(function_application) => {
-                                function_application.v.rets.iter().map(|ret| ret.v.ident.clone())
-                            }
-                            dparser::Statement::Loop(_) =>
-                                todo!("loop semantics need to be fleshed out and compositions extended to acoomodate them"),
-                        });
-                    for set_identifier in composition_set_identifiers {
-                        match set_numbers.entry(set_identifier.clone()) {
-                            Entry::Vacant(v) => {
-                                v.insert(set_counter);
-                                set_counter += 1;
-                            }
-                            Entry::Occupied(o) => {
-                                if output_sets_start <= *o.get() && *o.get() < output_sets_end {
-                                    continue;
-                                } else {
-                                    return err_dandelion!(DandelionError::Composition(
-                                        CompositionError::DuplicateSetName,
-                                    ));
-                                }
-                            }
-                        }
-                    }
-
-                    // have enumerated all set that are available so can start putting the composition together
-                    let dependencies = comp
-                        .v
-                        .statements
-                        .iter()
-                        .map(|statement| match statement {
-                            dparser::Statement::FunctionApplication(function_application) => {
-                                let function_decl = known_functions
-                                    .get(&function_application.v.name)
-                                    .ok_or_else(|| dandelion_err!(DandelionError::Composition(CompositionError::ContainsInvalidFunction(function_application.v.name.clone()))))?;
-                                if function_decl.v.params.len() < function_application.v.args.len()
-                                    || function_decl.v.returns.len()
-                                        < function_application.v.rets.len()
-                                {
-                                    return err_dandelion!(DandelionError::Composition(CompositionError::ContainsInvalidFunction(function_application.v.name.clone())));
-                                }
-                                // find the indeces of the sets in the function application by looking though the definition
-                                let mut input_set_ids = try_with_capacity!(Vec, function_decl.v.params.len())?;
-                                input_set_ids.resize(function_decl.v.params.len(), None);
-                                for argument in function_application.v.args.iter() {
-                                    if let Some(index) =
-                                        function_decl.v.params.iter().position(
-                                            |param_name| argument.v.name == *param_name,
-                                        )
-                                    {
-                                        let set_id = set_numbers.get(&argument.v.ident).ok_or_else(
-                                            ||dandelion_err!(DandelionError::Composition(CompositionError::FunctionInvalidIdentifier(
-                                                format!("Could not find compositon set for argument {} of function {}",
-                                                argument.v.ident, function_application.v.name)
-                                            ))),
-                                        )?;
-                                        input_set_ids[index] = Some(InputSetDescriptor {
-                                            composition_id: *set_id,
-                                            sharding:
-                                            ShardingMode::from_parser_sharding(
-                                                &argument.v.sharding,
-                                            ),
-                                            optional: argument.v.optional }
-                                        );
-                                    } else {
-                                        return err_dandelion!(
-                                            DandelionError::Composition(CompositionError::FunctionInvalidIdentifier(
-                                                format!("could not find index for input set {} for function {}",
-                                                argument.v.name, function_application.v.name)
-                                            ))
-                                        );
-                                    }
-                                }
-
-                                // find the join order
-                                let num_params = function_decl.v.params.len();
-                                let mut processed_set = try_with_capacity!(Vec, num_params)?;
-                                processed_set.resize(function_decl.v.params.len(), false);
-                                let mut join_set_order = try_with_capacity!(Vec, num_params)?;
-                                let mut join_strategies = try_with_capacity!(Vec, num_params)?;
-                                let mut tmp_any_join_set_order = try_with_capacity!(Vec, num_params)?;
-                                let mut tmp_any_join_strategies = try_with_capacity!(Vec, num_params)?;
-                                let mut curr_join_chain_any = None;
-                                if let Some(strategy) = function_application.v.join_strategy.as_ref().and_then(|strategy| if strategy.join_strategy_order.is_empty() || strategy.join_strategies.is_empty() {None} else {Some(strategy)}) {
-                                    for (i, set_name) in strategy.join_strategy_order.iter().enumerate() {
-                                        // find set index
-                                        let set_index = function_decl.v.params.iter()
-                                            .position(|param_name| *param_name == *set_name)
-                                            .ok_or_else(|| dandelion_err!(DandelionError::Composition(CompositionError::FunctionInvalidIdentifier(
-                                                format!("Join order for {} contains invalid set name: {}", function_application.v.name, set_name))
-                                            )))?;
-
-                                        // check that this set has not already been processed
-                                        if processed_set[set_index] {
-                                            return err_dandelion!(DandelionError::Composition(CompositionError::InvalidSecondJoin(
-                                                format!("Joining set '{}' twice.", set_name)
-                                            )));
-                                        }
-                                        processed_set[set_index] = true;
-
-                                        // get strategy and add to the corresponding join order
-                                        if i > 0 {
-                                            let strategy = JoinStrategy::from_parser_strategy(&strategy.join_strategies[i-1]);
-                                            join_strategies.push(strategy);
-                                            if strategy == JoinStrategy::Cross {
-                                                curr_join_chain_any = None;
-                                            }
-                                        };
-                                        if let Some(set_id) = input_set_ids[set_index] {
-                                            match set_id.sharding {
-                                                ShardingMode::Key => {
-                                                    if let Some(is_any) = curr_join_chain_any {
-                                                        if is_any {
-                                                            return err_dandelion!(DandelionError::Composition(CompositionError::InvalidJoinSharding(
-                                                                format!("Mixing keyed and anyKeyed shardings: Encountered keyed while processing any chain for index {}", set_index)
-                                                            )));
-                                                        }
-                                                    }
-                                                    curr_join_chain_any = Some(false);
-                                                    join_set_order.push(set_index);
-                                                }
-                                                ShardingMode::AnyKey => {
-                                                    if let Some(is_any) = curr_join_chain_any {
-                                                        if !is_any {
-                                                            return err_dandelion!(DandelionError::Composition(CompositionError::InvalidJoinSharding(
-                                                                format!("Mixing keyed and anyKeyed shardings: Encountered anyKeyed while processing non-any chain for index {}", set_index)
-                                                            )));
-                                                        }
-                                                    }
-                                                    curr_join_chain_any = Some(true);
-                                                    tmp_any_join_set_order.push(set_index);
-                                                }
-                                                _ => return err_dandelion!(DandelionError::Composition(CompositionError::InvalidJoinSharding(
-                                                    format!("Joining set with non-keyed sharding (set_index: {}, sharding: {:?}", set_index, set_id.sharding)
-                                                ))),
-                                            }
-                                        }
-                                    }
-                                }
-                                // add remaining sets with keyed shardings that have no specific join order
-                                for (set_idx, set_id_opt) in input_set_ids.iter().enumerate() {
-                                    if processed_set[set_idx] {
-                                        continue;
-                                    }
-                                    if let Some(set_id) = set_id_opt {
-                                        if set_id.sharding == ShardingMode::Key {
-                                            processed_set[set_idx] = true;
-                                            join_strategies.push(JoinStrategy::Cross);
-                                            join_set_order.push(set_idx);
-                                        }
-                                    }
-                                }
-                                // add joined any sets
-                                join_strategies.append(&mut tmp_any_join_strategies);
-                                join_set_order.append(&mut tmp_any_join_set_order);
-                                // fill up the remaining join order/strategy
-                                for (set_idx, is_processed) in processed_set.iter().enumerate() {
-                                    if !is_processed {
-                                        join_set_order.push(set_idx);
-                                    }
-                                }
-                                if join_set_order.len() > 0 {
-                                    join_strategies.resize(join_set_order.len() - 1, JoinStrategy::Cross);
-                                }
-
-                                // find the index set index in the original definition for each return set in the application
-                                let mut output_set_ids = try_with_capacity!(Vec, function_decl.v.returns.len())?;
-                                output_set_ids.resize(function_decl.v.returns.len(), None);
-                                for return_set in function_application.v.rets.iter() {
-                                    if let Some(index) =
-                                        function_decl.v.returns.iter().position(
-                                            |return_name| {
-                                                return_set.v.name == *return_name
-                                            },
-                                        )
-                                    {
-                                        let set_id = set_numbers.get(&return_set.v.ident).ok_or(dandelion_err!(
-                                            DandelionError::Composition(CompositionError::FunctionInvalidIdentifier(
-                                                return_set.v.ident.clone(),
-                                            ))),
-                                        )?;
-                                        output_set_ids[index] = Some(*set_id);
-                                    } else {
-                                        return err_dandelion!(
-                                            DandelionError::Composition(CompositionError::FunctionInvalidIdentifier(
-                                                return_set.v.ident.clone(),
-                                            )));
-                                    }
-                                }
-                                Ok(FunctionDependencies {
-                                    function: Arc::new(function_decl.v.name.clone()),
-                                    input_set_ids,
-                                    join_info: (join_set_order, join_strategies),
-                                    output_set_ids,
-                                })
-                            }
-                            dparser::Statement::Loop(_) => {
-                                todo!("Need to implement loop support in compositions")
-                            }
-                        })
-                        .collect::<DandelionResult<Vec<_>>>()?;
-                    let metadata = Metadata {
-                        input_sets: comp
-                            .v
-                            .params
-                            .iter()
-                            .map(|name| (name.clone(), None))
-                            .collect_vec()
-                            .into(),
-                        output_sets: comp
-                            .v
-                            .returns
-                            .iter()
-                            .map(|name| name.clone())
-                            .collect_vec()
-                            .into(),
-                    };
-                    compositions.push((
-                        Arc::new(comp.v.name.clone()),
-                        Composition {
-                            dependencies,
-                            output_map,
-                        },
-                        metadata,
-                    ));
+                    builder.add_composition(&comp.v)?;
                 }
             }
         }
-
-        Ok(compositions)
+        Ok(builder.finish())
     }
 
     /// Inserts the composition into the function registry.
