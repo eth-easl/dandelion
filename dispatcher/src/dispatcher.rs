@@ -228,10 +228,8 @@ impl Dispatcher {
                     }) = in_set_decriptor
                     {
                         if let Some(comp_set) = inputs.get(*composition_id) {
-                            // this means the a non optional set is empty, so we can skip it and directly queue all outputs are ready none
-                            if !*optional
-                                && (comp_set.is_none() || comp_set.as_ref().unwrap().is_empty())
-                            {
+                            // this means the a non optional set None, so we can skip it and directly queue all outputs are ready None
+                            if !*optional && comp_set.is_none() {
                                 let new_sets = deps
                                     .output_set_ids
                                     .iter()
@@ -243,6 +241,11 @@ impl Dispatcher {
                                 return None;
                             }
                             if let Some(set) = comp_set {
+                                debug_assert_ne!(
+                                    0,
+                                    set.len(),
+                                    "Expect sets that are some to have at least one item"
+                                );
                                 ready_inputs[function_index] = Some((*sharding, set.clone()));
                             }
                         } else {
@@ -305,10 +308,7 @@ impl Dispatcher {
                                 // TODO: for left, right and outer joins, some sets may also be pseuto optional.
                                 // (i.e. an empty left set on a right join can still have functions that should run)
                                 // Fix either by adding attributes to easily check here or move to check optional together with sharding.
-                                if !optional
-                                    && (composition_set_option.is_none()
-                                        || composition_set_option.as_ref().unwrap().is_empty())
-                                {
+                                if !optional && composition_set_option.is_none() {
                                     let new_sets = args
                                         .output_mapping
                                         .iter()
@@ -320,9 +320,15 @@ impl Dispatcher {
                                         .push(Either::Left(ready(Ok((new_sets, Vec::new())))));
                                     None
                                 } else {
-                                    args.inptut_sets[*function_index] = composition_set_option
-                                        .clone()
-                                        .and_then(|set| Some((*mode, set)));
+                                    args.inptut_sets[*function_index] =
+                                        composition_set_option.clone().and_then(|set| {
+                                            debug_assert_ne!(
+                                                0,
+                                                set.len(),
+                                                "Expect at least 1 item in composition set"
+                                            );
+                                            Some((*mode, set))
+                                        });
                                     Some((*comp_index, *function_index))
                                 }
                             })
@@ -385,12 +391,11 @@ impl Dispatcher {
 
         // check if there are no input sets or all of them are none, then don't need sharding,
         // but still want to run if we queued it.
-        let is_sharded = input_sets.len() != 0
-            && input_sets
-                .iter()
-                .any(|opt| opt.is_some() && !opt.as_ref().unwrap().1.is_empty());
+        let is_sharded = input_sets.len() != 0 && input_sets.iter().any(|opt| opt.is_some());
         let composition_results: DandelionResult<Vec<_>> = if is_sharded {
-            let sharded = get_sharding(input_sets, join_order, join_strategies);
+            // TODO: check how to best compute the target parallelism
+            let target_parallelism = usize::MAX;
+            let sharded = get_sharding(input_sets, join_order, join_strategies, target_parallelism);
             let size_hint = sharded.len();
             recorders = Vec::with_capacity(size_hint);
             let resutls: Vec<_> = sharded
@@ -438,11 +443,7 @@ impl Dispatcher {
                         (insert @ None, Some(set)) => {
                             *insert = Some(set);
                         }
-                        (Some(old_set), Some(new_set)) => {
-                            old_set
-                                .combine(new_set)
-                                .expect("Should always be possible to combine");
-                        }
+                        (Some(old_set), Some(new_set)) => old_set.combine(new_set),
                     }
                 }
                 accumulator
@@ -506,7 +507,7 @@ impl Dispatcher {
 
                     let subrecoder = recorder.get_sub_recorder();
                     let args = WorkToDo::FunctionArguments {
-                        function_id,
+                        function_id: function_id.clone(),
                         function_alternatives,
                         input_sets,
                         metadata,
@@ -525,7 +526,8 @@ impl Dispatcher {
                                     let mut stderr_output: Vec<u8> = vec![0; itm.data.size];
                                     context.context.read(itm.data.offset, &mut stderr_output)?;
                                     warn!(
-                                        "Function result contains stderr output:\n{}",
+                                        "Function '{}' result contains stderr output:\n{}",
+                                        function_id,
                                         std::str::from_utf8(stderr_output.as_slice())
                                             .expect("Invalid stderr buffer")
                                     );
@@ -534,7 +536,8 @@ impl Dispatcher {
                                     let mut stdout_output: Vec<u8> = vec![0; itm.data.size];
                                     context.context.read(itm.data.offset, &mut stdout_output)?;
                                     debug!(
-                                        "Function output:\n{}",
+                                        "Function '{}' output:\n{}",
+                                        function_id,
                                         std::str::from_utf8(stdout_output.as_slice())
                                             .expect("Invalid stdout buffer")
                                     );
@@ -543,22 +546,7 @@ impl Dispatcher {
                         }
                     }
 
-                    let context_arc = Arc::new(context);
-                    let composition_sets = context_arc
-                        .content
-                        .iter()
-                        .enumerate()
-                        .map(|(function_set_id, data_option)| {
-                            data_option.as_ref().and_then(|_| {
-                                Some(CompositionSet::from((
-                                    function_set_id,
-                                    vec![context_arc.clone()],
-                                )))
-                            })
-                        })
-                        .collect();
-
-                    return Ok(composition_sets);
+                    return Ok(CompositionSet::from_context(context));
                 }
                 FunctionType::Composition(comp_info) => {
                     return self

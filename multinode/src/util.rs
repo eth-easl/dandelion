@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 // For types which have the same name for prot and machine_interface,
 // use the full ones to make sure there is no mix ups
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, MultinodeError};
@@ -47,9 +45,8 @@ pub(crate) fn engine_type_ptod(t: i32) -> DandelionResult<machine_config::Engine
 /// Takes a `CompositionSet` reference and translates it into a protocol data set.
 fn composition_set_to_proto(set: &CompositionSet, offset: &mut u64) -> proto::MetadataSet {
     let mut items = Vec::with_capacity(set.len());
-    for (set_index, item_index, context) in set {
+    for (item, _) in set {
         // don't need to send items with no size
-        let item = &context.content[set_index].as_ref().unwrap().buffers[item_index];
         if item.data.size > 0 {
             *offset += item.data.size as u64;
             items.push(proto::MetadataItem {
@@ -62,7 +59,7 @@ fn composition_set_to_proto(set: &CompositionSet, offset: &mut u64) -> proto::Me
     // assigning name equal to index, as they are ignored on the receiver node anyway
     // so the effort to get the correct name would be wasted.
     proto::MetadataSet {
-        ident: format!("set"),
+        ident: set.get_name().clone(),
         items,
     }
 }
@@ -159,12 +156,8 @@ pub(crate) fn proto_data_sets_to_composition_sets(
     proto_sets: Vec<proto::MetadataSet>,
     data_buf: Option<Bytes>,
 ) -> Vec<Option<CompositionSet>> {
-    let num_sets = proto_sets.len();
     let context = proto_data_sets_to_context(proto_sets, data_buf);
-    let context_arc = Arc::new(context);
-    (0..num_sets)
-        .map(|set_id| Some(CompositionSet::from((set_id, vec![context_arc.clone()]))))
-        .collect::<Vec<_>>()
+    CompositionSet::from_context(context)
 }
 
 const METADATA_SIZE_BITS: u32 = 32;

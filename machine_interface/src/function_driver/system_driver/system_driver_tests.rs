@@ -109,10 +109,7 @@ mod system_driver_tests {
                 key: 0,
             }],
         }));
-        let input_sets = vec![Some(CompositionSet::from((
-            0,
-            vec![Arc::new(input_context)],
-        )))];
+        let input_sets = CompositionSet::from_context(input_context);
 
         let recorder = Recorder::new(zero_id(), Instant::now());
         let metadata = Arc::new(Metadata {
@@ -208,10 +205,7 @@ dolore magna aliquyam erat, sed diam voluptua."#,
                 key: 0,
             }],
         }));
-        let input_sets = vec![Some(CompositionSet::from((
-            0,
-            vec![Arc::new(input_context)],
-        )))];
+        let input_sets = CompositionSet::from_context(input_context);
 
         let recorder = Recorder::new(zero_id(), Instant::now());
         let metadata = Arc::new(Metadata {

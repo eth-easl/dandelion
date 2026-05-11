@@ -22,7 +22,7 @@ use http::{version::Version as HttpVersion, HeaderName, HeaderValue, Method as H
 use log::{debug, error, warn};
 use memcache::Client as MemcachedClient;
 use reqwest::{header::HeaderMap, Client as HttpClient};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::{
     runtime::Builder,
     sync::{RwLock, Semaphore},
@@ -269,17 +269,16 @@ impl Request for MemcachedRequest {
 }
 
 fn parse_requests<RequestType: Request>(
-    composition_set: &CompositionSet,
+    composition_set: CompositionSet,
 ) -> DandelionResult<Vec<RequestType>> {
     let request_info: DandelionResult<Vec<RequestType>> = composition_set
         .into_iter()
-        .map(|(set_index, item_index, context)| {
-            let data_item = &context.content[set_index].as_ref().unwrap().buffers[item_index];
+        .map(|(data_item, context)| {
             let mut request_buffer = Vec::with_capacity(data_item.data.size);
             request_buffer.resize(data_item.data.size, 0);
             context.read(data_item.data.offset, &mut request_buffer)?;
             // TODO: from raw may also take the vec of refs from the context (via the get_chunk interface), so we don't need to copy the request
-            RequestType::from_raw(request_buffer, data_item.ident.clone(), data_item.key)
+            RequestType::from_raw(request_buffer, data_item.ident, data_item.key)
         })
         .collect();
     return request_info;
@@ -533,7 +532,7 @@ async fn run_http_request(
     debt: Debt,
     recorder: Recorder,
 ) -> () {
-    let request_vec = match parse_requests(&composition_set) {
+    let request_vec = match parse_requests(composition_set) {
         Ok(request) => request,
         Err(err) => {
             debt.fulfill(Err(err));
@@ -564,16 +563,13 @@ async fn run_memcached_request(
     debt: Debt,
     recorder: Recorder,
 ) -> () {
-    let request_vec = match parse_requests(&composition_set) {
+    let request_vec = match parse_requests(composition_set) {
         Ok(request) => request,
         Err(err) => {
             debt.fulfill(Err(err));
             return;
         }
     };
-
-    // get rid of systems context to drop references to old contexts before starting to do requests
-    drop(composition_set);
 
     let responses = match futures::future::try_join_all(
         request_vec
@@ -592,15 +588,22 @@ async fn run_memcached_request(
     responses_write(&metadata.output_sets, debt, recorder, responses)
 }
 
+/// Number of concurrent requests a single IO core should be handling
+pub const DEFAULT_CONCURRENCY_LIMIT: usize = 15;
+pub static CONCURRENCY_LIMIT: OnceLock<usize> = OnceLock::new();
+
 async fn engine_loop(queue: impl EngineWorkQueue + Send + 'static) -> Debt {
     log::debug!("Reqwest engine Init");
     let http_client = HttpClient::new();
 
-    let semaphore = Arc::new(Semaphore::new(15));
+    let concurrency_limit = CONCURRENCY_LIMIT.get_or_init(|| DEFAULT_CONCURRENCY_LIMIT);
+    let semaphore = Arc::new(Semaphore::new(*concurrency_limit));
     let worker_lock = Arc::new(RwLock::new(()));
+
     loop {
         let ticket = semaphore.clone().acquire_owned().await.unwrap();
         let (args, debt) = queue.get_engine_args().await;
+
         match args {
             WorkToDo::FunctionArguments {
                 function_id: _,

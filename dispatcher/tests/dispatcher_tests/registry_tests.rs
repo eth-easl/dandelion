@@ -38,16 +38,24 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let matrix_a = Box::new([1u64, 2u64]);
-    let matrix_b = Box::new([1u64, 3u64]);
-    let matrix_c = Box::new([1u64, 5u64]);
-    let fault_matrix = Box::new([1u64, 100u64]);
-    let expected = [11, 11, 17];
     // set up input sets
-    let mat_con_a = Arc::new(create_context(matrix_a));
-    let mat_con_b = Arc::new(create_context(matrix_b));
-    let mat_con_c = Arc::new(create_context(matrix_c));
-    let mat_fault = Arc::new(create_context(fault_matrix));
+    let mat_a_composition_set =
+        CompositionSet::from_context(create_context(Box::new([1u64, 2u64])))[0]
+            .take()
+            .unwrap();
+    let mat_b_composition_set =
+        CompositionSet::from_context(create_context(Box::new([1u64, 3u64])))[0]
+            .take()
+            .unwrap();
+    let mat_c_composition_set =
+        CompositionSet::from_context(create_context(Box::new([1u64, 5u64])))[0]
+            .take()
+            .unwrap();
+    let mat_fault_composition_set =
+        CompositionSet::from_context(create_context(Box::new([1u64, 100u64])))[0]
+            .take()
+            .unwrap();
+    let expected = [11, 11, 17];
     let in_set_names = vec![
         (String::from(""), None),
         (String::from(""), None),
@@ -68,7 +76,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
     absolute_path.push(relative_path);
     for i in 0..=2 {
         let mut local_names = in_set_names.clone();
-        local_names[i].1 = Some(CompositionSet::from((0, vec![mat_con_a.clone()])));
+        local_names[i].1 = Some(mat_a_composition_set.clone());
         // alter metadata for the functions
         let function_id = Arc::new(format!("local_name_{}", i));
 
@@ -94,10 +102,10 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
             .filter(|index| *index != i)
             .collect::<Vec<_>>();
         let mut inputs = vec![None; 3];
-        inputs[input_sets[0]] = Some(CompositionSet::from((0, vec![mat_con_b.clone()])));
-        inputs[input_sets[1]] = Some(CompositionSet::from((0, vec![mat_con_c.clone()])));
+        inputs[input_sets[0]] = Some(mat_b_composition_set.clone());
+        inputs[input_sets[1]] = Some(mat_c_composition_set.clone());
         let mut overwrite_inputs = inputs.clone();
-        overwrite_inputs[i] = Some(CompositionSet::from((0, vec![mat_fault.clone()])));
+        overwrite_inputs[i] = Some(mat_fault_composition_set.clone());
 
         let mut recorder = Recorder::new(function_id.clone(), Instant::now());
         let result = tokio::runtime::Builder::new_current_thread()
@@ -125,13 +133,15 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         assert_eq!(1, out_sets.len());
         assert_eq!(1, overwrite_sets.len());
         let mut result_iter = out_sets[0].as_ref().unwrap().into_iter();
-        let (_, _, result_set) = result_iter.next().unwrap();
+        let (result_item, result_set) = result_iter.next().unwrap();
         assert!(result_iter.next().is_none());
         let mut overwrite_iter = overwrite_sets[0].as_ref().unwrap().into_iter();
-        let (_, _, overwrite_set) = overwrite_iter.next().unwrap();
+        let (overwrite_item, overwrite_set) = overwrite_iter.next().unwrap();
         assert!(overwrite_iter.next().is_none());
-        check_matrix(&result_set, 0, 0, 1, vec![expected[i]]);
-        check_matrix(&overwrite_set, 0, 0, 1, vec![expected[i]]);
+        assert_eq!(0, result_item.key);
+        assert_eq!(0, overwrite_item.key);
+        check_matrix(&result_set, result_item, 1, vec![expected[i]]);
+        check_matrix(&overwrite_set, overwrite_item, 1, vec![expected[i]]);
     }
 }
 
@@ -142,16 +152,25 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let matrix_a = Box::new([1u64, 2u64]);
-    let matrix_b = Box::new([1u64, 3u64]);
-    let matrix_c = Box::new([1u64, 5u64]);
-    let fault_matrix = Box::new([1u64, 100u64]);
-    let expected = [11, 11, 17];
     // set up input sets
-    let mat_con_a = Arc::new(create_context(matrix_a));
-    let mat_con_b = Arc::new(create_context(matrix_b));
-    let mat_con_c = Arc::new(create_context(matrix_c));
-    let mat_fault = Arc::new(create_context(fault_matrix));
+    let mat_a_composition_set =
+        CompositionSet::from_context(create_context(Box::new([1u64, 2u64])))[0]
+            .take()
+            .unwrap();
+    let mat_b_composition_set =
+        CompositionSet::from_context(create_context(Box::new([1u64, 3u64])))[0]
+            .take()
+            .unwrap();
+    let mat_c_composition_set =
+        CompositionSet::from_context(create_context(Box::new([1u64, 5u64])))[0]
+            .take()
+            .unwrap();
+    let mat_fault_composition_set =
+        CompositionSet::from_context(create_context(Box::new([1u64, 100u64])))[0]
+            .take()
+            .unwrap();
+    let expected = [11, 11, 17];
+
     let in_set_names = vec![
         (String::from(""), None),
         (String::from(""), None),
@@ -176,8 +195,8 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
             .filter(|index| *index != i)
             .collect::<Vec<_>>();
         let mut local_names = in_set_names.clone();
-        local_names[fixed_sets[0]].1 = Some(CompositionSet::from((0, vec![mat_con_b.clone()])));
-        local_names[fixed_sets[1]].1 = Some(CompositionSet::from((0, vec![mat_con_c.clone()])));
+        local_names[fixed_sets[0]].1 = Some(mat_b_composition_set.clone());
+        local_names[fixed_sets[1]].1 = Some(mat_c_composition_set.clone());
         // alter metadata for the functions
         let function_id = Arc::new(format!("insert_function_{}", i));
 
@@ -199,10 +218,10 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
 
         // prepare inputs
         let mut inputs = vec![None; 3];
-        inputs[i] = Some(CompositionSet::from((0, vec![mat_con_a.clone()])));
+        inputs[i] = Some(mat_a_composition_set.clone());
         let mut overwrite_inputs = inputs.clone();
-        overwrite_inputs[fixed_sets[0]] = Some(CompositionSet::from((0, vec![mat_fault.clone()])));
-        overwrite_inputs[fixed_sets[1]] = Some(CompositionSet::from((0, vec![mat_fault.clone()])));
+        overwrite_inputs[fixed_sets[0]] = Some(mat_fault_composition_set.clone());
+        overwrite_inputs[fixed_sets[1]] = Some(mat_fault_composition_set.clone());
 
         let mut recorder = Recorder::new(function_id.clone(), Instant::now());
         let result = tokio::runtime::Builder::new_current_thread()
@@ -230,13 +249,15 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         assert_eq!(1, out_sets.len());
         assert_eq!(1, overwrite_sets.len());
         let mut result_iter = out_sets[0].as_ref().unwrap().into_iter();
-        let (_, _, result_set) = result_iter.next().unwrap();
+        let (result_item, result_set) = result_iter.next().unwrap();
         assert!(result_iter.next().is_none());
         let mut overwrite_iter = overwrite_sets[0].as_ref().unwrap().into_iter();
-        let (_, _, overwrite_set) = overwrite_iter.next().unwrap();
+        let (overwrite_item, overwrite_set) = overwrite_iter.next().unwrap();
         assert!(overwrite_iter.next().is_none());
-        check_matrix(&result_set, 0, 0, 1, vec![expected[i]]);
-        check_matrix(&overwrite_set, 0, 0, 1, vec![expected[i]]);
+        assert_eq!(0, result_item.key);
+        assert_eq!(0, overwrite_item.key);
+        check_matrix(&result_set, result_item, 1, vec![expected[i]]);
+        check_matrix(&overwrite_set, overwrite_item, 1, vec![expected[i]]);
     }
 }
 

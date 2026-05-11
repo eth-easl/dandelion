@@ -19,8 +19,7 @@ use machine_interface::{
     composition::CompositionSet,
     function_driver::Metadata,
     machine_config::EngineType,
-    memory_domain::{bytes_context::BytesContext, read_only::ReadOnlyContext},
-    DataItem, DataSet, Position,
+    memory_domain::bytes_context::BytesContext,
 };
 use multinode::DispatcherCommand;
 use serde::Deserialize;
@@ -109,32 +108,10 @@ async fn handle_function_registration(
         .input_sets
         .into_iter()
         .map(|(name, data)| {
-            if let Some(static_data) = data {
-                let data_contexts = static_data
-                    .into_iter()
-                    .map(|(item_name, data_vec)| {
-                        let item_size = data_vec.len();
-                        let mut new_context =
-                            ReadOnlyContext::new(data_vec.into_boxed_slice()).unwrap();
-                        new_context.content.push(Some(DataSet {
-                            ident: name.clone(),
-                            buffers: vec![DataItem {
-                                ident: item_name,
-                                data: Position {
-                                    offset: 0,
-                                    size: item_size,
-                                },
-                                key: 0,
-                            }],
-                        }));
-                        Arc::new(new_context)
-                    })
-                    .collect();
-                let composition_set = CompositionSet::from((0, data_contexts));
-                (name, Some(composition_set))
-            } else {
-                (name, None)
-            }
+            (
+                name,
+                data.and_then(|static_data| Some(CompositionSet::from_byte_items(static_data))),
+            )
         })
         .collect();
 
@@ -256,10 +233,11 @@ async fn handle_request(
     // map sets in the order they are in the request
     let request_number = request_context.content.len();
     debug!("Request number of request_context: {}", request_number);
-    let request_arc = Arc::new(request_context);
-    let inputs = (0..request_number)
-        .map(|set_id| {
-            DispatcherInput::Set(CompositionSet::from((set_id, vec![request_arc.clone()])))
+    let inputs = CompositionSet::from_context(request_context)
+        .into_iter()
+        .map(|set_option| match set_option {
+            Some(set) => DispatcherInput::Set(set),
+            None => DispatcherInput::None,
         })
         .collect::<Vec<_>>();
 

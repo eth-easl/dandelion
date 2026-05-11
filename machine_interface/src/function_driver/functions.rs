@@ -57,7 +57,7 @@ impl Function {
     ) -> DandelionResult<Context> {
         return match &self.config {
             FunctionConfig::ElfConfig(_) => {
-                load_static(domain, self.context.clone(), &self.requirements, ctx_size)
+                load_static(domain, &self.context, &self.requirements, ctx_size)
             }
             FunctionConfig::SysConfig(_) => domain.acquire_context(ctx_size),
         };

@@ -279,6 +279,11 @@ fn main() -> () {
         Err(_) => panic!("Failed to initialize tracing archive"),
     }
 
+    // set the reqwest engine concurrency limit if it is available
+    #[cfg(feature = "reqwest_io")]
+    let _ = machine_interface::function_driver::system_driver::reqwest::CONCURRENCY_LIMIT
+        .set(config.io_concurrency);
+
     // find available resources
     let num_phyiscal_cores = u8::try_from(num_cpus::get_physical()).unwrap();
     let num_virt_cores = u8::try_from(num_cpus::get()).unwrap();
@@ -362,8 +367,8 @@ fn main() -> () {
     };
 
     // get RAM size
-    // TODO could be a configuration, open question on how to split between engines
-    // or if we unify somehow and have one underlying pool
+    // TODO: open question on how to split between engines or if we unify somehow and have one
+    // underlying pool.
     let max_ram = read_to_string("/proc/meminfo")
         .unwrap()
         .lines()
@@ -374,7 +379,8 @@ fn main() -> () {
         })
         .unwrap()
         .unwrap()
-        * 1024;
+        * 1024
+        * config.virtual_max_ram_multiplier;
 
     let memory_pool = match config.test_mode {
         Some(dandelion_server::config::TestMode::NoEngine) => BTreeMap::new(),

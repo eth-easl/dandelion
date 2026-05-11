@@ -67,7 +67,7 @@ async fn send_message(
     if let Some((data_sets, total_size)) = data_buffer {
         sender.write_u64(total_size).await.unwrap();
         for data_set in data_sets.into_iter().filter_map(|item| item) {
-            for (item_set, item_index, item_context) in data_set.into_iter() {
+            for (item, item_context) in data_set.into_iter() {
                 let DataItem {
                     ident: _,
                     data:
@@ -76,7 +76,7 @@ async fn send_message(
                             size: item_size,
                         },
                     key: _,
-                } = item_context.content[item_set].as_ref().unwrap().buffers[item_index];
+                } = item;
                 debug_assert_ne!(0, item_size);
                 let mut bytes_written = 0;
                 while bytes_written < item_size {

@@ -158,17 +158,7 @@ fn test_serialize_invocation_request() {
             ],
         }),
     ];
-    let context_arc = std::sync::Arc::new(in_context);
-    let inputs = vec![
-        Some(machine_interface::composition::CompositionSet::from((
-            0,
-            vec![context_arc.clone()],
-        ))),
-        Some(machine_interface::composition::CompositionSet::from((
-            1,
-            vec![context_arc.clone()],
-        ))),
-    ];
+    let inputs = machine_interface::composition::CompositionSet::from_context(in_context);
 
     // serialize
     let (serialized_metadata_sets, set_option) = util::composition_sets_to_proto(inputs);
@@ -184,9 +174,8 @@ fn test_serialize_invocation_request() {
 
     let mut data_buf = prost::bytes::BytesMut::with_capacity(total_data_size as usize);
     for data_set in inputs.iter().filter_map(|item| item.as_ref()) {
-        for (set_index, item_index, context) in data_set {
-            let data_position =
-                context.content[set_index].as_ref().unwrap().buffers[item_index].data;
+        for (item, context) in data_set {
+            let data_position = item.data;
             let data_slice = context
                 .get_chunk_ref(data_position.offset, data_position.size)
                 .unwrap();
@@ -279,53 +268,38 @@ fn test_serialize_invocation_request() {
 
     let set_0 = sets[0].take().expect("Should have Some(_) for set 0");
     assert_eq!(1, set_0.len());
-    let (item_0_0_set_index, item_0_0_item_index, item_0_0_context) =
-        set_0.into_iter().next().unwrap();
-    let item_0_0_item = &item_0_0_context.content[item_0_0_set_index]
-        .as_ref()
-        .unwrap()
-        .buffers[item_0_0_item_index];
-    assert_eq!(item_0_0_name, item_0_0_item.ident);
-    assert_eq!(0, item_0_0_item.key);
-    assert_eq!(size_of::<u64>(), item_0_0_item.data.size);
+    let (item_0_0, item_0_0_context) = set_0.into_iter().next().unwrap();
+    assert_eq!(item_0_0_name, item_0_0.ident);
+    assert_eq!(0, item_0_0.key);
+    assert_eq!(size_of::<u64>(), item_0_0.data.size);
     assert_eq!(
         &item_0_0_data.to_le_bytes(),
         item_0_0_context
-            .get_chunk_ref(item_0_0_item.data.offset, size_of::<u64>())
+            .get_chunk_ref(item_0_0.data.offset, size_of::<u64>())
             .unwrap()
     );
 
     let set_1 = sets[1].take().expect("Should have Some(_) for set 1");
     assert_eq!(2, set_1.len());
     let mut set_1_iterator = set_1.into_iter();
-    let (item_1_0_set_index, item_1_0_item_index, item_1_0_context) =
-        set_1_iterator.next().unwrap();
-    let item_1_0_item = &item_1_0_context.content[item_1_0_set_index]
-        .as_ref()
-        .unwrap()
-        .buffers[item_1_0_item_index];
-    assert_eq!(item_1_0_name, item_1_0_item.ident);
-    assert_eq!(7, item_1_0_item.key);
-    assert_eq!(size_of::<u64>(), item_1_0_item.data.size);
+    let (item_1_0, item_1_0_context) = set_1_iterator.next().unwrap();
+    assert_eq!(item_1_0_name, item_1_0.ident);
+    assert_eq!(7, item_1_0.key);
+    assert_eq!(size_of::<u64>(), item_1_0.data.size);
     assert_eq!(
         &item_1_0_data.to_le_bytes(),
         item_1_0_context
-            .get_chunk_ref(item_1_0_item.data.offset, size_of::<u64>())
+            .get_chunk_ref(item_1_0.data.offset, size_of::<u64>())
             .unwrap()
     );
-    let (item_1_1_set_index, item_1_1_item_index, item_1_1_context) =
-        set_1_iterator.next().unwrap();
-    let item_1_1_item = &item_1_1_context.content[item_1_1_set_index]
-        .as_ref()
-        .unwrap()
-        .buffers[item_1_1_item_index];
-    assert_eq!(item_1_1_name, item_1_1_item.ident);
-    assert_eq!(14, item_1_1_item.key);
-    assert_eq!(size_of::<u128>(), item_1_1_item.data.size);
+    let (item_1_1, item_1_1_context) = set_1_iterator.next().unwrap();
+    assert_eq!(item_1_1_name, item_1_1.ident);
+    assert_eq!(14, item_1_1.key);
+    assert_eq!(size_of::<u128>(), item_1_1.data.size);
     assert_eq!(
         &item_1_1_data.to_le_bytes(),
         item_1_1_context
-            .get_chunk_ref(item_1_1_item.data.offset, size_of::<u128>())
+            .get_chunk_ref(item_1_1.data.offset, size_of::<u128>())
             .unwrap()
     );
 }

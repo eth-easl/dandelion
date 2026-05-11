@@ -164,8 +164,7 @@ mod compute_driver_tests {
                 key: 0,
             }],
         }));
-        let context_arc = Arc::new(input_context);
-        let input_sets = vec![Some(CompositionSet::from((0, vec![context_arc])))];
+        let input_sets = CompositionSet::from_context(input_context);
 
         let metadata = Arc::new(Metadata {
             input_sets: vec![("".to_string(), None)],
@@ -257,8 +256,7 @@ mod compute_driver_tests {
                     key: 0,
                 }],
             })];
-            let context_arc = Arc::new(input_context);
-            let input_sets = vec![Some(CompositionSet::from((0, vec![context_arc])))];
+            let input_sets = CompositionSet::from_context(input_context);
 
             let metadata = Arc::new(Metadata {
                 input_sets: vec![("".to_string(), None)],
@@ -364,8 +362,7 @@ mod compute_driver_tests {
             ReadOnlyContext::new(unsafe { in_data.as_mut_vec() }.clone().into_boxed_slice())
                 .unwrap();
         input_context.content = content;
-        let context_arc = Arc::new(input_context);
-        let input_sets = vec![Some(CompositionSet::from((0, vec![context_arc])))];
+        let input_sets = CompositionSet::from_context(input_context);
 
         let metadata = Arc::new(Metadata {
             input_sets: vec![("stdio".to_string(), None)],
@@ -523,11 +520,7 @@ mod compute_driver_tests {
             ReadOnlyContext::new(unsafe { in_data.as_mut_vec() }.clone().into_boxed_slice())
                 .unwrap();
         input_context.content = content;
-        let context_arc = Arc::new(input_context);
-        let input_sets = vec![
-            Some(CompositionSet::from((0, vec![context_arc.clone()]))),
-            Some(CompositionSet::from((1, vec![context_arc]))),
-        ];
+        let input_sets = CompositionSet::from_context(input_context);
 
         let metadata = Arc::new(Metadata {
             input_sets: vec![("in".to_string(), None), ("in_nested".to_string(), None)],
