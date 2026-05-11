@@ -237,10 +237,8 @@ impl Dispatcher {
                     }) = in_set_decriptor
                     {
                         if let Some(comp_set) = inputs.get(*composition_id) {
-                            // this means the a non optional set is empty, so we can skip it and directly queue all outputs are ready none
-                            if !*optional
-                                && (comp_set.is_none() || comp_set.as_ref().unwrap().is_empty())
-                            {
+                            // this means the a non optional set None, so we can skip it and directly queue all outputs are ready None
+                            if !*optional && comp_set.is_none() {
                                 let new_sets = deps
                                     .output_set_ids
                                     .iter()
@@ -252,6 +250,11 @@ impl Dispatcher {
                                 return None;
                             }
                             if let Some(set) = comp_set {
+                                debug_assert_ne!(
+                                    0,
+                                    set.len(),
+                                    "Expect sets that are some to have at least one item"
+                                );
                                 ready_inputs[function_index] = Some((*sharding, set.clone()));
                             }
                         } else {
@@ -311,10 +314,7 @@ impl Dispatcher {
                             )
                             .map(|((comp_index, function_index), (mode, optional))| {
                                 // if it was not optional skip executing and push all output sets
-                                if !optional
-                                    && (composition_set_option.is_none()
-                                        || composition_set_option.as_ref().unwrap().is_empty())
-                                {
+                                if !optional && composition_set_option.is_none() {
                                     let new_sets = args
                                         .output_mapping
                                         .iter()
@@ -326,9 +326,15 @@ impl Dispatcher {
                                         .push(Either::Left(ready(Ok((new_sets, Vec::new())))));
                                     None
                                 } else {
-                                    args.inptut_sets[*function_index] = composition_set_option
-                                        .clone()
-                                        .and_then(|set| Some((*mode, set)));
+                                    args.inptut_sets[*function_index] =
+                                        composition_set_option.clone().and_then(|set| {
+                                            debug_assert_ne!(
+                                                0,
+                                                set.len(),
+                                                "Expect at least 1 item in composition set"
+                                            );
+                                            Some((*mode, set))
+                                        });
                                     Some((*comp_index, *function_index))
                                 }
                             })
@@ -391,10 +397,7 @@ impl Dispatcher {
 
         // check if there are no input sets or all of them are none, then don't need sharding,
         // but still want to run if we queued it.
-        let is_sharded = input_sets.len() != 0
-            && input_sets
-                .iter()
-                .any(|opt| opt.is_some() && !opt.as_ref().unwrap().1.is_empty());
+        let is_sharded = input_sets.len() != 0 && input_sets.iter().any(|opt| opt.is_some());
         let composition_results: DandelionResult<Vec<_>> = if is_sharded {
             // TODO: check how to best compute the target parallelism
             let target_parallelism = usize::MAX;
@@ -446,11 +449,7 @@ impl Dispatcher {
                         (insert @ None, Some(set)) => {
                             *insert = Some(set);
                         }
-                        (Some(old_set), Some(new_set)) => {
-                            old_set
-                                .combine(new_set)
-                                .expect("Should always be possible to combine");
-                        }
+                        (Some(old_set), Some(new_set)) => old_set.combine(new_set),
                     }
                 }
                 accumulator
@@ -553,22 +552,7 @@ impl Dispatcher {
                         }
                     }
 
-                    let context_arc = Arc::new(context);
-                    let composition_sets = context_arc
-                        .content
-                        .iter()
-                        .enumerate()
-                        .map(|(function_set_id, data_option)| {
-                            data_option.as_ref().and_then(|_| {
-                                Some(CompositionSet::from((
-                                    function_set_id,
-                                    vec![context_arc.clone()],
-                                )))
-                            })
-                        })
-                        .collect();
-
-                    return Ok(composition_sets);
+                    return Ok(CompositionSet::from_context(context));
                 }
                 FunctionType::Composition(comp_info) => {
                     return self

@@ -277,7 +277,7 @@ pub fn system_context_transfer(
 ///     (Using this function could cause inconcistencies with fragmented data)
 pub fn into_system_context_transfer(
     destination: &mut SystemContext,
-    source: Arc<Context>,
+    source: &Arc<Context>,
     destination_offset: usize,
     source_offset: usize,
     size: usize,
@@ -329,7 +329,7 @@ pub fn out_of_system_context_transfer(
             DataPosition::ContextStorage(data_arc_context, actual_offset) => {
                 transfer_memory(
                     destination,
-                    data_arc_context.clone(),
+                    data_arc_context,
                     destination_offset + transfered_bytes,
                     *actual_offset,
                     *item_size,

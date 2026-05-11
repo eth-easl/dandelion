@@ -31,9 +31,8 @@ impl SetAllIterator {
         set: CompositionSet,
         write_idx: usize,
     ) -> Option<Box<dyn JoinIterator>> {
-        if set.is_empty() {
-            return left;
-        }
+        // Composition sets should be guaranteed to have at least 1 item in them
+        debug_assert_ne!(0, set.len());
 
         Some(Box::new(Self {
             left,
@@ -82,9 +81,8 @@ impl SetEachIterator {
         set: CompositionSet,
         write_idx: usize,
     ) -> (Option<Box<dyn JoinIterator>>, usize) {
-        if set.is_empty() {
-            return (left, 1);
-        }
+        // Composition sets should be guaranteed to have at least 1 item in them
+        debug_assert_ne!(0, set.len());
 
         let num_items = set.len();
         let it: Option<Box<dyn JoinIterator>> = Some(Box::new(Self {
@@ -110,7 +108,9 @@ impl JoinIterator for SetEachIterator {
         debug_assert!(self.item_idx < self.set.item_list.len());
         to_fill[self.write_idx] = Some(CompositionSet {
             item_list: vec![self.set.item_list[self.item_idx].clone()],
-            set_index: self.set.set_index,
+            // no need to clone the original set name, sharding is for functions that are to be run.
+            // When the function is run, the set names from the metadata are used, so this would be ignored anyway
+            set_name: String::new(),
         });
         if let Some(left) = &mut self.left {
             left.fill_in(to_fill);
@@ -217,8 +217,8 @@ impl SetKeyIterator {
     ) -> Option<Box<SetKeyIterator>> {
         let mut key_groups = Vec::new();
         let mut start_idx = 0;
-        for chunk in set.item_list.chunk_by(|a, b| a.0 == b.0) {
-            let key = chunk[0].0;
+        for chunk in set.item_list.chunk_by(|a, b| a.0.key == b.0.key) {
+            let key = chunk[0].0.key;
             let end_idx = start_idx + chunk.len();
             key_groups.push((key, start_idx..end_idx));
             start_idx = end_idx;
@@ -316,7 +316,9 @@ impl JoinIterator for SetKeyIterator {
             to_fill[self.write_idx] = Some(CompositionSet {
                 item_list: self.set.item_list[self.key_groups[self.key_groups_idx].1.clone()]
                     .to_vec(),
-                set_index: self.set.set_index,
+                // no need to clone the original set name, sharding is for functions that are to be run.
+                // When the function is run, the set names from the metadata are used, so this would be ignored anyway
+                set_name: String::new(),
             });
         }
         if let Some(left) = &mut self.left {
@@ -626,7 +628,7 @@ impl JoinIterator for AnyIterator {
                 for i in start_idx..end_idx {
                     if let Some(set) = &mut curr_set {
                         if let Some(next_set) = self.set_groups[i][set_idx].take() {
-                            set.combine(next_set).unwrap();
+                            set.combine(next_set);
                         }
                     } else {
                         curr_set = self.set_groups[i][set_idx].take();

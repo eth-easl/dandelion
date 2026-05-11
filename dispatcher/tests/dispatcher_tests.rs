@@ -10,6 +10,7 @@ mod dispatcher_tests {
         function_driver::{ComputeResource, Metadata},
         machine_config::{DomainType, EngineType},
         memory_domain::{Context, ContextTrait, MemoryDomain, MemoryResource},
+        DataItem,
     };
     use std::{collections::BTreeMap, sync::Arc};
 
@@ -61,27 +62,13 @@ mod dispatcher_tests {
         return (dispatcher, function_id);
     }
 
-    fn check_matrix(context: &Context, set_id: usize, key: u32, rows: u64, expected: Vec<u64>) {
-        assert!(context.content.len() >= set_id);
-        let out_mat_set = context.content[set_id].as_ref().expect("Should have set");
-        assert_eq!(
-            1,
-            out_mat_set
-                .buffers
-                .iter()
-                .filter(|buffer| buffer.key == key)
-                .count()
-        );
-        let out_mat_position = out_mat_set
-            .buffers
-            .iter()
-            .find(|buffer| buffer.key == key)
-            .expect("should find a buffer with the correct key");
+    fn check_matrix(context: &Context, item: &DataItem, rows: u64, expected: Vec<u64>) {
+        let out_mat_position = item.data;
         let mut out_mat = Vec::<u64>::new();
-        assert_eq!((expected.len() + 1) * 8, out_mat_position.data.size);
+        assert_eq!((expected.len() + 1) * 8, out_mat_position.size);
         out_mat.resize(expected.len() + 1, 0);
         context
-            .read(out_mat_position.data.offset, &mut out_mat)
+            .read(out_mat_position.offset, &mut out_mat)
             .expect("Should read output matrix");
         assert_eq!(rows, out_mat[0]);
         let mut found_error = false;

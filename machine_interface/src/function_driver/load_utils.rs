@@ -23,7 +23,7 @@ pub fn load_u8_from_file(full_path: String) -> DandelionResult<Vec<u8>> {
 
 pub fn load_static(
     domain: &Box<dyn MemoryDomain>,
-    static_context: Arc<Context>,
+    static_context: &Arc<Context>,
     requirement_list: &DataRequirementList,
     ctx_size: usize,
 ) -> DandelionResult<Context> {
@@ -51,7 +51,7 @@ pub fn load_static(
         }
         transfer_memory(
             &mut function_context,
-            static_context.clone(),
+            static_context,
             requirement.offset,
             position.offset,
             position.size,
