@@ -5,6 +5,7 @@ use hyper::body::Frame;
 use machine_interface::{
     composition::CompositionSet,
     memory_domain::{Context, ContextTrait},
+    DataItem,
 };
 use serde::{Deserialize, Serialize};
 use std::{io::IoSlice, sync::Arc};
@@ -43,20 +44,17 @@ pub struct InputItem<'data> {
 struct ItemData {
     response_offset: usize,
     reponse_size: usize,
-    set_index: usize,
-    item_index: usize,
+    data_item: DataItem,
     context: Arc<Context>,
 }
 
 fn encode_item(
-    set_index: usize,
-    item_index: usize,
-    context: Arc<Context>,
+    data_item: &DataItem,
+    context: &Arc<Context>,
     response: &mut Vec<u8>,
     data_items: &mut Vec<ItemData>,
     array_index: usize,
 ) -> usize {
-    let item_ref = &context.content[set_index].as_ref().unwrap().buffers[item_index];
     // add item to array with doc type and index into array as name
     response.push(3);
     response.extend_from_slice(format!("{}", array_index).as_bytes());
@@ -68,7 +66,7 @@ fn encode_item(
     // item identifier to be type string, name identifier and item identifier
     response.push(2);
     response.extend_from_slice("identifier\0".as_bytes());
-    let identifier = &item_ref.ident;
+    let identifier = &data_item.ident;
     response.extend_from_slice(&((identifier.len() + 1) as i32).to_le_bytes());
     response.extend_from_slice(identifier.as_bytes());
     response.push(0);
@@ -76,24 +74,23 @@ fn encode_item(
     // item key to be type int64, name key and item key
     response.push(18);
     response.extend_from_slice("key\0".as_bytes());
-    let key = item_ref.key as i64;
+    let key = data_item.key as i64;
     response.extend_from_slice(&key.to_le_bytes());
 
     // item data to be binary type, name data, with item data
     response.push(5);
     response.extend_from_slice("data\0".as_bytes());
     // binary lenth, generic subtype subtype and then all data
-    let data_size = item_ref.data.size as i32;
+    let data_size = data_item.data.size as i32;
     response.extend_from_slice(&data_size.to_le_bytes());
     response.push(0);
 
-    let item_size = item_ref.data.size;
+    let item_size = data_item.data.size;
     data_items.push(ItemData {
         response_offset: response.len(),
         reponse_size: item_size,
-        set_index,
-        item_index,
-        context,
+        data_item: data_item.clone(),
+        context: context.clone(),
     });
 
     // end doc and set length
@@ -111,16 +108,7 @@ fn encode_sets(
 ) -> usize {
     let mut all_items = 0;
     // filter out empty sets
-    let non_empty_set = sets.into_iter().filter_map(|set| match set {
-        Some(s) => {
-            if s.is_empty() {
-                None
-            } else {
-                Some(s)
-            }
-        }
-        _ => None,
-    });
+    let non_empty_set = sets.into_iter().filter_map(|set| set);
     // if list is empty need to push empty string
     for (index, set) in non_empty_set.enumerate() {
         // add item to array with doc type and name equal to index into the array
@@ -134,9 +122,7 @@ fn encode_sets(
         // set identifier: string type, identifier e_name and actual set name as length, string, null byte
         response.push(2);
         response.extend_from_slice("identifier\0".as_bytes());
-        let mut set_iter = set.into_iter().peekable();
-        let (set_index, _, zero_set) = set_iter.peek().unwrap();
-        let set_name = &zero_set.content[*set_index].as_ref().unwrap().ident;
+        let set_name = set.get_name();
         response.extend_from_slice(&((set_name.len() + 1) as i32).to_le_bytes());
         response.extend_from_slice(set_name.as_bytes());
         response.push(0);
@@ -148,15 +134,8 @@ fn encode_sets(
         response.extend_from_slice(&0i32.to_le_bytes());
 
         let mut set_items_length = 0;
-        for (array_index, (set_index, item_index, context)) in set_iter.enumerate() {
-            set_items_length += encode_item(
-                set_index,
-                item_index,
-                context,
-                response,
-                data_items,
-                array_index,
-            );
+        for (array_index, (data_item, context)) in set.into_iter().enumerate() {
+            set_items_length += encode_item(data_item, context, response, data_items, array_index);
         }
         all_items += set_items_length;
 
@@ -267,11 +246,9 @@ impl DandelionBuf {
                     context,
                     response_offset: _,
                     reponse_size: _,
-                    set_index,
-                    item_index,
+                    data_item,
                 } = &self.items[buf_item_index];
-                let position =
-                    context.content[*set_index].as_ref().unwrap().buffers[*item_index].data;
+                let position = data_item.data;
                 let start = position.offset + (position.size - to_end);
                 context.get_chunk_ref(start, to_end).unwrap()
             }
@@ -500,9 +477,8 @@ fn test_dandelion_body_serialization() {
             },
         }],
     })];
-    let composition_set = CompositionSet::from((0, vec![Arc::new(new_context)]));
-    let context_map = vec![Some(composition_set)];
-    let context_body = DandelionBody::new(context_map, &recorder);
+    let composition_set = CompositionSet::from_context(new_context);
+    let context_body = DandelionBody::new(composition_set, &recorder);
 
     tokio::runtime::Builder::new_current_thread()
         .build()

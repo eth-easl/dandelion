@@ -1,11 +1,10 @@
 use crate::{
     composition::join_iterator::JoinIterator,
     memory_domain::{Context, ContextTrait},
+    DataItem, DataSet, Position,
 };
 use core::fmt;
-use dandelion_commons::{
-    err_dandelion, DandelionError, DandelionResult, DispatcherError, FunctionId,
-};
+use dandelion_commons::FunctionId;
 use log::trace;
 use std::{cmp, collections::BTreeMap, sync::Arc, vec};
 
@@ -95,100 +94,121 @@ impl JoinStrategy {
 }
 
 /// Struct that has all locations belonging to one set, that is potentially spread over multiple contexts.
+/// Should only be constructed from a context, returning a list of all sets in the contexts content.
+/// By construction, empty sets should not be allowed to exist, as they should return None instead on construction
 #[derive(Clone, Debug)]
 pub struct CompositionSet {
     /// items identfied by tuple of key, item index and the context reference
-    item_list: Vec<(u32, usize, Arc<Context>)>,
-    /// the set side inside the contexts the composition set represents
-    set_index: usize,
+    item_list: Vec<(DataItem, Arc<Context>)>,
+    set_name: String,
 }
 
 impl CompositionSet {
-    pub fn is_empty(&self) -> bool {
-        self.item_list.is_empty()
-    }
-
     pub fn len(&self) -> usize {
         self.item_list.len()
     }
 
-    pub fn get_set_idx(&self) -> usize {
-        self.set_index
+    pub fn get_name(&self) -> &String {
+        &self.set_name
     }
 
     /// Used for serializing the data to protobuf
     pub fn get_item(&self, idx: usize) -> (String, u32, Vec<u8>) {
-        let item = &self.item_list[idx];
-        let context_item = &item.2.content[self.set_index].as_ref().unwrap().buffers[item.1];
-        let mut data_bytes = Vec::<u8>::with_capacity(context_item.data.size);
-        let data_slice = item
-            .2
-            .get_chunk_ref(context_item.data.offset, context_item.data.size)
-            .expect("Failed to read item!");
-        data_bytes.extend_from_slice(data_slice);
-        (context_item.ident.clone(), context_item.key, data_bytes)
-    }
-
-    pub fn combine(&mut self, additional: CompositionSet) -> DandelionResult<()> {
-        let CompositionSet {
-            item_list,
-            set_index,
-        } = additional;
-        if self.set_index != set_index {
-            return err_dandelion!(DandelionError::Dispatcher(
-                DispatcherError::CompositionCombine,
-            ));
+        let (item, context) = &self.item_list[idx];
+        let Position { offset, size } = item.data;
+        let mut data_bytes = Vec::<u8>::with_capacity(size);
+        while data_bytes.len() < size {
+            let data_slice = context
+                .get_chunk_ref(offset + data_bytes.len(), size - data_bytes.len())
+                .expect("Failed to read item!");
+            data_bytes.extend_from_slice(data_slice);
         }
-        self.item_list.extend(item_list.into_iter());
-        self.item_list.sort_unstable_by_key(|a| a.0);
-        return Ok(());
+        (item.ident.clone(), item.key, data_bytes)
     }
-}
 
-impl From<(usize, Vec<Arc<Context>>)> for CompositionSet {
-    fn from(pair: (usize, Vec<Arc<Context>>)) -> Self {
-        let (set_index, context_vec) = pair;
-        let mut item_list = Vec::new();
-        for context in context_vec.into_iter() {
-            if let Some(Some(set)) = context.content.get(set_index) {
-                for (item_index, buffer) in set.buffers.iter().enumerate() {
-                    item_list.push((buffer.key, item_index, context.clone()));
+    pub fn from_context(mut context: Context) -> Vec<Option<Self>> {
+        // take the content from the context before putting it into an arc
+        let sets = core::mem::take(&mut context.content);
+        let context_arc = Arc::new(context);
+        let mut composition_sets = Vec::with_capacity(sets.len());
+        for set_option in sets.into_iter() {
+            let composition_option = if let Some(set) = set_option {
+                let DataSet { ident, buffers } = set;
+                if buffers.len() == 0 {
+                    None
+                } else {
+                    let mut item_list = Vec::with_capacity(buffers.len());
+                    for item in buffers.into_iter() {
+                        item_list.push((item, context_arc.clone()));
+                    }
+                    Some(CompositionSet {
+                        item_list,
+                        set_name: ident,
+                    })
                 }
-            }
+            } else {
+                None
+            };
+            composition_sets.push(composition_option);
         }
-        item_list.sort_unstable_by_key(|a| a.0);
-        return CompositionSet {
-            item_list,
-            set_index,
-        };
+        composition_sets
+    }
+
+    // This is used on the frontend, to be depricated when we change function registration serialziation
+    // DO NOT ADD USAGE
+    pub fn from_byte_items(items: Vec<(String, Vec<u8>)>) -> Self {
+        CompositionSet {
+            item_list: items
+                .into_iter()
+                .map(|(name, data)| {
+                    (
+                        DataItem {
+                            ident: name,
+                            data: Position {
+                                offset: 0,
+                                size: data.len(),
+                            },
+                            key: 0,
+                        },
+                        Arc::new(
+                            crate::memory_domain::read_only::ReadOnlyContext::new(
+                                data.into_boxed_slice(),
+                            )
+                            .unwrap(),
+                        ),
+                    )
+                })
+                .collect(),
+            // This is only used for static sets from function registration, which will get a name from the metadata
+            set_name: String::new(),
+        }
+    }
+
+    pub fn combine(&mut self, additional: CompositionSet) {
+        self.item_list.extend(additional.item_list.into_iter());
+        self.item_list.sort_unstable_by_key(|a| a.0.key);
     }
 }
 
 pub struct CompositionSetTransferIterator<'origin> {
     /// set for which this iterator is implemented
-    set_iterator: std::slice::Iter<'origin, (u32, usize, Arc<Context>)>,
-    set_index: usize,
+    set_iterator: std::slice::Iter<'origin, (DataItem, Arc<Context>)>,
 }
 
-impl Iterator for CompositionSetTransferIterator<'_> {
-    type Item = (usize, usize, Arc<Context>);
+impl<'origin> Iterator for CompositionSetTransferIterator<'origin> {
+    type Item = &'origin (DataItem, Arc<Context>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.set_iterator
-            .next()
-            .and_then(|(_, item_index, context)| {
-                Some((self.set_index, *item_index, context.clone()))
-            })
+        self.set_iterator.next()
     }
 }
 
 impl<'origin> IntoIterator for &'origin CompositionSet {
-    type Item = (usize, usize, Arc<Context>);
+    type Item = &'origin (DataItem, Arc<Context>);
     type IntoIter = CompositionSetTransferIterator<'origin>;
     fn into_iter(self) -> Self::IntoIter {
         Self::IntoIter {
             set_iterator: self.item_list.iter(),
-            set_index: self.set_index,
         }
     }
 }
@@ -196,15 +216,15 @@ impl<'origin> IntoIterator for &'origin CompositionSet {
 /// A more concise display for the composition set that does not print the entire Context contents.
 impl fmt::Display for CompositionSet {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "item_index: [")?;
-        for (key, itm_idx, ctx) in self.item_list.iter() {
+        write!(f, "items: [")?;
+        for (item, ctx) in self.item_list.iter() {
             write!(
                 f,
-                "(key: {}, idx: {}, context: {{ type: {:?}, size: {}, state: {:?} }})",
-                key, itm_idx, ctx.context, ctx.size, ctx.state
+                "(item: {:?}, context: {{ type: {:?}, size: {}, state: {:?} }})",
+                item, ctx.context, ctx.size, ctx.state
             )?;
         }
-        write!(f, "], set_index: {}", self.set_index)
+        write!(f, "]")
     }
 }
 
@@ -438,12 +458,21 @@ fn create_dummy_set(keys: Vec<u32>) -> CompositionSet {
     let items = keys
         .into_iter()
         .enumerate()
-        .map(|(i, k)| (k, i, dummy_context.clone()))
-        .sorted_by_key(|tuple| tuple.0)
+        .map(|(i, k)| {
+            (
+                DataItem {
+                    ident: i.to_string(),
+                    key: k,
+                    data: Position { offset: 0, size: 0 },
+                },
+                dummy_context.clone(),
+            )
+        })
+        .sorted_by_key(|tuple| tuple.0.key)
         .collect();
     CompositionSet {
         item_list: items,
-        set_index: 0,
+        set_name: String::new(),
     }
 }
 
@@ -489,18 +518,20 @@ fn check_sharding(actual: Vec<Vec<Option<CompositionSet>>>, expected: Vec<SetGro
             let mut actual_set = actual_set_opt.unwrap();
             assert_eq!(expected_set.len(), actual_set.item_list.len());
             // sort both lists by item index, since that one should be unique, since we only have a single context
-            expected_set.sort_by_key(|item| item.1);
-            actual_set.item_list.sort_by_key(|item| item.1);
+            expected_set.sort_by_key(|item| item.1.clone());
+            actual_set.item_list.sort_by_key(|item| item.0.key);
             // have two sorted lists, check that each item index is the expected one and that it has the correct key
-            for ((expected_key, expected_index), (actual_key, actual_index, _)) in
+            for ((expected_key, expected_ident), (actual_item, _)) in
                 expected_set.into_iter().zip(actual_set.item_list)
             {
                 assert_eq!(
-                    expected_index, actual_index,
+                    expected_ident.to_string(),
+                    actual_item.ident,
                     "for keys {}, {}",
-                    expected_key, actual_key
+                    expected_key,
+                    actual_item.ident
                 );
-                assert_eq!(expected_key, actual_key);
+                assert_eq!(expected_key, actual_item.key);
             }
         }
     }
@@ -516,8 +547,8 @@ fn print_sharding(actual: &Vec<Vec<Option<CompositionSet>>>) {
                 println!("  set {}: [None]", set_idx);
             } else {
                 print!("  set {}: [ ", set_idx);
-                for (key, itm, _) in set.as_ref().unwrap().item_list.iter() {
-                    print!("({}, {}) ", key, itm);
+                for (item, _) in set.as_ref().unwrap().item_list.iter() {
+                    print!("{:?} ", item);
                 }
                 println!("]");
             }
@@ -1002,13 +1033,13 @@ fn join_it_any_chain_test_6() {
     assert_eq!(sharding_2[0][1].as_ref().unwrap().len(), 2);
     assert_eq!(sharding_2[0][2].as_ref().unwrap().len(), 1);
     assert_eq!(sharding_2[0][3].as_ref().unwrap().len(), 1); // <- parallelized any set
-    assert_eq!(sharding_2[0][0].as_ref().unwrap().item_list[0].0, 0);
-    assert_eq!(sharding_2[0][0].as_ref().unwrap().item_list[1].0, 1);
-    assert_eq!(sharding_2[0][0].as_ref().unwrap().item_list[2].0, 4);
-    assert_eq!(sharding_2[0][1].as_ref().unwrap().item_list[0].0, 0);
-    assert_eq!(sharding_2[0][1].as_ref().unwrap().item_list[1].0, 0);
-    assert_eq!(sharding_2[0][2].as_ref().unwrap().item_list[0].0, 0);
-    assert_eq!(sharding_2[0][3].as_ref().unwrap().item_list[0].0, 5);
+    assert_eq!(sharding_2[0][0].as_ref().unwrap().item_list[0].0.key, 0);
+    assert_eq!(sharding_2[0][0].as_ref().unwrap().item_list[1].0.key, 1);
+    assert_eq!(sharding_2[0][0].as_ref().unwrap().item_list[2].0.key, 4);
+    assert_eq!(sharding_2[0][1].as_ref().unwrap().item_list[0].0.key, 0);
+    assert_eq!(sharding_2[0][1].as_ref().unwrap().item_list[1].0.key, 0);
+    assert_eq!(sharding_2[0][2].as_ref().unwrap().item_list[0].0.key, 0);
+    assert_eq!(sharding_2[0][3].as_ref().unwrap().item_list[0].0.key, 5);
 
     let sharding_3 = get_sharding(sets.clone(), join_order.clone(), join_strategies.clone(), 3);
     assert_eq!(sharding_3.len(), 3); // <- should get 3 shardings
@@ -1017,12 +1048,12 @@ fn join_it_any_chain_test_6() {
     assert_eq!(sharding_3[0][1].as_ref().unwrap().len(), 2); // <- parallelized any set
     assert_eq!(sharding_3[0][2].as_ref().unwrap().len(), 1); // <- parallelized any set
     assert_eq!(sharding_3[0][3].as_ref().unwrap().len(), 2);
-    assert_eq!(sharding_3[0][0].as_ref().unwrap().item_list[0].0, 0);
-    assert_eq!(sharding_3[0][1].as_ref().unwrap().item_list[0].0, 0);
-    assert_eq!(sharding_3[0][1].as_ref().unwrap().item_list[1].0, 0);
-    assert_eq!(sharding_3[0][2].as_ref().unwrap().item_list[0].0, 0);
-    assert_eq!(sharding_3[0][3].as_ref().unwrap().item_list[0].0, 5);
-    assert_eq!(sharding_3[0][3].as_ref().unwrap().item_list[1].0, 5);
+    assert_eq!(sharding_3[0][0].as_ref().unwrap().item_list[0].0.key, 0);
+    assert_eq!(sharding_3[0][1].as_ref().unwrap().item_list[0].0.key, 0);
+    assert_eq!(sharding_3[0][1].as_ref().unwrap().item_list[1].0.key, 0);
+    assert_eq!(sharding_3[0][2].as_ref().unwrap().item_list[0].0.key, 0);
+    assert_eq!(sharding_3[0][3].as_ref().unwrap().item_list[0].0.key, 5);
+    assert_eq!(sharding_3[0][3].as_ref().unwrap().item_list[1].0.key, 5);
 }
 
 #[test]
@@ -1047,6 +1078,6 @@ fn join_it_any_chain_test_7() {
     assert_eq!(sharding[0][0].as_ref().unwrap().len(), 1);
     assert_eq!(sharding[0][1].as_ref().unwrap().len(), 1);
     assert!(sharding[0][2].is_none());
-    assert_eq!(sharding[0][0].as_ref().unwrap().item_list[0].0, 0);
-    assert_eq!(sharding[0][1].as_ref().unwrap().item_list[0].0, 0);
+    assert_eq!(sharding[0][0].as_ref().unwrap().item_list[0].0.key, 0);
+    assert_eq!(sharding[0][1].as_ref().unwrap().item_list[0].0.key, 0);
 }

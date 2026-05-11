@@ -95,15 +95,13 @@ fn run_thread<E: EngineLoop>(core_id: u8, queue: Box<dyn EngineWorkQueue>) {
                         buffers: Vec::with_capacity(capacity),
                     }));
                     if let Some(transfer_set) = transfer_option {
-                        for (source_set_index, source_item_index, source_context) in transfer_set {
+                        for (source_item, source_context) in transfer_set {
                             let transfer_result = memory_domain::transfer_data_item(
                                 &mut function_context,
                                 source_context,
                                 set_index,
                                 128,
-                                input_set_name.as_str(),
-                                source_set_index,
-                                source_item_index,
+                                source_item,
                             );
 
                             if let Err(transfer_error) = transfer_result {

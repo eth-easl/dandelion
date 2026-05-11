@@ -273,8 +273,7 @@ fn parse_requests<RequestType: Request>(
 ) -> DandelionResult<Vec<RequestType>> {
     let request_info: DandelionResult<Vec<RequestType>> = composition_set
         .into_iter()
-        .map(|(set_index, item_index, context)| {
-            let data_item = &context.content[set_index].as_ref().unwrap().buffers[item_index];
+        .map(|(data_item, context)| {
             let mut request_buffer = Vec::with_capacity(data_item.data.size);
             request_buffer.resize(data_item.data.size, 0);
             context.read(data_item.data.offset, &mut request_buffer)?;

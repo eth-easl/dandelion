@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 // For types which have the same name for prot and machine_interface,
 // use the full ones to make sure there is no mix ups
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, MultinodeError};
@@ -44,7 +42,6 @@ pub fn engine_type_ptod(t: proto::EngineType) -> DandelionResult<machine_config:
 
 /// Takes a `CompositionSet` reference and translates it into a protocol data set.
 pub fn composition_set_to_proto(set: &CompositionSet) -> proto::DataSet {
-    let set_idx = set.get_set_idx();
     let mut items = Vec::with_capacity(set.len());
     for itm_idx in 0..set.len() {
         let (ident, key, data) = set.get_item(itm_idx);
@@ -53,7 +50,7 @@ pub fn composition_set_to_proto(set: &CompositionSet) -> proto::DataSet {
     // assigning name equal to index, as they are ignored on the receiver node anyway
     // so the effort to get the correct name would be wasted.
     proto::DataSet {
-        ident: format!("set_{}", set_idx),
+        ident: set.get_name().clone(),
         items,
     }
 }
@@ -119,10 +116,6 @@ pub fn proto_data_sets_to_context(protobuf_sets: Vec<proto::DataSet>) -> Context
 pub fn proto_data_sets_to_composition_sets(
     proto_sets: Vec<proto::DataSet>,
 ) -> Vec<Option<CompositionSet>> {
-    let num_sets = proto_sets.len();
     let context = proto_data_sets_to_context(proto_sets);
-    let context_arc = Arc::new(context);
-    (0..num_sets)
-        .map(|set_id| Some(CompositionSet::from((set_id, vec![context_arc.clone()]))))
-        .collect::<Vec<_>>()
+    CompositionSet::from_context(context)
 }

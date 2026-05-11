@@ -532,7 +532,7 @@ pub fn get_transfer_offset(
 
 pub fn transfer_into(
     destination: &mut KvmContext,
-    source: Arc<Context>,
+    source: &Arc<Context>,
     destination_offset: usize,
     source_offset: usize,
     size: usize,
