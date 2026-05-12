@@ -127,9 +127,11 @@ impl FunctionAlternative {
                 return Ok(inner.clone());
             }
         }
-        let driver = self.engine.get_driver();
         recorder.record(dandelion_commons::records::RecordPoint::ParsingStart);
-        let function = Arc::new(driver.parse_function(self.path.clone(), &self.domain)?);
+        let function = Arc::new(
+            self.engine
+                .parse_function(self.path.clone(), &self.domain)?,
+        );
         recorder.record(dandelion_commons::records::RecordPoint::ParsingEnd);
         if caching {
             let mut function_lock = self.function.write().unwrap();

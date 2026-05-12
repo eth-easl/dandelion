@@ -1,271 +1,509 @@
-use dandelion_commons::{
-    err_dandelion, DandelionError, DandelionResult, FunctionId, MultinodeError,
-};
-use log::{debug, warn};
-use machine_interface::{
-    composition::CompositionSet, machine_config::EngineType, memory_domain::Context,
-};
-use prost::bytes::Bytes;
-use tokio::time::{sleep, Duration};
-
 use crate::{
-    proto,
-    util::{self, composition_sets_to_proto, proto_data_sets_to_context},
+    deserialize_node_info, deserialize_queue_message, deserialize_remote_message,
+    proto::{
+        self, queue_message, remote_message, Invocation, NodeInfo, QueueMessage, RemoteMessage,
+        RepeatedEngines, Response,
+    },
+    serialize_node_info, serialize_queue_message, serialize_remote_message,
+    util::{
+        composition_sets_to_proto, engine_type_dtop, engine_type_ptod,
+        pack_metadata_size_and_flags, proto_data_sets_to_composition_sets,
+        proto_data_sets_to_context, unpack_metadata_size_and_flags, ADDITIONAL_DATA_BUFFER,
+        NO_FLAGS,
+    },
+    DispatcherCommand,
+};
+use dandelion_commons::{
+    err_dandelion, records::Recorder, DandelionError, DandelionResult, MultinodeError,
+};
+use dispatcher::queue::{get_engine_flag, WorkQueue};
+use futures::{future::Either, stream::FuturesUnordered, FutureExt, StreamExt};
+use log::{trace, warn};
+use machine_interface::{
+    composition::CompositionSet,
+    function_driver::{WorkDone, WorkToDo},
+    machine_config::{EngineType, IntoEnumIterator},
+    memory_domain::ContextTrait,
+    DataItem, Position,
+};
+use prost::bytes::{Bytes, BytesMut};
+use std::{
+    collections::{BTreeMap, BinaryHeap},
+    sync::Arc,
+    time::Instant,
+};
+use tokio::{
+    io::{split, AsyncReadExt, AsyncWriteExt},
+    sync::{mpsc, oneshot, watch, Notify},
 };
 
-// TODO: should only registered remotes be allowed to make requests?
-//       -> if so we need to make sure we don't allow requests after we deregister a node (introduce
-//          an active flag in the RemoteNode struct)
-// TODO: do we need to send periodic heartbeats to the remotes (to check if a node is still alive)?
+#[cfg(test)]
+mod test;
 
-/// Represents a remote dandelion node.
-///
-/// Create a new `RemoteNode` using either the `try_create_client` or `create_client` function.
-/// Use the `RemoteNode` instance to communicate with the remote dandelion instance using the
-/// multinode api.
-#[derive(Debug)]
-pub struct RemoteNode {
-    /// Remote connection info
-    remote_host: String,
-    remote_port: u16,
-    /// The client struct used to execute the http requests
-    client: reqwest::Client,
-}
+const _: () = assert!(size_of::<u64>() == size_of::<usize>());
 
-async fn try_connect(
-    client: &reqwest::Client,
-    remote_host: &String,
-    remote_port: u16,
-) -> DandelionResult<()> {
-    match client
-        .post(format!("http://{}:{}/multinode/", remote_host, remote_port))
-        .body("")
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            if resp.status().is_success() {
-                return Ok(());
-            } else {
-                return err_dandelion!(DandelionError::Multinode(
-                    MultinodeError::ConnectionFailed(format!(
-                        "Probe returned status code {}",
-                        resp.status()
-                    ),)
-                ));
-            }
+// TODO handle connection failure
+/// To send a message between nodes, always first send the length of the message,
+/// then the message, so the other side knows when one message ends.
+async fn send_message(
+    metadata_buffer: &Bytes,
+    mut sender: impl AsyncWriteExt + std::marker::Unpin,
+    data_buffer: Option<(Vec<Option<CompositionSet>>, u64)>,
+) {
+    let metadata_size: u32 = metadata_buffer.len().try_into().unwrap();
+    let flags = match data_buffer {
+        Some((_, total_size)) => {
+            debug_assert!(total_size > 0);
+            ADDITIONAL_DATA_BUFFER
         }
-        Err(err) => err_dandelion!(DandelionError::Multinode(MultinodeError::ConnectionFailed(
-            format!("Probe request failed: {:?}", err),
-        ))),
-    }
-}
+        _ => NO_FLAGS,
+    };
 
-/// Tries to establish connection with the given remote and returns the corresponding `RemoteNode`
-/// instance on success.
-pub async fn try_create_client(
-    remote_host: String,
-    remote_port: u16,
-) -> DandelionResult<RemoteNode> {
-    let client = reqwest::Client::new();
-    match try_connect(&client, &remote_host, remote_port).await {
-        Ok(_) => Ok(RemoteNode {
-            remote_host,
-            remote_port,
-            client,
-        }),
-        Err(err) => Err(err),
-    }
-}
+    let packed_metadata = pack_metadata_size_and_flags(metadata_size, flags);
 
-/// Creates a `RemoteNode` instance representing the given remote node by continuosly trying to
-/// establish a connection and retrying every `retry_timout_ms` ms on failure until success.
-pub async fn create_client(
-    remote_host: String,
-    remote_port: u16,
-    retry_timout_ms: u64,
-) -> RemoteNode {
-    let client = reqwest::Client::new();
-    loop {
-        match try_connect(&client, &remote_host, remote_port).await {
-            Ok(_) => {
-                return RemoteNode {
-                    remote_host,
-                    remote_port,
-                    client,
+    sender.write_u64(packed_metadata).await.unwrap();
+    sender.write_all(metadata_buffer).await.unwrap();
+
+    if let Some((data_sets, total_size)) = data_buffer {
+        sender.write_u64(total_size).await.unwrap();
+        for data_set in data_sets.into_iter().filter_map(|item| item) {
+            for (item, item_context) in data_set.into_iter() {
+                let DataItem {
+                    ident: _,
+                    data:
+                        Position {
+                            offset: item_offset,
+                            size: item_size,
+                        },
+                    key: _,
+                } = item;
+                debug_assert_ne!(0, item_size);
+                let mut bytes_written = 0;
+                while bytes_written < item_size {
+                    let next_chunk = item_context
+                        .get_chunk_ref(item_offset + bytes_written, item_size - bytes_written)
+                        .unwrap();
+                    sender.write_all(next_chunk).await.unwrap();
+                    bytes_written += next_chunk.len();
                 }
             }
-            Err(err) => {
-                warn!(
-                    "Failed to probe remote node! Retrying in {} ms... (Error: {})",
-                    retry_timout_ms, err
-                );
-                sleep(Duration::from_millis(retry_timout_ms)).await;
+        }
+    }
+
+    sender.flush().await.unwrap();
+}
+
+// TODO handle connection failure
+// For small messages we are expecting repeteatly, could have spezial read function with permanent preallocated buffers
+// Issue: serialization does not give constant sizes, so would need to find an upper bound first
+async fn receive_message(
+    mut receiver: impl AsyncReadExt + std::marker::Unpin,
+) -> (Bytes, Option<Bytes>) {
+    let packed_metadata = receiver.read_u64().await.unwrap();
+    let (metadata_size, flags) = unpack_metadata_size_and_flags(packed_metadata);
+
+    // new buffer with size of message
+    let mut metadata_buffer = BytesMut::zeroed(metadata_size as usize);
+    // Using read_exact here to ensure that we do not read a part of the next message,
+    // which could happen if we use read_buf here.
+    assert_eq!(
+        metadata_size as usize,
+        receiver.read_exact(&mut metadata_buffer).await.unwrap()
+    );
+
+    if (flags & ADDITIONAL_DATA_BUFFER) != 0 {
+        let total_data_size = receiver.read_u64().await.unwrap();
+        let mut data_buffer = BytesMut::with_capacity(total_data_size as usize);
+        let mut bytes_read = 0;
+        while bytes_read < total_data_size as usize {
+            bytes_read += receiver.read_buf(&mut data_buffer).await.unwrap();
+        }
+        return (metadata_buffer.freeze(), Some(data_buffer.freeze()));
+    } else {
+        return (metadata_buffer.freeze(), None);
+    }
+}
+
+enum QueueOption<Stream: AsyncReadExt + std::marker::Unpin> {
+    Message(Stream, remote_message::RemoteMessage, Option<Bytes>),
+    WorkAvailable(Arc<Notify>),
+}
+
+async fn receive_client_message<Stream: AsyncReadExt + std::marker::Unpin>(
+    mut socket: Stream,
+) -> QueueOption<Stream> {
+    let (message_bytes, data_bytes) = receive_message(&mut socket).await;
+    let message = deserialize_remote_message(message_bytes)
+        .unwrap()
+        .remote_message
+        .unwrap();
+    QueueOption::Message(socket, message, data_bytes)
+}
+
+async fn receive_work_available_notification<Stream: AsyncReadExt + std::marker::Unpin>(
+    receiver: Arc<Notify>,
+) -> QueueOption<Stream> {
+    receiver.notified().await;
+    QueueOption::WorkAvailable(receiver)
+}
+
+/// Handler for one remote node, polling the local queue for them.
+/// The first message from the remote should contain the possible engines it will poll for,
+/// and the maximum number of requests for those engines it will poll.
+/// Protocol for polling is sending a poll message, saying which engines are polled for.
+/// Response is either a single available task or if none are available immediately,
+/// a message that notifies the remote of that. If the response is yes,
+/// Each task sent out is associated with an id.
+/// When a task if finished, the response is to carry that same id, so the promise can be fulfilled.
+pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::marker::Unpin>(
+    socket: Stream,
+    queue: WorkQueue,
+) {
+    let mut waiting_for_work = false;
+    let (mut read_socket, mut write_socket) = split(socket);
+
+    // First ask for the information about the other node
+    // Currently not using engine information
+    trace!("Queue Server wait for initial message");
+    let (node_info_buffer, node_info_data) = receive_message(&mut read_socket).await;
+    debug_assert!(node_info_data.is_none());
+    let NodeInfo { version } = deserialize_node_info(node_info_buffer).unwrap();
+    assert_eq!(version, 1);
+    trace!("Queue Server received initial message");
+
+    let mut debt_map = BTreeMap::new();
+    let mut free_debt_ids = BinaryHeap::new();
+    let mut max_debt_id = 0;
+
+    let mut merged_stream = FuturesUnordered::new();
+    merged_stream.push(Either::Right(receive_client_message(read_socket)));
+    merged_stream.push(Either::Left(receive_work_available_notification(
+        queue.queueing_notifier(),
+    )));
+
+    // are ready, wait for the remote to ask for work or return completed tasks
+    while let Some(current_future) = merged_stream.next().await {
+        match current_future {
+            QueueOption::Message(read_socket, message, data_option) => {
+                match message {
+                    remote_message::RemoteMessage::WorkRequest(work_request) => {
+                        debug_assert!(data_option.is_none());
+                        // For now just send one matching function
+                        let engines = work_request.engines;
+                        let mut engine_flags = 0;
+                        for engine in engines {
+                            engine_flags |=
+                                get_engine_flag(engine_type_ptod(engine.engine_type).unwrap());
+                        }
+                        trace!(
+                            "Queue Server received work request for engine flags: {}",
+                            engine_flags
+                        );
+                        // poll work
+                        let (queue_message, data_buffer) = if let Some((work, debt)) =
+                            queue.try_get_work_no_shutdown(engine_flags)
+                        {
+                            // there is some work so send it out
+                            // find the local function id to use
+                            let promise_id = if let Some(free_id) = free_debt_ids.pop() {
+                                free_id
+                            } else {
+                                let promise_id = max_debt_id;
+                                max_debt_id += 1;
+                                promise_id
+                            };
+                            debt_map.insert(promise_id, debt);
+                            let (function_id, data_sets, caching) = match work {
+                                // Todo send along relevant information, like caching bool and recorder start time
+                                WorkToDo::FunctionArguments {
+                                    function_id,
+                                    function_alternatives: _,
+                                    input_sets,
+                                    metadata: _,
+                                    caching,
+                                    recorder: _,
+                                } => (function_id, input_sets, caching),
+                                WorkToDo::Shutdown(_) => {
+                                    panic!("Should never get shutdown in remote engine queue")
+                                }
+                            };
+                            let (metadata_sets, data_sets) = composition_sets_to_proto(data_sets);
+                            (
+                                QueueMessage {
+                                    queue_message: Some(queue_message::QueueMessage::Invocation(
+                                        Invocation {
+                                            metadata_sets,
+                                            function_id: function_id.to_string(),
+                                            invocation_id: promise_id,
+                                            caching,
+                                        },
+                                    )),
+                                },
+                                data_sets,
+                            )
+                        } else {
+                            waiting_for_work = true;
+                            // there is no work, so send message accordingly
+                            (
+                                QueueMessage {
+                                    queue_message: Some(queue_message::QueueMessage::NoWork(true)),
+                                },
+                                None,
+                            )
+                        };
+                        let message_bytes = serialize_queue_message(queue_message);
+                        send_message(&message_bytes, &mut write_socket, data_buffer).await;
+                    }
+                    remote_message::RemoteMessage::Response(response) => {
+                        trace!("Queue Server received response");
+                        let Response {
+                            invocation_id,
+                            response,
+                        } = response;
+                        // TODO: handle failure
+                        let debt = debt_map
+                            .remove(&invocation_id)
+                            .expect("Should always get back function response for a present debt");
+                        let result = match response.unwrap() {
+                            proto::response::Response::MetadataSets(metadata_sets) => {
+                                Ok(WorkDone::Context(proto_data_sets_to_context(
+                                    metadata_sets.metadata_sets,
+                                    data_option,
+                                )))
+                            }
+                            proto::response::Response::ErrorMsg(error_message) => {
+                                err_dandelion!(DandelionError::Multinode(
+                                    MultinodeError::RequestFailed(error_message)
+                                ))
+                            }
+                        };
+                        debt.fulfill(result)
+                    }
+                }
+                merged_stream.push(Either::Right(receive_client_message(read_socket)));
+            }
+            QueueOption::WorkAvailable(receiver) => {
+                trace!("Queue Server received work available notification");
+                if waiting_for_work {
+                    waiting_for_work = false;
+                    let message = serialize_queue_message(QueueMessage {
+                        queue_message: Some(queue_message::QueueMessage::NoWork(false)),
+                    });
+                    send_message(&message, &mut write_socket, None).await;
+                }
+                merged_stream.push(Either::Left(receive_work_available_notification(receiver)));
             }
         }
     }
 }
 
-impl RemoteNode {
-    async fn send_request(&self, url: String, request: Bytes) -> DandelionResult<Bytes> {
-        match self.client.post(url).body(request).send().await {
-            Ok(response) => {
-                if !response.status().is_success() {
-                    return err_dandelion!(DandelionError::Multinode(
-                        MultinodeError::RequestFailed(format!(
-                            "Response status {:?}",
-                            response.status()
-                        ),)
-                    ));
-                }
-                let body = response
-                    .bytes()
-                    .await
-                    .expect("Failed to collect response body");
-                Ok(body)
-            }
-            Err(err) => {
-                return err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
-                    format!("{:?}", err),
-                )))
-            }
-        }
-    }
+enum PollingOption<Stream: AsyncReadExt + std::marker::Unpin> {
+    Message(
+        Stream,
+        DandelionResult<queue_message::QueueMessage>,
+        Option<Bytes>,
+    ),
+    PollFor(watch::Receiver<u32>, u32),
+    Results(RemoteMessage, Option<(Vec<Option<CompositionSet>>, u64)>),
+}
 
-    /// Runs the given function with the given input data on the remote node and returns the
-    /// resulting output sets.
-    pub async fn invoke_function(
-        &self,
-        function_id: FunctionId,
-        data_sets: &Vec<Option<CompositionSet>>,
-    ) -> DandelionResult<Context> {
-        // prepare request
-        let serialized_data = composition_sets_to_proto(data_sets);
-        let inv_req = proto::InvocationRequest {
-            function_id: (*function_id).clone(),
-            data_sets: serialized_data,
-        };
-        let request = super::serialize_invocation_request(inv_req);
+async fn receive_queue_message<Stream: AsyncReadExt + std::marker::Unpin>(
+    mut receiver: Stream,
+) -> PollingOption<Stream> {
+    let (message_buffer, data_buf) = receive_message(&mut receiver).await;
+    let new_message = deserialize_queue_message(message_buffer)
+        .and_then(|message| Ok(message.queue_message.unwrap()));
+    PollingOption::Message(receiver, new_message, data_buf)
+}
 
-        // execute
-        let response_body = self
-            .send_request(
-                format!(
-                    "http://{}:{}/multinode/invoke",
-                    self.remote_host, self.remote_port
-                ),
-                request,
+async fn poll_idle_core<Stream: AsyncReadExt + std::marker::Unpin>(
+    mut receiver: watch::Receiver<u32>,
+) -> PollingOption<Stream> {
+    receiver.changed().await.unwrap();
+    let engine_state = *receiver.borrow_and_update();
+    PollingOption::PollFor(receiver, engine_state)
+}
+
+async fn poll_results<Stream: AsyncReadExt + std::marker::Unpin>(
+    result_receiver: oneshot::Receiver<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
+    invocation_id: u32,
+) -> PollingOption<Stream> {
+    let (response_message, response_set) = match result_receiver.await.unwrap() {
+        Ok((sets, _)) => {
+            let (metadata_sets, data_sets) = composition_sets_to_proto(sets);
+            (
+                proto::response::Response::MetadataSets(proto::RepeatedMetadataSet {
+                    metadata_sets,
+                }),
+                data_sets,
             )
-            .await?;
-
-        // process response
-        let inv_resp = match super::deserialize_invocation_response(response_body.clone()) {
-            Ok(resp) => resp,
-            Err(_) => {
-                // might also return a non-successful ActionStatus on internal errors
-                let action_status = super::deserialize_action_status(response_body.clone())?;
-                assert!(!action_status.success);
-                return err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
-                    action_status.message,
-                )));
-            }
-        };
-        if !inv_resp.success {
-            return err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
-                inv_resp.error_msg,
-            )));
         }
-        Ok(proto_data_sets_to_context(inv_resp.data_sets))
-    }
+        Err(err) => (
+            proto::response::Response::ErrorMsg(err.error.to_string()),
+            None,
+        ),
+    };
+    PollingOption::Results(
+        RemoteMessage {
+            remote_message: Some(proto::remote_message::RemoteMessage::Response(Response {
+                invocation_id,
+                response: Some(response_message),
+            })),
+        },
+        response_set,
+    )
 }
 
-// TODO: should this be another object, having a remote worker and a remote master?
-// Then can implement deregister on drop for example
-/// Registers this node at the remote node.
-pub async fn register_as_remote(
-    local_host: String,
-    local_port: u32,
-    remote_url: String,
-    engines: Vec<(EngineType, u32)>,
-) -> DandelionResult<()> {
-    debug!("Registering as remote on {}", remote_url);
-    // prepare request
-    let proto_engines = engines
-        .iter()
-        .map(|(t, c)| proto::Engine {
-            engine_type: util::engine_type_dtop(*t) as i32,
-            engine_capacity: *c,
-        })
-        .collect();
-    let node_info = proto::NodeInfo {
-        host: local_host,
-        port: local_port,
-        engines: proto_engines,
-    };
-    let request = super::serialize_node_info(node_info);
+/// Client to ask for work from a remote queue.
+/// Whenever the local idle engine number changes, if there are idle engines send out request for work.
+/// There is no request for work when the remote has not replied with work (or not replied yet).
+/// Expect a single invocation. The change in idle cores going down 1 (from the work that was enqueued),
+/// should retrigger asking for more work if there are more idle cores.
+pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::marker::Unpin>(
+    socket: Stream,
+    sender: mpsc::Sender<DispatcherCommand>,
+    // TODO: might want a differnet mechanism, to wake them one after each other to go check
+    // But each poller also needs to be able to check if there are still cores available,
+    // in case the remote sends a message that there is work available
+    local_available: watch::Receiver<u32>,
+) {
+    // local state keeping variables
+    let mut remote_had_work = true;
 
-    let response_body = match reqwest::Client::new()
-        .post(format!("http://{}/multinode/register", remote_url))
-        .body(request)
-        .send()
-        .await
-    {
-        Ok(response) => {
-            if !response.status().is_success() {
-                return err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
-                    format!("Response status {:?}", response.status()),
-                )));
-            } else {
-                response
-                    .bytes()
-                    .await
-                    .expect("Failed to collect response body")
+    // set up the connection by sending a single node info
+    let node_info_buffer = serialize_node_info(NodeInfo { version: 1 });
+
+    let (read_socket, mut write_socket) = split(socket);
+
+    send_message(&node_info_buffer, &mut write_socket, None).await;
+    trace!("Queue Client sent out initial message");
+
+    // Create a second copy of the watcher to wait on asynchronously, marke changed to check once in the beginning,
+    // in case there are already idle cores
+    let mut new_local_available = local_available.clone();
+    new_local_available.mark_changed();
+
+    // stream for the promises of the local requests wait for them to resolve
+    // Once stream interfaces stabilize would be nice to move this to merged streams, but for now this seems
+    let mut merged_stream = FuturesUnordered::new();
+    merged_stream.push(Either::Right(Either::Right(poll_idle_core(
+        new_local_available,
+    ))));
+    merged_stream.push(Either::Right(
+        receive_queue_message(read_socket).left_future(),
+    ));
+
+    while let Some(current_future) = merged_stream.next().await {
+        match current_future {
+            PollingOption::Message(read_socket, Ok(message), data_option) => {
+                match message {
+                    // remote did not have work, can ignore local capacity to work until we get a message the more is available
+                    queue_message::QueueMessage::NoWork(true) => {
+                        trace!("Queue Client recieved NoWork(true)");
+                        debug_assert!(data_option.is_none());
+                        remote_had_work = false
+                    }
+                    // remote signals it may have work so can ask for it, if we have capacity
+                    queue_message::QueueMessage::NoWork(false) => {
+                        trace!("Queue Client recieved NoWork(false)");
+                        debug_assert!(data_option.is_none());
+                        let engine_capacity = *local_available.borrow();
+                        if engine_capacity > 0 {
+                            let engines = EngineType::iter()
+                                .map(|engine_type| proto::Engine {
+                                    engine_type: engine_type_dtop(engine_type) as i32,
+                                    engine_capacity,
+                                })
+                                .collect();
+                            let request_buffer = serialize_remote_message(RemoteMessage {
+                                remote_message: Some(remote_message::RemoteMessage::WorkRequest(
+                                    RepeatedEngines { engines },
+                                )),
+                            });
+                            send_message(&request_buffer, &mut write_socket, None).await;
+                        } else {
+                            // Only set to true, if we did not send out a message already,
+                            // otherwise avoid retriggering sending a message on state change, before we get answer.
+                            remote_had_work = true;
+                        }
+                    }
+                    queue_message::QueueMessage::Invocation(invocation) => {
+                        trace!("Queue Client recieved invocation");
+                        // mark remote as having work, so we ask for more as idle cores change
+                        remote_had_work = true;
+
+                        let Invocation {
+                            invocation_id,
+                            function_id,
+                            metadata_sets,
+                            caching,
+                        } = invocation;
+                        let function_arc = Arc::new(function_id);
+                        let inputs =
+                            proto_data_sets_to_composition_sets(metadata_sets, data_option);
+                        let recorder = Recorder::new(function_arc.clone(), Instant::now());
+                        let (callback_sender, callback_receriver) = oneshot::channel();
+                        sender
+                            .send(DispatcherCommand::RemoteFunctionRequest {
+                                function_id: function_arc,
+                                inputs,
+                                is_cold: !caching,
+                                recorder,
+                                callback: callback_sender,
+                            })
+                            .await
+                            .unwrap();
+                        merged_stream.push(Either::Left(poll_results(
+                            callback_receriver,
+                            invocation_id,
+                        )));
+                    }
+                }
+                merged_stream.push(Either::Right(Either::Left(receive_queue_message(
+                    read_socket,
+                ))));
+            }
+            PollingOption::Message(_, Err(error), _) => {
+                // TODO: recover from message reception failure
+                panic!("Receiving remote queue message faied with: {}", error);
+            }
+            PollingOption::Results(results, data_option) => {
+                trace!("Queue Client sending out result");
+                send_message(
+                    &serialize_remote_message(results),
+                    &mut write_socket,
+                    data_option,
+                )
+                .await;
+            }
+            // getting a notification so should poll the queue
+            PollingOption::PollFor(receiver, available_engines) => {
+                trace!(
+                    "Queue Client checking updated idle state: {:?}",
+                    available_engines
+                );
+                // send message to get work if we have not asked already
+                if remote_had_work && available_engines > 0 {
+                    let engines: Vec<_> = EngineType::iter()
+                        .map(|engine_type| proto::Engine {
+                            engine_type: engine_type_dtop(engine_type) as i32,
+                            engine_capacity: available_engines,
+                        })
+                        .collect();
+
+                    let request_buffer = serialize_remote_message(RemoteMessage {
+                        remote_message: Some(remote_message::RemoteMessage::WorkRequest(
+                            RepeatedEngines { engines },
+                        )),
+                    });
+                    trace!("Asking for more work, after seeing more idle engines");
+                    send_message(&request_buffer, &mut write_socket, None).await;
+                    // set false, to avoid double sending if multiple cores become idle, but did not have a response in between
+                    remote_had_work = false;
+                }
+                merged_stream.push(Either::Right(Either::Right(poll_idle_core(receiver))));
             }
         }
-        Err(err) => {
-            return err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
-                format!("{:?}", err),
-            )))
-        }
-    };
-
-    // process response
-    let action_status = super::deserialize_action_status(response_body)?;
-    match action_status.success {
-        true => Ok(()),
-        false => err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
-            action_status.message,
-        ))),
     }
+    warn!("Exited queue client loop");
 }
-
-// Deregisters this node at the remote node.
-// pub async fn deregister_at_remote(&self) -> DandelionResult<()> {
-//     // prepare request
-//     let node_info = proto::NodeInfo {
-//         host: self.local_host.clone(),
-//         port: self.local_port as u32,
-//         engines: vec![],
-//     };
-//     let request = super::serialize_node_info(node_info);
-
-//     // execute
-//     let response_body = self
-//         .send_request(
-//             format!(
-//                 "http://{}:{}/multinode/deregister",
-//                 self.remote_host, self.remote_port
-//             ),
-//             request,
-//         )
-//         .await?;
-
-//     // process response
-//     let action_status = super::deserialize_action_status(response_body)?;
-//     match action_status.success {
-//         true => Ok(()),
-//         false => err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
-//             action_status.message,
-//         ))),
-//     }
-// }

@@ -7,6 +7,7 @@ use log::{error, warn};
 const DEFAULT_CONFIG_PATH: &str = "./dandelion.config";
 const DEFAULT_FOLDER_PATH: &str = "/tmp/dandelion_server";
 const DEFAULT_PORT: u16 = 8080;
+const DEFAULT_QUEUE_PORT: u16 = 7070;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
 const DEFAULT_VIRTUAL_MAX_RAM_MULTIPLIER: usize = 2;
 const DEFAULT_MULTINODE_TIMEOUT: u64 = 50;
@@ -24,6 +25,12 @@ pub struct PreloadFunc {
     pub bin_path: String,
     #[serde(rename = "metadata")]
     pub metadata: FuncMetadata,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct PreloadFile {
+    functions: Vec<PreloadFunc>,
+    compositions: Vec<String>,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -79,6 +86,10 @@ pub struct DandelionConfig {
     #[serde(default)]
     pub folder_path: String,
 
+    /// Port on which to listen to remote node connections which want to poll
+    /// the work queue
+    #[arg(long, env, default_value_t = DEFAULT_QUEUE_PORT)]
+    pub q_port: u16,
     /// For multinode, add a remote host to register to
     #[arg(long, env)]
     #[serde(default)]
@@ -258,42 +269,53 @@ impl DandelionConfig {
         return core_vec;
     }
 
-    pub fn get_preload_functions(&self) -> Vec<PreloadFunc> {
+    pub fn get_preload_functions(&self) -> (Vec<PreloadFunc>, Vec<String>) {
+        let default_value = (vec![], vec![]);
         if self.bin_preload_path.is_empty() {
-            return vec![];
+            return default_value;
         }
 
         // read + parse json file
         let reader = match File::open(Path::new(&self.bin_preload_path)) {
             Err(err) => {
                 error!("Failed to read preload json file: {}", err);
-                return vec![];
+                return default_value;
             }
             Ok(f) => f,
         };
-        let json: Vec<PreloadFunc> = match serde_json::from_reader(reader) {
+        let PreloadFile {
+            functions,
+            compositions,
+        } = match serde_json::from_reader(reader) {
             Err(err) => {
                 error!("Failed to read preload json file: {}", err);
-                return vec![];
+                return default_value;
             }
             Ok(json) => json,
         };
 
         // sanity checks
-        json.into_iter()
-            .filter(|pf| {
-                let valid = !pf.name.is_empty()
-                    && pf.ctx_size > 0
-                    && !pf.engine_type_id.is_empty()
-                    && !pf.bin_path.is_empty();
-                if !valid {
-                    warn!(
-                        "Ignoring preload function {}: does not match specification!",
-                        pf.name
-                    )
-                };
-                valid
-            })
-            .collect()
+        if !functions.iter().all(|pf| {
+            let valid = !pf.name.is_empty()
+                && pf.ctx_size > 0
+                && !pf.engine_type_id.is_empty()
+                && !pf.bin_path.is_empty();
+            if !valid {
+                warn!(
+                    "Ignoring preload function {}: Does not match specification!",
+                    pf.name
+                )
+            };
+            valid
+        }) || !compositions.iter().all(|composition| {
+            let valid = !composition.is_empty();
+            if !valid {
+                warn!("Ignoring empty composition preload!");
+            }
+            valid
+        }) {
+            return default_value;
+        }
+        (functions, compositions)
     }
 }

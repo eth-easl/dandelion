@@ -1,7 +1,8 @@
 use crate::{
-    function_driver::Driver,
+    function_driver::{functions::Function, ComputeResource, Driver, EngineWorkQueue},
     memory_domain::{MemoryDomain, MemoryResource},
 };
+use dandelion_commons::DandelionResult;
 use std::{collections::BTreeMap, sync::Arc};
 pub use strum::IntoEnumIterator;
 pub use strum::{EnumCount, EnumIter};
@@ -45,18 +46,45 @@ impl EngineType {
         }
     }
 
-    pub fn get_driver(&self) -> &dyn Driver {
+    pub fn start_engine(
+        &self,
+        resource: ComputeResource,
+        queue: impl EngineWorkQueue + Send + 'static,
+    ) -> DandelionResult<()> {
         match self {
             #[cfg(feature = "reqwest_io")]
-            EngineType::Reqwest => {
-                &crate::function_driver::system_driver::reqwest::ReqwestDriver {}
-            }
+            EngineType::Reqwest => crate::function_driver::system_driver::reqwest::ReqwestDriver {}
+                .start_engine(resource, queue),
             #[cfg(feature = "cheri")]
-            EngineType::Cheri => &crate::function_driver::compute_driver::cheri::CheriDriver {},
+            EngineType::Cheri => crate::function_driver::compute_driver::cheri::CheriDriver {}
+                .start_engine(resource, queue),
             #[cfg(feature = "mmu")]
-            EngineType::Process => &crate::function_driver::compute_driver::mmu::MmuDriver {},
+            EngineType::Process => crate::function_driver::compute_driver::mmu::MmuDriver {}
+                .start_engine(resource, queue),
             #[cfg(feature = "kvm")]
-            EngineType::Kvm => &crate::function_driver::compute_driver::kvm::KvmDriver {},
+            EngineType::Kvm => crate::function_driver::compute_driver::kvm::KvmDriver {}
+                .start_engine(resource, queue),
+        }
+    }
+
+    pub fn parse_function(
+        &self,
+        function_path: String,
+        static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
+    ) -> DandelionResult<Function> {
+        match self {
+            #[cfg(feature = "reqwest_io")]
+            EngineType::Reqwest => crate::function_driver::system_driver::reqwest::ReqwestDriver {}
+                .parse_function(function_path, static_domain),
+            #[cfg(feature = "cheri")]
+            EngineType::Cheri => crate::function_driver::compute_driver::cheri::CheriDriver {}
+                .parse_function(function_path, static_domain),
+            #[cfg(feature = "mmu")]
+            EngineType::Process => crate::function_driver::compute_driver::mmu::MmuDriver {}
+                .parse_function(function_path, static_domain),
+            #[cfg(feature = "kvm")]
+            EngineType::Kvm => crate::function_driver::compute_driver::kvm::KvmDriver {}
+                .parse_function(function_path, static_domain),
         }
     }
 }

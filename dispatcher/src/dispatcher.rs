@@ -36,8 +36,6 @@ pub enum DispatcherInput {
     Set(CompositionSet),
 }
 
-const MAX_QUEUE: usize = 4096;
-
 // TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
 // the entire execution time anyway
 pub struct Dispatcher {
@@ -50,19 +48,16 @@ impl Dispatcher {
     pub fn init(
         mut resource_pool: ResourcePool,
         memory_resources: BTreeMap<DomainType, MemoryResource>,
-    ) -> DandelionResult<Dispatcher> {
+        work_queue: WorkQueue,
+    ) -> DandelionResult<Self> {
         // get machine specific configurations
         let domains = get_available_domains(memory_resources);
 
-        // TODO: get size from config?
-        let work_queue = WorkQueue::init(MAX_QUEUE);
-
         // create an engine queue wrapper of the work queue for each engine and use up all engine resource available
         for engine_type in EngineType::iter() {
-            let engine_queue = Box::new(EngineQueue::init(work_queue.clone(), engine_type));
-            let driver = engine_type.get_driver();
+            let engine_queue = EngineQueue::init(work_queue.clone(), engine_type);
             while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(engine_type) {
-                driver.start_engine(resource, engine_queue.clone())?;
+                engine_type.start_engine(resource, engine_queue.clone())?;
             }
         }
 
@@ -74,10 +69,6 @@ impl Dispatcher {
             work_queue,
             domains,
         });
-    }
-
-    pub fn get_work_queue(&self) -> WorkQueue {
-        self.work_queue.clone()
     }
 
     pub fn insert_function(
@@ -314,6 +305,9 @@ impl Dispatcher {
                             )
                             .map(|((comp_index, function_index), (mode, optional))| {
                                 // if it was not optional skip executing and push all output sets
+                                // TODO: for left, right and outer joins, some sets may also be pseuto optional.
+                                // (i.e. an empty left set on a right join can still have functions that should run)
+                                // Fix either by adding attributes to easily check here or move to check optional together with sharding.
                                 if !optional && composition_set_option.is_none() {
                                     let new_sets = args
                                         .output_mapping

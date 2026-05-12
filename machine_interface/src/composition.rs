@@ -1,7 +1,5 @@
 use crate::{
-    composition::join_iterator::JoinIterator,
-    memory_domain::{Context, ContextTrait},
-    DataItem, DataSet, Position,
+    composition::join_iterator::JoinIterator, memory_domain::Context, DataItem, DataSet, Position,
 };
 use core::fmt;
 use dandelion_commons::FunctionId;
@@ -111,20 +109,6 @@ impl CompositionSet {
 
     pub fn get_name(&self) -> &String {
         &self.set_name
-    }
-
-    /// Used for serializing the data to protobuf
-    pub fn get_item(&self, idx: usize) -> (String, u32, Vec<u8>) {
-        let (item, context) = &self.item_list[idx];
-        let Position { offset, size } = item.data;
-        let mut data_bytes = Vec::<u8>::with_capacity(size);
-        while data_bytes.len() < size {
-            let data_slice = context
-                .get_chunk_ref(offset + data_bytes.len(), size - data_bytes.len())
-                .expect("Failed to read item!");
-            data_bytes.extend_from_slice(data_slice);
-        }
-        (item.ident.clone(), item.key, data_bytes)
     }
 
     pub fn from_context(mut context: Context) -> Vec<Option<Self>> {

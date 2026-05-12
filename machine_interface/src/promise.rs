@@ -17,6 +17,7 @@ static PROMISE_ALIVE: u8 = 0b0010_0000;
 static CONTENT_SET: u8 = 0b0100_0000;
 static ALIVE: u8 = DEBT_ALIVE | PROMISE_ALIVE;
 
+// TODO replace 2 wakers with a futures::task::AtomicWaker
 struct PromiseData {
     /// Abort handle, only to be called once, as long as this value
     ///non null that means the function has not been aborted or terminated on it's own

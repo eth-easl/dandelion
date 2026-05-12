@@ -1,7 +1,5 @@
-use dandelion_commons::{
-    records::{Archive, Recorder},
-    DandelionResult,
-};
+use dandelion_commons::records::Archive;
+use dandelion_server::config::{FuncMetadata, PreloadFunc};
 use dispatcher::{
     dispatcher::{Dispatcher, DispatcherInput},
     queue::WorkQueue,
@@ -11,61 +9,19 @@ use log::{debug, error, info, warn};
 use machine_interface::{
     composition::CompositionSet,
     function_driver::{ComputeResource, Metadata},
-    machine_config::{DomainType, EngineType, IntoEnumIterator},
+    machine_config::{DomainType, EngineType},
     memory_domain::MemoryResource,
 };
-use multinode::client::register_as_remote;
+use multinode::DispatcherCommand;
 use nix::unistd::Pid;
-use std::{
-    collections::BTreeMap,
-    fs::read_to_string,
-    sync::{Arc, Mutex, OnceLock},
-};
+use std::{collections::BTreeMap, fs::read_to_string, sync::OnceLock};
 use tokio::{
     runtime::Builder,
     select, spawn,
-    sync::{mpsc, oneshot},
+    sync::{mpsc, watch},
 };
 
 mod frontend;
-
-pub enum DispatcherCommand {
-    FunctionRequest {
-        function_id: Arc<String>,
-        inputs: Vec<DispatcherInput>,
-        is_cold: bool,
-        recorder: Recorder,
-        callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
-    },
-    FunctionRegistration {
-        name: String,
-        engine_type: EngineType,
-        context_size: usize,
-        path: String,
-        metadata: Metadata,
-        callback: oneshot::Sender<DandelionResult<()>>,
-    },
-    CompositionRegistration {
-        composition: String,
-        callback: oneshot::Sender<DandelionResult<()>>,
-    },
-    RemoteRegistration {
-        callback: oneshot::Sender<DandelionResult<WorkQueue>>,
-    },
-    RemoteFunctionRequest {
-        function_id: Arc<String>,
-        inputs: Vec<Option<CompositionSet>>,
-        recorder: Recorder,
-        callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
-    },
-    CompositionRequest {
-        composition: String,
-        inputs: Vec<DispatcherInput>,
-        is_cold: bool,
-        recorder: Recorder,
-        callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
-    },
-}
 
 /// Recording setup
 static TRACING_ARCHIVE: OnceLock<Archive> = OnceLock::new();
@@ -146,18 +102,12 @@ async fn dispatcher_loop(
                     .send(insertion_res)
                     .expect("Composition registration callback failed!");
             }
-            DispatcherCommand::RemoteRegistration { callback } => {
-                // get queue to poll on
-                let workqueue = dispatcher.get_work_queue();
-                callback
-                    .send(Ok(workqueue))
-                    .expect("Remote registration callback should not fail.");
-            }
             DispatcherCommand::RemoteFunctionRequest {
                 function_id,
                 inputs,
                 recorder,
                 mut callback,
+                is_cold,
             } => {
                 debug!(
                     "Handling remote function request for function_id={}",
@@ -176,7 +126,7 @@ async fn dispatcher_loop(
                 let function_future = dispatcher.queue_function_by_name(
                     function_id,
                     dispatcher_input,
-                    false,
+                    !is_cold,
                     recorder,
                 );
                 spawn(async {
@@ -193,6 +143,35 @@ async fn dispatcher_loop(
             }
         };
     }
+}
+
+async fn remote_queue_server(queue_port: u16, queue: WorkQueue) {
+    // socket to listen to
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], queue_port));
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+
+    loop {
+        // wait for new connection to arrive
+        let accept_result = listener.accept().await;
+        if let Ok((socket, _address)) = accept_result {
+            spawn(multinode::client::remote_queue_server(
+                socket,
+                queue.clone(),
+            ));
+        } else {
+            // TODO handle errors on incomming request
+            continue;
+        };
+    }
+}
+
+async fn remote_queue_client(
+    remote_url: String,
+    sender: mpsc::Sender<DispatcherCommand>,
+    local_available: watch::Receiver<u32>,
+) {
+    let connection = tokio::net::TcpStream::connect(remote_url).await.unwrap();
+    multinode::client::remote_queue_client(connection, sender, local_available).await;
 }
 
 fn main() -> () {
@@ -342,23 +321,40 @@ fn main() -> () {
         ]),
     };
 
-    // Create an ARC pointer to the dispatcher for thread-safe access
+    let work_queue = WorkQueue::init();
     let dispatcher = Box::leak(Box::new(
-        Dispatcher::init(resource_pool, memory_pool).expect("Should be able to start dispatcher"),
+        Dispatcher::init(resource_pool, memory_pool, work_queue.clone())
+            .expect("Should be able to start dispatcher"),
     ));
     // start dispatcher
     dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
 
     // register preload functions
-    let preload_func = config.get_preload_functions();
-    if preload_func.len() > 0 {
-        Builder::new_multi_thread()
-            .enable_all()
+    let (preload_functions, preload_compositions) = config.get_preload_functions();
+    debug!(
+        "Preloading {} functions and {} compositions",
+        preload_functions.len(),
+        preload_compositions.len()
+    );
+    if preload_functions.len() > 0 {
+        Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(async {
-                for pf in preload_func.iter() {
-                    let engine_type = match pf.engine_type_id.to_lowercase().as_str() {
+                for pf in preload_functions.into_iter() {
+                    let PreloadFunc {
+                        name,
+                        engine_type_id,
+                        metadata:
+                            FuncMetadata {
+                                input_sets,
+                                output_sets,
+                            },
+                        ctx_size,
+                        bin_path,
+                    } = pf;
+                    debug!("Inserting preload function: {}", name);
+                    let engine_type = match engine_type_id.to_lowercase().as_str() {
                         #[cfg(feature = "mmu")]
                         "process" => EngineType::Process,
                         #[cfg(feature = "kvm")]
@@ -368,31 +364,40 @@ fn main() -> () {
                         _ => {
                             error!(
                                 "Failed to preload function {}: Unkown engine type string {}",
-                                pf.name, pf.engine_type_id
+                                name, engine_type_id
                             );
                             continue;
                         }
                     };
-                    let input_sets: Vec<(String, Option<CompositionSet>)> = pf
-                        .metadata
-                        .input_sets
-                        .iter()
-                        .map(|s| (s.clone(), None))
-                        .collect();
-                    let output_sets = pf.metadata.output_sets.clone();
+
+                    let input_sets: Vec<(String, Option<CompositionSet>)> =
+                        input_sets.into_iter().map(|s| (s, None)).collect();
                     let metadata = Metadata {
                         input_sets: input_sets,
                         output_sets: output_sets,
                     };
                     match dispatcher.insert_function(
-                        pf.name.clone(),
+                        name.clone(),
                         engine_type,
-                        pf.ctx_size,
-                        pf.bin_path.clone(),
+                        ctx_size,
+                        bin_path.clone(),
                         metadata,
                     ) {
-                        Err(err) => warn!("Failed to preload function {}: {}", pf.name, err),
-                        Ok(_) => info!("Inserted preload function {}", pf.name),
+                        Err(err) => warn!("Failed to preload function {}: {}", name, err),
+                        Ok(_) => info!("Inserted preload function {}", name),
+                    }
+                }
+            });
+    }
+    if preload_compositions.len() > 0 {
+        Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(async {
+                for preload_composition in preload_compositions.into_iter() {
+                    match dispatcher.insert_compositions(preload_composition) {
+                        Err(err) => warn!("Failed to preload composition {}", err),
+                        Ok(()) => info!("Inserted preload composition"),
                     }
                 }
             });
@@ -414,33 +419,24 @@ fn main() -> () {
     print!(" timestamp");
     print!("\n");
 
-    let remotes_running = Arc::new(Mutex::new(BTreeMap::new()));
+    let watcher = work_queue.idle_watcher();
+    // listen for other nodes trying to poll from local work queue
+    runtime.spawn(remote_queue_server(config.q_port, work_queue));
 
-    // if there is a remote url register there
-
-    let available_engine_types = EngineType::iter()
-        .map(|engine_type| (engine_type, 1u32))
-        .collect();
+    // start a thread to check if we should be checking remote queues
     if let Some(remote_url) = config.remote_queue_url {
-        runtime.spawn(async {
-            register_as_remote(
-                String::from("localhost"),
-                8081,
-                remote_url,
-                available_engine_types,
-            )
-            .await
-            .unwrap()
-        });
+        runtime.spawn(remote_queue_client(
+            remote_url,
+            dispatcher_sender.clone(),
+            watcher,
+        ));
     }
 
     // Run this server for... forever... unless I receive a signal!
     runtime.block_on(frontend::service_loop(
         dispatcher_sender,
-        remotes_running,
         folder_path,
         config.port,
-        config.multinode_timeout_ms,
     ));
 
     // clean up folder in tmp that is used for function storage

@@ -17,7 +17,7 @@ use dandelion_commons::{
     records::{RecordPoint, Recorder},
     DandelionError, DandelionResult, FunctionRegistryError,
 };
-use futures::{FutureExt, StreamExt};
+use futures::FutureExt;
 use http::{version::Version as HttpVersion, HeaderName, HeaderValue, Method as HttpMethod};
 use log::{debug, error, warn};
 use memcache::Client as MemcachedClient;
@@ -592,24 +592,18 @@ async fn run_memcached_request(
 pub const DEFAULT_CONCURRENCY_LIMIT: usize = 15;
 pub static CONCURRENCY_LIMIT: OnceLock<usize> = OnceLock::new();
 
-async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
+async fn engine_loop(queue: impl EngineWorkQueue + Send + 'static) -> Debt {
     log::debug!("Reqwest engine Init");
     let http_client = HttpClient::new();
 
-    // TODO FIX! This should not be necessary!
-    let mut queue_ref = Box::leak(queue);
-    let mut tuple;
     let concurrency_limit = CONCURRENCY_LIMIT.get_or_init(|| DEFAULT_CONCURRENCY_LIMIT);
     let semaphore = Arc::new(Semaphore::new(*concurrency_limit));
     let worker_lock = Arc::new(RwLock::new(()));
+
     loop {
         let ticket = semaphore.clone().acquire_owned().await.unwrap();
-        (tuple, queue_ref) = queue_ref.into_future().await;
-        let (args, debt) = if let Some((tuple_args, tuple_debt)) = tuple {
-            (tuple_args, tuple_debt)
-        } else {
-            panic!("Workqueue poll next returned none")
-        };
+        let (args, debt) = queue.get_engine_args().await;
+
         match args {
             WorkToDo::FunctionArguments {
                 function_id: _,
@@ -697,7 +691,7 @@ async fn engine_loop(queue: Box<dyn EngineWorkQueue + Send>) -> Debt {
     }
 }
 
-fn outer_engine(core_id: u8, queue: Box<dyn EngineWorkQueue + Send>) {
+fn outer_engine(core_id: u8, queue: impl EngineWorkQueue + Send + 'static) {
     // set core affinity
     if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
         log::error!("core received core id that could not be set");
@@ -725,7 +719,7 @@ impl Driver for ReqwestDriver {
     fn start_engine(
         &self,
         resource: ComputeResource,
-        queue: Box<dyn EngineWorkQueue + Send>,
+        queue: impl EngineWorkQueue + Send + 'static,
     ) -> DandelionResult<()> {
         log::debug!("Starting hyper engine");
         let core_id = match resource {

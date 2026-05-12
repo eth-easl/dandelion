@@ -1,10 +1,13 @@
-[{
-    "name": "matmul",
-    "engineType": "Cheri",
-    "ctxSize": 33554432,
-    "binaryPath": "../machine_interface/tests/data/test_elf_cheri_matmul",
-    "metadata": {
-        "inputSets": ["matrix_in"],
-        "outputSets": ["matrix_out"]
-    }
-}]
+{
+    "functions": [{
+        "name": "matmul",
+        "engineType": "Cheri",
+        "ctxSize": 33554432,
+        "binaryPath": "../machine_interface/tests/data/test_elf_cheri_matmul",
+        "metadata": {
+            "inputSets": ["matrix_in"],
+            "outputSets": ["matrix_out"]
+        }
+    }],
+    "compositions": []
+}

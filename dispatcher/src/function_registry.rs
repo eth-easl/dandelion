@@ -183,7 +183,6 @@ impl FunctionRegistry {
 
             // get the config from the parser
             let function_config = engine_type
-                .get_driver()
                 .parse_function(
                     String::from(""),
                     &domains[engine_type.get_domain_type() as usize],
