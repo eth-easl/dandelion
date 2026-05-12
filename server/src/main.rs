@@ -5,31 +5,20 @@ use dispatcher::{
     queue::WorkQueue,
     resource_pool::ResourcePool,
 };
-use futures::{
-    task::{AtomicWaker, Context, Poll},
-    Stream,
-};
 use log::{debug, error, info, warn};
 use machine_interface::{
     composition::CompositionSet,
     function_driver::{ComputeResource, Metadata},
-    machine_config::{DomainType, EngineType, IntoEnumIterator},
+    machine_config::{DomainType, EngineType},
     memory_domain::MemoryResource,
 };
 use multinode::DispatcherCommand;
 use nix::unistd::Pid;
-use std::{
-    collections::BTreeMap,
-    fs::read_to_string,
-    sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
-        Arc, LazyLock, OnceLock,
-    },
-};
+use std::{collections::BTreeMap, fs::read_to_string, sync::OnceLock};
 use tokio::{
     runtime::Builder,
     select, spawn,
-    sync::{mpsc, watch, Notify},
+    sync::{mpsc, watch},
 };
 
 mod frontend;
@@ -156,77 +145,7 @@ async fn dispatcher_loop(
     }
 }
 
-static CHANGE_WAKER: AtomicWaker = AtomicWaker::new();
-static UPDATED_COUNT: AtomicBool = AtomicBool::new(false);
-/// Future to check if the number of idle engines has been updated
-/// Need the atomic bool to make sure it can detect changes between polls and
-/// to retrun pending on the next call when the stream should be put on idle.
-struct ChangePoller {}
-impl Stream for ChangePoller {
-    type Item = ();
-
-    // Required method
-    fn poll_next(
-        self: core::pin::Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        CHANGE_WAKER.register(cx.waker());
-        let updated = UPDATED_COUNT.load(Ordering::Acquire);
-        if updated {
-            UPDATED_COUNT.store(false, Ordering::Release);
-            Poll::Ready(Some(()))
-        } else {
-            Poll::Pending
-        }
-    }
-}
-
-// TODO make into array with all relevant engines
-static IDLE_COUNT: AtomicU32 = AtomicU32::new(0);
-// TODO: this should be a future on the queue, that await the queue having something in the work queue and an empty worker queue
-static QUEUEING_NOTIFIER: LazyLock<Arc<Notify>> = LazyLock::new(|| Arc::new(Notify::new()));
-
-fn add_idle_send() {
-    IDLE_COUNT.fetch_add(1, Ordering::AcqRel);
-    UPDATED_COUNT.store(true, Ordering::Release);
-    CHANGE_WAKER.wake();
-}
-
-fn remove_idle_send() {
-    IDLE_COUNT.fetch_sub(1, Ordering::AcqRel);
-    UPDATED_COUNT.store(true, Ordering::Release);
-    CHANGE_WAKER.wake();
-}
-
-fn notify_queueing() {
-    QUEUEING_NOTIFIER.notify_waiters();
-}
-
-// TODO think about additional frontend request to add or remove a remote from the list
-// TODO think if we may want to fuse client and server to make them bidirectional
-// Probably want a version for which they are peers and one for hierarchical scheduling.
-// Peering can be implemented by having two open connections, but may have unwanted side effects.
-// (Like a request might pingpong between two servers under specific circumstances)
-// TODO: currently only handles a single kind of engine type being idle and just marks all of them as available.
-async fn update_idle_state(state_control: watch::Sender<Box<[(EngineType, u32)]>>) {
-    // array with currently idle engines
-    use futures::StreamExt;
-    let mut change_poller = ChangePoller {};
-    let mut idle_cores = 0;
-    while let Some(()) = change_poller.next().await {
-        let new_idle_cores = IDLE_COUNT.load(Ordering::Acquire);
-        if new_idle_cores != idle_cores {
-            idle_cores = new_idle_cores;
-            state_control.send_modify(|engine_array| {
-                for (_, engine_count) in engine_array.iter_mut() {
-                    *engine_count = idle_cores
-                }
-            });
-        }
-    }
-}
-
-async fn remote_queue_server(queue_port: u16, queue: WorkQueue, work_available: Arc<Notify>) {
+async fn remote_queue_server(queue_port: u16, queue: WorkQueue) {
     // socket to listen to
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], queue_port));
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
@@ -238,7 +157,6 @@ async fn remote_queue_server(queue_port: u16, queue: WorkQueue, work_available: 
             spawn(multinode::client::remote_queue_server(
                 socket,
                 queue.clone(),
-                work_available.clone(),
             ));
         } else {
             // TODO handle errors on incomming request
@@ -250,7 +168,7 @@ async fn remote_queue_server(queue_port: u16, queue: WorkQueue, work_available: 
 async fn remote_queue_client(
     remote_url: String,
     sender: mpsc::Sender<DispatcherCommand>,
-    local_available: watch::Receiver<Box<[(EngineType, u32)]>>,
+    local_available: watch::Receiver<u32>,
 ) {
     let connection = tokio::net::TcpStream::connect(remote_url).await.unwrap();
     multinode::client::remote_queue_client(connection, sender, local_available).await;
@@ -403,7 +321,7 @@ fn main() -> () {
         ]),
     };
 
-    let work_queue = WorkQueue::init(add_idle_send, remove_idle_send, notify_queueing);
+    let work_queue = WorkQueue::init();
     let dispatcher = Box::leak(Box::new(
         Dispatcher::init(resource_pool, memory_pool, work_queue.clone())
             .expect("Should be able to start dispatcher"),
@@ -501,27 +419,16 @@ fn main() -> () {
     print!(" timestamp");
     print!("\n");
 
-    let engine_vec = EngineType::iter()
-        .map(|engine_type| (engine_type, 0))
-        .collect();
-    let (state_sender, state_receiver) = watch::channel(engine_vec);
-
-    // spawn task that will update idle engine state
-    runtime.spawn(update_idle_state(state_sender));
-
+    let watcher = work_queue.idle_watcher();
     // listen for other nodes trying to poll from local work queue
-    runtime.spawn(remote_queue_server(
-        config.q_port,
-        work_queue,
-        QUEUEING_NOTIFIER.clone(),
-    ));
+    runtime.spawn(remote_queue_server(config.q_port, work_queue));
 
     // start a thread to check if we should be checking remote queues
     if let Some(remote_url) = config.remote_queue_url {
         runtime.spawn(remote_queue_client(
             remote_url,
             dispatcher_sender.clone(),
-            state_receiver,
+            watcher,
         ));
     }
 

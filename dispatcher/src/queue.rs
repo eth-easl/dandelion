@@ -15,6 +15,7 @@ use std::{
     sync::Arc,
     task::{Poll, Waker},
 };
+use tokio::sync::{watch, Notify};
 
 pub enum QueueFlag {
     EngineReqwestIO = 0b1,
@@ -56,37 +57,30 @@ const MAX_QUEUE: usize = 4096;
 /// Consumers can pop elements using the `aquire` function.
 #[derive(Clone)]
 pub struct WorkQueue {
-    // Holds the two queues, first one for work to be done, second one for engines waiting for fitting work to arrive
+    /// Holds the two queues, first one for work to be done, second one for engines waiting for fitting work to arrive
     queues: Arc<Mutex<(LinkedList<QueueElement>, LinkedList<WakerElement>)>>,
     promise_buffer: PromiseBuffer,
-    /// This is used to notify that the number of idle threads has increased or decreased
-    add_idle: fn(),
-    remove_idle: fn(),
-    notify_queueing: fn(),
+    /// Used to keep track of idle cores
+    idle_sender: watch::Sender<u32>,
+    idle_receiver: watch::Receiver<u32>,
+    /// Notifier to send out notification, that idle resource count changed
+    /// Notifier to send out notification that queueing is happening
+    queuing_notifier: Arc<Notify>,
 }
 
-struct WaitFuture<'list> {
+struct WaitFuture<'queue> {
     flags: u32,
-    queues: &'list Arc<Mutex<(LinkedList<QueueElement>, LinkedList<WakerElement>)>>,
-    lock: MutexLockFuture<'list, (LinkedList<QueueElement>, LinkedList<WakerElement>)>,
-    add_idle: fn(),
-    remove_idle: fn(),
+    work_queue: &'queue WorkQueue,
+    lock: MutexLockFuture<'queue, (LinkedList<QueueElement>, LinkedList<WakerElement>)>,
     was_set_idle: bool,
 }
 
 impl<'list> WaitFuture<'list> {
-    fn new(
-        flags: u32,
-        queues: &'list Arc<Mutex<(LinkedList<QueueElement>, LinkedList<WakerElement>)>>,
-        add_idle: fn(),
-        remove_idle: fn(),
-    ) -> WaitFuture<'list> {
+    fn new(flags: u32, work_queue: &'list WorkQueue) -> WaitFuture<'list> {
         Self {
             flags,
-            queues,
-            lock: queues.lock(),
-            add_idle,
-            remove_idle,
+            work_queue,
+            lock: work_queue.queues.lock(),
             was_set_idle: false,
         }
     }
@@ -110,7 +104,7 @@ impl Future for WaitFuture<'_> {
             if let Some(result_tupple) = result {
                 // Found some work, so core is not idle
                 if self.was_set_idle {
-                    (self.remove_idle)();
+                    self.work_queue.idle_sender.send_modify(|idle| *idle -= 1);
                 }
                 Poll::Ready(result_tupple)
             } else {
@@ -121,11 +115,11 @@ impl Future for WaitFuture<'_> {
                 };
                 if !self.was_set_idle {
                     self.was_set_idle = true;
-                    (self.add_idle)();
+                    self.work_queue.idle_sender.send_modify(|idle| *idle += 1);
                 }
                 lock_guard.1.push_back(waker_element);
                 // lock was ready once, need to set new one
-                self.lock = self.queues.lock();
+                self.lock = self.work_queue.queues.lock();
                 Poll::Pending
             }
         } else {
@@ -136,14 +130,23 @@ impl Future for WaitFuture<'_> {
 
 impl WorkQueue {
     /// Creates a new WorkQueue of given size.
-    pub fn init(add_idle: fn(), remove_idle: fn(), notify_queueing: fn()) -> Self {
+    pub fn init() -> Self {
+        let (idle_sender, idle_receiver) = watch::channel(0);
         WorkQueue {
             queues: Arc::new(Mutex::new((LinkedList::new(), LinkedList::new()))),
             promise_buffer: PromiseBuffer::init(MAX_QUEUE),
-            add_idle,
-            remove_idle,
-            notify_queueing,
+            idle_sender,
+            idle_receiver,
+            queuing_notifier: Arc::new(Notify::new()),
         }
+    }
+
+    pub fn idle_watcher(&self) -> watch::Receiver<u32> {
+        self.idle_receiver.clone()
+    }
+
+    pub fn queueing_notifier(&self) -> Arc<Notify> {
+        self.queuing_notifier.clone()
     }
 
     /// Pushes the work and debt to the back of the queue and sets the flags accordingly.
@@ -160,7 +163,7 @@ impl WorkQueue {
         {
             waker_to_call.waker.wake();
         } else {
-            (self.notify_queueing)()
+            self.queuing_notifier.notify_waiters();
         }
     }
 
@@ -229,7 +232,7 @@ impl WorkQueue {
     /// Spins on the queue until it manages to acquire some work that matches the given flags.
     pub async fn get_work(&self, engine_flags: u32) -> (WorkToDo, Debt) {
         // try to get work, if there is none, insert self into waker and try again
-        WaitFuture::new(engine_flags, &self.queues, self.add_idle, self.remove_idle).await
+        WaitFuture::new(engine_flags, &self).await
     }
 }
 

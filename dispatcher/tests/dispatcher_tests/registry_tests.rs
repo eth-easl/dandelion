@@ -265,8 +265,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
 #[cfg(any(feature = "reqwest_io"))]
 fn test_insert_composition_with_http_func() {
     use std::collections::BTreeMap;
-    let stub = || {};
-    let work_queue = dispatcher::queue::WorkQueue::init(stub, stub, stub);
+    let work_queue = dispatcher::queue::WorkQueue::init();
     let dispatcher = dispatcher::dispatcher::Dispatcher::init(
         dispatcher::resource_pool::ResourcePool {
             engine_pool: futures::lock::Mutex::new(BTreeMap::new()),

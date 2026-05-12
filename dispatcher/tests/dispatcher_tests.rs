@@ -47,8 +47,7 @@ mod dispatcher_tests {
                 )
             })
             .collect();
-        let stub = || {};
-        let work_queue = WorkQueue::init(stub, stub, stub);
+        let work_queue = WorkQueue::init();
         let dispatcher = Dispatcher::init(resource_pool, memory_resources, work_queue)
             .expect("Should have initialized dispatcher");
         let function_id = Arc::new(String::from("test_function"));
