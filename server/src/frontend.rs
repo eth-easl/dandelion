@@ -16,9 +16,7 @@ use hyper::{
 };
 use log::{debug, error, warn};
 use machine_interface::{
-    composition::CompositionSet,
-    function_driver::Metadata,
-    machine_config::EngineType,
+    composition::CompositionSet, function_driver::Metadata, machine_config::EngineType,
     memory_domain::bytes_context::BytesContext,
 };
 use multinode::DispatcherCommand;
