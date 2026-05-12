@@ -302,7 +302,7 @@ impl DandelionConfig {
                 && !pf.bin_path.is_empty();
             if !valid {
                 warn!(
-                    "Ignoring preload because function {}: does not match specification!",
+                    "Ignoring preload function {}: Does not match specification!",
                     pf.name
                 )
             };
