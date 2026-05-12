@@ -310,7 +310,7 @@ impl DandelionConfig {
         }) || !compositions.iter().all(|composition| {
             let valid = !composition.is_empty();
             if !valid {
-                warn!("Ignoring preload because of empty composition");
+                warn!("Ignoring empty composition preload!");
             }
             valid
         }) {
