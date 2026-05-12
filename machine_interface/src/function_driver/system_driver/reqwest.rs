@@ -345,7 +345,7 @@ async fn http_request(
         .and_then(|len_str| len_str.parse::<usize>().ok());
 
     for (key, value) in response.headers() {
-        preamble.push_str(&format!("{}:{}", key, value.to_str().unwrap()));
+        preamble.push_str(&format!("{}:{}\n", key, value.to_str().unwrap()));
     }
 
     let mut body_length = 0;
