@@ -1,4 +1,5 @@
 use crate::{
+    dispatcher::policies::get_max_parallelism,
     function_registry::{FunctionRegistry, FunctionType},
     queue::{EngineQueue, WorkQueue},
     resource_pool::ResourcePool,
@@ -28,12 +29,33 @@ use machine_interface::{
     machine_config::{get_available_domains, DomainType, EngineType, IntoEnumIterator},
     memory_domain::{MemoryDomain, MemoryResource},
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{atomic::AtomicUsize, Arc},
+};
+
+mod policies;
 
 #[derive(Debug, Clone)]
 pub enum DispatcherInput {
     None,
     Set(CompositionSet),
+}
+
+pub struct SystemInformation {
+    num_local_cores: usize,
+    num_remote_cores: AtomicUsize,
+    offload_const: usize,
+}
+
+impl SystemInformation {
+    pub fn new(num_local_cores: usize) -> Self {
+        Self {
+            num_local_cores,
+            num_remote_cores: AtomicUsize::new(0),
+            offload_const: 2, // TODO
+        }
+    }
 }
 
 // TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
@@ -42,6 +64,7 @@ pub struct Dispatcher {
     function_registry: FunctionRegistry,
     work_queue: WorkQueue,
     domains: Vec<Arc<Box<dyn MemoryDomain>>>,
+    system_info: SystemInformation,
 }
 
 impl Dispatcher {
@@ -52,6 +75,20 @@ impl Dispatcher {
     ) -> DandelionResult<Self> {
         // get machine specific configurations
         let domains = get_available_domains(memory_resources);
+
+        // get the number of compute cores from the resource pool
+        #[cfg(feature = "mmu")]
+        let compute_engine_type = EngineType::Process;
+        #[cfg(feature = "kvm")]
+        let compute_engine_type = EngineType::Kvm;
+        #[cfg(feature = "cheri")]
+        let compute_engine_type = EngineType::Cheri;
+        let system_info = SystemInformation::new(
+            match resource_pool.sync_get_availability(compute_engine_type) {
+                Some(n) => n,
+                None => 0,
+            },
+        );
 
         // create an engine queue wrapper of the work queue for each engine and use up all engine resource available
         for engine_type in EngineType::iter() {
@@ -68,6 +105,7 @@ impl Dispatcher {
             function_registry,
             work_queue,
             domains,
+            system_info,
         });
     }
 
@@ -393,9 +431,18 @@ impl Dispatcher {
         // but still want to run if we queued it.
         let is_sharded = input_sets.len() != 0 && input_sets.iter().any(|opt| opt.is_some());
         let composition_results: DandelionResult<Vec<_>> = if is_sharded {
-            // TODO: check how to best compute the target parallelism
-            let target_parallelism = usize::MAX;
-            let sharded = get_sharding(input_sets, join_order, join_strategies, target_parallelism);
+            let min_set_size = self
+                .function_registry
+                .get_metadata(&function_id)?
+                .min_set_size;
+            let max_parallelism = get_max_parallelism(&self, &input_sets, min_set_size);
+            let sharded = get_sharding(
+                input_sets,
+                join_order,
+                join_strategies,
+                max_parallelism,
+                min_set_size,
+            );
             let size_hint = sharded.len();
             recorders = Vec::with_capacity(size_hint);
             let resutls: Vec<_> = sharded

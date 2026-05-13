@@ -92,6 +92,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
                 Metadata {
                     input_sets: local_names,
                     output_sets: out_set_names.clone(),
+                    min_set_size: 0,
                 },
             )
             .expect("should be able to update function");
@@ -212,6 +213,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
                 Metadata {
                     input_sets: local_names,
                     output_sets: out_set_names.clone(),
+                    min_set_size: 0,
                 },
             )
             .expect("should be able to update function");

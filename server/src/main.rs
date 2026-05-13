@@ -9,7 +9,7 @@ use log::{debug, error, info, warn};
 use machine_interface::{
     composition::CompositionSet,
     function_driver::{ComputeResource, Metadata},
-    machine_config::{DomainType, EngineType},
+    machine_config::{create_engine_resource_map, DomainType, EngineType},
     memory_domain::MemoryResource,
 };
 use multinode::DispatcherCommand;
@@ -266,20 +266,7 @@ fn main() -> () {
     let (dispatcher_sender, dispatcher_recevier) = mpsc::channel(1000);
 
     // set up dispatcher configuration basics
-    let mut pool_map = BTreeMap::new();
-
-    // insert engines for the currentyl selected compute engine type
-    // todo add function to machine config to detect resources and auto generate this
-    #[cfg(feature = "mmu")]
-    let engine_type = EngineType::Process;
-    #[cfg(feature = "kvm")]
-    let engine_type = EngineType::Kvm;
-    #[cfg(feature = "cheri")]
-    let engine_type = EngineType::Cheri;
-    #[cfg(any(feature = "cheri", feature = "mmu", feature = "kvm"))]
-    pool_map.insert(engine_type, compute_cores);
-    #[cfg(feature = "reqwest_io")]
-    pool_map.insert(EngineType::Reqwest, communication_cores);
+    let pool_map = create_engine_resource_map(compute_cores, communication_cores);
     let resource_pool = ResourcePool {
         engine_pool: futures::lock::Mutex::new(pool_map),
     };
@@ -349,6 +336,7 @@ fn main() -> () {
                             FuncMetadata {
                                 input_sets,
                                 output_sets,
+                                min_set_size,
                             },
                         ctx_size,
                         bin_path,
@@ -373,8 +361,9 @@ fn main() -> () {
                     let input_sets: Vec<(String, Option<CompositionSet>)> =
                         input_sets.into_iter().map(|s| (s, None)).collect();
                     let metadata = Metadata {
-                        input_sets: input_sets,
-                        output_sets: output_sets,
+                        input_sets,
+                        output_sets,
+                        min_set_size,
                     };
                     match dispatcher.insert_function(
                         name.clone(),

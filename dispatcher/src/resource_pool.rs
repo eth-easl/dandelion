@@ -11,6 +11,11 @@ pub struct ResourcePool {
 }
 
 impl ResourcePool {
+    pub fn sync_get_availability(&mut self, engine_id: EngineType) -> Option<usize> {
+        let pool_guard = self.engine_pool.get_mut();
+        pool_guard.get_mut(&engine_id).and_then(|x| Some(x.len()))
+    }
+
     pub fn sync_acquire_engine_resource(
         &mut self,
         engine_id: EngineType,
