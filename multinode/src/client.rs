@@ -20,11 +20,11 @@ use dispatcher::queue::{get_engine_flag, WorkQueue};
 use futures::{future::Either, stream::FuturesUnordered, FutureExt, StreamExt};
 use log::{trace, warn};
 use machine_interface::{
-    composition::CompositionSet,
+    composition::{CompositionSet, ItemData},
     function_driver::{WorkDone, WorkToDo},
     machine_config::{EngineType, IntoEnumIterator},
     memory_domain::ContextTrait,
-    DataItem, Position,
+    Position,
 };
 use prost::bytes::{Bytes, BytesMut};
 use std::{
@@ -67,24 +67,27 @@ async fn send_message(
     if let Some((data_sets, total_size)) = data_buffer {
         sender.write_u64(total_size).await.unwrap();
         for data_set in data_sets.into_iter().filter_map(|item| item) {
-            for (item, item_context) in data_set.into_iter() {
-                let DataItem {
-                    ident: _,
-                    data:
-                        Position {
+            for (item, item_data) in data_set.into_iter() {
+                match item_data {
+                    ItemData::LocalData(context) => {
+                        let Position {
                             offset: item_offset,
                             size: item_size,
-                        },
-                    key: _,
-                } = item;
-                debug_assert_ne!(0, item_size);
-                let mut bytes_written = 0;
-                while bytes_written < item_size {
-                    let next_chunk = item_context
-                        .get_chunk_ref(item_offset + bytes_written, item_size - bytes_written)
-                        .unwrap();
-                    sender.write_all(next_chunk).await.unwrap();
-                    bytes_written += next_chunk.len();
+                        } = item.data;
+                        debug_assert_ne!(0, item_size);
+                        let mut bytes_written = 0;
+                        while bytes_written < item_size {
+                            let next_chunk = context
+                                .get_chunk_ref(
+                                    item_offset + bytes_written,
+                                    item_size - bytes_written,
+                                )
+                                .unwrap();
+                            sender.write_all(next_chunk).await.unwrap();
+                            bytes_written += next_chunk.len();
+                        }
+                    }
+                    _ => unimplemented!(),
                 }
             }
         }

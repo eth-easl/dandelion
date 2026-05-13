@@ -1,5 +1,5 @@
 use crate::{
-    composition::CompositionSet,
+    composition::LocalCompositionSet,
     function_driver::{
         functions::{Function, FunctionConfig},
         system_driver::SystemFunction,
@@ -269,7 +269,7 @@ impl Request for MemcachedRequest {
 }
 
 fn parse_requests<RequestType: Request>(
-    composition_set: CompositionSet,
+    composition_set: LocalCompositionSet,
 ) -> DandelionResult<Vec<RequestType>> {
     let request_info: DandelionResult<Vec<RequestType>> = composition_set
         .into_iter()
@@ -526,7 +526,7 @@ fn responses_write(
 }
 
 async fn run_http_request(
-    composition_set: CompositionSet,
+    composition_set: LocalCompositionSet,
     client: HttpClient,
     metadata: Arc<Metadata>,
     debt: Debt,
@@ -558,7 +558,7 @@ async fn run_http_request(
 }
 
 async fn run_memcached_request(
-    composition_set: CompositionSet,
+    composition_set: LocalCompositionSet,
     metadata: Arc<Metadata>,
     debt: Debt,
     recorder: Recorder,
@@ -645,8 +645,8 @@ async fn engine_loop(queue: impl EngineWorkQueue + Send + 'static) -> Debt {
                 let input_option = metadata.input_sets[0]
                     .1
                     .as_ref()
-                    .and_then(|static_set| Some(static_set.clone()))
-                    .or_else(|| input_sets[0].take());
+                    .map(|static_set| static_set.clone())
+                    .or_else(|| input_sets[0].take().and_then(|set| Some(set.into_local())));
                 if let Some(request_set) = input_option {
                     match system_function {
                         SystemFunction::HTTP => {

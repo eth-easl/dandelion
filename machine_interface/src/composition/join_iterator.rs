@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::composition::{CompositionSet, JoinStrategy, ShardingMode};
+use crate::composition::{CompositionSet, ItemData, JoinStrategy, ShardingMode};
 
 pub(super) trait JoinIterator {
     /// Reduces the parallelism of all `AnyIterators` in the iterator chain by combining some sets.
@@ -111,6 +111,11 @@ impl JoinIterator for SetEachIterator {
             // no need to clone the original set name, sharding is for functions that are to be run.
             // When the function is run, the set names from the metadata are used, so this would be ignored anyway
             set_name: String::new(),
+            non_local_sets: if let ItemData::LocalData(_) = self.set.item_list[self.item_idx].1 {
+                0
+            } else {
+                1
+            },
         });
         if let Some(left) = &mut self.left {
             left.fill_in(to_fill);
@@ -313,12 +318,24 @@ impl JoinIterator for SetKeyIterator {
         let fill_this_set = self.key_groups_idx < self.key_groups.len()
             && self.key == self.key_groups[self.key_groups_idx].0;
         if fill_this_set {
+            let item_list =
+                self.set.item_list[self.key_groups[self.key_groups_idx].1.clone()].to_vec();
+            let non_local_sets = item_list
+                .iter()
+                .filter(|(_, data)| {
+                    if let ItemData::LocalData(_) = data {
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .count();
             to_fill[self.write_idx] = Some(CompositionSet {
-                item_list: self.set.item_list[self.key_groups[self.key_groups_idx].1.clone()]
-                    .to_vec(),
+                item_list,
                 // no need to clone the original set name, sharding is for functions that are to be run.
                 // When the function is run, the set names from the metadata are used, so this would be ignored anyway
                 set_name: String::new(),
+                non_local_sets,
             });
         }
         if let Some(left) = &mut self.left {

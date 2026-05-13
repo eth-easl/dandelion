@@ -1,7 +1,6 @@
 use crate::{
     composition::join_iterator::JoinIterator, memory_domain::Context, DataItem, DataSet, Position,
 };
-use core::fmt;
 use dandelion_commons::FunctionId;
 use log::trace;
 use std::{cmp, collections::BTreeMap, sync::Arc, vec};
@@ -91,18 +90,18 @@ impl JoinStrategy {
     }
 }
 
-/// Struct that has all locations belonging to one set, that is potentially spread over multiple contexts.
-/// Should only be constructed from a context, returning a list of all sets in the contexts content.
+/// Struct containing all data belonging to one set, that is potentially spread over multiple contexts.
 /// By construction, empty sets should not be allowed to exist, as they should return None instead on construction
-#[derive(Clone, Debug)]
-pub struct CompositionSet {
+/// This version of the struct is guaranteed to only contain data that is in local memory.
+#[derive(Debug, Clone)]
+pub struct LocalCompositionSet {
     /// Each tuple in the list contains the DataItem with the metadata and the Context in which the item is stored.
     /// The data: Position of the DataItem refers to offset and size within the Context.
     item_list: Vec<(DataItem, Arc<Context>)>,
     set_name: String,
 }
 
-impl CompositionSet {
+impl LocalCompositionSet {
     pub fn len(&self) -> usize {
         self.item_list.len()
     }
@@ -111,38 +110,10 @@ impl CompositionSet {
         &self.set_name
     }
 
-    pub fn from_context(mut context: Context) -> Vec<Option<Self>> {
-        // take the content from the context before putting it into an arc
-        let sets = core::mem::take(&mut context.content);
-        let context_arc = Arc::new(context);
-        let mut composition_sets = Vec::with_capacity(sets.len());
-        for set_option in sets.into_iter() {
-            let composition_option = if let Some(set) = set_option {
-                let DataSet { ident, buffers } = set;
-                if buffers.len() == 0 {
-                    None
-                } else {
-                    let mut item_list = Vec::with_capacity(buffers.len());
-                    for item in buffers.into_iter() {
-                        item_list.push((item, context_arc.clone()));
-                    }
-                    Some(CompositionSet {
-                        item_list,
-                        set_name: ident,
-                    })
-                }
-            } else {
-                None
-            };
-            composition_sets.push(composition_option);
-        }
-        composition_sets
-    }
-
     // This is used on the frontend, to be depricated when we change function registration serialziation
     // DO NOT ADD USAGE
     pub fn from_byte_items(items: Vec<(String, Vec<u8>)>) -> Self {
-        CompositionSet {
+        Self {
             item_list: items
                 .into_iter()
                 .map(|(name, data)| {
@@ -168,15 +139,10 @@ impl CompositionSet {
             set_name: String::new(),
         }
     }
-
-    pub fn combine(&mut self, additional: CompositionSet) {
-        self.item_list.extend(additional.item_list.into_iter());
-        self.item_list.sort_unstable_by_key(|a| a.0.key);
-    }
 }
 
 /// Iterator over a reference of the composition set, not taking ownership
-impl<'origin> IntoIterator for &'origin CompositionSet {
+impl<'origin> IntoIterator for &'origin LocalCompositionSet {
     type Item = &'origin (DataItem, Arc<Context>);
     type IntoIter = std::slice::Iter<'origin, (DataItem, Arc<Context>)>;
     fn into_iter(self) -> Self::IntoIter {
@@ -185,7 +151,7 @@ impl<'origin> IntoIterator for &'origin CompositionSet {
 }
 
 /// Iterator taking ownership of the Compositon set
-impl IntoIterator for CompositionSet {
+impl IntoIterator for LocalCompositionSet {
     type Item = (DataItem, Arc<Context>);
     type IntoIter = std::vec::IntoIter<(DataItem, Arc<Context>)>;
     fn into_iter(self) -> Self::IntoIter {
@@ -193,16 +159,127 @@ impl IntoIterator for CompositionSet {
     }
 }
 
+/// Enum to represent data in a composition set.
+#[derive(Clone, Debug)]
+pub enum ItemData {
+    /// Data that is available locally on the node to use for computation.
+    LocalData(Arc<Context>),
+    /// Data that is already on another node and can be fetched from there.
+    RemoteData(),
+    /// Data that needs to be fetched using an IO function.
+    /// The DataItem and Context contain the inputs for the IO function to get the item locally.
+    IoData(DataItem, Arc<Context>),
+}
+
+/// Struct contianing refences for all data belonging to one set.
+/// Refences can either be to local data stored in contexts (from inputs or produced by functions running locally),
+/// or references to data that needs to be fetched remotely, either from another node or with an IO function.
+/// By construction, empty sets should not be allowed to exist, as they should return None instead on construction
+#[derive(Clone, Debug)]
+pub struct CompositionSet {
+    /// Each tuple in the list contains the DataItem with the metadata and the Context in which the item is stored.
+    /// The data: Position of the DataItem refers to offset and size within the Context.
+    item_list: Vec<(DataItem, ItemData)>,
+    set_name: String,
+    non_local_sets: usize,
+}
+
+impl CompositionSet {
+    pub fn len(&self) -> usize {
+        self.item_list.len()
+    }
+
+    pub fn get_name(&self) -> &String {
+        &self.set_name
+    }
+
+    pub fn into_local(self) -> LocalCompositionSet {
+        let CompositionSet {
+            item_list,
+            set_name,
+            non_local_sets,
+        } = self;
+        debug_assert_eq!(0, non_local_sets);
+        LocalCompositionSet {
+            item_list: item_list
+                .into_iter()
+                .map(|(item, data)| match data {
+                    ItemData::LocalData(context) => (item, context),
+                    _ => panic!("Converting CompositionSet with non local items"),
+                })
+                .collect(),
+            set_name: set_name,
+        }
+    }
+
+    pub fn from_context(mut context: Context) -> Vec<Option<Self>> {
+        // take the content from the context before putting it into an arc
+        let sets = core::mem::take(&mut context.content);
+        let context_arc = Arc::new(context);
+        sets.into_iter()
+            .map(|set_option| {
+                if let Some(set) = set_option {
+                    let DataSet { ident, buffers } = set;
+                    if buffers.len() == 0 {
+                        None
+                    } else {
+                        let mut item_list = Vec::with_capacity(buffers.len());
+                        for item in buffers.into_iter() {
+                            item_list.push((item, ItemData::LocalData(context_arc.clone())));
+                        }
+                        Some(CompositionSet {
+                            item_list,
+                            set_name: ident,
+                            non_local_sets: 0,
+                        })
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub fn combine(&mut self, additional: CompositionSet) {
+        self.item_list.extend(additional.item_list.into_iter());
+        self.item_list.sort_unstable_by_key(|a| a.0.key);
+        self.non_local_sets += additional.non_local_sets;
+    }
+}
+
+/// Iterator over a reference of the composition set, not taking ownership
+impl<'origin> IntoIterator for &'origin CompositionSet {
+    type Item = &'origin (DataItem, ItemData);
+    type IntoIter = std::slice::Iter<'origin, (DataItem, ItemData)>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.item_list.iter()
+    }
+}
+
+/// Iterator taking ownership of the Compositon set
+impl IntoIterator for CompositionSet {
+    type Item = (DataItem, ItemData);
+    type IntoIter = std::vec::IntoIter<(DataItem, ItemData)>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.item_list.into_iter()
+    }
+}
+
 /// A more concise display for the composition set that does not print the entire Context contents.
-impl fmt::Display for CompositionSet {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl core::fmt::Display for CompositionSet {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         write!(f, "items: [")?;
-        for (item, ctx) in self.item_list.iter() {
-            write!(
-                f,
-                "(item: {:?}, context: {{ type: {:?}, size: {}, state: {:?} }})",
-                item, ctx.context, ctx.size, ctx.state
-            )?;
+        for (item, data) in self.item_list.iter() {
+            write!(f, "(item: {:?}, ", item)?;
+            match data {
+                ItemData::LocalData(context) => write!(
+                    f,
+                    "data: {{ : {:?}, size: {}, state: {:?} }})",
+                    context.context, context.size, context.state
+                ),
+                ItemData::IoData(_, _) => write!(f, "IoData"),
+                ItemData::RemoteData() => write!(f, "RemoteData"),
+            }?;
         }
         write!(f, "]")
     }
@@ -445,7 +522,7 @@ fn create_dummy_set(keys: Vec<u32>) -> CompositionSet {
                     key: k,
                     data: Position { offset: 0, size: 0 },
                 },
-                dummy_context.clone(),
+                ItemData::LocalData(dummy_context.clone()),
             )
         })
         .sorted_by_key(|tuple| tuple.0.key)
@@ -453,6 +530,7 @@ fn create_dummy_set(keys: Vec<u32>) -> CompositionSet {
     CompositionSet {
         item_list: items,
         set_name: String::new(),
+        non_local_sets: 0,
     }
 }
 

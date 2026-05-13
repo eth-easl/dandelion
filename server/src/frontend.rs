@@ -7,7 +7,6 @@ use dandelion_commons::{
     err_dandelion, records::Recorder, DandelionError, DandelionResult, FrontendError,
 };
 use dandelion_server::DandelionBody;
-use dispatcher::dispatcher::DispatcherInput;
 use http_body_util::BodyExt;
 use hyper::{
     body::{Body, Incoming},
@@ -16,7 +15,9 @@ use hyper::{
 };
 use log::{debug, error, warn};
 use machine_interface::{
-    composition::CompositionSet, function_driver::Metadata, machine_config::EngineType,
+    composition::{CompositionSet, LocalCompositionSet},
+    function_driver::Metadata,
+    machine_config::EngineType,
     memory_domain::bytes_context::BytesContext,
 };
 use multinode::DispatcherCommand;
@@ -108,7 +109,9 @@ async fn handle_function_registration(
         .map(|(name, data)| {
             (
                 name,
-                data.and_then(|static_data| Some(CompositionSet::from_byte_items(static_data))),
+                data.and_then(|static_data| {
+                    Some(LocalCompositionSet::from_byte_items(static_data))
+                }),
             )
         })
         .collect();
@@ -233,10 +236,6 @@ async fn handle_request(
     debug!("Request number of request_context: {}", request_number);
     let inputs = CompositionSet::from_context(request_context)
         .into_iter()
-        .map(|set_option| match set_option {
-            Some(set) => DispatcherInput::Set(set),
-            None => DispatcherInput::None,
-        })
         .collect::<Vec<_>>();
 
     // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want

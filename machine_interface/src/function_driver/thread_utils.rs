@@ -87,7 +87,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
             WorkToDo::FunctionArguments {
                 function_id: _,
                 function_alternatives,
-                input_sets,
+                mut input_sets,
                 metadata,
                 caching,
                 mut recorder,
@@ -135,15 +135,17 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                 {
                     // need to add each input set to the content
                     // the input_sets vec can have less entries than the functions defined sets (not all sets need to be used in composition)
-                    let transfer_option = static_set
-                        .as_ref()
-                        .or_else(|| input_sets.get(set_index).and_then(|set| set.as_ref()));
-                    let capacity = transfer_option.map_or(0, |set| set.len());
-                    function_context.content.push(Some(crate::DataSet {
-                        ident: input_set_name.clone(),
-                        buffers: Vec::with_capacity(capacity),
-                    }));
+                    let input_option = input_sets
+                        .get_mut(set_index)
+                        .map(|set_opt| set_opt.take().map(|set| set.into_local()))
+                        .flatten();
+                    let transfer_option = static_set.as_ref().or(input_option.as_ref());
+                    // Always push the content set, even if it is empty / not present, so keep numbering consistent
                     if let Some(transfer_set) = transfer_option {
+                        function_context.content.push(Some(crate::DataSet {
+                            ident: input_set_name.clone(),
+                            buffers: Vec::with_capacity(transfer_set.len()),
+                        }));
                         for (source_item, source_context) in transfer_set {
                             let transfer_result = memory_domain::transfer_data_item(
                                 &mut function_context,
@@ -159,6 +161,8 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                                 continue 'engine;
                             }
                         }
+                    } else {
+                        function_context.content.push(None);
                     }
                 }
 
@@ -171,7 +175,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                 );
 
                 if let Ok(ref context) = result {
-                    log::debug!("content: {:?}", context.content);
+                    log::debug!("content: {:?}, state: {:?}", context.content, context.state);
                 }
 
                 recorder.record(RecordPoint::EngineEnd);

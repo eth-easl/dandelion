@@ -53,8 +53,6 @@ pub enum DandelionError {
     InvalidWrite,
     /// found a case with a data item that is a set but has no entries
     EmptyDataSet,
-    /// tried to transfer a set index that is not in the content of the context
-    TransferInputNoSetAvailable,
     /// error converting pointers or integers
     UsizeTypeConversionError,
     /// context synchronization failed

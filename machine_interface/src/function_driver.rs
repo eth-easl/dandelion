@@ -1,5 +1,5 @@
 use crate::{
-    composition::CompositionSet,
+    composition::{CompositionSet, LocalCompositionSet},
     machine_config::EngineType,
     memory_domain::{Context, MemoryDomain},
 };
@@ -26,7 +26,7 @@ pub enum ComputeResource {
 pub struct Metadata {
     /// The input set names with an optional static composition set. If the static set is set it will
     /// prioritized and any other input for that set is ignored.
-    pub input_sets: Vec<(String, Option<CompositionSet>)>,
+    pub input_sets: Vec<(String, Option<LocalCompositionSet>)>,
     /// The output set names.
     pub output_sets: Vec<String>,
 }

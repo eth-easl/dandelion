@@ -22,19 +22,14 @@ use log::{debug, trace};
 use machine_interface::memory_domain::ContextTrait;
 use machine_interface::{
     composition::{
-        get_sharding, Composition, CompositionSet, InputSetDescriptor, JoinStrategy, ShardingMode,
+        get_sharding, Composition, CompositionSet, InputSetDescriptor, JoinStrategy,
+        LocalCompositionSet, ShardingMode,
     },
     function_driver::{Metadata, WorkToDo},
     machine_config::{get_available_domains, DomainType, EngineType, IntoEnumIterator},
     memory_domain::{MemoryDomain, MemoryResource},
 };
 use std::{collections::BTreeMap, sync::Arc};
-
-#[derive(Debug, Clone)]
-pub enum DispatcherInput {
-    None,
-    Set(CompositionSet),
-}
 
 // TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
 // the entire execution time anyway
@@ -99,39 +94,33 @@ impl Dispatcher {
     pub async fn queue_function_by_name(
         &self,
         function_id: Arc<String>,
-        inputs: Vec<DispatcherInput>,
+        inputs: Vec<Option<CompositionSet>>,
         caching: bool,
         mut recorder: Recorder,
-    ) -> DandelionResult<(Vec<Option<CompositionSet>>, Recorder)> {
+    ) -> DandelionResult<(Vec<Option<LocalCompositionSet>>, Recorder)> {
         debug!("Queuing function {}", function_id);
         recorder.record(RecordPoint::EnterDispatcher);
 
-        let mut input_vec = Vec::with_capacity(inputs.len());
-        input_vec.resize(inputs.len(), None);
-
-        for (index, input) in inputs.into_iter().enumerate() {
-            match input {
-                DispatcherInput::None => (),
-                DispatcherInput::Set(set) => {
-                    input_vec[index] = Some(set);
-                }
-            }
-        }
-
         let results = self
-            .queue_function(function_id, input_vec, caching, recorder.get_sub_recorder())
+            .queue_function(function_id, inputs, caching, recorder.get_sub_recorder())
             .await?;
 
-        return Ok((results, recorder));
+        // TODO: properly resolve non local sets
+        let local_results = results
+            .into_iter()
+            .map(|set_opt| set_opt.map(|set| set.into_local()))
+            .collect();
+
+        Ok((local_results, recorder))
     }
 
     pub async fn queue_unregistered_composition(
         &self,
         composition_desc: String,
-        inputs: Vec<DispatcherInput>,
+        inputs: Vec<Option<CompositionSet>>,
         caching: bool,
         recorder: Recorder,
-    ) -> DandelionResult<(Vec<Option<CompositionSet>>, Recorder)> {
+    ) -> DandelionResult<(Vec<Option<LocalCompositionSet>>, Recorder)> {
         debug!("Parsing single use composition");
         let composition_meta_pairs = self
             .function_registry
@@ -150,26 +139,22 @@ impl Dispatcher {
             "Queuing single use composition {}",
             composition_meta_pairs[0].0
         );
-        let mut input_vec = Vec::with_capacity(inputs.len());
-        input_vec.resize(inputs.len(), None);
-        for (index, input) in inputs.into_iter().enumerate() {
-            match input {
-                DispatcherInput::None => (),
-                DispatcherInput::Set(set) => {
-                    input_vec[index] = Some(set);
-                }
-            }
-        }
         let results = self
             .queue_composition(
                 composition_meta_pairs[0].1.clone(),
-                input_vec,
+                inputs,
                 caching,
                 recorder.get_sub_recorder(),
             )
             .await?;
 
-        return Ok((results, recorder));
+        // TODO: properly resolve non local sets
+        let local_results = results
+            .into_iter()
+            .map(|set_opt| set_opt.map(|set| set.into_local()))
+            .collect();
+
+        Ok((local_results, recorder))
     }
 
     /// Queue a composition for execution.

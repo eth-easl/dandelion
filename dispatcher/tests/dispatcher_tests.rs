@@ -6,10 +6,10 @@ mod dispatcher_tests {
     use dandelion_commons::FunctionId;
     use dispatcher::{dispatcher::Dispatcher, queue::WorkQueue, resource_pool::ResourcePool};
     use machine_interface::{
-        composition::CompositionSet,
+        composition::{CompositionSet, ItemData},
         function_driver::{ComputeResource, Metadata},
         machine_config::{DomainType, EngineType},
-        memory_domain::{Context, ContextTrait, MemoryDomain, MemoryResource},
+        memory_domain::{ContextTrait, MemoryDomain, MemoryResource},
         DataItem,
     };
     use std::{collections::BTreeMap, sync::Arc};
@@ -30,7 +30,10 @@ mod dispatcher_tests {
         path.push(name);
         let path_string = path.to_str().expect("Path should be string").to_string();
         let metadata = Metadata {
-            input_sets: in_set_names,
+            input_sets: in_set_names
+                .into_iter()
+                .map(|(name, set_option)| (name, set_option.map(|set| set.into_local())))
+                .collect(),
             output_sets: out_set_names,
         };
         let mut pool_map = BTreeMap::new();
@@ -63,7 +66,11 @@ mod dispatcher_tests {
         return (dispatcher, function_id);
     }
 
-    fn check_matrix(context: &Context, item: &DataItem, rows: u64, expected: Vec<u64>) {
+    fn check_matrix(data: &ItemData, item: &DataItem, rows: u64, expected: Vec<u64>) {
+        let context = match data {
+            ItemData::LocalData(context) => context,
+            _ => panic!("Should not get non local item data"),
+        };
         let out_mat_position = item.data;
         let mut out_mat = Vec::<u64>::new();
         assert_eq!((expected.len() + 1) * 8, out_mat_position.size);

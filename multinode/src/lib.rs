@@ -1,8 +1,7 @@
 use dandelion_commons::{
     err_dandelion, records::Recorder, DandelionError, DandelionResult, MultinodeError,
 };
-use dispatcher::dispatcher::DispatcherInput;
-use machine_interface::composition::CompositionSet;
+use machine_interface::composition::{CompositionSet, LocalCompositionSet};
 use prost::{
     bytes::{Buf, Bytes},
     Message,
@@ -14,14 +13,6 @@ mod util;
 
 // Todo remove when runtime is unified, and await dispatcher directly
 pub enum DispatcherCommand {
-    FunctionRequest {
-        function_id: std::sync::Arc<String>,
-        // Todo: check if we still need this for caching, otherwise, remiove and unify with temote request
-        inputs: Vec<DispatcherInput>,
-        is_cold: bool,
-        recorder: Recorder,
-        callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
-    },
     FunctionRegistration {
         name: String,
         engine_type: machine_interface::machine_config::EngineType,
@@ -34,6 +25,14 @@ pub enum DispatcherCommand {
         composition: String,
         callback: oneshot::Sender<DandelionResult<()>>,
     },
+    FunctionRequest {
+        function_id: std::sync::Arc<String>,
+        // Todo: check if we still need this for caching, otherwise, remiove and unify with temote request
+        inputs: Vec<Option<CompositionSet>>,
+        is_cold: bool,
+        recorder: Recorder,
+        callback: oneshot::Sender<DandelionResult<(Vec<Option<LocalCompositionSet>>, Recorder)>>,
+    },
     RemoteFunctionRequest {
         function_id: std::sync::Arc<String>,
         inputs: Vec<Option<CompositionSet>>,
@@ -43,10 +42,10 @@ pub enum DispatcherCommand {
     },
     CompositionRequest {
         composition: String,
-        inputs: Vec<DispatcherInput>,
+        inputs: Vec<Option<CompositionSet>>,
         is_cold: bool,
         recorder: Recorder,
-        callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
+        callback: oneshot::Sender<DandelionResult<(Vec<Option<LocalCompositionSet>>, Recorder)>>,
     },
 }
 
@@ -107,7 +106,7 @@ fn deserialize_queue_message(buf: Bytes) -> DandelionResult<proto::QueueMessage>
 #[test]
 fn test_serialize_invocation_request() {
     use crate::proto::{queue_message, Invocation, QueueMessage};
-    use machine_interface::memory_domain::ContextTrait;
+    use machine_interface::{composition::ItemData, memory_domain::ContextTrait};
 
     // construct invocation data
     let expected_id = String::from("TestName");
@@ -174,7 +173,11 @@ fn test_serialize_invocation_request() {
 
     let mut data_buf = prost::bytes::BytesMut::with_capacity(total_data_size as usize);
     for data_set in inputs.iter().filter_map(|item| item.as_ref()) {
-        for (item, context) in data_set {
+        for (item, data) in data_set {
+            let context = match data {
+                ItemData::LocalData(context) => context,
+                _ => panic!("Should not get data reference"),
+            };
             let data_position = item.data;
             let data_slice = context
                 .get_chunk_ref(data_position.offset, data_position.size)
@@ -188,8 +191,8 @@ fn test_serialize_invocation_request() {
     assert_eq!(item_0_0_name, serialized_metadata_sets[0].items[0].ident);
     assert_eq!(0, serialized_metadata_sets[0].items[0].key);
     assert_eq!(
-        size_of::<u64>() as u64,
-        serialized_metadata_sets[0].items[0].end_offset
+        proto::metadata_item::Data::EndOffset(size_of::<u64>() as u64),
+        serialized_metadata_sets[0].items[0].data.unwrap()
     );
     assert_eq!(
         item_0_0_data,
@@ -200,8 +203,8 @@ fn test_serialize_invocation_request() {
     assert_eq!(item_1_0_name, serialized_metadata_sets[1].items[0].ident);
     assert_eq!(7, serialized_metadata_sets[1].items[0].key);
     assert_eq!(
-        2 * size_of::<u64>() as u64,
-        serialized_metadata_sets[1].items[0].end_offset
+        proto::metadata_item::Data::EndOffset(2 * size_of::<u64>() as u64),
+        serialized_metadata_sets[1].items[0].data.unwrap()
     );
     assert_eq!(
         item_1_0_data,
@@ -214,8 +217,10 @@ fn test_serialize_invocation_request() {
     assert_eq!(item_1_1_name, serialized_metadata_sets[1].items[1].ident);
     assert_eq!(14, serialized_metadata_sets[1].items[1].key);
     assert_eq!(
-        2 * size_of::<u64>() as u64 + size_of::<u128>() as u64,
-        serialized_metadata_sets[1].items[1].end_offset
+        proto::metadata_item::Data::EndOffset(
+            2 * size_of::<u64>() as u64 + size_of::<u128>() as u64
+        ),
+        serialized_metadata_sets[1].items[1].data.unwrap()
     );
     assert_eq!(
         item_1_1_data,
@@ -268,10 +273,14 @@ fn test_serialize_invocation_request() {
 
     let set_0 = sets[0].take().expect("Should have Some(_) for set 0");
     assert_eq!(1, set_0.len());
-    let (item_0_0, item_0_0_context) = set_0.into_iter().next().unwrap();
+    let (item_0_0, item_0_0_item_data) = set_0.into_iter().next().unwrap();
     assert_eq!(item_0_0_name, item_0_0.ident);
     assert_eq!(0, item_0_0.key);
     assert_eq!(size_of::<u64>(), item_0_0.data.size);
+    let item_0_0_context = match item_0_0_item_data {
+        ItemData::LocalData(context) => context,
+        _ => panic!("Should have local data"),
+    };
     assert_eq!(
         &item_0_0_data.to_le_bytes(),
         item_0_0_context
@@ -282,20 +291,28 @@ fn test_serialize_invocation_request() {
     let set_1 = sets[1].take().expect("Should have Some(_) for set 1");
     assert_eq!(2, set_1.len());
     let mut set_1_iterator = set_1.into_iter();
-    let (item_1_0, item_1_0_context) = set_1_iterator.next().unwrap();
+    let (item_1_0, item_1_0_item_data) = set_1_iterator.next().unwrap();
     assert_eq!(item_1_0_name, item_1_0.ident);
     assert_eq!(7, item_1_0.key);
     assert_eq!(size_of::<u64>(), item_1_0.data.size);
+    let item_1_0_context = match item_1_0_item_data {
+        ItemData::LocalData(context) => context,
+        _ => panic!("Should have local data"),
+    };
     assert_eq!(
         &item_1_0_data.to_le_bytes(),
         item_1_0_context
             .get_chunk_ref(item_1_0.data.offset, size_of::<u64>())
             .unwrap()
     );
-    let (item_1_1, item_1_1_context) = set_1_iterator.next().unwrap();
+    let (item_1_1, item_1_1_item_data) = set_1_iterator.next().unwrap();
     assert_eq!(item_1_1_name, item_1_1.ident);
     assert_eq!(14, item_1_1.key);
     assert_eq!(size_of::<u128>(), item_1_1.data.size);
+    let item_1_1_context = match item_1_1_item_data {
+        ItemData::LocalData(context) => context,
+        _ => panic!("Should have local data"),
+    };
     assert_eq!(
         &item_1_1_data.to_le_bytes(),
         item_1_1_context

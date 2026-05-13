@@ -1,13 +1,9 @@
 use dandelion_commons::records::Archive;
 use dandelion_server::config::{FuncMetadata, PreloadFunc};
-use dispatcher::{
-    dispatcher::{Dispatcher, DispatcherInput},
-    queue::WorkQueue,
-    resource_pool::ResourcePool,
-};
+use dispatcher::{dispatcher::Dispatcher, queue::WorkQueue, resource_pool::ResourcePool};
 use log::{debug, error, info, warn};
 use machine_interface::{
-    composition::CompositionSet,
+    composition::LocalCompositionSet,
     function_driver::{ComputeResource, Metadata},
     machine_config::{DomainType, EngineType},
     memory_domain::MemoryResource,
@@ -113,21 +109,11 @@ async fn dispatcher_loop(
                     "Handling remote function request for function_id={}",
                     function_id
                 );
-                let dispatcher_input = inputs
-                    .into_iter()
-                    .map(|input_option| {
-                        if let Some(input_set) = input_option {
-                            DispatcherInput::Set(input_set)
-                        } else {
-                            DispatcherInput::None
-                        }
-                    })
-                    .collect();
-                let function_future = dispatcher.queue_function_by_name(
+                let function_future = dispatcher.queue_function(
                     function_id,
-                    dispatcher_input,
+                    inputs,
                     !is_cold,
-                    recorder,
+                    recorder.get_sub_recorder(),
                 );
                 spawn(async {
                     select! {
@@ -135,7 +121,7 @@ async fn dispatcher_loop(
                             // either get an ok, meaning the data was sent, or get the data back
                             // no need to handle ok, and nothing useful to do with data if we get it back
                             // drop it here to release resources
-                            let _ = callback.send(function_output);
+                            let _ = callback.send(function_output.map(|sets|(sets, recorder)));
                         }
                         _ = callback.closed() => ()
                     }
@@ -370,7 +356,7 @@ fn main() -> () {
                         }
                     };
 
-                    let input_sets: Vec<(String, Option<CompositionSet>)> =
+                    let input_sets: Vec<(String, Option<LocalCompositionSet>)> =
                         input_sets.into_iter().map(|s| (s, None)).collect();
                     let metadata = Metadata {
                         input_sets: input_sets,

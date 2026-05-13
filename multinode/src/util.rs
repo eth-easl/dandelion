@@ -9,7 +9,7 @@ use machine_interface::{
 };
 use prost::bytes::{Bytes, BytesMut};
 
-use crate::proto;
+use crate::proto::{self, metadata_item};
 
 /// Translates dandelion engine types to protocol engine types.
 pub(crate) fn engine_type_dtop(t: machine_config::EngineType) -> proto::EngineType {
@@ -52,7 +52,7 @@ fn composition_set_to_proto(set: &CompositionSet, offset: &mut u64) -> proto::Me
             items.push(proto::MetadataItem {
                 ident: item.ident.clone(),
                 key: item.key,
-                end_offset: *offset,
+                data: Some(metadata_item::Data::EndOffset(*offset)),
             });
         }
     }
@@ -98,6 +98,8 @@ pub(crate) fn proto_data_sets_to_context(
     protobuf_sets: Vec<proto::MetadataSet>,
     data_buf: Option<Bytes>,
 ) -> Context {
+    // TODO: expect data buffer, not option, option does not make sense here if we expect any actual data items to be in there.
+    // TODO: also does not need to be split, simply converting from MetaDataItems to items should be enough
     // create context sets with correct offsets to the buffer
     let mut sets = Vec::with_capacity(protobuf_sets.len());
     let mut frames = Vec::new();
@@ -115,7 +117,12 @@ pub(crate) fn proto_data_sets_to_context(
         for protobuf_itm in protobuf_set.items.into_iter() {
             // let data_ptr = protobuf_itm.data.as_ptr();
             let new_frame;
-            let buf_size = protobuf_itm.end_offset as usize - last_end_offset;
+
+            let end_offset = match protobuf_itm.data.unwrap() {
+                metadata_item::Data::EndOffset(offset) => offset as usize,
+                _ => unimplemented!(),
+            };
+            let buf_size = end_offset - last_end_offset;
 
             if buf_size > 0 {
                 new_frame = mut_data_buf.as_mut().unwrap().split_to(buf_size).freeze();
@@ -132,7 +139,7 @@ pub(crate) fn proto_data_sets_to_context(
                 key: protobuf_itm.key,
             });
             frames.push(new_frame);
-            last_end_offset = protobuf_itm.end_offset as usize;
+            last_end_offset = end_offset;
         }
         sets.push(Some(machine_interface::DataSet {
             ident: protobuf_set.ident.clone(),

@@ -9,7 +9,10 @@ message NodeInfo {
 message MetadataItem {
     string ident = 1;
     uint32 key = 2;
-    uint64 end_offset = 3;
+    oneof data {
+        // For data that is sent with the request and will be local to the node
+        uint64 end_offset = 3;
+    }
 }
 
 message MetadataSet {
