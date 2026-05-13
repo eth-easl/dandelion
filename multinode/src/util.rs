@@ -94,7 +94,7 @@ pub(crate) fn composition_sets_to_proto(
 
 /// Takes a (reference to a) vector of protocol data sets and translates them into a `BytesContext`
 /// that contains all of the sets.
-pub(crate) fn proto_data_sets_to_context(
+fn proto_data_sets_to_context(
     protobuf_sets: Vec<proto::MetadataSet>,
     data_buf: Option<Bytes>,
 ) -> Context {

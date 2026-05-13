@@ -1,5 +1,5 @@
 use crate::{
-    composition::LocalCompositionSet,
+    composition::{CompositionSet, LocalCompositionSet},
     function_driver::{
         functions::{Function, FunctionConfig},
         system_driver::SystemFunction,
@@ -521,7 +521,9 @@ fn responses_write(
 
     recorder.record(RecordPoint::EngineEnd);
     drop(recorder);
-    debt.fulfill(Ok(WorkDone::Context(out_context)));
+    debt.fulfill(Ok(WorkDone::CompositionSet(CompositionSet::from_context(
+        out_context,
+    ))));
     return;
 }
 

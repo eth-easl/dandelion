@@ -500,38 +500,48 @@ impl Dispatcher {
                         recorder: subrecoder,
                     };
                     recorder.record(RecordPoint::ExecutionQueue);
-                    let context = self.work_queue.do_work(args).await?.get_context();
+                    let sets = self.work_queue.do_work(args).await?.get_composition();
                     recorder.record(RecordPoint::FutureReturn);
 
                     #[cfg(feature = "log_function_stdio")]
-                    for opt in context.content.iter() {
-                        if opt.as_ref().is_some_and(|s| s.ident == "stdio") {
-                            for itm in opt.as_ref().unwrap().buffers.iter() {
-                                if itm.ident == "stderr" && itm.data.size > 0 {
-                                    let mut stderr_output: Vec<u8> = vec![0; itm.data.size];
-                                    context.context.read(itm.data.offset, &mut stderr_output)?;
-                                    warn!(
-                                        "Function '{}' result contains stderr output:\n{}",
-                                        function_id,
-                                        std::str::from_utf8(stderr_output.as_slice())
-                                            .expect("Invalid stderr buffer")
-                                    );
+                    if let Some(io_set) = sets
+                        .iter()
+                        .filter_map(|set_option| set_option.as_ref())
+                        .find(|set| set.get_name() == "stdio")
+                    {
+                        for (item, data) in io_set {
+                            use machine_interface::composition::ItemData;
+                            let context = match data {
+                                ItemData::LocalData(context) => context,
+                                _ => {
+                                    debug!("Cannot print stdio data for non local items");
+                                    continue;
                                 }
-                                if itm.ident == "stdout" && itm.data.size > 0 {
-                                    let mut stdout_output: Vec<u8> = vec![0; itm.data.size];
-                                    context.context.read(itm.data.offset, &mut stdout_output)?;
-                                    debug!(
-                                        "Function '{}' output:\n{}",
-                                        function_id,
-                                        std::str::from_utf8(stdout_output.as_slice())
-                                            .expect("Invalid stdout buffer")
-                                    );
-                                }
+                            };
+                            if item.ident == "stderr" && item.data.size > 0 {
+                                let mut stderr_output: Vec<u8> = vec![0; item.data.size];
+                                context.context.read(item.data.offset, &mut stderr_output)?;
+                                warn!(
+                                    "Function '{}' result contains stderr output:\n{}",
+                                    function_id,
+                                    std::str::from_utf8(stderr_output.as_slice())
+                                        .expect("Invalid stderr buffer")
+                                );
+                            }
+                            if item.ident == "stdout" && item.data.size > 0 {
+                                let mut stdout_output: Vec<u8> = vec![0; item.data.size];
+                                context.context.read(item.data.offset, &mut stdout_output)?;
+                                debug!(
+                                    "Function '{}' output:\n{}",
+                                    function_id,
+                                    std::str::from_utf8(stdout_output.as_slice())
+                                        .expect("Invalid stdout buffer")
+                                );
                             }
                         }
                     }
 
-                    return Ok(CompositionSet::from_context(context));
+                    return Ok(sets);
                 }
                 FunctionType::Composition(comp_info) => {
                     return self

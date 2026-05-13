@@ -1,7 +1,7 @@
 use crate::{
     composition::{CompositionSet, LocalCompositionSet},
     machine_config::EngineType,
-    memory_domain::{Context, MemoryDomain},
+    memory_domain::MemoryDomain,
 };
 extern crate alloc;
 use alloc::sync::Arc;
@@ -31,6 +31,7 @@ pub struct Metadata {
     pub output_sets: Vec<String>,
 }
 
+/// Struct holding function data comming from the dispatcher into the queueing.
 pub enum WorkToDo {
     FunctionArguments {
         function_id: Arc<String>,
@@ -44,14 +45,14 @@ pub enum WorkToDo {
 }
 
 pub enum WorkDone {
-    Context(Context),
+    CompositionSet(Vec<Option<CompositionSet>>),
     Resources(Vec<ComputeResource>),
 }
 
 impl WorkDone {
-    pub fn get_context(self) -> Context {
+    pub fn get_composition(self) -> Vec<Option<CompositionSet>> {
         return match self {
-            WorkDone::Context(context) => context,
+            WorkDone::CompositionSet(sets) => sets,
             _ => panic!("WorkDone is not context when context was expected"),
         };
     }

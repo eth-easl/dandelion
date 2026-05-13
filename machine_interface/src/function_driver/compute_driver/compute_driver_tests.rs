@@ -186,23 +186,21 @@ mod compute_driver_tests {
             caching: false,
             recorder,
         });
-        let result_context = tokio::runtime::Builder::new_current_thread()
+        let mut result_sets = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(promise)
             .expect("Engine should run ok with basic function")
-            .get_context();
+            .get_composition();
         // check that result is 4
-        assert_eq!(1, result_context.content.len());
-        let output_item = result_context.content[0]
-            .as_ref()
-            .expect("Set should be present");
-        assert_eq!(1, output_item.buffers.len());
-        let position = output_item.buffers[0].data;
+        assert_eq!(1, result_sets.len());
+        let result_set = result_sets[0].take().unwrap().into_local();
+        assert_eq!(1, result_set.len());
+        let (output_item, context) = result_set.into_iter().next().unwrap();
+        let position = output_item.data;
         assert_eq!(16, position.size, "Checking for size of output");
         let mut read_buffer = vec![0i64; position.size / 8];
-        result_context
-            .context
+        context
             .read(position.offset, &mut read_buffer)
             .expect("Should succeed in reading");
         assert_eq!(1, read_buffer[0]);
@@ -278,26 +276,25 @@ mod compute_driver_tests {
                 caching: false,
                 recorder,
             });
-            let result_context = tokio::runtime::Builder::new_current_thread()
+            let mut result_sets = tokio::runtime::Builder::new_current_thread()
                 .build()
                 .unwrap()
                 .block_on(promise)
                 .expect("Engine should run ok with basic function")
-                .get_context();
-            assert_eq!(1, result_context.content.len());
-            let output_item = &result_context.content[0]
-                .as_ref()
-                .expect("Set should be present");
-            assert_eq!(1, output_item.buffers.len());
-            let position = output_item.buffers[0].data;
+                .get_composition();
+
+            assert_eq!(1, result_sets.len());
+            let result_set = result_sets[0].take().unwrap().into_local();
+            assert_eq!(1, result_set.len());
+            let (output_item, output_context) = result_set.into_iter().next().unwrap();
+            let position = output_item.data;
             assert_eq!(
                 (mat_size * mat_size + 1) * 8,
                 position.size,
                 "Checking for size of output"
             );
             let mut output = vec![0i64; position.size / 8];
-            result_context
-                .context
+            output_context
                 .read(position.offset, &mut output)
                 .expect("Should succeed in reading");
             let expected = self::get_expected_mat(mat_size);
@@ -384,39 +381,31 @@ mod compute_driver_tests {
             caching: false,
             recorder,
         });
-        let result_context = tokio::runtime::Builder::new_current_thread()
+        let mut result_sets = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(promise)
             .expect("Engine should run ok with basic function")
-            .get_context();
+            .get_composition();
 
-        // check the function exited with exit code 0
-        use crate::memory_domain::ContextState;
-        match result_context.state {
-            ContextState::InPreparation => panic!("context still in preparation, never evaluated "),
-            ContextState::Run(exit_status) => assert_eq!(0, exit_status),
-        }
         // check there is exactly one set called stdio
-        assert_eq!(1, result_context.content.len());
-        let io_set = &result_context.content[0]
-            .as_ref()
-            .expect("Set should be present");
-        assert_eq!("stdio", io_set.ident);
-        assert_eq!(2, io_set.buffers.len());
+        assert_eq!(1, result_sets.len());
+        let io_set = result_sets[0].take().unwrap().into_local();
+        assert_eq!("stdio", io_set.get_name());
+        assert_eq!(2, io_set.len());
         let mut stdout_vec = Vec::<u8>::new();
         let mut stderr_vec = Vec::<u8>::new();
-        for item in &io_set.buffers {
+        for (item, context) in &io_set {
             match item.ident.as_str() {
                 "stdout" => {
                     stdout_vec = vec![0; item.data.size];
-                    result_context
+                    context
                         .read(item.data.offset, &mut stdout_vec)
                         .expect("stdout read should succeed")
                 }
                 "stderr" => {
                     stderr_vec = vec![0; item.data.size];
-                    result_context
+                    context
                         .read(item.data.offset, &mut stderr_vec)
                         .expect("stderr read should succeed")
                 }
@@ -546,35 +535,33 @@ mod compute_driver_tests {
             caching: false,
             recorder,
         });
-        let result_context = tokio::runtime::Builder::new_current_thread()
+        let mut result_sets = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(promise)
             .expect("Engine should run ok with basic function")
-            .get_context();
-        assert_eq!(3, result_context.content.len());
+            .get_composition();
+        assert_eq!(3, result_sets.len());
+
         // check out set
-        let set1 = result_context.content[1]
-            .as_ref()
-            .expect("Set should be present");
-        assert_eq!(1, set1.buffers.len());
-        let item = &set1.buffers[0];
+        let set1 = result_sets[1].take().unwrap().into_local();
+        assert_eq!(1, set1.len());
+        let (item, context) = set1.into_iter().next().unwrap();
         assert_eq!("out_file", item.ident);
         let mut read_buffer = vec![0; item.data.size];
-        result_context
+        context
             .read(item.data.offset, &mut read_buffer)
             .expect("should be able to read");
         assert_eq!(
             in_file_content,
             std::str::from_utf8(&read_buffer).expect("output content should be string")
         );
-        let output_set = result_context.content[2]
-            .as_ref()
-            .expect("Should have output set");
-        assert_eq!(4, output_set.buffers.len());
-        for item in output_set.buffers.iter() {
+
+        let output_set = result_sets[2].take().unwrap().into_local();
+        assert_eq!(4, output_set.len());
+        for (item, context) in output_set {
             let mut read_buffer = vec![0; item.data.size];
-            result_context
+            context
                 .read(item.data.offset, &mut read_buffer)
                 .expect("should be able to read");
             let content_string =

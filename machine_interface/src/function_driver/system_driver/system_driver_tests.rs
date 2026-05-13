@@ -134,28 +134,31 @@ mod system_driver_tests {
             caching: true,
             recorder: recorder,
         });
-        let result_context = tokio::runtime::Builder::new_current_thread()
+        let mut result_sets = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(promise)
             .expect("Engine should return without error")
-            .get_context();
-        let header_set = result_context.content[0].as_ref().unwrap();
-        assert_eq!(1, header_set.buffers.len());
-        let status_item = &header_set.buffers[0];
+            .get_composition();
+
+        assert_eq!(2, result_sets.len());
+        let mut header_set = result_sets[0].take().unwrap().into_local().into_iter();
+        let (status_item, status_context) = header_set.next().unwrap();
+        assert_eq!(0, header_set.count());
         let mut response_buffer = Vec::<u8>::new();
         response_buffer.resize(status_item.data.size, 0);
-        result_context
+        status_context
             .read(status_item.data.offset, &mut response_buffer)
             .expect("Should be able to read status");
         let status = read_status(&response_buffer);
         assert_eq!("HTTP/1.1 200 OK", status);
 
         // check body
-        let body_set = result_context.content[1].as_ref().unwrap();
-        assert_eq!(1, body_set.buffers.len());
+        let mut body_set = result_sets[1].take().unwrap().into_local().into_iter();
+        let (body_item, _) = body_set.next().unwrap();
+        assert_eq!(0, body_set.count());
         // debug!("expected_body_len: {}", expected_body_len);
-        assert_eq!(expected_body_size, body_set.buffers[0].data.size);
+        assert_eq!(expected_body_size, body_item.data.size);
     }
 
     fn post_http<Dom: MemoryDomain>(
@@ -230,19 +233,20 @@ dolore magna aliquyam erat, sed diam voluptua."#,
             caching: true,
             recorder,
         });
-        let result_context = tokio::runtime::Builder::new_current_thread()
+        let mut result_sets = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(promise)
             .expect("Engine should not fail")
-            .get_context();
+            .get_composition();
 
-        let header_set = result_context.content[0].as_ref().unwrap();
-        assert_eq!(1, header_set.buffers.len());
-        let header_item = &header_set.buffers[0];
+        assert_eq!(2, result_sets.len());
+        let mut header_set = result_sets[0].take().unwrap().into_local().into_iter();
+        let (header_item, header_context) = header_set.next().unwrap();
+        assert_eq!(0, header_set.count());
         let mut header_buffer = Vec::<u8>::new();
         header_buffer.resize(header_item.data.size, 0);
-        result_context
+        header_context
             .read(header_item.data.offset, &mut header_buffer)
             .expect("Should be able to read status");
         let status = read_status(&header_buffer);

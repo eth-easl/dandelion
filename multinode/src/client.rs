@@ -8,8 +8,7 @@ use crate::{
     util::{
         composition_sets_to_proto, engine_type_dtop, engine_type_ptod,
         pack_metadata_size_and_flags, proto_data_sets_to_composition_sets,
-        proto_data_sets_to_context, unpack_metadata_size_and_flags, ADDITIONAL_DATA_BUFFER,
-        NO_FLAGS,
+        unpack_metadata_size_and_flags, ADDITIONAL_DATA_BUFFER, NO_FLAGS,
     },
     DispatcherCommand,
 };
@@ -268,12 +267,12 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                             .remove(&invocation_id)
                             .expect("Should always get back function response for a present debt");
                         let result = match response.unwrap() {
-                            proto::response::Response::MetadataSets(metadata_sets) => {
-                                Ok(WorkDone::Context(proto_data_sets_to_context(
+                            proto::response::Response::MetadataSets(metadata_sets) => Ok(
+                                WorkDone::CompositionSet(proto_data_sets_to_composition_sets(
                                     metadata_sets.metadata_sets,
                                     data_option,
-                                )))
-                            }
+                                )),
+                            ),
                             proto::response::Response::ErrorMsg(error_message) => {
                                 err_dandelion!(DandelionError::Multinode(
                                     MultinodeError::RequestFailed(error_message)

@@ -1,4 +1,5 @@
 use crate::{
+    composition::CompositionSet,
     function_driver::{
         functions::FunctionConfig, ComputeResource, EngineWorkQueue, WorkDone, WorkToDo,
     },
@@ -181,7 +182,11 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                 recorder.record(RecordPoint::EngineEnd);
                 drop(recorder);
 
-                let results = result.and_then(|context| Ok(WorkDone::Context(context)));
+                let results = result.and_then(|context| {
+                    Ok(WorkDone::CompositionSet(CompositionSet::from_context(
+                        context,
+                    )))
+                });
                 debt.fulfill(results);
             }
             WorkToDo::Shutdown(_) => {
