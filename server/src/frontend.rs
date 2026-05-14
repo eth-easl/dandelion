@@ -352,6 +352,7 @@ pub async fn service_loop(
     // socket to listen to
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await.unwrap();
+    println!("Socket ready");
 
     // signal handlers for gracefull shutdown
     let mut sigterm_stream = tokio::signal::unix::signal(SignalKind::terminate()).unwrap();

@@ -51,7 +51,7 @@ mod server_tests {
                 let mut buf = String::new();
                 let len = reader.read_line(&mut buf).unwrap();
                 assert_ne!(len, 0, "Server exited unexpectedly");
-                if buf.contains("Server start") {
+                if buf.contains("Socket ready") {
                     break;
                 } else {
                     print!("{} out: {}", self.name, buf);
