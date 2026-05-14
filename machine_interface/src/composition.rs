@@ -193,6 +193,10 @@ impl CompositionSet {
         &self.set_name
     }
 
+    pub fn is_local(&self) -> bool {
+        self.non_local_sets == 0
+    }
+
     pub fn into_local(self) -> LocalCompositionSet {
         let CompositionSet {
             item_list,

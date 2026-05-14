@@ -203,7 +203,7 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                         );
                         // poll work
                         let (queue_message, data_buffer) = if let Some((work, debt)) =
-                            queue.try_get_work_no_shutdown(engine_flags)
+                            queue.try_get_work_for_remote(engine_flags)
                         {
                             // there is some work so send it out
                             // find the local function id to use

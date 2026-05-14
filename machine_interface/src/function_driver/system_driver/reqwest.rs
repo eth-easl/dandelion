@@ -619,7 +619,7 @@ async fn engine_loop(queue: impl EngineWorkQueue + Send + 'static) -> Debt {
 
                 let alternative = match function_alternatives
                     .into_iter()
-                    .find(|alt| alt.engine == EngineType::Reqwest)
+                    .find(|alt| alt.engine == EngineType::System)
                 {
                     Some(alt) => alt,
                     None => {

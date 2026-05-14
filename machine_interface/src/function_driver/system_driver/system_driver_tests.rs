@@ -297,6 +297,6 @@ dolore magna aliquyam erat, sed diam voluptua."#,
         // use crate::memory_domain::malloc::MallocMemoryDomain as domain;
         use crate::memory_domain::system_domain::SystemMemoryDomain as domain;
         // use crate::memory_domain::mmap::MmapMemoryDomain as domain;
-        driverTests!(reqwest_io; domain; crate::memory_domain::MemoryResource::Anonymous{size: (2<<22)}; EngineType::Reqwest; ComputeResource::CPU(1));
+        driverTests!(reqwest_io; domain; crate::memory_domain::MemoryResource::Anonymous{size: (2<<22)}; EngineType::System; ComputeResource::CPU(1));
     }
 }

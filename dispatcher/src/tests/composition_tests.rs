@@ -20,7 +20,7 @@ fn get_module(comp_string: &str) -> Module {
 #[allow(unreachable_code)]
 fn get_some_engine_type() -> EngineType {
     #[cfg(feature = "reqwest_io")]
-    return EngineType::Reqwest;
+    return EngineType::System;
     #[cfg(feature = "cheri")]
     return EngineType::Cheri;
     #[cfg(feature = "mmu")]

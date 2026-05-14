@@ -18,7 +18,7 @@ use std::{
 use tokio::sync::{watch, Notify};
 
 pub enum QueueFlag {
-    EngineReqwestIO = 0b1,
+    EngineSystem = 0b1,
     EngineCheri = 0b10,
     EngineProcess = 0b100,
     EngineKvm = 0b1000,
@@ -27,7 +27,7 @@ pub enum QueueFlag {
 pub fn get_engine_flag(t: EngineType) -> u32 {
     match t {
         #[cfg(feature = "reqwest_io")]
-        EngineType::Reqwest => QueueFlag::EngineReqwestIO as u32,
+        EngineType::System => QueueFlag::EngineSystem as u32,
         #[cfg(feature = "cheri")]
         EngineType::Cheri => QueueFlag::EngineCheri as u32,
         #[cfg(feature = "mmu")]
@@ -51,14 +51,23 @@ struct WakerElement {
     waker: Waker,
 }
 
+struct InnerQueue {
+    /// Queueu holding work for which some data still needs to be fetched
+    fetching_queue: LinkedList<QueueElement>,
+    /// Queueu holding work for which all data is local
+    local_ready_queue: LinkedList<QueueElement>,
+    /// List of engines which are idle
+    waker_list: LinkedList<WakerElement>,
+}
+
 const MAX_QUEUE: usize = 4096;
 
 /// Producers can push new work to the end of the queue using the `push` function.
 /// Consumers can pop elements using the `aquire` function.
 #[derive(Clone)]
 pub struct WorkQueue {
-    /// Holds the two queues, first one for work to be done, second one for engines waiting for fitting work to arrive
-    queues: Arc<Mutex<(LinkedList<QueueElement>, LinkedList<WakerElement>)>>,
+    /// Holds the two queues, first one for work ready to be run locally, second one for engines waiting for fitting work to arrive
+    inner: Arc<Mutex<InnerQueue>>,
     promise_buffer: PromiseBuffer,
     /// Used to keep track of idle cores
     idle_sender: watch::Sender<u32>,
@@ -71,7 +80,7 @@ pub struct WorkQueue {
 struct WaitFuture<'queue> {
     flags: u32,
     work_queue: &'queue WorkQueue,
-    lock: MutexLockFuture<'queue, (LinkedList<QueueElement>, LinkedList<WakerElement>)>,
+    lock: MutexLockFuture<'queue, InnerQueue>,
     was_set_idle: bool,
 }
 
@@ -80,7 +89,7 @@ impl<'list> WaitFuture<'list> {
         Self {
             flags,
             work_queue,
-            lock: work_queue.queues.lock(),
+            lock: work_queue.inner.lock(),
             was_set_idle: false,
         }
     }
@@ -97,7 +106,7 @@ impl Future for WaitFuture<'_> {
         if let Poll::Ready(mut lock_guard) = self.lock.poll_unpin(cx) {
             // check if there is any work with the flags we are looking for
             let result = lock_guard
-                .0
+                .local_ready_queue
                 .extract_if(|queue_element| queue_element.flags & self.flags != 0)
                 .next()
                 .map(|queue_element| (queue_element.work, queue_element.debt));
@@ -117,9 +126,9 @@ impl Future for WaitFuture<'_> {
                     self.was_set_idle = true;
                     self.work_queue.idle_sender.send_modify(|idle| *idle += 1);
                 }
-                lock_guard.1.push_back(waker_element);
+                lock_guard.waker_list.push_back(waker_element);
                 // lock was ready once, need to set new one
-                self.lock = self.work_queue.queues.lock();
+                self.lock = self.work_queue.inner.lock();
                 Poll::Pending
             }
         } else {
@@ -133,7 +142,11 @@ impl WorkQueue {
     pub fn init() -> Self {
         let (idle_sender, idle_receiver) = watch::channel(0);
         WorkQueue {
-            queues: Arc::new(Mutex::new((LinkedList::new(), LinkedList::new()))),
+            inner: Arc::new(Mutex::new(InnerQueue {
+                fetching_queue: LinkedList::new(),
+                local_ready_queue: LinkedList::new(),
+                waker_list: LinkedList::new(),
+            })),
             promise_buffer: PromiseBuffer::init(MAX_QUEUE),
             idle_sender,
             idle_receiver,
@@ -152,12 +165,14 @@ impl WorkQueue {
     /// Pushes the work and debt to the back of the queue and sets the flags accordingly.
     /// Returns an error if the queue is full.
     /// TODO: check or define here and other places, if the flags need to match fully, just checking that any flag is set would be enough
-    async fn push(&self, work: WorkToDo, debt: Debt, flags: u32) {
-        let mut queue_guard = self.queues.lock().await;
-        queue_guard.0.push_back(QueueElement { flags, work, debt });
+    async fn push_local(&self, work: WorkToDo, debt: Debt, flags: u32) {
+        let mut queue_guard = self.inner.lock().await;
+        queue_guard
+            .local_ready_queue
+            .push_back(QueueElement { flags, work, debt });
         // call first waker with matching flags if there are any
         if let Some(waker_to_call) = queue_guard
-            .1
+            .waker_list
             .extract_if(|queue_element| queue_element.flags & flags == flags)
             .next()
         {
@@ -170,16 +185,24 @@ impl WorkQueue {
     /// Inserts the work into the queue setting the flags according to the supported engines and
     /// awaits the future before returning the result.
     pub async fn do_work(&self, work: WorkToDo) -> DandelionResult<WorkDone> {
-        let flags = match &work {
-            WorkToDo::Shutdown(engine_type) => get_engine_flag(*engine_type),
+        let (flags, local) = match &work {
+            WorkToDo::Shutdown(engine_type) => (get_engine_flag(*engine_type), true),
             WorkToDo::FunctionArguments {
                 function_id: _,
                 function_alternatives,
-                input_sets: _,
+                input_sets,
                 metadata: _,
                 caching: _,
                 recorder: _,
             } => {
+                // check if all the sets are already fully locally available
+                let local = input_sets.into_iter().all(|set_option| {
+                    if let Some(set) = set_option {
+                        set.is_local()
+                    } else {
+                        true
+                    }
+                });
                 let mut flags = 0;
                 trace!(
                     "found function arguments with alternatives: {:?}",
@@ -188,35 +211,43 @@ impl WorkQueue {
                 for alternative in function_alternatives {
                     flags |= get_engine_flag(alternative.engine);
                 }
-                flags
+                (flags, local)
             }
         };
         log::trace!("Enqueueing with flags: {}", flags);
 
         let (promise, debt) = self.promise_buffer.get_promise()?;
-        self.push(work, debt, flags).await;
+        if local {
+            self.push_local(work, debt, flags).await;
+        } else {
+            self.inner
+                .lock()
+                .await
+                .fetching_queue
+                .push_back(QueueElement { flags, work, debt });
+        }
         return promise.await;
     }
 
-    /// Tries to acquire some work that matches the given flags starting from the head of the queue.
-    pub fn try_get_work(&self, engine_flags: u32) -> Option<(WorkToDo, Debt)> {
-        // May want to try lock here too, instead of lock, but since we have the ticket, should always succeed on locking
-        self.queues.try_lock().and_then(|mut guard| {
-            guard
-                .0
-                .extract_if(|queue_element| queue_element.flags & engine_flags != 0)
-                .next()
-                .map(|queue_element| (queue_element.work, queue_element.debt))
-        })
-    }
+    // /// Tries to acquire some work that matches the given flags starting from the head of the queue.
+    // pub fn try_get_work(&self, engine_flags: u32) -> Option<(WorkToDo, Debt)> {
+    //     // May want to try lock here too, instead of lock, but since we have the ticket, should always succeed on locking
+    //     self.inner.try_lock().and_then(|mut guard| {
+    //         guard
+    //             .0
+    //             .extract_if(|queue_element| queue_element.flags & engine_flags != 0)
+    //             .next()
+    //             .map(|queue_element| (queue_element.work, queue_element.debt))
+    //     })
+    // }
 
     /// Tries to acquire some work that matches the given flags starting from the head of the queue.
     /// Ignores shutdown (to use for remote nodes for example)
-    pub fn try_get_work_no_shutdown(&self, engine_flags: u32) -> Option<(WorkToDo, Debt)> {
+    pub fn try_get_work_for_remote(&self, engine_flags: u32) -> Option<(WorkToDo, Debt)> {
         // May want to try lock here too, instead of lock, but since we have the ticket, should always succeed on locking
-        self.queues.try_lock().and_then(|mut guard| {
+        self.inner.try_lock().and_then(|mut guard| {
             guard
-                .0
+                .local_ready_queue
                 .extract_if(|queue_element| {
                     if let WorkToDo::Shutdown(_) = queue_element.work {
                         false
@@ -258,9 +289,5 @@ impl EngineWorkQueue for EngineQueue {
         &self,
     ) -> impl Future<Output = (WorkToDo, machine_interface::promise::Debt)> {
         self.work_queue.get_work(self.engine_flags)
-    }
-
-    fn try_get_engine_args(&self) -> Option<(WorkToDo, machine_interface::promise::Debt)> {
-        self.work_queue.try_get_work(self.engine_flags)
     }
 }

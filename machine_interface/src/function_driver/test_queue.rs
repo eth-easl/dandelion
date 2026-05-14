@@ -40,11 +40,6 @@ impl TestQueue {
 
 impl EngineWorkQueue for TestQueue {
     async fn get_engine_args(&self) -> (WorkToDo, Debt) {
-        self.try_get_engine_args().unwrap()
-    }
-
-    // For the test queue also use blocking implementation, to simplify test
-    fn try_get_engine_args(&self) -> Option<(WorkToDo, crate::promise::Debt)> {
         let (lock, arg_var) = self.internal.as_ref();
         let mut lock_guard = lock
             .lock()
@@ -59,6 +54,6 @@ impl EngineWorkQueue for TestQueue {
             .take()
             .expect("Test queue tried to take args from empty queue");
         arg_var.notify_all();
-        Some(args)
+        args
     }
 }

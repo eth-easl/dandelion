@@ -56,7 +56,7 @@ const SYS_FUNC_DEFAULT_CONTEXT_SIZE: usize = usize::MAX;
 pub const SYSTEM_FUNCTIONS: &[(EngineType, SystemFunction, usize)] = &[
     #[cfg(feature = "reqwest_io")]
     (
-        EngineType::Reqwest,
+        EngineType::System,
         SystemFunction::HTTP,
         SYS_FUNC_DEFAULT_CONTEXT_SIZE,
     ),

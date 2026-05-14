@@ -12,7 +12,7 @@ pub use strum::{EnumCount, EnumIter};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, EnumCount, EnumIter)]
 pub enum EngineType {
     #[cfg(feature = "reqwest_io")]
-    Reqwest,
+    System,
     #[cfg(feature = "cheri")]
     Cheri,
     #[cfg(feature = "mmu")]
@@ -36,7 +36,7 @@ impl EngineType {
     pub fn get_domain_type(&self) -> DomainType {
         match self {
             #[cfg(feature = "reqwest_io")]
-            EngineType::Reqwest => DomainType::System,
+            EngineType::System => DomainType::System,
             #[cfg(feature = "cheri")]
             EngineType::Cheri => DomainType::Cheri,
             #[cfg(feature = "mmu")]
@@ -53,7 +53,7 @@ impl EngineType {
     ) -> DandelionResult<()> {
         match self {
             #[cfg(feature = "reqwest_io")]
-            EngineType::Reqwest => crate::function_driver::system_driver::reqwest::ReqwestDriver {}
+            EngineType::System => crate::function_driver::system_driver::reqwest::ReqwestDriver {}
                 .start_engine(resource, queue),
             #[cfg(feature = "cheri")]
             EngineType::Cheri => crate::function_driver::compute_driver::cheri::CheriDriver {}
@@ -74,7 +74,7 @@ impl EngineType {
     ) -> DandelionResult<Function> {
         match self {
             #[cfg(feature = "reqwest_io")]
-            EngineType::Reqwest => crate::function_driver::system_driver::reqwest::ReqwestDriver {}
+            EngineType::System => crate::function_driver::system_driver::reqwest::ReqwestDriver {}
                 .parse_function(function_path, static_domain),
             #[cfg(feature = "cheri")]
             EngineType::Cheri => crate::function_driver::compute_driver::cheri::CheriDriver {}
