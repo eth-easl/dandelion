@@ -1,12 +1,12 @@
 use std::ops::Range;
 
-use crate::composition::{CompositionSet, JoinStrategy, ShardingMode};
+use crate::composition::{AnySetGroup, CompositionSet, JoinStrategy, ShardingMode};
 
 pub(super) trait JoinIterator {
     /// Reduces the parallelism of all `AnyIterators` in the iterator chain by combining some sets.
     /// We expect this function is only called once, otherwise, we could end up with unevenly
     /// distributed or completely messed up groups.
-    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<(usize, usize, bool)>);
+    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<AnySetGroup>);
 
     /// Fills the given composition set vector with the current iterator state.
     /// This is undefined behaviour if the previous `advance` call returned `false`.
@@ -43,7 +43,7 @@ impl SetAllIterator {
 }
 
 impl JoinIterator for SetAllIterator {
-    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<(usize, usize, bool)>) {
+    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<AnySetGroup>) {
         if let Some(left) = self.left.as_mut() {
             left.reduce_any_parallelism(any_parallelisms);
         } else {
@@ -96,7 +96,7 @@ impl SetEachIterator {
 }
 
 impl JoinIterator for SetEachIterator {
-    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<(usize, usize, bool)>) {
+    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<AnySetGroup>) {
         if let Some(left) = self.left.as_mut() {
             left.reduce_any_parallelism(any_parallelisms);
         } else {
@@ -302,7 +302,7 @@ impl SetKeyIterator {
 }
 
 impl JoinIterator for SetKeyIterator {
-    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<(usize, usize, bool)>) {
+    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<AnySetGroup>) {
         debug_assert!(any_parallelisms.len() == 0);
     }
 
@@ -620,10 +620,11 @@ impl AnyIterator {
 }
 
 impl JoinIterator for AnyIterator {
-    fn reduce_any_parallelism(&mut self, mut any_parallelisms: Vec<(usize, usize, bool)>) {
-        let (_, parallelism, _) = any_parallelisms
+    fn reduce_any_parallelism(&mut self, mut any_parallelisms: Vec<AnySetGroup>) {
+        let parallelism = any_parallelisms
             .pop()
-            .expect("Ran out of any_parallelisms.");
+            .expect("Ran out of any_parallelisms.")
+            .target_partitions;
 
         // can only group into less groups than we currently have
         debug_assert!(parallelism > 0);

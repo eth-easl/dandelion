@@ -237,6 +237,8 @@ pub enum DispatcherError {
     DependencyError,
     /// dispatcher got invalid composition
     InvalidComposition,
+    /// dispatcher got into an invalid system information state
+    InvalidSytemInformation,
 }
 
 #[derive(Debug, Clone, PartialEq)]

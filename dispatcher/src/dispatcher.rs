@@ -1,5 +1,4 @@
 use crate::{
-    dispatcher::policies::get_max_parallelism,
     function_registry::{FunctionRegistry, FunctionType},
     queue::{EngineQueue, WorkQueue},
     resource_pool::ResourcePool,
@@ -23,7 +22,8 @@ use log::{debug, trace};
 use machine_interface::memory_domain::ContextTrait;
 use machine_interface::{
     composition::{
-        get_sharding, Composition, CompositionSet, InputSetDescriptor, JoinStrategy, ShardingMode,
+        get_sharding, AnyShardingMode, AnyShardingParams, Composition, CompositionSet,
+        InputSetDescriptor, JoinStrategy, ShardingMode,
     },
     function_driver::{Metadata, WorkToDo},
     machine_config::{get_available_domains, DomainType, EngineType, IntoEnumIterator},
@@ -31,31 +31,13 @@ use machine_interface::{
 };
 use std::{
     collections::BTreeMap,
-    sync::{atomic::AtomicUsize, Arc},
+    sync::{atomic::Ordering, Arc},
 };
-
-mod policies;
 
 #[derive(Debug, Clone)]
 pub enum DispatcherInput {
     None,
     Set(CompositionSet),
-}
-
-pub struct SystemInformation {
-    num_local_cores: usize,
-    num_remote_cores: AtomicUsize,
-    offload_const: usize,
-}
-
-impl SystemInformation {
-    pub fn new(num_local_cores: usize) -> Self {
-        Self {
-            num_local_cores,
-            num_remote_cores: AtomicUsize::new(0),
-            offload_const: 2, // TODO
-        }
-    }
 }
 
 // TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
@@ -64,7 +46,7 @@ pub struct Dispatcher {
     function_registry: FunctionRegistry,
     work_queue: WorkQueue,
     domains: Vec<Arc<Box<dyn MemoryDomain>>>,
-    system_info: SystemInformation,
+    any_sharding_mode: AnyShardingMode,
 }
 
 impl Dispatcher {
@@ -83,7 +65,7 @@ impl Dispatcher {
         let compute_engine_type = EngineType::Kvm;
         #[cfg(feature = "cheri")]
         let compute_engine_type = EngineType::Cheri;
-        let system_info = SystemInformation::new(
+        let any_sharding_params = AnyShardingParams::new(
             match resource_pool.sync_get_availability(compute_engine_type) {
                 Some(n) => n,
                 None => 0,
@@ -105,7 +87,7 @@ impl Dispatcher {
             function_registry,
             work_queue,
             domains,
-            system_info,
+            any_sharding_mode: AnyShardingMode::AutoSharding(any_sharding_params), // TODO: make configurable
         });
     }
 
@@ -435,12 +417,11 @@ impl Dispatcher {
                 .function_registry
                 .get_metadata(&function_id)?
                 .min_set_size;
-            let max_parallelism = get_max_parallelism(&self, &input_sets, min_set_size);
             let sharded = get_sharding(
                 input_sets,
                 join_order,
                 join_strategies,
-                max_parallelism,
+                &self.any_sharding_mode,
                 min_set_size,
             );
             let size_hint = sharded.len();
@@ -607,5 +588,30 @@ impl Dispatcher {
                 }
             };
         })
+    }
+
+    pub fn add_remote_capacity(&self, cap: usize) {
+        match &self.any_sharding_mode {
+            AnyShardingMode::AutoSharding(params) => {
+                params.num_remote_cores.fetch_add(cap, Ordering::AcqRel);
+            }
+            _ => (),
+        }
+    }
+
+    pub fn remove_remote_capacity(&self, cap: usize) -> DandelionResult<()> {
+        match &self.any_sharding_mode {
+            AnyShardingMode::AutoSharding(params) => {
+                let prev_value = params.num_remote_cores.fetch_sub(cap, Ordering::AcqRel);
+                if prev_value < cap {
+                    err_dandelion!(DandelionError::Dispatcher(
+                        DispatcherError::InvalidSytemInformation
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+            _ => Ok(()),
+        }
     }
 }

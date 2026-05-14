@@ -4,7 +4,15 @@ use crate::{
 use core::fmt;
 use dandelion_commons::FunctionId;
 use log::trace;
-use std::{cmp, collections::BTreeMap, sync::Arc, vec};
+use std::{
+    cmp,
+    collections::BTreeMap,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    vec,
+};
 
 #[cfg(test)]
 use crate::memory_domain::read_only::ReadOnlyContext;
@@ -12,6 +20,8 @@ use crate::memory_domain::read_only::ReadOnlyContext;
 use itertools::Itertools;
 
 mod join_iterator;
+
+const OFFLOAD_CONST: usize = 2;
 
 /// A composition has a composition wide id space that maps ids of
 /// the input and output sets to sets of individual functions to a unified
@@ -89,6 +99,53 @@ impl JoinStrategy {
             dparser::JoinFilterStrategy::Cross => panic!("Parser should not produce cross"),
         }
     }
+}
+
+#[derive(Debug)]
+struct AnySetGroup {
+    largest_set_size: usize,
+    max_partitions: usize,
+    target_partitions: usize,
+    processed: bool,
+}
+
+impl AnySetGroup {
+    fn new(largest_set_size: usize, max_partitions: usize) -> Self {
+        Self {
+            largest_set_size,
+            max_partitions,
+            target_partitions: 1,
+            processed: false,
+        }
+    }
+}
+
+pub struct AnyShardingParams {
+    /// The number of local compute cores in the system.
+    pub num_local_cores: usize,
+    /// The number of remote compute cores in the system.
+    pub num_remote_cores: AtomicUsize,
+    /// A constant that estimates the offload overhead when determining the number of partitions.
+    pub offload_const: usize,
+}
+
+impl AnyShardingParams {
+    pub fn new(num_local_cores: usize) -> Self {
+        Self {
+            num_local_cores,
+            num_remote_cores: AtomicUsize::new(0),
+            offload_const: OFFLOAD_CONST,
+        }
+    }
+}
+
+pub enum AnyShardingMode {
+    /// Use the maximum number of partiions (`AnyKey` becomes `Key`, `AnyEach` becomes `Each`).
+    MaxSharding,
+    /// Use a fixed target number of partitions.
+    FixedSharding(usize),
+    /// Compute an "optimal" target number of partitions.
+    AutoSharding(AnyShardingParams),
 }
 
 /// Struct that has all locations belonging to one set, that is potentially spread over multiple contexts.
@@ -216,14 +273,18 @@ impl fmt::Display for CompositionSet {
 /// The `join_order` vector is expected to be of length `sets.len()`, the `join_strategies` vector
 /// is expected to be of size `sets.len() - 1`.
 ///
-/// The function tries to produce an output vector of size `target_parallelism` if possible grouping
-/// `AnyEach` and `AnyKey` sets accordingly. If a `target_parallelism` of 0 is given it will use
-/// maximum possible parallellism (i.e. `AnyKey` becomes `Key` and `AnyEach` becomes `Each`).
+/// Based on the any sharding mode the function uses the system information to determine a suitable
+/// number of partitions and then tries to shard `AnyEach` and `AnyKey` sets accordingly if possible.
+/// If an `AnyShardingMode::MaxSharding` is given it will create the maximum possible partitions
+/// (i.e. `AnyKey` becomes `Key` and `AnyEach` becomes `Each`).
+///
+/// The `min_set_size` is used to create `any` set shards of at least that size and is ignored if
+/// set to 0.
 pub fn get_sharding(
     mut sets: Vec<Option<(ShardingMode, CompositionSet)>>,
     join_order: Vec<usize>,
     join_strategies: Vec<JoinStrategy>,
-    target_parallelism: usize,
+    any_sharding_mode: &AnyShardingMode,
     min_set_size: usize,
 ) -> Vec<Vec<Option<CompositionSet>>> {
     let set_num = sets.len();
@@ -247,7 +308,7 @@ pub fn get_sharding(
 
     // first create the iterators for any keyed shardings
     let mut key_join_iter = None;
-    let mut fixed_parallelism = 1;
+    let mut fixed_partitions = 1;
     let mut join_group_key_set: Vec<u32> = vec![];
     let mut i = 0;
     while i < join_order.len() {
@@ -255,7 +316,7 @@ pub fn get_sharding(
         if let Some((sharding, set)) = sets[set_idx].take() {
             if sharding != ShardingMode::Key {
                 if join_group_key_set.len() > 0 {
-                    fixed_parallelism *= join_group_key_set.len();
+                    fixed_partitions *= join_group_key_set.len();
                     join_group_key_set.clear();
                 }
                 sets[set_idx] = Some((sharding, set)); // put back into sets
@@ -270,7 +331,7 @@ pub fn get_sharding(
 
             if strategy == JoinStrategy::Cross {
                 if join_group_key_set.len() > 0 {
-                    fixed_parallelism *= join_group_key_set.len();
+                    fixed_partitions *= join_group_key_set.len();
                     join_group_key_set.clear();
                 }
             }
@@ -287,7 +348,8 @@ pub fn get_sharding(
     }
 
     // second create the iterators for all remaining shardings
-    let mut any_parallelisms: Vec<(usize, usize, bool)> = Vec::new(); // vec of (max parallelism, chosen parallelism)
+    // vec of (largest set size, max parallelism, chosen parallelism, processed)
+    let mut any_set_groups = Vec::new();
     let mut join_iter = key_join_iter.map(|i| i as Box<dyn JoinIterator>);
     while i < join_order.len() {
         let set_idx = join_order[i];
@@ -300,9 +362,10 @@ pub fn get_sharding(
                     let parallelism;
                     (join_iter, parallelism) =
                         join_iterator::SetEachIterator::new(join_iter, set, set_idx);
-                    fixed_parallelism *= parallelism;
+                    fixed_partitions *= parallelism;
                 }
                 ShardingMode::AnyEach => {
+                    let set_size = set.size();
                     let (any_join_iter, max_parallelism) = join_iterator::AnyIterator::new(
                         join_iter,
                         vec![set],
@@ -312,12 +375,13 @@ pub fn get_sharding(
                         min_set_size,
                     );
                     if max_parallelism > 0 {
-                        any_parallelisms.push((max_parallelism, 1, false));
+                        any_set_groups.push(AnySetGroup::new(set_size, max_parallelism));
                     }
                     join_iter = any_join_iter.map(|i| i as Box<dyn JoinIterator>);
                 }
                 ShardingMode::AnyKey => {
                     // get all sets that are joined together (i.e. find the next cross join)
+                    let mut largest_set_size = set.size();
                     let mut joined_sets = vec![set];
                     let mut joined_set_idcs = vec![set_idx];
                     let mut joined_strategies = vec![];
@@ -327,6 +391,7 @@ pub fn get_sharding(
                             let next_set_idx = join_order[i + 1];
                             // if the set is none we just skip it -> this allows for empty optional sets
                             if let Some((_, set)) = sets[next_set_idx].take() {
+                                largest_set_size = cmp::max(largest_set_size, set.size());
                                 joined_sets.push(set);
                                 joined_set_idcs.push(next_set_idx);
                                 joined_strategies.push(next_strategy);
@@ -347,7 +412,7 @@ pub fn get_sharding(
                         min_set_size,
                     );
                     if max_parallelism > 0 {
-                        any_parallelisms.push((max_parallelism, 1, false));
+                        any_set_groups.push(AnySetGroup::new(largest_set_size, max_parallelism));
                     }
                     join_iter = any_join_iter.map(|i| i as Box<dyn JoinIterator>);
                 }
@@ -358,29 +423,61 @@ pub fn get_sharding(
         }
         i += 1;
     }
+
+    // compute the target parallelism
+    let target_partitions = match any_sharding_mode {
+        AnyShardingMode::MaxSharding => 0,
+        AnyShardingMode::FixedSharding(n) => *n,
+        AnyShardingMode::AutoSharding(params) => {
+            let total_largest_any_set_sizes: usize =
+                any_set_groups.iter().map(|g| g.largest_set_size).product();
+            if total_largest_any_set_sizes == 0 {
+                0
+            } else {
+                if total_largest_any_set_sizes
+                    > params.offload_const * min_set_size * params.num_local_cores
+                {
+                    log::trace!(
+                        "Any sets using at most local cores = {}",
+                        params.num_local_cores
+                    );
+                    params.num_local_cores
+                } else {
+                    let all_cores =
+                        params.num_local_cores + params.num_remote_cores.load(Ordering::Acquire);
+                    log::trace!(
+                        "Any sets using at most local + remote cores = {}",
+                        all_cores
+                    );
+                    all_cores
+                }
+            }
+        }
+    };
     trace!(
-        "Found fixed_parallelism: {} (target_parallelism: {})",
-        fixed_parallelism,
-        target_parallelism
+        "Found fixed_partitions: {} and {} any sets (target_partitions: {})",
+        fixed_partitions,
+        any_set_groups.len(),
+        target_partitions,
     );
 
     // compute the parallelism for the any shardings
-    if fixed_parallelism < target_parallelism && !any_parallelisms.is_empty() {
-        let mut leftover_parallelism = target_parallelism / fixed_parallelism;
+    if fixed_partitions < target_partitions && !any_set_groups.is_empty() {
+        let mut leftover_parallelism = target_partitions / fixed_partitions;
         loop {
             // find the best suitable set to parallelize over
             let mut best_idx = 0;
             let mut best_dist = 0.0;
-            for (i, (max_p, _, processed)) in any_parallelisms.iter().enumerate() {
+            for (i, any_set_group) in any_set_groups.iter().enumerate() {
                 // check that we have not yet assigned a parallelism to this any set
-                if !*processed {
-                    let remainder = max_p % leftover_parallelism;
+                if !any_set_group.processed {
+                    let remainder = any_set_group.max_partitions % leftover_parallelism;
                     if remainder == 0 {
                         best_idx = i;
                         best_dist = 0.0;
                         break;
                     }
-                    let dist = (remainder) as f64 / (*max_p) as f64;
+                    let dist = (remainder) as f64 / (any_set_group.max_partitions) as f64;
                     if best_dist == 0.0 || dist < best_dist {
                         best_idx = i;
                         best_dist = dist;
@@ -391,27 +488,29 @@ pub fn get_sharding(
             // if the best set has fewer elements than the leftover parallelization we continue and
             // check if we can find another set to parallelize over in addition to the found one
             if best_dist >= 1.0 {
-                let max_parallelism = any_parallelisms[best_idx].0;
-                any_parallelisms[best_idx].1 = max_parallelism;
-                leftover_parallelism /= max_parallelism;
+                any_set_groups[best_idx].target_partitions =
+                    any_set_groups[best_idx].max_partitions;
+                leftover_parallelism /= any_set_groups[best_idx].max_partitions;
                 if leftover_parallelism <= 1 {
                     break;
                 }
-                any_parallelisms[best_idx].2 = true;
+                any_set_groups[best_idx].processed = true;
             } else {
-                if !any_parallelisms[best_idx].2 {
-                    let chosen_parallelism =
-                        cmp::min(leftover_parallelism, any_parallelisms[best_idx].0);
-                    any_parallelisms[best_idx].1 = chosen_parallelism;
+                if !any_set_groups[best_idx].processed {
+                    let chosen_parallelism = cmp::min(
+                        leftover_parallelism,
+                        any_set_groups[best_idx].max_partitions,
+                    );
+                    any_set_groups[best_idx].target_partitions = chosen_parallelism;
                 }
                 break;
             }
         }
     }
-    if target_parallelism > 0 {
-        trace!("Using any parallelism: {:?}", any_parallelisms);
+    if target_partitions > 0 {
+        trace!("Using any parallelism: {:?}", any_set_groups);
         if let Some(iter) = join_iter.as_mut() {
-            iter.reduce_any_parallelism(any_parallelisms);
+            iter.reduce_any_parallelism(any_set_groups);
         }
     }
 
@@ -555,7 +654,13 @@ fn join_it_inner_test() {
     let join_order = vec![0, 1];
     let join_strategies = vec![JoinStrategy::Inner];
 
-    let sharding = get_sharding(sets, join_order, join_strategies, 0, 0);
+    let sharding = get_sharding(
+        sets,
+        join_order,
+        join_strategies,
+        &AnyShardingMode::MaxSharding,
+        0,
+    );
     let expected = vec![
         vec![Some(vec![(0, 1)]), Some(vec![(0, 1)])],
         vec![Some(vec![(1, 2)]), Some(vec![(1, 0), (1, 2)])],
@@ -575,7 +680,13 @@ fn join_it_left_test() {
     let join_order = vec![0, 1];
     let join_strategies = vec![JoinStrategy::Left];
 
-    let sharding = get_sharding(sets, join_order, join_strategies, 0, 0);
+    let sharding = get_sharding(
+        sets,
+        join_order,
+        join_strategies,
+        &AnyShardingMode::MaxSharding,
+        0,
+    );
     let expected = vec![
         vec![Some(vec![(0, 0)]), Some(vec![(0, 2)])],
         vec![Some(vec![(1, 1)]), Some(vec![(1, 1), (1, 3)])],
@@ -596,7 +707,13 @@ fn join_it_right_test() {
     let join_order = vec![0, 1];
     let join_strategies = vec![JoinStrategy::Right];
 
-    let sharding = get_sharding(sets, join_order, join_strategies, 0, 0);
+    let sharding = get_sharding(
+        sets,
+        join_order,
+        join_strategies,
+        &AnyShardingMode::MaxSharding,
+        0,
+    );
     let expected = vec![
         vec![Some(vec![(0, 2)]), Some(vec![(0, 0)])],
         vec![Some(vec![(1, 1), (1, 3)]), Some(vec![(1, 1)])],
@@ -617,7 +734,13 @@ fn join_it_outer_test() {
     let join_order = vec![0, 1];
     let join_strategies = vec![JoinStrategy::Outer];
 
-    let sharding = get_sharding(sets, join_order, join_strategies, 0, 0);
+    let sharding = get_sharding(
+        sets,
+        join_order,
+        join_strategies,
+        &AnyShardingMode::MaxSharding,
+        0,
+    );
     let expected = vec![
         vec![Some(vec![(0, 0)]), Some(vec![(0, 2)])],
         vec![Some(vec![(1, 1)]), Some(vec![(1, 1), (1, 3)])],
@@ -639,7 +762,13 @@ fn join_it_cross_test() {
     let join_order = vec![0, 1];
     let join_strategies = vec![JoinStrategy::Cross];
 
-    let sharding = get_sharding(sets, join_order, join_strategies, 0, 0);
+    let sharding = get_sharding(
+        sets,
+        join_order,
+        join_strategies,
+        &AnyShardingMode::MaxSharding,
+        0,
+    );
     let expected = vec![
         vec![Some(vec![(0, 0)]), Some(vec![(0, 2)])],
         vec![Some(vec![(0, 0)]), Some(vec![(1, 1), (1, 3)])],
@@ -666,7 +795,13 @@ fn join_it_order_test() {
     let join_order = vec![1, 0];
     let join_strategies = vec![JoinStrategy::Left];
 
-    let sharding = get_sharding(sets, join_order, join_strategies, 0, 0);
+    let sharding = get_sharding(
+        sets,
+        join_order,
+        join_strategies,
+        &AnyShardingMode::MaxSharding,
+        0,
+    );
     let expected = vec![
         vec![Some(vec![(0, 2)]), Some(vec![(0, 0)])],
         vec![Some(vec![(1, 1), (1, 3)]), Some(vec![(1, 1)])],
@@ -705,7 +840,13 @@ fn join_it_chain_test() {
         JoinStrategy::Outer,
     ];
 
-    let sharding = get_sharding(sets, join_order, join_strategies, 0, 0);
+    let sharding = get_sharding(
+        sets,
+        join_order,
+        join_strategies,
+        &AnyShardingMode::MaxSharding,
+        0,
+    );
     let expected = vec![
         vec![Some(vec![(1, 0)]), None, None, None],
         vec![None, Some(vec![(2, 0)]), None, None],
@@ -757,7 +898,13 @@ fn join_it_any_simple_test() {
     let join_order = vec![0];
     let join_strategies = vec![];
 
-    let sharding = get_sharding(sets, join_order, join_strategies, 2, 0);
+    let sharding = get_sharding(
+        sets,
+        join_order,
+        join_strategies,
+        &AnyShardingMode::FixedSharding(2),
+        0,
+    );
     let expected = vec![
         vec![Some(vec![(0, 0), (1, 1)])],
         vec![Some(vec![(2, 2), (3, 3)])],
@@ -777,7 +924,13 @@ fn join_it_any_joined_keys_test() {
     let join_order = vec![0, 1];
     let join_strategies = vec![JoinStrategy::Inner];
 
-    let sharding = get_sharding(sets, join_order, join_strategies, 2, 0);
+    let sharding = get_sharding(
+        sets,
+        join_order,
+        join_strategies,
+        &AnyShardingMode::FixedSharding(2),
+        0,
+    );
     let expected = vec![
         vec![Some(vec![(0, 0), (2, 2)]), Some(vec![(0, 0), (2, 1)])],
         vec![Some(vec![(3, 3), (5, 4)]), Some(vec![(3, 2), (5, 4)])],
@@ -798,7 +951,13 @@ fn join_it_any_chain_test() {
     let join_order = vec![1, 2, 0];
     let join_strategies = vec![JoinStrategy::Inner, JoinStrategy::Cross];
 
-    let sharding = get_sharding(sets, join_order, join_strategies, 2, 0);
+    let sharding = get_sharding(
+        sets,
+        join_order,
+        join_strategies,
+        &AnyShardingMode::FixedSharding(2),
+        0,
+    );
     let expected = vec![
         vec![
             Some(vec![(0, 0), (0, 1), (0, 2)]),
@@ -834,7 +993,7 @@ fn join_it_any_chain_test_1() {
         sets.clone(),
         join_order.clone(),
         join_strategies.clone(),
-        6,
+        &AnyShardingMode::FixedSharding(6),
         0,
     );
     assert_eq!(sharding_6.len(), 6); // <- should get 6 shardings
@@ -847,7 +1006,7 @@ fn join_it_any_chain_test_1() {
         sets.clone(),
         join_order.clone(),
         join_strategies.clone(),
-        3,
+        &AnyShardingMode::FixedSharding(3),
         0,
     );
     assert_eq!(sharding_3.len(), 3); // <- should get 3 shardings
@@ -860,7 +1019,7 @@ fn join_it_any_chain_test_1() {
         sets.clone(),
         join_order.clone(),
         join_strategies.clone(),
-        4,
+        &AnyShardingMode::FixedSharding(4),
         0,
     );
     assert_eq!(sharding_4.len(), 4); // <- should get 4 shardings
@@ -884,7 +1043,7 @@ fn join_it_any_chain_test_2() {
         sets.clone(),
         join_order.clone(),
         join_strategies.clone(),
-        2,
+        &AnyShardingMode::FixedSharding(2),
         0,
     );
     assert_eq!(sharding_2.len(), 2); // <- should get 2 shardings
@@ -896,7 +1055,7 @@ fn join_it_any_chain_test_2() {
         sets.clone(),
         join_order.clone(),
         join_strategies.clone(),
-        3,
+        &AnyShardingMode::FixedSharding(3),
         0,
     );
     assert_eq!(sharding_3.len(), 3); // <- should get 3 shardings
@@ -908,7 +1067,7 @@ fn join_it_any_chain_test_2() {
         sets.clone(),
         join_order.clone(),
         join_strategies.clone(),
-        6,
+        &AnyShardingMode::FixedSharding(6),
         0,
     );
     assert_eq!(sharding_6.len(), 6); // <- should get 6 shardings
@@ -932,7 +1091,7 @@ fn join_it_any_chain_test_3() {
         sets.clone(),
         join_order.clone(),
         join_strategies.clone(),
-        2,
+        &AnyShardingMode::FixedSharding(2),
         0,
     );
     assert_eq!(sharding_2.len(), 2); // <- should get 2 shardings
@@ -945,7 +1104,7 @@ fn join_it_any_chain_test_3() {
         sets.clone(),
         join_order.clone(),
         join_strategies.clone(),
-        4,
+        &AnyShardingMode::FixedSharding(4),
         0,
     );
     assert_eq!(sharding_4.len(), 4); // <- should get 4 shardings
@@ -958,7 +1117,7 @@ fn join_it_any_chain_test_3() {
         sets.clone(),
         join_order.clone(),
         join_strategies.clone(),
-        6,
+        &AnyShardingMode::FixedSharding(6),
         0,
     );
     assert_eq!(sharding_6.len(), 6); // <- should get 6 shardings
@@ -983,7 +1142,7 @@ fn join_it_any_chain_test_4() {
         sets.clone(),
         join_order.clone(),
         join_strategies_inner.clone(),
-        10,
+        &AnyShardingMode::FixedSharding(10),
         0,
     );
     assert_eq!(sharding_inner.len(), 4); // <- should get 4 shardings
@@ -997,7 +1156,7 @@ fn join_it_any_chain_test_4() {
         sets.clone(),
         join_order.clone(),
         join_strategies_left.clone(),
-        10,
+        &AnyShardingMode::FixedSharding(10),
         0,
     );
     assert_eq!(sharding_left.len(), 8); // <- should get 2*4=8 shardings
@@ -1011,7 +1170,7 @@ fn join_it_any_chain_test_4() {
         sets.clone(),
         join_order.clone(),
         join_strategies_right.clone(),
-        10,
+        &AnyShardingMode::FixedSharding(10),
         0,
     );
     assert_eq!(sharding_right.len(), 6); // <- should get 2*3=6 shardings
@@ -1025,7 +1184,7 @@ fn join_it_any_chain_test_4() {
         sets.clone(),
         join_order.clone(),
         join_strategies_outer.clone(),
-        10,
+        &AnyShardingMode::FixedSharding(10),
         0,
     );
     assert_eq!(sharding_outer.len(), 10); // <- should get 2*5=10 shardings
@@ -1049,7 +1208,7 @@ fn join_it_any_chain_test_5() {
         sets.clone(),
         join_order.clone(),
         join_strategies.clone(),
-        2,
+        &AnyShardingMode::FixedSharding(2),
         0,
     );
     assert_eq!(sharding_2.len(), 2); // <- should get 2 shardings
@@ -1060,7 +1219,7 @@ fn join_it_any_chain_test_5() {
         sets.clone(),
         join_order.clone(),
         join_strategies.clone(),
-        4,
+        &AnyShardingMode::FixedSharding(4),
         0,
     );
     assert_eq!(sharding_4.len(), 4); // <- should get 4 shardings
@@ -1088,7 +1247,7 @@ fn join_it_any_chain_test_6() {
         sets.clone(),
         join_order.clone(),
         join_strategies.clone(),
-        2,
+        &AnyShardingMode::FixedSharding(2),
         0,
     );
     assert_eq!(sharding_2.len(), 2); // <- should get 2 shardings
@@ -1109,7 +1268,7 @@ fn join_it_any_chain_test_6() {
         sets.clone(),
         join_order.clone(),
         join_strategies.clone(),
-        3,
+        &AnyShardingMode::FixedSharding(3),
         0,
     );
     assert_eq!(sharding_3.len(), 3); // <- should get 3 shardings
@@ -1141,7 +1300,7 @@ fn join_it_any_chain_test_7() {
         sets.clone(),
         join_order.clone(),
         join_strategies.clone(),
-        usize::MAX,
+        &AnyShardingMode::FixedSharding(usize::MAX),
         0,
     );
     assert_eq!(sharding.len(), 1); // <- should get 1 sharding

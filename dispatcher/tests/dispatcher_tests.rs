@@ -4,11 +4,7 @@ mod dispatcher_tests {
     mod registry_tests;
 
     use dandelion_commons::FunctionId;
-    use dispatcher::{
-        dispatcher::{Dispatcher, SystemInformation},
-        queue::WorkQueue,
-        resource_pool::ResourcePool,
-    };
+    use dispatcher::{dispatcher::Dispatcher, queue::WorkQueue, resource_pool::ResourcePool};
     use machine_interface::{
         composition::CompositionSet,
         function_driver::{ComputeResource, Metadata},
