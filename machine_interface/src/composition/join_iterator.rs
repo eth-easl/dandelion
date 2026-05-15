@@ -6,7 +6,7 @@ pub(super) trait JoinIterator {
     /// Reduces the parallelism of all `AnyIterators` in the iterator chain by combining some sets.
     /// We expect this function is only called once, otherwise, we could end up with unevenly
     /// distributed or completely messed up groups.
-    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<AnySetGroup>);
+    fn reduce_any_partitions(&mut self, any_parallelisms: Vec<AnySetGroup>);
 
     /// Fills the given composition set vector with the current iterator state.
     /// This is undefined behaviour if the previous `advance` call returned `false`.
@@ -43,9 +43,9 @@ impl SetAllIterator {
 }
 
 impl JoinIterator for SetAllIterator {
-    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<AnySetGroup>) {
+    fn reduce_any_partitions(&mut self, any_parallelisms: Vec<AnySetGroup>) {
         if let Some(left) = self.left.as_mut() {
-            left.reduce_any_parallelism(any_parallelisms);
+            left.reduce_any_partitions(any_parallelisms);
         } else {
             debug_assert!(any_parallelisms.len() == 0);
         }
@@ -96,9 +96,9 @@ impl SetEachIterator {
 }
 
 impl JoinIterator for SetEachIterator {
-    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<AnySetGroup>) {
+    fn reduce_any_partitions(&mut self, any_parallelisms: Vec<AnySetGroup>) {
         if let Some(left) = self.left.as_mut() {
-            left.reduce_any_parallelism(any_parallelisms);
+            left.reduce_any_partitions(any_parallelisms);
         } else {
             debug_assert!(any_parallelisms.len() == 0);
         }
@@ -302,7 +302,7 @@ impl SetKeyIterator {
 }
 
 impl JoinIterator for SetKeyIterator {
-    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<AnySetGroup>) {
+    fn reduce_any_partitions(&mut self, any_parallelisms: Vec<AnySetGroup>) {
         debug_assert!(any_parallelisms.len() == 0);
     }
 
@@ -543,6 +543,13 @@ pub(super) struct AnyIterator {
 }
 
 impl AnyIterator {
+    /// Creates a new `AnyIterator` generating the maximum number of sharded sets for this any set
+    /// group. The number of total partitions can then be reduced using the `reduce_any_parallelism`
+    /// over all iterators.
+    ///
+    /// Returns the corresponding a tuple of the `JoinIterator`, the largest set size (after
+    /// joining) and the maximum possible number of partitions. If the iterator is empty, i.e. won't
+    /// produce any sets, it returns the left `JoinIterator` (and zeros for the other values).
     pub(super) fn new(
         left: Option<Box<dyn JoinIterator>>,
         sets: Vec<CompositionSet>,
@@ -550,7 +557,7 @@ impl AnyIterator {
         write_idcs: Vec<usize>,
         sharding: ShardingMode,
         min_set_size: usize,
-    ) -> (Option<Box<dyn JoinIterator>>, usize) {
+    ) -> (Option<Box<dyn JoinIterator>>, usize, usize) {
         let num_sets = sets.len();
         debug_assert!(num_sets > 0);
 
@@ -586,6 +593,8 @@ impl AnyIterator {
         }
 
         if let Some(mut it) = inner_join_it {
+            let mut total_sizes = Vec::new();
+            total_sizes.resize(num_sets, 0);
             let mut inner_sharding = Vec::new();
 
             // generate all sets
@@ -597,6 +606,11 @@ impl AnyIterator {
                 let mut next_sets = Vec::with_capacity(num_sets);
                 next_sets.resize(num_sets, None);
                 it.fill_in(&mut next_sets);
+                for (i, set_opt) in next_sets.iter().enumerate() {
+                    if let Some(set) = set_opt {
+                        total_sizes[i] += set.size();
+                    }
+                }
                 inner_sharding.push(next_sets);
             }
             let max_parallelism = inner_sharding.len();
@@ -610,17 +624,18 @@ impl AnyIterator {
                     min_set_size,
                     largest_set_idx,
                 })),
+                *total_sizes.iter().max().unwrap(),
                 max_parallelism,
             )
         } else {
             // no inner join iterator was built -> this iterator will no produce any sets
-            (left, 0)
+            (left, 0, 0)
         }
     }
 }
 
 impl JoinIterator for AnyIterator {
-    fn reduce_any_parallelism(&mut self, mut any_parallelisms: Vec<AnySetGroup>) {
+    fn reduce_any_partitions(&mut self, mut any_parallelisms: Vec<AnySetGroup>) {
         let parallelism = any_parallelisms
             .pop()
             .expect("Ran out of any_parallelisms.")
@@ -650,6 +665,9 @@ impl JoinIterator for AnyIterator {
             let mut curr_idx = 0;
             let mut min_end_idx = 0;
             for group_idx in 0..parallelism {
+                if curr_idx >= self.set_groups.len() {
+                    break;
+                }
                 let extra = if group_idx < remainder { 1 } else { 0 };
                 min_end_idx = min_end_idx + base_size + extra;
 
@@ -696,7 +714,7 @@ impl JoinIterator for AnyIterator {
                             curr_set = self.set_groups[i][set_idx].take();
                         }
                     }
-                    set_group.push(curr_set);
+                    set_group[set_idx] = curr_set;
                 }
                 new_set_groups.push(set_group);
             }
@@ -729,7 +747,7 @@ impl JoinIterator for AnyIterator {
         self.set_groups = new_set_groups;
 
         if let Some(left) = self.left.as_mut() {
-            left.reduce_any_parallelism(any_parallelisms);
+            left.reduce_any_partitions(any_parallelisms);
         } else {
             debug_assert!(any_parallelisms.len() == 0);
         }
