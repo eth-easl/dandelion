@@ -41,6 +41,9 @@ pub enum WorkToDo {
         caching: bool,
         recorder: Recorder,
     },
+    SetsToResolve {
+        input_sets: Vec<Option<CompositionSet>>,
+    },
     Shutdown(EngineType),
 }
 
@@ -59,9 +62,21 @@ impl WorkDone {
 }
 
 pub trait EngineWorkQueue {
-    fn get_engine_args(
+    fn get_compute_engine_args(
         &self,
     ) -> impl std::future::Future<Output = (WorkToDo, crate::promise::Debt)> + Send;
+    /// Function to get work for the IO engines
+    /// Unstable: This is a temproary addition to the interface use with caution
+    fn get_io_engine_args(
+        &self,
+    ) -> impl std::future::Future<Output = (WorkToDo, crate::promise::Debt)> + Send;
+    /// Function to return a Work to do to the queue after fetching all reference sets
+    /// Unstable: This is a temproary addition to the interface use with caution
+    fn requeu_engine_args(
+        &self,
+        work: WorkToDo,
+        debt: crate::promise::Debt,
+    ) -> impl std::future::Future<Output = ()> + Send;
 }
 
 pub trait Driver: Send + Sync {
@@ -70,7 +85,7 @@ pub trait Driver: Send + Sync {
         &self,
         resource: ComputeResource,
         // TODO check out why this can't be impl instead of Box<dyn
-        queue: impl EngineWorkQueue + Send + 'static,
+        queue: impl EngineWorkQueue + Clone + Send + 'static,
     ) -> DandelionResult<()>;
 
     // parses an executable,

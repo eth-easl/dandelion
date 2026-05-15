@@ -3,6 +3,9 @@ mod dispatcher_tests {
     mod function_tests;
     mod registry_tests;
 
+    #[cfg(feature = "reqwest_io")]
+    mod combination_tests;
+
     use dandelion_commons::FunctionId;
     use dispatcher::{dispatcher::Dispatcher, queue::WorkQueue, resource_pool::ResourcePool};
     use machine_interface::{
@@ -15,6 +18,11 @@ mod dispatcher_tests {
     use std::{collections::BTreeMap, sync::Arc};
 
     const DEFAULT_CONTEXT_SIZE: usize = 0x800_0000; // 128MiB
+
+    #[inline]
+    fn zero_id() -> FunctionId {
+        Arc::new(0.to_string())
+    }
 
     fn setup_dispatcher<Dom: MemoryDomain>(
         name: &str,
@@ -38,6 +46,11 @@ mod dispatcher_tests {
         };
         let mut pool_map = BTreeMap::new();
         pool_map.insert(engine_type, engine_resource);
+
+        // insert a system engine if available
+        #[cfg(feature = "reqwest_io")]
+        pool_map.insert(EngineType::System, vec![ComputeResource::CPU(0)]);
+
         let resource_pool = ResourcePool {
             engine_pool: futures::lock::Mutex::new(pool_map),
         };
@@ -184,6 +197,14 @@ mod dispatcher_tests {
             fn test_multiple_input_fixed() {
                 let name = format!("test_{}_matmac", stringify!($name));
                 multiple_input_fixed::<$domain>($init, &name, $engine_type, $engine_resource)
+            }
+
+            #[test_log::test]
+            #[cfg(feature = "reqwest_io")]
+            fn test_fetch_compute() {
+                use crate::dispatcher_tests::combination_tests::fetch_compute;
+                let name = format!("test_{}_matmul", stringify!($name));
+                fetch_compute::<$domain>($init, &name, $engine_type, $engine_resource)
             }
         };
     }

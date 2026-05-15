@@ -105,8 +105,25 @@ impl Dispatcher {
             .queue_function(function_id, inputs, caching, recorder.get_sub_recorder())
             .await?;
 
-        // TODO: properly resolve non local sets
-        let local_results = results
+        // if any set is not local send them trough reference resolution
+        let resolved_sets = if !(&results).into_iter().all(|set_option| {
+            if let Some(set) = set_option {
+                set.is_local()
+            } else {
+                true
+            }
+        }) {
+            self.work_queue
+                .do_work(WorkToDo::SetsToResolve {
+                    input_sets: results,
+                })
+                .await?
+                .get_composition()
+        } else {
+            results
+        };
+
+        let local_results = resolved_sets
             .into_iter()
             .map(|set_opt| set_opt.map(|set| set.into_local()))
             .collect();
@@ -148,8 +165,24 @@ impl Dispatcher {
             )
             .await?;
 
-        // TODO: properly resolve non local sets
-        let local_results = results
+        // if any set is not local send them trough reference resolution
+        let resolved_sets = if !(&results).into_iter().all(|set_option| {
+            if let Some(set) = set_option {
+                set.is_local()
+            } else {
+                true
+            }
+        }) {
+            self.work_queue
+                .do_work(WorkToDo::SetsToResolve {
+                    input_sets: results,
+                })
+                .await?
+                .get_composition()
+        } else {
+            results
+        };
+        let local_results = resolved_sets
             .into_iter()
             .map(|set_opt| set_opt.map(|set| set.into_local()))
             .collect();
@@ -466,10 +499,17 @@ impl Dispatcher {
         debug!("Queueing function with id: {}", function_id);
         Box::pin(async move {
             // find an engine capable of running the function
-            // TODO: think about more distinctions, that allow pushing chains of functions which can be executed by single engine,
-            // or potentially or potentially even compositions that still need to be split.
             match self.function_registry.get_function(&function_id)? {
-                FunctionType::SystemFunction(func_info) | FunctionType::Function(func_info) => {
+                // Defer actual execution of system functions (i.e. fetching),
+                // by calling the system function to produce a composition set containing the reference to be resolved later
+                FunctionType::SystemFunction(func_info) => {
+                    machine_interface::function_driver::system_driver::convert_to_references(
+                        function_id,
+                        input_sets,
+                        func_info.metadata.clone(),
+                    )
+                }
+                FunctionType::Function(func_info) => {
                     let function_alternatives = func_info
                         .alternatives
                         .read()
@@ -541,19 +581,18 @@ impl Dispatcher {
                         }
                     }
 
-                    return Ok(sets);
+                    Ok(sets)
                 }
                 FunctionType::Composition(comp_info) => {
-                    return self
-                        .queue_composition(
-                            (*comp_info.composition).clone(),
-                            input_sets,
-                            caching,
-                            recorder,
-                        )
-                        .await;
+                    self.queue_composition(
+                        (*comp_info.composition).clone(),
+                        input_sets,
+                        caching,
+                        recorder,
+                    )
+                    .await
                 }
-            };
+            }
         })
     }
 }

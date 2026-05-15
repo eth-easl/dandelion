@@ -39,7 +39,7 @@ impl TestQueue {
 }
 
 impl EngineWorkQueue for TestQueue {
-    async fn get_engine_args(&self) -> (WorkToDo, Debt) {
+    async fn get_compute_engine_args(&self) -> (WorkToDo, Debt) {
         let (lock, arg_var) = self.internal.as_ref();
         let mut lock_guard = lock
             .lock()
@@ -55,5 +55,26 @@ impl EngineWorkQueue for TestQueue {
             .expect("Test queue tried to take args from empty queue");
         arg_var.notify_all();
         args
+    }
+    async fn get_io_engine_args(&self) -> (WorkToDo, Debt) {
+        let (lock, arg_var) = self.internal.as_ref();
+        let mut lock_guard = lock
+            .lock()
+            .expect("Test queue failed to lock on get_engine_args");
+        if lock_guard.args.is_none() {
+            lock_guard = arg_var
+                .wait_while(lock_guard, |guard| guard.args.is_none())
+                .expect("Test queue failed waiting to take args");
+        }
+        let args = lock_guard
+            .args
+            .take()
+            .expect("Test queue tried to take args from empty queue");
+        arg_var.notify_all();
+        args
+    }
+
+    async fn requeu_engine_args(&self, _work: WorkToDo, _debt: crate::promise::Debt) {
+        panic!("should not requeue on the test queue");
     }
 }

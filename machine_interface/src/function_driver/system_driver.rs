@@ -1,7 +1,15 @@
 #[cfg(feature = "reqwest_io")]
 pub mod reqwest;
 
-use crate::{function_driver::functions::SystemFunction, machine_config::EngineType};
+use crate::{
+    composition::{CompositionSet, ItemData},
+    function_driver::{functions::SystemFunction, Metadata},
+    machine_config::EngineType,
+    memory_domain::Context,
+    DataItem,
+};
+use dandelion_commons::{try_with_capacity, DandelionResult};
+use std::sync::Arc;
 
 /// HTTP function currently expects one set with requests formated by HTTP standard (in text).
 /// This means one line with the reqest method, a space, request url, another space and the protocol version
@@ -61,6 +69,80 @@ pub const SYSTEM_FUNCTIONS: &[(EngineType, SystemFunction, usize)] = &[
         SYS_FUNC_DEFAULT_CONTEXT_SIZE,
     ),
 ];
+
+// TODO: find way to couple the outputs of fetching.
+// now if an item is cloned it may lead to multple fetches
+// same is true if the body and headers are used
+#[derive(Debug, Clone)]
+pub struct IoData {
+    pub original_item: DataItem,
+    // TODO change to ItemData and do recursive resolving
+    pub original_data: Arc<Context>,
+    pub function: SystemFunction,
+    pub set_index: usize,
+    // recorder: Recorder,
+}
+
+/// Currently assumes the HTTP_INPUT_SETS and HTTP_OUTPUT_SETS
+pub fn convert_to_references(
+    function_id: Arc<String>,
+    mut inputs: Vec<Option<CompositionSet>>,
+    metadata: Arc<Metadata>,
+    // recorder: Recorder,
+) -> DandelionResult<Vec<Option<CompositionSet>>> {
+    // check that the function id contains string correcpsonding to system function
+    let function = SystemFunction::from(function_id.as_ref().as_str());
+    debug_assert_eq!(
+        1,
+        inputs.len(),
+        "all current IO functions expect a single input set"
+    );
+    debug_assert_eq!(
+        2,
+        metadata.output_sets.len(),
+        "all current IO functions have 2 output sets"
+    );
+
+    // go through all input sets and check if there is already a static one, or on in the input data
+    let mut output_vec = try_with_capacity!(Vec, 2)?;
+    output_vec.resize(2, None);
+
+    // TODO: fix for non local
+    let input_option = metadata.input_sets[0]
+        .clone()
+        .1
+        .or_else(|| inputs[0].take().map(|set| set.into_local()));
+
+    if let Some(input_set) = input_option {
+        let input_set_name = input_set.get_name().clone();
+        let mut out_0_list = try_with_capacity!(Vec, input_set.len())?;
+        let mut out_1_list = try_with_capacity!(Vec, input_set.len())?;
+        for (item, context) in input_set {
+            let new_item = DataItem {
+                data: crate::Position { offset: 0, size: 0 },
+                ident: item.ident.clone(),
+                key: item.key,
+            };
+            let header_data = IoData {
+                original_item: item.clone(),
+                original_data: context.clone(),
+                function,
+                set_index: 0,
+            };
+            let body_data = IoData {
+                original_item: item,
+                original_data: context,
+                function,
+                set_index: 1,
+            };
+            out_0_list.push((new_item.clone(), ItemData::IoData(header_data)));
+            out_1_list.push((new_item, ItemData::IoData(body_data)));
+        }
+        output_vec[0] = CompositionSet::from_item_list(input_set_name.clone(), out_0_list);
+        output_vec[1] = CompositionSet::from_item_list(input_set_name, out_1_list);
+    }
+    Ok(output_vec)
+}
 
 #[cfg(test)]
 mod system_driver_tests;

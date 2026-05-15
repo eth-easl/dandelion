@@ -54,7 +54,7 @@ const WAKER_TABLE: RawWakerVTable =
     RawWakerVTable::new(waker_clone, waker_wake, waker_wake_by_ref, waker_drop);
 
 fn manual_pull(queue: &mut impl EngineWorkQueue) -> (WorkToDo, Debt) {
-    let mut queue_future = core::pin::pin!(queue.get_engine_args());
+    let mut queue_future = core::pin::pin!(queue.get_compute_engine_args());
     //
     let new_atomic = AtomicBool::new(false);
     let raw_waker = RawWaker::new(new_atomic.as_ptr() as *const (), &WAKER_TABLE);
@@ -188,6 +188,9 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                     )))
                 });
                 debt.fulfill(results);
+            }
+            WorkToDo::SetsToResolve { input_sets: _ } => {
+                panic!("Compute engine should never get sets to resolve")
             }
             WorkToDo::Shutdown(_) => {
                 debt.fulfill(Ok(WorkDone::Resources(vec![ComputeResource::CPU(core_id)])));

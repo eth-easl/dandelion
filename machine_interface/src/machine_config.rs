@@ -49,7 +49,7 @@ impl EngineType {
     pub fn start_engine(
         &self,
         resource: ComputeResource,
-        queue: impl EngineWorkQueue + Send + 'static,
+        queue: impl EngineWorkQueue + Clone + Send + 'static,
     ) -> DandelionResult<()> {
         match self {
             #[cfg(feature = "reqwest_io")]

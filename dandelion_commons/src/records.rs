@@ -195,7 +195,7 @@ impl Recorder {
     }
 }
 
-impl fmt::Display for Recorder {
+impl fmt::Debug for Recorder {
     fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         #[cfg(feature = "timestamp")]
         {
@@ -207,6 +207,12 @@ impl fmt::Display for Recorder {
             self.timestamps.fmt(_f)?;
         }
         Ok(())
+    }
+}
+
+impl fmt::Display for Recorder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
     }
 }
 

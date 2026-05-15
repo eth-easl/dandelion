@@ -6,12 +6,23 @@ message NodeInfo {
     uint32 version = 1;
 }
 
+enum SystemFunction {
+    HTTP = 0;
+}
+
+message IoData {
+    uint64 end_offset = 2;
+    SystemFunction function = 3;
+    uint64 set_index = 4;
+}
+
 message MetadataItem {
     string ident = 1;
     uint32 key = 2;
     oneof data {
         // For data that is sent with the request and will be local to the node
-        uint64 end_offset = 3;
+        uint64 local_end_offset = 3;
+        IoData io_data = 4; 
     }
 }
 

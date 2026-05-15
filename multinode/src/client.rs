@@ -20,7 +20,7 @@ use futures::{future::Either, stream::FuturesUnordered, FutureExt, StreamExt};
 use log::{trace, warn};
 use machine_interface::{
     composition::{CompositionSet, ItemData},
-    function_driver::{WorkDone, WorkToDo},
+    function_driver::{system_driver::IoData, WorkDone, WorkToDo},
     machine_config::{EngineType, IntoEnumIterator},
     memory_domain::ContextTrait,
     Position,
@@ -67,26 +67,32 @@ async fn send_message(
         sender.write_u64(total_size).await.unwrap();
         for data_set in data_sets.into_iter().filter_map(|item| item) {
             for (item, item_data) in data_set.into_iter() {
-                match item_data {
+                let (offset, size, context) = match item_data {
                     ItemData::LocalData(context) => {
-                        let Position {
-                            offset: item_offset,
-                            size: item_size,
-                        } = item.data;
-                        debug_assert_ne!(0, item_size);
-                        let mut bytes_written = 0;
-                        while bytes_written < item_size {
-                            let next_chunk = context
-                                .get_chunk_ref(
-                                    item_offset + bytes_written,
-                                    item_size - bytes_written,
-                                )
-                                .unwrap();
-                            sender.write_all(next_chunk).await.unwrap();
-                            bytes_written += next_chunk.len();
-                        }
+                        let Position { offset, size } = item.data;
+                        (offset, size, context)
                     }
-                    _ => unimplemented!(),
+                    ItemData::IoData(io_data) => {
+                        let IoData {
+                            original_item,
+                            original_data,
+                            function: _,
+                            set_index: _,
+                        } = io_data;
+                        let Position { offset, size } = original_item.data;
+                        (offset, size, original_data)
+                    }
+                    // if there is nothing to write to the buffer do a continue to skip writing
+                    ItemData::RemoteData() => todo!(),
+                };
+                debug_assert_ne!(0, size);
+                let mut bytes_written = 0;
+                while bytes_written < size {
+                    let next_chunk = context
+                        .get_chunk_ref(offset + bytes_written, size - bytes_written)
+                        .unwrap();
+                    sender.write_all(next_chunk).await.unwrap();
+                    bytes_written += next_chunk.len();
                 }
             }
         }
@@ -225,8 +231,9 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                                     caching,
                                     recorder: _,
                                 } => (function_id, input_sets, caching),
-                                WorkToDo::Shutdown(_) => {
-                                    panic!("Should never get shutdown in remote engine queue")
+                                WorkToDo::SetsToResolve { input_sets: _ }
+                                | WorkToDo::Shutdown(_) => {
+                                    panic!("Should only get function arguments when polling for remote queue")
                                 }
                             };
                             let (metadata_sets, data_sets) = composition_sets_to_proto(data_sets);

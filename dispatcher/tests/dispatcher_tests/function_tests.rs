@@ -1,5 +1,5 @@
-use super::{check_matrix, setup_dispatcher};
-use dandelion_commons::{records::Recorder, FunctionId};
+use super::{check_matrix, setup_dispatcher, zero_id};
+use dandelion_commons::records::Recorder;
 use dispatcher::dispatcher::Dispatcher;
 use machine_interface::{
     composition::{
@@ -13,11 +13,6 @@ use machine_interface::{
 };
 use std::{collections::BTreeMap, time::Instant};
 use std::{iter, sync::Arc};
-
-#[inline]
-fn zero_id() -> FunctionId {
-    Arc::new(0.to_string())
-}
 
 pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
     memory_resource: (DomainType, MemoryResource),

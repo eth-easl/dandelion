@@ -1,5 +1,6 @@
 use crate::{
-    composition::join_iterator::JoinIterator, memory_domain::Context, DataItem, DataSet, Position,
+    composition::join_iterator::JoinIterator, function_driver::system_driver::IoData,
+    memory_domain::Context, DataItem, DataSet, Position,
 };
 use dandelion_commons::FunctionId;
 use log::trace;
@@ -167,8 +168,7 @@ pub enum ItemData {
     /// Data that is already on another node and can be fetched from there.
     RemoteData(),
     /// Data that needs to be fetched using an IO function.
-    /// The DataItem and Context contain the inputs for the IO function to get the item locally.
-    IoData(DataItem, Arc<Context>),
+    IoData(IoData),
 }
 
 /// Struct contianing refences for all data belonging to one set.
@@ -244,6 +244,25 @@ impl CompositionSet {
             .collect()
     }
 
+    pub fn from_item_list(set_name: String, item_list: Vec<(DataItem, ItemData)>) -> Option<Self> {
+        if item_list.is_empty() {
+            None
+        } else {
+            let non_local_sets = (&item_list)
+                .into_iter()
+                .filter(|(_, data)| match data {
+                    ItemData::LocalData(_) => false,
+                    _ => true,
+                })
+                .count();
+            Some(Self {
+                non_local_sets,
+                item_list,
+                set_name,
+            })
+        }
+    }
+
     pub fn combine(&mut self, additional: CompositionSet) {
         self.item_list.extend(additional.item_list.into_iter());
         self.item_list.sort_unstable_by_key(|a| a.0.key);
@@ -278,10 +297,10 @@ impl core::fmt::Display for CompositionSet {
             match data {
                 ItemData::LocalData(context) => write!(
                     f,
-                    "data: {{ : {:?}, size: {}, state: {:?} }})",
+                    "LocalData: {{ context: {:?}, size: {}, state: {:?} }})",
                     context.context, context.size, context.state
                 ),
-                ItemData::IoData(_, _) => write!(f, "IoData"),
+                ItemData::IoData(data) => write!(f, "IoData: {:?}", data),
                 ItemData::RemoteData() => write!(f, "RemoteData"),
             }?;
         }

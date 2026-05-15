@@ -1,8 +1,11 @@
+use std::sync::Arc;
+
 // For types which have the same name for prot and machine_interface,
 // use the full ones to make sure there is no mix ups
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, MultinodeError};
 use machine_interface::{
-    composition::CompositionSet,
+    composition::{CompositionSet, ItemData},
+    function_driver::{functions::SystemFunction, system_driver::IoData},
     machine_config,
     memory_domain::{bytes_context::BytesContext, Context, ContextType},
     Position,
@@ -42,18 +45,58 @@ pub(crate) fn engine_type_ptod(t: i32) -> DandelionResult<machine_config::Engine
     }
 }
 
+pub(crate) fn system_function_ptod(proto_function: i32) -> DandelionResult<SystemFunction> {
+    match proto::SystemFunction::try_from(proto_function).unwrap() {
+        proto::SystemFunction::Http => Ok(SystemFunction::HTTP),
+    }
+}
+
+pub(crate) fn system_function_dtop(
+    dandelion_function: &SystemFunction,
+) -> DandelionResult<proto::SystemFunction> {
+    match dandelion_function {
+        SystemFunction::HTTP => Ok(proto::SystemFunction::Http),
+        _ => unimplemented!(),
+    }
+}
+
 /// Takes a `CompositionSet` reference and translates it into a protocol data set.
 fn composition_set_to_proto(set: &CompositionSet, offset: &mut u64) -> proto::MetadataSet {
     let mut items = Vec::with_capacity(set.len());
-    for (item, _) in set {
-        // don't need to send items with no size
-        if item.data.size > 0 {
-            *offset += item.data.size as u64;
-            items.push(proto::MetadataItem {
-                ident: item.ident.clone(),
-                key: item.key,
-                data: Some(metadata_item::Data::EndOffset(*offset)),
-            });
+    for (item, data) in set {
+        match data {
+            ItemData::LocalData(_) => {
+                // don't need to send items with no size
+                if item.data.size > 0 {
+                    *offset += item.data.size as u64;
+                    items.push(proto::MetadataItem {
+                        ident: item.ident.clone(),
+                        key: item.key,
+                        data: Some(metadata_item::Data::LocalEndOffset(*offset)),
+                    });
+                }
+            }
+            ItemData::IoData(io_data) => {
+                let IoData {
+                    original_item,
+                    original_data: _,
+                    function,
+                    set_index,
+                } = io_data;
+                if original_item.data.size > 0 {
+                    *offset += original_item.data.size as u64;
+                    items.push(proto::MetadataItem {
+                        ident: item.ident.clone(),
+                        key: item.key,
+                        data: Some(metadata_item::Data::IoData(proto::IoData {
+                            set_index: *set_index as u64,
+                            end_offset: *offset,
+                            function: system_function_dtop(function).unwrap() as i32,
+                        })),
+                    });
+                }
+            }
+            ItemData::RemoteData() => todo!(),
         }
     }
     // assigning name equal to index, as they are ignored on the receiver node anyway
@@ -92,79 +135,93 @@ pub(crate) fn composition_sets_to_proto(
     }
 }
 
-/// Takes a (reference to a) vector of protocol data sets and translates them into a `BytesContext`
-/// that contains all of the sets.
-fn proto_data_sets_to_context(
-    protobuf_sets: Vec<proto::MetadataSet>,
-    data_buf: Option<Bytes>,
-) -> Context {
-    // TODO: expect data buffer, not option, option does not make sense here if we expect any actual data items to be in there.
-    // TODO: also does not need to be split, simply converting from MetaDataItems to items should be enough
-    // create context sets with correct offsets to the buffer
-    let mut sets = Vec::with_capacity(protobuf_sets.len());
-    let mut frames = Vec::new();
-    let mut last_end_offset = 0usize;
-
-    let mut mut_data_buf;
-    if let Some(buf) = data_buf {
-        mut_data_buf = Some(BytesMut::from(buf));
-    } else {
-        mut_data_buf = None;
-    }
-
-    for protobuf_set in protobuf_sets.into_iter() {
-        let mut items = Vec::with_capacity(protobuf_set.items.len());
-        for protobuf_itm in protobuf_set.items.into_iter() {
-            // let data_ptr = protobuf_itm.data.as_ptr();
-            let new_frame;
-
-            let end_offset = match protobuf_itm.data.unwrap() {
-                metadata_item::Data::EndOffset(offset) => offset as usize,
-                _ => unimplemented!(),
-            };
-            let buf_size = end_offset - last_end_offset;
-
-            if buf_size > 0 {
-                new_frame = mut_data_buf.as_mut().unwrap().split_to(buf_size).freeze();
-            } else {
-                new_frame = Bytes::new();
-            }
-
-            items.push(machine_interface::DataItem {
-                ident: protobuf_itm.ident,
-                data: Position {
-                    offset: last_end_offset,
-                    size: new_frame.len(),
-                },
-                key: protobuf_itm.key,
-            });
-            frames.push(new_frame);
-            last_end_offset = end_offset;
-        }
-        sets.push(Some(machine_interface::DataSet {
-            ident: protobuf_set.ident.clone(),
-            buffers: items,
-        }));
-    }
-
-    // create context over the protobuf
-    let mut context = Context::new(
-        ContextType::Bytes(Box::new(BytesContext::new(frames))),
-        last_end_offset,
-    );
-    context.content = sets;
-
-    context
-}
-
 /// Takes a (reference to a) vector of protocol data sets, translates them into a `BytesContext`
 /// and returns a vector of optional `CompositionSet` that hold the reference to the context.
 pub(crate) fn proto_data_sets_to_composition_sets(
     proto_sets: Vec<proto::MetadataSet>,
     data_buf: Option<Bytes>,
 ) -> Vec<Option<CompositionSet>> {
-    let context = proto_data_sets_to_context(proto_sets, data_buf);
-    CompositionSet::from_context(context)
+    // TODO: expect data buffer, not option, option does not make sense here if we expect any actual data items to be in there.
+    // TODO: also does not need to be split, simply converting from MetaDataItems to items should be enough
+    // create context sets with correct offsets to the buffer
+    let mut sets = Vec::with_capacity(proto_sets.len());
+
+    let mut mut_buffer = data_buf.map(|buf| BytesMut::from(buf));
+    let mut last_end_offset = 0;
+
+    for protobuf_set in proto_sets.into_iter() {
+        let mut item_list = Vec::with_capacity(protobuf_set.items.len());
+        for protobuf_item in protobuf_set.items.into_iter() {
+            match protobuf_item.data.unwrap() {
+                metadata_item::Data::LocalEndOffset(offset) => {
+                    assert!(last_end_offset < offset as usize);
+                    let end_offset = offset as usize;
+                    let buffer_size = end_offset - last_end_offset;
+                    let new_frame = mut_buffer.as_mut().unwrap().split_to(buffer_size).freeze();
+                    let new_context = Arc::new(Context::new(
+                        ContextType::Bytes(Box::new(BytesContext::new(vec![new_frame]))),
+                        buffer_size,
+                    ));
+                    item_list.push((
+                        machine_interface::DataItem {
+                            ident: protobuf_item.ident,
+                            key: protobuf_item.key,
+                            data: Position {
+                                offset: 0,
+                                size: buffer_size,
+                            },
+                        },
+                        ItemData::LocalData(new_context),
+                    ));
+                    last_end_offset = end_offset;
+                }
+                metadata_item::Data::IoData(io_data) => {
+                    let proto::IoData {
+                        end_offset: offset,
+                        function,
+                        set_index,
+                    } = io_data;
+                    let end_offset = offset as usize;
+                    assert!(last_end_offset < end_offset as usize);
+                    let buffer_size = end_offset - last_end_offset;
+                    let new_frame = mut_buffer.as_mut().unwrap().split_to(buffer_size).freeze();
+                    let new_context = Arc::new(Context::new(
+                        ContextType::Bytes(Box::new(BytesContext::new(vec![new_frame]))),
+                        buffer_size,
+                    ));
+                    let buffer_size = end_offset - last_end_offset;
+                    item_list.push((
+                        machine_interface::DataItem {
+                            ident: String::new(),
+                            data: Position { offset: 0, size: 0 },
+                            key: protobuf_item.key,
+                        },
+                        ItemData::IoData(IoData {
+                            original_item: machine_interface::DataItem {
+                                ident: String::new(),
+                                data: Position {
+                                    offset: 0,
+                                    size: buffer_size,
+                                },
+                                key: protobuf_item.key,
+                            },
+                            original_data: new_context,
+                            function: system_function_ptod(function).unwrap(),
+                            set_index: set_index as usize,
+                        }),
+                    ));
+                    last_end_offset = end_offset;
+                }
+                _ => todo!(),
+            };
+        }
+        sets.push(CompositionSet::from_item_list(
+            protobuf_set.ident,
+            item_list,
+        ));
+    }
+
+    sets
 }
 
 const METADATA_SIZE_BITS: u32 = 32;

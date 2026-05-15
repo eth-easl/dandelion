@@ -191,7 +191,7 @@ fn test_serialize_invocation_request() {
     assert_eq!(item_0_0_name, serialized_metadata_sets[0].items[0].ident);
     assert_eq!(0, serialized_metadata_sets[0].items[0].key);
     assert_eq!(
-        proto::metadata_item::Data::EndOffset(size_of::<u64>() as u64),
+        proto::metadata_item::Data::LocalEndOffset(size_of::<u64>() as u64),
         serialized_metadata_sets[0].items[0].data.unwrap()
     );
     assert_eq!(
@@ -203,7 +203,7 @@ fn test_serialize_invocation_request() {
     assert_eq!(item_1_0_name, serialized_metadata_sets[1].items[0].ident);
     assert_eq!(7, serialized_metadata_sets[1].items[0].key);
     assert_eq!(
-        proto::metadata_item::Data::EndOffset(2 * size_of::<u64>() as u64),
+        proto::metadata_item::Data::LocalEndOffset(2 * size_of::<u64>() as u64),
         serialized_metadata_sets[1].items[0].data.unwrap()
     );
     assert_eq!(
@@ -217,7 +217,7 @@ fn test_serialize_invocation_request() {
     assert_eq!(item_1_1_name, serialized_metadata_sets[1].items[1].ident);
     assert_eq!(14, serialized_metadata_sets[1].items[1].key);
     assert_eq!(
-        proto::metadata_item::Data::EndOffset(
+        proto::metadata_item::Data::LocalEndOffset(
             2 * size_of::<u64>() as u64 + size_of::<u128>() as u64
         ),
         serialized_metadata_sets[1].items[1].data.unwrap()

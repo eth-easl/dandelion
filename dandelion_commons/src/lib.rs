@@ -23,6 +23,9 @@ pub enum DandelionError {
     UserError(UserError),
     /// Error in inter communication to other nodes
     Multinode(MultinodeError),
+    /// Default error, should never be used, but need it to implement Default,
+    /// which should never be constructed in normal operation
+    Default,
     /// trying to use a feature that is not yet implemented
     NotImplemented,
     // errors in configurations
@@ -74,6 +77,8 @@ pub enum DandelionError {
     /// there was a non recoverable issue when spawning or running the MMU worker
     MmuWorkerError,
     // system engine errors
+    /// The name does not belong to a system function
+    InvalidSystemFuncName,
     /// The arguments in the context handed to the system function are malformed or otherwise insufissient
     /// the string identifies the argument that was malformed or gives other information about the issue
     MalformedSystemFuncArg(String),
@@ -160,6 +165,7 @@ macro_rules! err_dandelion {
 #[macro_export]
 macro_rules! try_with_capacity {
     ($type:ident, $size:expr) => {{
+        use dandelion_commons::{dandelion_err, DandelionError};
         let mut container = $type::new();
         container
             .try_reserve($size)
