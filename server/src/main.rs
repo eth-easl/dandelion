@@ -408,6 +408,8 @@ fn main() -> () {
     print!(" timestamp");
     print!("\n");
 
+    // TODO: integrate dispatcher `add_remote_capacity` and `remove_remote_capacity` into
+    //       remote_queue_server
     let watcher = work_queue.idle_watcher();
     // listen for other nodes trying to poll from local work queue
     runtime.spawn(remote_queue_server(config.q_port, work_queue));

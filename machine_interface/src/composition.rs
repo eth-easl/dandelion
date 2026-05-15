@@ -19,7 +19,7 @@ mod join_iterator;
 #[cfg(test)]
 mod composition_tests;
 
-const OFFLOAD_CONST: usize = 2;
+const OFFLOAD_CONST: usize = 2; // TODO: determine suitable value here or come up with a better idea
 
 /// A composition has a composition wide id space that maps ids of
 /// the input and output sets to sets of individual functions to a unified

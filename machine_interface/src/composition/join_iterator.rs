@@ -563,7 +563,6 @@ impl AnyIterator {
 
         // build the iterators to generate all sets so we can then group them
         let mut inner_join_it = None;
-        let mut largest_set_idx = 0;
         if sharding == ShardingMode::AnyEach {
             debug_assert_eq!(num_sets, 1);
             (inner_join_it, _) =
@@ -571,16 +570,7 @@ impl AnyIterator {
         } else {
             debug_assert_eq!(sharding, ShardingMode::AnyKey);
             let mut inner_key_it = None;
-            let mut max_set_size = 0;
             for (i, set) in sets.into_iter().enumerate() {
-                if min_set_size > 0 {
-                    let set_size = set.size();
-                    if set_size > max_set_size {
-                        largest_set_idx = i;
-                        max_set_size = set_size;
-                    }
-                }
-
                 let strategy = if i > 0 {
                     strategies[i - 1]
                 } else {
@@ -615,6 +605,11 @@ impl AnyIterator {
             }
             let max_parallelism = inner_sharding.len();
 
+            let (largest_set_idx, largest_set_size) = total_sizes
+                .iter()
+                .enumerate()
+                .max_by_key(|&(_, s)| s)
+                .unwrap();
             (
                 Some(Box::new(Self {
                     left,
@@ -624,7 +619,7 @@ impl AnyIterator {
                     min_set_size,
                     largest_set_idx,
                 })),
-                *total_sizes.iter().max().unwrap(),
+                *largest_set_size,
                 max_parallelism,
             )
         } else {
