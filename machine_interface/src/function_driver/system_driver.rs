@@ -6,10 +6,11 @@ use crate::{
     function_driver::{functions::SystemFunction, Metadata},
     machine_config::EngineType,
     memory_domain::Context,
-    DataItem,
+    DataItem, Position,
 };
 use dandelion_commons::{try_with_capacity, DandelionResult};
 use std::sync::Arc;
+use tokio::sync::OnceCell;
 
 /// HTTP function currently expects one set with requests formated by HTTP standard (in text).
 /// This means one line with the reqest method, a space, request url, another space and the protocol version
@@ -75,9 +76,13 @@ pub const SYSTEM_FUNCTIONS: &[(EngineType, SystemFunction, usize)] = &[
 // same is true if the body and headers are used
 #[derive(Debug, Clone)]
 pub struct IoData {
-    pub original_item: DataItem,
+    pub original_position: Position,
     // TODO change to ItemData and do recursive resolving
     pub original_data: Arc<Context>,
+    // A vec with the resolved outputs for this IO request
+    // one entry for each output set of the function.
+    // The output item starts at 0 in the context and goes until the end of the context.
+    pub resolved: OnceCell<DandelionResult<Vec<Arc<Context>>>>,
     pub function: SystemFunction,
     pub set_index: usize,
     // recorder: Recorder,
@@ -123,15 +128,18 @@ pub fn convert_to_references(
                 ident: item.ident.clone(),
                 key: item.key,
             };
+            let set_once = OnceCell::new();
             let header_data = IoData {
-                original_item: item.clone(),
+                original_position: item.data,
                 original_data: context.clone(),
+                resolved: set_once.clone(),
                 function,
                 set_index: 0,
             };
             let body_data = IoData {
-                original_item: item,
+                original_position: item.data,
                 original_data: context,
+                resolved: set_once,
                 function,
                 set_index: 1,
             };

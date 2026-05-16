@@ -74,12 +74,14 @@ async fn send_message(
                     }
                     ItemData::IoData(io_data) => {
                         let IoData {
-                            original_item,
+                            original_position,
                             original_data,
                             function: _,
                             set_index: _,
+                            resolved: _,
                         } = io_data;
-                        let Position { offset, size } = original_item.data;
+                        // TODO: could think about sending the data if it is already resolved
+                        let Position { offset, size } = original_position;
                         (offset, size, original_data)
                     }
                     // if there is nothing to write to the buffer do a continue to skip writing

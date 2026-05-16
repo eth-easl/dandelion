@@ -11,6 +11,7 @@ use machine_interface::{
     Position,
 };
 use prost::bytes::{Bytes, BytesMut};
+use tokio::sync::OnceCell;
 
 use crate::proto::{self, metadata_item};
 
@@ -78,13 +79,15 @@ fn composition_set_to_proto(set: &CompositionSet, offset: &mut u64) -> proto::Me
             }
             ItemData::IoData(io_data) => {
                 let IoData {
-                    original_item,
+                    original_position,
                     original_data: _,
+                    resolved: _,
                     function,
                     set_index,
                 } = io_data;
-                if original_item.data.size > 0 {
-                    *offset += original_item.data.size as u64;
+                // TODO: fuse with serialization, so we can use the resolved without race conditions
+                if original_position.size > 0 {
+                    *offset += original_position.size as u64;
                     items.push(proto::MetadataItem {
                         ident: item.ident.clone(),
                         key: item.key,
@@ -197,14 +200,11 @@ pub(crate) fn proto_data_sets_to_composition_sets(
                             key: protobuf_item.key,
                         },
                         ItemData::IoData(IoData {
-                            original_item: machine_interface::DataItem {
-                                ident: String::new(),
-                                data: Position {
-                                    offset: 0,
-                                    size: buffer_size,
-                                },
-                                key: protobuf_item.key,
+                            original_position: Position {
+                                offset: 0,
+                                size: buffer_size,
                             },
+                            resolved: OnceCell::new(),
                             original_data: new_context,
                             function: system_function_ptod(function).unwrap(),
                             set_index: set_index as usize,

@@ -254,15 +254,16 @@ fn parse_request<RequestType: Request>(
 
 async fn http_request(
     client: HttpClient,
-    request_info: HttpRequest,
-) -> DandelionResult<(Arc<Context>, Arc<Context>)> {
+    position: Position,
+    context: Arc<Context>,
+) -> DandelionResult<Vec<Arc<Context>>> {
     let HttpRequest {
         method,
         uri,
         version,
         headermap,
         body,
-    } = request_info;
+    } = parse_request(position, context)?;
 
     let request_builder = match method {
         HttpMethod::PUT => client.put(uri.clone()),
@@ -345,18 +346,19 @@ async fn http_request(
         body_length,
     ));
 
-    Ok((header_context, body_context))
+    Ok(vec![header_context, body_context])
 }
 
 async fn memcached_request(
-    request_info: MemcachedRequest,
-) -> DandelionResult<(Arc<Context>, Arc<Context>)> {
+    position: Position,
+    context: Arc<Context>,
+) -> DandelionResult<Vec<Arc<Context>>> {
     let MemcachedRequest {
         method,
         uri,
         memcached_identifier,
         body,
-    } = request_info;
+    } = parse_request(position, context)?;
 
     // For simplicity, we use the same Methods as http.
     // Memcached Basic Text Protocol could have following methods:
@@ -431,7 +433,7 @@ async fn memcached_request(
         body_length,
     ));
 
-    Ok((header_context, body_context))
+    Ok(vec![header_context, body_context])
 }
 
 async fn resolve_item(
@@ -444,54 +446,36 @@ async fn resolve_item(
         ItemData::RemoteData() => unimplemented!(),
         ItemData::IoData(io_data) => {
             let IoData {
-                original_item,
+                original_position,
                 original_data,
+                resolved,
                 function,
                 set_index,
             } = io_data;
             match function {
                 SystemFunction::HTTP => {
-                    let request = parse_request(original_item.data, original_data)?;
-                    let (header_context, body_context) =
-                        http_request(client.clone(), request).await?;
-                    match set_index {
-                        0 => {
-                            item.data = Position {
-                                offset: 0,
-                                size: header_context.size,
-                            };
-                            Ok((item, ItemData::LocalData(header_context)))
-                        }
-                        1 => {
-                            item.data = Position {
-                                offset: 0,
-                                size: body_context.size,
-                            };
-                            Ok((item, ItemData::LocalData(body_context)))
-                        }
-                        _ => panic!("Received unexpected set index"),
-                    }
+                    let outputs = resolved
+                        .get_or_init(move || {
+                            http_request(client.clone(), original_position, original_data)
+                        })
+                        .await;
+                    let context = match outputs {
+                        Ok(context_vec) => context_vec[set_index].clone(),
+                        Err(err) => return Err(err.clone()),
+                    };
+                    item.data.size = context.size;
+                    Ok((item, ItemData::LocalData(context)))
                 }
                 SystemFunction::MEMCACHED => {
-                    let request = parse_request(original_item.data, original_data)?;
-                    let (header_context, body_context) = memcached_request(request).await?;
-                    match set_index {
-                        0 => {
-                            item.data = Position {
-                                offset: 0,
-                                size: header_context.size,
-                            };
-                            Ok((item, ItemData::LocalData(header_context)))
-                        }
-                        1 => {
-                            item.data = Position {
-                                offset: 0,
-                                size: body_context.size,
-                            };
-                            Ok((item, ItemData::LocalData(body_context)))
-                        }
-                        _ => panic!("Received unexpected set index"),
-                    }
+                    let outputs = resolved
+                        .get_or_init(move || memcached_request(original_position, original_data))
+                        .await;
+                    let context = match outputs {
+                        Ok(context_vec) => context_vec[set_index].clone(),
+                        Err(err) => return Err(err.clone()),
+                    };
+                    item.data.size = context.size;
+                    Ok((item, ItemData::LocalData(context)))
                 }
             }
         }
