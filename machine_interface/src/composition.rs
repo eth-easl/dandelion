@@ -2,9 +2,18 @@ use crate::{
     composition::join_iterator::JoinIterator, function_driver::system_driver::IoData,
     memory_domain::Context, DataItem, DataSet, Position,
 };
-use dandelion_commons::FunctionId;
+use dandelion_commons::{
+    err_dandelion, DandelionError, DandelionResult, FunctionId, MultinodeError,
+};
 use log::trace;
-use std::{cmp, collections::BTreeMap, sync::Arc, vec};
+use std::{
+    cmp,
+    collections::BTreeMap,
+    future::Future,
+    pin::Pin,
+    sync::{Arc, OnceLock},
+    vec,
+};
 
 #[cfg(test)]
 use crate::memory_domain::read_only::ReadOnlyContext;
@@ -160,13 +169,45 @@ impl IntoIterator for LocalCompositionSet {
     }
 }
 
+// TODO: find a more reasonable place for RemoteData and RemoteDataResolver
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RemoteData {
+    pub node_id: u64,
+    pub data_id: u64,
+}
+
+pub trait RemoteDataResolver: Send + Sync {
+    fn resolve_remote_data(
+        &self,
+        data: RemoteData,
+    ) -> Pin<Box<dyn Future<Output = DandelionResult<Arc<Context>>> + Send + '_>>;
+}
+
+static REMOTE_DATA_RESOLVER: OnceLock<Arc<dyn RemoteDataResolver>> = OnceLock::new();
+
+pub fn set_remote_data_resolver(resolver: Arc<dyn RemoteDataResolver>) {
+    let _ = REMOTE_DATA_RESOLVER.set(resolver);
+}
+
+pub async fn resolve_remote_data(data: RemoteData) -> DandelionResult<Arc<Context>> {
+    let resolver = match REMOTE_DATA_RESOLVER.get() {
+        Some(resolver) => resolver,
+        None => {
+            return err_dandelion!(DandelionError::Multinode(MultinodeError::ConfigError(
+                "No remote data resolver configured".to_string(),
+            )))
+        }
+    };
+    resolver.resolve_remote_data(data).await
+}
+
 /// Enum to represent data in a composition set.
 #[derive(Clone, Debug)]
 pub enum ItemData {
     /// Data that is available locally on the node to use for computation.
     LocalData(Arc<Context>),
     /// Data that is already on another node and can be fetched from there.
-    RemoteData(),
+    RemoteData(RemoteData),
     /// Data that needs to be fetched using an IO function.
     IoData(IoData),
 }
@@ -301,7 +342,7 @@ impl core::fmt::Display for CompositionSet {
                     context.context, context.size, context.state
                 ),
                 ItemData::IoData(data) => write!(f, "IoData: {:?}", data),
-                ItemData::RemoteData() => write!(f, "RemoteData"),
+                ItemData::RemoteData(data) => write!(f, "RemoteData: {:?})", data),
             }?;
         }
         write!(f, "]")

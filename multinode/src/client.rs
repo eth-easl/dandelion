@@ -1,4 +1,5 @@
 use crate::{
+    data::ExportRegistry,
     deserialize_node_info, deserialize_queue_message, deserialize_remote_message,
     proto::{
         self, queue_message, remote_message, Invocation, NodeInfo, QueueMessage, RemoteMessage,
@@ -6,9 +7,9 @@ use crate::{
     },
     serialize_node_info, serialize_queue_message, serialize_remote_message,
     util::{
-        composition_sets_to_proto, engine_type_dtop, engine_type_ptod,
-        pack_metadata_size_and_flags, proto_data_sets_to_composition_sets,
-        unpack_metadata_size_and_flags, ADDITIONAL_DATA_BUFFER, NO_FLAGS,
+        engine_type_dtop, engine_type_ptod, pack_metadata_size_and_flags,
+        proto_data_sets_to_composition_sets, unpack_metadata_size_and_flags,
+        ADDITIONAL_DATA_BUFFER, NO_FLAGS,
     },
     DispatcherCommand,
 };
@@ -41,6 +42,9 @@ mod test;
 
 const _: () = assert!(size_of::<u64>() == size_of::<usize>());
 
+// TODO ADDITIONAL_DATA_BUFFER and data_buffer are currently used only to carry IoData
+// We should consider removing this when recursive resolution of IoData is implemented,
+// as then all sets will be exchanged via the remote data server.
 // TODO handle connection failure
 /// To send a message between nodes, always first send the length of the message,
 /// then the message, so the other side knows when one message ends.
@@ -66,12 +70,9 @@ async fn send_message(
     if let Some((data_sets, total_size)) = data_buffer {
         sender.write_u64(total_size).await.unwrap();
         for data_set in data_sets.into_iter().filter_map(|item| item) {
-            for (item, item_data) in data_set.into_iter() {
+            for (_item, item_data) in data_set.into_iter() {
                 let (offset, size, context) = match item_data {
-                    ItemData::LocalData(context) => {
-                        let Position { offset, size } = item.data;
-                        (offset, size, context)
-                    }
+                    ItemData::LocalData(_) => continue,
                     ItemData::IoData(io_data) => {
                         let IoData {
                             original_position,
@@ -85,7 +86,7 @@ async fn send_message(
                         (offset, size, original_data)
                     }
                     // if there is nothing to write to the buffer do a continue to skip writing
-                    ItemData::RemoteData() => todo!(),
+                    ItemData::RemoteData(_) => continue,
                 };
                 debug_assert_ne!(0, size);
                 let mut bytes_written = 0;
@@ -168,6 +169,7 @@ async fn receive_work_available_notification<Stream: AsyncReadExt + std::marker:
 pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::marker::Unpin>(
     socket: Stream,
     queue: WorkQueue,
+    export_registry: ExportRegistry,
 ) {
     let mut waiting_for_work = false;
     let (mut read_socket, mut write_socket) = split(socket);
@@ -238,7 +240,8 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                                     panic!("Should only get function arguments when polling for remote queue")
                                 }
                             };
-                            let (metadata_sets, data_sets) = composition_sets_to_proto(data_sets);
+                            let (metadata_sets, data_sets) =
+                                export_registry.composition_sets_to_proto(data_sets).await;
                             (
                                 QueueMessage {
                                     queue_message: Some(queue_message::QueueMessage::Invocation(
@@ -266,6 +269,7 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                         send_message(&message_bytes, &mut write_socket, data_buffer).await;
                     }
                     remote_message::RemoteMessage::Response(response) => {
+                        debug_assert!(data_option.is_none());
                         trace!("Queue Server received response");
                         let Response {
                             invocation_id,
@@ -338,10 +342,11 @@ async fn poll_idle_core<Stream: AsyncReadExt + std::marker::Unpin>(
 async fn poll_results<Stream: AsyncReadExt + std::marker::Unpin>(
     result_receiver: oneshot::Receiver<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
     invocation_id: u32,
+    export_registry: ExportRegistry,
 ) -> PollingOption<Stream> {
     let (response_message, response_set) = match result_receiver.await.unwrap() {
         Ok((sets, _)) => {
-            let (metadata_sets, data_sets) = composition_sets_to_proto(sets);
+            let (metadata_sets, data_sets) = export_registry.composition_sets_to_proto(sets).await;
             (
                 proto::response::Response::MetadataSets(proto::RepeatedMetadataSet {
                     metadata_sets,
@@ -377,6 +382,7 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
     // But each poller also needs to be able to check if there are still cores available,
     // in case the remote sends a message that there is work available
     local_available: watch::Receiver<u32>,
+    export_registry: ExportRegistry,
 ) {
     // local state keeping variables
     let mut remote_had_work = true;
@@ -467,6 +473,7 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                         merged_stream.push(Either::Left(poll_results(
                             callback_receriver,
                             invocation_id,
+                            export_registry.clone(),
                         )));
                     }
                 }

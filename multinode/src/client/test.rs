@@ -7,6 +7,7 @@ use std::{
 
 use crate::{
     client::{receive_message, remote_queue_client, remote_queue_server, send_message},
+    data::ExportRegistry,
     deserialize_node_info, deserialize_queue_message, deserialize_remote_message,
     proto::{
         self, queue_message, remote_message, response, Engine, Invocation, NodeInfo, QueueMessage,
@@ -153,7 +154,11 @@ fn test_remote_queue_server() {
     let engine_type = machine_config::EngineType::iter().next().unwrap();
 
     let mut context = Context::from_waker(Waker::noop());
-    let mut server_future = Box::pin(remote_queue_server(server, work_queue.clone()));
+    let mut server_future = Box::pin(remote_queue_server(
+        server,
+        work_queue.clone(),
+        ExportRegistry::new(1),
+    ));
     let mut test_client_future = Box::pin(mock_queue_client(client, engine_type_dtop(engine_type)));
     let mut test_dispatcher_future = Box::pin(mock_dispatcher(work_queue.clone(), engine_type));
 
@@ -333,6 +338,7 @@ fn test_remote_queue_client() {
         client,
         dispatcher_sender,
         watch_receiver,
+        ExportRegistry::new(1),
     ));
     let mut test_server_future = Box::pin(mock_queue_server(
         expected_function_id.clone(),
@@ -450,11 +456,16 @@ fn test_combined() {
 
     // spawn both on a new runtime
     let runtime = tokio::runtime::Builder::new_multi_thread().build().unwrap();
-    runtime.spawn(remote_queue_server(client_socket, work_queue.clone()));
+    runtime.spawn(remote_queue_server(
+        client_socket,
+        work_queue.clone(),
+        ExportRegistry::new(1),
+    ));
     runtime.spawn(remote_queue_client(
         server_socket,
         dispatcher_sender,
         watch_receiver,
+        ExportRegistry::new(2),
     ));
 
     // send work on the work queue

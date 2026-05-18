@@ -357,10 +357,12 @@ mod server_tests {
             version
         );
         println!("Preload_path: {}", preload_path);
+        let multinode_config = format!(
+            "{}/tests/manifests/multinode_config.json",
+            env!("CARGO_MANIFEST_DIR"),
+        );
 
         let remote_port = 8081;
-        let queue_port = 8082;
-
         let mut master_cmd = Command::new(assert_cmd::cargo::cargo_bin!());
         let master_server = master_cmd
             .stdout(Stdio::piped())
@@ -371,9 +373,11 @@ mod server_tests {
             .arg("--total-cores")
             .arg("1")
             .arg("--test-mode")
-            .arg("no-engine")
-            .arg("--q-port")
-            .arg(queue_port.to_string())
+            .arg("no-compute")
+            .arg("--node-id")
+            .arg("0")
+            .arg("--multinode-config")
+            .arg(&multinode_config)
             .spawn()
             .unwrap();
         let mut master_killer = ServerKiller {
@@ -391,8 +395,12 @@ mod server_tests {
             .arg(&preload_path)
             .arg("--port")
             .arg(remote_port.to_string())
-            .arg("--remote-queue-url")
-            .arg(format!("localhost:{}", queue_port))
+            .arg("--io-cores")
+            .arg("1")
+            .arg("--node-id")
+            .arg("1")
+            .arg("--multinode-config")
+            .arg(&multinode_config)
             .spawn()
             .unwrap();
         let mut worker_killer = ServerKiller {

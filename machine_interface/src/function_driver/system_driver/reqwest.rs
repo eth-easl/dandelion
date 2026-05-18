@@ -443,7 +443,13 @@ async fn resolve_item(
 ) -> DandelionResult<(DataItem, ItemData)> {
     match data {
         ItemData::LocalData(_) => Ok((item, data)),
-        ItemData::RemoteData() => unimplemented!(),
+        ItemData::RemoteData(remote_data) => {
+            let context = crate::composition::resolve_remote_data(remote_data)
+                .await
+                .unwrap();
+            item.data.size = context.size;
+            Ok((item, ItemData::LocalData(context)))
+        }
         ItemData::IoData(io_data) => {
             let IoData {
                 original_position,

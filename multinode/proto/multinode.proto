@@ -16,12 +16,17 @@ message IoData {
     uint64 set_index = 4;
 }
 
+message RemoteData {
+    uint64 node_id = 1;
+    uint64 data_id = 2;
+}
+
 message MetadataItem {
     string ident = 1;
     uint32 key = 2;
     oneof data {
         // For data that is sent with the request and will be local to the node
-        uint64 local_end_offset = 3;
+        RemoteData remote_data = 3;
         IoData io_data = 4; 
     }
 }

@@ -1,0 +1,225 @@
+use crate::{proto, util::composition_sets_to_proto};
+use dandelion_commons::{
+    dandelion_err, err_dandelion, DandelionError, DandelionResult, MultinodeError,
+};
+use http_body_util::Full;
+use hyper::{body::Incoming, service::service_fn, Request, Response, StatusCode};
+use log::{debug, error, trace, warn};
+use machine_interface::{
+    composition::{CompositionSet, RemoteData, RemoteDataResolver},
+    memory_domain::{bytes_context::BytesContext, Context, ContextTrait, ContextType},
+    Position,
+};
+use prost::bytes::{Bytes, BytesMut};
+use std::{
+    collections::BTreeMap, convert::Infallible, future::Future, net::SocketAddr, pin::Pin,
+    sync::Arc,
+};
+use tokio::{net::TcpListener, signal::unix::SignalKind, sync::Mutex};
+
+#[derive(Clone)]
+struct ExportedData {
+    context: Arc<Context>,
+    position: Position,
+}
+
+// TODO: use composition hashid and item index to uniquely identify data to avoid
+// storing multiple copies of the same data if it is used in multiple places.
+struct ExportRegistryInner {
+    next_data_id: u64,
+    data: BTreeMap<u64, ExportedData>,
+}
+
+#[derive(Clone)]
+pub struct ExportRegistry {
+    node_id: u64,
+    inner: Arc<Mutex<ExportRegistryInner>>,
+}
+
+impl ExportRegistry {
+    pub fn new(node_id: u64) -> Self {
+        Self {
+            node_id,
+            inner: Arc::new(Mutex::new(ExportRegistryInner {
+                next_data_id: 0,
+                data: BTreeMap::new(),
+            })),
+        }
+    }
+
+    pub async fn composition_sets_to_proto(
+        &self,
+        sets: Vec<Option<CompositionSet>>,
+    ) -> (
+        Vec<proto::MetadataSet>,
+        Option<(Vec<Option<CompositionSet>>, u64)>,
+    ) {
+        let mut inner = self.inner.lock().await;
+        let node_id = self.node_id;
+        composition_sets_to_proto(sets, |item, context| {
+            let data_id = inner.next_data_id;
+            inner.next_data_id += 1;
+            inner.data.insert(
+                data_id,
+                ExportedData {
+                    context,
+                    position: item.data,
+                },
+            );
+            RemoteData { node_id, data_id }
+        })
+    }
+
+    pub async fn fetch_bytes(&self, data_id: u64) -> DandelionResult<Bytes> {
+        let exported_data = {
+            let inner = self.inner.lock().await;
+            inner.data.get(&data_id).cloned()
+        };
+
+        let Some(exported_data) = exported_data else {
+            return err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
+                format!("Unknown remote data id {}", data_id),
+            )));
+        };
+
+        let size = exported_data.position.size;
+        let mut result = BytesMut::with_capacity(size);
+        let base_offset = exported_data.position.offset;
+        let mut bytes_read = 0;
+        while bytes_read < size {
+            let next_chunk = exported_data
+                .context
+                .get_chunk_ref(base_offset + bytes_read, size - bytes_read)?;
+            result.extend_from_slice(next_chunk);
+            bytes_read += next_chunk.len();
+        }
+        Ok(result.freeze())
+    }
+}
+
+pub struct HttpRemoteDataResolver {
+    node_map: BTreeMap<u64, String>,
+    client: reqwest::Client,
+}
+
+impl HttpRemoteDataResolver {
+    pub fn new(node_map: BTreeMap<u64, String>) -> Self {
+        Self {
+            node_map,
+            client: reqwest::Client::new(),
+        }
+    }
+}
+
+impl RemoteDataResolver for HttpRemoteDataResolver {
+    fn resolve_remote_data(
+        &self,
+        data: RemoteData,
+    ) -> Pin<Box<dyn Future<Output = DandelionResult<Arc<Context>>> + Send + '_>> {
+        trace!(
+            "Resolving remote data: node_id={}, data_id={}",
+            data.node_id,
+            data.data_id
+        );
+        Box::pin(async move {
+            let address = self.node_map.get(&data.node_id).ok_or(dandelion_err!(
+                DandelionError::Multinode(MultinodeError::ConfigError(format!(
+                    "No data server configured for node {}",
+                    data.node_id
+                )))
+            ))?;
+            let base_url = if address.starts_with("http://") || address.starts_with("https://") {
+                address.clone()
+            } else {
+                format!("http://{}", address)
+            };
+            let url = format!("{}/data/{}", base_url.trim_end_matches('/'), data.data_id);
+            let response = self.client.get(url).send().await.map_err(|err| {
+                dandelion_err!(DandelionError::Multinode(MultinodeError::ConnectionFailed(
+                    err.to_string(),
+                )))
+            })?;
+            if !response.status().is_success() {
+                return err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
+                    response.status().to_string(),
+                )));
+            }
+            let bytes = response.bytes().await.map_err(|err| {
+                dandelion_err!(DandelionError::Multinode(MultinodeError::ConnectionFailed(
+                    err.to_string(),
+                )))
+            })?;
+            let size = bytes.len();
+            Ok(Arc::new(Context::new(
+                ContextType::Bytes(Box::new(BytesContext::new(vec![bytes]))),
+                size,
+            )))
+        })
+    }
+}
+
+type DataServerBody = Full<Bytes>;
+
+// TODO: make data service handler copy free
+async fn service(
+    req: Request<Incoming>,
+    export_registry: ExportRegistry,
+) -> Result<Response<DataServerBody>, Infallible> {
+    let path = req.uri().path();
+    let result = async {
+        let data_id = path
+            .strip_prefix("/data/")
+            .ok_or_else(|| format!("Unknown data server path {}", path))?
+            .parse::<u64>()
+            .map_err(|err| format!("Invalid data id: {}", err))?;
+        export_registry
+            .fetch_bytes(data_id)
+            .await
+            .map_err(|err| err.to_string())
+    }
+    .await;
+
+    match result {
+        Ok(bytes) => Ok(Response::new(Full::new(bytes))),
+        Err(err) => {
+            warn!("Failed to serve remote data request: {}", err);
+            let mut response = Response::new(Full::new(err.into_bytes().into()));
+            *response.status_mut() = StatusCode::BAD_REQUEST;
+            Ok(response)
+        }
+    }
+}
+
+pub async fn service_loop(port: u16, export_registry: ExportRegistry) {
+    let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = TcpListener::bind(addr).await.unwrap();
+    debug!("Data server ready");
+
+    let mut sigterm_stream = tokio::signal::unix::signal(SignalKind::terminate()).unwrap();
+    let mut sigint_stream = tokio::signal::unix::signal(SignalKind::interrupt()).unwrap();
+    let mut sigquit_stream = tokio::signal::unix::signal(SignalKind::quit()).unwrap();
+
+    loop {
+        tokio::select! {
+            connection_pair = listener.accept() => {
+                let (stream, _) = connection_pair.unwrap();
+                let io = hyper_util::rt::TokioIo::new(stream);
+                let service_registry = export_registry.clone();
+                tokio::task::spawn(async move {
+                    if let Err(err) = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+                        .serve_connection_with_upgrades(
+                            io,
+                            service_fn(|req| service(req, service_registry.clone())),
+                        )
+                        .await
+                    {
+                        error!("Data request serving failed with error: {:?}", err);
+                    }
+                });
+            }
+            _ = sigterm_stream.recv() => return,
+            _ = sigint_stream.recv() => return,
+            _ = sigquit_stream.recv() => return,
+        }
+    }
+}

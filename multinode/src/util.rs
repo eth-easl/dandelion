@@ -4,11 +4,11 @@ use std::sync::Arc;
 // use the full ones to make sure there is no mix ups
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, MultinodeError};
 use machine_interface::{
-    composition::{CompositionSet, ItemData},
+    composition::{CompositionSet, ItemData, RemoteData},
     function_driver::{functions::SystemFunction, system_driver::IoData},
     machine_config,
     memory_domain::{bytes_context::BytesContext, Context, ContextType},
-    Position,
+    DataItem, Position,
 };
 use prost::bytes::{Bytes, BytesMut};
 use tokio::sync::OnceCell;
@@ -61,59 +61,26 @@ pub(crate) fn system_function_dtop(
     }
 }
 
-/// Takes a `CompositionSet` reference and translates it into a protocol data set.
-fn composition_set_to_proto(set: &CompositionSet, offset: &mut u64) -> proto::MetadataSet {
-    let mut items = Vec::with_capacity(set.len());
-    for (item, data) in set {
-        match data {
-            ItemData::LocalData(_) => {
-                // don't need to send items with no size
-                if item.data.size > 0 {
-                    *offset += item.data.size as u64;
-                    items.push(proto::MetadataItem {
-                        ident: item.ident.clone(),
-                        key: item.key,
-                        data: Some(metadata_item::Data::LocalEndOffset(*offset)),
-                    });
-                }
-            }
-            ItemData::IoData(io_data) => {
-                let IoData {
-                    original_position,
-                    original_data: _,
-                    resolved: _,
-                    function,
-                    set_index,
-                } = io_data;
-                // TODO: fuse with serialization, so we can use the resolved without race conditions
-                if original_position.size > 0 {
-                    *offset += original_position.size as u64;
-                    items.push(proto::MetadataItem {
-                        ident: item.ident.clone(),
-                        key: item.key,
-                        data: Some(metadata_item::Data::IoData(proto::IoData {
-                            set_index: *set_index as u64,
-                            end_offset: *offset,
-                            function: system_function_dtop(function).unwrap() as i32,
-                        })),
-                    });
-                }
-            }
-            ItemData::RemoteData() => todo!(),
-        }
-    }
-    // assigning name equal to index, as they are ignored on the receiver node anyway
-    // so the effort to get the correct name would be wasted.
-    proto::MetadataSet {
-        ident: set.get_name().clone(),
-        items,
+fn remote_data_dtop(remote_data: RemoteData) -> proto::RemoteData {
+    proto::RemoteData {
+        node_id: remote_data.node_id,
+        data_id: remote_data.data_id,
     }
 }
 
+fn remote_data_ptod(remote_data: proto::RemoteData) -> RemoteData {
+    RemoteData {
+        node_id: remote_data.node_id,
+        data_id: remote_data.data_id,
+    }
+}
+
+// TODO: find a better interface for exporting data
 /// Takes a (reference to a) vector of optional `CompositionSet` instances and translates each of
 /// them into the corresponding protocol data set.
 pub(crate) fn composition_sets_to_proto(
     sets: Vec<Option<CompositionSet>>,
+    mut export_local_data: impl FnMut(&DataItem, Arc<Context>) -> RemoteData,
 ) -> (
     Vec<proto::MetadataSet>,
     Option<(Vec<Option<CompositionSet>>, u64)>,
@@ -123,7 +90,56 @@ pub(crate) fn composition_sets_to_proto(
 
     for set in sets.iter() {
         if let Some(s) = set {
-            metadata_sets.push(composition_set_to_proto(s, &mut offset));
+            let mut metadata_items = Vec::with_capacity(s.len());
+            for (item, data) in s {
+                match data {
+                    ItemData::LocalData(context) => {
+                        let remote_data = export_local_data(item, context.clone());
+                        metadata_items.push(proto::MetadataItem {
+                            ident: item.ident.clone(),
+                            key: item.key,
+                            data: Some(metadata_item::Data::RemoteData(remote_data_dtop(
+                                remote_data,
+                            ))),
+                        });
+                    }
+                    ItemData::IoData(io_data) => {
+                        let IoData {
+                            original_position,
+                            original_data: _,
+                            resolved: _,
+                            function,
+                            set_index,
+                        } = io_data;
+                        // TODO: fuse with serialization, so we can use the resolved without race conditions
+                        if original_position.size > 0 {
+                            offset += original_position.size as u64;
+                            metadata_items.push(proto::MetadataItem {
+                                ident: item.ident.clone(),
+                                key: item.key,
+                                data: Some(metadata_item::Data::IoData(proto::IoData {
+                                    set_index: *set_index as u64,
+                                    end_offset: offset,
+                                    function: system_function_dtop(function).unwrap() as i32,
+                                })),
+                            });
+                        }
+                    }
+                    ItemData::RemoteData(remote_data) => {
+                        metadata_items.push(proto::MetadataItem {
+                            ident: item.ident.clone(),
+                            key: item.key,
+                            data: Some(metadata_item::Data::RemoteData(remote_data_dtop(
+                                *remote_data,
+                            ))),
+                        });
+                    }
+                }
+            }
+            metadata_sets.push(proto::MetadataSet {
+                ident: s.get_name().clone(),
+                items: metadata_items,
+            });
         } else {
             metadata_sets.push(proto::MetadataSet {
                 ident: format!("empty_set"),
@@ -156,28 +172,6 @@ pub(crate) fn proto_data_sets_to_composition_sets(
         let mut item_list = Vec::with_capacity(protobuf_set.items.len());
         for protobuf_item in protobuf_set.items.into_iter() {
             match protobuf_item.data.unwrap() {
-                metadata_item::Data::LocalEndOffset(offset) => {
-                    assert!(last_end_offset < offset as usize);
-                    let end_offset = offset as usize;
-                    let buffer_size = end_offset - last_end_offset;
-                    let new_frame = mut_buffer.as_mut().unwrap().split_to(buffer_size).freeze();
-                    let new_context = Arc::new(Context::new(
-                        ContextType::Bytes(Box::new(BytesContext::new(vec![new_frame]))),
-                        buffer_size,
-                    ));
-                    item_list.push((
-                        machine_interface::DataItem {
-                            ident: protobuf_item.ident,
-                            key: protobuf_item.key,
-                            data: Position {
-                                offset: 0,
-                                size: buffer_size,
-                            },
-                        },
-                        ItemData::LocalData(new_context),
-                    ));
-                    last_end_offset = end_offset;
-                }
                 metadata_item::Data::IoData(io_data) => {
                     let proto::IoData {
                         end_offset: offset,
@@ -212,7 +206,16 @@ pub(crate) fn proto_data_sets_to_composition_sets(
                     ));
                     last_end_offset = end_offset;
                 }
-                _ => todo!(),
+                metadata_item::Data::RemoteData(remote_data) => {
+                    item_list.push((
+                        machine_interface::DataItem {
+                            ident: protobuf_item.ident,
+                            key: protobuf_item.key,
+                            data: Position { offset: 0, size: 0 },
+                        },
+                        ItemData::RemoteData(remote_data_ptod(remote_data)),
+                    ));
+                }
             };
         }
         sets.push(CompositionSet::from_item_list(

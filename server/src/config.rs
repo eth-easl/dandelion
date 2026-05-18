@@ -7,7 +7,6 @@ use log::{error, warn};
 const DEFAULT_CONFIG_PATH: &str = "./dandelion.config";
 const DEFAULT_FOLDER_PATH: &str = "/tmp/dandelion_server";
 const DEFAULT_PORT: u16 = 8080;
-const DEFAULT_QUEUE_PORT: u16 = 7070;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
 const DEFAULT_VIRTUAL_MAX_RAM_MULTIPLIER: usize = 2;
 const DEFAULT_MULTINODE_TIMEOUT: u64 = 50;
@@ -44,6 +43,7 @@ pub struct FuncMetadata {
 #[derive(Clone, Copy, serde::Deserialize, Debug, clap::ValueEnum)]
 pub enum TestMode {
     SingleCore,
+    NoCompute,
     NoEngine,
 }
 
@@ -86,14 +86,14 @@ pub struct DandelionConfig {
     #[serde(default)]
     pub folder_path: String,
 
-    /// Port on which to listen to remote node connections which want to poll
-    /// the work queue
-    #[arg(long, env, default_value_t = DEFAULT_QUEUE_PORT)]
-    pub q_port: u16,
-    /// For multinode, add a remote host to register to
+    /// Static identifier for this Dandelion node
+    #[arg(long, env, default_value_t = 0)]
+    #[serde(default)]
+    pub node_id: u64,
+    /// JSON config describing multinode data servers and queue server
     #[arg(long, env)]
     #[serde(default)]
-    pub remote_queue_url: Option<String>,
+    pub multinode_config: Option<String>,
     /// Timeout for how long to try to establish a connection to another node
     #[arg(long, env, default_value_t = DEFAULT_MULTINODE_TIMEOUT)]
     #[serde(default)]
@@ -152,7 +152,8 @@ impl DandelionConfig {
         );
         merge_clone!(bin_preload_path, String::from(""));
         merge_clone!(folder_path, String::from(DEFAULT_FOLDER_PATH));
-        merge_option!(remote_queue_url);
+        merge!(node_id, 0);
+        merge_option!(multinode_config);
         merge!(multinode_timeout_ms, DEFAULT_MULTINODE_TIMEOUT);
     }
 
@@ -225,6 +226,7 @@ impl DandelionConfig {
         let core_vec = if let Some(test_mode) = &self.test_mode {
             match test_mode {
                 TestMode::SingleCore => vec![0],
+                TestMode::NoCompute => vec![0],
                 TestMode::NoEngine => vec![],
             }
         } else if let Some(comm_cores) = self.io_cores {
@@ -251,6 +253,7 @@ impl DandelionConfig {
         let core_vec = if let Some(test_mode) = &self.test_mode {
             return match test_mode {
                 TestMode::SingleCore => vec![0],
+                TestMode::NoCompute => vec![],
                 TestMode::NoEngine => vec![],
             };
         } else {

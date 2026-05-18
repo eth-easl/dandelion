@@ -3,14 +3,14 @@ use dandelion_server::config::{FuncMetadata, PreloadFunc};
 use dispatcher::{dispatcher::Dispatcher, queue::WorkQueue, resource_pool::ResourcePool};
 use log::{debug, error, info, warn};
 use machine_interface::{
-    composition::LocalCompositionSet,
+    composition::{set_remote_data_resolver, LocalCompositionSet},
     function_driver::{ComputeResource, Metadata},
     machine_config::{DomainType, EngineType},
     memory_domain::MemoryResource,
 };
-use multinode::DispatcherCommand;
+use multinode::{data::ExportRegistry, DispatcherCommand};
 use nix::unistd::Pid;
-use std::{collections::BTreeMap, fs::read_to_string, sync::OnceLock};
+use std::{collections::BTreeMap, fs::read_to_string, sync::Arc, sync::OnceLock};
 use tokio::{
     runtime::Builder,
     select, spawn,
@@ -131,7 +131,7 @@ async fn dispatcher_loop(
     }
 }
 
-async fn remote_queue_server(queue_port: u16, queue: WorkQueue) {
+async fn remote_queue_server(queue_port: u16, queue: WorkQueue, export_registry: ExportRegistry) {
     // socket to listen to
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], queue_port));
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
@@ -143,6 +143,7 @@ async fn remote_queue_server(queue_port: u16, queue: WorkQueue) {
             spawn(multinode::client::remote_queue_server(
                 socket,
                 queue.clone(),
+                export_registry.clone(),
             ));
         } else {
             // TODO handle errors on incomming request
@@ -155,9 +156,11 @@ async fn remote_queue_client(
     remote_url: String,
     sender: mpsc::Sender<DispatcherCommand>,
     local_available: watch::Receiver<u32>,
+    export_registry: ExportRegistry,
 ) {
     let connection = tokio::net::TcpStream::connect(remote_url).await.unwrap();
-    multinode::client::remote_queue_client(connection, sender, local_available).await;
+    multinode::client::remote_queue_client(connection, sender, local_available, export_registry)
+        .await;
 }
 
 fn main() -> () {
@@ -405,17 +408,47 @@ fn main() -> () {
     print!(" timestamp");
     print!("\n");
 
-    let watcher = work_queue.idle_watcher();
-    // listen for other nodes trying to poll from local work queue
-    runtime.spawn(remote_queue_server(config.q_port, work_queue));
+    if let Some(multinode_settings) =
+        multinode::config::MultinodeConfig::load(config.multinode_config.as_deref())
+    {
+        let node_id = config.node_id;
+        let export_registry = ExportRegistry::new(node_id);
+        let watcher = work_queue.idle_watcher();
+        if multinode_settings.queue_server.node_id == node_id {
+            let queue_server_port =
+                multinode::config::queue_server_port(&multinode_settings.queue_server.url)
+                    .unwrap_or_else(|err| panic!("Invalid queue server entry: {}", err));
+            // listen for other nodes trying to poll from local work queue
+            runtime.spawn(remote_queue_server(
+                queue_server_port,
+                work_queue,
+                export_registry.clone(),
+            ));
+        } else {
+            // start a thread to check if we should be checking remote queues
+            runtime.spawn(remote_queue_client(
+                multinode::config::tcp_address(&multinode_settings.queue_server.url),
+                dispatcher_sender.clone(),
+                watcher,
+                export_registry.clone(),
+            ));
+        }
 
-    // start a thread to check if we should be checking remote queues
-    if let Some(remote_url) = config.remote_queue_url {
-        runtime.spawn(remote_queue_client(
-            remote_url,
-            dispatcher_sender.clone(),
-            watcher,
+        let data_server_urls = multinode_settings.data_server_urls();
+        let data_server_address = data_server_urls
+            .get(&node_id)
+            .unwrap_or_else(|| panic!("No data server entry for node {}", node_id));
+        let data_server_port = multinode::config::data_server_port(data_server_address)
+            .unwrap_or_else(|err| {
+                panic!("Invalid data server entry for node {}: {}", node_id, err)
+            });
+        runtime.spawn(multinode::data::service_loop(
+            data_server_port,
+            export_registry,
         ));
+        set_remote_data_resolver(Arc::new(multinode::data::HttpRemoteDataResolver::new(
+            data_server_urls,
+        )));
     }
 
     // Run this server for... forever... unless I receive a signal!

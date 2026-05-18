@@ -9,6 +9,8 @@ use prost::{
 use tokio::sync::oneshot;
 
 pub mod client;
+pub mod config;
+pub mod data;
 mod util;
 
 // Todo remove when runtime is unified, and await dispatcher directly
@@ -160,75 +162,59 @@ fn test_serialize_invocation_request() {
     let inputs = machine_interface::composition::CompositionSet::from_context(in_context);
 
     // serialize
-    let (serialized_metadata_sets, set_option) = util::composition_sets_to_proto(inputs);
-    let (inputs, total_data_size) = set_option.unwrap();
+    let node_id = 42;
+    let mut next_data_id = 0;
+    let (serialized_metadata_sets, set_option) =
+        util::composition_sets_to_proto(inputs, |item, context| {
+            let data_id = next_data_id;
+            next_data_id += 1;
+            let data_slice = context
+                .get_chunk_ref(item.data.offset, item.data.size)
+                .unwrap();
+            match data_id {
+                0 => assert_eq!(&item_0_0_data.to_le_bytes(), data_slice),
+                1 => assert_eq!(&item_1_0_data.to_le_bytes(), data_slice),
+                2 => assert_eq!(&item_1_1_data.to_le_bytes(), data_slice),
+                _ => panic!("Unexpected exported data id"),
+            }
+            machine_interface::composition::RemoteData { node_id, data_id }
+        });
+    assert!(set_option.is_none());
+    assert_eq!(3, next_data_id);
     println!("serialized set: {:?}", serialized_metadata_sets);
     // not checking set names, as they are set arbitrarily, since they are ignored anyway
     // check the items
     assert_eq!(2, serialized_metadata_sets.len());
-    assert_eq!(
-        size_of::<u64>() as u64 + size_of::<u64>() as u64 + size_of::<u128>() as u64,
-        total_data_size
-    );
-
-    let mut data_buf = prost::bytes::BytesMut::with_capacity(total_data_size as usize);
-    for data_set in inputs.iter().filter_map(|item| item.as_ref()) {
-        for (item, data) in data_set {
-            let context = match data {
-                ItemData::LocalData(context) => context,
-                _ => panic!("Should not get data reference"),
-            };
-            let data_position = item.data;
-            let data_slice = context
-                .get_chunk_ref(data_position.offset, data_position.size)
-                .unwrap();
-            assert_eq!(data_position.size, data_slice.len());
-            data_buf.extend_from_slice(data_slice);
-        }
-    }
 
     assert_eq!(1, serialized_metadata_sets[0].items.len());
     assert_eq!(item_0_0_name, serialized_metadata_sets[0].items[0].ident);
     assert_eq!(0, serialized_metadata_sets[0].items[0].key);
     assert_eq!(
-        proto::metadata_item::Data::LocalEndOffset(size_of::<u64>() as u64),
+        proto::metadata_item::Data::RemoteData(proto::RemoteData {
+            node_id,
+            data_id: 0
+        }),
         serialized_metadata_sets[0].items[0].data.unwrap()
-    );
-    assert_eq!(
-        item_0_0_data,
-        u64::from_le_bytes(data_buf[0..size_of::<u64>()].try_into().unwrap())
     );
 
     assert_eq!(2, serialized_metadata_sets[1].items.len());
     assert_eq!(item_1_0_name, serialized_metadata_sets[1].items[0].ident);
     assert_eq!(7, serialized_metadata_sets[1].items[0].key);
     assert_eq!(
-        proto::metadata_item::Data::LocalEndOffset(2 * size_of::<u64>() as u64),
+        proto::metadata_item::Data::RemoteData(proto::RemoteData {
+            node_id,
+            data_id: 1
+        }),
         serialized_metadata_sets[1].items[0].data.unwrap()
-    );
-    assert_eq!(
-        item_1_0_data,
-        u64::from_le_bytes(
-            data_buf[size_of::<u64>()..2 * size_of::<u64>()]
-                .try_into()
-                .unwrap()
-        )
     );
     assert_eq!(item_1_1_name, serialized_metadata_sets[1].items[1].ident);
     assert_eq!(14, serialized_metadata_sets[1].items[1].key);
     assert_eq!(
-        proto::metadata_item::Data::LocalEndOffset(
-            2 * size_of::<u64>() as u64 + size_of::<u128>() as u64
-        ),
+        proto::metadata_item::Data::RemoteData(proto::RemoteData {
+            node_id,
+            data_id: 2
+        }),
         serialized_metadata_sets[1].items[1].data.unwrap()
-    );
-    assert_eq!(
-        item_1_1_data,
-        u128::from_le_bytes(
-            data_buf[2 * size_of::<u64>()..(2 * size_of::<u64>() + size_of::<u128>())]
-                .try_into()
-                .unwrap()
-        )
     );
 
     let request = QueueMessage {
@@ -265,10 +251,7 @@ fn test_serialize_invocation_request() {
     assert!(caching);
 
     // check the composition sets are as expected
-    let mut sets = util::proto_data_sets_to_composition_sets(
-        deserialized_metadata_sets,
-        Some(data_buf.freeze()),
-    );
+    let mut sets = util::proto_data_sets_to_composition_sets(deserialized_metadata_sets, None);
     assert_eq!(2, sets.len());
 
     let set_0 = sets[0].take().expect("Should have Some(_) for set 0");
@@ -276,17 +259,15 @@ fn test_serialize_invocation_request() {
     let (item_0_0, item_0_0_item_data) = set_0.into_iter().next().unwrap();
     assert_eq!(item_0_0_name, item_0_0.ident);
     assert_eq!(0, item_0_0.key);
-    assert_eq!(size_of::<u64>(), item_0_0.data.size);
-    let item_0_0_context = match item_0_0_item_data {
-        ItemData::LocalData(context) => context,
-        _ => panic!("Should have local data"),
+    assert_eq!(0, item_0_0.data.offset);
+    assert_eq!(0, item_0_0.data.size);
+    match item_0_0_item_data {
+        ItemData::RemoteData(remote_data) => {
+            assert_eq!(node_id, remote_data.node_id);
+            assert_eq!(0, remote_data.data_id);
+        }
+        _ => panic!("Should have remote data"),
     };
-    assert_eq!(
-        &item_0_0_data.to_le_bytes(),
-        item_0_0_context
-            .get_chunk_ref(item_0_0.data.offset, size_of::<u64>())
-            .unwrap()
-    );
 
     let set_1 = sets[1].take().expect("Should have Some(_) for set 1");
     assert_eq!(2, set_1.len());
@@ -294,29 +275,25 @@ fn test_serialize_invocation_request() {
     let (item_1_0, item_1_0_item_data) = set_1_iterator.next().unwrap();
     assert_eq!(item_1_0_name, item_1_0.ident);
     assert_eq!(7, item_1_0.key);
-    assert_eq!(size_of::<u64>(), item_1_0.data.size);
-    let item_1_0_context = match item_1_0_item_data {
-        ItemData::LocalData(context) => context,
-        _ => panic!("Should have local data"),
+    assert_eq!(0, item_1_0.data.offset);
+    assert_eq!(0, item_1_0.data.size);
+    match item_1_0_item_data {
+        ItemData::RemoteData(remote_data) => {
+            assert_eq!(node_id, remote_data.node_id);
+            assert_eq!(1, remote_data.data_id);
+        }
+        _ => panic!("Should have remote data"),
     };
-    assert_eq!(
-        &item_1_0_data.to_le_bytes(),
-        item_1_0_context
-            .get_chunk_ref(item_1_0.data.offset, size_of::<u64>())
-            .unwrap()
-    );
     let (item_1_1, item_1_1_item_data) = set_1_iterator.next().unwrap();
     assert_eq!(item_1_1_name, item_1_1.ident);
     assert_eq!(14, item_1_1.key);
-    assert_eq!(size_of::<u128>(), item_1_1.data.size);
-    let item_1_1_context = match item_1_1_item_data {
-        ItemData::LocalData(context) => context,
-        _ => panic!("Should have local data"),
+    assert_eq!(0, item_1_1.data.offset);
+    assert_eq!(0, item_1_1.data.size);
+    match item_1_1_item_data {
+        ItemData::RemoteData(remote_data) => {
+            assert_eq!(node_id, remote_data.node_id);
+            assert_eq!(2, remote_data.data_id);
+        }
+        _ => panic!("Should have remote data"),
     };
-    assert_eq!(
-        &item_1_1_data.to_le_bytes(),
-        item_1_1_context
-            .get_chunk_ref(item_1_1.data.offset, size_of::<u128>())
-            .unwrap()
-    );
 }
