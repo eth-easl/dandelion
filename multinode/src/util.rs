@@ -98,6 +98,7 @@ pub(crate) fn composition_sets_to_proto(
                         metadata_items.push(proto::MetadataItem {
                             ident: item.ident.clone(),
                             key: item.key,
+                            // TODO: send data directly for smaller items
                             data: Some(metadata_item::Data::RemoteData(remote_data_dtop(
                                 remote_data,
                             ))),
