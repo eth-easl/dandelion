@@ -25,6 +25,8 @@ struct ExportedData {
 
 // TODO: use composition hashid and item index to uniquely identify data to avoid
 // storing multiple copies of the same data if it is used in multiple places.
+// TODO: this is not optimized for concurrent access, we might want to shard the registry
+// or use a more concurrent data structure to serve remote data requests in parallel
 struct ExportRegistryInner {
     next_data_id: u64,
     data: BTreeMap<u64, ExportedData>,
@@ -72,8 +74,10 @@ impl ExportRegistry {
 
     pub async fn fetch_bytes(&self, data_id: u64) -> DandelionResult<Bytes> {
         let exported_data = {
-            let inner = self.inner.lock().await;
-            inner.data.get(&data_id).cloned()
+            let mut inner = self.inner.lock().await;
+            // This is ok because for now we don't deduplicate data items and thus only serve each data item once
+            // TODO: implement reference counting when we support deduplication and multiple uses of the same data item
+            inner.data.remove(&data_id)
         };
 
         let Some(exported_data) = exported_data else {
@@ -111,6 +115,7 @@ impl HttpRemoteDataResolver {
     }
 }
 
+// TODO: add fast path for local data access to avoid unnecessary HTTP requests when the remote data is actually local
 impl RemoteDataResolver for HttpRemoteDataResolver {
     fn resolve_remote_data(
         &self,
