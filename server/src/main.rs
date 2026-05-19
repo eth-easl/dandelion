@@ -444,10 +444,11 @@ fn main() -> () {
             });
         runtime.spawn(multinode::data::service_loop(
             data_server_port,
-            export_registry,
+            export_registry.clone(),
         ));
         set_remote_data_resolver(Arc::new(multinode::data::HttpRemoteDataResolver::new(
             data_server_urls,
+            export_registry,
         )));
     }
 

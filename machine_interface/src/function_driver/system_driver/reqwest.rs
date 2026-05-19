@@ -444,10 +444,10 @@ async fn resolve_item(
     match data {
         ItemData::LocalData(_) => Ok((item, data)),
         ItemData::RemoteData(remote_data) => {
-            let context = crate::composition::resolve_remote_data(remote_data)
+            let (context, position) = crate::composition::resolve_remote_data(remote_data)
                 .await
                 .unwrap();
-            item.data.size = context.size;
+            item.data = position;
             Ok((item, ItemData::LocalData(context)))
         }
         ItemData::IoData(io_data) => {

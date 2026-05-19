@@ -72,7 +72,7 @@ impl ExportRegistry {
         })
     }
 
-    pub async fn fetch_bytes(&self, data_id: u64) -> DandelionResult<Bytes> {
+    async fn take_exported_data(&self, data_id: u64) -> DandelionResult<ExportedData> {
         let exported_data = {
             let mut inner = self.inner.lock().await;
             // This is ok because for now we don't deduplicate data items and thus only serve each data item once
@@ -86,6 +86,11 @@ impl ExportRegistry {
             )));
         };
 
+        Ok(exported_data)
+    }
+
+    pub async fn fetch_bytes(&self, data_id: u64) -> DandelionResult<Bytes> {
+        let exported_data = self.take_exported_data(data_id).await?;
         let size = exported_data.position.size;
         let mut result = BytesMut::with_capacity(size);
         let base_offset = exported_data.position.offset;
@@ -99,34 +104,44 @@ impl ExportRegistry {
         }
         Ok(result.freeze())
     }
+
+    pub async fn fetch_context(&self, data_id: u64) -> DandelionResult<(Arc<Context>, Position)> {
+        let exported_data = self.take_exported_data(data_id).await?;
+        Ok((exported_data.context, exported_data.position))
+    }
 }
 
 pub struct HttpRemoteDataResolver {
     node_map: BTreeMap<u64, String>,
+    local_registry: ExportRegistry,
     client: reqwest::Client,
 }
 
 impl HttpRemoteDataResolver {
-    pub fn new(node_map: BTreeMap<u64, String>) -> Self {
+    pub fn new(node_map: BTreeMap<u64, String>, local_registry: ExportRegistry) -> Self {
         Self {
             node_map,
+            local_registry: local_registry,
             client: reqwest::Client::new(),
         }
     }
 }
 
-// TODO: add fast path for local data access to avoid unnecessary HTTP requests when the remote data is actually local
 impl RemoteDataResolver for HttpRemoteDataResolver {
     fn resolve_remote_data(
         &self,
         data: RemoteData,
-    ) -> Pin<Box<dyn Future<Output = DandelionResult<Arc<Context>>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = DandelionResult<(Arc<Context>, Position)>> + Send + '_>> {
         trace!(
             "Resolving remote data: node_id={}, data_id={}",
             data.node_id,
             data.data_id
         );
         Box::pin(async move {
+            if data.node_id == self.local_registry.node_id {
+                return self.local_registry.fetch_context(data.data_id).await;
+            }
+
             let address = self.node_map.get(&data.node_id).ok_or(dandelion_err!(
                 DandelionError::Multinode(MultinodeError::ConfigError(format!(
                     "No data server configured for node {}",
@@ -155,10 +170,13 @@ impl RemoteDataResolver for HttpRemoteDataResolver {
                 )))
             })?;
             let size = bytes.len();
-            Ok(Arc::new(Context::new(
-                ContextType::Bytes(Box::new(BytesContext::new(vec![bytes]))),
-                size,
-            )))
+            Ok((
+                Arc::new(Context::new(
+                    ContextType::Bytes(Box::new(BytesContext::new(vec![bytes]))),
+                    size,
+                )),
+                Position { offset: 0, size },
+            ))
         })
     }
 }

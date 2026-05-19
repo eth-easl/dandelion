@@ -180,7 +180,7 @@ pub trait RemoteDataResolver: Send + Sync {
     fn resolve_remote_data(
         &self,
         data: RemoteData,
-    ) -> Pin<Box<dyn Future<Output = DandelionResult<Arc<Context>>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = DandelionResult<(Arc<Context>, Position)>> + Send + '_>>;
 }
 
 static REMOTE_DATA_RESOLVER: OnceLock<Arc<dyn RemoteDataResolver>> = OnceLock::new();
@@ -189,7 +189,7 @@ pub fn set_remote_data_resolver(resolver: Arc<dyn RemoteDataResolver>) {
     let _ = REMOTE_DATA_RESOLVER.set(resolver);
 }
 
-pub async fn resolve_remote_data(data: RemoteData) -> DandelionResult<Arc<Context>> {
+pub async fn resolve_remote_data(data: RemoteData) -> DandelionResult<(Arc<Context>, Position)> {
     let resolver = match REMOTE_DATA_RESOLVER.get() {
         Some(resolver) => resolver,
         None => {
