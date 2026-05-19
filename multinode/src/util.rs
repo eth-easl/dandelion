@@ -189,7 +189,7 @@ pub(crate) fn proto_data_sets_to_composition_sets(
                     let buffer_size = end_offset - last_end_offset;
                     item_list.push((
                         machine_interface::DataItem {
-                            ident: String::new(),
+                            ident: protobuf_item.ident,
                             data: Position { offset: 0, size: 0 },
                             key: protobuf_item.key,
                         },
