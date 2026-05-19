@@ -43,7 +43,8 @@ impl Debug for OverlayItem {
 }
 
 pub struct KvmContext {
-    /// overlay data structure recording where overlay items END and how big they are.
+    /// The overlay stores information about valid data to read in the context.
+    /// the data structure records where overlay items END and how big they are.
     /// The end is recorded as start + size - 1 (so it is the index of the last byte).
     /// We are using the end, as it makes overlap checks easier, since we can be sure,
     /// there is no overlap if the offset we are looking for is bigger than the end.
