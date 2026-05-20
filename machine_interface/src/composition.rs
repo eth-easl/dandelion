@@ -105,15 +105,17 @@ struct AnySetGroup {
     largest_set_size: usize,
     max_partitions: usize,
     target_partitions: usize,
+    min_set_bytes: usize,
     processed: bool,
 }
 
 impl AnySetGroup {
-    fn new(largest_set_size: usize, max_partitions: usize) -> Self {
+    fn new(largest_set_size: usize, min_set_bytes: usize, max_partitions: usize) -> Self {
         Self {
             largest_set_size,
             max_partitions,
             target_partitions: 1,
+            min_set_bytes,
             processed: false,
         }
     }
@@ -281,7 +283,7 @@ pub fn get_sharding(
     join_order: Vec<usize>,
     join_strategies: Vec<JoinStrategy>,
     any_sharding_mode: &AnyShardingMode,
-    min_set_size: usize,
+    mut min_set_bytes: Vec<usize>,
 ) -> Vec<Vec<Option<CompositionSet>>> {
     let set_num = sets.len();
     debug_assert_eq!(join_order.len(), set_num);
@@ -289,6 +291,7 @@ pub fn get_sharding(
         join_strategies.len(),
         if set_num == 0 { 0 } else { set_num - 1 }
     );
+    min_set_bytes.resize(set_num, 0);
 
     trace!(
         "Computing sharding using sets: {:?}, join_order: {:?}, join_strategies: {:?}.",
@@ -307,7 +310,7 @@ pub fn get_sharding(
     let mut fixed_partitions = 1;
     let mut join_group_key_set: Vec<u32> = vec![];
     let mut i = 0;
-    while i < join_order.len() {
+    while i < set_num {
         let set_idx = join_order[i];
         if let Some((sharding, set)) = sets[set_idx].take() {
             if sharding != ShardingMode::Key {
@@ -346,7 +349,7 @@ pub fn get_sharding(
     // second create the iterators for all remaining shardings
     let mut any_set_groups = Vec::new();
     let mut join_iter = key_join_iter.map(|i| i as Box<dyn JoinIterator>);
-    while i < join_order.len() {
+    while i < set_num {
         let set_idx = join_order[i];
         if let Some((sharding, set)) = sets[set_idx].take() {
             match sharding {
@@ -360,17 +363,21 @@ pub fn get_sharding(
                     fixed_partitions *= partitions;
                 }
                 ShardingMode::AnyEach => {
-                    let (any_join_iter, largest_set_size, max_partitions) =
+                    let (any_join_iter, largest_set_size, min_set_size, max_partitions) =
                         join_iterator::AnyIterator::new(
                             join_iter,
                             vec![set],
                             vec![],
                             vec![set_idx],
                             sharding,
-                            min_set_size,
+                            &min_set_bytes[i..(i + 1)],
                         );
                     if max_partitions > 0 {
-                        any_set_groups.push(AnySetGroup::new(largest_set_size, max_partitions));
+                        any_set_groups.push(AnySetGroup::new(
+                            largest_set_size,
+                            min_set_size,
+                            max_partitions,
+                        ));
                     }
                     join_iter = any_join_iter.map(|i| i as Box<dyn JoinIterator>);
                 }
@@ -379,6 +386,7 @@ pub fn get_sharding(
                     let mut joined_sets = vec![set];
                     let mut joined_set_idcs = vec![set_idx];
                     let mut joined_strategies = vec![];
+                    let start_idx = i;
                     while i + 1 < join_order.len() {
                         let next_strategy = join_strategies[i];
                         if next_strategy != JoinStrategy::Cross {
@@ -396,17 +404,21 @@ pub fn get_sharding(
                         }
                     }
 
-                    let (any_join_iter, largest_set_size, max_partitions) =
+                    let (any_join_iter, largest_set_size, min_set_size, max_partitions) =
                         join_iterator::AnyIterator::new(
                             join_iter,
                             joined_sets,
                             joined_strategies,
                             joined_set_idcs,
                             sharding,
-                            min_set_size,
+                            &min_set_bytes[start_idx..(i + 1)],
                         );
                     if max_partitions > 0 {
-                        any_set_groups.push(AnySetGroup::new(largest_set_size, max_partitions));
+                        any_set_groups.push(AnySetGroup::new(
+                            largest_set_size,
+                            min_set_size,
+                            max_partitions,
+                        ));
                     }
                     join_iter = any_join_iter.map(|i| i as Box<dyn JoinIterator>);
                 }
@@ -423,13 +435,17 @@ pub fn get_sharding(
         AnyShardingMode::MaxSharding => 0,
         AnyShardingMode::FixedSharding(n) => *n,
         AnyShardingMode::AutoSharding(params) => {
-            let total_largest_any_set_sizes: usize =
-                any_set_groups.iter().map(|g| g.largest_set_size).product();
+            let mut total_largest_any_set_sizes = 1;
+            let mut total_min_set_sizes = 0;
+            for any_group in any_set_groups.iter() {
+                total_largest_any_set_sizes *= any_group.largest_set_size;
+                total_min_set_sizes += any_group.min_set_bytes;
+            }
             if total_largest_any_set_sizes == 0 {
                 0
             } else {
                 // use a minimal set size of at least 1 for this computation
-                let s_min = cmp::max(min_set_size, 1);
+                let s_min = cmp::max(total_min_set_sizes, 1);
                 let c_local = params.sys_info.num_local_cores.load(Ordering::Acquire);
                 let c_remote = params.sys_info.num_remote_cores.load(Ordering::Acquire);
                 if total_largest_any_set_sizes > params.offload_const * s_min * c_local {

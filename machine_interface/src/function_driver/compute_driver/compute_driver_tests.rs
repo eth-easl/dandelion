@@ -77,7 +77,7 @@ mod compute_driver_tests {
         let metadata = Arc::new(Metadata {
             input_sets: vec![],
             output_sets: vec![],
-            min_set_size: 0,
+            min_set_bytes: vec![],
         });
 
         let recorder = Recorder::new(Arc::new(0.to_string()), Instant::now());
@@ -119,7 +119,7 @@ mod compute_driver_tests {
         let metadata = Arc::new(Metadata {
             input_sets: vec![],
             output_sets: vec![],
-            min_set_size: 0,
+            min_set_bytes: vec![],
         });
 
         let recorder = Recorder::new(Arc::new(0.to_string()), Instant::now());
@@ -171,7 +171,7 @@ mod compute_driver_tests {
         let metadata = Arc::new(Metadata {
             input_sets: vec![("".to_string(), None)],
             output_sets: vec!["".to_string()],
-            min_set_size: 0,
+            min_set_bytes: vec![],
         });
 
         let recorder = Recorder::new(zero_id(), Instant::now());
@@ -264,7 +264,7 @@ mod compute_driver_tests {
             let metadata = Arc::new(Metadata {
                 input_sets: vec![("".to_string(), None)],
                 output_sets: vec!["".to_string()],
-                min_set_size: 0,
+                min_set_bytes: vec![],
             });
 
             let recorder = Recorder::new(zero_id(), Instant::now());
@@ -371,7 +371,7 @@ mod compute_driver_tests {
         let metadata = Arc::new(Metadata {
             input_sets: vec![("stdio".to_string(), None)],
             output_sets: vec!["stdio".to_string()],
-            min_set_size: 0,
+            min_set_bytes: vec![],
         });
 
         let recorder = Recorder::new(zero_id(), Instant::now());
@@ -534,7 +534,7 @@ mod compute_driver_tests {
                 "out".to_string(),
                 "out_nested".to_string(),
             ],
-            min_set_size: 0,
+            min_set_bytes: vec![],
         });
 
         let recorder = Recorder::new(zero_id(), Instant::now());

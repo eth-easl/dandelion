@@ -32,7 +32,7 @@ mod dispatcher_tests {
         let metadata = Metadata {
             input_sets: in_set_names,
             output_sets: out_set_names,
-            min_set_size: 0,
+            min_set_bytes: vec![],
         };
         let mut pool_map = BTreeMap::new();
         pool_map.insert(engine_type, engine_resource);

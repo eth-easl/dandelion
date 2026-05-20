@@ -40,8 +40,8 @@ pub struct FuncMetadata {
     pub input_sets: Vec<String>,
     #[serde(rename = "outputSets")]
     pub output_sets: Vec<String>,
-    #[serde(rename = "minSetSize", default)]
-    pub min_set_size: usize,
+    #[serde(rename = "minSetBytes", default)]
+    pub min_set_bytes: Vec<usize>,
 }
 
 #[derive(Clone, Copy, serde::Deserialize, Debug, clap::ValueEnum)]

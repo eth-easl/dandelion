@@ -355,7 +355,7 @@ fn main() -> () {
                             FuncMetadata {
                                 input_sets,
                                 output_sets,
-                                min_set_size,
+                                min_set_bytes,
                             },
                         ctx_size,
                         bin_path,
@@ -382,7 +382,7 @@ fn main() -> () {
                     let metadata = Metadata {
                         input_sets,
                         output_sets,
-                        min_set_size,
+                        min_set_bytes,
                     };
                     match dispatcher.insert_function(
                         name.clone(),

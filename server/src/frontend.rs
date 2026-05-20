@@ -55,7 +55,7 @@ struct RegisterFunction {
     /// The minimum size the largest set of a group of any sets should have. If given (i.e. has a
     /// value of > 0) the JoinIterator will combine any sets to achieve this size best-effort.
     #[serde(default)]
-    min_set_size: usize,
+    min_set_bytes: Vec<usize>,
 }
 
 async fn handle_function_registration(
@@ -121,7 +121,7 @@ async fn handle_function_registration(
     let metadata = Metadata {
         input_sets: input_sets,
         output_sets: request_map.output_sets,
-        min_set_size: request_map.min_set_size,
+        min_set_bytes: request_map.min_set_bytes,
     };
     dispatcher
         .send(DispatcherCommand::FunctionRegistration {

@@ -52,7 +52,7 @@ fn create_test_function_registry(functions: &[(&str, &[&str], &[&str])]) -> Func
         let metadata = Metadata {
             input_sets: inputs.iter().map(|s| (s.to_string(), None)).collect(),
             output_sets: outputs.iter().map(|s| s.to_string()).collect(),
-            min_set_size: 0,
+            min_set_bytes: vec![],
         };
         function_reg
             .insert_function(
@@ -295,7 +295,7 @@ fn test_from_module_minmal_composition() {
         Metadata {
             input_sets: Vec::new(),
             output_sets: Vec::new(),
-            min_set_size: 0,
+            min_set_bytes: vec![],
         },
     )];
     check_compositions_and_metadata(compositions, expected, 0..0, 0..0);
@@ -332,7 +332,7 @@ fn test_from_module_minmal_composition_with_inputs() {
         Metadata {
             input_sets: vec![(String::from("Cin"), None)],
             output_sets: vec![String::from("Cout")],
-            min_set_size: 0,
+            min_set_bytes: vec![],
         },
     )];
     check_compositions_and_metadata(compositions, expected, 0..1, 1..2);
@@ -373,7 +373,7 @@ fn test_from_module_minmal_composition_function_with_unused_input() {
         Metadata {
             input_sets: vec![(String::from("Cin"), None)],
             output_sets: vec![String::from("Cout")],
-            min_set_size: 0,
+            min_set_bytes: vec![],
         },
     )];
     check_compositions_and_metadata(compositions, expected, 0..1, 1..2);
@@ -411,7 +411,7 @@ fn test_from_module_minmal_composition_function_with_unused_output() {
         Metadata {
             input_sets: vec![(String::from("Cin"), None)],
             output_sets: vec![String::from("Cout")],
-            min_set_size: 0,
+            min_set_bytes: vec![],
         },
     )];
     check_compositions_and_metadata(compositions, expected, 0..1, 1..2);
@@ -449,7 +449,7 @@ fn test_from_module_minmal_composition_with_missing_input() {
         Metadata {
             input_sets: vec![(String::from("Cin"), None)],
             output_sets: vec![String::from("Cout")],
-            min_set_size: 0,
+            min_set_bytes: vec![],
         },
     )];
     check_compositions_and_metadata(compositions, expected, 0..1, 1..2);
@@ -487,7 +487,7 @@ fn test_from_module_minmal_composition_missing_output() {
         Metadata {
             input_sets: vec![(String::from("Cin"), None)],
             output_sets: vec![String::from("Cout")],
-            min_set_size: 0,
+            min_set_bytes: vec![],
         },
     )];
     check_compositions_and_metadata(compositions, expected, 0..1, 1..2);

@@ -125,7 +125,7 @@ async fn mock_dispatcher(work_queue: WorkQueue, engine_type: machine_config::Eng
                 metadata: Arc::new(Metadata {
                     input_sets: vec![],
                     output_sets: vec![],
-                    min_set_size: 0,
+                    min_set_bytes: vec![],
                 }),
                 caching: false,
                 recorder: Recorder::new(function_id, Instant::now()),

@@ -29,9 +29,9 @@ pub struct Metadata {
     pub input_sets: Vec<(String, Option<CompositionSet>)>,
     /// The output set names.
     pub output_sets: Vec<String>,
-    /// The minimum size the largest set of a group of any sets should have. If given (i.e. has a
-    /// value of > 0) the JoinIterator will combine any sets to achieve this size best-effort.
-    pub min_set_size: usize,
+    /// The minimum size in bytes the largest set of a group of any sets should have. If given (i.e.
+    /// has a value of > 0) the JoinIterator will combine any sets to achieve this size best-effort.
+    pub min_set_bytes: Vec<usize>,
 }
 
 pub enum WorkToDo {

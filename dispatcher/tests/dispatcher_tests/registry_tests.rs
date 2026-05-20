@@ -7,7 +7,7 @@ use machine_interface::{
     memory_domain::{read_only::ReadOnlyContext, Context, MemoryDomain, MemoryResource},
     DataItem, DataSet, Position,
 };
-use std::{sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant, vec};
 
 const DEFAULT_CONTEXT_SIZE: usize = 0x800_0000; // 128MiB
 
@@ -92,7 +92,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
                 Metadata {
                     input_sets: local_names,
                     output_sets: out_set_names.clone(),
-                    min_set_size: 0,
+                    min_set_bytes: vec![],
                 },
             )
             .expect("should be able to update function");
@@ -213,7 +213,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
                 Metadata {
                     input_sets: local_names,
                     output_sets: out_set_names.clone(),
-                    min_set_size: 0,
+                    min_set_bytes: vec![],
                 },
             )
             .expect("should be able to update function");

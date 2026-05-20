@@ -537,8 +537,8 @@ pub(super) struct AnyIterator {
     set_groups_idx: usize,
     write_idcs: Vec<usize>,
     // used to make sure the groups of the largest set are of a given minimum size
-    // use a `min_set_size` of 0 to disable
-    min_set_size: usize,
+    // use a `min_set_bytes` of 0 to disable
+    min_set_bytes: usize,
     largest_set_idx: usize,
 }
 
@@ -548,16 +548,17 @@ impl AnyIterator {
     /// over all iterators.
     ///
     /// Returns the corresponding a tuple of the `JoinIterator`, the largest set size (after
-    /// joining) and the maximum possible number of partitions. If the iterator is empty, i.e. won't
-    /// produce any sets, it returns the left `JoinIterator` (and zeros for the other values).
+    /// joining), the corresponding minimum set size, and the maximum possible number of partitions.
+    /// If the iterator is empty, i.e. won't produce any sets, it returns the left `JoinIterator`
+    /// (and zeros for the other values).
     pub(super) fn new(
         left: Option<Box<dyn JoinIterator>>,
         sets: Vec<CompositionSet>,
         strategies: Vec<JoinStrategy>,
         write_idcs: Vec<usize>,
         sharding: ShardingMode,
-        min_set_size: usize,
-    ) -> (Option<Box<dyn JoinIterator>>, usize, usize) {
+        min_set_bytes: &[usize],
+    ) -> (Option<Box<dyn JoinIterator>>, usize, usize, usize) {
         let num_sets = sets.len();
         debug_assert!(num_sets > 0);
 
@@ -605,6 +606,9 @@ impl AnyIterator {
             }
             let max_parallelism = inner_sharding.len();
 
+            // TODO: for multiple joined sets we still only check the minimum set byte size for the
+            //       the largest set -> fix this such that every group fullfills at least one of the
+            //       minimums
             let (largest_set_idx, largest_set_size) = total_sizes
                 .iter()
                 .enumerate()
@@ -616,15 +620,16 @@ impl AnyIterator {
                     set_groups: inner_sharding,
                     set_groups_idx: 0,
                     write_idcs,
-                    min_set_size,
+                    min_set_bytes: min_set_bytes[largest_set_idx],
                     largest_set_idx,
                 })),
                 *largest_set_size,
+                min_set_bytes[largest_set_idx],
                 max_parallelism,
             )
         } else {
             // no inner join iterator was built -> this iterator will no produce any sets
-            (left, 0, 0)
+            (left, 0, 0, 0)
         }
     }
 }
@@ -645,10 +650,10 @@ impl JoinIterator for AnyIterator {
         let mut new_set_groups = Vec::with_capacity(parallelism);
         let base_size = self.set_groups.len() / parallelism;
         let remainder = self.set_groups.len() % parallelism;
-        // If a min_set_size is given we make sure the set groups of the largest set have at least
+        // If a min_set_bytes is given we make sure the set groups of the largest set have at least
         // that size. This might lead to less groups than the `any_parallelism` given.
         // We sort the set_groups by size to get a more even partitioning in most cases.
-        if self.min_set_size > 0 {
+        if self.min_set_bytes > 0 {
             self.set_groups.sort_by(|a, b| {
                 a[self.largest_set_idx]
                     .as_ref()
@@ -670,13 +675,13 @@ impl JoinIterator for AnyIterator {
                 set_group.resize(num_sets, None);
 
                 // iterate through largest set until we have reached at least the min_end_idx and the
-                // set is at least self.min_set_size big
+                // set is at least self.min_set_bytes big
                 let start_idx = curr_idx;
                 {
                     let mut curr_set: Option<CompositionSet> = None;
                     let mut curr_set_size = 0;
                     while curr_idx < self.set_groups.len()
-                        && (curr_idx < min_end_idx || curr_set_size < self.min_set_size)
+                        && (curr_idx < min_end_idx || curr_set_size < self.min_set_bytes)
                     {
                         if let Some(set) = &mut curr_set {
                             if let Some(next_set) =
@@ -714,7 +719,7 @@ impl JoinIterator for AnyIterator {
                 new_set_groups.push(set_group);
             }
         } else {
-            // If no min_set_size is given we create even groups based on the number of items per set
+            // If no min_set_bytes is given we create even groups based on the number of items per set
             // ignoring any item/set sizes.
             let mut start_idx = 0;
             for group_idx in 0..parallelism {

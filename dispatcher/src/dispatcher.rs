@@ -397,16 +397,17 @@ impl Dispatcher {
         // but still want to run if we queued it.
         let is_sharded = input_sets.len() != 0 && input_sets.iter().any(|opt| opt.is_some());
         let composition_results: DandelionResult<Vec<_>> = if is_sharded {
-            let min_set_size = self
+            let min_set_bytes = self
                 .function_registry
                 .get_metadata(&function_id)?
-                .min_set_size;
+                .min_set_bytes
+                .clone();
             let sharded = get_sharding(
                 input_sets,
                 join_order,
                 join_strategies,
                 &self.any_sharding_mode,
-                min_set_size,
+                min_set_bytes,
             );
             let size_hint = sharded.len();
             recorders = Vec::with_capacity(size_hint);
