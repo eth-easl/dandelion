@@ -1,4 +1,3 @@
-use dandelion_commons::records::Archive;
 use dandelion_server::config::{FuncMetadata, PreloadFunc};
 use dispatcher::{dispatcher::Dispatcher, queue::WorkQueue, resource_pool::ResourcePool};
 use log::{debug, error, info, warn};
@@ -10,7 +9,7 @@ use machine_interface::{
 };
 use multinode::{data::ExportRegistry, DispatcherCommand};
 use nix::unistd::Pid;
-use std::{collections::BTreeMap, fs::read_to_string, sync::Arc, sync::OnceLock};
+use std::{collections::BTreeMap, fs::read_to_string, sync::Arc};
 use tokio::{
     runtime::Builder,
     select, spawn,
@@ -18,9 +17,6 @@ use tokio::{
 };
 
 mod frontend;
-
-/// Recording setup
-static TRACING_ARCHIVE: OnceLock<Archive> = OnceLock::new();
 
 async fn dispatcher_loop(
     mut request_receiver: mpsc::Receiver<DispatcherCommand>,
@@ -109,12 +105,8 @@ async fn dispatcher_loop(
                     "Handling remote function request for function_id={}",
                     function_id
                 );
-                let function_future = dispatcher.queue_function(
-                    function_id,
-                    inputs,
-                    !is_cold,
-                    recorder.get_sub_recorder(),
-                );
+                let function_future =
+                    dispatcher.queue_function(function_id, inputs, !is_cold, recorder.clone());
                 spawn(async {
                     select! {
                         function_output = function_future => {
@@ -179,12 +171,6 @@ fn main() -> () {
 
     // create globally available path to folder for data
     let folder_path: &'static str = Box::leak(config.folder_path.clone().into_boxed_str());
-
-    // Initilize metric collection
-    match TRACING_ARCHIVE.set(Archive::init()) {
-        Ok(_) => (),
-        Err(_) => panic!("Failed to initialize tracing archive"),
-    }
 
     // set the reqwest engine concurrency limit if it is available
     #[cfg(feature = "reqwest_io")]

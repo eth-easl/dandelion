@@ -528,8 +528,9 @@ async fn resolve_all_references(
     input_sets: Vec<Option<CompositionSet>>,
     metadata: Arc<Metadata>,
     caching: bool,
-    recorder: Recorder,
+    mut recorder: Recorder,
 ) {
+    recorder.record(RecordPoint::FetchingStart);
     // check if teh function id is for a system function
     debug!("Resolving references for call to {}", function_id);
     // TODO check if can await in parallel, look at comment in loop for things already attempted
@@ -544,6 +545,7 @@ async fn resolve_all_references(
             }
         }
     }
+    recorder.record(RecordPoint::FetchingEnd);
     if let Some(err) = error {
         debt.fulfill(Err(err));
     } else {
@@ -586,9 +588,8 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                 input_sets,
                 metadata,
                 caching, // ignoreing caching for system functions
-                mut recorder,
+                recorder,
             } => {
-                recorder.record(RecordPoint::EngineStart);
                 let client_clone = http_client.clone();
                 let queue_clone = queue.clone();
                 tokio::spawn(async move {

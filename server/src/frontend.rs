@@ -2,7 +2,6 @@ use std::{
     convert::Infallible, io::Write, net::SocketAddr, path::PathBuf, sync::Arc, time::Instant,
 };
 
-use crate::TRACING_ARCHIVE;
 use dandelion_commons::{
     err_dandelion, records::Recorder, DandelionError, DandelionResult, FrontendError,
 };
@@ -279,13 +278,6 @@ async fn handle_request(
     Ok(response_body)
 }
 
-async fn handle_stats_collection(_req: Request<Incoming>) -> DandelionResult<DandelionBody> {
-    let archive_ref = TRACING_ARCHIVE.get().unwrap();
-    let response = DandelionBody::from_vec(archive_ref.get_summary().into_bytes());
-    archive_ref.reset();
-    Ok(response)
-}
-
 //-----------------------
 // main service function
 
@@ -315,7 +307,6 @@ async fn service(
         | "/hot/middleware_app"
         | "/hot/compression_app"
         | "/hot/python_app" => handle_request(false, req, dispatcher).await,
-        "/stats" => handle_stats_collection(req).await,
         other_uri => {
             debug!("Received request on {}", other_uri);
             Ok(DandelionBody::from_vec(
