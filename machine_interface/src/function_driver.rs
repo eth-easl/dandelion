@@ -65,6 +65,7 @@ pub trait EngineWorkQueue {
         &self,
     ) -> impl std::future::Future<Output = (WorkToDo, crate::promise::Debt)> + Send;
     fn try_get_engine_args(&self) -> Option<(WorkToDo, crate::promise::Debt)>;
+    fn remove_self_from_queue(&self);
 }
 
 pub trait Driver: Send + Sync {

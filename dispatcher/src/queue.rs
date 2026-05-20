@@ -138,6 +138,7 @@ impl WorkQueue {
     /// Creates a new WorkQueue of given size.
     pub fn init() -> Self {
         let (idle_sender, idle_receiver) = watch::channel(0);
+        let (num_local_cores_sender, num_local_cores_watcher) = watch::channel(0);
         WorkQueue {
             queues: Arc::new(Mutex::new((LinkedList::new(), LinkedList::new()))),
             promise_buffer: PromiseBuffer::init(MAX_QUEUE),
@@ -145,7 +146,8 @@ impl WorkQueue {
             idle_receiver,
             queuing_notifier: Arc::new(Notify::new()),
             system_info: Arc::new(SystemInfo {
-                num_local_cores: AtomicUsize::new(0),
+                num_local_cores_watcher,
+                num_local_cores_sender,
                 num_remote_cores: AtomicUsize::new(0),
             }),
         }
@@ -247,38 +249,52 @@ impl WorkQueue {
 
     /// Increases the number of local cores.
     pub fn add_local_cores(&self, num_cores: usize) {
-        self.system_info
-            .num_local_cores
-            .fetch_add(num_cores, Ordering::AcqRel);
+        self.system_info.num_local_cores_sender.send_modify(|curr| {
+            trace!(
+                "Added {} local core(s). New number of local cores: {}",
+                num_cores,
+                *curr + num_cores
+            );
+            *curr += num_cores
+        });
     }
 
     /// Decreases the number of local cores.
     pub fn remove_local_cores(&self, num_cores: usize) -> DandelionResult<()> {
-        let mut curr_local_cores = self.system_info.num_local_cores.load(Ordering::Acquire);
-        loop {
-            if curr_local_cores < num_cores {
-                return err_dandelion!(DandelionError::Dispatcher(
-                    DispatcherError::InvalidSytemInformation
-                ));
-            }
-            let new_val = curr_local_cores - num_cores;
-            match self.system_info.num_local_cores.compare_exchange(
-                curr_local_cores,
-                new_val,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return Ok(()),
-                Err(val) => curr_local_cores = val,
-            }
+        match !self
+            .system_info
+            .num_local_cores_sender
+            .send_if_modified(|curr| {
+                if *curr < num_cores {
+                    false
+                } else {
+                    *curr -= num_cores;
+                    trace!(
+                        "Removed {} local core(s). New number of local cores: {}",
+                        num_cores,
+                        *curr - num_cores
+                    );
+                    true
+                }
+            }) {
+            false => err_dandelion!(DandelionError::Dispatcher(
+                DispatcherError::InvalidSytemInformation
+            )),
+            true => Ok(()),
         }
     }
 
     /// Increases the number of local cores.
     pub fn add_remote_cores(&self, num_cores: usize) {
-        self.system_info
+        let prev_num_cores = self
+            .system_info
             .num_remote_cores
             .fetch_add(num_cores, Ordering::AcqRel);
+        trace!(
+            "Added {} remote core(s). New number of remote cores: {}",
+            num_cores,
+            prev_num_cores + num_cores
+        );
     }
 
     /// Decreases the number of local cores.
@@ -297,10 +313,16 @@ impl WorkQueue {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return Ok(()),
+                Ok(_) => break,
                 Err(val) => curr_remote_cores = val,
             }
         }
+        trace!(
+            "Removed {} remote core(s). New number of remote cores: {}",
+            num_cores,
+            curr_remote_cores + num_cores
+        );
+        Ok(())
     }
 }
 
@@ -330,5 +352,11 @@ impl EngineWorkQueue for EngineQueue {
 
     fn try_get_engine_args(&self) -> Option<(WorkToDo, machine_interface::promise::Debt)> {
         self.work_queue.try_get_work(self.engine_flags)
+    }
+
+    fn remove_self_from_queue(&self) {
+        self.work_queue
+            .remove_local_cores(1)
+            .expect("Failed to remove itself from the work queue.");
     }
 }

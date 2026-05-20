@@ -13,6 +13,7 @@ use std::{
     },
     vec,
 };
+use tokio::sync::watch;
 
 mod join_iterator;
 
@@ -124,8 +125,10 @@ impl AnySetGroup {
 // TODO: move this to the queue when refactoring the project parts structure
 /// Contains system information used by the sharding policy.
 pub struct SystemInfo {
-    /// The number of local compute cores in the system.
-    pub num_local_cores: AtomicUsize,
+    /// The number of local compute cores in the system (as a watcher so we can update remote nodes
+    /// if the local core count changes).
+    pub num_local_cores_watcher: watch::Receiver<usize>,
+    pub num_local_cores_sender: watch::Sender<usize>,
     /// The number of remote compute cores in the system.
     pub num_remote_cores: AtomicUsize,
 }
@@ -446,7 +449,7 @@ pub fn get_sharding(
             } else {
                 // use a minimal set size of at least 1 for this computation
                 let s_min = cmp::max(total_min_set_sizes, 1);
-                let c_local = params.sys_info.num_local_cores.load(Ordering::Acquire);
+                let c_local = { *params.sys_info.num_local_cores_watcher.borrow() };
                 let c_remote = params.sys_info.num_remote_cores.load(Ordering::Acquire);
                 if total_largest_any_set_sizes > params.offload_const * s_min * c_local {
                     log::trace!(

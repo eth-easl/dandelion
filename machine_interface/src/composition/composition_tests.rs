@@ -11,6 +11,7 @@ use std::{
     sync::{atomic::AtomicUsize, Arc},
     vec,
 };
+use tokio::sync::watch;
 
 fn create_dummy_set(keys: Vec<u32>) -> CompositionSet {
     let dummy_context: Arc<Context> = Arc::new(ReadOnlyContext::new_static::<u8>(&mut []));
@@ -806,13 +807,15 @@ fn join_it_any_auto_sharding_test() {
 
     // large offload_const, no min_set_size -> should shard over local nodes
     set_item_sizes(&mut sets, &[&[2, 2, 2, 2]]);
+    let (sender, receiver) = watch::channel(2);
     let sharding = get_sharding(
         sets.clone(),
         join_order.clone(),
         join_strategies.clone(),
         &AnyShardingMode::AutoSharding(AnyShardingParams {
             sys_info: Arc::new(SystemInfo {
-                num_local_cores: AtomicUsize::new(2),
+                num_local_cores_sender: sender,
+                num_local_cores_watcher: receiver,
                 num_remote_cores: AtomicUsize::new(2),
             }),
             offload_const: 10, // -> should definitely not offload
@@ -839,13 +842,15 @@ fn join_it_any_auto_sharding_test_1() {
 
     // small offload_const, no min_set_size -> should shard over all nodes
     set_item_sizes(&mut sets, &[&[2, 2, 2, 2]]);
+    let (sender, receiver) = watch::channel(2);
     let sharding = get_sharding(
         sets.clone(),
         join_order.clone(),
         join_strategies.clone(),
         &AnyShardingMode::AutoSharding(AnyShardingParams {
             sys_info: Arc::new(SystemInfo {
-                num_local_cores: AtomicUsize::new(2),
+                num_local_cores_sender: sender,
+                num_local_cores_watcher: receiver,
                 num_remote_cores: AtomicUsize::new(2),
             }),
             offload_const: 1, // -> no offload overhead
@@ -874,13 +879,15 @@ fn join_it_any_auto_sharding_test_2() {
 
     // small offload_const, relevant min_set_size -> should shard over local nodes
     set_item_sizes(&mut sets, &[&[2, 2, 2, 2]]);
+    let (sender, receiver) = watch::channel(2);
     let sharding = get_sharding(
         sets.clone(),
         join_order.clone(),
         join_strategies.clone(),
         &AnyShardingMode::AutoSharding(AnyShardingParams {
             sys_info: Arc::new(SystemInfo {
-                num_local_cores: AtomicUsize::new(2),
+                num_local_cores_sender: sender,
+                num_local_cores_watcher: receiver,
                 num_remote_cores: AtomicUsize::new(2),
             }),
             offload_const: 1, // -> no offload overhead
@@ -907,13 +914,15 @@ fn join_it_any_auto_sharding_test_3() {
 
     // small offload_const, relevant min_set_size -> should shard over local nodes
     set_item_sizes(&mut sets, &[&[4, 1, 1, 1]]);
+    let (sender, receiver) = watch::channel(2);
     let sharding = get_sharding(
         sets.clone(),
         join_order.clone(),
         join_strategies.clone(),
         &AnyShardingMode::AutoSharding(AnyShardingParams {
             sys_info: Arc::new(SystemInfo {
-                num_local_cores: AtomicUsize::new(2),
+                num_local_cores_sender: sender,
+                num_local_cores_watcher: receiver,
                 num_remote_cores: AtomicUsize::new(2),
             }),
             offload_const: 1, // -> no offload overhead
@@ -941,13 +950,15 @@ fn join_it_any_auto_sharding_test_4() {
 
     // small offload_const, relevant min_set_size -> should shard over local nodes
     set_item_sizes(&mut sets, &[&[4, 1, 3, 5], &[100, 4, 4, 1], &[1, 1, 1, 1]]);
+    let (sender, receiver) = watch::channel(6);
     let sharding = get_sharding(
         sets.clone(),
         join_order.clone(),
         join_strategies.clone(),
         &AnyShardingMode::AutoSharding(AnyShardingParams {
             sys_info: Arc::new(SystemInfo {
-                num_local_cores: AtomicUsize::new(6),
+                num_local_cores_sender: sender,
+                num_local_cores_watcher: receiver,
                 num_remote_cores: AtomicUsize::new(2),
             }),
             offload_const: 1, // -> no offload overhead

@@ -61,6 +61,7 @@ impl Dispatcher {
             let engine_queue = EngineQueue::init(work_queue.clone(), engine_type);
             while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(engine_type) {
                 engine_type.start_engine(resource, engine_queue.clone())?;
+                work_queue.add_local_cores(1);
             }
         }
 

@@ -15,11 +15,7 @@ use machine_interface::{
 use multinode::DispatcherCommand;
 use nix::unistd::Pid;
 use std::{collections::BTreeMap, fs::read_to_string, sync::OnceLock};
-use tokio::{
-    runtime::Builder,
-    select, spawn,
-    sync::{mpsc, watch},
-};
+use tokio::{runtime::Builder, select, spawn, sync::mpsc};
 
 mod frontend;
 
@@ -168,10 +164,10 @@ async fn remote_queue_server(queue_port: u16, queue: WorkQueue) {
 async fn remote_queue_client(
     remote_url: String,
     sender: mpsc::Sender<DispatcherCommand>,
-    local_available: watch::Receiver<u32>,
+    queue: WorkQueue,
 ) {
     let connection = tokio::net::TcpStream::connect(remote_url).await.unwrap();
-    multinode::client::remote_queue_client(connection, sender, local_available).await;
+    multinode::client::remote_queue_client(connection, sender, queue).await;
 }
 
 fn main() -> () {
@@ -427,18 +423,15 @@ fn main() -> () {
     print!(" timestamp");
     print!("\n");
 
-    // TODO: integrate dispatcher `add_remote_capacity` and `remove_remote_capacity` into
-    //       remote_queue_server
-    let watcher = work_queue.idle_watcher();
     // listen for other nodes trying to poll from local work queue
-    runtime.spawn(remote_queue_server(config.q_port, work_queue));
+    runtime.spawn(remote_queue_server(config.q_port, work_queue.clone()));
 
     // start a thread to check if we should be checking remote queues
     if let Some(remote_url) = config.remote_queue_url {
         runtime.spawn(remote_queue_client(
             remote_url,
             dispatcher_sender.clone(),
-            watcher,
+            work_queue,
         ));
     }
 

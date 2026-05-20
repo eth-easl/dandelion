@@ -165,6 +165,7 @@ pub struct DandelionConfig {
     /// Port on which to listen to remote node connections which want to poll
     /// the work queue
     #[arg(long, env, default_value_t = DEFAULT_QUEUE_PORT)]
+    #[serde(default)]
     pub q_port: u16,
     /// For multinode, add a remote host to register to
     #[arg(long, env)]
