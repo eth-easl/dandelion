@@ -17,8 +17,6 @@ mod system_driver_tests {
     use std::{
         process::{Child, Command},
         sync::Arc,
-        thread,
-        time::Duration,
     };
 
     struct HttpServer {
@@ -39,7 +37,7 @@ mod system_driver_tests {
                 .expect("Failed to start python script");
 
             // TODO: poll the server to figure out if we're started
-            thread::sleep(Duration::from_secs(1));
+            std::thread::sleep(std::time::Duration::from_secs(1));
 
             HttpServer { proc_child }
         }

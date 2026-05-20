@@ -441,6 +441,7 @@ async fn resolve_item(
     data: ItemData,
     client: HttpClient,
 ) -> DandelionResult<(DataItem, ItemData)> {
+    debug!("Resolving item {:?}, data {:?}", item, data);
     match data {
         ItemData::LocalData(_) => Ok((item, data)),
         ItemData::RemoteData(remote_data) => {
@@ -452,18 +453,27 @@ async fn resolve_item(
         }
         ItemData::IoData(io_data) => {
             let IoData {
-                original_position,
+                mut original_position,
                 original_data,
                 resolved,
                 function,
                 set_index,
             } = io_data;
+            // first need to check if original data was local or we still need to fetch that.
+            let (mut item, request_input) = match *original_data {
+                ItemData::LocalData(context) => (item, context),
+                _ => match Box::pin(resolve_item(item, *original_data, client.clone())).await? {
+                    (item, ItemData::LocalData(context)) => {
+                        original_position = item.data;
+                        (item, context)
+                    }
+                    _ => unreachable!(),
+                },
+            };
             match function {
                 SystemFunction::HTTP => {
                     let outputs = resolved
-                        .get_or_init(move || {
-                            http_request(client.clone(), original_position, original_data)
-                        })
+                        .get_or_init(move || http_request(client, original_position, request_input))
                         .await;
                     let context = match outputs {
                         Ok(context_vec) => context_vec[set_index].clone(),
@@ -474,7 +484,7 @@ async fn resolve_item(
                 }
                 SystemFunction::MEMCACHED => {
                     let outputs = resolved
-                        .get_or_init(move || memcached_request(original_position, original_data))
+                        .get_or_init(move || memcached_request(original_position, request_input))
                         .await;
                     let context = match outputs {
                         Ok(context_vec) => context_vec[set_index].clone(),

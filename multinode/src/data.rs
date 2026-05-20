@@ -52,10 +52,9 @@ impl ExportRegistry {
     pub async fn composition_sets_to_proto(
         &self,
         sets: Vec<Option<CompositionSet>>,
-    ) -> (
-        Vec<proto::MetadataSet>,
-        Option<(Vec<Option<CompositionSet>>, u64)>,
-    ) {
+    ) -> Vec<proto::MetadataSet>
+// Option<(Vec<Option<CompositionSet>>, u64)>,
+    {
         let mut inner = self.inner.lock().await;
         let node_id = self.node_id;
         composition_sets_to_proto(sets, |item, context| {

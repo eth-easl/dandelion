@@ -20,11 +20,9 @@ use dispatcher::queue::{get_engine_flag, WorkQueue};
 use futures::{future::Either, stream::FuturesUnordered, FutureExt, StreamExt};
 use log::{trace, warn};
 use machine_interface::{
-    composition::{CompositionSet, ItemData},
-    function_driver::{system_driver::IoData, WorkDone, WorkToDo},
+    composition::CompositionSet,
+    function_driver::{WorkDone, WorkToDo},
     machine_config::{EngineType, IntoEnumIterator},
-    memory_domain::ContextTrait,
-    Position,
 };
 use prost::bytes::{Bytes, BytesMut};
 use std::{
@@ -67,40 +65,41 @@ async fn send_message(
     sender.write_u64(packed_metadata).await.unwrap();
     sender.write_all(metadata_buffer).await.unwrap();
 
-    if let Some((data_sets, total_size)) = data_buffer {
-        sender.write_u64(total_size).await.unwrap();
-        for data_set in data_sets.into_iter().filter_map(|item| item) {
-            for (_item, item_data) in data_set.into_iter() {
-                let (offset, size, context) = match item_data {
-                    ItemData::LocalData(_) => continue,
-                    ItemData::IoData(io_data) => {
-                        let IoData {
-                            original_position,
-                            original_data,
-                            function: _,
-                            set_index: _,
-                            resolved: _,
-                        } = io_data;
-                        // TODO: could think about sending the data if it is already resolved
-                        let Position { offset, size } = original_position;
-                        (offset, size, original_data)
-                    }
-                    // if there is nothing to write to the buffer do a continue to skip writing
-                    ItemData::RemoteData(_) => continue,
-                };
-                debug_assert_ne!(0, size);
-                let mut bytes_written = 0;
-                while bytes_written < size {
-                    let next_chunk = context
-                        .get_chunk_ref(offset + bytes_written, size - bytes_written)
-                        .unwrap();
-                    sender.write_all(next_chunk).await.unwrap();
-                    bytes_written += next_chunk.len();
-                }
-            }
-        }
-    }
-
+    // Code for sending data along with the request if needed
+    // Keeping for later when we want to send small items along with requests / responses.
+    // if let Some((data_sets, total_size)) = data_buffer {
+    //     sender.write_u64(total_size).await.unwrap();
+    //     for data_set in data_sets.into_iter().filter_map(|item| item) {
+    //         for (_item, item_data) in data_set.into_iter() {
+    //             let (offset, size, context) = match item_data {
+    //                 ItemData::LocalData(_) => continue,
+    //                 ItemData::IoData(io_data) => {
+    //                     let IoData {
+    //                         original_position,
+    //                         original_data,
+    //                         function: _,
+    //                         set_index: _,
+    //                         resolved: _,
+    //                     } = io_data;
+    //                     // TODO: could think about sending the data if it is already resolved
+    //                     let Position { offset, size } = original_position;
+    //                     (offset, size, original_data)
+    //                 }
+    //                 // if there is nothing to write to the buffer do a continue to skip writing
+    //                 ItemData::RemoteData(_) => continue,
+    //             };
+    //             debug_assert_ne!(0, size);
+    //             let mut bytes_written = 0;
+    //             while bytes_written < size {
+    //                 let next_chunk = context
+    //                     .get_chunk_ref(offset + bytes_written, size - bytes_written)
+    //                     .unwrap();
+    //                 sender.write_all(next_chunk).await.unwrap();
+    //                 bytes_written += next_chunk.len();
+    //             }
+    //         }
+    //     }
+    // }
     sender.flush().await.unwrap();
 }
 
@@ -111,28 +110,27 @@ async fn receive_message(
     mut receiver: impl AsyncReadExt + std::marker::Unpin,
 ) -> (Bytes, Option<Bytes>) {
     let packed_metadata = receiver.read_u64().await.unwrap();
-    let (metadata_size, flags) = unpack_metadata_size_and_flags(packed_metadata);
+    let (metadata_size, _) = unpack_metadata_size_and_flags(packed_metadata);
 
     // new buffer with size of message
-    let mut metadata_buffer = BytesMut::zeroed(metadata_size as usize);
-    // Using read_exact here to ensure that we do not read a part of the next message,
-    // which could happen if we use read_buf here.
-    assert_eq!(
-        metadata_size as usize,
-        receiver.read_exact(&mut metadata_buffer).await.unwrap()
-    );
-
-    if (flags & ADDITIONAL_DATA_BUFFER) != 0 {
-        let total_data_size = receiver.read_u64().await.unwrap();
-        let mut data_buffer = BytesMut::with_capacity(total_data_size as usize);
-        let mut bytes_read = 0;
-        while bytes_read < total_data_size as usize {
-            bytes_read += receiver.read_buf(&mut data_buffer).await.unwrap();
-        }
-        return (metadata_buffer.freeze(), Some(data_buffer.freeze()));
-    } else {
-        return (metadata_buffer.freeze(), None);
+    let mut metadata_buffer = BytesMut::with_capacity(metadata_size as usize);
+    while metadata_buffer.len() < metadata_size as usize {
+        receiver.read_buf(&mut metadata_buffer).await.unwrap();
     }
+
+    // Keep for when we want to send additional data long with requests
+    // if (flags & ADDITIONAL_DATA_BUFFER) != 0 {
+    //     let total_data_size = receiver.read_u64().await.unwrap();
+    //     let mut data_buffer = BytesMut::with_capacity(total_data_size as usize);
+    //     let mut bytes_read = 0;
+    //     while bytes_read < total_data_size as usize {
+    //         bytes_read += receiver.read_buf(&mut data_buffer).await.unwrap();
+    //     }
+    //     return (metadata_buffer.freeze(), Some(data_buffer.freeze()));
+    // } else {
+    //     return (metadata_buffer.freeze(), None);
+    // }
+    (metadata_buffer.freeze(), None)
 }
 
 enum QueueOption<Stream: AsyncReadExt + std::marker::Unpin> {
@@ -240,7 +238,7 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                                     panic!("Should only get function arguments when polling for remote queue")
                                 }
                             };
-                            let (metadata_sets, data_sets) =
+                            let metadata_sets =
                                 export_registry.composition_sets_to_proto(data_sets).await;
                             (
                                 QueueMessage {
@@ -253,7 +251,7 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                                         },
                                     )),
                                 },
-                                data_sets,
+                                None, // data_sets,
                             )
                         } else {
                             waiting_for_work = true;
@@ -319,7 +317,8 @@ enum PollingOption<Stream: AsyncReadExt + std::marker::Unpin> {
         Option<Bytes>,
     ),
     PollFor(watch::Receiver<u32>, u32),
-    Results(RemoteMessage, Option<(Vec<Option<CompositionSet>>, u64)>),
+    // Results(RemoteMessage, Option<(Vec<Option<CompositionSet>>, u64)>),
+    Results(RemoteMessage),
 }
 
 async fn receive_queue_message<Stream: AsyncReadExt + std::marker::Unpin>(
@@ -344,20 +343,12 @@ async fn poll_results<Stream: AsyncReadExt + std::marker::Unpin>(
     invocation_id: u32,
     export_registry: ExportRegistry,
 ) -> PollingOption<Stream> {
-    let (response_message, response_set) = match result_receiver.await.unwrap() {
+    let response_message = match result_receiver.await.unwrap() {
         Ok((sets, _)) => {
-            let (metadata_sets, data_sets) = export_registry.composition_sets_to_proto(sets).await;
-            (
-                proto::response::Response::MetadataSets(proto::RepeatedMetadataSet {
-                    metadata_sets,
-                }),
-                data_sets,
-            )
+            let metadata_sets = export_registry.composition_sets_to_proto(sets).await;
+            proto::response::Response::MetadataSets(proto::RepeatedMetadataSet { metadata_sets })
         }
-        Err(err) => (
-            proto::response::Response::ErrorMsg(err.error.to_string()),
-            None,
-        ),
+        Err(err) => proto::response::Response::ErrorMsg(err.error.to_string()),
     };
     PollingOption::Results(
         RemoteMessage {
@@ -366,7 +357,7 @@ async fn poll_results<Stream: AsyncReadExt + std::marker::Unpin>(
                 response: Some(response_message),
             })),
         },
-        response_set,
+        // response_set,
     )
 }
 
@@ -485,14 +476,9 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                 // TODO: recover from message reception failure
                 panic!("Receiving remote queue message faied with: {}", error);
             }
-            PollingOption::Results(results, data_option) => {
+            PollingOption::Results(results) => {
                 trace!("Queue Client sending out result");
-                send_message(
-                    &serialize_remote_message(results),
-                    &mut write_socket,
-                    data_option,
-                )
-                .await;
+                send_message(&serialize_remote_message(results), &mut write_socket, None).await;
             }
             // getting a notification so should poll the queue
             PollingOption::PollFor(receiver, available_engines) => {

@@ -13,7 +13,7 @@ pub mod config;
 pub mod data;
 mod util;
 
-// Todo remove when runtime is unified, and await dispatcher directly
+// TODO remove when runtime is unified, and await dispatcher directly
 pub enum DispatcherCommand {
     FunctionRegistration {
         name: String,
@@ -107,7 +107,7 @@ fn deserialize_queue_message(buf: Bytes) -> DandelionResult<proto::QueueMessage>
 
 #[test]
 fn test_serialize_invocation_request() {
-    use crate::proto::{queue_message, Invocation, QueueMessage};
+    use crate::proto::{item_data, queue_message, Invocation, QueueMessage};
     use machine_interface::{composition::ItemData, memory_domain::ContextTrait};
 
     // construct invocation data
@@ -164,22 +164,21 @@ fn test_serialize_invocation_request() {
     // serialize
     let node_id = 42;
     let mut next_data_id = 0;
-    let (serialized_metadata_sets, set_option) =
-        util::composition_sets_to_proto(inputs, |item, context| {
-            let data_id = next_data_id;
-            next_data_id += 1;
-            let data_slice = context
-                .get_chunk_ref(item.data.offset, item.data.size)
-                .unwrap();
-            match data_id {
-                0 => assert_eq!(&item_0_0_data.to_le_bytes(), data_slice),
-                1 => assert_eq!(&item_1_0_data.to_le_bytes(), data_slice),
-                2 => assert_eq!(&item_1_1_data.to_le_bytes(), data_slice),
-                _ => panic!("Unexpected exported data id"),
-            }
-            machine_interface::composition::RemoteData { node_id, data_id }
-        });
-    assert!(set_option.is_none());
+    let serialized_metadata_sets = util::composition_sets_to_proto(inputs, |item, context| {
+        let data_id = next_data_id;
+        next_data_id += 1;
+        let data_slice = context
+            .get_chunk_ref(item.data.offset, item.data.size)
+            .unwrap();
+        match data_id {
+            0 => assert_eq!(&item_0_0_data.to_le_bytes(), data_slice),
+            1 => assert_eq!(&item_1_0_data.to_le_bytes(), data_slice),
+            2 => assert_eq!(&item_1_1_data.to_le_bytes(), data_slice),
+            _ => panic!("Unexpected exported data id"),
+        }
+        machine_interface::composition::RemoteData { node_id, data_id }
+    });
+    // assert!(set_option.is_none());
     assert_eq!(3, next_data_id);
     println!("serialized set: {:?}", serialized_metadata_sets);
     // not checking set names, as they are set arbitrarily, since they are ignored anyway
@@ -190,31 +189,46 @@ fn test_serialize_invocation_request() {
     assert_eq!(item_0_0_name, serialized_metadata_sets[0].items[0].ident);
     assert_eq!(0, serialized_metadata_sets[0].items[0].key);
     assert_eq!(
-        proto::metadata_item::Data::RemoteData(proto::RemoteData {
+        item_data::Data::RemoteData(proto::RemoteData {
             node_id,
             data_id: 0
         }),
-        serialized_metadata_sets[0].items[0].data.unwrap()
+        serialized_metadata_sets[0].items[0]
+            .data
+            .clone()
+            .unwrap()
+            .data
+            .unwrap()
     );
 
     assert_eq!(2, serialized_metadata_sets[1].items.len());
     assert_eq!(item_1_0_name, serialized_metadata_sets[1].items[0].ident);
     assert_eq!(7, serialized_metadata_sets[1].items[0].key);
     assert_eq!(
-        proto::metadata_item::Data::RemoteData(proto::RemoteData {
+        item_data::Data::RemoteData(proto::RemoteData {
             node_id,
             data_id: 1
         }),
-        serialized_metadata_sets[1].items[0].data.unwrap()
+        serialized_metadata_sets[1].items[0]
+            .data
+            .clone()
+            .unwrap()
+            .data
+            .unwrap()
     );
     assert_eq!(item_1_1_name, serialized_metadata_sets[1].items[1].ident);
     assert_eq!(14, serialized_metadata_sets[1].items[1].key);
     assert_eq!(
-        proto::metadata_item::Data::RemoteData(proto::RemoteData {
+        item_data::Data::RemoteData(proto::RemoteData {
             node_id,
             data_id: 2
         }),
-        serialized_metadata_sets[1].items[1].data.unwrap()
+        serialized_metadata_sets[1].items[1]
+            .data
+            .clone()
+            .unwrap()
+            .data
+            .unwrap()
     );
 
     let request = QueueMessage {

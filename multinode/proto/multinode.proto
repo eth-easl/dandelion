@@ -10,10 +10,17 @@ enum SystemFunction {
     HTTP = 0;
 }
 
+message ItemData {
+    oneof data {
+        RemoteData remote_data = 1;
+        IoData io_data = 2;
+    }
+}
+
 message IoData {
-    uint64 end_offset = 2;
-    SystemFunction function = 3;
-    uint64 set_index = 4;
+    SystemFunction function = 1;
+    uint64 set_index = 2;
+    ItemData data = 3;
 }
 
 message RemoteData {
@@ -24,11 +31,7 @@ message RemoteData {
 message MetadataItem {
     string ident = 1;
     uint32 key = 2;
-    oneof data {
-        // For data that is sent with the request and will be local to the node
-        RemoteData remote_data = 3;
-        IoData io_data = 4; 
-    }
+    ItemData data = 3; 
 }
 
 message MetadataSet {

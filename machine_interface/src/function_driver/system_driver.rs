@@ -71,18 +71,14 @@ pub const SYSTEM_FUNCTIONS: &[(EngineType, SystemFunction, usize)] = &[
     ),
 ];
 
-// TODO: find way to couple the outputs of fetching.
-// now if an item is cloned it may lead to multple fetches
-// same is true if the body and headers are used
 #[derive(Debug, Clone)]
 pub struct IoData {
     pub original_position: Position,
-    // TODO change to ItemData and do recursive resolving
-    pub original_data: Arc<Context>,
+    pub original_data: Box<ItemData>,
     // A vec with the resolved outputs for this IO request
     // one entry for each output set of the function.
     // The output item starts at 0 in the context and goes until the end of the context.
-    pub resolved: OnceCell<DandelionResult<Vec<Arc<Context>>>>,
+    pub resolved: Arc<OnceCell<DandelionResult<Vec<Arc<Context>>>>>,
     pub function: SystemFunction,
     pub set_index: usize,
     // recorder: Recorder,
@@ -112,33 +108,27 @@ pub fn convert_to_references(
     let mut output_vec = try_with_capacity!(Vec, 2)?;
     output_vec.resize(2, None);
 
-    // TODO: fix for non local
-    let input_option = metadata.input_sets[0]
-        .clone()
-        .1
-        .or_else(|| inputs[0].take().map(|set| set.into_local()));
-
-    if let Some(input_set) = input_option {
+    if let Some(input_set) = inputs[0].take() {
         let input_set_name = input_set.get_name().clone();
         let mut out_0_list = try_with_capacity!(Vec, input_set.len())?;
         let mut out_1_list = try_with_capacity!(Vec, input_set.len())?;
-        for (item, context) in input_set {
+        for (item, data) in input_set {
             let new_item = DataItem {
                 data: crate::Position { offset: 0, size: 0 },
                 ident: item.ident.clone(),
                 key: item.key,
             };
-            let set_once = OnceCell::new();
+            let set_once = Arc::new(OnceCell::new());
             let header_data = IoData {
                 original_position: item.data,
-                original_data: context.clone(),
+                original_data: Box::new(data.clone()),
                 resolved: set_once.clone(),
                 function,
                 set_index: 0,
             };
             let body_data = IoData {
                 original_position: item.data,
-                original_data: context,
+                original_data: Box::new(data),
                 resolved: set_once,
                 function,
                 set_index: 1,

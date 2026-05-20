@@ -64,6 +64,8 @@ pub struct CompositionInfo {
 #[derive(Debug, Clone)]
 pub enum FunctionType {
     /// A system function. Cannot add more alternatives for this type after initialization.
+    /// TODO: replace with system function type, since metadata is always the same given the type
+    /// and there are no alternatives the dispatcher needs to select between.
     SystemFunction(FunctionInfo),
     /// A user defined function.
     Function(FunctionInfo),
