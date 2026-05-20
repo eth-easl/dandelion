@@ -277,6 +277,7 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                         let debt = debt_map
                             .remove(&invocation_id)
                             .expect("Should always get back function response for a present debt");
+                        free_debt_ids.push(invocation_id);
                         let result = match response.unwrap() {
                             proto::response::Response::MetadataSets(metadata_sets) => Ok(
                                 WorkDone::CompositionSet(proto_data_sets_to_composition_sets(
