@@ -6,7 +6,7 @@ mod dispatcher_tests {
     use dandelion_commons::FunctionId;
     use dispatcher::{dispatcher::Dispatcher, queue::WorkQueue, resource_pool::ResourcePool};
     use machine_interface::{
-        composition::CompositionSet,
+        composition::{AnyShardingMode, CompositionSet},
         function_driver::{ComputeResource, Metadata},
         machine_config::{DomainType, EngineType},
         memory_domain::{Context, ContextTrait, MemoryDomain, MemoryResource},
@@ -49,8 +49,13 @@ mod dispatcher_tests {
             })
             .collect();
         let work_queue = WorkQueue::init();
-        let dispatcher = Dispatcher::init(resource_pool, memory_resources, work_queue)
-            .expect("Should have initialized dispatcher");
+        let dispatcher = Dispatcher::init(
+            resource_pool,
+            memory_resources,
+            work_queue,
+            AnyShardingMode::MaxSharding,
+        )
+        .expect("Should have initialized dispatcher");
         let function_id = Arc::new(String::from("test_function"));
         dispatcher
             .insert_function(

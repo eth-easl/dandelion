@@ -1,7 +1,7 @@
 use crate::{
     composition::{
         get_sharding, AnyShardingMode, AnyShardingParams, CompositionSet, JoinStrategy,
-        ShardingMode,
+        ShardingMode, SystemInfo,
     },
     memory_domain::{read_only::ReadOnlyContext, Context},
     DataItem, Position,
@@ -811,8 +811,10 @@ fn join_it_any_auto_sharding_test() {
         join_order.clone(),
         join_strategies.clone(),
         &AnyShardingMode::AutoSharding(AnyShardingParams {
-            num_local_cores: 2,
-            num_remote_cores: AtomicUsize::new(2),
+            sys_info: Arc::new(SystemInfo {
+                num_local_cores: AtomicUsize::new(2),
+                num_remote_cores: AtomicUsize::new(2),
+            }),
             offload_const: 10, // -> should definitely not offload
         }),
         0,
@@ -842,8 +844,10 @@ fn join_it_any_auto_sharding_test_1() {
         join_order.clone(),
         join_strategies.clone(),
         &AnyShardingMode::AutoSharding(AnyShardingParams {
-            num_local_cores: 2,
-            num_remote_cores: AtomicUsize::new(2),
+            sys_info: Arc::new(SystemInfo {
+                num_local_cores: AtomicUsize::new(2),
+                num_remote_cores: AtomicUsize::new(2),
+            }),
             offload_const: 1, // -> no offload overhead
         }),
         0,
@@ -875,8 +879,10 @@ fn join_it_any_auto_sharding_test_2() {
         join_order.clone(),
         join_strategies.clone(),
         &AnyShardingMode::AutoSharding(AnyShardingParams {
-            num_local_cores: 2,
-            num_remote_cores: AtomicUsize::new(2),
+            sys_info: Arc::new(SystemInfo {
+                num_local_cores: AtomicUsize::new(2),
+                num_remote_cores: AtomicUsize::new(2),
+            }),
             offload_const: 1, // -> no offload overhead
         }),
         4,
@@ -906,8 +912,10 @@ fn join_it_any_auto_sharding_test_3() {
         join_order.clone(),
         join_strategies.clone(),
         &AnyShardingMode::AutoSharding(AnyShardingParams {
-            num_local_cores: 2,
-            num_remote_cores: AtomicUsize::new(2),
+            sys_info: Arc::new(SystemInfo {
+                num_local_cores: AtomicUsize::new(2),
+                num_remote_cores: AtomicUsize::new(2),
+            }),
             offload_const: 1, // -> no offload overhead
         }),
         3,
@@ -938,8 +946,10 @@ fn join_it_any_auto_sharding_test_4() {
         join_order.clone(),
         join_strategies.clone(),
         &AnyShardingMode::AutoSharding(AnyShardingParams {
-            num_local_cores: 6,
-            num_remote_cores: AtomicUsize::new(2),
+            sys_info: Arc::new(SystemInfo {
+                num_local_cores: AtomicUsize::new(6),
+                num_remote_cores: AtomicUsize::new(2),
+            }),
             offload_const: 1, // -> no offload overhead
         }),
         4,

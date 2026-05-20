@@ -267,6 +267,8 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
 #[cfg(any(feature = "reqwest_io"))]
 fn test_insert_composition_with_http_func() {
     use std::collections::BTreeMap;
+
+    use machine_interface::composition::AnyShardingMode;
     let work_queue = dispatcher::queue::WorkQueue::init();
     let dispatcher = dispatcher::dispatcher::Dispatcher::init(
         dispatcher::resource_pool::ResourcePool {
@@ -274,6 +276,7 @@ fn test_insert_composition_with_http_func() {
         },
         BTreeMap::new(),
         work_queue,
+        AnyShardingMode::MaxSharding,
     )
     .unwrap();
     let composition_string = r#"

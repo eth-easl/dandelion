@@ -19,7 +19,8 @@ mod join_iterator;
 #[cfg(test)]
 mod composition_tests;
 
-const OFFLOAD_CONST: usize = 2; // TODO: determine suitable value here or come up with a better idea
+// TODO: determine suitable value here or come up with a better idea
+pub const DEFAULT_AUTOSHARDING_OFFLOAD_CONST: usize = 2;
 
 /// A composition has a composition wide id space that maps ids of
 /// the input and output sets to sets of individual functions to a unified
@@ -118,23 +119,20 @@ impl AnySetGroup {
     }
 }
 
-pub struct AnyShardingParams {
+// TODO: move this to the queue when refactoring the project parts structure
+/// Contains system information used by the sharding policy.
+pub struct SystemInfo {
     /// The number of local compute cores in the system.
-    pub num_local_cores: usize,
+    pub num_local_cores: AtomicUsize,
     /// The number of remote compute cores in the system.
     pub num_remote_cores: AtomicUsize,
-    /// A constant that estimates the offload overhead when determining the number of partitions.
-    pub offload_const: usize,
 }
 
-impl AnyShardingParams {
-    pub fn new(num_local_cores: usize) -> Self {
-        Self {
-            num_local_cores,
-            num_remote_cores: AtomicUsize::new(0),
-            offload_const: OFFLOAD_CONST,
-        }
-    }
+pub struct AnyShardingParams {
+    /// A reference to the current system information maintained by the queue.
+    pub sys_info: Arc<SystemInfo>,
+    /// A constant that estimates the offload overhead when determining the number of partitions.
+    pub offload_const: usize,
 }
 
 pub enum AnyShardingMode {
@@ -432,22 +430,17 @@ pub fn get_sharding(
             } else {
                 // use a minimal set size of at least 1 for this computation
                 let s_min = cmp::max(min_set_size, 1);
-                if total_largest_any_set_sizes
-                    > params.offload_const * s_min * params.num_local_cores
-                {
-                    let all_cores =
-                        params.num_local_cores + params.num_remote_cores.load(Ordering::Acquire);
+                let c_local = params.sys_info.num_local_cores.load(Ordering::Acquire);
+                let c_remote = params.sys_info.num_remote_cores.load(Ordering::Acquire);
+                if total_largest_any_set_sizes > params.offload_const * s_min * c_local {
                     log::trace!(
                         "Any sets using at most local + remote cores = {}",
-                        all_cores
+                        c_local + c_remote
                     );
-                    all_cores
+                    c_local + c_remote
                 } else {
-                    log::trace!(
-                        "Any sets using at most local cores = {}",
-                        params.num_local_cores
-                    );
-                    params.num_local_cores
+                    log::trace!("Any sets using at most local cores = {}", c_local);
+                    c_local
                 }
             }
         }

@@ -1,5 +1,5 @@
-use core::panic;
-use std::{fs::File, path::Path};
+use core::{fmt, panic};
+use std::{fs::File, path::Path, str::FromStr};
 
 use clap::Parser;
 use log::{error, warn};
@@ -11,6 +11,7 @@ const DEFAULT_QUEUE_PORT: u16 = 7070;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
 const DEFAULT_VIRTUAL_MAX_RAM_MULTIPLIER: usize = 2;
 const DEFAULT_MULTINODE_TIMEOUT: u64 = 50;
+use machine_interface::composition::DEFAULT_AUTOSHARDING_OFFLOAD_CONST;
 use machine_interface::function_driver::system_driver::reqwest::DEFAULT_CONCURRENCY_LIMIT;
 
 #[derive(serde::Deserialize, Debug)]
@@ -49,6 +50,76 @@ pub enum TestMode {
     NoEngine,
 }
 
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum AnyShardingMode {
+    MaxSharding,
+    FixedSharding(usize),
+    AutoSharding(usize),
+}
+
+impl Default for AnyShardingMode {
+    fn default() -> Self {
+        Self::AutoSharding(DEFAULT_AUTOSHARDING_OFFLOAD_CONST)
+    }
+}
+
+impl FromStr for AnyShardingMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "max" => Ok(Self::MaxSharding),
+            s => {
+                if s.starts_with("fixed:") {
+                    let parts: Vec<&str> = s.split(':').collect();
+                    let num = parts
+                        .get(1)
+                        .and_then(|val| val.parse::<usize>().ok())
+                        .ok_or_else(|| {
+                            "Invalid number for fixed sharding (e.g., 'fixed:4')".to_string()
+                        })?;
+                    Ok(Self::FixedSharding(num))
+                } else if s.starts_with("auto:") {
+                    let parts: Vec<&str> = s.split(':').collect();
+                    let num = parts
+                        .get(1)
+                        .and_then(|val| val.parse::<usize>().ok())
+                        .ok_or_else(|| {
+                            "Invalid number for fixed sharding (e.g., 'fixed:4')".to_string()
+                        })?;
+                    Ok(Self::AutoSharding(num))
+                } else {
+                    Err(format!("Unknown AnyShardingMode {}", s))
+                }
+            }
+        }
+    }
+}
+
+impl fmt::Display for AnyShardingMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MaxSharding => write!(f, "max"),
+            Self::AutoSharding(n) => write!(f, "auto:{}", n),
+            Self::FixedSharding(n) => write!(f, "fixed:{}", n),
+        }
+    }
+}
+
+impl TryFrom<String> for AnyShardingMode {
+    type Error = String;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::from_str(&s)
+    }
+}
+
+impl From<AnyShardingMode> for String {
+    fn from(mode: AnyShardingMode) -> Self {
+        mode.to_string()
+    }
+}
+
 #[derive(serde::Deserialize, Parser, Debug)]
 pub struct DandelionConfig {
     #[arg(long, env, default_value_t = String::from(DEFAULT_CONFIG_PATH))]
@@ -77,6 +148,9 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = DEFAULT_VIRTUAL_MAX_RAM_MULTIPLIER)]
     #[serde(default)]
     pub virtual_max_ram_multiplier: usize,
+    #[arg(long, env, default_value_t = AnyShardingMode::AutoSharding(DEFAULT_AUTOSHARDING_OFFLOAD_CONST))]
+    #[serde(default)]
+    pub any_sharding_mode: AnyShardingMode,
 
     // (optional) preload config
     #[arg(long, env, default_value = "")]

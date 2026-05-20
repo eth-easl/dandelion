@@ -22,17 +22,14 @@ use log::{debug, trace};
 use machine_interface::memory_domain::ContextTrait;
 use machine_interface::{
     composition::{
-        get_sharding, AnyShardingMode, AnyShardingParams, Composition, CompositionSet,
-        InputSetDescriptor, JoinStrategy, ShardingMode,
+        get_sharding, AnyShardingMode, Composition, CompositionSet, InputSetDescriptor,
+        JoinStrategy, ShardingMode,
     },
     function_driver::{Metadata, WorkToDo},
     machine_config::{get_available_domains, DomainType, EngineType, IntoEnumIterator},
     memory_domain::{MemoryDomain, MemoryResource},
 };
-use std::{
-    collections::BTreeMap,
-    sync::{atomic::Ordering, Arc},
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Debug, Clone)]
 pub enum DispatcherInput {
@@ -54,23 +51,10 @@ impl Dispatcher {
         mut resource_pool: ResourcePool,
         memory_resources: BTreeMap<DomainType, MemoryResource>,
         work_queue: WorkQueue,
+        any_sharding_mode: AnyShardingMode,
     ) -> DandelionResult<Self> {
         // get machine specific configurations
         let domains = get_available_domains(memory_resources);
-
-        // get the number of compute cores from the resource pool
-        #[cfg(feature = "mmu")]
-        let compute_engine_type = EngineType::Process;
-        #[cfg(feature = "kvm")]
-        let compute_engine_type = EngineType::Kvm;
-        #[cfg(feature = "cheri")]
-        let compute_engine_type = EngineType::Cheri;
-        let any_sharding_params = AnyShardingParams::new(
-            match resource_pool.sync_get_availability(compute_engine_type) {
-                Some(n) => n,
-                None => 0,
-            },
-        );
 
         // create an engine queue wrapper of the work queue for each engine and use up all engine resource available
         for engine_type in EngineType::iter() {
@@ -87,7 +71,7 @@ impl Dispatcher {
             function_registry,
             work_queue,
             domains,
-            any_sharding_mode: AnyShardingMode::AutoSharding(any_sharding_params), // TODO: make configurable
+            any_sharding_mode,
         });
     }
 
@@ -588,30 +572,5 @@ impl Dispatcher {
                 }
             };
         })
-    }
-
-    pub fn add_remote_capacity(&self, cap: usize) {
-        match &self.any_sharding_mode {
-            AnyShardingMode::AutoSharding(params) => {
-                params.num_remote_cores.fetch_add(cap, Ordering::AcqRel);
-            }
-            _ => (),
-        }
-    }
-
-    pub fn remove_remote_capacity(&self, cap: usize) -> DandelionResult<()> {
-        match &self.any_sharding_mode {
-            AnyShardingMode::AutoSharding(params) => {
-                let prev_value = params.num_remote_cores.fetch_sub(cap, Ordering::AcqRel);
-                if prev_value < cap {
-                    err_dandelion!(DandelionError::Dispatcher(
-                        DispatcherError::InvalidSytemInformation
-                    ))
-                } else {
-                    Ok(())
-                }
-            }
-            _ => Ok(()),
-        }
     }
 }

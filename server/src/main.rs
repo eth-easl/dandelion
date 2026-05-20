@@ -1,5 +1,5 @@
 use dandelion_commons::records::Archive;
-use dandelion_server::config::{FuncMetadata, PreloadFunc};
+use dandelion_server::config::{self, FuncMetadata, PreloadFunc};
 use dispatcher::{
     dispatcher::{Dispatcher, DispatcherInput},
     queue::WorkQueue,
@@ -7,7 +7,7 @@ use dispatcher::{
 };
 use log::{debug, error, info, warn};
 use machine_interface::{
-    composition::CompositionSet,
+    composition::{AnyShardingMode, AnyShardingParams, CompositionSet},
     function_driver::{ComputeResource, Metadata},
     machine_config::{create_engine_resource_map, DomainType, EngineType},
     memory_domain::MemoryResource,
@@ -309,10 +309,29 @@ fn main() -> () {
     };
 
     let work_queue = WorkQueue::init();
+
+    // define the any sharding mode
+    let any_sharding_mode = match config.any_sharding_mode {
+        config::AnyShardingMode::MaxSharding => AnyShardingMode::MaxSharding,
+        config::AnyShardingMode::FixedSharding(n) => AnyShardingMode::FixedSharding(n),
+        config::AnyShardingMode::AutoSharding(n) => {
+            AnyShardingMode::AutoSharding(AnyShardingParams {
+                sys_info: work_queue.system_info.clone(),
+                offload_const: n,
+            })
+        }
+    };
+
     let dispatcher = Box::leak(Box::new(
-        Dispatcher::init(resource_pool, memory_pool, work_queue.clone())
-            .expect("Should be able to start dispatcher"),
+        Dispatcher::init(
+            resource_pool,
+            memory_pool,
+            work_queue.clone(),
+            any_sharding_mode,
+        )
+        .expect("Should be able to start dispatcher"),
     ));
+
     // start dispatcher
     dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
 
