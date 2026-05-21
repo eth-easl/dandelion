@@ -177,7 +177,10 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
     trace!("Queue Server wait for initial message");
     let (node_info_buffer, node_info_data) = receive_message(&mut read_socket).await;
     debug_assert!(node_info_data.is_none());
-    let NodeInfo { version } = deserialize_node_info(node_info_buffer).unwrap();
+    let NodeInfo {
+        version,
+        id: node_id,
+    } = deserialize_node_info(node_info_buffer).unwrap();
     assert_eq!(version, 1);
     trace!("Queue Server received initial message");
 
@@ -211,7 +214,7 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                         );
                         // poll work
                         let (queue_message, data_buffer) = if let Some((work, debt)) =
-                            queue.try_get_work_for_remote(engine_flags)
+                            queue.try_get_work_for_remote(engine_flags, node_id)
                         {
                             // there is some work so send it out
                             // find the local function id to use
@@ -395,7 +398,10 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
     let mut remote_had_work = true;
 
     // set up the connection by sending a single node info
-    let node_info_buffer = serialize_node_info(NodeInfo { version: 1 });
+    let node_info_buffer = serialize_node_info(NodeInfo {
+        version: 1,
+        id: export_registry.get_node_id(),
+    });
 
     let (read_socket, mut write_socket) = split(socket);
 

@@ -49,6 +49,10 @@ impl ExportRegistry {
         }
     }
 
+    pub fn get_node_id(&self) -> u64 {
+        self.node_id
+    }
+
     pub async fn composition_sets_to_proto(
         &self,
         sets: Vec<Option<CompositionSet>>,

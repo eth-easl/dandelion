@@ -38,7 +38,7 @@ const EXPECTED_ERROR: DandelionError = DandelionError::NotImplemented;
 
 async fn mock_queue_client(mut client: tokio::io::DuplexStream, engine_type: proto::EngineType) {
     // send the node info to the handler
-    let node_info = NodeInfo { version: 1 };
+    let node_info = NodeInfo { version: 1, id: 0 };
     let node_info_serial = serialize_node_info(node_info.clone());
     send_message(&node_info_serial, &mut client, None).await;
     // yield so the registration can be handled

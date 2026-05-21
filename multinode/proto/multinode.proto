@@ -4,6 +4,7 @@ package multinode_proto;
 // Node Information, sent to register new client on server
 message NodeInfo {
     uint32 version = 1;
+    uint64 id = 2;
 }
 
 enum SystemFunction {

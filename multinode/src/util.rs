@@ -82,14 +82,14 @@ pub(crate) fn recorder_dtop(
 }
 
 pub(crate) fn recorder_add_timestamps(
-    mut recorder: Recorder,
-    timestamps: Option<proto::Timestamps>,
-    local_reference: u128,
+    mut _recorder: Recorder,
+    _timestamps: Option<proto::Timestamps>,
+    _local_reference: u128,
 ) {
     #[cfg(feature = "timestamp")]
     {
         use dandelion_commons::records::RecordPoint;
-        if let Some(remote_time) = timestamps {
+        if let Some(remote_time) = _timestamps {
             let proto::Timestamps {
                 start_epoch,
                 fetching_start,
@@ -106,18 +106,18 @@ pub(crate) fn recorder_add_timestamps(
             // The every remote timestamp is an offset from the start_epoch.
             // To find the real timestamps, we need to add the remote timestamps to the RemoteTake value,
             // and then add the time the transfer took (start_epoch - local_reference).
-            let wire_time = start_epoch - (local_reference as u64);
+            let wire_time = start_epoch - (_local_reference as u64);
             let start_offset =
-                wire_time + recorder.get_timestamp(RecordPoint::RemoteTake).as_micros() as u64;
+                wire_time + _recorder.get_timestamp(RecordPoint::RemoteTake).as_micros() as u64;
             // set all the timestamps we received from remote
-            recorder.set_timestamp(RecordPoint::FetchingStart, fetching_start + start_offset);
-            recorder.set_timestamp(RecordPoint::FetchingEnd, fetching_end + start_offset);
-            recorder.set_timestamp(RecordPoint::ParsingStart, parsing_start + start_offset);
-            recorder.set_timestamp(RecordPoint::ParsingEnd, parsing_end + start_offset);
-            recorder.set_timestamp(RecordPoint::LoadStart, load_start + start_offset);
-            recorder.set_timestamp(RecordPoint::TransferStart, transfer_start + start_offset);
-            recorder.set_timestamp(RecordPoint::EngineStart, engine_start + start_offset);
-            recorder.set_timestamp(RecordPoint::EngineEnd, engine_end + start_offset);
+            _recorder.set_timestamp(RecordPoint::FetchingStart, fetching_start + start_offset);
+            _recorder.set_timestamp(RecordPoint::FetchingEnd, fetching_end + start_offset);
+            _recorder.set_timestamp(RecordPoint::ParsingStart, parsing_start + start_offset);
+            _recorder.set_timestamp(RecordPoint::ParsingEnd, parsing_end + start_offset);
+            _recorder.set_timestamp(RecordPoint::LoadStart, load_start + start_offset);
+            _recorder.set_timestamp(RecordPoint::TransferStart, transfer_start + start_offset);
+            _recorder.set_timestamp(RecordPoint::EngineStart, engine_start + start_offset);
+            _recorder.set_timestamp(RecordPoint::EngineEnd, engine_end + start_offset);
         }
     }
 }

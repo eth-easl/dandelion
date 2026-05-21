@@ -37,13 +37,28 @@ pub fn get_engine_flag(t: EngineType) -> u32 {
     }
 }
 
-struct QueueElement {
+struct ComputeQueueElement {
     /// Flags indicating which engines can run this task
     flags: u32,
     /// The WorkToDo content of the queue element
     work: WorkToDo,
     /// The Debt content of the queue element
     debt: Debt,
+}
+
+struct IoQueueElement {
+    /// Flags indicating which engines can run this task
+    flags: u32,
+    /// The WorkToDo content of the queue element
+    work: WorkToDo,
+    /// The Debt content of the queue element
+    debt: Debt,
+    /// Sizes of remote references if any
+    #[cfg(feature = "data_locallity")]
+    remote_data: std::collections::BTreeMap<u64, usize>,
+    /// Total size of all inputs
+    #[cfg(feature = "data_locallity")]
+    total_input_size: usize,
 }
 
 struct WakerElement {
@@ -53,9 +68,9 @@ struct WakerElement {
 
 struct InnerQueue {
     /// Queueu holding work for which some data still needs to be fetched
-    compute_queue: LinkedList<QueueElement>,
+    compute_queue: LinkedList<ComputeQueueElement>,
     /// Queueu holding work for which all data is local
-    io_queue: LinkedList<QueueElement>,
+    io_queue: LinkedList<IoQueueElement>,
     /// List of compute engines which are idle
     compute_waker_list: LinkedList<WakerElement>,
     /// List of io engines ready to take more work
@@ -216,7 +231,7 @@ impl WorkQueue {
         let mut queue_guard = self.inner.lock().await;
         queue_guard
             .compute_queue
-            .push_back(QueueElement { flags, work, debt });
+            .push_back(ComputeQueueElement { flags, work, debt });
         // call first waker with matching flags if there are any
         if let Some(waker_to_call) = queue_guard
             .compute_waker_list
@@ -231,9 +246,49 @@ impl WorkQueue {
 
     async fn push_io(&self, work: WorkToDo, debt: Debt, flags: u32) {
         let mut queue_guard = self.inner.lock().await;
-        queue_guard
-            .io_queue
-            .push_back(QueueElement { flags, work, debt });
+        #[cfg(feature = "data_locallity")]
+        let (remote_data, total_input_size) = if let WorkToDo::FunctionArguments {
+            function_id: _,
+            function_alternatives: _,
+            input_sets,
+            metadata: _,
+            caching: _,
+            recorder: _,
+        } = &work
+        {
+            let mut ref_map = std::collections::BTreeMap::new();
+            let mut total_reference_size = 0;
+            for (item, data) in input_sets
+                .iter()
+                .filter_map(|s| s.as_ref().map(|s| s.into_iter()))
+                .flatten()
+            {
+                if let machine_interface::composition::ItemData::RemoteData(remote_data) = data {
+                    if item.data.size > 0 {
+                        total_reference_size += item.data.size;
+                        use std::collections::btree_map::Entry;
+                        match ref_map.entry(remote_data.node_id) {
+                            Entry::Occupied(mut value) => *value.get_mut() += item.data.size,
+                            Entry::Vacant(value) => {
+                                value.insert(item.data.size);
+                            }
+                        }
+                    }
+                }
+            }
+            (ref_map, total_reference_size)
+        } else {
+            (std::collections::BTreeMap::new(), 0)
+        };
+        queue_guard.io_queue.push_back(IoQueueElement {
+            flags,
+            work,
+            debt,
+            #[cfg(feature = "data_locallity")]
+            remote_data,
+            #[cfg(feature = "data_locallity")]
+            total_input_size,
+        });
         // call first waker with matching flags if there are any
         if let Some(waker_to_call) = queue_guard.io_waker_list.pop_front() {
             waker_to_call.wake();
@@ -293,7 +348,88 @@ impl WorkQueue {
 
     /// Tries to acquire some work that matches the given flags starting from the head of the queue.
     /// Ignores shutdown and fetch work, since that only makes sense to execute locally
-    pub fn try_get_work_for_remote(&self, engine_flags: u32) -> Option<(WorkToDo, Debt)> {
+    /// Version that takes node locality into account
+    #[cfg(feature = "data_locallity")]
+    pub fn try_get_work_for_remote(
+        &self,
+        engine_flags: u32,
+        node_id: u64,
+    ) -> Option<(WorkToDo, Debt)> {
+        if let Some(mut lock) = self.inner.try_lock() {
+            // go through all the input sets and find the index of the one with the most data already on the node asking for work
+            if let Some((index, _)) = lock
+                .io_queue
+                .iter()
+                .filter_map(|queue_element| {
+                    if let WorkToDo::FunctionArguments {
+                        function_id: _,
+                        function_alternatives: _,
+                        input_sets: _,
+                        metadata: _,
+                        caching: _,
+                        recorder: _,
+                    } = &queue_element.work
+                    {
+                        if queue_element.flags & engine_flags != 0 {
+                            Some((
+                                node_id,
+                                queue_element
+                                    .remote_data
+                                    .get(&node_id)
+                                    .copied()
+                                    .unwrap_or(0usize),
+                            ))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .enumerate()
+                .max_by_key(|(_, data)| *data)
+            {
+                let mut second_half = lock.io_queue.split_off(index);
+                let work_option = second_half.pop_front();
+                lock.io_queue.append(&mut second_half);
+                return work_option.map(|q_element| (q_element.work, q_element.debt));
+            }
+            // did not find any work in the io_queue so check compute queue
+            if let Some(local_work) = lock
+                .compute_queue
+                .extract_if(|queue_element| {
+                    if let WorkToDo::FunctionArguments {
+                        function_id: _,
+                        function_alternatives: _,
+                        input_sets: _,
+                        metadata: _,
+                        caching: _,
+                        recorder: _,
+                    } = &queue_element.work
+                    {
+                        // TODO might want to prefer the one with the least total data
+                        queue_element.flags & engine_flags != 0
+                    } else {
+                        false
+                    }
+                })
+                .next()
+            {
+                return Some((local_work.work, local_work.debt));
+            }
+        }
+        None
+    }
+
+    /// Tries to acquire some work that matches the given flags starting from the head of the queue.
+    /// Ignores shutdown and fetch work, since that only makes sense to execute locally
+    /// Base Version
+    #[cfg(not(feature = "data_locallity"))]
+    pub fn try_get_work_for_remote(
+        &self,
+        engine_flags: u32,
+        _node_id: u64,
+    ) -> Option<(WorkToDo, Debt)> {
         if let Some(mut lock) = self.inner.try_lock() {
             // first check the queue with unresolved references, since those are easier to steal
             if let Some(work_with_references) = lock
@@ -342,7 +478,6 @@ impl WorkQueue {
         }
         None
     }
-
     /// Spins on the queue until it manages to acquire some work that matches the given flags.
     pub async fn get_compute_work(&self, engine_flags: u32) -> (WorkToDo, Debt) {
         // try to get work, if there is none, insert self into waker and try again
