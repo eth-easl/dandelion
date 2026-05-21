@@ -8,8 +8,8 @@ use crate::{
     serialize_node_info, serialize_queue_message, serialize_remote_message,
     util::{
         engine_type_dtop, engine_type_ptod, pack_metadata_size_and_flags,
-        proto_data_sets_to_composition_sets, unpack_metadata_size_and_flags,
-        ADDITIONAL_DATA_BUFFER, NO_FLAGS,
+        proto_data_sets_to_composition_sets, recorder_add_timestamps, recorder_dtop,
+        unpack_metadata_size_and_flags, ADDITIONAL_DATA_BUFFER, NO_FLAGS,
     },
     DispatcherCommand,
 };
@@ -28,7 +28,7 @@ use prost::bytes::{Bytes, BytesMut};
 use std::{
     collections::{BTreeMap, BinaryHeap},
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant, SystemTime},
 };
 use tokio::{
     io::{split, AsyncReadExt, AsyncWriteExt},
@@ -222,8 +222,7 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                                 max_debt_id += 1;
                                 promise_id
                             };
-                            debt_map.insert(promise_id, debt);
-                            let (function_id, data_sets, caching) = match work {
+                            let (function_id, data_sets, mut recorder, caching) = match work {
                                 // Todo send along relevant information, like caching bool and recorder start time
                                 WorkToDo::FunctionArguments {
                                     function_id,
@@ -231,13 +230,18 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                                     input_sets,
                                     metadata: _,
                                     caching,
-                                    recorder: _,
-                                } => (function_id, input_sets, caching),
+                                    recorder,
+                                } => (function_id, input_sets, recorder, caching),
                                 WorkToDo::SetsToResolve { input_sets: _ }
                                 | WorkToDo::Shutdown(_) => {
                                     panic!("Should only get function arguments when polling for remote queue")
                                 }
                             };
+                            recorder.record(dandelion_commons::records::RecordPoint::RemoteTake);
+                            let start_reference = SystemTime::elapsed(&std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_micros();
+                            debt_map.insert(promise_id, (debt, recorder, start_reference));
                             let metadata_sets =
                                 export_registry.composition_sets_to_proto(data_sets).await;
                             (
@@ -274,17 +278,24 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                             response,
                         } = response;
                         // TODO: handle failure
-                        let debt = debt_map
+                        let (debt, recorder, start_epoch) = debt_map
                             .remove(&invocation_id)
                             .expect("Should always get back function response for a present debt");
                         free_debt_ids.push(invocation_id);
                         let result = match response.unwrap() {
-                            proto::response::Response::MetadataSets(metadata_sets) => Ok(
-                                WorkDone::CompositionSet(proto_data_sets_to_composition_sets(
-                                    metadata_sets.metadata_sets,
-                                    data_option,
-                                )),
-                            ),
+                            proto::response::Response::MetadataSets(metadata_sets) => {
+                                recorder_add_timestamps(
+                                    recorder,
+                                    metadata_sets.timestamps,
+                                    start_epoch,
+                                );
+                                Ok(WorkDone::CompositionSet(
+                                    proto_data_sets_to_composition_sets(
+                                        metadata_sets.metadata_sets,
+                                        data_option,
+                                    ),
+                                ))
+                            }
                             proto::response::Response::ErrorMsg(error_message) => {
                                 err_dandelion!(DandelionError::Multinode(
                                     MultinodeError::RequestFailed(error_message)
@@ -343,11 +354,15 @@ async fn poll_results<Stream: AsyncReadExt + std::marker::Unpin>(
     result_receiver: oneshot::Receiver<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
     invocation_id: u32,
     export_registry: ExportRegistry,
+    start_time: Duration,
 ) -> PollingOption<Stream> {
     let response_message = match result_receiver.await.unwrap() {
-        Ok((sets, _)) => {
+        Ok((sets, recorder)) => {
             let metadata_sets = export_registry.composition_sets_to_proto(sets).await;
-            proto::response::Response::MetadataSets(proto::RepeatedMetadataSet { metadata_sets })
+            proto::response::Response::MetadataSets(proto::RepeatedMetadataSet {
+                metadata_sets,
+                timestamps: recorder_dtop(recorder, start_time),
+            })
         }
         Err(err) => proto::response::Response::ErrorMsg(err.error.to_string()),
     };
@@ -440,7 +455,10 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                         trace!("Queue Client recieved invocation");
                         // mark remote as having work, so we ask for more as idle cores change
                         remote_had_work = true;
-
+                        let start_instance = Instant::now();
+                        let start_time =
+                            std::time::SystemTime::elapsed(&std::time::SystemTime::UNIX_EPOCH)
+                                .unwrap();
                         let Invocation {
                             invocation_id,
                             function_id,
@@ -448,9 +466,9 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                             caching,
                         } = invocation;
                         let function_arc = Arc::new(function_id);
+                        let recorder = Recorder::new(function_arc.clone(), start_instance);
                         let inputs =
                             proto_data_sets_to_composition_sets(metadata_sets, data_option);
-                        let recorder = Recorder::new(function_arc.clone(), Instant::now());
                         let (callback_sender, callback_receriver) = oneshot::channel();
                         sender
                             .send(DispatcherCommand::RemoteFunctionRequest {
@@ -466,6 +484,7 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                             callback_receriver,
                             invocation_id,
                             export_registry.clone(),
+                            start_time,
                         )));
                     }
                 }
