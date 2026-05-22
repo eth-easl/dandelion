@@ -179,7 +179,7 @@ fn item_data_dtop(
             } = io_data;
             // TODO for data we want to send along: fuse with serialization, so we can use the `resolved` without race conditions
             let mut register_item = item.clone();
-            register_item.data = original_position.clone();
+            register_item.data = original_position;
             let data = item_data_dtop(&register_item, *original_data, export_local_data);
             proto::ItemData {
                 data: Some(item_data::Data::IoData(Box::new(proto::IoData {

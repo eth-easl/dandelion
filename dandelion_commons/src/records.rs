@@ -175,6 +175,7 @@ impl fmt::Debug for Recorder {
             _f.debug_struct("Recorder")
                 .field("Function ID", &self.inner.function_id)
                 .field("Timestamps", &self.inner.timestamps)
+                .field("Children", &self.inner.children)
                 .finish()
         }
         #[cfg(not(feature = "timestamp"))]
