@@ -336,7 +336,6 @@ fn test_remote_queue_client() {
 
     let work_queue = WorkQueue::init();
     let (dispatcher_sender, mut dispatcher_receiver) = mpsc::channel(1);
-    // let (watch_sender, watch_receiver) = watch::channel(0);
     let progress = Arc::new(Mutex::new(0));
     let engine_flags = get_engine_flag(machine_config::EngineType::iter().next().unwrap());
 
