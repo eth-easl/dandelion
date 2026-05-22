@@ -86,7 +86,7 @@ impl FromStr for AnyShardingMode {
                         .get(1)
                         .and_then(|val| val.parse::<usize>().ok())
                         .ok_or_else(|| {
-                            "Invalid number for fixed sharding (e.g., 'fixed:4')".to_string()
+                            "Invalid number for auto sharding (e.g., 'auto:2')".to_string()
                         })?;
                     Ok(Self::AutoSharding(num))
                 } else {
