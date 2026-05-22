@@ -138,6 +138,10 @@ impl Future for ComputeWaitFuture<'_> {
                 if self.was_set_idle {
                     self.work_queue.idle_sender.send_modify(|idle| *idle -= 1);
                 }
+                // Poke the IO queue in case they were waiting for space to produce more results
+                if let Some(waker) = lock_guard.io_waker_list.pop_front() {
+                    waker.wake();
+                }
                 Poll::Ready(result_tupple)
             } else {
                 // Did not find any work, so need to add to waker queue
@@ -174,6 +178,8 @@ impl<'list> IoWaitFuture<'list> {
     }
 }
 
+const LOCAL_WORK_PER_CORE: usize = 2;
+
 impl Future for IoWaitFuture<'_> {
     type Output = (WorkToDo, Debt);
 
@@ -183,10 +189,29 @@ impl Future for IoWaitFuture<'_> {
     ) -> Poll<Self::Output> {
         // check if there is a lock option and if so if it is ready
         if let Poll::Ready(mut lock_guard) = self.lock.poll_unpin(cx) {
-            // take first one, since we don't care about the flags, only to resolve the reference sets
+            // always take work that is not FunctionArguments, only take function arguments,
+            // if the local queue is smaller than a certain thershold
+            let compute_length = lock_guard.compute_queue.len();
             let result = lock_guard
                 .io_queue
-                .pop_front()
+                .extract_if(|queue_element| match queue_element.work {
+                    WorkToDo::FunctionArguments {
+                        function_id: _,
+                        function_alternatives: _,
+                        input_sets: _,
+                        metadata: _,
+                        caching: _,
+                        recorder: _,
+                    } => {
+                        // Only resover non local sets if there is not enough local work already
+                        compute_length
+                            < LOCAL_WORK_PER_CORE
+                                * *self.work_queue.system_info.num_local_cores_watcher.borrow()
+                    }
+                    // always take resolver work
+                    _ => true,
+                })
+                .next()
                 .map(|queue_element| (queue_element.work, queue_element.debt));
             if let Some(result_tupple) = result {
                 // Found some work, so core is not idle
@@ -428,6 +453,10 @@ impl WorkQueue {
                 })
                 .next()
             {
+                // poke the io cores to resolve more local work if some of it was taken
+                if let Some(waker) = lock.io_waker_list.pop_front() {
+                    waker.wake();
+                }
                 return Some((local_work.work, local_work.debt));
             }
         }
@@ -486,6 +515,10 @@ impl WorkQueue {
                 })
                 .next()
             {
+                // poke the io cores to resolve more local work if some of it was taken
+                if let Some(waker) = lock.io_waker_list.pop_front() {
+                    waker.wake();
+                }
                 return Some((local_work.work, local_work.debt));
             }
         }
