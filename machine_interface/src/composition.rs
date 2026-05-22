@@ -4,14 +4,24 @@ use crate::{
 use core::fmt;
 use dandelion_commons::FunctionId;
 use log::trace;
-use std::{cmp, collections::BTreeMap, sync::Arc, vec};
-
-#[cfg(test)]
-use crate::memory_domain::read_only::ReadOnlyContext;
-#[cfg(test)]
-use itertools::Itertools;
+use std::{
+    cmp,
+    collections::BTreeMap,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    vec,
+};
+use tokio::sync::watch;
 
 mod join_iterator;
+
+#[cfg(test)]
+mod composition_tests;
+
+// TODO: determine suitable value here or come up with a better idea
+pub const DEFAULT_AUTOSHARDING_OFFLOAD_CONST: usize = 2;
 
 /// A composition has a composition wide id space that maps ids of
 /// the input and output sets to sets of individual functions to a unified
@@ -91,6 +101,54 @@ impl JoinStrategy {
     }
 }
 
+#[derive(Debug)]
+struct AnySetGroup {
+    largest_set_size: usize,
+    max_partitions: usize,
+    target_partitions: usize,
+    min_set_bytes: usize,
+    processed: bool,
+}
+
+impl AnySetGroup {
+    fn new(largest_set_size: usize, min_set_bytes: usize, max_partitions: usize) -> Self {
+        Self {
+            largest_set_size,
+            max_partitions,
+            target_partitions: 1,
+            min_set_bytes,
+            processed: false,
+        }
+    }
+}
+
+// TODO: move this to the queue when refactoring the project parts structure
+/// Contains system information used by the sharding policy.
+pub struct SystemInfo {
+    /// The number of local compute cores in the system (as a watcher so we can update remote nodes
+    /// if the local core count changes).
+    pub num_local_cores_watcher: watch::Receiver<usize>,
+    pub num_local_cores_sender: watch::Sender<usize>,
+    /// The number of remote compute cores in the system.
+    pub num_remote_cores: AtomicUsize,
+}
+
+pub struct AnyShardingParams {
+    /// A reference to the current system information maintained by the queue.
+    pub sys_info: Arc<SystemInfo>,
+    /// A constant that estimates the offload overhead when determining the number of partitions.
+    pub offload_const: usize,
+}
+
+pub enum AnyShardingMode {
+    /// Use the maximum number of partiions (`AnyKey` becomes `Key`, `AnyEach` becomes `Each`).
+    MaxSharding,
+    /// Use a fixed target number of partitions.
+    FixedSharding(usize),
+    /// Compute an "optimal" target number of partitions.
+    AutoSharding(AnyShardingParams),
+}
+
 /// Struct that has all locations belonging to one set, that is potentially spread over multiple contexts.
 /// Should only be constructed from a context, returning a list of all sets in the contexts content.
 /// By construction, empty sets should not be allowed to exist, as they should return None instead on construction
@@ -105,6 +163,10 @@ pub struct CompositionSet {
 impl CompositionSet {
     pub fn len(&self) -> usize {
         self.item_list.len()
+    }
+
+    pub fn size(&self) -> usize {
+        self.item_list.iter().map(|(itm, _)| itm.data.size).sum()
     }
 
     pub fn get_name(&self) -> &String {
@@ -211,14 +273,20 @@ impl fmt::Display for CompositionSet {
 /// Computes the sharding for the given sets following the given join order and join strategies.
 /// The `join_order` vector is expected to be of length `sets.len()`, the `join_strategies` vector
 /// is expected to be of size `sets.len() - 1`.
-/// The function tries to produce an output vector of size `target_parallelism` if possible grouping
-/// `AnyEach` and `AnyKey` sets accordingly. If a `target_parallelism` of 0 is given it will use
-/// maximum possible parallellism.
+///
+/// Based on the any sharding mode the function uses the system information to determine a suitable
+/// number of partitions and then tries to shard `AnyEach` and `AnyKey` sets accordingly if possible.
+/// If an `AnyShardingMode::MaxSharding` is given it will create the maximum possible partitions
+/// (i.e. `AnyKey` becomes `Key` and `AnyEach` becomes `Each`).
+///
+/// The `min_set_size` is used to create `any` set shards of at least that size and is ignored if
+/// set to 0.
 pub fn get_sharding(
     mut sets: Vec<Option<(ShardingMode, CompositionSet)>>,
     join_order: Vec<usize>,
     join_strategies: Vec<JoinStrategy>,
-    target_parallelism: usize,
+    any_sharding_mode: &AnyShardingMode,
+    mut min_set_bytes: Vec<usize>,
 ) -> Vec<Vec<Option<CompositionSet>>> {
     let set_num = sets.len();
     debug_assert_eq!(join_order.len(), set_num);
@@ -226,6 +294,7 @@ pub fn get_sharding(
         join_strategies.len(),
         if set_num == 0 { 0 } else { set_num - 1 }
     );
+    min_set_bytes.resize(set_num, 0);
 
     trace!(
         "Computing sharding using sets: {:?}, join_order: {:?}, join_strategies: {:?}.",
@@ -241,15 +310,15 @@ pub fn get_sharding(
 
     // first create the iterators for any keyed shardings
     let mut key_join_iter = None;
-    let mut fixed_parallelism = 1;
+    let mut fixed_partitions = 1;
     let mut join_group_key_set: Vec<u32> = vec![];
     let mut i = 0;
-    while i < join_order.len() {
+    while i < set_num {
         let set_idx = join_order[i];
         if let Some((sharding, set)) = sets[set_idx].take() {
             if sharding != ShardingMode::Key {
                 if join_group_key_set.len() > 0 {
-                    fixed_parallelism *= join_group_key_set.len();
+                    fixed_partitions *= join_group_key_set.len();
                     join_group_key_set.clear();
                 }
                 sets[set_idx] = Some((sharding, set)); // put back into sets
@@ -264,7 +333,7 @@ pub fn get_sharding(
 
             if strategy == JoinStrategy::Cross {
                 if join_group_key_set.len() > 0 {
-                    fixed_parallelism *= join_group_key_set.len();
+                    fixed_partitions *= join_group_key_set.len();
                     join_group_key_set.clear();
                 }
             }
@@ -281,9 +350,9 @@ pub fn get_sharding(
     }
 
     // second create the iterators for all remaining shardings
-    let mut any_parallelisms: Vec<(usize, usize, bool)> = Vec::new(); // vec of (max parallelism, chosen parallelism)
+    let mut any_set_groups = Vec::new();
     let mut join_iter = key_join_iter.map(|i| i as Box<dyn JoinIterator>);
-    while i < join_order.len() {
+    while i < set_num {
         let set_idx = join_order[i];
         if let Some((sharding, set)) = sets[set_idx].take() {
             match sharding {
@@ -291,21 +360,27 @@ pub fn get_sharding(
                     join_iter = join_iterator::SetAllIterator::new(join_iter, set, set_idx);
                 }
                 ShardingMode::Each => {
-                    let parallelism;
-                    (join_iter, parallelism) =
+                    let partitions;
+                    (join_iter, partitions) =
                         join_iterator::SetEachIterator::new(join_iter, set, set_idx);
-                    fixed_parallelism *= parallelism;
+                    fixed_partitions *= partitions;
                 }
                 ShardingMode::AnyEach => {
-                    let (any_join_iter, max_parallelism) = join_iterator::AnyIterator::new(
-                        join_iter,
-                        vec![set],
-                        vec![],
-                        vec![set_idx],
-                        sharding,
-                    );
-                    if max_parallelism > 0 {
-                        any_parallelisms.push((max_parallelism, 1, false));
+                    let (any_join_iter, largest_set_size, min_set_size, max_partitions) =
+                        join_iterator::AnyIterator::new(
+                            join_iter,
+                            vec![set],
+                            vec![],
+                            vec![set_idx],
+                            sharding,
+                            &min_set_bytes[i..(i + 1)],
+                        );
+                    if max_partitions > 0 {
+                        any_set_groups.push(AnySetGroup::new(
+                            largest_set_size,
+                            min_set_size,
+                            max_partitions,
+                        ));
                     }
                     join_iter = any_join_iter.map(|i| i as Box<dyn JoinIterator>);
                 }
@@ -314,6 +389,7 @@ pub fn get_sharding(
                     let mut joined_sets = vec![set];
                     let mut joined_set_idcs = vec![set_idx];
                     let mut joined_strategies = vec![];
+                    let start_idx = i;
                     while i + 1 < join_order.len() {
                         let next_strategy = join_strategies[i];
                         if next_strategy != JoinStrategy::Cross {
@@ -331,15 +407,21 @@ pub fn get_sharding(
                         }
                     }
 
-                    let (any_join_iter, max_parallelism) = join_iterator::AnyIterator::new(
-                        join_iter,
-                        joined_sets,
-                        joined_strategies,
-                        joined_set_idcs,
-                        sharding,
-                    );
-                    if max_parallelism > 0 {
-                        any_parallelisms.push((max_parallelism, 1, false));
+                    let (any_join_iter, largest_set_size, min_set_size, max_partitions) =
+                        join_iterator::AnyIterator::new(
+                            join_iter,
+                            joined_sets,
+                            joined_strategies,
+                            joined_set_idcs,
+                            sharding,
+                            &min_set_bytes[start_idx..(i + 1)],
+                        );
+                    if max_partitions > 0 {
+                        any_set_groups.push(AnySetGroup::new(
+                            largest_set_size,
+                            min_set_size,
+                            max_partitions,
+                        ));
                     }
                     join_iter = any_join_iter.map(|i| i as Box<dyn JoinIterator>);
                 }
@@ -350,29 +432,62 @@ pub fn get_sharding(
         }
         i += 1;
     }
+
+    // compute the target partitions
+    let target_partitions = match any_sharding_mode {
+        AnyShardingMode::MaxSharding => 0,
+        AnyShardingMode::FixedSharding(n) => *n,
+        AnyShardingMode::AutoSharding(params) => {
+            let mut total_largest_any_set_sizes = 1;
+            let mut total_min_set_sizes = 0;
+            for any_group in any_set_groups.iter() {
+                total_largest_any_set_sizes *= any_group.largest_set_size;
+                total_min_set_sizes += any_group.min_set_bytes;
+            }
+            if total_largest_any_set_sizes == 0 {
+                0
+            } else {
+                // use a minimal set size of at least 1 for this computation
+                let s_min = cmp::max(total_min_set_sizes, 1);
+                let c_local = { *params.sys_info.num_local_cores_watcher.borrow() };
+                let c_remote = params.sys_info.num_remote_cores.load(Ordering::Acquire);
+                if total_largest_any_set_sizes > params.offload_const * s_min * c_local {
+                    log::trace!(
+                        "Any sets using at most local + remote cores = {}",
+                        c_local + c_remote
+                    );
+                    c_local + c_remote
+                } else {
+                    log::trace!("Any sets using at most local cores = {}", c_local);
+                    c_local
+                }
+            }
+        }
+    };
     trace!(
-        "Found fixed_parallelism: {} (target_parallelism: {}",
-        fixed_parallelism,
-        target_parallelism
+        "Found fixed_partitions: {} and {} any sets (target_partitions: {})",
+        fixed_partitions,
+        any_set_groups.len(),
+        target_partitions,
     );
 
-    // compute the parallelism for the any shardings
-    if fixed_parallelism < target_parallelism && !any_parallelisms.is_empty() {
-        let mut leftover_parallelism = target_parallelism / fixed_parallelism;
+    // compute the partitions for the any shardings
+    if fixed_partitions < target_partitions && !any_set_groups.is_empty() {
+        let mut leftover_partitions = target_partitions / fixed_partitions;
         loop {
             // find the best suitable set to parallelize over
             let mut best_idx = 0;
             let mut best_dist = 0.0;
-            for (i, (max_p, _, processed)) in any_parallelisms.iter().enumerate() {
-                // check that we have not yet assigned a parallelism to this any set
-                if !*processed {
-                    let remainder = max_p % leftover_parallelism;
+            for (i, any_set_group) in any_set_groups.iter().enumerate() {
+                // check that we have not yet assigned a partitions to this any set
+                if !any_set_group.processed {
+                    let remainder = any_set_group.max_partitions % leftover_partitions;
                     if remainder == 0 {
                         best_idx = i;
                         best_dist = 0.0;
                         break;
                     }
-                    let dist = (remainder) as f64 / (*max_p) as f64;
+                    let dist = (remainder) as f64 / (any_set_group.max_partitions) as f64;
                     if best_dist == 0.0 || dist < best_dist {
                         best_idx = i;
                         best_dist = dist;
@@ -383,27 +498,26 @@ pub fn get_sharding(
             // if the best set has fewer elements than the leftover parallelization we continue and
             // check if we can find another set to parallelize over in addition to the found one
             if best_dist >= 1.0 {
-                let max_parallelism = any_parallelisms[best_idx].0;
-                any_parallelisms[best_idx].1 = max_parallelism;
-                leftover_parallelism /= max_parallelism;
-                if leftover_parallelism <= 1 {
+                any_set_groups[best_idx].target_partitions =
+                    any_set_groups[best_idx].max_partitions;
+                leftover_partitions /= any_set_groups[best_idx].max_partitions;
+                if leftover_partitions <= 1 {
                     break;
                 }
-                any_parallelisms[best_idx].2 = true;
+                any_set_groups[best_idx].processed = true;
             } else {
-                if !any_parallelisms[best_idx].2 {
-                    let chosen_parallelism =
-                        cmp::min(leftover_parallelism, any_parallelisms[best_idx].0);
-                    any_parallelisms[best_idx].1 = chosen_parallelism;
+                if !any_set_groups[best_idx].processed {
+                    any_set_groups[best_idx].target_partitions =
+                        cmp::min(leftover_partitions, any_set_groups[best_idx].max_partitions);
                 }
                 break;
             }
         }
     }
-    if target_parallelism > 0 {
-        trace!("Using any parallelism: {:?}", any_parallelisms);
+    if target_partitions > 0 {
+        trace!("Using any partitions: {:?}", any_set_groups);
         if let Some(iter) = join_iter.as_mut() {
-            iter.reduce_any_parallelism(any_parallelisms);
+            iter.reduce_any_partitions(any_set_groups);
         }
     }
 
@@ -423,641 +537,4 @@ pub fn get_sharding(
 
     trace!("Computed sharding: {:?}", final_sharding);
     final_sharding
-}
-
-//=======
-// TESTS
-
-/// Creates a dummy set from a vector of keys.
-/// The item indexes in the composition set are qual to the index of the key in the input.
-/// Keys do not need to be in correct order, but they will be sorted after producing.
-/// This is to allow to have keys with lower item indexes but higher keys and vice versa.
-#[cfg(test)]
-fn create_dummy_set(keys: Vec<u32>) -> CompositionSet {
-    let dummy_context: Arc<Context> = Arc::new(ReadOnlyContext::new_static::<u8>(&mut []));
-    let items = keys
-        .into_iter()
-        .enumerate()
-        .map(|(i, k)| {
-            (
-                DataItem {
-                    ident: i.to_string(),
-                    key: k,
-                    data: Position { offset: 0, size: 0 },
-                },
-                dummy_context.clone(),
-            )
-        })
-        .sorted_by_key(|tuple| tuple.0.key)
-        .collect();
-    CompositionSet {
-        item_list: items,
-        set_name: String::new(),
-    }
-}
-
-/// An array of options for expected sets in the input set vec produced by a sharing.
-#[cfg(test)]
-type SetGroup = Vec<Option<ExpectedSet>>;
-
-/// An array of tuples with the expected keys and item indexes for the items in a set.
-#[cfg(test)]
-type ExpectedSet = Vec<(u32, usize)>;
-
-#[cfg(test)]
-/// The expected is a list of all vectors of generated sets.
-fn check_sharding(actual: Vec<Vec<Option<CompositionSet>>>, expected: Vec<SetGroup>) {
-    assert_eq!(
-        expected.len(),
-        actual.len(),
-        "Not the number of set groups that were expected"
-    );
-    for (set_group_index, (actual_sets, expected_sets)) in
-        actual.into_iter().zip(expected.into_iter()).enumerate()
-    {
-        assert_eq!(
-            expected_sets.len(),
-            actual_sets.len(),
-            "Sets not matching for index {}, ",
-            set_group_index
-        );
-        for (set_index, (expected_set_opt, actual_set_opt)) in expected_sets
-            .into_iter()
-            .zip(actual_sets.into_iter())
-            .enumerate()
-        {
-            if expected_set_opt.is_none() {
-                assert!(
-                    actual_set_opt.is_none(),
-                    "Expexted none, but found a set for index {}",
-                    set_index
-                );
-                continue;
-            }
-            let mut expected_set = expected_set_opt.unwrap();
-            let mut actual_set = actual_set_opt.unwrap();
-            assert_eq!(expected_set.len(), actual_set.item_list.len());
-            // sort both lists by item index, since that one should be unique, since we only have a single context
-            expected_set.sort_by_key(|item| item.1.clone());
-            actual_set.item_list.sort_by_key(|item| item.0.key);
-            // have two sorted lists, check that each item index is the expected one and that it has the correct key
-            for ((expected_key, expected_ident), (actual_item, _)) in
-                expected_set.into_iter().zip(actual_set.item_list)
-            {
-                assert_eq!(
-                    expected_ident.to_string(),
-                    actual_item.ident,
-                    "for keys {}, {}",
-                    expected_key,
-                    actual_item.ident
-                );
-                assert_eq!(expected_key, actual_item.key);
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-fn print_sharding(actual: &Vec<Vec<Option<CompositionSet>>>) {
-    println!("Got sharding:");
-    for inv_sets in actual.iter() {
-        println!("[");
-        for (set_idx, set) in inv_sets.iter().enumerate() {
-            if set.is_none() {
-                println!("  set {}: [None]", set_idx);
-            } else {
-                print!("  set {}: [ ", set_idx);
-                for (item, _) in set.as_ref().unwrap().item_list.iter() {
-                    print!("{:?} ", item);
-                }
-                println!("]");
-            }
-        }
-        println!("]");
-    }
-}
-
-#[test]
-fn join_it_inner_test() {
-    let sets = vec![
-        Some((ShardingMode::Key, create_dummy_set(vec![3, 0, 1]))),
-        Some((ShardingMode::Key, create_dummy_set(vec![1, 0, 1, 2]))),
-    ];
-
-    let join_order = vec![0, 1];
-    let join_strategies = vec![JoinStrategy::Inner];
-
-    let sharding = get_sharding(sets, join_order, join_strategies, 0);
-    let expected = vec![
-        vec![Some(vec![(0, 1)]), Some(vec![(0, 1)])],
-        vec![Some(vec![(1, 2)]), Some(vec![(1, 0), (1, 2)])],
-    ];
-
-    print_sharding(&sharding);
-    check_sharding(sharding, expected);
-}
-
-#[test]
-fn join_it_left_test() {
-    let sets = vec![
-        Some((ShardingMode::Key, create_dummy_set(vec![0, 1, 2]))),
-        Some((ShardingMode::Key, create_dummy_set(vec![3, 1, 0, 1]))),
-    ];
-
-    let join_order = vec![0, 1];
-    let join_strategies = vec![JoinStrategy::Left];
-
-    let sharding = get_sharding(sets, join_order, join_strategies, 0);
-    let expected = vec![
-        vec![Some(vec![(0, 0)]), Some(vec![(0, 2)])],
-        vec![Some(vec![(1, 1)]), Some(vec![(1, 1), (1, 3)])],
-        vec![Some(vec![(2, 2)]), None],
-    ];
-
-    print_sharding(&sharding);
-    check_sharding(sharding, expected);
-}
-
-#[test]
-fn join_it_right_test() {
-    let sets = vec![
-        Some((ShardingMode::Key, create_dummy_set(vec![3, 1, 0, 1]))),
-        Some((ShardingMode::Key, create_dummy_set(vec![0, 1, 2]))),
-    ];
-
-    let join_order = vec![0, 1];
-    let join_strategies = vec![JoinStrategy::Right];
-
-    let sharding = get_sharding(sets, join_order, join_strategies, 0);
-    let expected = vec![
-        vec![Some(vec![(0, 2)]), Some(vec![(0, 0)])],
-        vec![Some(vec![(1, 1), (1, 3)]), Some(vec![(1, 1)])],
-        vec![None, Some(vec![(2, 2)])],
-    ];
-
-    print_sharding(&sharding);
-    check_sharding(sharding, expected);
-}
-
-#[test]
-fn join_it_outer_test() {
-    let sets = vec![
-        Some((ShardingMode::Key, create_dummy_set(vec![0, 1, 2]))),
-        Some((ShardingMode::Key, create_dummy_set(vec![3, 1, 0, 1]))),
-    ];
-
-    let join_order = vec![0, 1];
-    let join_strategies = vec![JoinStrategy::Outer];
-
-    let sharding = get_sharding(sets, join_order, join_strategies, 0);
-    let expected = vec![
-        vec![Some(vec![(0, 0)]), Some(vec![(0, 2)])],
-        vec![Some(vec![(1, 1)]), Some(vec![(1, 1), (1, 3)])],
-        vec![Some(vec![(2, 2)]), None],
-        vec![None, Some(vec![(3, 0)])],
-    ];
-
-    print_sharding(&sharding);
-    check_sharding(sharding, expected);
-}
-
-#[test]
-fn join_it_cross_test() {
-    let sets = vec![
-        Some((ShardingMode::Key, create_dummy_set(vec![0, 1, 2]))),
-        Some((ShardingMode::Key, create_dummy_set(vec![3, 1, 0, 1]))),
-    ];
-
-    let join_order = vec![0, 1];
-    let join_strategies = vec![JoinStrategy::Cross];
-
-    let sharding = get_sharding(sets, join_order, join_strategies, 0);
-    let expected = vec![
-        vec![Some(vec![(0, 0)]), Some(vec![(0, 2)])],
-        vec![Some(vec![(0, 0)]), Some(vec![(1, 1), (1, 3)])],
-        vec![Some(vec![(0, 0)]), Some(vec![(3, 0)])],
-        vec![Some(vec![(1, 1)]), Some(vec![(0, 2)])],
-        vec![Some(vec![(1, 1)]), Some(vec![(1, 1), (1, 3)])],
-        vec![Some(vec![(1, 1)]), Some(vec![(3, 0)])],
-        vec![Some(vec![(2, 2)]), Some(vec![(0, 2)])],
-        vec![Some(vec![(2, 2)]), Some(vec![(1, 1), (1, 3)])],
-        vec![Some(vec![(2, 2)]), Some(vec![(3, 0)])],
-    ];
-
-    print_sharding(&sharding);
-    check_sharding(sharding, expected);
-}
-
-#[test]
-fn join_it_order_test() {
-    let sets = vec![
-        Some((ShardingMode::Key, create_dummy_set(vec![3, 1, 0, 1]))),
-        Some((ShardingMode::Key, create_dummy_set(vec![0, 1, 2]))),
-    ];
-
-    let join_order = vec![1, 0];
-    let join_strategies = vec![JoinStrategy::Left];
-
-    let sharding = get_sharding(sets, join_order, join_strategies, 0);
-    let expected = vec![
-        vec![Some(vec![(0, 2)]), Some(vec![(0, 0)])],
-        vec![Some(vec![(1, 1), (1, 3)]), Some(vec![(1, 1)])],
-        vec![None, Some(vec![(2, 2)])],
-    ];
-
-    print_sharding(&sharding);
-    check_sharding(sharding, expected);
-}
-
-#[test]
-fn join_it_chain_test() {
-    let sets = vec![
-        Some((
-            ShardingMode::Key,
-            create_dummy_set(vec![1, 1234, 123, 124, 134]),
-        )),
-        Some((
-            ShardingMode::Key,
-            create_dummy_set(vec![2, 234, 1234, 123, 124]),
-        )),
-        Some((
-            ShardingMode::Key,
-            create_dummy_set(vec![3, 134, 234, 1234, 123]),
-        )),
-        Some((
-            ShardingMode::Key,
-            create_dummy_set(vec![4, 124, 134, 234, 1234]),
-        )),
-    ];
-
-    let join_order = vec![0, 1, 2, 3];
-    let join_strategies = vec![
-        JoinStrategy::Outer,
-        JoinStrategy::Outer,
-        JoinStrategy::Outer,
-    ];
-
-    let sharding = get_sharding(sets, join_order, join_strategies, 0);
-    let expected = vec![
-        vec![Some(vec![(1, 0)]), None, None, None],
-        vec![None, Some(vec![(2, 0)]), None, None],
-        vec![None, None, Some(vec![(3, 0)]), None],
-        vec![None, None, None, Some(vec![(4, 0)])],
-        vec![
-            Some(vec![(123, 2)]),
-            Some(vec![(123, 3)]),
-            Some(vec![(123, 4)]),
-            None,
-        ],
-        vec![
-            Some(vec![(124, 3)]),
-            Some(vec![(124, 4)]),
-            None,
-            Some(vec![(124, 1)]),
-        ],
-        vec![
-            Some(vec![(134, 4)]),
-            None,
-            Some(vec![(134, 1)]),
-            Some(vec![(134, 2)]),
-        ],
-        vec![
-            None,
-            Some(vec![(234, 1)]),
-            Some(vec![(234, 2)]),
-            Some(vec![(234, 3)]),
-        ],
-        vec![
-            Some(vec![(1234, 1)]),
-            Some(vec![(1234, 2)]),
-            Some(vec![(1234, 3)]),
-            Some(vec![(1234, 4)]),
-        ],
-    ];
-
-    print_sharding(&sharding);
-    check_sharding(sharding, expected);
-}
-
-#[test]
-fn join_it_any_simple_test() {
-    let sets = vec![Some((
-        ShardingMode::AnyEach,
-        create_dummy_set(vec![0, 1, 2, 3]),
-    ))];
-
-    let join_order = vec![0];
-    let join_strategies = vec![];
-
-    let sharding = get_sharding(sets, join_order, join_strategies, 2);
-    let expected = vec![
-        vec![Some(vec![(0, 0), (1, 1)])],
-        vec![Some(vec![(2, 2), (3, 3)])],
-    ];
-
-    print_sharding(&sharding);
-    check_sharding(sharding, expected);
-}
-
-#[test]
-fn join_it_any_joined_keys_test() {
-    let sets = vec![
-        Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 1, 2, 3, 5]))),
-        Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 2, 3, 4, 5]))),
-    ];
-
-    let join_order = vec![0, 1];
-    let join_strategies = vec![JoinStrategy::Inner];
-
-    let sharding = get_sharding(sets, join_order, join_strategies, 2);
-    let expected = vec![
-        vec![Some(vec![(0, 0), (2, 2)]), Some(vec![(0, 0), (2, 1)])],
-        vec![Some(vec![(3, 3), (5, 4)]), Some(vec![(3, 2), (5, 4)])],
-    ];
-
-    print_sharding(&sharding);
-    check_sharding(sharding, expected);
-}
-
-#[test]
-fn join_it_any_chain_test() {
-    let sets = vec![
-        Some((ShardingMode::AnyEach, create_dummy_set(vec![0, 0, 0]))),
-        Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 1, 2, 3, 5]))),
-        Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 2, 3, 4, 5]))),
-    ];
-
-    let join_order = vec![1, 2, 0];
-    let join_strategies = vec![JoinStrategy::Inner, JoinStrategy::Cross];
-
-    let sharding = get_sharding(sets, join_order, join_strategies, 2);
-    let expected = vec![
-        vec![
-            Some(vec![(0, 0), (0, 1), (0, 2)]),
-            Some(vec![(0, 0), (2, 2)]),
-            Some(vec![(0, 0), (2, 1)]),
-        ],
-        vec![
-            Some(vec![(0, 0), (0, 1), (0, 2)]),
-            Some(vec![(3, 3), (5, 4)]),
-            Some(vec![(3, 2), (5, 4)]),
-        ],
-    ];
-
-    print_sharding(&sharding);
-    check_sharding(sharding, expected);
-}
-
-#[test]
-fn join_it_any_chain_test_1() {
-    let sets = vec![
-        Some((ShardingMode::AnyEach, create_dummy_set(vec![0, 1]))),
-        Some((
-            ShardingMode::AnyEach,
-            create_dummy_set(vec![0, 1, 2, 3, 4, 5]),
-        )),
-        Some((ShardingMode::AnyEach, create_dummy_set(vec![0, 1, 2, 3]))),
-    ];
-
-    let join_order = vec![0, 1, 2];
-    let join_strategies = vec![JoinStrategy::Cross, JoinStrategy::Cross];
-
-    let sharding_6 = get_sharding(sets.clone(), join_order.clone(), join_strategies.clone(), 6);
-    assert_eq!(sharding_6.len(), 6); // <- should get 6 shardings
-    assert_eq!(sharding_6[0].len(), 3); // <- should still get 3 sets
-    assert_eq!(sharding_6[0][0].as_ref().unwrap().len(), 2);
-    assert_eq!(sharding_6[0][1].as_ref().unwrap().len(), 1); // <- parallelized set
-    assert_eq!(sharding_6[0][2].as_ref().unwrap().len(), 4);
-
-    let sharding_3 = get_sharding(sets.clone(), join_order.clone(), join_strategies.clone(), 3);
-    assert_eq!(sharding_3.len(), 3); // <- should get 3 shardings
-    assert_eq!(sharding_3[0].len(), 3); // <- should still get 3 sets
-    assert_eq!(sharding_3[0][0].as_ref().unwrap().len(), 2);
-    assert_eq!(sharding_3[0][1].as_ref().unwrap().len(), 2); // <- parallelized set
-    assert_eq!(sharding_3[0][2].as_ref().unwrap().len(), 4);
-
-    let sharding_4 = get_sharding(sets.clone(), join_order.clone(), join_strategies.clone(), 4);
-    assert_eq!(sharding_4.len(), 4); // <- should get 4 shardings
-    assert_eq!(sharding_4[0].len(), 3); // <- should still get 3 sets
-    assert_eq!(sharding_4[0][0].as_ref().unwrap().len(), 2);
-    assert_eq!(sharding_4[0][1].as_ref().unwrap().len(), 6);
-    assert_eq!(sharding_4[0][2].as_ref().unwrap().len(), 1); // <- parallelized set
-}
-
-#[test]
-fn join_it_any_chain_test_2() {
-    let sets = vec![
-        Some((ShardingMode::AnyEach, create_dummy_set(vec![0, 1, 2]))),
-        Some((ShardingMode::AnyEach, create_dummy_set(vec![0, 1]))),
-    ];
-
-    let join_order = vec![0, 1];
-    let join_strategies = vec![JoinStrategy::Cross];
-
-    let sharding_2 = get_sharding(sets.clone(), join_order.clone(), join_strategies.clone(), 2);
-    assert_eq!(sharding_2.len(), 2); // <- should get 2 shardings
-    assert_eq!(sharding_2[0].len(), 2); // <- should still get 2 sets
-    assert_eq!(sharding_2[0][0].as_ref().unwrap().len(), 3);
-    assert_eq!(sharding_2[0][1].as_ref().unwrap().len(), 1); // <- parallelized set
-
-    let sharding_3 = get_sharding(sets.clone(), join_order.clone(), join_strategies.clone(), 3);
-    assert_eq!(sharding_3.len(), 3); // <- should get 3 shardings
-    assert_eq!(sharding_3[0].len(), 2); // <- should still get 2 sets
-    assert_eq!(sharding_3[0][0].as_ref().unwrap().len(), 1); // <- parallelized set
-    assert_eq!(sharding_3[0][1].as_ref().unwrap().len(), 2);
-
-    let sharding_6 = get_sharding(sets.clone(), join_order.clone(), join_strategies.clone(), 6);
-    assert_eq!(sharding_6.len(), 6); // <- should get 6 shardings
-    assert_eq!(sharding_6[0].len(), 2); // <- should still get 2 sets
-    assert_eq!(sharding_6[0][0].as_ref().unwrap().len(), 1); // <- parallelized set
-    assert_eq!(sharding_6[0][1].as_ref().unwrap().len(), 1); // <- parallelized set
-}
-
-#[test]
-fn join_it_any_chain_test_3() {
-    let sets = vec![
-        Some((ShardingMode::Each, create_dummy_set(vec![0, 0]))),
-        Some((ShardingMode::AnyEach, create_dummy_set(vec![0, 0, 0]))),
-        Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 1, 1]))),
-    ];
-
-    let join_order = vec![0, 1, 2];
-    let join_strategies = vec![JoinStrategy::Cross, JoinStrategy::Cross];
-
-    let sharding_2 = get_sharding(sets.clone(), join_order.clone(), join_strategies.clone(), 2);
-    assert_eq!(sharding_2.len(), 2); // <- should get 2 shardings
-    assert_eq!(sharding_2[0].len(), 3); // <- should still get 3 sets
-    assert_eq!(sharding_2[0][0].as_ref().unwrap().len(), 1); // <- always parallelized (not any)
-    assert_eq!(sharding_2[0][1].as_ref().unwrap().len(), 3);
-    assert_eq!(sharding_2[0][2].as_ref().unwrap().len(), 3);
-
-    let sharding_4 = get_sharding(sets.clone(), join_order.clone(), join_strategies.clone(), 4);
-    assert_eq!(sharding_4.len(), 4); // <- should get 4 shardings
-    assert_eq!(sharding_4[0].len(), 3); // <- should still get 3 sets
-    assert_eq!(sharding_4[0][0].as_ref().unwrap().len(), 1); // <- always parallelized (not any)
-    assert_eq!(sharding_4[0][1].as_ref().unwrap().len(), 3);
-    assert_eq!(sharding_4[0][2].as_ref().unwrap().len(), 1); // <- parallelized any set
-
-    let sharding_6 = get_sharding(sets.clone(), join_order.clone(), join_strategies.clone(), 6);
-    assert_eq!(sharding_6.len(), 6); // <- should get 6 shardings
-    assert_eq!(sharding_6[0].len(), 3); // <- should still get 3 sets
-    assert_eq!(sharding_6[0][0].as_ref().unwrap().len(), 1); // <- always parallelized (not any)
-    assert_eq!(sharding_6[0][1].as_ref().unwrap().len(), 1); // <- parallelized any set
-    assert_eq!(sharding_6[0][2].as_ref().unwrap().len(), 3);
-}
-
-#[test]
-fn join_it_any_chain_test_4() {
-    let sets = vec![
-        Some((ShardingMode::Each, create_dummy_set(vec![0, 0]))),
-        Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 2, 0, 1, 3]))),
-        Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 1, 1, 4]))),
-    ];
-
-    let join_order = vec![1, 2, 0];
-
-    let join_strategies_inner = vec![JoinStrategy::Inner, JoinStrategy::Cross];
-    let sharding_inner = get_sharding(
-        sets.clone(),
-        join_order.clone(),
-        join_strategies_inner.clone(),
-        10,
-    );
-    assert_eq!(sharding_inner.len(), 4); // <- should get 4 shardings
-    assert_eq!(sharding_inner[0].len(), 3); // <- should still get 3 sets
-    assert_eq!(sharding_inner[0][0].as_ref().unwrap().len(), 1); // <- always parallelized (not any)
-    assert_eq!(sharding_inner[0][1].as_ref().unwrap().len(), 2); // <- parallelized any set
-    assert_eq!(sharding_inner[0][2].as_ref().unwrap().len(), 1); // <- parallelized any set
-
-    let join_strategies_left = vec![JoinStrategy::Left, JoinStrategy::Cross];
-    let sharding_left = get_sharding(
-        sets.clone(),
-        join_order.clone(),
-        join_strategies_left.clone(),
-        10,
-    );
-    assert_eq!(sharding_left.len(), 8); // <- should get 2*4=8 shardings
-    assert_eq!(sharding_left[0].len(), 3); // <- should still get 3 sets
-    assert_eq!(sharding_left[0][0].as_ref().unwrap().len(), 1); // <- always parallelized (not any)
-    assert_eq!(sharding_left[0][1].as_ref().unwrap().len(), 2); // <- parallelized any set
-    assert_eq!(sharding_left[0][2].as_ref().unwrap().len(), 1); // <- parallelized any set
-
-    let join_strategies_right = vec![JoinStrategy::Right, JoinStrategy::Cross];
-    let sharding_right = get_sharding(
-        sets.clone(),
-        join_order.clone(),
-        join_strategies_right.clone(),
-        10,
-    );
-    assert_eq!(sharding_right.len(), 6); // <- should get 2*3=6 shardings
-    assert_eq!(sharding_right[0].len(), 3); // <- should still get 3 sets
-    assert_eq!(sharding_right[0][0].as_ref().unwrap().len(), 1); // <- always parallelized (not any)
-    assert_eq!(sharding_right[0][1].as_ref().unwrap().len(), 2); // <- parallelized any set
-    assert_eq!(sharding_right[0][2].as_ref().unwrap().len(), 1); // <- parallelized any set
-
-    let join_strategies_outer = vec![JoinStrategy::Outer, JoinStrategy::Cross];
-    let sharding_outer = get_sharding(
-        sets.clone(),
-        join_order.clone(),
-        join_strategies_outer.clone(),
-        10,
-    );
-    assert_eq!(sharding_outer.len(), 10); // <- should get 2*5=10 shardings
-    assert_eq!(sharding_outer[0].len(), 3); // <- should still get 3 sets
-    assert_eq!(sharding_outer[0][0].as_ref().unwrap().len(), 1); // <- always parallelized (not any)
-    assert_eq!(sharding_outer[0][1].as_ref().unwrap().len(), 2); // <- parallelized any set
-    assert_eq!(sharding_outer[0][2].as_ref().unwrap().len(), 1); // <- parallelized any set
-}
-
-#[test]
-fn join_it_any_chain_test_5() {
-    let sets = vec![Some((
-        ShardingMode::AnyKey,
-        create_dummy_set(vec![0, 2, 0, 1, 3]),
-    ))];
-
-    let join_order = vec![0];
-    let join_strategies = vec![];
-
-    let sharding_2 = get_sharding(sets.clone(), join_order.clone(), join_strategies.clone(), 2);
-    assert_eq!(sharding_2.len(), 2); // <- should get 2 shardings
-    assert_eq!(sharding_2[0].len(), 1); // <- should still get 1 set
-    assert_eq!(sharding_2[0][0].as_ref().unwrap().len(), 3); // <- parallelized any set
-
-    let sharding_4 = get_sharding(sets.clone(), join_order.clone(), join_strategies.clone(), 4);
-    assert_eq!(sharding_4.len(), 4); // <- should get 4 shardings
-    assert_eq!(sharding_4[0].len(), 1); // <- should still get 1 set
-    assert_eq!(sharding_4[0][0].as_ref().unwrap().len(), 2); // <- parallelized any set
-}
-
-#[test]
-fn join_it_any_chain_test_6() {
-    let sets = vec![
-        Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 1, 4]))),
-        Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 2, 0, 3]))),
-        Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 1, 1]))),
-        Some((ShardingMode::AnyEach, create_dummy_set(vec![5, 5]))),
-    ];
-
-    let join_order = vec![1, 2, 0, 3];
-    let join_strategies = vec![
-        JoinStrategy::Inner,
-        JoinStrategy::Right,
-        JoinStrategy::Cross,
-    ];
-
-    let sharding_2 = get_sharding(sets.clone(), join_order.clone(), join_strategies.clone(), 2);
-    assert_eq!(sharding_2.len(), 2); // <- should get 2 shardings
-    assert_eq!(sharding_2[0].len(), 4); // <- should still get 4 sets
-    assert_eq!(sharding_2[0][0].as_ref().unwrap().len(), 3);
-    assert_eq!(sharding_2[0][1].as_ref().unwrap().len(), 2);
-    assert_eq!(sharding_2[0][2].as_ref().unwrap().len(), 1);
-    assert_eq!(sharding_2[0][3].as_ref().unwrap().len(), 1); // <- parallelized any set
-    assert_eq!(sharding_2[0][0].as_ref().unwrap().item_list[0].0.key, 0);
-    assert_eq!(sharding_2[0][0].as_ref().unwrap().item_list[1].0.key, 1);
-    assert_eq!(sharding_2[0][0].as_ref().unwrap().item_list[2].0.key, 4);
-    assert_eq!(sharding_2[0][1].as_ref().unwrap().item_list[0].0.key, 0);
-    assert_eq!(sharding_2[0][1].as_ref().unwrap().item_list[1].0.key, 0);
-    assert_eq!(sharding_2[0][2].as_ref().unwrap().item_list[0].0.key, 0);
-    assert_eq!(sharding_2[0][3].as_ref().unwrap().item_list[0].0.key, 5);
-
-    let sharding_3 = get_sharding(sets.clone(), join_order.clone(), join_strategies.clone(), 3);
-    assert_eq!(sharding_3.len(), 3); // <- should get 3 shardings
-    assert_eq!(sharding_3[0].len(), 4); // <- should still get 4 sets
-    assert_eq!(sharding_3[0][0].as_ref().unwrap().len(), 1); // <- parallelized any set
-    assert_eq!(sharding_3[0][1].as_ref().unwrap().len(), 2); // <- parallelized any set
-    assert_eq!(sharding_3[0][2].as_ref().unwrap().len(), 1); // <- parallelized any set
-    assert_eq!(sharding_3[0][3].as_ref().unwrap().len(), 2);
-    assert_eq!(sharding_3[0][0].as_ref().unwrap().item_list[0].0.key, 0);
-    assert_eq!(sharding_3[0][1].as_ref().unwrap().item_list[0].0.key, 0);
-    assert_eq!(sharding_3[0][1].as_ref().unwrap().item_list[1].0.key, 0);
-    assert_eq!(sharding_3[0][2].as_ref().unwrap().item_list[0].0.key, 0);
-    assert_eq!(sharding_3[0][3].as_ref().unwrap().item_list[0].0.key, 5);
-    assert_eq!(sharding_3[0][3].as_ref().unwrap().item_list[1].0.key, 5);
-}
-
-#[test]
-fn join_it_any_chain_test_7() {
-    let sets = vec![
-        Some((ShardingMode::Each, create_dummy_set(vec![0]))),
-        Some((ShardingMode::AnyEach, create_dummy_set(vec![0]))),
-        None,
-    ];
-
-    let join_order = vec![0, 1, 2];
-    let join_strategies = vec![JoinStrategy::Cross, JoinStrategy::Cross];
-
-    let sharding = get_sharding(
-        sets.clone(),
-        join_order.clone(),
-        join_strategies.clone(),
-        usize::MAX,
-    );
-    assert_eq!(sharding.len(), 1); // <- should get 1 sharding
-    assert_eq!(sharding[0].len(), 3); // <- should still get 3 sets
-    assert_eq!(sharding[0][0].as_ref().unwrap().len(), 1);
-    assert_eq!(sharding[0][1].as_ref().unwrap().len(), 1);
-    assert!(sharding[0][2].is_none());
-    assert_eq!(sharding[0][0].as_ref().unwrap().item_list[0].0.key, 0);
-    assert_eq!(sharding[0][1].as_ref().unwrap().item_list[0].0.key, 0);
 }

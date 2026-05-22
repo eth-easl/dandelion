@@ -131,3 +131,26 @@ pub fn get_available_domains(
         })
         .collect();
 }
+
+pub fn create_engine_resource_map(
+    compute_cores: Vec<ComputeResource>,
+    communication_cores: Vec<ComputeResource>,
+) -> BTreeMap<EngineType, Vec<ComputeResource>> {
+    let mut pool_map: BTreeMap<EngineType, Vec<ComputeResource>> = BTreeMap::new();
+
+    // compute engines
+    #[cfg(feature = "mmu")]
+    let engine_type = EngineType::Process;
+    #[cfg(feature = "kvm")]
+    let engine_type = EngineType::Kvm;
+    #[cfg(feature = "cheri")]
+    let engine_type = EngineType::Cheri;
+    #[cfg(any(feature = "cheri", feature = "mmu", feature = "kvm"))]
+    pool_map.insert(engine_type, compute_cores);
+
+    // communication engines
+    #[cfg(feature = "reqwest_io")]
+    pool_map.insert(EngineType::Reqwest, communication_cores);
+
+    pool_map
+}

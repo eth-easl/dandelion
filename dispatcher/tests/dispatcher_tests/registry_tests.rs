@@ -7,7 +7,7 @@ use machine_interface::{
     memory_domain::{read_only::ReadOnlyContext, Context, MemoryDomain, MemoryResource},
     DataItem, DataSet, Position,
 };
-use std::{sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant, vec};
 
 const DEFAULT_CONTEXT_SIZE: usize = 0x800_0000; // 128MiB
 
@@ -92,6 +92,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
                 Metadata {
                     input_sets: local_names,
                     output_sets: out_set_names.clone(),
+                    min_set_bytes: vec![],
                 },
             )
             .expect("should be able to update function");
@@ -212,6 +213,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
                 Metadata {
                     input_sets: local_names,
                     output_sets: out_set_names.clone(),
+                    min_set_bytes: vec![],
                 },
             )
             .expect("should be able to update function");
@@ -265,6 +267,8 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
 #[cfg(any(feature = "reqwest_io"))]
 fn test_insert_composition_with_http_func() {
     use std::collections::BTreeMap;
+
+    use machine_interface::composition::AnyShardingMode;
     let work_queue = dispatcher::queue::WorkQueue::init();
     let dispatcher = dispatcher::dispatcher::Dispatcher::init(
         dispatcher::resource_pool::ResourcePool {
@@ -272,6 +276,7 @@ fn test_insert_composition_with_http_func() {
         },
         BTreeMap::new(),
         work_queue,
+        AnyShardingMode::MaxSharding,
     )
     .unwrap();
     let composition_string = r#"

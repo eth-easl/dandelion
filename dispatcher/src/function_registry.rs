@@ -208,6 +208,7 @@ impl FunctionRegistry {
                     .map(|name| (name, None))
                     .collect(),
                 output_sets: get_system_function_output_sets(system_function),
+                min_set_bytes: vec![],
             };
 
             if let Err(err) =

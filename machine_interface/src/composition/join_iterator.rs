@@ -1,12 +1,12 @@
 use std::ops::Range;
 
-use crate::composition::{CompositionSet, JoinStrategy, ShardingMode};
+use crate::composition::{AnySetGroup, CompositionSet, JoinStrategy, ShardingMode};
 
 pub(super) trait JoinIterator {
     /// Reduces the parallelism of all `AnyIterators` in the iterator chain by combining some sets.
     /// We expect this function is only called once, otherwise, we could end up with unevenly
     /// distributed or completely messed up groups.
-    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<(usize, usize, bool)>);
+    fn reduce_any_partitions(&mut self, any_parallelisms: Vec<AnySetGroup>);
 
     /// Fills the given composition set vector with the current iterator state.
     /// This is undefined behaviour if the previous `advance` call returned `false`.
@@ -43,9 +43,9 @@ impl SetAllIterator {
 }
 
 impl JoinIterator for SetAllIterator {
-    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<(usize, usize, bool)>) {
+    fn reduce_any_partitions(&mut self, any_parallelisms: Vec<AnySetGroup>) {
         if let Some(left) = self.left.as_mut() {
-            left.reduce_any_parallelism(any_parallelisms);
+            left.reduce_any_partitions(any_parallelisms);
         } else {
             debug_assert!(any_parallelisms.len() == 0);
         }
@@ -96,9 +96,9 @@ impl SetEachIterator {
 }
 
 impl JoinIterator for SetEachIterator {
-    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<(usize, usize, bool)>) {
+    fn reduce_any_partitions(&mut self, any_parallelisms: Vec<AnySetGroup>) {
         if let Some(left) = self.left.as_mut() {
-            left.reduce_any_parallelism(any_parallelisms);
+            left.reduce_any_partitions(any_parallelisms);
         } else {
             debug_assert!(any_parallelisms.len() == 0);
         }
@@ -302,7 +302,7 @@ impl SetKeyIterator {
 }
 
 impl JoinIterator for SetKeyIterator {
-    fn reduce_any_parallelism(&mut self, any_parallelisms: Vec<(usize, usize, bool)>) {
+    fn reduce_any_partitions(&mut self, any_parallelisms: Vec<AnySetGroup>) {
         debug_assert!(any_parallelisms.len() == 0);
     }
 
@@ -536,16 +536,29 @@ pub(super) struct AnyIterator {
     set_groups: Vec<Vec<Option<CompositionSet>>>,
     set_groups_idx: usize,
     write_idcs: Vec<usize>,
+    // used to make sure the groups of the largest set are of a given minimum size
+    // use a `min_set_bytes` of 0 to disable
+    min_set_bytes: usize,
+    largest_set_idx: usize,
 }
 
 impl AnyIterator {
+    /// Creates a new `AnyIterator` generating the maximum number of sharded sets for this any set
+    /// group. The number of total partitions can then be reduced using the `reduce_any_parallelism`
+    /// over all iterators.
+    ///
+    /// Returns the corresponding a tuple of the `JoinIterator`, the largest set size (after
+    /// joining), the corresponding minimum set size, and the maximum possible number of partitions.
+    /// If the iterator is empty, i.e. won't produce any sets, it returns the left `JoinIterator`
+    /// (and zeros for the other values).
     pub(super) fn new(
         left: Option<Box<dyn JoinIterator>>,
         sets: Vec<CompositionSet>,
         strategies: Vec<JoinStrategy>,
         write_idcs: Vec<usize>,
         sharding: ShardingMode,
-    ) -> (Option<Box<dyn JoinIterator>>, usize) {
+        min_set_bytes: &[usize],
+    ) -> (Option<Box<dyn JoinIterator>>, usize, usize, usize) {
         let num_sets = sets.len();
         debug_assert!(num_sets > 0);
 
@@ -571,6 +584,8 @@ impl AnyIterator {
         }
 
         if let Some(mut it) = inner_join_it {
+            let mut total_sizes = Vec::new();
+            total_sizes.resize(num_sets, 0);
             let mut inner_sharding = Vec::new();
 
             // generate all sets
@@ -582,31 +597,49 @@ impl AnyIterator {
                 let mut next_sets = Vec::with_capacity(num_sets);
                 next_sets.resize(num_sets, None);
                 it.fill_in(&mut next_sets);
+                for (i, set_opt) in next_sets.iter().enumerate() {
+                    if let Some(set) = set_opt {
+                        total_sizes[i] += set.size();
+                    }
+                }
                 inner_sharding.push(next_sets);
             }
             let max_parallelism = inner_sharding.len();
 
+            // TODO: for multiple joined sets we still only check the minimum set byte size for the
+            //       the largest set -> fix this such that every group fullfills at least one of the
+            //       minimums
+            let (largest_set_idx, largest_set_size) = total_sizes
+                .iter()
+                .enumerate()
+                .max_by_key(|&(_, s)| s)
+                .unwrap();
             (
                 Some(Box::new(Self {
                     left,
                     set_groups: inner_sharding,
                     set_groups_idx: 0,
                     write_idcs,
+                    min_set_bytes: min_set_bytes[largest_set_idx],
+                    largest_set_idx,
                 })),
+                *largest_set_size,
+                min_set_bytes[largest_set_idx],
                 max_parallelism,
             )
         } else {
             // no inner join iterator was built -> this iterator will no produce any sets
-            (left, 0)
+            (left, 0, 0, 0)
         }
     }
 }
 
 impl JoinIterator for AnyIterator {
-    fn reduce_any_parallelism(&mut self, mut any_parallelisms: Vec<(usize, usize, bool)>) {
-        let (_, parallelism, _) = any_parallelisms
+    fn reduce_any_partitions(&mut self, mut any_parallelisms: Vec<AnySetGroup>) {
+        let parallelism = any_parallelisms
             .pop()
-            .expect("Ran out of any_parallelisms.");
+            .expect("Ran out of any_parallelisms.")
+            .target_partitions;
 
         // can only group into less groups than we currently have
         debug_assert!(parallelism > 0);
@@ -617,32 +650,104 @@ impl JoinIterator for AnyIterator {
         let mut new_set_groups = Vec::with_capacity(parallelism);
         let base_size = self.set_groups.len() / parallelism;
         let remainder = self.set_groups.len() % parallelism;
-        let mut start_idx = 0;
-        for group_idx in 0..parallelism {
-            let extra = if group_idx < remainder { 1 } else { 0 };
-            let end_idx = start_idx + base_size + extra;
+        // If a min_set_bytes is given we make sure the set groups of the largest set have at least
+        // that size. This might lead to less groups than the `any_parallelism` given.
+        // We sort the set_groups by size to get a more even partitioning in most cases.
+        if self.min_set_bytes > 0 {
+            self.set_groups.sort_by(|a, b| {
+                a[self.largest_set_idx]
+                    .as_ref()
+                    .unwrap()
+                    .size()
+                    .cmp(&b[self.largest_set_idx].as_ref().unwrap().size())
+            });
 
-            let mut set_group = Vec::with_capacity(num_sets);
-            for set_idx in 0..num_sets {
-                let mut curr_set: Option<CompositionSet> = None;
-                for i in start_idx..end_idx {
-                    if let Some(set) = &mut curr_set {
-                        if let Some(next_set) = self.set_groups[i][set_idx].take() {
-                            set.combine(next_set);
-                        }
-                    } else {
-                        curr_set = self.set_groups[i][set_idx].take();
-                    }
+            let mut curr_idx = 0;
+            let mut min_end_idx = 0;
+            for group_idx in 0..parallelism {
+                if curr_idx >= self.set_groups.len() {
+                    break;
                 }
-                set_group.push(curr_set);
+                let extra = if group_idx < remainder { 1 } else { 0 };
+                min_end_idx = min_end_idx + base_size + extra;
+
+                let mut set_group = Vec::with_capacity(num_sets);
+                set_group.resize(num_sets, None);
+
+                // iterate through largest set until we have reached at least the min_end_idx and the
+                // set is at least self.min_set_bytes big
+                let start_idx = curr_idx;
+                {
+                    let mut curr_set: Option<CompositionSet> = None;
+                    let mut curr_set_size = 0;
+                    while curr_idx < self.set_groups.len()
+                        && (curr_idx < min_end_idx || curr_set_size < self.min_set_bytes)
+                    {
+                        if let Some(set) = &mut curr_set {
+                            if let Some(next_set) =
+                                self.set_groups[curr_idx][self.largest_set_idx].take()
+                            {
+                                curr_set_size += next_set.size();
+                                set.combine(next_set);
+                            }
+                        } else {
+                            curr_set = self.set_groups[curr_idx][self.largest_set_idx].take();
+                            curr_set_size = curr_set.as_ref().unwrap().size();
+                        }
+                        curr_idx += 1;
+                    }
+                    set_group[self.largest_set_idx] = curr_set;
+                }
+
+                // create the set group for all other sets
+                for set_idx in 0..num_sets {
+                    if set_idx == self.largest_set_idx {
+                        continue;
+                    }
+                    let mut curr_set: Option<CompositionSet> = None;
+                    for i in start_idx..curr_idx {
+                        if let Some(set) = &mut curr_set {
+                            if let Some(next_set) = self.set_groups[i][set_idx].take() {
+                                set.combine(next_set);
+                            }
+                        } else {
+                            curr_set = self.set_groups[i][set_idx].take();
+                        }
+                    }
+                    set_group[set_idx] = curr_set;
+                }
+                new_set_groups.push(set_group);
             }
-            new_set_groups.push(set_group);
-            start_idx = end_idx;
+        } else {
+            // If no min_set_bytes is given we create even groups based on the number of items per set
+            // ignoring any item/set sizes.
+            let mut start_idx = 0;
+            for group_idx in 0..parallelism {
+                let extra = if group_idx < remainder { 1 } else { 0 };
+                let end_idx = start_idx + base_size + extra;
+
+                let mut set_group = Vec::with_capacity(num_sets);
+                for set_idx in 0..num_sets {
+                    let mut curr_set: Option<CompositionSet> = None;
+                    for i in start_idx..end_idx {
+                        if let Some(set) = &mut curr_set {
+                            if let Some(next_set) = self.set_groups[i][set_idx].take() {
+                                set.combine(next_set);
+                            }
+                        } else {
+                            curr_set = self.set_groups[i][set_idx].take();
+                        }
+                    }
+                    set_group.push(curr_set);
+                }
+                new_set_groups.push(set_group);
+                start_idx = end_idx;
+            }
         }
         self.set_groups = new_set_groups;
 
         if let Some(left) = self.left.as_mut() {
-            left.reduce_any_parallelism(any_parallelisms);
+            left.reduce_any_partitions(any_parallelisms);
         } else {
             debug_assert!(any_parallelisms.len() == 0);
         }

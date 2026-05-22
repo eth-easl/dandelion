@@ -118,6 +118,7 @@ mod system_driver_tests {
                 .map(|name| (name, None))
                 .collect(),
             output_sets: get_system_function_output_sets(SystemFunction::HTTP),
+            min_set_bytes: vec![],
         });
         let function_alternatives = vec![Arc::new(FunctionAlternative::new_loaded(
             engine_type,
@@ -214,6 +215,7 @@ dolore magna aliquyam erat, sed diam voluptua."#,
                 .map(|name| (name, None))
                 .collect(),
             output_sets: get_system_function_output_sets(SystemFunction::HTTP),
+            min_set_bytes: vec![],
         });
         let function_alternatives = vec![Arc::new(FunctionAlternative::new_loaded(
             engine_type,

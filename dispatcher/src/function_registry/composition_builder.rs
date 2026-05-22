@@ -394,6 +394,7 @@ impl<'reg> CompositionBuilder<'reg> {
                 .map(|name| (name.clone(), None))
                 .collect(),
             output_sets: comp.returns.iter().map(|name| name.clone()).collect(),
+            min_set_bytes: vec![],
         };
         self.compositions.push((
             Arc::new(comp.name.clone()),

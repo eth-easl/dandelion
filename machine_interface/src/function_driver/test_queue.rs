@@ -61,4 +61,6 @@ impl EngineWorkQueue for TestQueue {
         arg_var.notify_all();
         Some(args)
     }
+
+    fn remove_self_from_queue(&self) {}
 }
