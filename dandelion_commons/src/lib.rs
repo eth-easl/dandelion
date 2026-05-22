@@ -241,6 +241,8 @@ pub enum DispatcherError {
     DependencyError,
     /// dispatcher got invalid composition
     InvalidComposition,
+    /// dispatcher got into an invalid system information state
+    InvalidSytemInformation,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -283,17 +285,21 @@ pub enum FunctionRegistryError {
 /// Errors related to function compositions
 #[derive(Debug, Clone, PartialEq)]
 pub enum CompositionError {
-    /// Failed to parse composition
+    /// Failed to parse composition.
     ParsingError,
-    /// Composition identifier is already taken
+    /// Composition identifier is already taken.
     DuplicateIdentifier(String),
-    /// Composition contains function that does not exist
-    ContainsInvalidFunction(String),
-    /// Function in parsing has identifier that is not defined in composition
-    FunctionInvalidIdentifier(String),
-    /// Set indentifier is produced by multiple functions in a composition
-    DuplicateSetName,
-    /// Joining a set twice
+    /// Composition declares a function that does not exist.
+    InvalidFunctionDeclaration(String),
+    /// Composition contains a function that was not declared.
+    UnknownFunction(String),
+    /// Composition contains an invalid function application.
+    InvalidFunctionApplication(String),
+    /// Function application uses undefined input set.
+    UndefinedDataSet(String),
+    /// Set indentifier is produced by multiple functions in a composition.
+    DuplicateSetName(String),
+    /// A set is joined a second time.
     InvalidSecondJoin(String),
     /// Set joins (non cross join) either an all/each sharding or an anyKeyed with a keyed sharding.
     InvalidJoinSharding(String),

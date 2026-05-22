@@ -9,7 +9,7 @@ mod dispatcher_tests {
     use dandelion_commons::FunctionId;
     use dispatcher::{dispatcher::Dispatcher, queue::WorkQueue, resource_pool::ResourcePool};
     use machine_interface::{
-        composition::{CompositionSet, ItemData},
+        composition::{AnyShardingMode, CompositionSet, ItemData},
         function_driver::{ComputeResource, Metadata},
         machine_config::{DomainType, EngineType},
         memory_domain::{ContextTrait, MemoryDomain, MemoryResource},
@@ -43,6 +43,7 @@ mod dispatcher_tests {
                 .map(|(name, set_option)| (name, set_option.map(|set| set.into_local())))
                 .collect(),
             output_sets: out_set_names,
+            min_set_bytes: vec![],
         };
         let mut pool_map = BTreeMap::new();
         pool_map.insert(engine_type, engine_resource);
@@ -64,8 +65,13 @@ mod dispatcher_tests {
             })
             .collect();
         let work_queue = WorkQueue::init();
-        let dispatcher = Dispatcher::init(resource_pool, memory_resources, work_queue)
-            .expect("Should have initialized dispatcher");
+        let dispatcher = Dispatcher::init(
+            resource_pool,
+            memory_resources,
+            work_queue,
+            AnyShardingMode::MaxSharding,
+        )
+        .expect("Should have initialized dispatcher");
         let function_id = Arc::new(String::from("test_function"));
         dispatcher
             .insert_function(

@@ -216,8 +216,8 @@ mod server_tests {
                 local_path: matmul_path,
                 binary: Vec::new(),
                 engine_type,
-                input_sets: vec![(String::from(""), None)],
-                output_sets: vec![String::from("")],
+                input_sets: vec![(String::from("InMats"), None)],
+                output_sets: vec![String::from("OutMats")],
             })
             .unwrap()
         } else {
@@ -226,8 +226,8 @@ mod server_tests {
                 context_size: 0x802_0000,
                 binary: std::fs::read(matmul_path).unwrap(),
                 engine_type,
-                input_sets: vec![(String::from(""), None)],
-                output_sets: vec![String::from("")],
+                input_sets: vec![(String::from("InMats"), None)],
+                output_sets: vec![String::from("OutMats")],
             })
             .unwrap()
         };
@@ -487,12 +487,12 @@ mod server_tests {
         let composition_request = RegisterChain {
             composition: String::from(
                 r#"
-                function matmul(MatrixIn) => (MatrixOut);
-                function matmac(MultiplyLeft, AddLeft, AddRight) => (MatrixOut);
+                function matmul(matrix_in) => (matrix_out);
+                function matmac(mul_left, add_left, add_right) => (matrix_out);
                 composition reuse_output(CompIn) => (CompOut) {
-                    matmul(MatrixIn = all CompIn) => (MatrixA = MatrixOut);
-                    matmul(MatrixIn = all MatrixA) => (MatrixB = MatrixOut);
-                    matmac(AddLeft = all MatrixA, AddRight = all MatrixB) => (CompOut = MatrixOut);
+                    matmul(matrix_in = all CompIn) => (MatrixA = matrix_out);
+                    matmul(matrix_in = all MatrixA) => (MatrixB = matrix_out);
+                    matmac(add_left = all MatrixA, add_right = all MatrixB) => (CompOut = matrix_out);
                 }
             "#,
             ),

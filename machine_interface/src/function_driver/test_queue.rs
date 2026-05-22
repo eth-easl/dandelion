@@ -77,4 +77,6 @@ impl EngineWorkQueue for TestQueue {
     async fn requeu_engine_args(&self, _work: WorkToDo, _debt: crate::promise::Debt) {
         panic!("should not requeue on the test queue");
     }
+
+    fn remove_self_from_queue(&self) {}
 }

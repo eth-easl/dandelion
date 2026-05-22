@@ -5,6 +5,7 @@ package multinode_proto;
 message NodeInfo {
     uint32 version = 1;
     uint64 id = 2;
+    uint64 num_local_cores = 3;
 }
 
 enum SystemFunction {
@@ -88,6 +89,10 @@ message Response {
     }
 }
 
+message NodeUpdate {
+    uint64 num_local_cores = 1;
+}
+
 // Message from remote node to get work or return completed tasks
 message RemoteMessage {
     oneof remote_message {
@@ -95,6 +100,8 @@ message RemoteMessage {
         RepeatedEngines work_request = 1;
         // Message containing the response for a specific function that was run 
         Response response = 2;
+        // Update message to the server
+        NodeUpdate node_update = 3;
     }
 }
 

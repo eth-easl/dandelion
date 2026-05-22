@@ -94,6 +94,7 @@ mod system_driver_tests {
                 .map(|name| (name, None))
                 .collect(),
             output_sets: get_system_function_output_sets(SystemFunction::HTTP),
+            min_set_bytes: vec![],
         });
 
         let input_sets = convert_to_references(
@@ -175,6 +176,7 @@ dolore magna aliquyam erat, sed diam voluptua."#,
                 .map(|name| (name, None))
                 .collect(),
             output_sets: get_system_function_output_sets(SystemFunction::HTTP),
+            min_set_bytes: vec![],
         });
 
         let input_sets = convert_to_references(

@@ -257,6 +257,7 @@ impl EngineLoop for KvmLoop {
         let dirty_log = self.vm.get_dirty_log(0, kvm_context.storage.len()).unwrap();
 
         // detach VM memory
+        // check if we need to do this, since we always set a new one, this should not be necessary
         region.memory_size = 0;
         unsafe {
             self.vm.set_user_memory_region(region).unwrap();
@@ -312,6 +313,39 @@ impl EngineLoop for KvmLoop {
         }
 
         read_output_structs::<u64, u64>(&mut context, elf_config.system_data_offset)?;
+        // go through the content and only keep overlay segments that are still used
+        let mut overlay_keep = Vec::new();
+        for set in context.content.iter().filter_map(|set| set.as_ref()) {
+            for item in &set.buffers {
+                let Position { offset, size } = item.data;
+                overlay_keep.push((offset, (offset + size).saturating_sub(1)));
+            }
+        }
+        overlay_keep.sort_unstable_by_key(|(start, _)| *start);
+
+        let kvm_context = match &mut context.context {
+            ContextType::Kvm(context) => context,
+            _ => unreachable!(),
+        };
+        let mut keep_index = 0;
+        kvm_context
+            .overlay
+            .retain(|overlay_end, (overlay_start, _)| {
+                while keep_index < overlay_keep.len() {
+                    let (item_start, item_end) = overlay_keep[keep_index];
+                    match (item_start <= *overlay_end, *overlay_start <= item_end) {
+                        // if there is overlap return true
+                        (true, true) => return true,
+                        // the item starts and ends before the current overlay item, so go to next one
+                        (true, false) => (),
+                        // item starts after the overlay ends, so go to next overlay and throw this one away
+                        (false, _) => return false,
+                    }
+                    keep_index += 1;
+                }
+                false
+            });
+
         return Ok(context);
     }
 }
