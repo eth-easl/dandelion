@@ -194,18 +194,26 @@ impl fmt::Display for Recorder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{{\"id\": \"{}\", \"ts\": {}, \"children:\": [",
+            "{{\"id\": \"{}\", \"ts\": {}, \"children\": [",
             self.inner.function_id, self.inner.timestamps
         )?;
+        let mut need_comma = false;
         if let Some(children) = self.inner.children.get() {
             for child in children.iter() {
                 if let Some(child_recorders) = child {
+                    if need_comma {
+                        write!(f, ",")?;
+                    }
+                    write!(f, "[")?;
                     for (i, r) in child_recorders.iter().enumerate() {
-                        write!(f, "{}", r)?;
                         if i < child_recorders.len() - 1 {
-                            write!(f, ",")?;
+                            write!(f, "{},", r)?;
+                        } else {
+                            write!(f, "{}", r)?;
                         }
                     }
+                    write!(f, "]")?;
+                    need_comma = true;
                 }
             }
         }
