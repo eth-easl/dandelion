@@ -479,6 +479,7 @@ async fn resolve_item(
                         Ok(context_vec) => context_vec[set_index].clone(),
                         Err(err) => return Err(err.clone()),
                     };
+                    item.data.offset = 0;
                     item.data.size = context.size;
                     Ok((item, ItemData::LocalData(context)))
                 }
@@ -490,6 +491,7 @@ async fn resolve_item(
                         Ok(context_vec) => context_vec[set_index].clone(),
                         Err(err) => return Err(err.clone()),
                     };
+                    item.data.offset = 0;
                     item.data.size = context.size;
                     Ok((item, ItemData::LocalData(context)))
                 }
