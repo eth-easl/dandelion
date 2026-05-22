@@ -1,20 +1,18 @@
-use dandelion_server::config::{FuncMetadata, PreloadFunc};
+use dandelion_server::config::{self, FuncMetadata, PreloadFunc};
 use dispatcher::{dispatcher::Dispatcher, queue::WorkQueue, resource_pool::ResourcePool};
 use log::{debug, error, info, warn};
 use machine_interface::{
-    composition::{set_remote_data_resolver, LocalCompositionSet},
+    composition::{
+        set_remote_data_resolver, AnyShardingMode, AnyShardingParams, LocalCompositionSet,
+    },
     function_driver::{ComputeResource, Metadata},
-    machine_config::{DomainType, EngineType},
+    machine_config::{create_engine_resource_map, DomainType, EngineType},
     memory_domain::MemoryResource,
 };
 use multinode::{data::ExportRegistry, DispatcherCommand};
 use nix::unistd::Pid;
 use std::{collections::BTreeMap, fs::read_to_string, sync::Arc};
-use tokio::{
-    runtime::Builder,
-    select, spawn,
-    sync::{mpsc, watch},
-};
+use tokio::{runtime::Builder, select, spawn, sync::mpsc};
 
 mod frontend;
 
@@ -147,12 +145,11 @@ async fn remote_queue_server(queue_port: u16, queue: WorkQueue, export_registry:
 async fn remote_queue_client(
     remote_url: String,
     sender: mpsc::Sender<DispatcherCommand>,
-    local_available: watch::Receiver<u32>,
     export_registry: ExportRegistry,
+    queue: WorkQueue,
 ) {
     let connection = tokio::net::TcpStream::connect(remote_url).await.unwrap();
-    multinode::client::remote_queue_client(connection, sender, local_available, export_registry)
-        .await;
+    multinode::client::remote_queue_client(connection, sender, export_registry, queue).await;
 }
 
 fn main() -> () {
@@ -241,20 +238,7 @@ fn main() -> () {
     let (dispatcher_sender, dispatcher_recevier) = mpsc::channel(1000);
 
     // set up dispatcher configuration basics
-    let mut pool_map = BTreeMap::new();
-
-    // insert engines for the currentyl selected compute engine type
-    // todo add function to machine config to detect resources and auto generate this
-    #[cfg(feature = "mmu")]
-    let engine_type = EngineType::Process;
-    #[cfg(feature = "kvm")]
-    let engine_type = EngineType::Kvm;
-    #[cfg(feature = "cheri")]
-    let engine_type = EngineType::Cheri;
-    #[cfg(any(feature = "cheri", feature = "mmu", feature = "kvm"))]
-    pool_map.insert(engine_type, compute_cores);
-    #[cfg(feature = "reqwest_io")]
-    pool_map.insert(EngineType::System, communication_cores);
+    let pool_map = create_engine_resource_map(compute_cores, communication_cores);
     let resource_pool = ResourcePool {
         engine_pool: futures::lock::Mutex::new(pool_map),
     };
@@ -297,10 +281,29 @@ fn main() -> () {
     };
 
     let work_queue = WorkQueue::init();
+
+    // define the any sharding mode
+    let any_sharding_mode = match config.any_sharding_mode {
+        config::AnyShardingMode::MaxSharding => AnyShardingMode::MaxSharding,
+        config::AnyShardingMode::FixedSharding(n) => AnyShardingMode::FixedSharding(n),
+        config::AnyShardingMode::AutoSharding(n) => {
+            AnyShardingMode::AutoSharding(AnyShardingParams {
+                sys_info: work_queue.system_info.clone(),
+                offload_const: n,
+            })
+        }
+    };
+
     let dispatcher = Box::leak(Box::new(
-        Dispatcher::init(resource_pool, memory_pool, work_queue.clone())
-            .expect("Should be able to start dispatcher"),
+        Dispatcher::init(
+            resource_pool,
+            memory_pool,
+            work_queue.clone(),
+            any_sharding_mode,
+        )
+        .expect("Should be able to start dispatcher"),
     ));
+
     // start dispatcher
     dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
 
@@ -324,6 +327,7 @@ fn main() -> () {
                             FuncMetadata {
                                 input_sets,
                                 output_sets,
+                                min_set_bytes,
                             },
                         ctx_size,
                         bin_path,
@@ -348,8 +352,9 @@ fn main() -> () {
                     let input_sets: Vec<(String, Option<LocalCompositionSet>)> =
                         input_sets.into_iter().map(|s| (s, None)).collect();
                     let metadata = Metadata {
-                        input_sets: input_sets,
-                        output_sets: output_sets,
+                        input_sets,
+                        output_sets,
+                        min_set_bytes,
                     };
                     match dispatcher.insert_function(
                         name.clone(),
@@ -399,7 +404,6 @@ fn main() -> () {
     {
         let node_id = config.node_id;
         let export_registry = ExportRegistry::new(node_id);
-        let watcher = work_queue.idle_watcher();
         if multinode_settings.queue_server.node_id == node_id {
             let queue_server_port =
                 multinode::config::queue_server_port(&multinode_settings.queue_server.url)
@@ -415,8 +419,8 @@ fn main() -> () {
             runtime.spawn(remote_queue_client(
                 multinode::config::tcp_address(&multinode_settings.queue_server.url),
                 dispatcher_sender.clone(),
-                watcher,
                 export_registry.clone(),
+                work_queue,
             ));
         }
 

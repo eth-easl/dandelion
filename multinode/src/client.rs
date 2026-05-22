@@ -2,8 +2,8 @@ use crate::{
     data::ExportRegistry,
     deserialize_node_info, deserialize_queue_message, deserialize_remote_message,
     proto::{
-        self, queue_message, remote_message, Invocation, NodeInfo, QueueMessage, RemoteMessage,
-        RepeatedEngines, Response,
+        self, queue_message, remote_message, Invocation, NodeInfo, NodeUpdate, QueueMessage,
+        RemoteMessage, RepeatedEngines, Response,
     },
     serialize_node_info, serialize_queue_message, serialize_remote_message,
     util::{
@@ -18,7 +18,7 @@ use dandelion_commons::{
 };
 use dispatcher::queue::{get_engine_flag, WorkQueue};
 use futures::{future::Either, stream::FuturesUnordered, FutureExt, StreamExt};
-use log::{trace, warn};
+use log::{error, trace, warn};
 use machine_interface::{
     composition::CompositionSet,
     function_driver::{WorkDone, WorkToDo},
@@ -180,9 +180,14 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
     let NodeInfo {
         version,
         id: node_id,
+        num_local_cores,
     } = deserialize_node_info(node_info_buffer).unwrap();
     assert_eq!(version, 1);
     trace!("Queue Server received initial message");
+
+    // track current number remote cores
+    let mut remote_num_cores = num_local_cores;
+    queue.add_remote_cores(num_local_cores as usize);
 
     let mut debt_map = BTreeMap::new();
     let mut free_debt_ids = BinaryHeap::new();
@@ -307,6 +312,29 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                         };
                         debt.fulfill(result)
                     }
+                    remote_message::RemoteMessage::NodeUpdate(node_update) => {
+                        trace!(
+                            "Queue Server received node update with new local count: {}",
+                            node_update.num_local_cores
+                        );
+                        let mut success = true;
+                        if node_update.num_local_cores < remote_num_cores {
+                            success = queue
+                                .remove_remote_cores(
+                                    (remote_num_cores - node_update.num_local_cores) as usize,
+                                )
+                                .is_ok();
+                        } else {
+                            queue.add_remote_cores(
+                                (node_update.num_local_cores - remote_num_cores) as usize,
+                            );
+                        }
+                        if success {
+                            remote_num_cores = node_update.num_local_cores;
+                        } else {
+                            error!("Failed to update remote core count: Total number of remote cores underflows.");
+                        }
+                    }
                 }
                 merged_stream.push(Either::Right(receive_client_message(read_socket)));
             }
@@ -331,7 +359,8 @@ enum PollingOption<Stream: AsyncReadExt + std::marker::Unpin> {
         DandelionResult<queue_message::QueueMessage>,
         Option<Bytes>,
     ),
-    PollFor(watch::Receiver<u32>, u32),
+    IdleCoresChanged(watch::Receiver<u32>, u32),
+    LocalCoreCountChanged(watch::Receiver<usize>, usize),
     // Results(RemoteMessage, Option<(Vec<Option<CompositionSet>>, u64)>),
     Results(RemoteMessage),
 }
@@ -350,7 +379,15 @@ async fn poll_idle_core<Stream: AsyncReadExt + std::marker::Unpin>(
 ) -> PollingOption<Stream> {
     receiver.changed().await.unwrap();
     let engine_state = *receiver.borrow_and_update();
-    PollingOption::PollFor(receiver, engine_state)
+    PollingOption::IdleCoresChanged(receiver, engine_state)
+}
+
+async fn poll_local_core_count<Stream: AsyncReadExt + std::marker::Unpin>(
+    mut receiver: watch::Receiver<usize>,
+) -> PollingOption<Stream> {
+    receiver.changed().await.unwrap();
+    let num_local_cores = *receiver.borrow_and_update();
+    PollingOption::LocalCoreCountChanged(receiver, num_local_cores)
 }
 
 async fn poll_results<Stream: AsyncReadExt + std::marker::Unpin>(
@@ -391,8 +428,8 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
     // TODO: might want a differnet mechanism, to wake them one after each other to go check
     // But each poller also needs to be able to check if there are still cores available,
     // in case the remote sends a message that there is work available
-    local_available: watch::Receiver<u32>,
     export_registry: ExportRegistry,
+    queue: WorkQueue,
 ) {
     // local state keeping variables
     let mut remote_had_work = true;
@@ -401,6 +438,7 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
     let node_info_buffer = serialize_node_info(NodeInfo {
         version: 1,
         id: export_registry.get_node_id(),
+        num_local_cores: { *queue.system_info.num_local_cores_watcher.borrow() } as u64,
     });
 
     let (read_socket, mut write_socket) = split(socket);
@@ -410,6 +448,7 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
 
     // Create a second copy of the watcher to wait on asynchronously, marke changed to check once in the beginning,
     // in case there are already idle cores
+    let local_available = queue.idle_watcher();
     let mut new_local_available = local_available.clone();
     new_local_available.mark_changed();
 
@@ -422,6 +461,9 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
     merged_stream.push(Either::Right(
         receive_queue_message(read_socket).left_future(),
     ));
+    merged_stream.push(Either::Left(Either::Right(poll_local_core_count(
+        queue.system_info.num_local_cores_watcher.clone(),
+    ))));
 
     while let Some(current_future) = merged_stream.next().await {
         match current_future {
@@ -486,12 +528,12 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                             })
                             .await
                             .unwrap();
-                        merged_stream.push(Either::Left(poll_results(
+                        merged_stream.push(Either::Left(Either::Left(poll_results(
                             callback_receriver,
                             invocation_id,
                             export_registry.clone(),
                             start_time,
-                        )));
+                        ))));
                     }
                 }
                 merged_stream.push(Either::Right(Either::Left(receive_queue_message(
@@ -507,7 +549,7 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                 send_message(&serialize_remote_message(results), &mut write_socket, None).await;
             }
             // getting a notification so should poll the queue
-            PollingOption::PollFor(receiver, available_engines) => {
+            PollingOption::IdleCoresChanged(receiver, available_engines) => {
                 trace!(
                     "Queue Client checking updated idle state: {:?}",
                     available_engines
@@ -532,6 +574,16 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                     remote_had_work = false;
                 }
                 merged_stream.push(Either::Right(Either::Right(poll_idle_core(receiver))));
+            }
+            PollingOption::LocalCoreCountChanged(receiver, num_local_cores) => {
+                let request_buffer = serialize_remote_message(RemoteMessage {
+                    remote_message: Some(remote_message::RemoteMessage::NodeUpdate(NodeUpdate {
+                        num_local_cores: num_local_cores as u64,
+                    })),
+                });
+                trace!("Sending new local core count: {}", num_local_cores);
+                send_message(&request_buffer, &mut write_socket, None).await;
+                merged_stream.push(Either::Left(Either::Right(poll_local_core_count(receiver))));
             }
         }
     }

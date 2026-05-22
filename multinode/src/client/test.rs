@@ -18,7 +18,7 @@ use crate::{
     DispatcherCommand,
 };
 use dandelion_commons::{err_dandelion, records::Recorder, DandelionError};
-use dispatcher::queue::WorkQueue;
+use dispatcher::queue::{get_engine_flag, WorkQueue};
 use futures::{
     task::{Context, Waker},
     FutureExt,
@@ -30,7 +30,7 @@ use machine_interface::{
 };
 use tokio::{
     io::{AsyncRead, ReadBuf},
-    sync::{mpsc, watch},
+    sync::mpsc,
     task::yield_now,
 };
 
@@ -38,7 +38,11 @@ const EXPECTED_ERROR: DandelionError = DandelionError::NotImplemented;
 
 async fn mock_queue_client(mut client: tokio::io::DuplexStream, engine_type: proto::EngineType) {
     // send the node info to the handler
-    let node_info = NodeInfo { version: 1, id: 0 };
+    let node_info = NodeInfo {
+        version: 1,
+        id: 0,
+        num_local_cores: 0,
+    };
     let node_info_serial = serialize_node_info(node_info.clone());
     send_message(&node_info_serial, &mut client, None).await;
     // yield so the registration can be handled
@@ -126,6 +130,7 @@ async fn mock_dispatcher(work_queue: WorkQueue, engine_type: machine_config::Eng
                 metadata: Arc::new(Metadata {
                     input_sets: vec![],
                     output_sets: vec![],
+                    min_set_bytes: vec![],
                 }),
                 caching: false,
                 recorder: Recorder::new(function_id, Instant::now()),
@@ -269,6 +274,9 @@ async fn mock_queue_server(
                 _ => panic!("expected error message"),
             }
         }
+        remote_message::RemoteMessage::NodeUpdate(_) => {
+            panic!("Should not receive node update in this test.")
+        }
     }
 
     *progress_point.lock().unwrap() = 3;
@@ -284,6 +292,9 @@ async fn mock_queue_server(
     {
         remote_message::RemoteMessage::WorkRequest(_) => (),
         remote_message::RemoteMessage::Response(_) => panic!("Should receive work request"),
+        remote_message::RemoteMessage::NodeUpdate(_) => {
+            panic!("Should not receive node update in this test.")
+        }
     }
     // send back no work available
     let no_work_message = serialize_queue_message(QueueMessage {
@@ -329,16 +340,17 @@ fn test_remote_queue_client() {
     // create a mock socket for the handler
     let (client, server) = tokio::io::duplex(4096);
 
+    let work_queue = WorkQueue::init();
     let (dispatcher_sender, mut dispatcher_receiver) = mpsc::channel(1);
-    let (watch_sender, watch_receiver) = watch::channel(0);
     let progress = Arc::new(Mutex::new(0));
+    let engine_flags = get_engine_flag(machine_config::EngineType::iter().next().unwrap());
 
     let mut context = Context::from_waker(Waker::noop());
     let mut poller_future = Box::pin(remote_queue_client(
         client,
         dispatcher_sender,
-        watch_receiver,
         ExportRegistry::new(1),
+        work_queue.clone(),
     ));
     let mut test_server_future = Box::pin(mock_queue_server(
         expected_function_id.clone(),
@@ -365,7 +377,11 @@ fn test_remote_queue_client() {
     assert_eq!(*progress.lock().unwrap(), 1);
 
     // poke client to go fetch work
-    watch_sender.send_replace(1);
+    let mut engine_future = Box::pin(work_queue.get_compute_work(engine_flags));
+    assert!(match engine_future.as_mut().poll(&mut context) {
+        Poll::Pending => true,
+        _ => false,
+    });
 
     // poll the client so it can send
     assert_eq!(Poll::Pending, poller_future.as_mut().poll(&mut context));
@@ -411,7 +427,11 @@ fn test_remote_queue_client() {
     assert_eq!(3, *progress.lock().unwrap());
 
     // have the server ask for more work
-    watch_sender.send_replace(1);
+    let mut another_engine_future = Box::pin(work_queue.get_compute_work(engine_flags));
+    assert!(match another_engine_future.as_mut().poll(&mut context) {
+        Poll::Pending => true,
+        _ => false,
+    });
     assert_eq!(Poll::Pending, poller_future.as_mut().poll(&mut context));
 
     // check node asked for more work and send back that there is none
@@ -452,7 +472,6 @@ fn test_combined() {
 
     // create variable needed for client side
     let (dispatcher_sender, mut dispatcher_receiver) = mpsc::channel(1);
-    let (_watch_sender, watch_receiver) = watch::channel(1);
 
     // spawn both on a new runtime
     let runtime = tokio::runtime::Builder::new_multi_thread().build().unwrap();
@@ -464,12 +483,19 @@ fn test_combined() {
     runtime.spawn(remote_queue_client(
         server_socket,
         dispatcher_sender,
-        watch_receiver,
         ExportRegistry::new(2),
+        work_queue.clone(),
     ));
 
-    // send work on the work queue
+    // create one waiting engine
     let mut context = Context::from_waker(Waker::noop());
+    let mut engine_future = Box::pin(work_queue.get_compute_work(get_engine_flag(engine_type)));
+    assert!(match engine_future.as_mut().poll(&mut context) {
+        Poll::Pending => true,
+        _ => false,
+    });
+
+    // send work on the work queue
     let mut test_dispatcher_future = Box::pin(mock_dispatcher(work_queue.clone(), engine_type));
     assert_eq!(
         Poll::Pending,

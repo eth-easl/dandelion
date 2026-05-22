@@ -22,8 +22,8 @@ use log::{debug, trace};
 use machine_interface::memory_domain::ContextTrait;
 use machine_interface::{
     composition::{
-        get_sharding, Composition, CompositionSet, InputSetDescriptor, JoinStrategy,
-        LocalCompositionSet, ShardingMode,
+        get_sharding, AnyShardingMode, Composition, CompositionSet, InputSetDescriptor,
+        JoinStrategy, LocalCompositionSet, ShardingMode,
     },
     function_driver::{Metadata, WorkToDo},
     machine_config::{get_available_domains, DomainType, EngineType, IntoEnumIterator},
@@ -37,6 +37,7 @@ pub struct Dispatcher {
     function_registry: FunctionRegistry,
     work_queue: WorkQueue,
     domains: Vec<Arc<Box<dyn MemoryDomain>>>,
+    any_sharding_mode: AnyShardingMode,
 }
 
 impl Dispatcher {
@@ -44,6 +45,7 @@ impl Dispatcher {
         mut resource_pool: ResourcePool,
         memory_resources: BTreeMap<DomainType, MemoryResource>,
         work_queue: WorkQueue,
+        any_sharding_mode: AnyShardingMode,
     ) -> DandelionResult<Self> {
         // get machine specific configurations
         let domains = get_available_domains(memory_resources);
@@ -53,6 +55,7 @@ impl Dispatcher {
             let engine_queue = EngineQueue::init(work_queue.clone(), engine_type);
             while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(engine_type) {
                 engine_type.start_engine(resource, engine_queue.clone())?;
+                work_queue.add_local_cores(1);
             }
         }
 
@@ -63,6 +66,7 @@ impl Dispatcher {
             function_registry,
             work_queue,
             domains,
+            any_sharding_mode,
         });
     }
 
@@ -432,9 +436,18 @@ impl Dispatcher {
         // but still want to run if we queued it.
         let is_sharded = input_sets.len() != 0 && input_sets.iter().any(|opt| opt.is_some());
         let composition_results: DandelionResult<Vec<_>> = if is_sharded {
-            // TODO: check how to best compute the target parallelism
-            let target_parallelism = usize::MAX;
-            let sharded = get_sharding(input_sets, join_order, join_strategies, target_parallelism);
+            let min_set_bytes = self
+                .function_registry
+                .get_metadata(&function_id)?
+                .min_set_bytes
+                .clone();
+            let sharded = get_sharding(
+                input_sets,
+                join_order,
+                join_strategies,
+                &self.any_sharding_mode,
+                min_set_bytes,
+            );
             let size_hint = sharded.len();
             recorders = Vec::with_capacity(size_hint);
             let resutls: Vec<_> = sharded
