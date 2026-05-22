@@ -85,7 +85,14 @@ impl fmt::Debug for FunctionTimestamp {
 #[cfg(feature = "timestamp")]
 impl fmt::Display for FunctionTimestamp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "[",)?;
+        // write own time points
+        for index in 0..LAST_RECORD_POINT {
+            let duration = unsafe { *self.time_points[index].get() };
+            write!(f, "{},", duration.as_micros())?;
+        }
+        let duration = unsafe { *self.time_points[LAST_RECORD_POINT].get() };
+        write!(f, "{}]", duration.as_micros())
     }
 }
 
@@ -185,6 +192,23 @@ impl fmt::Debug for Recorder {
 
 impl fmt::Display for Recorder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        write!(
+            f,
+            "{{\"id\": \"{}\", \"ts\": {}, \"children:\": [",
+            self.inner.function_id, self.inner.timestamps
+        )?;
+        if let Some(children) = self.inner.children.get() {
+            for child in children.iter() {
+                if let Some(child_recorders) = child {
+                    for (i, r) in child_recorders.iter().enumerate() {
+                        write!(f, "{}", r)?;
+                        if i < child_recorders.len() - 1 {
+                            write!(f, ",")?;
+                        }
+                    }
+                }
+            }
+        }
+        write!(f, "]}}")
     }
 }
