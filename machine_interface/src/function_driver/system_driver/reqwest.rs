@@ -445,9 +445,9 @@ async fn resolve_item(
     match data {
         ItemData::LocalData(_) => Ok((item, data)),
         ItemData::RemoteData(remote_data) => {
-            let (context, position) = crate::composition::resolve_remote_data(remote_data)
-                .await
-                .unwrap();
+            let _remote_data_clone = remote_data.clone(); // avoid potential drop before resolve finishes
+            let client = crate::composition::get_remote_data_client()?;
+            let (context, position) = client.resolve_remote_data(remote_data).await?;
             item.data = position;
             Ok((item, ItemData::LocalData(context)))
         }
@@ -630,6 +630,23 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                     } else {
                         debt.fulfill(Ok(WorkDone::CompositionSet(sets)));
                     }
+                    drop(ticket);
+                });
+            }
+            WorkToDo::RemoteToDelete { remote_data } => {
+                tokio::spawn(async move {
+                    match crate::composition::get_remote_data_client() {
+                        Ok(client) => {
+                            let result = client
+                                .delete_remote_data(remote_data)
+                                .await
+                                .map(|_| WorkDone::RemoteDeleted);
+                            debt.fulfill(result);
+                        }
+                        Err(err) => {
+                            debt.fulfill(Err(err));
+                        }
+                    };
                     drop(ticket);
                 });
             }

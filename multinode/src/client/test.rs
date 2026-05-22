@@ -152,12 +152,14 @@ fn test_remote_queue_server() {
 
     let work_queue = WorkQueue::init();
     let engine_type = machine_config::EngineType::iter().next().unwrap();
+    let (remote_data_deletion_sender, _remote_data_deletion_receiver) = mpsc::unbounded_channel();
 
     let mut context = Context::from_waker(Waker::noop());
     let mut server_future = Box::pin(remote_queue_server(
         server,
         work_queue.clone(),
         ExportRegistry::new(1),
+        remote_data_deletion_sender,
     ));
     let mut test_client_future = Box::pin(mock_queue_client(client, engine_type_dtop(engine_type)));
     let mut test_dispatcher_future = Box::pin(mock_dispatcher(work_queue.clone(), engine_type));
@@ -456,10 +458,12 @@ fn test_combined() {
 
     // spawn both on a new runtime
     let runtime = tokio::runtime::Builder::new_multi_thread().build().unwrap();
+    let (remote_data_deletion_sender, _remote_data_deletion_receiver) = mpsc::unbounded_channel();
     runtime.spawn(remote_queue_server(
         client_socket,
         work_queue.clone(),
         ExportRegistry::new(1),
+        remote_data_deletion_sender,
     ));
     runtime.spawn(remote_queue_client(
         server_socket,

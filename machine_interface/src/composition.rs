@@ -10,10 +10,12 @@ use std::{
     cmp,
     collections::BTreeMap,
     future::Future,
+    ops::Deref,
     pin::Pin,
     sync::{Arc, OnceLock},
     vec,
 };
+use tokio::sync::mpsc;
 
 #[cfg(test)]
 use crate::memory_domain::read_only::ReadOnlyContext;
@@ -169,36 +171,93 @@ impl IntoIterator for LocalCompositionSet {
     }
 }
 
-// TODO: find a more reasonable place for RemoteData and RemoteDataResolver
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+// TODO: find a more reasonable place for RemoteData and RemoteDataClient
+#[derive(Clone, Debug)]
 pub struct RemoteData {
-    pub node_id: u64,
-    pub data_id: u64,
+    inner: Arc<RemoteDataInner>,
 }
 
-pub trait RemoteDataResolver: Send + Sync {
+#[derive(Debug)]
+pub struct RemoteDataInner {
+    pub node_id: u64,
+    pub data_id: u64,
+    delete_sender: Option<mpsc::UnboundedSender<RemoteData>>,
+}
+
+impl RemoteData {
+    pub fn new(node_id: u64, data_id: u64) -> Self {
+        Self {
+            inner: Arc::new(RemoteDataInner {
+                node_id,
+                data_id,
+                delete_sender: None,
+            }),
+        }
+    }
+
+    pub fn delete_on_drop(
+        node_id: u64,
+        data_id: u64,
+        delete_sender: mpsc::UnboundedSender<RemoteData>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(RemoteDataInner {
+                node_id,
+                data_id,
+                delete_sender: Some(delete_sender),
+            }),
+        }
+    }
+}
+
+impl Deref for RemoteData {
+    type Target = RemoteDataInner;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner.as_ref()
+    }
+}
+
+impl Drop for RemoteDataInner {
+    fn drop(&mut self) {
+        if let Some(delete_sender) = &self.delete_sender {
+            if let Err(err) = delete_sender.send(RemoteData::new(self.node_id, self.data_id)) {
+                panic!(
+                    "Failed to send remote data deletion message for node_id {}, data_id {}: {}",
+                    self.node_id, self.data_id, err
+                );
+            }
+        }
+    }
+}
+
+pub trait RemoteDataClient: Send + Sync {
     fn resolve_remote_data(
         &self,
         data: RemoteData,
     ) -> Pin<Box<dyn Future<Output = DandelionResult<(Arc<Context>, Position)>> + Send + '_>>;
+
+    fn delete_remote_data(
+        &self,
+        data: RemoteData,
+    ) -> Pin<Box<dyn Future<Output = DandelionResult<()>> + Send + '_>>;
 }
 
-static REMOTE_DATA_RESOLVER: OnceLock<Arc<dyn RemoteDataResolver>> = OnceLock::new();
+static REMOTE_DATA_CLIENT: OnceLock<Arc<dyn RemoteDataClient>> = OnceLock::new();
 
-pub fn set_remote_data_resolver(resolver: Arc<dyn RemoteDataResolver>) {
-    let _ = REMOTE_DATA_RESOLVER.set(resolver);
+pub fn set_remote_data_client(client: Arc<dyn RemoteDataClient>) {
+    let _ = REMOTE_DATA_CLIENT.set(client);
 }
 
-pub async fn resolve_remote_data(data: RemoteData) -> DandelionResult<(Arc<Context>, Position)> {
-    let resolver = match REMOTE_DATA_RESOLVER.get() {
-        Some(resolver) => resolver,
+pub fn get_remote_data_client() -> DandelionResult<Arc<dyn RemoteDataClient>> {
+    match REMOTE_DATA_CLIENT.get() {
+        Some(client) => Ok(client.clone()),
         None => {
-            return err_dandelion!(DandelionError::Multinode(MultinodeError::ConfigError(
-                "No remote data resolver configured".to_string(),
+            err_dandelion!(DandelionError::Multinode(MultinodeError::ConfigError(
+                "No remote data client configured".to_string(),
             )))
         }
-    };
-    resolver.resolve_remote_data(data).await
+    }
 }
 
 /// Enum to represent data in a composition set.

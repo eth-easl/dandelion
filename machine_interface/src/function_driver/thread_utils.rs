@@ -192,6 +192,9 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
             WorkToDo::SetsToResolve { input_sets: _ } => {
                 panic!("Compute engine should never get sets to resolve")
             }
+            WorkToDo::RemoteToDelete { remote_data: _ } => {
+                panic!("Compute engine should never get remote data to delete")
+            }
             WorkToDo::Shutdown(_) => {
                 debt.fulfill(Ok(WorkDone::Resources(vec![ComputeResource::CPU(core_id)])));
                 return;

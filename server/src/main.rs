@@ -2,7 +2,7 @@ use dandelion_server::config::{FuncMetadata, PreloadFunc};
 use dispatcher::{dispatcher::Dispatcher, queue::WorkQueue, resource_pool::ResourcePool};
 use log::{debug, error, info, warn};
 use machine_interface::{
-    composition::{set_remote_data_resolver, LocalCompositionSet},
+    composition::{set_remote_data_client, LocalCompositionSet, RemoteData},
     function_driver::{ComputeResource, Metadata},
     machine_config::{DomainType, EngineType},
     memory_domain::MemoryResource,
@@ -20,9 +20,27 @@ mod frontend;
 
 async fn dispatcher_loop(
     mut request_receiver: mpsc::Receiver<DispatcherCommand>,
+    mut remote_data_deletion_receiver: mpsc::UnboundedReceiver<RemoteData>,
     dispatcher: &'static Dispatcher,
 ) {
-    while let Some(dispatcher_args) = request_receiver.recv().await {
+    loop {
+        let dispatcher_args = select! {
+            dispatcher_args = request_receiver.recv() => dispatcher_args,
+            remote_data = remote_data_deletion_receiver.recv() => {
+                if let Some(remote_data) = remote_data {
+                    spawn(async move {
+                        if let Err(err) = dispatcher.delete_remote_data(remote_data).await {
+                            warn!("Failed to delete remote data: {}", err);
+                        }
+                    });
+                    continue;
+                }
+                None
+            }
+        };
+        let Some(dispatcher_args) = dispatcher_args else {
+            break;
+        };
         match dispatcher_args {
             DispatcherCommand::FunctionRequest {
                 function_id,
@@ -123,7 +141,12 @@ async fn dispatcher_loop(
     }
 }
 
-async fn remote_queue_server(queue_port: u16, queue: WorkQueue, export_registry: ExportRegistry) {
+async fn remote_queue_server(
+    queue_port: u16,
+    queue: WorkQueue,
+    export_registry: ExportRegistry,
+    remote_data_deletion_sender: mpsc::UnboundedSender<RemoteData>,
+) {
     // socket to listen to
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], queue_port));
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
@@ -136,6 +159,7 @@ async fn remote_queue_server(queue_port: u16, queue: WorkQueue, export_registry:
                 socket,
                 queue.clone(),
                 export_registry.clone(),
+                remote_data_deletion_sender.clone(),
             ));
         } else {
             // TODO handle errors on incomming request
@@ -297,12 +321,17 @@ fn main() -> () {
     };
 
     let work_queue = WorkQueue::init();
+    let (remote_data_deletion_sender, remote_data_deletion_receiver) = mpsc::unbounded_channel();
     let dispatcher = Box::leak(Box::new(
         Dispatcher::init(resource_pool, memory_pool, work_queue.clone())
             .expect("Should be able to start dispatcher"),
     ));
     // start dispatcher
-    dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
+    dispatcher_runtime.spawn(dispatcher_loop(
+        dispatcher_recevier,
+        remote_data_deletion_receiver,
+        dispatcher,
+    ));
 
     // register preload functions
     let (preload_functions, preload_compositions) = config.get_preload_functions();
@@ -409,6 +438,7 @@ fn main() -> () {
                 queue_server_port,
                 work_queue,
                 export_registry.clone(),
+                remote_data_deletion_sender.clone(),
             ));
         } else {
             // start a thread to check if we should be checking remote queues
@@ -432,7 +462,7 @@ fn main() -> () {
             data_server_port,
             export_registry.clone(),
         ));
-        set_remote_data_resolver(Arc::new(multinode::data::HttpRemoteDataResolver::new(
+        set_remote_data_client(Arc::new(multinode::data::HttpRemoteDataClient::new(
             data_server_urls,
             export_registry,
         )));

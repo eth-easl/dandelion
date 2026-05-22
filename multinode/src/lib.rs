@@ -176,7 +176,7 @@ fn test_serialize_invocation_request() {
             2 => assert_eq!(&item_1_1_data.to_le_bytes(), data_slice),
             _ => panic!("Unexpected exported data id"),
         }
-        machine_interface::composition::RemoteData { node_id, data_id }
+        machine_interface::composition::RemoteData::new(node_id, data_id)
     });
     // assert!(set_option.is_none());
     assert_eq!(3, next_data_id);

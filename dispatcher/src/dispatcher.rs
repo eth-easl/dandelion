@@ -23,7 +23,7 @@ use machine_interface::memory_domain::ContextTrait;
 use machine_interface::{
     composition::{
         get_sharding, Composition, CompositionSet, InputSetDescriptor, JoinStrategy,
-        LocalCompositionSet, ShardingMode,
+        LocalCompositionSet, RemoteData, ShardingMode,
     },
     function_driver::{Metadata, WorkToDo},
     machine_config::{get_available_domains, DomainType, EngineType, IntoEnumIterator},
@@ -129,6 +129,13 @@ impl Dispatcher {
             .collect();
 
         Ok((local_results, recorder))
+    }
+
+    pub async fn delete_remote_data(&self, remote_data: RemoteData) -> DandelionResult<()> {
+        self.work_queue
+            .do_work(WorkToDo::RemoteToDelete { remote_data })
+            .await
+            .map(|_| ())
     }
 
     pub async fn queue_unregistered_composition(

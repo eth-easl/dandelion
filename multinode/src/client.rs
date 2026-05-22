@@ -7,9 +7,10 @@ use crate::{
     },
     serialize_node_info, serialize_queue_message, serialize_remote_message,
     util::{
-        engine_type_dtop, engine_type_ptod, pack_metadata_size_and_flags,
-        proto_data_sets_to_composition_sets, recorder_add_timestamps, recorder_dtop,
-        unpack_metadata_size_and_flags, ADDITIONAL_DATA_BUFFER, NO_FLAGS,
+        collect_remote_data_references, engine_type_dtop, engine_type_ptod,
+        pack_metadata_size_and_flags, proto_data_sets_to_composition_sets,
+        proto_data_sets_to_composition_sets_with_delete_on_drop, recorder_add_timestamps,
+        recorder_dtop, unpack_metadata_size_and_flags, ADDITIONAL_DATA_BUFFER, NO_FLAGS,
     },
     DispatcherCommand,
 };
@@ -20,7 +21,7 @@ use dispatcher::queue::{get_engine_flag, WorkQueue};
 use futures::{future::Either, stream::FuturesUnordered, FutureExt, StreamExt};
 use log::{trace, warn};
 use machine_interface::{
-    composition::CompositionSet,
+    composition::{CompositionSet, RemoteData},
     function_driver::{WorkDone, WorkToDo},
     machine_config::{EngineType, IntoEnumIterator},
 };
@@ -168,6 +169,7 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
     socket: Stream,
     queue: WorkQueue,
     export_registry: ExportRegistry,
+    remote_data_deletion_sender: mpsc::UnboundedSender<RemoteData>,
 ) {
     let mut waiting_for_work = false;
     let (mut read_socket, mut write_socket) = split(socket);
@@ -236,6 +238,7 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                                     recorder,
                                 } => (function_id, input_sets, recorder, caching),
                                 WorkToDo::SetsToResolve { input_sets: _ }
+                                | WorkToDo::RemoteToDelete { remote_data: _ }
                                 | WorkToDo::Shutdown(_) => {
                                     panic!("Should only get function arguments when polling for remote queue")
                                 }
@@ -244,7 +247,11 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                             let start_reference = SystemTime::elapsed(&std::time::UNIX_EPOCH)
                                 .unwrap()
                                 .as_micros();
-                            debt_map.insert(promise_id, (debt, recorder, start_reference));
+                            let remote_data_references = collect_remote_data_references(&data_sets);
+                            debt_map.insert(
+                                promise_id,
+                                (debt, recorder, start_reference, remote_data_references),
+                            );
                             let metadata_sets =
                                 export_registry.composition_sets_to_proto(data_sets).await;
                             (
@@ -281,7 +288,7 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                             response,
                         } = response;
                         // TODO: handle failure
-                        let (debt, recorder, start_epoch) = debt_map
+                        let (debt, recorder, start_epoch, remote_data_references) = debt_map
                             .remove(&invocation_id)
                             .expect("Should always get back function response for a present debt");
                         free_debt_ids.push(invocation_id);
@@ -293,9 +300,10 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                                     start_epoch,
                                 );
                                 Ok(WorkDone::CompositionSet(
-                                    proto_data_sets_to_composition_sets(
+                                    proto_data_sets_to_composition_sets_with_delete_on_drop(
                                         metadata_sets.metadata_sets,
                                         data_option,
+                                        remote_data_deletion_sender.clone(),
                                     ),
                                 ))
                             }
@@ -305,6 +313,7 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                                 ))
                             }
                         };
+                        drop(remote_data_references);
                         debt.fulfill(result)
                     }
                 }

@@ -105,10 +105,33 @@ mod server_tests {
         http_version: reqwest::Version,
         client: Client,
     ) {
+        let matrix_dim = 3;
+        let expected_checksum = if chain {
+            matrix_dim * matrix_dim * matrix_dim
+        } else {
+            matrix_dim
+        };
+        send_matrix_request_expect_checksum(
+            endpoint,
+            function_name,
+            matrix_dim,
+            expected_checksum,
+            http_version,
+            client,
+        );
+    }
+
+    fn send_matrix_request_expect_checksum(
+        endpoint: &str,
+        function_name: String,
+        matrix_dim: u64,
+        expected_checksum: u64,
+        http_version: reqwest::Version,
+        client: Client,
+    ) {
         // call into function
         let mut data = Vec::new();
         // Use a matrix big enough to potentially get split into multiple frames
-        let matrix_dim = 3;
         data.extend_from_slice(&u64::to_le_bytes(matrix_dim));
         for _ in 0..matrix_dim * matrix_dim {
             data.extend_from_slice(&u64::to_le_bytes(1));
@@ -148,11 +171,7 @@ mod server_tests {
         let mat_size = reader.read_u64::<LittleEndian>().unwrap();
         assert_eq!(matrix_dim, mat_size);
         let checksum = reader.read_u64::<LittleEndian>().unwrap();
-        if chain {
-            assert_eq!(matrix_dim * matrix_dim * matrix_dim, checksum)
-        } else {
-            assert_eq!(matrix_dim, checksum);
-        }
+        assert_eq!(expected_checksum, checksum);
     }
 
     fn register_and_request(http_version: reqwest::Version, client: Client, local: bool) {
@@ -259,6 +278,111 @@ mod server_tests {
         );
     }
 
+    struct MultinodeServers {
+        master: ServerKiller,
+        worker: ServerKiller,
+    }
+
+    impl MultinodeServers {
+        fn assert_running(mut self) {
+            let status_result = self.master.server.try_wait();
+            drop(self.master);
+            let status = status_result.unwrap();
+            assert_eq!(status, None, "Server exited unexpectedly");
+
+            let status_result = self.worker.server.try_wait();
+            drop(self.worker);
+            let status = status_result.unwrap();
+            assert_eq!(status, None, "Server exited unexpectedly");
+        }
+    }
+
+    fn multinode_preload_path() -> String {
+        let version;
+        #[cfg(feature = "mmu")]
+        {
+            version = format!("process_{}", std::env::consts::ARCH);
+        }
+        #[cfg(feature = "kvm")]
+        {
+            version = format!("kvm_{}", std::env::consts::ARCH);
+        }
+        #[cfg(feature = "cheri")]
+        {
+            version = "cheri".to_string();
+        }
+        format!(
+            "{}/tests/preload_files/preload_{}.json",
+            env!("CARGO_MANIFEST_DIR"),
+            version
+        )
+    }
+
+    fn start_multinode_servers() -> MultinodeServers {
+        let preload_path = multinode_preload_path();
+        println!("Preload_path: {}", preload_path);
+        let multinode_config = format!(
+            "{}/tests/manifests/multinode_config.json",
+            env!("CARGO_MANIFEST_DIR"),
+        );
+
+        let remote_port = 8081;
+        let mut master_cmd = Command::new(assert_cmd::cargo::cargo_bin!());
+        let master_server = master_cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env("RUST_LOG", "debug,multinode=trace")
+            .arg("--bin-preload-path")
+            .arg(&preload_path)
+            .arg("--total-cores")
+            .arg("1")
+            .arg("--test-mode")
+            .arg("no-compute")
+            .arg("--node-id")
+            .arg("0")
+            .arg("--multinode-config")
+            .arg(&multinode_config)
+            .spawn()
+            .unwrap();
+        let mut master = ServerKiller {
+            name: "Master",
+            server: master_server,
+        };
+        master.check_for_start();
+
+        let mut worker_cmd = Command::new(assert_cmd::cargo::cargo_bin!());
+        let worker_server = worker_cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env("RUST_LOG", "debug,multinode=trace")
+            .arg("--bin-preload-path")
+            .arg(&preload_path)
+            .arg("--port")
+            .arg(remote_port.to_string())
+            .arg("--io-cores")
+            .arg("1")
+            .arg("--node-id")
+            .arg("1")
+            .arg("--multinode-config")
+            .arg(&multinode_config)
+            .spawn()
+            .unwrap();
+        let mut worker = ServerKiller {
+            name: "Worker",
+            server: worker_server,
+        };
+        worker.check_for_start();
+
+        MultinodeServers { master, worker }
+    }
+
+    fn multinode_client() -> Client {
+        Client::builder()
+            .timeout(Some(std::time::Duration::from_secs(5)))
+            .build()
+            .unwrap()
+    }
+
     #[test]
     #[serial]
     fn serve_matmul_http_2() {
@@ -340,76 +464,7 @@ mod server_tests {
     #[test]
     #[serial]
     fn serve_multinode() {
-        let version;
-        #[cfg(feature = "mmu")]
-        {
-            version = format!("process_{}", std::env::consts::ARCH);
-        }
-        #[cfg(feature = "kvm")]
-        {
-            version = format!("kvm_{}", std::env::consts::ARCH);
-        }
-        #[cfg(feature = "cheri")]
-        {
-            version = "elf_cheri";
-        }
-        let preload_path = format!(
-            "{}/tests/preload_files/preload_{}.json",
-            env!("CARGO_MANIFEST_DIR"),
-            version
-        );
-        println!("Preload_path: {}", preload_path);
-        let multinode_config = format!(
-            "{}/tests/manifests/multinode_config.json",
-            env!("CARGO_MANIFEST_DIR"),
-        );
-
-        let remote_port = 8081;
-        let mut master_cmd = Command::new(assert_cmd::cargo::cargo_bin!());
-        let master_server = master_cmd
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .env("RUST_LOG", "debug,multinode=trace")
-            .arg("--bin-preload-path")
-            .arg(&preload_path)
-            .arg("--total-cores")
-            .arg("1")
-            .arg("--test-mode")
-            .arg("no-compute")
-            .arg("--node-id")
-            .arg("0")
-            .arg("--multinode-config")
-            .arg(&multinode_config)
-            .spawn()
-            .unwrap();
-        let mut master_killer = ServerKiller {
-            name: "Master",
-            server: master_server,
-        };
-        master_killer.check_for_start();
-
-        let mut worker_cmd = Command::new(assert_cmd::cargo::cargo_bin!());
-        let worker_server = worker_cmd
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .env("RUST_LOG", "debug,multinode=trace")
-            .arg("--bin-preload-path")
-            .arg(&preload_path)
-            .arg("--port")
-            .arg(remote_port.to_string())
-            .arg("--io-cores")
-            .arg("1")
-            .arg("--node-id")
-            .arg("1")
-            .arg("--multinode-config")
-            .arg(&multinode_config)
-            .spawn()
-            .unwrap();
-        let mut worker_killer = ServerKiller {
-            name: "Worker",
-            server: worker_server,
-        };
-        worker_killer.check_for_start();
+        let servers = start_multinode_servers();
 
         // perform the request
         send_matrix_request(
@@ -417,21 +472,50 @@ mod server_tests {
             String::from("matmul"),
             false,
             reqwest::Version::HTTP_11,
-            Client::builder()
-                .timeout(Some(std::time::Duration::from_secs(5)))
-                .build()
-                .unwrap(),
+            multinode_client(),
         );
 
-        // get the output of the servers
-        let status_result = master_killer.server.try_wait();
-        drop(master_killer);
-        let status = status_result.unwrap();
-        assert_eq!(status, None, "Server exited unexpectedly");
+        servers.assert_running();
+    }
 
-        let status_result = worker_killer.server.try_wait();
-        drop(worker_killer);
-        let status = status_result.unwrap();
-        assert_eq!(status, None, "Server exited unexpectedly");
+    #[test]
+    #[serial]
+    fn serve_multinode_reuses_output() {
+        let servers = start_multinode_servers();
+        let client = multinode_client();
+
+        let composition_request = RegisterChain {
+            composition: String::from(
+                r#"
+                function matmul(MatrixIn) => (MatrixOut);
+                function matmac(MultiplyLeft, AddLeft, AddRight) => (MatrixOut);
+                composition reuse_output(CompIn) => (CompOut) {
+                    matmul(MatrixIn = all CompIn) => (MatrixA = MatrixOut);
+                    matmul(MatrixIn = all MatrixA) => (MatrixB = MatrixOut);
+                    matmac(AddLeft = all MatrixA, AddRight = all MatrixB) => (CompOut = MatrixOut);
+                }
+            "#,
+            ),
+        };
+        let composition_resp = client
+            .post("http://localhost:8080/register/composition")
+            .version(reqwest::Version::HTTP_11)
+            .body(bson::to_vec(&composition_request).unwrap())
+            .send()
+            .unwrap();
+        assert!(composition_resp.status().is_success());
+
+        // The composition is A(input), B(A), C(A, B), so A's output is consumed twice.
+        // For an all-ones 3x3 matrix, A produces 3s, B produces 27s, and C adds A+B.
+        send_matrix_request_expect_checksum(
+            "http://localhost:8080/hot/matmul",
+            String::from("reuse_output"),
+            3,
+            30,
+            reqwest::Version::HTTP_11,
+            client,
+        );
+
+        servers.assert_running();
     }
 }

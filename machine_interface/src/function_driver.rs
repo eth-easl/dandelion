@@ -1,5 +1,5 @@
 use crate::{
-    composition::{CompositionSet, LocalCompositionSet},
+    composition::{CompositionSet, LocalCompositionSet, RemoteData},
     machine_config::EngineType,
     memory_domain::MemoryDomain,
 };
@@ -44,12 +44,16 @@ pub enum WorkToDo {
     SetsToResolve {
         input_sets: Vec<Option<CompositionSet>>,
     },
+    RemoteToDelete {
+        remote_data: RemoteData,
+    },
     Shutdown(EngineType),
 }
 
 pub enum WorkDone {
     CompositionSet(Vec<Option<CompositionSet>>),
     Resources(Vec<ComputeResource>),
+    RemoteDeleted,
 }
 
 impl WorkDone {

@@ -3,10 +3,10 @@ use dandelion_commons::{
     dandelion_err, err_dandelion, DandelionError, DandelionResult, MultinodeError,
 };
 use http_body_util::Full;
-use hyper::{body::Incoming, service::service_fn, Request, Response, StatusCode};
+use hyper::{body::Incoming, service::service_fn, Method, Request, Response, StatusCode};
 use log::{debug, error, trace, warn};
 use machine_interface::{
-    composition::{CompositionSet, RemoteData, RemoteDataResolver},
+    composition::{CompositionSet, RemoteData, RemoteDataClient},
     memory_domain::{bytes_context::BytesContext, Context, ContextTrait, ContextType},
     Position,
 };
@@ -71,16 +71,18 @@ impl ExportRegistry {
                     position: item.data,
                 },
             );
-            RemoteData { node_id, data_id }
+            RemoteData::new(node_id, data_id)
         })
     }
 
-    async fn take_exported_data(&self, data_id: u64) -> DandelionResult<ExportedData> {
+    async fn get_exported_data(&self, data_id: u64) -> DandelionResult<ExportedData> {
+        debug!(
+            "Fetching exported data: node_id={}, data_id={}",
+            self.node_id, data_id
+        );
         let exported_data = {
-            let mut inner = self.inner.lock().await;
-            // This is ok because for now we don't deduplicate data items and thus only serve each data item once
-            // TODO: implement reference counting when we support deduplication and multiple uses of the same data item
-            inner.data.remove(&data_id)
+            let inner = self.inner.lock().await;
+            inner.data.get(&data_id).cloned()
         };
 
         let Some(exported_data) = exported_data else {
@@ -92,8 +94,22 @@ impl ExportRegistry {
         Ok(exported_data)
     }
 
+    pub async fn delete_exported_data(&self, data_id: u64) -> DandelionResult<()> {
+        debug!(
+            "Deleting exported data: node_id={}, data_id={}",
+            self.node_id, data_id
+        );
+        let mut inner = self.inner.lock().await;
+        let Some(_) = inner.data.remove(&data_id) else {
+            return err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
+                format!("Unknown remote data id {}", data_id),
+            )));
+        };
+        Ok(())
+    }
+
     pub async fn fetch_bytes(&self, data_id: u64) -> DandelionResult<Bytes> {
-        let exported_data = self.take_exported_data(data_id).await?;
+        let exported_data = self.get_exported_data(data_id).await?;
         let size = exported_data.position.size;
         let mut result = BytesMut::with_capacity(size);
         let base_offset = exported_data.position.offset;
@@ -109,18 +125,18 @@ impl ExportRegistry {
     }
 
     pub async fn fetch_context(&self, data_id: u64) -> DandelionResult<(Arc<Context>, Position)> {
-        let exported_data = self.take_exported_data(data_id).await?;
+        let exported_data = self.get_exported_data(data_id).await?;
         Ok((exported_data.context, exported_data.position))
     }
 }
 
-pub struct HttpRemoteDataResolver {
+pub struct HttpRemoteDataClient {
     node_map: BTreeMap<u64, String>,
     local_registry: ExportRegistry,
     client: reqwest::Client,
 }
 
-impl HttpRemoteDataResolver {
+impl HttpRemoteDataClient {
     pub fn new(node_map: BTreeMap<u64, String>, local_registry: ExportRegistry) -> Self {
         Self {
             node_map,
@@ -128,9 +144,31 @@ impl HttpRemoteDataResolver {
             client: reqwest::Client::new(),
         }
     }
+
+    fn remote_data_url(&self, data: RemoteData) -> DandelionResult<String> {
+        let address =
+            self.node_map
+                .get(&data.node_id)
+                .ok_or(dandelion_err!(DandelionError::Multinode(
+                    MultinodeError::ConfigError(format!(
+                        "No data server configured for node {}",
+                        data.node_id
+                    ))
+                )))?;
+        let base_url = if address.starts_with("http://") || address.starts_with("https://") {
+            address.clone()
+        } else {
+            format!("http://{}", address)
+        };
+        Ok(format!(
+            "{}/data/{}",
+            base_url.trim_end_matches('/'),
+            data.data_id
+        ))
+    }
 }
 
-impl RemoteDataResolver for HttpRemoteDataResolver {
+impl RemoteDataClient for HttpRemoteDataClient {
     fn resolve_remote_data(
         &self,
         data: RemoteData,
@@ -145,18 +183,7 @@ impl RemoteDataResolver for HttpRemoteDataResolver {
                 return self.local_registry.fetch_context(data.data_id).await;
             }
 
-            let address = self.node_map.get(&data.node_id).ok_or(dandelion_err!(
-                DandelionError::Multinode(MultinodeError::ConfigError(format!(
-                    "No data server configured for node {}",
-                    data.node_id
-                )))
-            ))?;
-            let base_url = if address.starts_with("http://") || address.starts_with("https://") {
-                address.clone()
-            } else {
-                format!("http://{}", address)
-            };
-            let url = format!("{}/data/{}", base_url.trim_end_matches('/'), data.data_id);
+            let url = self.remote_data_url(data)?;
             let response = self.client.get(url).send().await.map_err(|err| {
                 dandelion_err!(DandelionError::Multinode(MultinodeError::ConnectionFailed(
                     err.to_string(),
@@ -182,6 +209,35 @@ impl RemoteDataResolver for HttpRemoteDataResolver {
             ))
         })
     }
+
+    fn delete_remote_data(
+        &self,
+        data: RemoteData,
+    ) -> Pin<Box<dyn Future<Output = DandelionResult<()>> + Send + '_>> {
+        trace!(
+            "Deleting remote data: node_id={}, data_id={}",
+            data.node_id,
+            data.data_id
+        );
+        Box::pin(async move {
+            if data.node_id == self.local_registry.node_id {
+                return self.local_registry.delete_exported_data(data.data_id).await;
+            }
+
+            let url = self.remote_data_url(data)?;
+            let response = self.client.delete(url).send().await.map_err(|err| {
+                dandelion_err!(DandelionError::Multinode(MultinodeError::ConnectionFailed(
+                    err.to_string(),
+                )))
+            })?;
+            if !response.status().is_success() {
+                return err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
+                    response.status().to_string(),
+                )));
+            }
+            Ok(())
+        })
+    }
 }
 
 type DataServerBody = Full<Bytes>;
@@ -191,17 +247,26 @@ async fn service(
     req: Request<Incoming>,
     export_registry: ExportRegistry,
 ) -> Result<Response<DataServerBody>, Infallible> {
-    let path = req.uri().path();
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
     let result = async {
         let data_id = path
             .strip_prefix("/data/")
             .ok_or_else(|| format!("Unknown data server path {}", path))?
             .parse::<u64>()
             .map_err(|err| format!("Invalid data id: {}", err))?;
-        export_registry
-            .fetch_bytes(data_id)
-            .await
-            .map_err(|err| err.to_string())
+        match method {
+            Method::GET => export_registry
+                .fetch_bytes(data_id)
+                .await
+                .map_err(|err| err.to_string()),
+            Method::DELETE => export_registry
+                .delete_exported_data(data_id)
+                .await
+                .map(|_| Bytes::new())
+                .map_err(|err| err.to_string()),
+            method => Err(format!("Unsupported data server method {}", method)),
+        }
     }
     .await;
 

@@ -13,7 +13,7 @@ use machine_interface::{
 };
 use prost::bytes::Bytes;
 use std::{sync::Arc, time::Duration};
-use tokio::sync::OnceCell;
+use tokio::sync::{mpsc, OnceCell};
 
 /// Translates dandelion engine types to protocol engine types.
 pub(crate) fn engine_type_dtop(t: machine_config::EngineType) -> proto::EngineType {
@@ -144,10 +144,15 @@ fn remote_data_dtop(remote_data: RemoteData) -> proto::RemoteData {
     }
 }
 
-fn remote_data_ptod(remote_data: proto::RemoteData) -> RemoteData {
-    RemoteData {
-        node_id: remote_data.node_id,
-        data_id: remote_data.data_id,
+fn remote_data_ptod(
+    remote_data: proto::RemoteData,
+    delete_sender: Option<mpsc::UnboundedSender<RemoteData>>,
+) -> RemoteData {
+    match delete_sender {
+        Some(delete_sender) => {
+            RemoteData::delete_on_drop(remote_data.node_id, remote_data.data_id, delete_sender)
+        }
+        None => RemoteData::new(remote_data.node_id, remote_data.data_id),
     }
 }
 
@@ -190,7 +195,10 @@ fn item_data_dtop(
     }
 }
 
-fn item_data_ptod(data: proto::ItemData) -> ItemData {
+fn item_data_ptod(
+    data: proto::ItemData,
+    delete_sender: Option<mpsc::UnboundedSender<RemoteData>>,
+) -> ItemData {
     match data.data.unwrap() {
         item_data::Data::IoData(io_data) => {
             let proto::IoData {
@@ -212,7 +220,7 @@ fn item_data_ptod(data: proto::ItemData) -> ItemData {
             ItemData::IoData(IoData {
                 original_position: Position { offset: 0, size: 0 },
                 resolved: Arc::new(OnceCell::new()),
-                original_data: Box::new(item_data_ptod(*input_data.unwrap())),
+                original_data: Box::new(item_data_ptod(*input_data.unwrap(), delete_sender)),
                 function: system_function_ptod(function).unwrap(),
                 set_index: set_index as usize,
             })
@@ -220,7 +228,7 @@ fn item_data_ptod(data: proto::ItemData) -> ItemData {
             // last_end_offset = end_offset;
         }
         item_data::Data::RemoteData(remote_data) => {
-            ItemData::RemoteData(remote_data_ptod(remote_data))
+            ItemData::RemoteData(remote_data_ptod(remote_data, delete_sender))
         }
     }
 }
@@ -268,11 +276,47 @@ pub(crate) fn composition_sets_to_proto(
     metadata_sets
 }
 
+fn collect_item_remote_data_references(data: &ItemData, references: &mut Vec<RemoteData>) {
+    match data {
+        ItemData::LocalData(_) => {}
+        ItemData::RemoteData(remote_data) => references.push(remote_data.clone()),
+        ItemData::IoData(io_data) => {
+            collect_item_remote_data_references(&io_data.original_data, references)
+        }
+    }
+}
+
+pub(crate) fn collect_remote_data_references(sets: &[Option<CompositionSet>]) -> Vec<RemoteData> {
+    let mut references = Vec::new();
+    for set in sets.iter().flatten() {
+        for (_, data) in set {
+            collect_item_remote_data_references(data, &mut references);
+        }
+    }
+    references
+}
+
 /// Takes a (reference to a) vector of protocol data sets, translates them into a `BytesContext`
 /// and returns a vector of optional `CompositionSet` that hold the reference to the context.
 pub(crate) fn proto_data_sets_to_composition_sets(
     proto_sets: Vec<proto::MetadataSet>,
     _data_buf: Option<Bytes>,
+) -> Vec<Option<CompositionSet>> {
+    proto_data_sets_to_composition_sets_inner(proto_sets, _data_buf, None)
+}
+
+pub(crate) fn proto_data_sets_to_composition_sets_with_delete_on_drop(
+    proto_sets: Vec<proto::MetadataSet>,
+    _data_buf: Option<Bytes>,
+    delete_sender: mpsc::UnboundedSender<RemoteData>,
+) -> Vec<Option<CompositionSet>> {
+    proto_data_sets_to_composition_sets_inner(proto_sets, _data_buf, Some(delete_sender))
+}
+
+fn proto_data_sets_to_composition_sets_inner(
+    proto_sets: Vec<proto::MetadataSet>,
+    _data_buf: Option<Bytes>,
+    delete_sender: Option<mpsc::UnboundedSender<RemoteData>>,
 ) -> Vec<Option<CompositionSet>> {
     // TODO: expect data buffer, not option, option does not make sense here if we expect any actual data items to be in there.
     // TODO: also does not need to be split, simply converting from MetaDataItems to items should be enough
@@ -291,7 +335,7 @@ pub(crate) fn proto_data_sets_to_composition_sets(
                     data: Position { offset: 0, size: 0 },
                     key: protobuf_item.key,
                 },
-                item_data_ptod(protobuf_item.data.unwrap()),
+                item_data_ptod(protobuf_item.data.unwrap(), delete_sender.clone()),
             ));
         }
         sets.push(CompositionSet::from_item_list(
