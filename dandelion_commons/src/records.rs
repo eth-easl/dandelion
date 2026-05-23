@@ -191,32 +191,37 @@ impl fmt::Debug for Recorder {
 }
 
 impl fmt::Display for Recorder {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{{\"id\": \"{}\", \"ts\": {}, \"children\": [",
-            self.inner.function_id, self.inner.timestamps
-        )?;
-        let mut need_comma = false;
-        if let Some(children) = self.inner.children.get() {
-            for child in children.iter() {
-                if let Some(child_recorders) = child {
-                    if need_comma {
-                        write!(f, ",")?;
-                    }
-                    write!(f, "[")?;
-                    for (i, r) in child_recorders.iter().enumerate() {
-                        if i < child_recorders.len() - 1 {
-                            write!(f, "{},", r)?;
-                        } else {
-                            write!(f, "{}", r)?;
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        #[cfg(feature = "timestamp")]
+        {
+            write!(
+                f,
+                "{{\"id\": \"{}\", \"ts\": {}, \"children\": [",
+                self.inner.function_id, self.inner.timestamps
+            )?;
+            let mut need_comma = false;
+            if let Some(children) = self.inner.children.get() {
+                for child in children.iter() {
+                    if let Some(child_recorders) = child {
+                        if need_comma {
+                            write!(f, ",")?;
                         }
+                        write!(f, "[")?;
+                        for (i, r) in child_recorders.iter().enumerate() {
+                            if i < child_recorders.len() - 1 {
+                                write!(f, "{},", r)?;
+                            } else {
+                                write!(f, "{}", r)?;
+                            }
+                        }
+                        write!(f, "]")?;
+                        need_comma = true;
                     }
-                    write!(f, "]")?;
-                    need_comma = true;
                 }
             }
+            write!(f, "]}}")
         }
-        write!(f, "]}}")
+        #[cfg(not(feature = "timestamp"))]
+        Ok(())
     }
 }
