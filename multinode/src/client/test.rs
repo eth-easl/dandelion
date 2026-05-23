@@ -36,17 +36,25 @@ use tokio::{
 
 const EXPECTED_ERROR: DandelionError = DandelionError::NotImplemented;
 
-async fn mock_queue_client(mut client: tokio::io::DuplexStream, engine_type: proto::EngineType) {
+async fn mock_queue_client(
+    client: tokio::io::DuplexStream,
+    engine_type: proto::EngineType,
+    state: Arc<Mutex<usize>>,
+) {
     // send the node info to the handler
     let node_info = NodeInfo {
         version: 1,
         id: 0,
         num_local_cores: 0,
     };
+    let boxed = Box::new(client);
+    let client = unsafe { &mut *Box::into_raw(boxed) };
     let node_info_serial = serialize_node_info(node_info.clone());
-    send_message(&node_info_serial, &mut client, None).await;
+    send_message(&node_info_serial, &mut *client, None).await;
     // yield so the registration can be handled
     yield_now().await;
+
+    *state.lock().unwrap() = 1;
 
     // send a request for work, expect there to be work
     let remote_message = serialize_remote_message(RemoteMessage {
@@ -59,10 +67,37 @@ async fn mock_queue_client(mut client: tokio::io::DuplexStream, engine_type: pro
             },
         )),
     });
-    send_message(&remote_message, &mut client, None).await;
-    let (work_bytes, should_be_none) = receive_message(&mut client).await;
+    send_message(&remote_message, &mut *client, None).await;
+    let (work_bytes, should_be_none) = receive_message(&mut *client).await;
+
+    *state.lock().unwrap() = 2;
+
     assert!(should_be_none.is_none());
-    let invocation_id = match deserialize_queue_message(work_bytes)
+    let first_invocation_id = match deserialize_queue_message(work_bytes)
+        .unwrap()
+        .queue_message
+        .unwrap()
+    {
+        queue_message::QueueMessage::Invocation(Invocation {
+            invocation_id,
+            function_id,
+            metadata_sets: _,
+            caching: _,
+        }) => {
+            assert_eq!("dummy_function", function_id);
+            invocation_id
+        }
+        queue_message::QueueMessage::NoWork(_) => panic!("should not receive no work message"),
+    };
+
+    // ask for work again, expecting another invocation
+    send_message(&remote_message, &mut *client, None).await;
+    let (work_bytes, should_be_none) = receive_message(&mut *client).await;
+
+    *state.lock().unwrap() = 3;
+
+    assert!(should_be_none.is_none());
+    let second_invocation_id = match deserialize_queue_message(work_bytes)
         .unwrap()
         .queue_message
         .unwrap()
@@ -80,8 +115,11 @@ async fn mock_queue_client(mut client: tokio::io::DuplexStream, engine_type: pro
     };
 
     // ask for work again, but expect there to be none
-    send_message(&remote_message, &mut client, None).await;
-    let (work_bytes, _) = receive_message(&mut client).await;
+    send_message(&remote_message, &mut *client, None).await;
+    let (work_bytes, _) = receive_message(&mut *client).await;
+
+    *state.lock().unwrap() = 4;
+
     match deserialize_queue_message(work_bytes)
         .unwrap()
         .queue_message
@@ -91,17 +129,20 @@ async fn mock_queue_client(mut client: tokio::io::DuplexStream, engine_type: pro
         queue_message::QueueMessage::Invocation(_) => panic!("Should not receive more work"),
     }
 
-    // send back the results of the first invocation
+    // send back the results of the second invocation
     let function_result = serialize_remote_message(RemoteMessage {
         remote_message: Some(remote_message::RemoteMessage::Response(Response {
-            invocation_id,
+            invocation_id: second_invocation_id,
             response: Some(response::Response::ErrorMsg(EXPECTED_ERROR.to_string())),
         })),
     });
-    send_message(&function_result, &mut client, None).await;
+    send_message(&function_result, &mut *client, None).await;
 
     // should receive a message that there is more work available
-    let (message_buffer, message_data) = receive_message(&mut client).await;
+    let (message_buffer, message_data) = receive_message(&mut *client).await;
+
+    *state.lock().unwrap() = 5;
+
     assert!(message_data.is_none());
     let work_available = deserialize_queue_message(message_buffer)
         .unwrap()
@@ -111,6 +152,39 @@ async fn mock_queue_client(mut client: tokio::io::DuplexStream, engine_type: pro
         queue_message::QueueMessage::NoWork(false) => (),
         _ => panic!("did not get expected message:{:?}", work_available),
     }
+
+    // ask for work again, expecting another invocation
+    send_message(&remote_message, &mut *client, None).await;
+    let (work_bytes, should_be_none) = receive_message(&mut *client).await;
+
+    *state.lock().unwrap() = 6;
+
+    assert!(should_be_none.is_none());
+    let _ = match deserialize_queue_message(work_bytes)
+        .unwrap()
+        .queue_message
+        .unwrap()
+    {
+        queue_message::QueueMessage::Invocation(Invocation {
+            invocation_id,
+            function_id,
+            metadata_sets: _,
+            caching: _,
+        }) => {
+            assert_eq!("dummy_function", function_id);
+            invocation_id
+        }
+        queue_message::QueueMessage::NoWork(_) => panic!("should not receive no work message"),
+    };
+
+    // send back the results of the first invocation
+    let function_result = serialize_remote_message(RemoteMessage {
+        remote_message: Some(remote_message::RemoteMessage::Response(Response {
+            invocation_id: first_invocation_id,
+            response: Some(response::Response::ErrorMsg(EXPECTED_ERROR.to_string())),
+        })),
+    });
+    send_message(&function_result, &mut *client, None).await;
 }
 
 async fn mock_dispatcher(work_queue: WorkQueue, engine_type: machine_config::EngineType) {
@@ -158,6 +232,7 @@ fn test_remote_queue_server() {
     let work_queue = WorkQueue::init();
     let engine_type = machine_config::EngineType::iter().next().unwrap();
     let (remote_data_deletion_sender, _remote_data_deletion_receiver) = mpsc::unbounded_channel();
+    let client_state = Arc::new(Mutex::new(0));
 
     let mut context = Context::from_waker(Waker::noop());
     let mut server_future = Box::pin(remote_queue_server(
@@ -166,26 +241,48 @@ fn test_remote_queue_server() {
         ExportRegistry::new(1),
         remote_data_deletion_sender,
     ));
-    let mut test_client_future = Box::pin(mock_queue_client(client, engine_type_dtop(engine_type)));
-    let mut test_dispatcher_future = Box::pin(mock_dispatcher(work_queue.clone(), engine_type));
+    let mut test_client_future = Box::pin(mock_queue_client(
+        client,
+        engine_type_dtop(engine_type),
+        client_state.clone(),
+    ));
+    let mut test_composition_1 = Box::pin(mock_dispatcher(work_queue.clone(), engine_type));
+    let mut test_composition_2 = Box::pin(mock_dispatcher(work_queue.clone(), engine_type));
+    let mut test_composition_3 = Box::pin(mock_dispatcher(work_queue.clone(), engine_type));
 
+    // enqueue two functions
     assert_eq!(
         Poll::Pending,
-        test_dispatcher_future.as_mut().poll(&mut context)
+        test_composition_1.as_mut().poll(&mut context)
+    );
+    assert_eq!(
+        Poll::Pending,
+        test_composition_2.as_mut().poll(&mut context)
     );
 
     assert_eq!(
         Poll::Pending,
         test_client_future.as_mut().poll(&mut context)
     );
+    assert_eq!(0, *client_state.lock().unwrap());
 
     // poll the handle once to make sure the node info was processed
     assert_eq!(Poll::Pending, server_future.as_mut().poll(&mut context));
-    // send the request for work
+    // send the request for work and receive first invocation
     assert_eq!(
         Poll::Pending,
         test_client_future.as_mut().poll(&mut context)
     );
+    assert_eq!(1, *client_state.lock().unwrap());
+
+    // poll again so the work can be sent
+    assert_eq!(Poll::Pending, server_future.as_mut().poll(&mut context));
+    // poll to process work and get
+    assert_eq!(
+        Poll::Pending,
+        test_client_future.as_mut().poll(&mut context)
+    );
+    assert_eq!(2, *client_state.lock().unwrap());
     // poll again so the work can be sent
     assert_eq!(Poll::Pending, server_future.as_mut().poll(&mut context));
     // poll to process work and ask for more
@@ -193,29 +290,51 @@ fn test_remote_queue_server() {
         Poll::Pending,
         test_client_future.as_mut().poll(&mut context)
     );
+    assert_eq!(3, *client_state.lock().unwrap());
+
     // should send message that there is no more work
     assert_eq!(Poll::Pending, server_future.as_mut().poll(&mut context));
-    // receive notifcation that there is no more work, return the finished work for the first invocation
+    // receive notifcation that there is no more work, return the finished work for the second invocation
     assert_eq!(
         Poll::Pending,
         test_client_future.as_mut().poll(&mut context)
     );
+    assert_eq!(4, *client_state.lock().unwrap());
+
     // receive the result for the invocation
     assert_eq!(Poll::Pending, server_future.as_mut().poll(&mut context));
     // check the result has been forwarded correctly
     assert_eq!(
         Poll::Ready(()),
-        test_dispatcher_future.as_mut().poll(&mut context)
+        test_composition_2.as_mut().poll(&mut context)
     );
 
-    // send notification to the server that more work has become available
-    work_queue.queueing_notifier().notify_one();
+    // make more work avaialble
+    assert_eq!(
+        Poll::Pending,
+        test_composition_3.as_mut().poll(&mut context)
+    );
+    assert_eq!(Poll::Pending, server_future.as_mut().poll(&mut context));
+    assert_eq!(
+        Poll::Pending,
+        test_client_future.as_mut().poll(&mut context)
+    );
+    assert_eq!(5, *client_state.lock().unwrap());
+
+    // allow the server to send a message back
     assert_eq!(Poll::Pending, server_future.as_mut().poll(&mut context));
 
-    // check the client has terminated succcessfully
+    // check for the message that work is now available and then send back the result for the initial invocation
     assert_eq!(
         Poll::Ready(()),
         test_client_future.as_mut().poll(&mut context)
+    );
+    assert_eq!(6, *client_state.lock().unwrap());
+    // receive the result for the first invocation
+    assert_eq!(Poll::Pending, server_future.as_mut().poll(&mut context));
+    assert_eq!(
+        Poll::Ready(()),
+        test_composition_1.as_mut().poll(&mut context)
     );
 }
 
@@ -244,6 +363,29 @@ async fn mock_queue_server(
         _ => panic!("Expected work request"),
     }
     *progress_point.lock().unwrap() = 2;
+    // send back a message with work
+    let work_message = serialize_queue_message(QueueMessage {
+        queue_message: Some(queue_message::QueueMessage::Invocation(Invocation {
+            invocation_id: INVOCATION_ID,
+            function_id: function_id.clone(),
+            metadata_sets: vec![],
+            caching: true,
+        })),
+    });
+    send_message(&work_message, &mut socket, None).await;
+
+    // expect to be asked for work again, send more work
+    let (message_buffer, message_data) = receive_message(&mut socket).await;
+    assert!(message_data.is_none());
+    match deserialize_remote_message(message_buffer)
+        .unwrap()
+        .remote_message
+        .unwrap()
+    {
+        remote_message::RemoteMessage::WorkRequest(_) => (),
+        _ => panic!("Expected work request"),
+    }
+    *progress_point.lock().unwrap() = 3;
     // send back a message with work
     let work_message = serialize_queue_message(QueueMessage {
         queue_message: Some(queue_message::QueueMessage::Invocation(Invocation {
@@ -281,7 +423,7 @@ async fn mock_queue_server(
         }
     }
 
-    *progress_point.lock().unwrap() = 3;
+    *progress_point.lock().unwrap() = 4;
     yield_now().await;
 
     let (remote_message, remote_data) = receive_message(&mut socket).await;
@@ -304,7 +446,7 @@ async fn mock_queue_server(
     });
     send_message(&no_work_message, &mut socket, None).await;
 
-    *progress_point.lock().unwrap() = 4;
+    *progress_point.lock().unwrap() = 5;
     yield_now().await;
 
     let mut context = Context::from_waker(Waker::noop());
@@ -319,7 +461,7 @@ async fn mock_queue_server(
         queue_message: Some(queue_message::QueueMessage::NoWork(false)),
     });
     send_message(&more_work_message, &mut socket, None).await;
-    *progress_point.lock().unwrap() = 5;
+    *progress_point.lock().unwrap() = 6;
 
     // expect to receive message asking for more work
     let (remote_message, remote_data) = receive_message(&mut socket).await;
@@ -345,7 +487,8 @@ fn test_remote_queue_client() {
     let work_queue = WorkQueue::init();
     let (dispatcher_sender, mut dispatcher_receiver) = mpsc::channel(1);
     let progress = Arc::new(Mutex::new(0));
-    let engine_flags = get_engine_flag(machine_config::EngineType::iter().next().unwrap());
+    let engine_type = machine_config::EngineType::iter().next().unwrap();
+    let engine_flags = get_engine_flag(engine_type);
 
     let mut context = Context::from_waker(Waker::noop());
     let mut poller_future = Box::pin(remote_queue_client(
@@ -378,14 +521,19 @@ fn test_remote_queue_client() {
     );
     assert_eq!(*progress.lock().unwrap(), 1);
 
-    // poke client to go fetch work
-    let mut engine_future = Box::pin(work_queue.get_compute_work(engine_flags));
-    assert!(match engine_future.as_mut().poll(&mut context) {
+    // poke client to go fetch work, add two engines
+    let mut engine_future_1 = Box::pin(work_queue.get_compute_work(engine_flags));
+    assert!(match engine_future_1.as_mut().poll(&mut context) {
+        Poll::Pending => true,
+        _ => false,
+    });
+    let mut engine_future_2 = Box::pin(work_queue.get_compute_work(engine_flags));
+    assert!(match engine_future_2.as_mut().poll(&mut context) {
         Poll::Pending => true,
         _ => false,
     });
 
-    // poll the client so it can send
+    // poll the client so it can send a rquest for work
     assert_eq!(Poll::Pending, poller_future.as_mut().poll(&mut context));
     // poll the test server to check that the message was received and send back an invocation
     assert_eq!(
@@ -396,8 +544,13 @@ fn test_remote_queue_client() {
 
     // poll the server to receive work
     assert_eq!(Poll::Pending, poller_future.as_mut().poll(&mut context));
-    // should now have work in the receiver
-    let work_sender = match dispatcher_receiver.poll_recv(&mut context) {
+    // poll the engine again to check that the work has been delivered to the engine
+    assert!(match engine_future_2.as_mut().poll(&mut context) {
+        Poll::Pending => true,
+        _ => false,
+    });
+    // should now have work in the receiver, need to keep the receiver since the client doesn't handle dropping it.
+    let (result_future_1, _sender) = match dispatcher_receiver.poll_recv(&mut context) {
         Poll::Ready(Some(DispatcherCommand::RemoteFunctionRequest {
             function_id,
             inputs: _,
@@ -407,16 +560,105 @@ fn test_remote_queue_client() {
         })) => {
             assert!(!is_cold);
             assert_eq!(expected_function_id, function_id.as_str());
-            callback
+            (
+                work_queue.do_work(
+                    machine_interface::function_driver::WorkToDo::FunctionArguments {
+                        function_id: function_id.clone(),
+                        function_alternatives: vec![Arc::new(FunctionAlternative {
+                            engine: engine_type,
+                            context_size: 0,
+                            path: "".to_string(),
+                            domain: Arc::new(Box::new(MallocMemoryDomain {})),
+                            function: RwLock::new(None),
+                        })],
+                        input_sets: vec![],
+                        metadata: Arc::new(Metadata {
+                            input_sets: vec![],
+                            output_sets: vec![],
+                            min_set_bytes: vec![],
+                        }),
+                        caching: false,
+                        recorder: Recorder::new(function_id, Instant::now()),
+                    },
+                ),
+                callback,
+            )
         }
         Poll::Pending | Poll::Ready(None) => panic!("Should receive work now"),
         Poll::Ready(Some(_)) => panic!("Received unexpected command"),
     };
-    // make sure nothing breaks in the poller in the mean time
-    assert_eq!(Poll::Pending, poller_future.as_mut().poll(&mut context));
+    let mut result_poller_1 = Box::pin(result_future_1);
+    match result_poller_1.poll_unpin(&mut context) {
+        Poll::Pending => (),
+        Poll::Ready(_) => panic!("Should not have work done yet"),
+    }
+    // engine should now get work
+    match engine_future_1.poll_unpin(&mut context) {
+        Poll::Ready(_) => (),
+        Poll::Pending => panic!("should now be able to get work"),
+    }
+    // should now send request for more work, since one engine left the queue and there is one remaining
+    assert_eq!(Poll::Pending, poller_future.poll_unpin(&mut context));
+    // check node asked for more work and send it back
+    assert_eq!(
+        Poll::Pending,
+        test_server_future.as_mut().poll(&mut context)
+    );
+    assert_eq!(3, *progress.lock().unwrap());
+    // poll the client to make sure it had time to receive
+    assert_eq!(Poll::Pending, poller_future.poll_unpin(&mut context));
+
+    // check that we have more work on the reciever
+    let (result_future_2, work_sender_2) = match dispatcher_receiver.poll_recv(&mut context) {
+        Poll::Ready(Some(DispatcherCommand::RemoteFunctionRequest {
+            function_id,
+            inputs: _,
+            is_cold,
+            recorder: _,
+            callback,
+        })) => {
+            assert!(!is_cold);
+            assert_eq!(expected_function_id, function_id.as_str());
+            (
+                work_queue.do_work(
+                    machine_interface::function_driver::WorkToDo::FunctionArguments {
+                        function_id: function_id.clone(),
+                        function_alternatives: vec![Arc::new(FunctionAlternative {
+                            engine: engine_type,
+                            context_size: 0,
+                            path: "".to_string(),
+                            domain: Arc::new(Box::new(MallocMemoryDomain {})),
+                            function: RwLock::new(None),
+                        })],
+                        input_sets: vec![],
+                        metadata: Arc::new(Metadata {
+                            input_sets: vec![],
+                            output_sets: vec![],
+                            min_set_bytes: vec![],
+                        }),
+                        caching: false,
+                        recorder: Recorder::new(function_id, Instant::now()),
+                    },
+                ),
+                callback,
+            )
+        }
+        Poll::Pending | Poll::Ready(None) => panic!("Should receive work now"),
+        Poll::Ready(Some(_)) => panic!("Received unexpected command"),
+    };
+    let mut result_poller_2 = Box::pin(result_future_2);
+    match result_poller_2.poll_unpin(&mut context) {
+        Poll::Pending => (),
+        Poll::Ready(_) => panic!("Should not have work done yet"),
+    }
+    // engine should now get work
+    match engine_future_2.poll_unpin(&mut context) {
+        Poll::Ready(_) => (),
+        Poll::Pending => panic!("should now be able to get work"),
+    }
 
     // send back a result and poll to get it processed
-    assert!(work_sender
+    assert!(work_sender_2
         .send(err_dandelion!(DandelionError::NotImplemented))
         .is_ok());
     assert_eq!(Poll::Pending, poller_future.as_mut().poll(&mut context));
@@ -426,7 +668,7 @@ fn test_remote_queue_client() {
         Poll::Pending,
         test_server_future.as_mut().poll(&mut context)
     );
-    assert_eq!(3, *progress.lock().unwrap());
+    assert_eq!(4, *progress.lock().unwrap());
 
     // have the server ask for more work
     let mut another_engine_future = Box::pin(work_queue.get_compute_work(engine_flags));
@@ -441,7 +683,7 @@ fn test_remote_queue_client() {
         Poll::Pending,
         test_server_future.as_mut().poll(&mut context)
     );
-    assert_eq!(4, *progress.lock().unwrap());
+    assert_eq!(5, *progress.lock().unwrap());
 
     // give poller option to receive the message an react
     assert_eq!(Poll::Pending, poller_future.as_mut().poll(&mut context));
@@ -451,7 +693,7 @@ fn test_remote_queue_client() {
         Poll::Pending,
         test_server_future.as_mut().poll(&mut context)
     );
-    assert_eq!(5, *progress.lock().unwrap());
+    assert_eq!(6, *progress.lock().unwrap());
 
     // process the notification that there is more work and ask for it
     assert_eq!(Poll::Pending, poller_future.as_mut().poll(&mut context));
