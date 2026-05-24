@@ -1,8 +1,4 @@
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, DispatcherError};
-use futures::{
-    lock::{Mutex, MutexLockFuture},
-    FutureExt,
-};
 use log::trace;
 use machine_interface::{
     composition::SystemInfo,
@@ -15,7 +11,7 @@ use std::{
     future::Future,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     task::{Poll, Waker},
 };
@@ -90,9 +86,9 @@ pub struct WorkQueue {
     /// Holds the two queues, first one for work ready to be run locally, second one for engines waiting for fitting work to arrive
     inner: Arc<Mutex<InnerQueue>>,
     promise_buffer: PromiseBuffer,
-    /// Used to keep track of idle cores
-    idle_sender: watch::Sender<u32>,
-    idle_receiver: watch::Receiver<u32>,
+    /// Used to keep track of the total number of jobs currently in the queue
+    queue_state_sender: watch::Sender<usize>,
+    queue_state_receiver: watch::Receiver<usize>,
     /// Notifier to send out notification, that idle resource count changed
     /// Notifier to send out notification that queueing is happening
     queuing_notifier: Arc<Notify>,
@@ -103,62 +99,40 @@ pub struct WorkQueue {
 struct ComputeWaitFuture<'queue> {
     flags: u32,
     work_queue: &'queue WorkQueue,
-    lock: MutexLockFuture<'queue, InnerQueue>,
-    was_set_idle: bool,
 }
 
 impl<'list> ComputeWaitFuture<'list> {
     fn new(flags: u32, work_queue: &'list WorkQueue) -> ComputeWaitFuture<'list> {
-        Self {
-            flags,
-            work_queue,
-            lock: work_queue.inner.lock(),
-            was_set_idle: false,
-        }
+        Self { flags, work_queue }
     }
 }
 
 impl Future for ComputeWaitFuture<'_> {
     type Output = (WorkToDo, Debt);
 
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Self::Output> {
-        // check if there is a lock option and if so if it is ready
-        if let Poll::Ready(mut lock_guard) = self.lock.poll_unpin(cx) {
-            // check if there is any work with the flags we are looking for
-            let result = lock_guard
-                .compute_queue
-                .extract_if(|queue_element| queue_element.flags & self.flags != 0)
-                .next()
-                .map(|queue_element| (queue_element.work, queue_element.debt));
-            if let Some(result_tupple) = result {
-                // Found some work, so core is not idle
-                if self.was_set_idle {
-                    self.work_queue.idle_sender.send_modify(|idle| *idle -= 1);
-                }
-                // Poke the IO queue in case they were waiting for space to produce more results
-                if let Some(waker) = lock_guard.io_waker_list.pop_front() {
-                    waker.wake();
-                }
-                Poll::Ready(result_tupple)
-            } else {
-                // Did not find any work, so need to add to waker queue
-                let waker_element = WakerElement {
-                    flags: self.flags,
-                    waker: cx.waker().clone(),
-                };
-                if !self.was_set_idle {
-                    self.was_set_idle = true;
-                    self.work_queue.idle_sender.send_modify(|idle| *idle += 1);
-                }
-                lock_guard.compute_waker_list.push_back(waker_element);
-                // lock was ready once, need to set new one
-                self.lock = self.work_queue.inner.lock();
-                Poll::Pending
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        let mut lock_guard = self.work_queue.inner.lock().unwrap();
+        // check if there is any work with the flags we are looking for
+        let result = lock_guard
+            .compute_queue
+            .extract_if(|queue_element| queue_element.flags & self.flags != 0)
+            .next()
+            .map(|queue_element| (queue_element.work, queue_element.debt));
+        if let Some(result_tupple) = result {
+            // Poke the IO queue in case they were waiting for space to produce more results
+            if let Some(waker) = lock_guard.io_waker_list.pop_front() {
+                waker.wake();
             }
+            self.work_queue.queue_state_decrease();
+            Poll::Ready(result_tupple)
         } else {
+            // Did not find any work, so need to add to waker queue
+            let waker_element = WakerElement {
+                flags: self.flags,
+                waker: cx.waker().clone(),
+            };
+            lock_guard.compute_waker_list.push_back(waker_element);
+            // lock was ready once, need to set new one
             Poll::Pending
         }
     }
@@ -166,15 +140,11 @@ impl Future for ComputeWaitFuture<'_> {
 
 struct IoWaitFuture<'queue> {
     work_queue: &'queue WorkQueue,
-    lock: MutexLockFuture<'queue, InnerQueue>,
 }
 
 impl<'list> IoWaitFuture<'list> {
     fn new(work_queue: &'list WorkQueue) -> IoWaitFuture<'list> {
-        Self {
-            work_queue,
-            lock: work_queue.inner.lock(),
-        }
+        Self { work_queue }
     }
 }
 
@@ -183,47 +153,39 @@ const LOCAL_WORK_PER_CORE: usize = 2;
 impl Future for IoWaitFuture<'_> {
     type Output = (WorkToDo, Debt);
 
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Self::Output> {
-        // check if there is a lock option and if so if it is ready
-        if let Poll::Ready(mut lock_guard) = self.lock.poll_unpin(cx) {
-            // always take work that is not FunctionArguments, only take function arguments,
-            // if the local queue is smaller than a certain thershold
-            let compute_length = lock_guard.compute_queue.len();
-            let result = lock_guard
-                .io_queue
-                .extract_if(|queue_element| match queue_element.work {
-                    WorkToDo::FunctionArguments {
-                        function_id: _,
-                        function_alternatives: _,
-                        input_sets: _,
-                        metadata: _,
-                        caching: _,
-                        recorder: _,
-                    } => {
-                        // Only resover non local sets if there is not enough local work already
-                        compute_length
-                            < LOCAL_WORK_PER_CORE
-                                * *self.work_queue.system_info.num_local_cores_watcher.borrow()
-                    }
-                    // always take resolver work
-                    _ => true,
-                })
-                .next()
-                .map(|queue_element| (queue_element.work, queue_element.debt));
-            if let Some(result_tupple) = result {
-                // Found some work, so core is not idle
-                Poll::Ready(result_tupple)
-            } else {
-                // Did not find any work, so need to add to waker queue
-                lock_guard.io_waker_list.push_back(cx.waker().clone());
-                // lock was ready once, need to set new one
-                self.lock = self.work_queue.inner.lock();
-                Poll::Pending
-            }
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        let mut lock_guard = self.work_queue.inner.lock().unwrap();
+        // always take work that is not FunctionArguments, only take function arguments,
+        // if the local queue is smaller than a certain thershold
+        let compute_length = lock_guard.compute_queue.len();
+        let result = lock_guard
+            .io_queue
+            .extract_if(|queue_element| match queue_element.work {
+                WorkToDo::FunctionArguments {
+                    function_id: _,
+                    function_alternatives: _,
+                    input_sets: _,
+                    metadata: _,
+                    caching: _,
+                    recorder: _,
+                } => {
+                    // Only resover non local sets if there is not enough local work already
+                    compute_length
+                        < LOCAL_WORK_PER_CORE
+                            * *self.work_queue.system_info.num_local_cores_watcher.borrow()
+                }
+                // always take resolver work
+                _ => true,
+            })
+            .next()
+            .map(|queue_element| (queue_element.work, queue_element.debt));
+        if let Some(result_tupple) = result {
+            // Found some work, so core is not idle
+            Poll::Ready(result_tupple)
         } else {
+            // Did not find any work, so need to add to waker queue
+            lock_guard.io_waker_list.push_back(cx.waker().clone());
+            // lock was ready once, need to set new one
             Poll::Pending
         }
     }
@@ -232,7 +194,7 @@ impl Future for IoWaitFuture<'_> {
 impl WorkQueue {
     /// Creates a new WorkQueue of given size.
     pub fn init() -> Self {
-        let (idle_sender, idle_receiver) = watch::channel(0);
+        let (queue_state_sender, queue_state_receiver) = watch::channel(0);
         let (num_local_cores_sender, num_local_cores_watcher) = watch::channel(0);
         WorkQueue {
             inner: Arc::new(Mutex::new(InnerQueue {
@@ -242,8 +204,8 @@ impl WorkQueue {
                 io_waker_list: LinkedList::new(),
             })),
             promise_buffer: PromiseBuffer::init(MAX_QUEUE),
-            idle_sender,
-            idle_receiver,
+            queue_state_sender,
+            queue_state_receiver,
             queuing_notifier: Arc::new(Notify::new()),
             system_info: Arc::new(SystemInfo {
                 num_local_cores_watcher,
@@ -253,19 +215,33 @@ impl WorkQueue {
         }
     }
 
-    pub fn idle_watcher(&self) -> watch::Receiver<u32> {
-        self.idle_receiver.clone()
+    pub fn queue_state_watcher(&self) -> watch::Receiver<usize> {
+        self.queue_state_receiver.clone()
     }
 
     pub fn queueing_notifier(&self) -> Arc<Notify> {
         self.queuing_notifier.clone()
     }
 
+    fn queue_state_decrease(&self) {
+        self.queue_state_sender.send_if_modified(|current_state| {
+            *current_state -= 1;
+            *current_state < *self.system_info.num_local_cores_watcher.borrow()
+        });
+    }
+
+    fn queue_state_increase(&self) {
+        self.queue_state_sender.send_if_modified(|current_state| {
+            *current_state += 1;
+            *current_state < *self.system_info.num_local_cores_watcher.borrow()
+        });
+    }
+
     /// Pushes the work and debt to the back of the queue and sets the flags accordingly.
     /// Returns an error if the queue is full.
     /// TODO: check or define here and other places, if the flags need to match fully, just checking that any flag is set would be enough
     async fn push_compute(&self, work: WorkToDo, debt: Debt, flags: u32) {
-        let mut queue_guard = self.inner.lock().await;
+        let mut queue_guard = self.inner.lock().unwrap();
         queue_guard
             .compute_queue
             .push_back(ComputeQueueElement { flags, work, debt });
@@ -275,6 +251,7 @@ impl WorkQueue {
             .extract_if(|queue_element| queue_element.flags & flags == flags)
             .next()
         {
+            log::trace!("Notifying one waker");
             waker_to_call.waker.wake();
         } else {
             self.queuing_notifier.notify_waiters();
@@ -282,7 +259,7 @@ impl WorkQueue {
     }
 
     async fn push_io(&self, work: WorkToDo, debt: Debt, flags: u32) {
-        let mut queue_guard = self.inner.lock().await;
+        let mut queue_guard = self.inner.lock().unwrap();
         #[cfg(feature = "data_locallity")]
         let (remote_data, total_input_size) = if let WorkToDo::FunctionArguments {
             function_id: _,
@@ -365,6 +342,8 @@ impl WorkQueue {
                 for alternative in function_alternatives {
                     flags |= get_engine_flag(alternative.engine);
                 }
+                // only want to count the actual functions to execute
+                self.queue_state_increase();
                 // check if system flag is set, if so, put in system queue
                 (flags, local)
             }
@@ -393,72 +372,73 @@ impl WorkQueue {
         engine_flags: u32,
         node_id: u64,
     ) -> Option<(WorkToDo, Debt)> {
-        if let Some(mut lock) = self.inner.try_lock() {
-            // go through all the input sets and find the index of the one with the most data already on the node asking for work
-            if let Some((index, _)) = lock
-                .io_queue
-                .iter()
-                .filter_map(|queue_element| {
-                    if let WorkToDo::FunctionArguments {
-                        function_id: _,
-                        function_alternatives: _,
-                        input_sets: _,
-                        metadata: _,
-                        caching: _,
-                        recorder: _,
-                    } = &queue_element.work
-                    {
-                        if queue_element.flags & engine_flags != 0 {
-                            Some((
-                                node_id,
-                                queue_element
-                                    .remote_data
-                                    .get(&node_id)
-                                    .copied()
-                                    .unwrap_or(0usize),
-                            ))
-                        } else {
-                            None
-                        }
+        let mut lock = self.inner.lock().unwrap();
+        // go through all the input sets and find the index of the one with the most data already on the node asking for work
+        if let Some((index, _)) = lock
+            .io_queue
+            .iter()
+            .filter_map(|queue_element| {
+                if let WorkToDo::FunctionArguments {
+                    function_id: _,
+                    function_alternatives: _,
+                    input_sets: _,
+                    metadata: _,
+                    caching: _,
+                    recorder: _,
+                } = &queue_element.work
+                {
+                    if queue_element.flags & engine_flags != 0 {
+                        Some((
+                            node_id,
+                            queue_element
+                                .remote_data
+                                .get(&node_id)
+                                .copied()
+                                .unwrap_or(0usize),
+                        ))
                     } else {
                         None
                     }
-                })
-                .enumerate()
-                .max_by_key(|(_, data)| *data)
-            {
-                let mut second_half = lock.io_queue.split_off(index);
-                let work_option = second_half.pop_front();
-                lock.io_queue.append(&mut second_half);
-                return work_option.map(|q_element| (q_element.work, q_element.debt));
-            }
-            // did not find any work in the io_queue so check compute queue
-            if let Some(local_work) = lock
-                .compute_queue
-                .extract_if(|queue_element| {
-                    if let WorkToDo::FunctionArguments {
-                        function_id: _,
-                        function_alternatives: _,
-                        input_sets: _,
-                        metadata: _,
-                        caching: _,
-                        recorder: _,
-                    } = &queue_element.work
-                    {
-                        // TODO might want to prefer the one with the least total data
-                        queue_element.flags & engine_flags != 0
-                    } else {
-                        false
-                    }
-                })
-                .next()
-            {
-                // poke the io cores to resolve more local work if some of it was taken
-                if let Some(waker) = lock.io_waker_list.pop_front() {
-                    waker.wake();
+                } else {
+                    None
                 }
-                return Some((local_work.work, local_work.debt));
+            })
+            .enumerate()
+            .max_by_key(|(_, data)| *data)
+        {
+            let mut second_half = lock.io_queue.split_off(index);
+            let work_option = second_half.pop_front();
+            lock.io_queue.append(&mut second_half);
+            self.queue_state_decrease();
+            return work_option.map(|q_element| (q_element.work, q_element.debt));
+        }
+        // did not find any work in the io_queue so check compute queue
+        if let Some(local_work) = lock
+            .compute_queue
+            .extract_if(|queue_element| {
+                if let WorkToDo::FunctionArguments {
+                    function_id: _,
+                    function_alternatives: _,
+                    input_sets: _,
+                    metadata: _,
+                    caching: _,
+                    recorder: _,
+                } = &queue_element.work
+                {
+                    // TODO might want to prefer the one with the least total data
+                    queue_element.flags & engine_flags != 0
+                } else {
+                    false
+                }
+            })
+            .next()
+        {
+            // poke the io cores to resolve more local work if some of it was taken
+            if let Some(waker) = lock.io_waker_list.pop_front() {
+                waker.wake();
             }
+            self.queue_state_decrease();
+            return Some((local_work.work, local_work.debt));
         }
         None
     }
@@ -472,58 +452,60 @@ impl WorkQueue {
         engine_flags: u32,
         _node_id: u64,
     ) -> Option<(WorkToDo, Debt)> {
-        if let Some(mut lock) = self.inner.try_lock() {
-            // first check the queue with unresolved references, since those are easier to steal
-            if let Some(work_with_references) = lock
-                .io_queue
-                .extract_if(|queue_element| {
-                    if let WorkToDo::FunctionArguments {
-                        function_id: _,
-                        function_alternatives: _,
-                        input_sets: _,
-                        metadata: _,
-                        caching: _,
-                        recorder: _,
-                    } = &queue_element.work
-                    {
-                        queue_element.flags & engine_flags != 0
-                    } else {
-                        false
-                    }
-                })
-                .next()
-            {
-                return Some((work_with_references.work, work_with_references.debt));
-            }
-            // did not find any work in the io_queue so check compute queue
-            if let Some(local_work) = lock
-                .compute_queue
-                .extract_if(|queue_element| {
-                    if let WorkToDo::FunctionArguments {
-                        function_id: _,
-                        function_alternatives: _,
-                        input_sets: _,
-                        metadata: _,
-                        caching: _,
-                        recorder: _,
-                    } = &queue_element.work
-                    {
-                        queue_element.flags & engine_flags != 0
-                    } else {
-                        false
-                    }
-                })
-                .next()
-            {
-                // poke the io cores to resolve more local work if some of it was taken
-                if let Some(waker) = lock.io_waker_list.pop_front() {
-                    waker.wake();
+        let mut lock_guard = self.inner.lock().unwrap();
+        // first check the queue with unresolved references, since those are easier to steal
+        if let Some(work_with_references) = lock_guard
+            .io_queue
+            .extract_if(|queue_element| {
+                if let WorkToDo::FunctionArguments {
+                    function_id: _,
+                    function_alternatives: _,
+                    input_sets: _,
+                    metadata: _,
+                    caching: _,
+                    recorder: _,
+                } = &queue_element.work
+                {
+                    queue_element.flags & engine_flags != 0
+                } else {
+                    false
                 }
-                return Some((local_work.work, local_work.debt));
+            })
+            .next()
+        {
+            self.queue_state_decrease();
+            return Some((work_with_references.work, work_with_references.debt));
+        }
+        // did not find any work in the io_queue so check compute queue
+        if let Some(local_work) = lock_guard
+            .compute_queue
+            .extract_if(|queue_element| {
+                if let WorkToDo::FunctionArguments {
+                    function_id: _,
+                    function_alternatives: _,
+                    input_sets: _,
+                    metadata: _,
+                    caching: _,
+                    recorder: _,
+                } = &queue_element.work
+                {
+                    queue_element.flags & engine_flags != 0
+                } else {
+                    false
+                }
+            })
+            .next()
+        {
+            // poke the io cores to resolve more local work if some of it was taken
+            if let Some(waker) = lock_guard.io_waker_list.pop_front() {
+                waker.wake();
             }
+            self.queue_state_decrease();
+            return Some((local_work.work, local_work.debt));
         }
         None
     }
+
     /// Spins on the queue until it manages to acquire some work that matches the given flags.
     pub async fn get_compute_work(&self, engine_flags: u32) -> (WorkToDo, Debt) {
         // try to get work, if there is none, insert self into waker and try again

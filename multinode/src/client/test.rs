@@ -349,18 +349,19 @@ async fn mock_queue_server(
     assert!(node_info_data.is_none());
     let registration_messge = deserialize_node_info(node_info_buffer).unwrap();
     assert_eq!(1, registration_messge.version);
+    assert_eq!(2, registration_messge.num_local_cores);
     *progress_point.lock().unwrap() = 1;
 
     // wait for second message asking for work
     let (message_buffer, message_data) = receive_message(&mut socket).await;
     assert!(message_data.is_none());
-    match deserialize_remote_message(message_buffer)
+    let remote_message = deserialize_remote_message(message_buffer)
         .unwrap()
         .remote_message
-        .unwrap()
-    {
+        .unwrap();
+    match remote_message {
         remote_message::RemoteMessage::WorkRequest(_) => (),
-        _ => panic!("Expected work request"),
+        _ => panic!("Expected work request not {:?}", remote_message),
     }
     *progress_point.lock().unwrap() = 2;
     // send back a message with work
@@ -377,13 +378,13 @@ async fn mock_queue_server(
     // expect to be asked for work again, send more work
     let (message_buffer, message_data) = receive_message(&mut socket).await;
     assert!(message_data.is_none());
-    match deserialize_remote_message(message_buffer)
+    let remote_message = deserialize_remote_message(message_buffer)
         .unwrap()
         .remote_message
-        .unwrap()
-    {
+        .unwrap();
+    match remote_message {
         remote_message::RemoteMessage::WorkRequest(_) => (),
-        _ => panic!("Expected work request"),
+        _ => panic!("Expected work request not {:?}", remote_message),
     }
     *progress_point.lock().unwrap() = 3;
     // send back a message with work
@@ -476,7 +477,7 @@ async fn mock_queue_server(
     }
 }
 
-#[test]
+#[test_log::test]
 fn test_remote_queue_client() {
     // constants used in the test
     let expected_function_id = "dummy function".to_string();
@@ -485,6 +486,7 @@ fn test_remote_queue_client() {
     let (client, server) = tokio::io::duplex(4096);
 
     let work_queue = WorkQueue::init();
+    work_queue.add_local_cores(2);
     let (dispatcher_sender, mut dispatcher_receiver) = mpsc::channel(1);
     let progress = Arc::new(Mutex::new(0));
     let engine_type = machine_config::EngineType::iter().next().unwrap();
@@ -511,44 +513,12 @@ fn test_remote_queue_client() {
         Poll::Pending,
         test_server_future.as_mut().poll(&mut context)
     );
-    assert_eq!(*progress.lock().unwrap(), 1);
-
-    // poke client to see it does not send spurious messages
-    assert_eq!(Poll::Pending, poller_future.as_mut().poll(&mut context));
-    assert_eq!(
-        Poll::Pending,
-        test_server_future.as_mut().poll(&mut context)
-    );
-    assert_eq!(*progress.lock().unwrap(), 1);
-
-    // poke client to go fetch work, add two engines
-    let mut engine_future_1 = Box::pin(work_queue.get_compute_work(engine_flags));
-    assert!(match engine_future_1.as_mut().poll(&mut context) {
-        Poll::Pending => true,
-        _ => false,
-    });
-    let mut engine_future_2 = Box::pin(work_queue.get_compute_work(engine_flags));
-    assert!(match engine_future_2.as_mut().poll(&mut context) {
-        Poll::Pending => true,
-        _ => false,
-    });
-
-    // poll the client so it can send a rquest for work
-    assert_eq!(Poll::Pending, poller_future.as_mut().poll(&mut context));
-    // poll the test server to check that the message was received and send back an invocation
-    assert_eq!(
-        Poll::Pending,
-        test_server_future.as_mut().poll(&mut context)
-    );
+    // expect server already has sent the initial message with the node info and then the request for work
     assert_eq!(2, *progress.lock().unwrap());
 
     // poll the server to receive work
     assert_eq!(Poll::Pending, poller_future.as_mut().poll(&mut context));
-    // poll the engine again to check that the work has been delivered to the engine
-    assert!(match engine_future_2.as_mut().poll(&mut context) {
-        Poll::Pending => true,
-        _ => false,
-    });
+
     // should now have work in the receiver, need to keep the receiver since the client doesn't handle dropping it.
     let (result_future_1, _sender) = match dispatcher_receiver.poll_recv(&mut context) {
         Poll::Ready(Some(DispatcherCommand::RemoteFunctionRequest {
@@ -592,11 +562,7 @@ fn test_remote_queue_client() {
         Poll::Pending => (),
         Poll::Ready(_) => panic!("Should not have work done yet"),
     }
-    // engine should now get work
-    match engine_future_1.poll_unpin(&mut context) {
-        Poll::Ready(_) => (),
-        Poll::Pending => panic!("should now be able to get work"),
-    }
+
     // should now send request for more work, since one engine left the queue and there is one remaining
     assert_eq!(Poll::Pending, poller_future.poll_unpin(&mut context));
     // check node asked for more work and send it back
@@ -651,11 +617,6 @@ fn test_remote_queue_client() {
         Poll::Pending => (),
         Poll::Ready(_) => panic!("Should not have work done yet"),
     }
-    // engine should now get work
-    match engine_future_2.poll_unpin(&mut context) {
-        Poll::Ready(_) => (),
-        Poll::Pending => panic!("should now be able to get work"),
-    }
 
     // send back a result and poll to get it processed
     assert!(work_sender_2
@@ -670,11 +631,11 @@ fn test_remote_queue_client() {
     );
     assert_eq!(4, *progress.lock().unwrap());
 
-    // have the server ask for more work
+    // take work from the queue and check that client polls for more
     let mut another_engine_future = Box::pin(work_queue.get_compute_work(engine_flags));
     assert!(match another_engine_future.as_mut().poll(&mut context) {
-        Poll::Pending => true,
-        _ => false,
+        Poll::Ready(_) => true,
+        Poll::Pending => false,
     });
     assert_eq!(Poll::Pending, poller_future.as_mut().poll(&mut context));
 
@@ -712,6 +673,7 @@ fn test_combined() {
 
     // create variable needed for server side
     let work_queue = WorkQueue::init();
+    work_queue.add_local_cores(2);
     let engine_type = machine_config::EngineType::iter().next().unwrap();
 
     // create variable needed for client side

@@ -368,7 +368,7 @@ enum PollingOption<Stream: AsyncReadExt + std::marker::Unpin> {
         DandelionResult<queue_message::QueueMessage>,
         Option<Bytes>,
     ),
-    IdleCoresChanged(watch::Receiver<u32>, u32),
+    QueueStateChanged(watch::Receiver<usize>, usize),
     LocalCoreCountChanged(watch::Receiver<usize>, usize),
     // Results(RemoteMessage, Option<(Vec<Option<CompositionSet>>, u64)>),
     Results(RemoteMessage),
@@ -383,12 +383,13 @@ async fn receive_queue_message<Stream: AsyncReadExt + std::marker::Unpin>(
     PollingOption::Message(receiver, new_message, data_buf)
 }
 
-async fn poll_idle_core<Stream: AsyncReadExt + std::marker::Unpin>(
-    mut receiver: watch::Receiver<u32>,
+async fn poll_local_queue_state<Stream: AsyncReadExt + std::marker::Unpin>(
+    mut receiver: watch::Receiver<usize>,
 ) -> PollingOption<Stream> {
     receiver.changed().await.unwrap();
-    let engine_state = *receiver.borrow_and_update();
-    PollingOption::IdleCoresChanged(receiver, engine_state)
+    trace!("received local queue state");
+    let queue_state = *receiver.borrow_and_update();
+    PollingOption::QueueStateChanged(receiver, queue_state)
 }
 
 async fn poll_local_core_count<Stream: AsyncReadExt + std::marker::Unpin>(
@@ -444,10 +445,11 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
     let mut remote_had_work = true;
 
     // set up the connection by sending a single node info
+    let mut local_core_watcher = queue.system_info.num_local_cores_watcher.clone();
     let node_info_buffer = serialize_node_info(NodeInfo {
         version: 1,
         id: export_registry.get_node_id(),
-        num_local_cores: { *queue.system_info.num_local_cores_watcher.borrow() } as u64,
+        num_local_cores: { *local_core_watcher.borrow_and_update() } as u64,
     });
 
     let (read_socket, mut write_socket) = split(socket);
@@ -457,21 +459,22 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
 
     // Create a second copy of the watcher to wait on asynchronously, marke changed to check once in the beginning,
     // in case there are already idle cores
-    let local_available = queue.idle_watcher();
-    let mut new_local_available = local_available.clone();
-    new_local_available.mark_changed();
+    let local_queue_state = queue.queue_state_watcher();
+    let mut new_local_queue_state = local_queue_state.clone();
+    // needs to be marked changed, so a server with an empty queue and already stead number of local cores starts to poll
+    new_local_queue_state.mark_changed();
 
     // stream for the promises of the local requests wait for them to resolve
     // Once stream interfaces stabilize would be nice to move this to merged streams, but for now this seems
     let mut merged_stream = FuturesUnordered::new();
-    merged_stream.push(Either::Right(Either::Right(poll_idle_core(
-        new_local_available,
+    merged_stream.push(Either::Right(Either::Right(poll_local_queue_state(
+        new_local_queue_state,
     ))));
     merged_stream.push(Either::Right(
         receive_queue_message(read_socket).left_future(),
     ));
     merged_stream.push(Either::Left(Either::Right(poll_local_core_count(
-        queue.system_info.num_local_cores_watcher.clone(),
+        local_core_watcher,
     ))));
 
     while let Some(current_future) = merged_stream.next().await {
@@ -488,12 +491,13 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                     queue_message::QueueMessage::NoWork(false) => {
                         trace!("Queue Client recieved NoWork(false)");
                         debug_assert!(data_option.is_none());
-                        let engine_capacity = *local_available.borrow();
-                        if engine_capacity > 0 {
+                        let current_jobs_queued = *local_queue_state.borrow();
+                        let local_cores = *queue.system_info.num_local_cores_watcher.borrow();
+                        if current_jobs_queued < local_cores {
                             let engines = EngineType::iter()
                                 .map(|engine_type| proto::Engine {
                                     engine_type: engine_type_dtop(engine_type) as i32,
-                                    engine_capacity,
+                                    engine_capacity: (local_cores - current_jobs_queued) as u32,
                                 })
                                 .collect();
                             let request_buffer = serialize_remote_message(RemoteMessage {
@@ -502,6 +506,7 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                                 )),
                             });
                             send_message(&request_buffer, &mut write_socket, None).await;
+                            remote_had_work = false;
                         } else {
                             // Only set to true, if we did not send out a message already,
                             // otherwise avoid retriggering sending a message on state change, before we get answer.
@@ -558,17 +563,19 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                 send_message(&serialize_remote_message(results), &mut write_socket, None).await;
             }
             // getting a notification so should poll the queue
-            PollingOption::IdleCoresChanged(receiver, available_engines) => {
+            PollingOption::QueueStateChanged(receiver, current_queue_state) => {
                 trace!(
-                    "Queue Client checking updated idle state: {:?}",
-                    available_engines
+                    "Queue Client checking updated queue state: {:?}, remote_had_work {}",
+                    current_queue_state,
+                    remote_had_work,
                 );
                 // send message to get work if we have not asked already
-                if remote_had_work && available_engines > 0 {
+                let local_cores = *queue.system_info.num_local_cores_watcher.borrow();
+                if remote_had_work && current_queue_state < local_cores {
                     let engines: Vec<_> = EngineType::iter()
                         .map(|engine_type| proto::Engine {
                             engine_type: engine_type_dtop(engine_type) as i32,
-                            engine_capacity: available_engines,
+                            engine_capacity: (local_cores - current_queue_state) as u32,
                         })
                         .collect();
 
@@ -577,12 +584,14 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                             RepeatedEngines { engines },
                         )),
                     });
-                    trace!("Asking for more work, after seeing more idle engines");
+                    trace!("Asking for more work");
                     send_message(&request_buffer, &mut write_socket, None).await;
                     // set false, to avoid double sending if multiple cores become idle, but did not have a response in between
                     remote_had_work = false;
                 }
-                merged_stream.push(Either::Right(Either::Right(poll_idle_core(receiver))));
+                merged_stream.push(Either::Right(Either::Right(poll_local_queue_state(
+                    receiver,
+                ))));
             }
             PollingOption::LocalCoreCountChanged(receiver, num_local_cores) => {
                 let request_buffer = serialize_remote_message(RemoteMessage {
