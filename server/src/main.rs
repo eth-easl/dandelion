@@ -307,6 +307,7 @@ fn main() -> () {
     let work_queue = WorkQueue::init();
 
     // define the any sharding mode
+    info!("Using any sharding mode: {:?}", config.any_sharding_mode);
     let any_sharding_mode = match config.any_sharding_mode {
         config::AnyShardingMode::MaxSharding => AnyShardingMode::MaxSharding,
         config::AnyShardingMode::FixedSharding(n) => AnyShardingMode::FixedSharding(n),

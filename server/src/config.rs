@@ -227,6 +227,10 @@ impl DandelionConfig {
             virtual_max_ram_multiplier,
             DEFAULT_VIRTUAL_MAX_RAM_MULTIPLIER
         );
+        merge!(
+            any_sharding_mode,
+            AnyShardingMode::AutoSharding(DEFAULT_AUTOSHARDING_OFFLOAD_CONST)
+        );
         merge_clone!(bin_preload_path, String::from(""));
         merge_clone!(folder_path, String::from(DEFAULT_FOLDER_PATH));
         merge_option!(remote_queue_url);
