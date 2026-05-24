@@ -5,7 +5,7 @@ use crate::{
 use dandelion_commons::{
     err_dandelion, DandelionError, DandelionResult, FunctionId, MultinodeError,
 };
-use log::trace;
+use log::{debug, trace};
 use std::{
     cmp,
     collections::BTreeMap,
@@ -647,24 +647,18 @@ pub fn get_sharding(
                 let c_local = { *params.sys_info.num_local_cores_watcher.borrow() };
                 let c_remote = params.sys_info.num_remote_cores.load(Ordering::Acquire);
                 if total_largest_any_set_sizes > params.offload_const * s_min * c_local {
-                    log::trace!(
+                    log::debug!(
                         "Any sets using at most local + remote cores = {}",
                         c_local + c_remote
                     );
                     c_local + c_remote
                 } else {
-                    log::trace!("Any sets using at most local cores = {}", c_local);
+                    log::debug!("Any sets using at most local cores = {}", c_local);
                     c_local
                 }
             }
         }
     };
-    trace!(
-        "Found fixed_partitions: {} and {} any sets (target_partitions: {})",
-        fixed_partitions,
-        any_set_groups.len(),
-        target_partitions,
-    );
 
     // compute the partitions for the any shardings
     if fixed_partitions < target_partitions && !any_set_groups.is_empty() {
@@ -709,6 +703,10 @@ pub fn get_sharding(
             }
         }
     }
+    debug!(
+        "Found fixed_partitions: {} and any sets: {:?} (target_partitions: {})",
+        fixed_partitions, any_set_groups, target_partitions,
+    );
     if target_partitions > 0 {
         trace!("Using any partitions: {:?}", any_set_groups);
         if let Some(iter) = join_iter.as_mut() {

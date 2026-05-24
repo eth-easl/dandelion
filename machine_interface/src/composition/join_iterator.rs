@@ -1,3 +1,4 @@
+use log::debug;
 use std::ops::Range;
 
 use crate::composition::{AnySetGroup, CompositionSet, ItemData, JoinStrategy, ShardingMode};
@@ -662,106 +663,113 @@ impl JoinIterator for AnyIterator {
         debug_assert!(parallelism > 0);
         debug_assert!(parallelism <= self.set_groups.len());
 
-        // split them into even groups
-        let num_sets = self.set_groups[0].len();
-        let mut new_set_groups = Vec::with_capacity(parallelism);
-        let base_size = self.set_groups.len() / parallelism;
-        let remainder = self.set_groups.len() % parallelism;
-        // If a min_set_bytes is given we make sure the set groups of the largest set have at least
-        // that size. This might lead to less groups than the `any_parallelism` given.
-        // We sort the set_groups by size to get a more even partitioning in most cases.
-        if self.min_set_bytes > 0 {
-            self.set_groups.sort_by(|a, b| {
-                a[self.largest_set_idx]
-                    .as_ref()
-                    .unwrap()
-                    .size()
-                    .cmp(&b[self.largest_set_idx].as_ref().unwrap().size())
-            });
+        if self.min_set_bytes > 0 || parallelism < self.set_groups.len() {
+            // split them into even groups
+            let num_sets = self.set_groups[0].len();
+            let mut new_set_groups = Vec::with_capacity(parallelism);
+            let base_size = self.set_groups.len() / parallelism;
+            let remainder = self.set_groups.len() % parallelism;
+            // If a min_set_bytes is given we make sure the set groups of the largest set have at least
+            // that size. This might lead to less groups than the `any_parallelism` given.
+            // We sort the set_groups by size to get a more even partitioning in most cases.
+            if self.min_set_bytes > 0 {
+                self.set_groups.sort_by(|a, b| {
+                    a[self.largest_set_idx]
+                        .as_ref()
+                        .unwrap()
+                        .size()
+                        .cmp(&b[self.largest_set_idx].as_ref().unwrap().size())
+                });
 
-            let mut curr_idx = 0;
-            let mut min_end_idx = 0;
-            for group_idx in 0..parallelism {
-                if curr_idx >= self.set_groups.len() {
-                    break;
-                }
-                let extra = if group_idx < remainder { 1 } else { 0 };
-                min_end_idx = min_end_idx + base_size + extra;
+                let mut curr_idx = 0;
+                let mut min_end_idx = 0;
+                for group_idx in 0..parallelism {
+                    if curr_idx >= self.set_groups.len() {
+                        break;
+                    }
+                    let extra = if group_idx < remainder { 1 } else { 0 };
+                    min_end_idx = min_end_idx + base_size + extra;
 
-                let mut set_group = Vec::with_capacity(num_sets);
-                set_group.resize(num_sets, None);
+                    let mut set_group = Vec::with_capacity(num_sets);
+                    set_group.resize(num_sets, None);
 
-                // iterate through largest set until we have reached at least the min_end_idx and the
-                // set is at least self.min_set_bytes big
-                let start_idx = curr_idx;
-                {
-                    let mut curr_set: Option<CompositionSet> = None;
-                    let mut curr_set_size = 0;
-                    while curr_idx < self.set_groups.len()
-                        && (curr_idx < min_end_idx || curr_set_size < self.min_set_bytes)
+                    // iterate through largest set until we have reached at least the min_end_idx and the
+                    // set is at least self.min_set_bytes big
+                    let start_idx = curr_idx;
                     {
-                        if let Some(set) = &mut curr_set {
-                            if let Some(next_set) =
-                                self.set_groups[curr_idx][self.largest_set_idx].take()
-                            {
-                                curr_set_size += next_set.size();
-                                set.combine(next_set);
+                        let mut curr_set: Option<CompositionSet> = None;
+                        let mut curr_set_size = 0;
+                        while curr_idx < self.set_groups.len()
+                            && (curr_idx < min_end_idx || curr_set_size < self.min_set_bytes)
+                        {
+                            if let Some(set) = &mut curr_set {
+                                if let Some(next_set) =
+                                    self.set_groups[curr_idx][self.largest_set_idx].take()
+                                {
+                                    curr_set_size += next_set.size();
+                                    set.combine(next_set);
+                                }
+                            } else {
+                                curr_set = self.set_groups[curr_idx][self.largest_set_idx].take();
+                                curr_set_size = curr_set.as_ref().unwrap().size();
                             }
-                        } else {
-                            curr_set = self.set_groups[curr_idx][self.largest_set_idx].take();
-                            curr_set_size = curr_set.as_ref().unwrap().size();
+                            curr_idx += 1;
                         }
-                        curr_idx += 1;
+                        set_group[self.largest_set_idx] = curr_set;
                     }
-                    set_group[self.largest_set_idx] = curr_set;
-                }
 
-                // create the set group for all other sets
-                for set_idx in 0..num_sets {
-                    if set_idx == self.largest_set_idx {
-                        continue;
-                    }
-                    let mut curr_set: Option<CompositionSet> = None;
-                    for i in start_idx..curr_idx {
-                        if let Some(set) = &mut curr_set {
-                            if let Some(next_set) = self.set_groups[i][set_idx].take() {
-                                set.combine(next_set);
-                            }
-                        } else {
-                            curr_set = self.set_groups[i][set_idx].take();
+                    // create the set group for all other sets
+                    for set_idx in 0..num_sets {
+                        if set_idx == self.largest_set_idx {
+                            continue;
                         }
+                        let mut curr_set: Option<CompositionSet> = None;
+                        for i in start_idx..curr_idx {
+                            if let Some(set) = &mut curr_set {
+                                if let Some(next_set) = self.set_groups[i][set_idx].take() {
+                                    set.combine(next_set);
+                                }
+                            } else {
+                                curr_set = self.set_groups[i][set_idx].take();
+                            }
+                        }
+                        set_group[set_idx] = curr_set;
                     }
-                    set_group[set_idx] = curr_set;
+                    new_set_groups.push(set_group);
                 }
-                new_set_groups.push(set_group);
-            }
-        } else {
-            // If no min_set_bytes is given we create even groups based on the number of items per set
-            // ignoring any item/set sizes.
-            let mut start_idx = 0;
-            for group_idx in 0..parallelism {
-                let extra = if group_idx < remainder { 1 } else { 0 };
-                let end_idx = start_idx + base_size + extra;
+            } else {
+                // If no min_set_bytes is given we create even groups based on the number of items per set
+                // ignoring any item/set sizes.
+                let mut start_idx = 0;
+                for group_idx in 0..parallelism {
+                    let extra = if group_idx < remainder { 1 } else { 0 };
+                    let end_idx = start_idx + base_size + extra;
 
-                let mut set_group = Vec::with_capacity(num_sets);
-                for set_idx in 0..num_sets {
-                    let mut curr_set: Option<CompositionSet> = None;
-                    for i in start_idx..end_idx {
-                        if let Some(set) = &mut curr_set {
-                            if let Some(next_set) = self.set_groups[i][set_idx].take() {
-                                set.combine(next_set);
+                    let mut set_group = Vec::with_capacity(num_sets);
+                    for set_idx in 0..num_sets {
+                        let mut curr_set: Option<CompositionSet> = None;
+                        for i in start_idx..end_idx {
+                            if let Some(set) = &mut curr_set {
+                                if let Some(next_set) = self.set_groups[i][set_idx].take() {
+                                    set.combine(next_set);
+                                }
+                            } else {
+                                curr_set = self.set_groups[i][set_idx].take();
                             }
-                        } else {
-                            curr_set = self.set_groups[i][set_idx].take();
                         }
+                        set_group.push(curr_set);
                     }
-                    set_group.push(curr_set);
+                    new_set_groups.push(set_group);
+                    start_idx = end_idx;
                 }
-                new_set_groups.push(set_group);
-                start_idx = end_idx;
             }
+            debug!(
+                "Reduced partitions from {} to {}",
+                self.set_groups.len(),
+                new_set_groups.len()
+            );
+            self.set_groups = new_set_groups;
         }
-        self.set_groups = new_set_groups;
 
         if let Some(left) = self.left.as_mut() {
             left.reduce_any_partitions(any_parallelisms);
