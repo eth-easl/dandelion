@@ -308,6 +308,7 @@ fn main() -> () {
     let (remote_data_deletion_sender, remote_data_deletion_receiver) = mpsc::unbounded_channel();
 
     // define the any sharding mode
+    info!("Using any sharding mode: {:?}", config.any_sharding_mode);
     let any_sharding_mode = match config.any_sharding_mode {
         config::AnyShardingMode::MaxSharding => AnyShardingMode::MaxSharding,
         config::AnyShardingMode::FixedSharding(n) => AnyShardingMode::FixedSharding(n),

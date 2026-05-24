@@ -195,7 +195,7 @@ impl fmt::Display for Recorder {
         #[cfg(feature = "timestamp")]
         {
             write!(
-                f,
+                _f,
                 "{{\"id\": \"{}\", \"ts\": {}, \"children\": [",
                 self.inner.function_id, self.inner.timestamps
             )?;
@@ -204,22 +204,22 @@ impl fmt::Display for Recorder {
                 for child in children.iter() {
                     if let Some(child_recorders) = child {
                         if need_comma {
-                            write!(f, ",")?;
+                            write!(_f, ",")?;
                         }
-                        write!(f, "[")?;
+                        write!(_f, "[")?;
                         for (i, r) in child_recorders.iter().enumerate() {
                             if i < child_recorders.len() - 1 {
-                                write!(f, "{},", r)?;
+                                write!(_f, "{},", r)?;
                             } else {
-                                write!(f, "{}", r)?;
+                                write!(_f, "{}", r)?;
                             }
                         }
-                        write!(f, "]")?;
+                        write!(_f, "]")?;
                         need_comma = true;
                     }
                 }
             }
-            write!(f, "]}}")
+            write!(_f, "]}}")
         }
         #[cfg(not(feature = "timestamp"))]
         Ok(())
