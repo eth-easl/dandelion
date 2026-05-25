@@ -114,7 +114,7 @@ async fn dispatcher_loop(
                 function_id,
                 inputs,
                 recorder,
-                mut callback,
+                callback,
                 is_cold,
             } => {
                 debug!(
@@ -124,15 +124,9 @@ async fn dispatcher_loop(
                 let function_future =
                     dispatcher.queue_function(function_id, inputs, !is_cold, recorder.clone());
                 spawn(async {
-                    select! {
-                        function_output = function_future => {
-                            // either get an ok, meaning the data was sent, or get the data back
-                            // no need to handle ok, and nothing useful to do with data if we get it back
-                            // drop it here to release resources
-                            let _ = callback.send(function_output.map(|sets|(sets, recorder)));
-                        }
-                        _ = callback.closed() => ()
-                    }
+                    callback
+                        .callback(function_future.await.map(|sets| (sets, recorder)))
+                        .await;
                 });
             }
         };

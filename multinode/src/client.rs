@@ -18,7 +18,6 @@ use dandelion_commons::{
     err_dandelion, records::Recorder, DandelionError, DandelionResult, MultinodeError,
 };
 use dispatcher::queue::{get_engine_flag, WorkQueue};
-use futures::{future::Either, stream::FuturesUnordered, FutureExt, StreamExt};
 use log::{error, trace, warn};
 use machine_interface::{
     composition::{CompositionSet, RemoteData},
@@ -32,13 +31,13 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 use tokio::{
-    io::{split, AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
         TcpStream,
     },
     spawn,
-    sync::{mpsc, oneshot, watch, Notify},
+    sync::{mpsc, watch, Notify},
 };
 
 #[cfg(test)]
@@ -115,12 +114,14 @@ async fn send_message(
 async fn receive_message(mut receiver: impl AsyncReadExt + Unpin) -> (Bytes, Option<Bytes>) {
     let packed_metadata = receiver.read_u64().await.unwrap();
     let (metadata_size, _) = unpack_metadata_size_and_flags(packed_metadata);
+    trace!("strart receiving: {}", metadata_size);
 
     // new buffer with size of message
     let mut metadata_buffer = BytesMut::with_capacity(metadata_size as usize);
     while metadata_buffer.len() < metadata_size as usize {
         receiver.read_buf(&mut metadata_buffer).await.unwrap();
     }
+    trace!("finish receiving");
 
     // Keep for when we want to send additional data long with requests
     // if (flags & ADDITIONAL_DATA_BUFFER) != 0 {
@@ -171,10 +172,12 @@ async fn remote_queue_server_receiver(
 /// check if we can unite this and the reciever with the other one, by using traits
 async fn remote_queue_server_sender(
     mut socket: OwnedWriteHalf,
-    mut receiver: mpsc::Receiver<QueueMessage>,
+    mut receiver: mpsc::Receiver<queue_message::QueueMessage>,
 ) {
     while let Some(queue_message) = receiver.recv().await {
-        let message_buffer = serialize_queue_message(queue_message);
+        let message_buffer = serialize_queue_message(QueueMessage {
+            queue_message: Some(queue_message),
+        });
         send_message(&message_buffer, &mut socket, None).await;
     }
 }
@@ -182,7 +185,7 @@ async fn remote_queue_server_sender(
 /// The protocol logic handling for the remote queue server
 async fn remote_queue_server_logic(
     mut message_receiver: mpsc::Receiver<QueueOption>,
-    message_sender: mpsc::Sender<QueueMessage>,
+    message_sender: mpsc::Sender<queue_message::QueueMessage>,
     queue: WorkQueue,
     export_registry: ExportRegistry,
     remote_data_deletion_sender: mpsc::UnboundedSender<RemoteData>,
@@ -217,6 +220,7 @@ async fn remote_queue_server_logic(
                         let queue_message = if let Some((work, debt)) =
                             queue.try_get_work_for_remote(engine_flags, node_id)
                         {
+                            trace!("Found work, prepare to send out");
                             // there is some work so send it out
                             // find the local function id to use
                             let promise_id = if let Some(free_id) = free_debt_ids.pop() {
@@ -253,22 +257,18 @@ async fn remote_queue_server_logic(
                             );
                             let metadata_sets =
                                 export_registry.composition_sets_to_proto(data_sets).await;
-                            QueueMessage {
-                                queue_message: Some(queue_message::QueueMessage::Invocation(
-                                    Invocation {
-                                        metadata_sets,
-                                        function_id: function_id.to_string(),
-                                        invocation_id: promise_id,
-                                        caching,
-                                    },
-                                )),
-                            }
+                            trace!("Prepared work, sending out now");
+                            queue_message::QueueMessage::Invocation(Invocation {
+                                metadata_sets,
+                                function_id: function_id.to_string(),
+                                invocation_id: promise_id,
+                                caching,
+                            })
                         } else {
                             waiting_for_work = true;
+                            trace!("No work available");
                             // there is no work, so send message accordingly
-                            QueueMessage {
-                                queue_message: Some(queue_message::QueueMessage::NoWork(true)),
-                            }
+                            queue_message::QueueMessage::NoWork(true)
                         };
                         message_sender.send(queue_message).await.unwrap();
                     }
@@ -338,15 +338,14 @@ async fn remote_queue_server_logic(
                 if waiting_for_work {
                     waiting_for_work = false;
                     message_sender
-                        .send(QueueMessage {
-                            queue_message: Some(queue_message::QueueMessage::NoWork(false)),
-                        })
+                        .send(queue_message::QueueMessage::NoWork(false))
                         .await
                         .unwrap();
                 }
             }
         }
     }
+    warn!("Arrived at end of remtote_queue_server_logic, which should stay in the loop forever");
 }
 
 /// Handler for one remote node, polling the local queue for them.
@@ -411,150 +410,146 @@ pub async fn remote_queue_server(
     .await;
 }
 
-enum PollingOption<Stream: AsyncReadExt + Unpin> {
-    Message(
-        Stream,
-        DandelionResult<queue_message::QueueMessage>,
-        Option<Bytes>,
-    ),
-    QueueStateChanged(watch::Receiver<usize>, usize),
-    LocalCoreCountChanged(watch::Receiver<usize>, usize),
+pub enum PollingOption {
+    Message(DandelionResult<queue_message::QueueMessage>, Option<Bytes>),
+    QueueStateChanged(usize),
+    LocalCoreCountChanged(usize),
     // Results(RemoteMessage, Option<(Vec<Option<CompositionSet>>, u64)>),
-    Results(RemoteMessage),
+    Results(remote_message::RemoteMessage),
 }
 
-async fn receive_queue_message<Stream: AsyncReadExt + Unpin>(
-    mut receiver: Stream,
-) -> PollingOption<Stream> {
-    let (message_buffer, data_buf) = receive_message(&mut receiver).await;
-    let new_message = deserialize_queue_message(message_buffer)
-        .and_then(|message| Ok(message.queue_message.unwrap()));
-    PollingOption::Message(receiver, new_message, data_buf)
+async fn remote_queue_client_receiver(
+    mut socket: OwnedReadHalf,
+    sender: mpsc::Sender<PollingOption>,
+) {
+    loop {
+        let (message_buffer, _) = receive_message(&mut socket).await;
+        let message = deserialize_queue_message(message_buffer)
+            .and_then(|message| Ok(message.queue_message.unwrap()));
+        sender
+            .send(PollingOption::Message(message, None))
+            .await
+            .unwrap();
+    }
 }
 
-async fn poll_local_queue_state<Stream: AsyncReadExt + Unpin>(
+async fn remote_queue_client_sender(
+    mut socket: OwnedWriteHalf,
+    mut receiver: mpsc::Receiver<remote_message::RemoteMessage>,
+) {
+    while let Some(remote_message) = receiver.recv().await {
+        let message_buffer = serialize_remote_message(RemoteMessage {
+            remote_message: Some(remote_message),
+        });
+        send_message(&message_buffer, &mut socket, None).await;
+    }
+}
+
+async fn remote_queue_client_queue_state(
     mut receiver: watch::Receiver<usize>,
-) -> PollingOption<Stream> {
-    receiver.changed().await.unwrap();
-    trace!("received local queue state");
-    let queue_state = *receiver.borrow_and_update();
-    PollingOption::QueueStateChanged(receiver, queue_state)
+    sender: mpsc::Sender<PollingOption>,
+) {
+    loop {
+        receiver.changed().await.unwrap();
+        trace!("received local queue state");
+        let queue_state = *receiver.borrow_and_update();
+        sender
+            .send(PollingOption::QueueStateChanged(queue_state))
+            .await
+            .unwrap();
+    }
 }
 
-async fn poll_local_core_count<Stream: AsyncReadExt + Unpin>(
+async fn remote_queue_client_core_count(
     mut receiver: watch::Receiver<usize>,
-) -> PollingOption<Stream> {
-    receiver.changed().await.unwrap();
-    let num_local_cores = *receiver.borrow_and_update();
-    PollingOption::LocalCoreCountChanged(receiver, num_local_cores)
+    sender: mpsc::Sender<PollingOption>,
+) {
+    loop {
+        receiver.changed().await.unwrap();
+        let num_local_cores = *receiver.borrow_and_update();
+        sender
+            .send(PollingOption::LocalCoreCountChanged(num_local_cores))
+            .await
+            .unwrap();
+    }
 }
 
-async fn poll_results<Stream: AsyncReadExt + Unpin>(
-    result_receiver: oneshot::Receiver<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
+pub struct ResultCallback {
     invocation_id: u32,
     export_registry: ExportRegistry,
     start_time: Duration,
-) -> PollingOption<Stream> {
-    let response_message = match result_receiver.await.unwrap() {
-        Ok((sets, recorder)) => {
-            let metadata_sets = export_registry.composition_sets_to_proto(sets).await;
-            proto::response::Response::MetadataSets(proto::RepeatedMetadataSet {
-                metadata_sets,
-                timestamps: recorder_dtop(recorder, start_time),
-            })
-        }
-        Err(err) => proto::response::Response::ErrorMsg(err.error.to_string()),
-    };
-    PollingOption::Results(
-        RemoteMessage {
-            remote_message: Some(proto::remote_message::RemoteMessage::Response(Response {
-                invocation_id,
-                response: Some(response_message),
-            })),
-        },
-        // response_set,
-    )
+    sender: mpsc::Sender<PollingOption>,
 }
 
-/// Client to ask for work from a remote queue.
-/// Whenever the local idle engine number changes, if there are idle engines send out request for work.
-/// There is no request for work when the remote has not replied with work (or not replied yet).
-/// Expect a single invocation. The change in idle cores going down 1 (from the work that was enqueued),
-/// should retrigger asking for more work if there are more idle cores.
-pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + Unpin>(
-    socket: Stream,
-    sender: mpsc::Sender<DispatcherCommand>,
-    // TODO: might want a differnet mechanism, to wake them one after each other to go check
-    // But each poller also needs to be able to check if there are still cores available,
-    // in case the remote sends a message that there is work available
+impl ResultCallback {
+    pub async fn callback(self, result: DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>) {
+        let response_message = match result {
+            Ok((sets, recorder)) => {
+                let metadata_sets = self.export_registry.composition_sets_to_proto(sets).await;
+                proto::response::Response::MetadataSets(proto::RepeatedMetadataSet {
+                    metadata_sets,
+                    timestamps: recorder_dtop(recorder, self.start_time),
+                })
+            }
+            Err(err) => proto::response::Response::ErrorMsg(err.error.to_string()),
+        };
+        self.sender
+            .send(PollingOption::Results(
+                remote_message::RemoteMessage::Response(Response {
+                    invocation_id: self.invocation_id,
+                    response: Some(response_message),
+                }),
+                // None,
+            ))
+            .await
+            .unwrap();
+    }
+}
+
+async fn remote_queue_client_logic(
+    mut receiver: mpsc::Receiver<PollingOption>,
+    message_sender: mpsc::Sender<remote_message::RemoteMessage>,
+    dispatcher_sender: mpsc::Sender<DispatcherCommand>,
+    result_sender: mpsc::Sender<PollingOption>,
+    // TODO: check how up to date we need to be with the queue state
+    // the current design is more clean, but there are cases where we look at an out of date queue state
+    // local_queue_state: watch::Receiver<usize>,
     export_registry: ExportRegistry,
-    queue: WorkQueue,
+    mut num_local_cores: usize,
 ) {
-    // local state keeping variables
     let mut remote_had_work = true;
+    let mut queue_state = 0;
 
-    // set up the connection by sending a single node info
-    let mut local_core_watcher = queue.system_info.num_local_cores_watcher.clone();
-    let node_info_buffer = serialize_node_info(NodeInfo {
-        version: 1,
-        id: export_registry.get_node_id(),
-        num_local_cores: { *local_core_watcher.borrow_and_update() } as u64,
-    });
-
-    let (read_socket, mut write_socket) = split(socket);
-
-    send_message(&node_info_buffer, &mut write_socket, None).await;
-    trace!("Queue Client sent out initial message");
-
-    // Create a second copy of the watcher to wait on asynchronously, marke changed to check once in the beginning,
-    // in case there are already idle cores
-    let local_queue_state = queue.queue_state_watcher();
-    let mut new_local_queue_state = local_queue_state.clone();
-    // needs to be marked changed, so a server with an empty queue and already stead number of local cores starts to poll
-    new_local_queue_state.mark_changed();
-
-    // stream for the promises of the local requests wait for them to resolve
-    // Once stream interfaces stabilize would be nice to move this to merged streams, but for now this seems
-    let mut merged_stream = FuturesUnordered::new();
-    merged_stream.push(Either::Right(Either::Right(poll_local_queue_state(
-        new_local_queue_state,
-    ))));
-    merged_stream.push(Either::Right(
-        receive_queue_message(read_socket).left_future(),
-    ));
-    merged_stream.push(Either::Left(Either::Right(poll_local_core_count(
-        local_core_watcher,
-    ))));
-
-    while let Some(current_future) = merged_stream.next().await {
+    while let Some(current_future) = receiver.recv().await {
         match current_future {
-            PollingOption::Message(read_socket, Ok(message), data_option) => {
+            PollingOption::Message(Ok(message), data_option) => {
                 match message {
                     // remote did not have work, can ignore local capacity to work until we get a message the more is available
                     queue_message::QueueMessage::NoWork(true) => {
                         trace!("Queue Client recieved NoWork(true)");
                         debug_assert!(data_option.is_none());
+
                         remote_had_work = false
                     }
                     // remote signals it may have work so can ask for it, if we have capacity
                     queue_message::QueueMessage::NoWork(false) => {
                         trace!("Queue Client recieved NoWork(false)");
                         debug_assert!(data_option.is_none());
-                        let current_jobs_queued = *local_queue_state.borrow();
-                        let local_cores = *queue.system_info.num_local_cores_watcher.borrow();
-                        if current_jobs_queued < local_cores {
+
+                        // let current_jobs_queued = *local_queue_state.borrow();
+                        if queue_state < num_local_cores {
                             let engines = EngineType::iter()
                                 .map(|engine_type| proto::Engine {
                                     engine_type: engine_type_dtop(engine_type) as i32,
-                                    engine_capacity: (local_cores - current_jobs_queued) as u32,
+                                    engine_capacity: (num_local_cores - queue_state) as u32,
                                 })
                                 .collect();
-                            let request_buffer = serialize_remote_message(RemoteMessage {
-                                remote_message: Some(remote_message::RemoteMessage::WorkRequest(
+                            message_sender
+                                .send(remote_message::RemoteMessage::WorkRequest(
                                     RepeatedEngines { engines },
-                                )),
-                            });
-                            send_message(&request_buffer, &mut write_socket, None).await;
+                                ))
+                                .await
+                                .unwrap();
                             remote_had_work = false;
                         } else {
                             // Only set to true, if we did not send out a message already,
@@ -564,6 +559,7 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + Unpin>(
                     }
                     queue_message::QueueMessage::Invocation(invocation) => {
                         trace!("Queue Client recieved invocation");
+
                         // mark remote as having work, so we ask for more as idle cores change
                         remote_had_work = true;
                         let start_instance = Instant::now();
@@ -580,79 +576,161 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + Unpin>(
                         let recorder = Recorder::new(function_arc.clone(), start_instance);
                         let inputs =
                             proto_data_sets_to_composition_sets(metadata_sets, data_option);
-                        let (callback_sender, callback_receriver) = oneshot::channel();
-                        sender
+                        dispatcher_sender
                             .send(DispatcherCommand::RemoteFunctionRequest {
                                 function_id: function_arc,
                                 inputs,
                                 is_cold: !caching,
                                 recorder,
-                                callback: callback_sender,
+                                callback: ResultCallback {
+                                    invocation_id,
+                                    start_time,
+                                    export_registry: export_registry.clone(),
+                                    sender: result_sender.clone(),
+                                },
                             })
                             .await
                             .unwrap();
-                        merged_stream.push(Either::Left(Either::Left(poll_results(
-                            callback_receriver,
-                            invocation_id,
-                            export_registry.clone(),
-                            start_time,
-                        ))));
                     }
                 }
-                merged_stream.push(Either::Right(Either::Left(receive_queue_message(
-                    read_socket,
-                ))));
             }
-            PollingOption::Message(_, Err(error), _) => {
+            PollingOption::Message(Err(error), _) => {
                 // TODO: recover from message reception failure
                 panic!("Receiving remote queue message faied with: {}", error);
             }
             PollingOption::Results(results) => {
                 trace!("Queue Client sending out result");
-                send_message(&serialize_remote_message(results), &mut write_socket, None).await;
+                message_sender.send(results).await.unwrap();
             }
             // getting a notification so should poll the queue
-            PollingOption::QueueStateChanged(receiver, current_queue_state) => {
+            PollingOption::QueueStateChanged(current_queue_state) => {
                 trace!(
                     "Queue Client checking updated queue state: {:?}, remote_had_work {}",
                     current_queue_state,
                     remote_had_work,
                 );
+                queue_state = current_queue_state;
                 // send message to get work if we have not asked already
-                let local_cores = *queue.system_info.num_local_cores_watcher.borrow();
-                if remote_had_work && current_queue_state < local_cores {
+                if remote_had_work && queue_state < num_local_cores {
                     let engines: Vec<_> = EngineType::iter()
                         .map(|engine_type| proto::Engine {
                             engine_type: engine_type_dtop(engine_type) as i32,
-                            engine_capacity: (local_cores - current_queue_state) as u32,
+                            engine_capacity: (num_local_cores - queue_state) as u32,
                         })
                         .collect();
 
-                    let request_buffer = serialize_remote_message(RemoteMessage {
-                        remote_message: Some(remote_message::RemoteMessage::WorkRequest(
-                            RepeatedEngines { engines },
-                        )),
-                    });
                     trace!("Asking for more work");
-                    send_message(&request_buffer, &mut write_socket, None).await;
+                    message_sender
+                        .send(remote_message::RemoteMessage::WorkRequest(
+                            RepeatedEngines { engines },
+                        ))
+                        .await
+                        .unwrap();
+                    trace!("Finished sending the message asking for more work");
                     // set false, to avoid double sending if multiple cores become idle, but did not have a response in between
                     remote_had_work = false;
                 }
-                merged_stream.push(Either::Right(Either::Right(poll_local_queue_state(
-                    receiver,
-                ))));
             }
-            PollingOption::LocalCoreCountChanged(receiver, num_local_cores) => {
-                let request_buffer = serialize_remote_message(RemoteMessage {
-                    remote_message: Some(remote_message::RemoteMessage::NodeUpdate(NodeUpdate {
-                        num_local_cores: num_local_cores as u64,
-                    })),
-                });
-                trace!("Sending new local core count: {}", num_local_cores);
-                send_message(&request_buffer, &mut write_socket, None).await;
-                merged_stream.push(Either::Left(Either::Right(poll_local_core_count(receiver))));
+            PollingOption::LocalCoreCountChanged(new_core_number) => {
+                trace!("Sending new local core count: {}", new_core_number);
+                num_local_cores = new_core_number;
+                message_sender
+                    .send(remote_message::RemoteMessage::NodeUpdate(NodeUpdate {
+                        num_local_cores: new_core_number as u64,
+                    }))
+                    .await
+                    .unwrap();
+                // check if we now want to get more work
+                if remote_had_work && queue_state < num_local_cores {
+                    let engines: Vec<_> = EngineType::iter()
+                        .map(|engine_type| proto::Engine {
+                            engine_type: engine_type_dtop(engine_type) as i32,
+                            engine_capacity: (num_local_cores - queue_state) as u32,
+                        })
+                        .collect();
+
+                    trace!("Asking for more work");
+                    message_sender
+                        .send(remote_message::RemoteMessage::WorkRequest(
+                            RepeatedEngines { engines },
+                        ))
+                        .await
+                        .unwrap();
+                    trace!("Finished sending the message asking for more work");
+                    // set false, to avoid double sending if multiple cores become idle, but did not have a response in between
+                    remote_had_work = false;
+                }
             }
         }
     }
-    warn!("Exited queue client loop");
+    warn!("Arrived at end of remote_qeueu_client_logic, which should stay in the loop forever");
+}
+
+/// Client to ask for work from a remote queue.
+/// Whenever the local idle engine number changes, if there are idle engines send out request for work.
+/// There is no request for work when the remote has not replied with work (or not replied yet).
+/// Expect a single invocation. The change in idle cores going down 1 (from the work that was enqueued),
+/// should retrigger asking for more work if there are more idle cores.
+pub async fn remote_queue_client(
+    socket: TcpStream,
+    dispatcher_sender: mpsc::Sender<DispatcherCommand>,
+    // TODO: might want a differnet mechanism, to wake them one after each other to go check
+    // But each poller also needs to be able to check if there are still cores available,
+    // in case the remote sends a message that there is work available
+    export_registry: ExportRegistry,
+    queue: WorkQueue,
+) {
+    // set up the connection by sending a single node info
+    let mut local_core_watcher = queue.system_info.num_local_cores_watcher.clone();
+    let local_core_count = *local_core_watcher.borrow_and_update();
+    let node_info_buffer = serialize_node_info(NodeInfo {
+        version: 1,
+        id: export_registry.get_node_id(),
+        num_local_cores: local_core_count as u64,
+    });
+
+    let (read_socket, mut write_socket) = socket.into_split();
+
+    send_message(&node_info_buffer, &mut write_socket, None).await;
+    trace!("Queue Client sent out initial message");
+
+    // Create a second copy of the watcher to wait on asynchronously, marke changed to check once in the beginning,
+    // in case there are already idle cores
+    let mut local_queue_state = queue.queue_state_watcher();
+    // needs to be marked changed, so a server with an empty queue and already stead number of local cores starts to poll
+    local_queue_state.mark_changed();
+
+    // start sender loop
+    let (remote_message_sender, remote_message_reciever) = mpsc::channel(64);
+    spawn(remote_queue_client_sender(
+        write_socket,
+        remote_message_reciever,
+    ));
+    // start receiver loop
+    let (poll_option_sender, poll_option_receiver) = mpsc::channel(64);
+    spawn(remote_queue_client_receiver(
+        read_socket,
+        poll_option_sender.clone(),
+    ));
+    // start core count loop
+    spawn(remote_queue_client_core_count(
+        local_core_watcher,
+        poll_option_sender.clone(),
+    ));
+    // spawn queue state loop
+    spawn(remote_queue_client_queue_state(
+        local_queue_state,
+        poll_option_sender.clone(),
+    ));
+
+    remote_queue_client_logic(
+        poll_option_receiver,
+        remote_message_sender,
+        dispatcher_sender,
+        poll_option_sender,
+        // queue.queue_state_watcher(),
+        export_registry,
+        local_core_count,
+    )
+    .await;
 }

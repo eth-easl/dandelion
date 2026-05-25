@@ -12,10 +12,14 @@ use machine_interface::{
 };
 use prost::bytes::{Bytes, BytesMut};
 use std::{
-    collections::BTreeMap, convert::Infallible, future::Future, net::SocketAddr, pin::Pin,
-    sync::Arc,
+    collections::BTreeMap,
+    convert::Infallible,
+    future::Future,
+    net::SocketAddr,
+    pin::Pin,
+    sync::{Arc, Mutex},
 };
-use tokio::{net::TcpListener, signal::unix::SignalKind, sync::Mutex};
+use tokio::{net::TcpListener, signal::unix::SignalKind};
 
 #[derive(Clone)]
 struct ExportedData {
@@ -59,9 +63,9 @@ impl ExportRegistry {
     ) -> Vec<proto::MetadataSet>
 // Option<(Vec<Option<CompositionSet>>, u64)>,
     {
-        let mut inner = self.inner.lock().await;
         let node_id = self.node_id;
         composition_sets_to_proto(sets, |item, context| {
+            let mut inner = self.inner.lock().unwrap();
             let data_id = inner.next_data_id;
             inner.next_data_id += 1;
             inner.data.insert(
@@ -75,13 +79,13 @@ impl ExportRegistry {
         })
     }
 
-    async fn get_exported_data(&self, data_id: u64) -> DandelionResult<ExportedData> {
+    fn get_exported_data(&self, data_id: u64) -> DandelionResult<ExportedData> {
         debug!(
             "Fetching exported data: node_id={}, data_id={}",
             self.node_id, data_id
         );
         let exported_data = {
-            let inner = self.inner.lock().await;
+            let inner = self.inner.lock().unwrap();
             inner.data.get(&data_id).cloned()
         };
 
@@ -94,12 +98,12 @@ impl ExportRegistry {
         Ok(exported_data)
     }
 
-    pub async fn delete_exported_data(&self, data_id: u64) -> DandelionResult<()> {
+    pub fn delete_exported_data(&self, data_id: u64) -> DandelionResult<()> {
         debug!(
             "Deleting exported data: node_id={}, data_id={}",
             self.node_id, data_id
         );
-        let mut inner = self.inner.lock().await;
+        let mut inner = self.inner.lock().unwrap();
         let Some(_) = inner.data.remove(&data_id) else {
             return err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
                 format!("Unknown remote data id {}", data_id),
@@ -108,8 +112,8 @@ impl ExportRegistry {
         Ok(())
     }
 
-    pub async fn fetch_bytes(&self, data_id: u64) -> DandelionResult<Bytes> {
-        let exported_data = self.get_exported_data(data_id).await?;
+    pub fn fetch_bytes(&self, data_id: u64) -> DandelionResult<Bytes> {
+        let exported_data = self.get_exported_data(data_id)?;
         let size = exported_data.position.size;
         let mut result = BytesMut::with_capacity(size);
         let base_offset = exported_data.position.offset;
@@ -124,8 +128,8 @@ impl ExportRegistry {
         Ok(result.freeze())
     }
 
-    pub async fn fetch_context(&self, data_id: u64) -> DandelionResult<(Arc<Context>, Position)> {
-        let exported_data = self.get_exported_data(data_id).await?;
+    pub fn fetch_context(&self, data_id: u64) -> DandelionResult<(Arc<Context>, Position)> {
+        let exported_data = self.get_exported_data(data_id)?;
         Ok((exported_data.context, exported_data.position))
     }
 }
@@ -173,18 +177,18 @@ impl RemoteDataClient for HttpRemoteDataClient {
         &self,
         data: RemoteData,
     ) -> Pin<Box<dyn Future<Output = DandelionResult<(Arc<Context>, Position)>> + Send + '_>> {
-        trace!(
-            "Resolving remote data: node_id={}, data_id={}",
-            data.node_id,
-            data.data_id
-        );
         Box::pin(async move {
+            trace!(
+                "Resolving remote data: node_id={}, data_id={}",
+                data.node_id,
+                data.data_id
+            );
             if data.node_id == self.local_registry.node_id {
-                return self.local_registry.fetch_context(data.data_id).await;
+                return self.local_registry.fetch_context(data.data_id);
             }
 
             let url = self.remote_data_url(data)?;
-            let response = self.client.get(url).send().await.map_err(|err| {
+            let mut response = self.client.get(url).send().await.map_err(|err| {
                 dandelion_err!(DandelionError::Multinode(MultinodeError::ConnectionFailed(
                     err.to_string(),
                 )))
@@ -194,15 +198,22 @@ impl RemoteDataClient for HttpRemoteDataClient {
                     response.status().to_string(),
                 )));
             }
-            let bytes = response.bytes().await.map_err(|err| {
-                dandelion_err!(DandelionError::Multinode(MultinodeError::ConnectionFailed(
-                    err.to_string(),
-                )))
-            })?;
-            let size = bytes.len();
+            let mut size = 0;
+            let mut body = Vec::new();
+            loop {
+                match response.chunk().await {
+                    Ok(Some(frame)) => {
+                        size += frame.len();
+                        body.push(frame)
+                    }
+                    Ok(None) => break,
+                    Err(_) => return err_dandelion!(DandelionError::SystemFuncResponseError),
+                }
+            }
+            trace!("Finished resolving remote data");
             Ok((
                 Arc::new(Context::new(
-                    ContextType::Bytes(Box::new(BytesContext::new(vec![bytes]))),
+                    ContextType::Bytes(Box::new(BytesContext::new(body))),
                     size,
                 )),
                 Position { offset: 0, size },
@@ -221,7 +232,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
         );
         Box::pin(async move {
             if data.node_id == self.local_registry.node_id {
-                return self.local_registry.delete_exported_data(data.data_id).await;
+                return self.local_registry.delete_exported_data(data.data_id);
             }
 
             let url = self.remote_data_url(data)?;
@@ -247,28 +258,22 @@ async fn service(
     req: Request<Incoming>,
     export_registry: ExportRegistry,
 ) -> Result<Response<DataServerBody>, Infallible> {
-    let method = req.method().clone();
-    let path = req.uri().path().to_string();
-    let result = async {
-        let data_id = path
-            .strip_prefix("/data/")
-            .ok_or_else(|| format!("Unknown data server path {}", path))?
-            .parse::<u64>()
-            .map_err(|err| format!("Invalid data id: {}", err))?;
-        match method {
-            Method::GET => export_registry
-                .fetch_bytes(data_id)
-                .await
-                .map_err(|err| err.to_string()),
-            Method::DELETE => export_registry
-                .delete_exported_data(data_id)
-                .await
-                .map(|_| Bytes::new())
-                .map_err(|err| err.to_string()),
-            method => Err(format!("Unsupported data server method {}", method)),
-        }
-    }
-    .await;
+    let result = match req.uri().path().strip_prefix("/data/") {
+        None => Err(format!("Unknown data server path {}", req.uri().path())),
+        Some(id_string) => match id_string.parse::<u64>() {
+            Err(err) => Err(format!("Invalid data id: {}", err)),
+            Ok(data_id) => match req.method() {
+                &Method::GET => export_registry
+                    .fetch_bytes(data_id)
+                    .map_err(|err| err.to_string()),
+                &Method::DELETE => export_registry
+                    .delete_exported_data(data_id)
+                    .map(|_| Bytes::new())
+                    .map_err(|err| err.to_string()),
+                method => Err(format!("Unsupported data server method {}", method)),
+            },
+        },
+    };
 
     match result {
         Ok(bytes) => Ok(Response::new(Full::new(bytes))),

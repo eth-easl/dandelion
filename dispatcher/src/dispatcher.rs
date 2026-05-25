@@ -3,7 +3,6 @@ use crate::{
     queue::{EngineQueue, WorkQueue},
     resource_pool::ResourcePool,
 };
-use core::pin::Pin;
 use dandelion_commons::{
     err_dandelion,
     records::{RecordPoint, Recorder},
@@ -12,7 +11,6 @@ use dandelion_commons::{
 use futures::{
     future::{join_all, ready, Either},
     stream::{FuturesUnordered, StreamExt},
-    Future,
 };
 use itertools::Itertools;
 #[cfg(feature = "log_function_stdio")]
@@ -56,10 +54,10 @@ impl Dispatcher {
             while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(engine_type) {
                 engine_type.start_engine(resource, engine_queue.clone())?;
                 // FIXME: for whatever reason uncommenting this breaks a multinode test
-                // #[cfg(feature = "reqwest_io")]
-                // if engine_type == EngineType::System {
-                //     continue;
-                // }
+                #[cfg(feature = "reqwest_io")]
+                if engine_type == EngineType::System {
+                    continue;
+                }
                 work_queue.add_local_cores(1);
             }
         }
@@ -529,38 +527,35 @@ impl Dispatcher {
 
     /// returns a vector of pairs of a index and a composition set
     /// the index describes which output set the composition belongs to.
-    pub fn queue_function<'dispatcher>(
+    pub async fn queue_function<'dispatcher>(
         &'dispatcher self,
         function_id: FunctionId,
         input_sets: Vec<Option<CompositionSet>>,
         caching: bool,
         mut recorder: Recorder,
-    ) -> Pin<
-        Box<dyn Future<Output = DandelionResult<Vec<Option<CompositionSet>>>> + 'dispatcher + Send>,
-    > {
+    ) -> DandelionResult<Vec<Option<CompositionSet>>> {
         debug!("Queueing function with id: {}", function_id);
-        Box::pin(async move {
-            // find an engine capable of running the function
-            match self.function_registry.get_function(&function_id)? {
-                // Defer actual execution of system functions (i.e. fetching),
-                // by calling the system function to produce a composition set containing the reference to be resolved later
-                FunctionType::SystemFunction(func_info) => {
-                    machine_interface::function_driver::system_driver::convert_to_references(
-                        function_id,
-                        input_sets,
-                        func_info.metadata.clone(),
-                    )
-                }
-                FunctionType::Function(func_info) => {
-                    let function_alternatives = func_info
-                        .alternatives
-                        .read()
-                        .expect("Function registry lock is poisoned!")
-                        .clone();
+        // find an engine capable of running the function
+        match self.function_registry.get_function(&function_id).unwrap() {
+            // Defer actual execution of system functions (i.e. fetching),
+            // by calling the system function to produce a composition set containing the reference to be resolved later
+            FunctionType::SystemFunction(func_info) => {
+                machine_interface::function_driver::system_driver::convert_to_references(
+                    function_id,
+                    input_sets,
+                    func_info.metadata.clone(),
+                )
+            }
+            FunctionType::Function(func_info) => {
+                let function_alternatives = func_info
+                    .alternatives
+                    .read()
+                    .expect("Function registry lock is poisoned!")
+                    .clone();
 
-                    let metadata = func_info.metadata;
-                    // run on engine
-                    trace!(
+                let metadata = func_info.metadata;
+                // run on engine
+                trace!(
                         "Running function {} with input sets {:?} and output sets {:?} and alternatives: {:?}",
                         function_id,
                         metadata
@@ -572,68 +567,67 @@ impl Dispatcher {
                         function_alternatives
                     );
 
-                    let args = WorkToDo::FunctionArguments {
-                        function_id: function_id.clone(),
-                        function_alternatives,
-                        input_sets,
-                        metadata,
-                        caching,
-                        recorder: recorder.clone(),
-                    };
-                    recorder.record(RecordPoint::ExecutionQueue);
-                    let sets = self.work_queue.do_work(args).await?.get_composition();
-                    recorder.record(RecordPoint::FutureReturn);
+                let args = WorkToDo::FunctionArguments {
+                    function_id: function_id.clone(),
+                    function_alternatives,
+                    input_sets,
+                    metadata,
+                    caching,
+                    recorder: recorder.clone(),
+                };
+                recorder.record(RecordPoint::ExecutionQueue);
+                let sets = self.work_queue.do_work(args).await?.get_composition();
+                recorder.record(RecordPoint::FutureReturn);
 
-                    #[cfg(feature = "log_function_stdio")]
-                    if let Some(io_set) = sets
-                        .iter()
-                        .filter_map(|set_option| set_option.as_ref())
-                        .find(|set| set.get_name() == "stdio")
-                    {
-                        for (item, data) in io_set {
-                            use machine_interface::composition::ItemData;
-                            let context = match data {
-                                ItemData::LocalData(context) => context,
-                                _ => {
-                                    debug!("Cannot print stdio data for non local items");
-                                    continue;
-                                }
-                            };
-                            if item.ident == "stderr" && item.data.size > 0 {
-                                let mut stderr_output: Vec<u8> = vec![0; item.data.size];
-                                context.context.read(item.data.offset, &mut stderr_output)?;
-                                warn!(
-                                    "Function '{}' result contains stderr output:\n{}",
-                                    function_id,
-                                    std::str::from_utf8(stderr_output.as_slice())
-                                        .expect("Invalid stderr buffer")
-                                );
+                #[cfg(feature = "log_function_stdio")]
+                if let Some(io_set) = sets
+                    .iter()
+                    .filter_map(|set_option| set_option.as_ref())
+                    .find(|set| set.get_name() == "stdio")
+                {
+                    for (item, data) in io_set {
+                        use machine_interface::composition::ItemData;
+                        let context = match data {
+                            ItemData::LocalData(context) => context,
+                            _ => {
+                                debug!("Cannot print stdio data for non local items");
+                                continue;
                             }
-                            if item.ident == "stdout" && item.data.size > 0 {
-                                let mut stdout_output: Vec<u8> = vec![0; item.data.size];
-                                context.context.read(item.data.offset, &mut stdout_output)?;
-                                debug!(
-                                    "Function '{}' output:\n{}",
-                                    function_id,
-                                    std::str::from_utf8(stdout_output.as_slice())
-                                        .expect("Invalid stdout buffer")
-                                );
-                            }
+                        };
+                        if item.ident == "stderr" && item.data.size > 0 {
+                            let mut stderr_output: Vec<u8> = vec![0; item.data.size];
+                            context.context.read(item.data.offset, &mut stderr_output)?;
+                            warn!(
+                                "Function '{}' result contains stderr output:\n{}",
+                                function_id,
+                                std::str::from_utf8(stderr_output.as_slice())
+                                    .expect("Invalid stderr buffer")
+                            );
+                        }
+                        if item.ident == "stdout" && item.data.size > 0 {
+                            let mut stdout_output: Vec<u8> = vec![0; item.data.size];
+                            context.context.read(item.data.offset, &mut stdout_output)?;
+                            debug!(
+                                "Function '{}' output:\n{}",
+                                function_id,
+                                std::str::from_utf8(stdout_output.as_slice())
+                                    .expect("Invalid stdout buffer")
+                            );
                         }
                     }
+                }
 
-                    Ok(sets)
-                }
-                FunctionType::Composition(comp_info) => {
-                    self.queue_composition(
-                        (*comp_info.composition).clone(),
-                        input_sets,
-                        caching,
-                        recorder,
-                    )
-                    .await
-                }
+                Ok(sets)
             }
-        })
+            FunctionType::Composition(comp_info) => {
+                self.queue_composition(
+                    (*comp_info.composition).clone(),
+                    input_sets,
+                    caching,
+                    recorder,
+                )
+                .await
+            }
+        }
     }
 }

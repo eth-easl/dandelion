@@ -40,7 +40,7 @@ pub enum DispatcherCommand {
         inputs: Vec<Option<CompositionSet>>,
         is_cold: bool,
         recorder: Recorder,
-        callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
+        callback: crate::client::ResultCallback,
     },
     CompositionRequest {
         composition: String,

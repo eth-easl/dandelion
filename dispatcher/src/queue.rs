@@ -185,6 +185,9 @@ impl Future for IoWaitFuture<'_> {
         } else {
             // Did not find any work, so need to add to waker queue
             lock_guard.io_waker_list.push_back(cx.waker().clone());
+            // TODO: this is here, for the case where we have 0 compute engines, as this otherwise just always spins
+            // Mainly necessary for tests, find better overall policy
+            self.work_queue.queueing_notifier().notify_waiters();
             // lock was ready once, need to set new one
             Poll::Pending
         }
