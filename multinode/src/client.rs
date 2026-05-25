@@ -550,7 +550,7 @@ async fn remote_queue_client_logic(
                                 ))
                                 .await
                                 .unwrap();
-                            remote_had_work = false;
+                            // remote_had_work = false;
                         } else {
                             // Only set to true, if we did not send out a message already,
                             // otherwise avoid retriggering sending a message on state change, before we get answer.
@@ -628,7 +628,7 @@ async fn remote_queue_client_logic(
                         .unwrap();
                     trace!("Finished sending the message asking for more work");
                     // set false, to avoid double sending if multiple cores become idle, but did not have a response in between
-                    remote_had_work = false;
+                    // remote_had_work = false;
                 }
             }
             PollingOption::LocalCoreCountChanged(new_core_number) => {
@@ -658,7 +658,7 @@ async fn remote_queue_client_logic(
                         .unwrap();
                     trace!("Finished sending the message asking for more work");
                     // set false, to avoid double sending if multiple cores become idle, but did not have a response in between
-                    remote_had_work = false;
+                    // remote_had_work = false;
                 }
             }
         }
