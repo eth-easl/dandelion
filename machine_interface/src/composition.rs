@@ -230,6 +230,8 @@ pub struct RemoteData {
     inner: Arc<RemoteDataInner>,
 }
 
+/// TODO: for the ones we create locally we are going through the sender too,
+/// think if it would be easiert to have a enum in the delete sender to perform local drop directly.
 #[derive(Debug)]
 pub struct RemoteDataInner {
     pub node_id: u64,

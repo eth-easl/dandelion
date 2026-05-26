@@ -7,8 +7,8 @@ use crate::{
     },
     serialize_node_info, serialize_queue_message, serialize_remote_message,
     util::{
-        collect_remote_data_references, engine_type_dtop, engine_type_ptod,
-        pack_metadata_size_and_flags, proto_data_sets_to_composition_sets,
+        composition_sets_to_proto, composition_sets_to_proto_and_refs, engine_type_dtop,
+        engine_type_ptod, pack_metadata_size_and_flags, proto_data_sets_to_composition_sets,
         proto_data_sets_to_composition_sets_with_delete_on_drop, recorder_add_timestamps,
         recorder_dtop, unpack_metadata_size_and_flags, ADDITIONAL_DATA_BUFFER, NO_FLAGS,
     },
@@ -250,13 +250,18 @@ async fn remote_queue_server_logic(
                             let start_reference = SystemTime::elapsed(&std::time::UNIX_EPOCH)
                                 .unwrap()
                                 .as_micros();
-                            let remote_data_references = collect_remote_data_references(&data_sets);
+                            let (metadata_sets, remote_data_references) =
+                                composition_sets_to_proto_and_refs(data_sets, |item, context| {
+                                    export_registry.insert_function(
+                                        item,
+                                        context,
+                                        Some(remote_data_deletion_sender.clone()),
+                                    )
+                                });
                             debt_map.insert(
                                 promise_id,
                                 (debt, recorder, start_reference, remote_data_references),
                             );
-                            let metadata_sets =
-                                export_registry.composition_sets_to_proto(data_sets).await;
                             trace!("Prepared work, sending out now");
                             queue_message::QueueMessage::Invocation(Invocation {
                                 metadata_sets,
@@ -485,7 +490,9 @@ impl ResultCallback {
     pub async fn callback(self, result: DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>) {
         let response_message = match result {
             Ok((sets, recorder)) => {
-                let metadata_sets = self.export_registry.composition_sets_to_proto(sets).await;
+                let metadata_sets = composition_sets_to_proto(sets, |item, context| {
+                    self.export_registry.insert_function(item, context, None)
+                });
                 proto::response::Response::MetadataSets(proto::RepeatedMetadataSet {
                     metadata_sets,
                     timestamps: recorder_dtop(recorder, self.start_time),

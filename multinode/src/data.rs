@@ -1,4 +1,7 @@
-use crate::{proto, util::composition_sets_to_proto};
+use crate::{
+    proto,
+    util::{composition_sets_to_proto, composition_sets_to_proto_and_refs},
+};
 use dandelion_commons::{
     dandelion_err, err_dandelion, DandelionError, DandelionResult, MultinodeError,
 };
@@ -8,7 +11,7 @@ use log::{debug, error, trace, warn};
 use machine_interface::{
     composition::{CompositionSet, RemoteData, RemoteDataClient},
     memory_domain::{bytes_context::BytesContext, Context, ContextTrait, ContextType},
-    Position,
+    DataItem, Position,
 };
 use prost::bytes::{Bytes, BytesMut};
 use std::{
@@ -57,26 +60,27 @@ impl ExportRegistry {
         self.node_id
     }
 
-    pub async fn composition_sets_to_proto(
+    pub fn insert_function(
         &self,
-        sets: Vec<Option<CompositionSet>>,
-    ) -> Vec<proto::MetadataSet>
-// Option<(Vec<Option<CompositionSet>>, u64)>,
-    {
-        let node_id = self.node_id;
-        composition_sets_to_proto(sets, |item, context| {
-            let mut inner = self.inner.lock().unwrap();
-            let data_id = inner.next_data_id;
-            inner.next_data_id += 1;
-            inner.data.insert(
-                data_id,
-                ExportedData {
-                    context,
-                    position: item.data,
-                },
-            );
-            RemoteData::new(node_id, data_id)
-        })
+        item: &DataItem,
+        context: Arc<Context>,
+        delete_sender: Option<tokio::sync::mpsc::UnboundedSender<RemoteData>>,
+    ) -> RemoteData {
+        let mut inner = self.inner.lock().unwrap();
+        let data_id = inner.next_data_id;
+        inner.next_data_id += 1;
+        inner.data.insert(
+            data_id,
+            ExportedData {
+                context,
+                position: item.data,
+            },
+        );
+        if let Some(delete_sender) = delete_sender {
+            RemoteData::delete_on_drop(self.node_id, data_id, delete_sender)
+        } else {
+            RemoteData::new(self.node_id, data_id)
+        }
     }
 
     fn get_exported_data(&self, data_id: u64) -> DandelionResult<ExportedData> {

@@ -137,7 +137,7 @@ pub(crate) fn system_function_dtop(
     }
 }
 
-fn remote_data_dtop(remote_data: RemoteData) -> proto::RemoteData {
+fn remote_data_dtop(remote_data: &RemoteData) -> proto::RemoteData {
     proto::RemoteData {
         node_id: remote_data.node_id,
         data_id: remote_data.data_id,
@@ -166,7 +166,7 @@ fn item_data_dtop(
             let remote_data = export_local_data(item, context);
             // TODO: send data directly for smaller items
             proto::ItemData {
-                data: Some(item_data::Data::RemoteData(remote_data_dtop(remote_data))),
+                data: Some(item_data::Data::RemoteData(remote_data_dtop(&remote_data))),
             }
         }
         ItemData::IoData(io_data) => {
@@ -190,8 +190,57 @@ fn item_data_dtop(
             }
         }
         ItemData::RemoteData(remote_data) => proto::ItemData {
-            data: Some(item_data::Data::RemoteData(remote_data_dtop(remote_data))),
+            data: Some(item_data::Data::RemoteData(remote_data_dtop(&remote_data))),
         },
+    }
+}
+
+fn item_data_and_ref(
+    item: &DataItem,
+    data: ItemData,
+    export_local_data: &mut impl FnMut(&DataItem, Arc<Context>) -> RemoteData,
+) -> (proto::ItemData, Option<RemoteData>) {
+    match data {
+        ItemData::LocalData(context) => {
+            let remote_data = export_local_data(item, context);
+            // TODO: send data directly for smaller items
+            (
+                proto::ItemData {
+                    data: Some(item_data::Data::RemoteData(remote_data_dtop(&remote_data))),
+                },
+                Some(remote_data),
+            )
+        }
+        ItemData::IoData(io_data) => {
+            let IoData {
+                original_position,
+                original_data,
+                resolved: _,
+                function,
+                set_index,
+            } = io_data;
+            // TODO for data we want to send along: fuse with serialization, so we can use the `resolved` without race conditions
+            let mut register_item = item.clone();
+            register_item.data = original_position;
+            let (data, remote_data) =
+                item_data_and_ref(&register_item, *original_data, export_local_data);
+            (
+                proto::ItemData {
+                    data: Some(item_data::Data::IoData(Box::new(proto::IoData {
+                        set_index: set_index as u64,
+                        function: system_function_dtop(&function).unwrap() as i32,
+                        data: Some(Box::new(data)),
+                    }))),
+                },
+                remote_data,
+            )
+        }
+        ItemData::RemoteData(remote_data) => (
+            proto::ItemData {
+                data: Some(item_data::Data::RemoteData(remote_data_dtop(&remote_data))),
+            },
+            Some(remote_data),
+        ),
     }
 }
 
@@ -276,24 +325,50 @@ pub(crate) fn composition_sets_to_proto(
     metadata_sets
 }
 
-fn collect_item_remote_data_references(data: &ItemData, references: &mut Vec<RemoteData>) {
-    match data {
-        ItemData::LocalData(_) => {}
-        ItemData::RemoteData(remote_data) => references.push(remote_data.clone()),
-        ItemData::IoData(io_data) => {
-            collect_item_remote_data_references(&io_data.original_data, references)
-        }
-    }
-}
+pub(crate) fn composition_sets_to_proto_and_refs(
+    sets: Vec<Option<CompositionSet>>,
+    mut export_local_data: impl FnMut(&DataItem, Arc<Context>) -> RemoteData,
+) -> (Vec<proto::MetadataSet>, Vec<RemoteData>)
+// TODO change to (Vec<(Position, Arc<Context>)>,u64) when we add sending data directly with the request
+    // No need to keep as composition set.
+    // Option<(Vec<Option<CompositionSet>>, u64)>,
+{
+    let mut metadata_sets = Vec::with_capacity(sets.len());
+    let mut remote_references = Vec::new();
+    // let mut offset: u64 = 0;
 
-pub(crate) fn collect_remote_data_references(sets: &[Option<CompositionSet>]) -> Vec<RemoteData> {
-    let mut references = Vec::new();
-    for set in sets.iter().flatten() {
-        for (_, data) in set {
-            collect_item_remote_data_references(data, &mut references);
+    for set_option in sets.into_iter() {
+        if let Some(set) = set_option {
+            let mut metadata_items = Vec::with_capacity(set.len());
+            let set_name = set.get_name().clone();
+            for (item, data) in set {
+                let (proto_item, remote_data_option) =
+                    item_data_and_ref(&item, data, &mut export_local_data);
+                metadata_items.push(proto::MetadataItem {
+                    data: Some(proto_item),
+                    ident: item.ident,
+                    key: item.key,
+                });
+                if let Some(remote_data) = remote_data_option {
+                    remote_references.push(remote_data);
+                }
+            }
+            metadata_sets.push(proto::MetadataSet {
+                ident: set_name,
+                items: metadata_items,
+            });
+        } else {
+            metadata_sets.push(proto::MetadataSet {
+                ident: format!("empty_set"),
+                items: vec![],
+            });
         }
     }
-    references
+    // if offset > 0 {
+    //     (metadata_sets, Some((sets, offset)))
+    // } else {
+    // }
+    (metadata_sets, remote_references)
 }
 
 /// Takes a (reference to a) vector of protocol data sets, translates them into a `BytesContext`
