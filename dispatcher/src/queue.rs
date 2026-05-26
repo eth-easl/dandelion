@@ -155,9 +155,14 @@ impl Future for IoWaitFuture<'_> {
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let mut lock_guard = self.work_queue.inner.lock().unwrap();
-        // always take work that is not FunctionArguments, only take function arguments,
-        // if the local queue is smaller than a certain thershold
+        // Always take work that is not FunctionArguments.
+        // Take FunctionArguments only if the local queue is smaller than a certain thershold.
+        // Do this to avoid overloading the IO cores with too much parallel fetching and to make it easier for remotes
+        // to find work where they can do their own fetching instead.
         let compute_length = lock_guard.compute_queue.len();
+        let local_cores = *self.work_queue.system_info.num_local_cores_watcher.borrow();
+        #[cfg(feature = "data_locallity")]
+        let idle_compute_cores = lock_guard.compute_waker_list.len();
         let result = lock_guard
             .io_queue
             .extract_if(|queue_element| match queue_element.work {
@@ -169,10 +174,18 @@ impl Future for IoWaitFuture<'_> {
                     caching: _,
                     recorder: _,
                 } => {
-                    // Only resover non local sets if there is not enough local work already
-                    compute_length
-                        < LOCAL_WORK_PER_CORE
-                            * *self.work_queue.system_info.num_local_cores_watcher.borrow()
+                    #[cfg(not(feature = "data_locallity"))]
+                    let should_keep = compute_length < LOCAL_WORK_PER_CORE * local_cores;
+
+                    #[cfg(feature = "data_locallity")]
+                    // additionally want to prevent fetching, if there is remote data and no local core is idle
+                    // always take it if there are idle cores, only prefetch if it is prefetching via IO, not from other nodes
+                    let should_keep = idle_compute_cores > 0
+                        || (compute_length < LOCAL_WORK_PER_CORE * local_cores
+                            && !queue_element.remote_data.is_empty());
+
+                    // need to do it like this, because attributes on expressions are still experimental
+                    should_keep
                 }
                 // always take resolver work
                 _ => true,
