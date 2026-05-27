@@ -53,7 +53,6 @@ impl Dispatcher {
             let engine_queue = EngineQueue::init(work_queue.clone(), engine_type);
             while let Ok(Some(resource)) = resource_pool.sync_acquire_engine_resource(engine_type) {
                 engine_type.start_engine(resource, engine_queue.clone())?;
-                // FIXME: for whatever reason uncommenting this breaks a multinode test
                 #[cfg(feature = "reqwest_io")]
                 if engine_type == EngineType::System {
                     continue;

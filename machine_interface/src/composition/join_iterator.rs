@@ -603,13 +603,21 @@ impl AnyIterator {
 
         if let Some(mut it) = inner_join_it {
             let mut total_sizes = Vec::new();
-            total_sizes.resize(num_sets, 0);
+            total_sizes.reserve(num_sets);
             let mut inner_sharding = Vec::new();
 
             // generate all sets
             let mut first_sets = Vec::with_capacity(num_sets);
             first_sets.resize(num_sets, None);
             it.fill_in(&mut first_sets);
+            for set_opt in first_sets.iter() {
+                let size = if let Some(set) = set_opt {
+                    set.size()
+                } else {
+                    0
+                };
+                total_sizes.push(size);
+            }
             inner_sharding.push(first_sets);
             while it.advance() {
                 let mut next_sets = Vec::with_capacity(num_sets);
@@ -632,6 +640,7 @@ impl AnyIterator {
                 .enumerate()
                 .max_by_key(|&(_, s)| s)
                 .unwrap();
+            println!("{:?}", total_sizes);
             (
                 Some(Box::new(Self {
                     left,
@@ -659,11 +668,12 @@ impl JoinIterator for AnyIterator {
             .expect("Ran out of any_parallelisms.")
             .target_partitions;
 
-        // can only group into less groups than we currently have
-        debug_assert!(parallelism > 0);
+        // can only group into at most the same number of groups than we currently have
         debug_assert!(parallelism <= self.set_groups.len());
 
-        if self.min_set_bytes > 0 || parallelism < self.set_groups.len() {
+        // using a target parallelism of 0 implies we do not reduce this parallelism (also not based
+        // on `min_set_bytes`) -> this is important for system function reference sets which have size 0
+        if parallelism > 0 && (self.min_set_bytes > 0 || parallelism < self.set_groups.len()) {
             // split them into even groups
             let num_sets = self.set_groups[0].len();
             let mut new_set_groups = Vec::with_capacity(parallelism);

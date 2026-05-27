@@ -117,12 +117,24 @@ struct AnySetGroup {
 
 impl AnySetGroup {
     fn new(largest_set_size: usize, min_set_bytes: usize, max_partitions: usize) -> Self {
-        Self {
-            largest_set_size,
-            max_partitions,
-            target_partitions: 1,
-            min_set_bytes,
-            processed: false,
+        // if the largest set size is zero it is considered unknown (e.g. contains system function
+        // reference items) -> setting a target_partitions value of 0 leads to max sharding
+        if largest_set_size == 0 {
+            Self {
+                largest_set_size,
+                max_partitions,
+                target_partitions: 0,
+                min_set_bytes,
+                processed: true,
+            }
+        } else {
+            Self {
+                largest_set_size,
+                max_partitions,
+                target_partitions: 1,
+                min_set_bytes,
+                processed: false,
+            }
         }
     }
 }
