@@ -3,7 +3,8 @@ use dispatcher::{dispatcher::Dispatcher, queue::WorkQueue, resource_pool::Resour
 use log::{debug, error, info, warn};
 use machine_interface::{
     composition::{
-        set_remote_data_client, AnyShardingMode, AnyShardingParams, LocalCompositionSet, RemoteData,
+        get_remote_data_client, set_remote_data_client, AnyShardingMode, AnyShardingParams,
+        LocalCompositionSet, RemoteData,
     },
     function_driver::{ComputeResource, Metadata},
     machine_config::{create_engine_resource_map, DomainType, EngineType},
@@ -16,26 +17,34 @@ use tokio::{runtime::Builder, select, spawn, sync::mpsc};
 
 mod frontend;
 
+async fn delete_service_loop(
+    mut remote_data_deletion_receiver: mpsc::UnboundedReceiver<RemoteData>,
+) {
+    loop {
+        if let Some(remote_data) = remote_data_deletion_receiver.recv().await {
+            spawn(async move {
+                match get_remote_data_client() {
+                    Ok(client) => {
+                        if let Err(err) = client.delete_remote_data(remote_data).await {
+                            warn!("Failed to delete remote data: {}", err);
+                        }
+                    }
+                    Err(err) => {
+                        warn!("Failed to delete remote data: {}", err);
+                    }
+                };
+            });
+            continue;
+        }
+    }
+}
+
 async fn dispatcher_loop(
     mut request_receiver: mpsc::Receiver<DispatcherCommand>,
-    mut remote_data_deletion_receiver: mpsc::UnboundedReceiver<RemoteData>,
     dispatcher: &'static Dispatcher,
 ) {
     loop {
-        let dispatcher_args = select! {
-            dispatcher_args = request_receiver.recv() => dispatcher_args,
-            remote_data = remote_data_deletion_receiver.recv() => {
-                if let Some(remote_data) = remote_data {
-                    spawn(async move {
-                        if let Err(err) = dispatcher.delete_remote_data(remote_data).await {
-                            warn!("Failed to delete remote data: {}", err);
-                        }
-                    });
-                    continue;
-                }
-                None
-            }
-        };
+        let dispatcher_args = request_receiver.recv().await;
         let Some(dispatcher_args) = dispatcher_args else {
             break;
         };
@@ -301,7 +310,6 @@ fn main() -> () {
     };
 
     let work_queue = WorkQueue::init();
-    let (remote_data_deletion_sender, remote_data_deletion_receiver) = mpsc::unbounded_channel();
 
     // define the any sharding mode
     info!("Using any sharding mode: {:?}", config.any_sharding_mode);
@@ -327,11 +335,7 @@ fn main() -> () {
     ));
 
     // start dispatcher
-    dispatcher_runtime.spawn(dispatcher_loop(
-        dispatcher_recevier,
-        remote_data_deletion_receiver,
-        dispatcher,
-    ));
+    dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
 
     // register preload functions
     let (preload_functions, preload_compositions) = config.get_preload_functions();
@@ -431,6 +435,10 @@ fn main() -> () {
         let node_id = config.node_id;
         let export_registry = ExportRegistry::new(node_id);
         if multinode_settings.queue_server.node_id == node_id {
+            let (remote_data_deletion_sender, remote_data_deletion_receiver) =
+                mpsc::unbounded_channel();
+            runtime.spawn(delete_service_loop(remote_data_deletion_receiver));
+
             let queue_server_port =
                 multinode::config::queue_server_port(&multinode_settings.queue_server.url)
                     .unwrap_or_else(|err| panic!("Invalid queue server entry: {}", err));

@@ -640,7 +640,6 @@ impl AnyIterator {
                 .enumerate()
                 .max_by_key(|&(_, s)| s)
                 .unwrap();
-            println!("{:?}", total_sizes);
             (
                 Some(Box::new(Self {
                     left,
