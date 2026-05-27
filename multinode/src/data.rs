@@ -1,7 +1,3 @@
-use crate::{
-    proto,
-    util::{composition_sets_to_proto, composition_sets_to_proto_and_refs},
-};
 use dandelion_commons::{
     dandelion_err, err_dandelion, DandelionError, DandelionResult, MultinodeError,
 };
@@ -9,7 +5,7 @@ use http_body_util::Full;
 use hyper::{body::Incoming, service::service_fn, Method, Request, Response, StatusCode};
 use log::{debug, error, trace, warn};
 use machine_interface::{
-    composition::{CompositionSet, RemoteData, RemoteDataClient},
+    composition::{RemoteData, RemoteDataClient},
     memory_domain::{bytes_context::BytesContext, Context, ContextTrait, ContextType},
     DataItem, Position,
 };
