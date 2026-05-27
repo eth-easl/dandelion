@@ -137,22 +137,11 @@ pub(crate) fn system_function_dtop(
     }
 }
 
-fn remote_data_dtop(remote_data: &RemoteData) -> proto::RemoteData {
+fn remote_data_dtop(remote_data: &RemoteData, size: usize) -> proto::RemoteData {
     proto::RemoteData {
         node_id: remote_data.node_id,
         data_id: remote_data.data_id,
-    }
-}
-
-fn remote_data_ptod(
-    remote_data: proto::RemoteData,
-    delete_sender: Option<mpsc::UnboundedSender<RemoteData>>,
-) -> RemoteData {
-    match delete_sender {
-        Some(delete_sender) => {
-            RemoteData::delete_on_drop(remote_data.node_id, remote_data.data_id, delete_sender)
-        }
-        None => RemoteData::new(remote_data.node_id, remote_data.data_id),
+        size: size as u64,
     }
 }
 
@@ -166,7 +155,10 @@ fn item_data_dtop(
             let remote_data = export_local_data(item, context);
             // TODO: send data directly for smaller items
             proto::ItemData {
-                data: Some(item_data::Data::RemoteData(remote_data_dtop(&remote_data))),
+                data: Some(item_data::Data::RemoteData(remote_data_dtop(
+                    &remote_data,
+                    item.data.size,
+                ))),
             }
         }
         ItemData::IoData(io_data) => {
@@ -190,7 +182,10 @@ fn item_data_dtop(
             }
         }
         ItemData::RemoteData(remote_data) => proto::ItemData {
-            data: Some(item_data::Data::RemoteData(remote_data_dtop(&remote_data))),
+            data: Some(item_data::Data::RemoteData(remote_data_dtop(
+                &remote_data,
+                item.data.size,
+            ))),
         },
     }
 }
@@ -206,7 +201,10 @@ fn item_data_and_ref(
             // TODO: send data directly for smaller items
             (
                 proto::ItemData {
-                    data: Some(item_data::Data::RemoteData(remote_data_dtop(&remote_data))),
+                    data: Some(item_data::Data::RemoteData(remote_data_dtop(
+                        &remote_data,
+                        item.data.size,
+                    ))),
                 },
                 Some(remote_data),
             )
@@ -237,17 +235,32 @@ fn item_data_and_ref(
         }
         ItemData::RemoteData(remote_data) => (
             proto::ItemData {
-                data: Some(item_data::Data::RemoteData(remote_data_dtop(&remote_data))),
+                data: Some(item_data::Data::RemoteData(remote_data_dtop(
+                    &remote_data,
+                    item.data.size,
+                ))),
             },
             Some(remote_data),
         ),
     }
 }
 
+fn remote_data_ptod(
+    remote_data: proto::RemoteData,
+    delete_sender: Option<mpsc::UnboundedSender<RemoteData>>,
+) -> RemoteData {
+    match delete_sender {
+        Some(delete_sender) => {
+            RemoteData::delete_on_drop(remote_data.node_id, remote_data.data_id, delete_sender)
+        }
+        None => RemoteData::new(remote_data.node_id, remote_data.data_id),
+    }
+}
+
 fn item_data_ptod(
     data: proto::ItemData,
     delete_sender: Option<mpsc::UnboundedSender<RemoteData>>,
-) -> ItemData {
+) -> (ItemData, usize) {
     match data.data.unwrap() {
         item_data::Data::IoData(io_data) => {
             let proto::IoData {
@@ -266,19 +279,23 @@ fn item_data_ptod(
             // ));
             // let buffer_size = end_offset - last_end_offset;
 
-            ItemData::IoData(IoData {
-                original_position: Position { offset: 0, size: 0 },
-                resolved: Arc::new(OnceCell::new()),
-                original_data: Box::new(item_data_ptod(*input_data.unwrap(), delete_sender)),
-                function: system_function_ptod(function).unwrap(),
-                set_index: set_index as usize,
-            })
+            (
+                ItemData::IoData(IoData {
+                    original_position: Position { offset: 0, size: 0 },
+                    resolved: Arc::new(OnceCell::new()),
+                    original_data: Box::new(item_data_ptod(*input_data.unwrap(), delete_sender).0),
+                    function: system_function_ptod(function).unwrap(),
+                    set_index: set_index as usize,
+                }),
+                0,
+            )
 
             // last_end_offset = end_offset;
         }
-        item_data::Data::RemoteData(remote_data) => {
-            ItemData::RemoteData(remote_data_ptod(remote_data, delete_sender))
-        }
+        item_data::Data::RemoteData(remote_data) => (
+            ItemData::RemoteData(remote_data_ptod(remote_data, delete_sender)),
+            remote_data.size as usize,
+        ),
     }
 }
 
@@ -404,13 +421,17 @@ fn proto_data_sets_to_composition_sets_inner(
     for protobuf_set in proto_sets.into_iter() {
         let mut item_list = Vec::with_capacity(protobuf_set.items.len());
         for protobuf_item in protobuf_set.items.into_iter() {
+            let (data, size) = item_data_ptod(protobuf_item.data.unwrap(), delete_sender.clone());
             item_list.push((
                 machine_interface::DataItem {
                     ident: protobuf_item.ident,
-                    data: Position { offset: 0, size: 0 },
+                    data: Position {
+                        offset: 0,
+                        size: size,
+                    },
                     key: protobuf_item.key,
                 },
-                item_data_ptod(protobuf_item.data.unwrap(), delete_sender.clone()),
+                data,
             ));
         }
         sets.push(CompositionSet::from_item_list(

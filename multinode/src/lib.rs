@@ -191,7 +191,8 @@ fn test_serialize_invocation_request() {
     assert_eq!(
         item_data::Data::RemoteData(proto::RemoteData {
             node_id,
-            data_id: 0
+            data_id: 0,
+            size: size_of_val(&item_0_0_data) as u64,
         }),
         serialized_metadata_sets[0].items[0]
             .data
@@ -207,7 +208,8 @@ fn test_serialize_invocation_request() {
     assert_eq!(
         item_data::Data::RemoteData(proto::RemoteData {
             node_id,
-            data_id: 1
+            data_id: 1,
+            size: size_of_val(&item_1_0_data) as u64,
         }),
         serialized_metadata_sets[1].items[0]
             .data
@@ -221,7 +223,8 @@ fn test_serialize_invocation_request() {
     assert_eq!(
         item_data::Data::RemoteData(proto::RemoteData {
             node_id,
-            data_id: 2
+            data_id: 2,
+            size: size_of_val(&item_1_1_data) as u64,
         }),
         serialized_metadata_sets[1].items[1]
             .data
@@ -274,7 +277,7 @@ fn test_serialize_invocation_request() {
     assert_eq!(item_0_0_name, item_0_0.ident);
     assert_eq!(0, item_0_0.key);
     assert_eq!(0, item_0_0.data.offset);
-    assert_eq!(0, item_0_0.data.size);
+    assert_eq!(size_of_val(&item_0_0_data), item_0_0.data.size);
     match item_0_0_item_data {
         ItemData::RemoteData(remote_data) => {
             assert_eq!(node_id, remote_data.node_id);
@@ -290,7 +293,7 @@ fn test_serialize_invocation_request() {
     assert_eq!(item_1_0_name, item_1_0.ident);
     assert_eq!(7, item_1_0.key);
     assert_eq!(0, item_1_0.data.offset);
-    assert_eq!(0, item_1_0.data.size);
+    assert_eq!(size_of_val(&item_1_0_data), item_1_0.data.size);
     match item_1_0_item_data {
         ItemData::RemoteData(remote_data) => {
             assert_eq!(node_id, remote_data.node_id);
@@ -302,7 +305,7 @@ fn test_serialize_invocation_request() {
     assert_eq!(item_1_1_name, item_1_1.ident);
     assert_eq!(14, item_1_1.key);
     assert_eq!(0, item_1_1.data.offset);
-    assert_eq!(0, item_1_1.data.size);
+    assert_eq!(size_of_val(&item_1_1_data), item_1_1.data.size);
     match item_1_1_item_data {
         ItemData::RemoteData(remote_data) => {
             assert_eq!(node_id, remote_data.node_id);
