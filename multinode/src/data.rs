@@ -6,10 +6,12 @@ use hyper::{body::Incoming, service::service_fn, Method, Request, Response, Stat
 use log::{debug, error, trace, warn};
 use machine_interface::{
     composition::{RemoteData, RemoteDataClient},
-    memory_domain::{bytes_context::BytesContext, Context, ContextTrait, ContextType},
+    memory_domain::{
+        bytes_context::BytesContext, read_only::ReadOnlyContext, Context, ContextTrait, ContextType,
+    },
     DataItem, Position,
 };
-use prost::bytes::{Bytes, BytesMut};
+use prost::bytes::{self, Bytes, BytesMut};
 use std::{
     collections::BTreeMap,
     convert::Infallible,
@@ -24,6 +26,60 @@ use tokio::{net::TcpListener, signal::unix::SignalKind};
 struct ExportedData {
     context: Arc<Context>,
     position: Position,
+}
+
+// TODO: use a TCP socket instead of hyper then we don't need this
+impl bytes::Buf for ExportedData {
+    fn remaining(&self) -> usize {
+        self.position.size
+    }
+
+    fn advance(&mut self, cnt: usize) {
+        self.position.offset += cnt;
+        self.position.size -= cnt;
+    }
+
+    fn chunk(&self) -> &[u8] {
+        self.context
+            .get_chunk_ref(self.position.offset, self.position.size)
+            .unwrap()
+    }
+
+    fn chunks_vectored<'a>(&'a self, dst: &mut [std::io::IoSlice<'a>]) -> usize {
+        let size = self.position.size;
+        let offset = self.position.offset;
+        let mut bytes_read = 0;
+        let mut slice_index = 0;
+        while bytes_read < size && slice_index < dst.len() {
+            let new_chunk = self
+                .context
+                .get_chunk_ref(offset + bytes_read, size - bytes_read)
+                .unwrap();
+            dst[slice_index] = std::io::IoSlice::new(new_chunk);
+            slice_index += 1;
+            bytes_read += new_chunk.len();
+        }
+        slice_index
+    }
+}
+
+struct ExportedBody {
+    inner: Option<ExportedData>,
+}
+
+impl hyper::body::Body for ExportedBody {
+    type Data = ExportedData;
+    type Error = DandelionError;
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
+        let frame = self
+            .inner
+            .take()
+            .and_then(|data| Some(Ok(hyper::body::Frame::data(data))));
+        return std::task::Poll::Ready(frame);
+    }
 }
 
 // TODO: use composition hashid and item index to uniquely identify data to avoid
@@ -112,20 +168,8 @@ impl ExportRegistry {
         Ok(())
     }
 
-    pub fn fetch_bytes(&self, data_id: u64) -> DandelionResult<Bytes> {
-        let exported_data = self.get_exported_data(data_id)?;
-        let size = exported_data.position.size;
-        let mut result = BytesMut::with_capacity(size);
-        let base_offset = exported_data.position.offset;
-        let mut bytes_read = 0;
-        while bytes_read < size {
-            let next_chunk = exported_data
-                .context
-                .get_chunk_ref(base_offset + bytes_read, size - bytes_read)?;
-            result.extend_from_slice(next_chunk);
-            bytes_read += next_chunk.len();
-        }
-        Ok(result.freeze())
+    pub fn fetch_bytes(&self, data_id: u64) -> DandelionResult<ExportedData> {
+        self.get_exported_data(data_id)
     }
 
     pub fn fetch_context(&self, data_id: u64) -> DandelionResult<(Arc<Context>, Position)> {
@@ -251,13 +295,11 @@ impl RemoteDataClient for HttpRemoteDataClient {
     }
 }
 
-type DataServerBody = Full<Bytes>;
-
 // TODO: make data service handler copy free
 async fn service(
     req: Request<Incoming>,
     export_registry: ExportRegistry,
-) -> Result<Response<DataServerBody>, Infallible> {
+) -> Result<Response<ExportedBody>, Infallible> {
     let result = match req.uri().path().strip_prefix("/data/") {
         None => Err(format!("Unknown data server path {}", req.uri().path())),
         Some(id_string) => match id_string.parse::<u64>() {
@@ -265,10 +307,11 @@ async fn service(
             Ok(data_id) => match req.method() {
                 &Method::GET => export_registry
                     .fetch_bytes(data_id)
+                    .map(|data| Some(data))
                     .map_err(|err| err.to_string()),
                 &Method::DELETE => export_registry
                     .delete_exported_data(data_id)
-                    .map(|_| Bytes::new())
+                    .map(|_| None)
                     .map_err(|err| err.to_string()),
                 method => Err(format!("Unsupported data server method {}", method)),
             },
@@ -276,10 +319,22 @@ async fn service(
     };
 
     match result {
-        Ok(bytes) => Ok(Response::new(Full::new(bytes))),
+        Ok(bytes) => Ok(Response::new(ExportedBody { inner: bytes })),
         Err(err) => {
             warn!("Failed to serve remote data request: {}", err);
-            let mut response = Response::new(Full::new(err.into_bytes().into()));
+            let error_bytes = err.into_bytes();
+            let error_lenth = error_bytes.len();
+            let mut response = Response::new(ExportedBody {
+                inner: Some(ExportedData {
+                    context: Arc::new(
+                        ReadOnlyContext::new(error_bytes.into_boxed_slice()).unwrap(),
+                    ),
+                    position: Position {
+                        offset: 0,
+                        size: error_lenth,
+                    },
+                }),
+            });
             *response.status_mut() = StatusCode::BAD_REQUEST;
             Ok(response)
         }
