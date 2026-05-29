@@ -1,7 +1,6 @@
 use dandelion_commons::{
     dandelion_err, err_dandelion, DandelionError, DandelionResult, MultinodeError,
 };
-use http_body_util::Full;
 use hyper::{body::Incoming, service::service_fn, Method, Request, Response, StatusCode};
 use log::{debug, error, trace, warn};
 use machine_interface::{
@@ -11,7 +10,7 @@ use machine_interface::{
     },
     DataItem, Position,
 };
-use prost::bytes::{self, Bytes, BytesMut};
+use prost::bytes;
 use std::{
     collections::BTreeMap,
     convert::Infallible,
@@ -168,7 +167,7 @@ impl ExportRegistry {
         Ok(())
     }
 
-    pub fn fetch_bytes(&self, data_id: u64) -> DandelionResult<ExportedData> {
+    fn fetch_bytes(&self, data_id: u64) -> DandelionResult<ExportedData> {
         self.get_exported_data(data_id)
     }
 

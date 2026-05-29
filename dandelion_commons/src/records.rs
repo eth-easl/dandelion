@@ -5,10 +5,10 @@ use std::time::Instant;
 /// Maximum usize to expect when converting a record point to a usize
 /// By setting the last element to this explicitly, the compiler will throw an error,
 /// if there are more than this, because it enumerates from 0 and won't allow a number to be assigned twice.
-const LAST_RECORD_POINT: usize = 12;
+const LAST_RECORD_POINT: usize = 14;
 /// The first timestamp that should come from the engine running the function
-const FIRST_ENGINE_POINT: usize = 4;
-const LAST_ENGINE_POINT: usize = 11;
+const FIRST_ENGINE_POINT: usize = 6;
+const LAST_ENGINE_POINT: usize = 13;
 
 pub const ENGINE_RECORD_POINTS: usize = LAST_ENGINE_POINT - FIRST_ENGINE_POINT + 1;
 
@@ -21,10 +21,14 @@ pub enum RecordPoint {
     EnterDispatcher,
     /// Queue to get the function executed on the engine (async)
     ExecutionQueue,
+    /// Time spend fetching on the composition owner, before offloading.
+    /// Only set when the function was offloaded, otherwise the fetching time is recorded in fetching start  and end.
+    MasterFetchStart,
+    MasterFetchEnd,
     /// Time when a request was taken from the queue to send to the remote.
     /// Used to anchor the remote timings.
     RemoteTake,
-    /// Start fetching of input sets
+    /// Start of fetching input sets on the node the function ends up running on
     FetchingStart = FIRST_ENGINE_POINT,
     /// Finished the fetching, all input sets now local
     FetchingEnd,
@@ -168,6 +172,17 @@ impl Recorder {
         let reference =
             core::cell::UnsafeCell::raw_get(&self.inner.timestamps.time_points[point as usize]);
         unsafe { *reference = Duration::from_micros(time_micros) };
+    }
+
+    /// Get a slice with the timestamps related to engine execution
+    #[cfg(feature = "timestamp")]
+    pub fn set_master_fetching(&self) {
+        unsafe {
+            *self.inner.timestamps.time_points[RecordPoint::MasterFetchStart as usize].get() =
+                *self.inner.timestamps.time_points[RecordPoint::FetchingStart as usize].get();
+            *self.inner.timestamps.time_points[RecordPoint::MasterFetchEnd as usize].get() =
+                *self.inner.timestamps.time_points[RecordPoint::FetchingEnd as usize].get();
+        }
     }
 }
 

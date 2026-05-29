@@ -109,6 +109,8 @@ pub(crate) fn recorder_add_timestamps(
             let wire_time = start_epoch - (_local_reference as u64);
             let start_offset =
                 wire_time + _recorder.get_timestamp(RecordPoint::RemoteTake).as_micros() as u64;
+            // preserve original timestamping for fetching
+            _recorder.set_master_fetching();
             // set all the timestamps we received from remote
             _recorder.set_timestamp(RecordPoint::FetchingStart, fetching_start + start_offset);
             _recorder.set_timestamp(RecordPoint::FetchingEnd, fetching_end + start_offset);
