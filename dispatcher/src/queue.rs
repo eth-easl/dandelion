@@ -75,6 +75,8 @@ struct InnerQueue {
     compute_waker_list: LinkedList<WakerElement>,
     /// List of io engines ready to take more work
     io_waker_list: LinkedList<Waker>,
+    /// The number of functions for which we are currently prefetching
+    fetching_in_progress: usize,
 }
 
 const MAX_QUEUE: usize = 4096;
@@ -161,8 +163,10 @@ impl Future for IoWaitFuture<'_> {
         // to find work where they can do their own fetching instead.
         let compute_length = lock_guard.compute_queue.len();
         let local_cores = *self.work_queue.system_info.num_local_cores_watcher.borrow();
+        let already_fetching = lock_guard.fetching_in_progress;
         #[cfg(feature = "data_locallity")]
         let idle_compute_cores = lock_guard.compute_waker_list.len();
+        let mut is_fetching = false;
         let result = lock_guard
             .io_queue
             .extract_if(|queue_element| match queue_element.work {
@@ -175,23 +179,29 @@ impl Future for IoWaitFuture<'_> {
                     recorder: _,
                 } => {
                     #[cfg(not(feature = "data_locallity"))]
-                    let should_keep = compute_length < LOCAL_WORK_PER_CORE * local_cores;
+                    let should_take =
+                        compute_length + already_fetching < LOCAL_WORK_PER_CORE * local_cores;
 
                     #[cfg(feature = "data_locallity")]
                     // additionally want to prevent fetching, if there is remote data and no local core is idle
                     // always take it if there are idle cores, only prefetch if it is prefetching via IO, not from other nodes
-                    let should_keep = idle_compute_cores > 0
-                        || (compute_length < LOCAL_WORK_PER_CORE * local_cores
+                    let should_take = idle_compute_cores > 0
+                        || (compute_length + already_fetching < LOCAL_WORK_PER_CORE * local_cores
                             && !queue_element.remote_data.is_empty());
 
+                    // If will take task that has prefetching, increase counter accordingly
+                    is_fetching = should_take;
                     // need to do it like this, because attributes on expressions are still experimental
-                    should_keep
+                    should_take
                 }
                 // always take resolver work
                 _ => true,
             })
             .next()
             .map(|queue_element| (queue_element.work, queue_element.debt));
+        if is_fetching {
+            lock_guard.fetching_in_progress += 1;
+        }
         if let Some(result_tupple) = result {
             // Found some work, so core is not idle
             Poll::Ready(result_tupple)
@@ -218,6 +228,7 @@ impl WorkQueue {
                 io_queue: LinkedList::new(),
                 compute_waker_list: LinkedList::new(),
                 io_waker_list: LinkedList::new(),
+                fetching_in_progress: 0,
             })),
             promise_buffer: PromiseBuffer::init(MAX_QUEUE),
             queue_state_sender,
@@ -256,8 +267,11 @@ impl WorkQueue {
     /// Pushes the work and debt to the back of the queue and sets the flags accordingly.
     /// Returns an error if the queue is full.
     /// TODO: check or define here and other places, if the flags need to match fully, just checking that any flag is set would be enough
-    async fn push_compute(&self, work: WorkToDo, debt: Debt, flags: u32) {
+    async fn push_compute(&self, work: WorkToDo, debt: Debt, flags: u32, had_fetching: bool) {
         let mut queue_guard = self.inner.lock().unwrap();
+        if had_fetching {
+            queue_guard.fetching_in_progress -= 1;
+        }
         queue_guard
             .compute_queue
             .push_back(ComputeQueueElement { flags, work, debt });
@@ -372,7 +386,7 @@ impl WorkQueue {
 
         let (promise, debt) = self.promise_buffer.get_promise()?;
         if local {
-            self.push_compute(work, debt, flags).await;
+            self.push_compute(work, debt, flags, false).await;
         } else {
             self.push_io(work, debt, flags).await;
         }
@@ -657,7 +671,7 @@ impl EngineWorkQueue for EngineQueue {
             _ => panic!("Should not reenqueue non function arguments"),
         };
         trace!("Reenqueue with flags: {}", flags);
-        self.work_queue.push_compute(work, debt, flags)
+        self.work_queue.push_compute(work, debt, flags, true)
     }
 
     fn remove_self_from_queue(&self) {
