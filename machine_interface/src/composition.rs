@@ -415,10 +415,14 @@ impl CompositionSet {
             .collect()
     }
 
-    pub fn from_item_list(set_name: String, item_list: Vec<(DataItem, ItemData)>) -> Option<Self> {
+    pub fn from_item_list(
+        set_name: String,
+        mut item_list: Vec<(DataItem, ItemData)>,
+    ) -> Option<Self> {
         if item_list.is_empty() {
             None
         } else {
+            item_list.sort_unstable_by_key(|item| item.0.key);
             let non_local_sets = (&item_list)
                 .into_iter()
                 .filter(|(_, data)| match data {

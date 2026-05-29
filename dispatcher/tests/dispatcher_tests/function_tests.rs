@@ -1,6 +1,7 @@
 use super::{check_matrix, setup_dispatcher, zero_id};
 use dandelion_commons::records::Recorder;
 use dispatcher::dispatcher::Dispatcher;
+use log::debug;
 use machine_interface::{
     composition::{
         Composition, CompositionSet, FunctionDependencies, InputSetDescriptor, JoinStrategy,
@@ -194,7 +195,7 @@ pub fn composition_optional<Domain: MemoryDomain>(
         memory_resource,
     );
 
-    // check case where the set is an input set, not optional and not present
+    debug!("Starting test for case where the set is an input set, not optional and not present");
     let composition1 = Composition {
         dependencies: vec![FunctionDependencies {
             function: function_id.clone(),
@@ -213,7 +214,7 @@ pub fn composition_optional<Domain: MemoryDomain>(
     assert_eq!(1, out_contexts.len());
     assert!(out_contexts[0].is_none());
 
-    // check case where the set is an input set, optional and not present
+    debug!("Starting test for case where the set is an input set, optional and not present");
     let composition2 = Composition {
         dependencies: vec![FunctionDependencies {
             function: function_id.clone(),
@@ -232,7 +233,9 @@ pub fn composition_optional<Domain: MemoryDomain>(
     assert_eq!(1, out_contexts.len());
     assert!(out_contexts[0].is_some());
 
-    // check case where the set is a composition set, not optional and not present
+    debug!(
+        "Starting test for case where the set is a composition set, not optional and not present"
+    );
     let composition5 = Composition {
         dependencies: vec![
             FunctionDependencies {
@@ -259,14 +262,14 @@ pub fn composition_optional<Domain: MemoryDomain>(
     assert_eq!(1, out_contexts.len());
     assert!(out_contexts[0].is_none());
 
-    // check case where the set is an input set, optional and not present
+    debug!("Starting test for case where the set is a composition set, optional and not present");
     let composition6 = Composition {
         dependencies: vec![
             FunctionDependencies {
                 function: function_id.clone(),
                 join_info: (vec![], vec![]),
                 input_set_ids: vec![],
-                output_set_ids: vec![None, Some(1)],
+                output_set_ids: vec![Some(1)],
             },
             FunctionDependencies {
                 function: function_id.clone(),

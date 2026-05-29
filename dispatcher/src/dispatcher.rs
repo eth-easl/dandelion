@@ -487,36 +487,28 @@ impl Dispatcher {
         };
 
         // collect vec of vec of shards into vec of sets
-        // TODO: collect vector of sets and rewrite combine to do it in one go instead of calling it over and over again
-        let output_lenght = output_mapping.len();
-        let composition_set_vecs = composition_results?
-            .into_iter()
-            .reduce(|mut accumulator, elem_vec| {
-                for (accumulator_set, elem_set) in accumulator.iter_mut().zip(elem_vec.into_iter())
-                {
-                    match (accumulator_set, elem_set) {
-                        (_, None) => (),
-                        (insert @ None, Some(set)) => {
-                            *insert = Some(set);
-                        }
-                        (Some(old_set), Some(new_set)) => old_set.combine(new_set),
-                    }
+        let mut composition_set_vecs = Vec::with_capacity(output_mapping.len());
+        composition_set_vecs.resize(output_mapping.len(), Vec::new());
+        let mut set_names = Vec::with_capacity(output_mapping.len());
+        set_names.resize(output_mapping.len(), None);
+        for sets in composition_results? {
+            for (index, set_option) in sets.into_iter().enumerate() {
+                if let Some(set) = set_option {
+                    set_names[index].get_or_insert_with(|| set.get_name().clone());
+                    composition_set_vecs[index].extend(set.into_iter());
                 }
-                accumulator
-            })
-            .unwrap_or_else(|| {
-                let mut new_vec = Vec::with_capacity(output_lenght);
-                new_vec.resize(output_lenght, None);
-                new_vec
-            });
-
+            }
+        }
         // assiociated sets with composition ids
         Ok((
             output_mapping
                 .into_iter()
                 .zip(composition_set_vecs.into_iter())
-                .filter_map(|(index_option, set_option)| {
-                    index_option.and_then(|index| Some((index, set_option)))
+                .zip(set_names)
+                .filter_map(|((index_option, sets), name)| {
+                    index_option.and_then(|index| {
+                        name.map(|name| (index, CompositionSet::from_item_list(name, sets)))
+                    })
                 })
                 .collect(),
             function_index,
