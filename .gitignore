@@ -28,3 +28,7 @@ Cargo.lock
 # misc ignores
 misc/
 .vscode/
+
+
+.venv
+__pycache__

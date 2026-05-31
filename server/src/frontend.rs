@@ -304,29 +304,18 @@ async fn service(
     let res = match req.uri().path() {
         "/register/function" => handle_function_registration(req, dispatcher, folder_path).await,
         "/register/composition" => handle_composition_registration(req, dispatcher).await,
-        // TODO: rename to cold func and hot func, remove matmul, compute, io
-        "/cold/matmul"
-        | "/cold/matmulstore"
-        | "/cold/compute"
-        | "/cold/io"
-        | "/cold/chain_scaling"
-        | "/cold/middleware_app"
-        | "/cold/compression_app"
-        | "/cold/python_app" => handle_request(true, req, dispatcher).await,
-        "/hot/matmul"
-        | "/hot/matmulstore"
-        | "/hot/compute"
-        | "/hot/io"
-        | "/hot/chain_scaling"
-        | "/hot/middleware_app"
-        | "/hot/compression_app"
-        | "/hot/python_app" => handle_request(false, req, dispatcher).await,
         "/stats" => handle_stats_collection(req).await,
         other_uri => {
-            debug!("Received request on {}", other_uri);
-            Ok(DandelionBody::from_vec(
-                format!("Hello, World\n").into_bytes(),
-            ))
+            if other_uri.starts_with("/hot/") {
+                handle_request(false, req, dispatcher).await
+            } else if other_uri.starts_with("/cold/") {
+                handle_request(true, req, dispatcher).await
+            } else {
+                debug!("Received request on {}", other_uri);
+                Ok(DandelionBody::from_vec(
+                    format!("Hello, World\n").into_bytes(),
+                ))
+            }
         }
     };
 
