@@ -551,19 +551,17 @@ async fn resolve_all_references(
     if let Some(err) = error {
         debt.fulfill(Err(err));
     } else {
-        queue
-            .requeu_engine_args(
-                WorkToDo::FunctionArguments {
-                    function_id,
-                    function_alternatives,
-                    input_sets: sets,
-                    metadata,
-                    caching,
-                    recorder,
-                },
-                debt,
-            )
-            .await;
+        queue.requeu_engine_args(
+            WorkToDo::FunctionArguments {
+                function_id,
+                function_alternatives,
+                input_sets: sets,
+                metadata,
+                caching,
+                recorder,
+            },
+            debt,
+        );
     }
 }
 

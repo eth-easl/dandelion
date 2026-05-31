@@ -82,7 +82,7 @@ pub(crate) fn recorder_dtop(
 }
 
 pub(crate) fn recorder_add_timestamps(
-    mut _recorder: Recorder,
+    _recorder: &mut Recorder,
     _timestamps: Option<proto::Timestamps>,
     _local_reference: u128,
 ) {
@@ -194,12 +194,12 @@ fn item_data_dtop(
 
 fn item_data_and_ref(
     item: &DataItem,
-    data: ItemData,
+    data: &ItemData,
     export_local_data: &mut impl FnMut(&DataItem, Arc<Context>) -> RemoteData,
 ) -> (proto::ItemData, Option<RemoteData>) {
     match data {
         ItemData::LocalData(context) => {
-            let remote_data = export_local_data(item, context);
+            let remote_data = export_local_data(item, context.clone());
             // TODO: send data directly for smaller items
             (
                 proto::ItemData {
@@ -221,13 +221,13 @@ fn item_data_and_ref(
             } = io_data;
             // TODO for data we want to send along: fuse with serialization, so we can use the `resolved` without race conditions
             let mut register_item = item.clone();
-            register_item.data = original_position;
+            register_item.data = original_position.clone();
             let (data, remote_data) =
-                item_data_and_ref(&register_item, *original_data, export_local_data);
+                item_data_and_ref(&register_item, original_data, export_local_data);
             (
                 proto::ItemData {
                     data: Some(item_data::Data::IoData(Box::new(proto::IoData {
-                        set_index: set_index as u64,
+                        set_index: *set_index as u64,
                         function: system_function_dtop(&function).unwrap() as i32,
                         data: Some(Box::new(data)),
                     }))),
@@ -242,7 +242,7 @@ fn item_data_and_ref(
                     item.data.size,
                 ))),
             },
-            Some(remote_data),
+            Some(remote_data.clone()),
         ),
     }
 }
@@ -345,7 +345,7 @@ pub(crate) fn composition_sets_to_proto(
 }
 
 pub(crate) fn composition_sets_to_proto_and_refs(
-    sets: Vec<Option<CompositionSet>>,
+    sets: &Vec<Option<CompositionSet>>,
     mut export_local_data: impl FnMut(&DataItem, Arc<Context>) -> RemoteData,
 ) -> (Vec<proto::MetadataSet>, Vec<RemoteData>)
 // TODO change to (Vec<(Position, Arc<Context>)>,u64) when we add sending data directly with the request
@@ -362,10 +362,10 @@ pub(crate) fn composition_sets_to_proto_and_refs(
             let set_name = set.get_name().clone();
             for (item, data) in set {
                 let (proto_item, remote_data_option) =
-                    item_data_and_ref(&item, data, &mut export_local_data);
+                    item_data_and_ref(item, data, &mut export_local_data);
                 metadata_items.push(proto::MetadataItem {
                     data: Some(proto_item),
-                    ident: item.ident,
+                    ident: item.ident.clone(),
                     key: item.key,
                 });
                 if let Some(remote_data) = remote_data_option {

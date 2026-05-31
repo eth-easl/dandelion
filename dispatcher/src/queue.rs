@@ -7,7 +7,7 @@ use machine_interface::{
     promise::{Debt, PromiseBuffer},
 };
 use std::{
-    collections::LinkedList,
+    collections::{BTreeMap, LinkedList},
     future::Future,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -15,7 +15,7 @@ use std::{
     },
     task::{Poll, Waker},
 };
-use tokio::sync::{watch, Notify};
+use tokio::sync::{mpsc, watch, Notify};
 
 pub enum QueueFlag {
     EngineSystem = 0b1,
@@ -83,6 +83,7 @@ const MAX_QUEUE: usize = 4096;
 
 /// Producers can push new work to the end of the queue using the `push` function.
 /// Consumers can pop elements using the `aquire` function.
+/// TODO: move all things behind Arcs into a single one.
 #[derive(Clone)]
 pub struct WorkQueue {
     /// Holds the two queues, first one for work ready to be run locally, second one for engines waiting for fitting work to arrive
@@ -96,6 +97,8 @@ pub struct WorkQueue {
     queuing_notifier: Arc<Notify>,
     /// Tracks current system informations used by the any sharding policy.
     pub system_info: Arc<SystemInfo>,
+    /// Channels for asking remote node to take work
+    remote_nodes: Arc<Mutex<BTreeMap<u64, mpsc::Sender<(WorkToDo, Debt)>>>>,
 }
 
 struct ComputeWaitFuture<'queue> {
@@ -239,6 +242,7 @@ impl WorkQueue {
                 num_local_cores_sender,
                 num_remote_cores: AtomicUsize::new(0),
             }),
+            remote_nodes: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -267,7 +271,7 @@ impl WorkQueue {
     /// Pushes the work and debt to the back of the queue and sets the flags accordingly.
     /// Returns an error if the queue is full.
     /// TODO: check or define here and other places, if the flags need to match fully, just checking that any flag is set would be enough
-    async fn push_compute(&self, work: WorkToDo, debt: Debt, flags: u32, had_fetching: bool) {
+    fn push_compute(&self, work: WorkToDo, debt: Debt, flags: u32, had_fetching: bool) {
         let mut queue_guard = self.inner.lock().unwrap();
         if had_fetching {
             queue_guard.fetching_in_progress -= 1;
@@ -288,7 +292,13 @@ impl WorkQueue {
         }
     }
 
-    async fn push_io(&self, work: WorkToDo, debt: Debt, flags: u32) {
+    fn push_io(
+        &self,
+        work: WorkToDo,
+        debt: Debt,
+        flags: u32,
+        #[cfg(feature = "data_locallity")] try_offload: bool,
+    ) {
         let mut queue_guard = self.inner.lock().unwrap();
         #[cfg(feature = "data_locallity")]
         let (remote_data, total_input_size) = if let WorkToDo::FunctionArguments {
@@ -324,6 +334,22 @@ impl WorkQueue {
         } else {
             (std::collections::BTreeMap::new(), 0)
         };
+        // TODO: think about if there is a better place to do this
+        #[cfg(feature = "data_locallity")]
+        {
+            if try_offload {
+                if let Some((node_id, max_size)) = remote_data.iter().max() {
+                    // if more than half of the data is on one specific node try to offload to that one
+                    if max_size * 2 > total_input_size {
+                        if let Some(node_sender) = self.remote_nodes.lock().unwrap().get(node_id) {
+                            // Doing try send to avoid compiler issues with holding mutex
+                            node_sender.try_send((work, debt)).unwrap();
+                            return;
+                        }
+                    }
+                }
+            }
+        }
         queue_guard.io_queue.push_back(IoQueueElement {
             flags,
             work,
@@ -341,9 +367,12 @@ impl WorkQueue {
         }
     }
 
-    /// Inserts the work into the queue setting the flags according to the supported engines and
-    /// awaits the future before returning the result.
-    pub async fn do_work(&self, work: WorkToDo) -> DandelionResult<WorkDone> {
+    fn push(
+        &self,
+        work: WorkToDo,
+        debt: Debt,
+        #[cfg(feature = "data_locallity")] try_offload: bool,
+    ) {
         let (flags, local) = match &work {
             WorkToDo::Shutdown(engine_type) => (get_engine_flag(*engine_type), true),
             WorkToDo::SetsToResolve { input_sets: _ } => (0, false),
@@ -384,12 +413,24 @@ impl WorkQueue {
             flags
         );
 
-        let (promise, debt) = self.promise_buffer.get_promise()?;
         if local {
-            self.push_compute(work, debt, flags, false).await;
+            self.push_compute(work, debt, flags, false);
         } else {
-            self.push_io(work, debt, flags).await;
+            #[cfg(feature = "data_locallity")]
+            self.push_io(work, debt, flags, try_offload);
+            #[cfg(not(feature = "data_locallity"))]
+            self.push_io(work, debt, flags);
         }
+    }
+
+    /// Inserts the work into the queue setting the flags according to the supported engines and
+    /// awaits the future before returning the result.
+    pub async fn do_work(&self, work: WorkToDo) -> DandelionResult<WorkDone> {
+        let (promise, debt) = self.promise_buffer.get_promise()?;
+        #[cfg(feature = "data_locallity")]
+        self.push(work, debt, true);
+        #[cfg(not(feature = "data_locallity"))]
+        self.push(work, debt);
         return promise.await;
     }
 
@@ -584,6 +625,18 @@ impl WorkQueue {
         }
     }
 
+    pub fn add_remote_channel(&self, node_id: u64, channel: mpsc::Sender<(WorkToDo, Debt)>) {
+        self.remote_nodes.lock().unwrap().insert(node_id, channel);
+    }
+
+    /// Put work back into queue after trying to offload without success
+    pub async fn reenqueue(&self, work: WorkToDo, debt: Debt) {
+        #[cfg(feature = "data_locallity")]
+        self.push(work, debt, false);
+        #[cfg(not(feature = "data_locallity"))]
+        self.push(work, debt);
+    }
+
     /// Increases the number of local cores.
     pub fn add_remote_cores(&self, num_cores: usize) {
         let prev_num_cores = self
@@ -656,7 +709,7 @@ impl EngineWorkQueue for EngineQueue {
         self.work_queue.get_io_work()
     }
 
-    fn requeu_engine_args(&self, work: WorkToDo, debt: Debt) -> impl Future<Output = ()> {
+    fn requeu_engine_args(&self, work: WorkToDo, debt: Debt) {
         let flags = match &work {
             WorkToDo::FunctionArguments {
                 function_id: _,

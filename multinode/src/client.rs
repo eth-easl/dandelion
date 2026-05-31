@@ -23,6 +23,7 @@ use machine_interface::{
     composition::{CompositionSet, RemoteData},
     function_driver::{WorkDone, WorkToDo},
     machine_config::{EngineType, IntoEnumIterator},
+    promise::Debt,
 };
 use prost::bytes::{Bytes, BytesMut};
 use std::{
@@ -141,6 +142,7 @@ async fn receive_message(mut receiver: impl AsyncReadExt + Unpin) -> (Bytes, Opt
 enum QueueOption {
     Message(remote_message::RemoteMessage, Option<Bytes>),
     WorkAvailable,
+    TryOffload(WorkToDo, machine_interface::promise::Debt),
 }
 
 async fn remote_queue_sever_notification(receiver: Arc<Notify>, sender: mpsc::Sender<QueueOption>) {
@@ -179,6 +181,19 @@ async fn remote_queue_server_sender(
             queue_message: Some(queue_message),
         });
         send_message(&message_buffer, &mut socket, None).await;
+    }
+}
+
+/// Translating the messages from the queue for offlaoding into something the server logic understands
+async fn remote_queue_server_try_offload(
+    mut queue_receiver: mpsc::Receiver<(WorkToDo, Debt)>,
+    sender: mpsc::Sender<QueueOption>,
+) {
+    while let Some((work, debt)) = queue_receiver.recv().await {
+        sender
+            .send(QueueOption::TryOffload(work, debt))
+            .await
+            .unwrap();
     }
 }
 
@@ -230,7 +245,7 @@ async fn remote_queue_server_logic(
                                 max_debt_id += 1;
                                 promise_id
                             };
-                            let (function_id, data_sets, mut recorder, caching) = match work {
+                            let (function_id, data_sets, recorder, &caching) = match &work {
                                 // Todo send along relevant information, like caching bool and recorder start time
                                 WorkToDo::FunctionArguments {
                                     function_id,
@@ -246,7 +261,9 @@ async fn remote_queue_server_logic(
                                     panic!("Should only get function arguments when polling for remote queue")
                                 }
                             };
-                            recorder.record(dandelion_commons::records::RecordPoint::RemoteTake);
+                            let mut new_recorder = recorder.clone();
+                            new_recorder
+                                .record(dandelion_commons::records::RecordPoint::RemoteTake);
                             let start_reference = SystemTime::elapsed(&std::time::UNIX_EPOCH)
                                 .unwrap()
                                 .as_micros();
@@ -258,14 +275,22 @@ async fn remote_queue_server_logic(
                                         Some(remote_data_deletion_sender.clone()),
                                     )
                                 });
+                            let caching = caching;
+                            let function_id = function_id.to_string();
                             debt_map.insert(
                                 promise_id,
-                                (debt, recorder, start_reference, remote_data_references),
+                                (
+                                    debt,
+                                    new_recorder,
+                                    start_reference,
+                                    remote_data_references,
+                                    work,
+                                ),
                             );
                             trace!("Prepared work, sending out now");
                             queue_message::QueueMessage::Invocation(Invocation {
                                 metadata_sets,
-                                function_id: function_id.to_string(),
+                                function_id,
                                 invocation_id: promise_id,
                                 caching,
                             })
@@ -285,33 +310,40 @@ async fn remote_queue_server_logic(
                             response,
                         } = response;
                         // TODO: handle failure
-                        let (debt, recorder, start_epoch, remote_data_references) = debt_map
-                            .remove(&invocation_id)
-                            .expect("Should always get back function response for a present debt");
+                        let (debt, mut recorder, start_epoch, remote_data_references, work) =
+                            debt_map.remove(&invocation_id).expect(
+                                "Should always get back function response for a present debt",
+                            );
                         free_debt_ids.push(invocation_id);
-                        let result = match response.unwrap() {
-                            proto::response::Response::MetadataSets(metadata_sets) => {
-                                recorder_add_timestamps(
-                                    recorder,
-                                    metadata_sets.timestamps,
-                                    start_epoch,
-                                );
-                                Ok(WorkDone::CompositionSet(
-                                    proto_data_sets_to_composition_sets_with_delete_on_drop(
-                                        metadata_sets.metadata_sets,
-                                        data_option,
-                                        remote_data_deletion_sender.clone(),
-                                    ),
-                                ))
-                            }
-                            proto::response::Response::ErrorMsg(error_message) => {
-                                err_dandelion!(DandelionError::Multinode(
-                                    MultinodeError::RequestFailed(error_message)
-                                ))
-                            }
-                        };
                         drop(remote_data_references);
-                        debt.fulfill(result)
+                        // remote did not do work, was a try offload request, reenqueu the work
+                        if let Some(response) = response {
+                            let result = match response {
+                                proto::response::Response::MetadataSets(metadata_sets) => {
+                                    recorder_add_timestamps(
+                                        &mut recorder,
+                                        metadata_sets.timestamps,
+                                        start_epoch,
+                                    );
+                                    Ok(WorkDone::CompositionSet(
+                                        proto_data_sets_to_composition_sets_with_delete_on_drop(
+                                            metadata_sets.metadata_sets,
+                                            data_option,
+                                            remote_data_deletion_sender.clone(),
+                                        ),
+                                    ))
+                                }
+                                proto::response::Response::ErrorMsg(error_message) => {
+                                    err_dandelion!(DandelionError::Multinode(
+                                        MultinodeError::RequestFailed(error_message)
+                                    ))
+                                }
+                            };
+                            debt.fulfill(result)
+                        } else {
+                            // did not get response so need to reenqueue the work
+                            queue.reenqueue(work, debt).await;
+                        }
                     }
                     remote_message::RemoteMessage::NodeUpdate(node_update) => {
                         trace!(
@@ -337,6 +369,65 @@ async fn remote_queue_server_logic(
                         }
                     }
                 }
+            }
+            QueueOption::TryOffload(work, debt) => {
+                // Ask remote if it can take the invocation, otherwise requeue it locally
+                let promise_id = if let Some(free_id) = free_debt_ids.pop() {
+                    free_id
+                } else {
+                    let promise_id = max_debt_id;
+                    max_debt_id += 1;
+                    promise_id
+                };
+                let (function_id, data_sets, recorder, &caching) = match &work {
+                    // Todo send along relevant information, like caching bool and recorder start time
+                    WorkToDo::FunctionArguments {
+                        function_id,
+                        function_alternatives: _,
+                        input_sets,
+                        metadata: _,
+                        caching,
+                        recorder,
+                    } => (function_id, input_sets, recorder, caching),
+                    WorkToDo::SetsToResolve { input_sets: _ }
+                    | WorkToDo::RemoteToDelete { remote_data: _ }
+                    | WorkToDo::Shutdown(_) => {
+                        panic!("Should only get function arguments when polling for remote queue")
+                    }
+                };
+                let mut new_recorder = recorder.clone();
+                new_recorder.record(dandelion_commons::records::RecordPoint::RemoteTake);
+                let start_reference = SystemTime::elapsed(&std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_micros();
+                let (metadata_sets, remote_data_references) =
+                    composition_sets_to_proto_and_refs(data_sets, |item, context| {
+                        export_registry.insert_function(
+                            item,
+                            context,
+                            Some(remote_data_deletion_sender.clone()),
+                        )
+                    });
+                let caching = caching;
+                let function_id = function_id.to_string();
+                debt_map.insert(
+                    promise_id,
+                    (
+                        debt,
+                        new_recorder,
+                        start_reference,
+                        remote_data_references,
+                        work,
+                    ),
+                );
+                trace!("Prepared work, sending out now");
+                let try_offload_message = queue_message::QueueMessage::TryOffload(Invocation {
+                    invocation_id: promise_id,
+                    function_id,
+                    metadata_sets,
+                    caching,
+                });
+                message_sender.send(try_offload_message).await.unwrap();
             }
             QueueOption::WorkAvailable => {
                 trace!("Queue Server received work available notification");
@@ -400,6 +491,13 @@ pub async fn remote_queue_server(
     // spawn notificaiton loop
     spawn(remote_queue_sever_notification(
         queue.queueing_notifier(),
+        queue_option_sender.clone(),
+    ));
+    // spawn loop to check for queue trying to offload
+    let (offload_sender, offload_receiver) = mpsc::channel(num_local_cores as usize);
+    queue.add_remote_channel(node_id, offload_sender);
+    spawn(remote_queue_server_try_offload(
+        offload_receiver,
         queue_option_sender,
     ));
 
@@ -564,7 +662,9 @@ async fn remote_queue_client_logic(
                             remote_had_work = true;
                         }
                     }
-                    queue_message::QueueMessage::Invocation(invocation) => {
+                    // TODO for try offload decide when to refuse work
+                    queue_message::QueueMessage::TryOffload(invocation)
+                    | queue_message::QueueMessage::Invocation(invocation) => {
                         trace!("Queue Client recieved invocation");
 
                         // mark remote as having work, so we ask for more as idle cores change

@@ -121,7 +121,7 @@ fn test_remote_queue_server() {
             assert_eq!("dummy_function", function_id);
             invocation_id
         }
-        queue_message::QueueMessage::NoWork(_) => panic!("should not receive no work message"),
+        other => panic!("Should not receive other message: {:?}", other),
     };
 
     // ask for more work before sending a response for the first one
@@ -149,7 +149,7 @@ fn test_remote_queue_server() {
             assert_eq!("dummy_function", function_id);
             invocation_id
         }
-        queue_message::QueueMessage::NoWork(_) => panic!("should not receive no work message"),
+        other => panic!("Should not receive other message: {:?}", other),
     };
 
     // ask for more work again, queue should now be empty
@@ -169,7 +169,7 @@ fn test_remote_queue_server() {
     assert_eq!(Poll::Pending, server_future.poll_unpin(&mut context));
     match queue_message_receiver.try_recv().unwrap() {
         queue_message::QueueMessage::NoWork(no_work) => assert!(no_work),
-        queue_message::QueueMessage::Invocation(_) => panic!("Should not receive more work"),
+        other => panic!("Should not receive other message: {:?}", other),
     }
 
     // send back results out of order, start with second
@@ -199,7 +199,7 @@ fn test_remote_queue_server() {
     assert_eq!(Poll::Pending, server_future.poll_unpin(&mut context));
     match queue_message_receiver.try_recv().unwrap() {
         queue_message::QueueMessage::NoWork(no_work) => assert!(!no_work),
-        queue_message::QueueMessage::Invocation(_) => panic!("Should not receive more work"),
+        other => panic!("Should not receive other message: {:?}", other),
     }
 
     // ask for that work
@@ -227,7 +227,7 @@ fn test_remote_queue_server() {
             assert_eq!("dummy_function", function_id);
             invocation_id
         }
-        queue_message::QueueMessage::NoWork(_) => panic!("should not receive no work message"),
+        other => panic!("should not receive other message: {:?}", other),
     };
 
     // send back the remaining results

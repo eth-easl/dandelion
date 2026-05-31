@@ -114,6 +114,8 @@ message QueueMessage {
         bool no_work = 1;
         // Message containing the work for one function
         Invocation invocation = 2;
+        // Message containing the work for one function, can be refused
+        Invocation try_offload = 3;
         // TODO add message to cancel invocation
    }
 }
