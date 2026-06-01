@@ -93,7 +93,10 @@ mod waker {
     };
 
     fn waker_clone(data: *const ()) -> RawWaker {
-        let new_sender = unsafe { &*(data as *const Box<Sender<()>>) }.clone();
+        let box_ref = unsafe { Box::from_raw(data as *mut Sender<()>) };
+        let new_sender = box_ref.clone();
+        // don't drop the original box
+        let _ = Box::into_raw(box_ref);
         RawWaker::new(Box::into_raw(new_sender) as *const (), &WAKER_TABLE)
     }
 
@@ -105,7 +108,7 @@ mod waker {
     }
 
     unsafe fn waker_wake_by_ref(data: *const ()) {
-        let sender_ref = &*(data as *const Box<Sender<()>>);
+        let sender_ref = &*(data as *const Sender<()>);
         sender_ref.send(()).unwrap();
     }
 
