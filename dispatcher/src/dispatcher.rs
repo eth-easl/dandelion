@@ -29,12 +29,37 @@ use machine_interface::{
     machine_config::{get_available_domains, DomainType, EngineType, IntoEnumIterator},
     memory_domain::{MemoryDomain, MemoryResource},
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
 #[derive(Debug, Clone)]
 pub enum DispatcherInput {
     None,
     Set(CompositionSet),
+}
+
+#[derive(Clone, Default)]
+pub struct RequestCancellation {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl RequestCancellation {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
 }
 
 // TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
@@ -111,6 +136,7 @@ impl Dispatcher {
         inputs: Vec<DispatcherInput>,
         caching: bool,
         mut recorder: Recorder,
+        cancellation: RequestCancellation,
     ) -> DandelionResult<(Vec<Option<CompositionSet>>, Recorder)> {
         debug!("Queuing function {}", function_id);
         recorder.record(RecordPoint::EnterDispatcher);
@@ -128,7 +154,13 @@ impl Dispatcher {
         }
 
         let results = self
-            .queue_function(function_id, input_vec, caching, recorder.get_sub_recorder())
+            .queue_function(
+                function_id,
+                input_vec,
+                caching,
+                recorder.get_sub_recorder(),
+                cancellation,
+            )
             .await?;
 
         return Ok((results, recorder));
@@ -140,6 +172,7 @@ impl Dispatcher {
         inputs: Vec<DispatcherInput>,
         caching: bool,
         recorder: Recorder,
+        cancellation: RequestCancellation,
     ) -> DandelionResult<(Vec<Option<CompositionSet>>, Recorder)> {
         debug!("Parsing single use composition");
         let composition_meta_pairs = self
@@ -175,6 +208,7 @@ impl Dispatcher {
                 input_vec,
                 caching,
                 recorder.get_sub_recorder(),
+                cancellation,
             )
             .await?;
 
@@ -194,6 +228,7 @@ impl Dispatcher {
         inputs: Vec<Option<CompositionSet>>,
         caching: bool,
         mut recorder: Recorder,
+        cancellation: RequestCancellation,
     ) -> DandelionResult<Vec<Option<CompositionSet>>> {
         // build up ready sets
         trace!("queue composition");
@@ -275,6 +310,9 @@ impl Dispatcher {
 
         // start all functions that are ready and insert their sets into the awaited ones
         for args in ready_functions.into_iter() {
+            if cancellation.is_cancelled() {
+                break;
+            }
             awaited_sets.push(Either::Right(self.queue_function_sharded(
                 args.function_id,
                 args.inptut_sets,
@@ -283,6 +321,7 @@ impl Dispatcher {
                 args.output_mapping,
                 caching,
                 recorder.get_sub_recorder(),
+                cancellation.clone(),
             )));
         }
         let num_running_functions = awaited_sets.len();
@@ -295,6 +334,12 @@ impl Dispatcher {
         while let Some(new_compositions_result) = awaited_sets.next().await {
             let (new_compositions, new_recorders) = new_compositions_result?;
             recorder.add_children(new_recorders);
+            if cancellation.is_cancelled() {
+                trace!("composition execution stopped after request cancellation");
+                non_ready_functions.clear();
+                continue;
+            }
+
             for (composition_set_index, composition_set_option) in &new_compositions {
                 trace!(
                     "composition set {:?} arrived at dispatcher is some: {}",
@@ -359,6 +404,7 @@ impl Dispatcher {
                                 args.output_mapping,
                                 caching,
                                 recorder.get_sub_recorder(),
+                                cancellation.clone(),
                             )));
                             None
                         } else {
@@ -390,6 +436,7 @@ impl Dispatcher {
         output_mapping: Vec<Option<usize>>,
         caching: bool,
         recorder: Recorder,
+        cancellation: RequestCancellation,
     ) -> DandelionResult<(Vec<(usize, Option<CompositionSet>)>, Vec<Recorder>)> {
         trace!(
             "queue function {} sharded and input sets: {:?}",
@@ -425,6 +472,7 @@ impl Dispatcher {
                         ins,
                         caching,
                         new_recorder.get_sub_recorder(),
+                        cancellation.clone(),
                     ));
                     recorders.push(new_recorder);
                     future_box
@@ -441,6 +489,7 @@ impl Dispatcher {
                     vec![],
                     caching,
                     new_recorder.get_sub_recorder(),
+                    cancellation,
                 )
                 .await
                 .and_then(|result| Ok(vec![result]));
@@ -493,6 +542,7 @@ impl Dispatcher {
         input_sets: Vec<Option<CompositionSet>>,
         caching: bool,
         mut recorder: Recorder,
+        cancellation: RequestCancellation,
     ) -> Pin<
         Box<dyn Future<Output = DandelionResult<Vec<Option<CompositionSet>>>> + 'dispatcher + Send>,
     > {
@@ -573,6 +623,7 @@ impl Dispatcher {
                             input_sets,
                             caching,
                             recorder,
+                            cancellation,
                         )
                         .await;
                 }

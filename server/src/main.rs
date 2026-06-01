@@ -1,7 +1,7 @@
 use dandelion_commons::records::Archive;
 use dandelion_server::config::{self, FuncMetadata, PreloadFunc};
 use dispatcher::{
-    dispatcher::{Dispatcher, DispatcherInput},
+    dispatcher::{Dispatcher, DispatcherInput, RequestCancellation},
     queue::WorkQueue,
     resource_pool::ResourcePool,
 };
@@ -36,17 +36,28 @@ async fn dispatcher_loop(
                 mut callback,
             } => {
                 debug!("Handling function request for function {}", function_id);
-                let function_future =
-                    dispatcher.queue_function_by_name(function_id, inputs, !is_cold, recorder);
-                spawn(async {
+                let cancellation = RequestCancellation::new();
+                let function_future = dispatcher.queue_function_by_name(
+                    function_id,
+                    inputs,
+                    !is_cold,
+                    recorder,
+                    cancellation.clone(),
+                );
+                spawn(async move {
+                    tokio::pin!(function_future);
                     select! {
-                        function_output = function_future => {
+                        function_output = &mut function_future => {
                             // either get an ok, meaning the data was sent, or get the data back
                             // no need to handle ok, and nothing useful to do with data if we get it back
                             // drop it here to release resources
                             let _ = callback.send(function_output);
                         }
-                        _ = callback.closed() => ()
+                        _ = callback.closed() => {
+                            cancellation.cancel();
+                            let function_output = function_future.await;
+                            let _ = callback.send(function_output);
+                        }
                     }
                 });
             }
@@ -58,18 +69,25 @@ async fn dispatcher_loop(
                 mut callback,
             } => {
                 debug!("Handling composition request");
+                let cancellation = RequestCancellation::new();
                 let future = dispatcher.queue_unregistered_composition(
                     composition,
                     inputs,
                     !is_cold,
                     recorder,
+                    cancellation.clone(),
                 );
-                spawn(async {
+                spawn(async move {
+                    tokio::pin!(future);
                     select! {
-                        output = future => {
+                        output = &mut future => {
                             let _ = callback.send(output);
                         }
-                        _ = callback.closed() => ()
+                        _ = callback.closed() => {
+                            cancellation.cancel();
+                            let output = future.await;
+                            let _ = callback.send(output);
+                        }
                     }
                 });
             }
@@ -119,21 +137,28 @@ async fn dispatcher_loop(
                         }
                     })
                     .collect();
+                let cancellation = RequestCancellation::new();
                 let function_future = dispatcher.queue_function_by_name(
                     function_id,
                     dispatcher_input,
                     !is_cold,
                     recorder,
+                    cancellation.clone(),
                 );
-                spawn(async {
+                spawn(async move {
+                    tokio::pin!(function_future);
                     select! {
-                        function_output = function_future => {
+                        function_output = &mut function_future => {
                             // either get an ok, meaning the data was sent, or get the data back
                             // no need to handle ok, and nothing useful to do with data if we get it back
                             // drop it here to release resources
                             let _ = callback.send(function_output);
                         }
-                        _ = callback.closed() => ()
+                        _ = callback.closed() => {
+                            cancellation.cancel();
+                            let function_output = function_future.await;
+                            let _ = callback.send(function_output);
+                        }
                     }
                 });
             }
