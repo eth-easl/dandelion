@@ -98,7 +98,7 @@ pub struct WorkQueue {
     /// Tracks current system informations used by the any sharding policy.
     pub system_info: Arc<SystemInfo>,
     /// Channels for asking remote node to take work
-    remote_nodes: Arc<Mutex<BTreeMap<u64, mpsc::Sender<(WorkToDo, Debt)>>>>,
+    remote_nodes: Arc<Mutex<BTreeMap<u64, mpsc::UnboundedSender<(WorkToDo, Debt)>>>>,
 }
 
 struct ComputeWaitFuture<'queue> {
@@ -343,7 +343,7 @@ impl WorkQueue {
                     if max_size * 2 > total_input_size {
                         if let Some(node_sender) = self.remote_nodes.lock().unwrap().get(node_id) {
                             // Doing try send to avoid compiler issues with holding mutex
-                            node_sender.try_send((work, debt)).unwrap();
+                            node_sender.send((work, debt)).unwrap();
                             return;
                         }
                     }
@@ -625,7 +625,11 @@ impl WorkQueue {
         }
     }
 
-    pub fn add_remote_channel(&self, node_id: u64, channel: mpsc::Sender<(WorkToDo, Debt)>) {
+    pub fn add_remote_channel(
+        &self,
+        node_id: u64,
+        channel: mpsc::UnboundedSender<(WorkToDo, Debt)>,
+    ) {
         self.remote_nodes.lock().unwrap().insert(node_id, channel);
     }
 

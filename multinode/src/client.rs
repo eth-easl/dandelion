@@ -186,7 +186,7 @@ async fn remote_queue_server_sender(
 
 /// Translating the messages from the queue for offlaoding into something the server logic understands
 async fn remote_queue_server_try_offload(
-    mut queue_receiver: mpsc::Receiver<(WorkToDo, Debt)>,
+    mut queue_receiver: mpsc::UnboundedReceiver<(WorkToDo, Debt)>,
     sender: mpsc::Sender<QueueOption>,
 ) {
     while let Some((work, debt)) = queue_receiver.recv().await {
@@ -208,6 +208,7 @@ async fn remote_queue_server_logic(
     mut remote_num_cores: u64,
 ) {
     let mut waiting_for_work = false;
+    let mut invocations_running = 0;
 
     let mut debt_map = BTreeMap::new();
     let mut free_debt_ids = BinaryHeap::new();
@@ -288,6 +289,7 @@ async fn remote_queue_server_logic(
                                 ),
                             );
                             trace!("Prepared work, sending out now");
+                            invocations_running += 1;
                             queue_message::QueueMessage::Invocation(Invocation {
                                 metadata_sets,
                                 function_id,
@@ -303,6 +305,7 @@ async fn remote_queue_server_logic(
                         message_sender.send(queue_message).await.unwrap();
                     }
                     remote_message::RemoteMessage::Response(response) => {
+                        invocations_running -= 1;
                         debug_assert!(data_option.is_none());
                         trace!("Queue Server received response");
                         let Response {
@@ -371,6 +374,12 @@ async fn remote_queue_server_logic(
                 }
             }
             QueueOption::TryOffload(work, debt) => {
+                // if this node already sent enough work for the remote to be at capacity don't send more
+                if invocations_running >= remote_num_cores {
+                    queue.reenqueue(work, debt).await;
+                    continue;
+                }
+                invocations_running += 1;
                 // Ask remote if it can take the invocation, otherwise requeue it locally
                 let promise_id = if let Some(free_id) = free_debt_ids.pop() {
                     free_id
@@ -494,7 +503,7 @@ pub async fn remote_queue_server(
         queue_option_sender.clone(),
     ));
     // spawn loop to check for queue trying to offload
-    let (offload_sender, offload_receiver) = mpsc::channel(num_local_cores as usize);
+    let (offload_sender, offload_receiver) = mpsc::unbounded_channel();
     queue.add_remote_channel(node_id, offload_sender);
     spawn(remote_queue_server_try_offload(
         offload_receiver,
