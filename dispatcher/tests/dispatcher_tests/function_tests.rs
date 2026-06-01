@@ -269,7 +269,7 @@ pub fn composition_optional<Domain: MemoryDomain>(
                 function: function_id.clone(),
                 join_info: (vec![], vec![]),
                 input_set_ids: vec![],
-                output_set_ids: vec![Some(1)],
+                output_set_ids: vec![None, Some(1)],
             },
             FunctionDependencies {
                 function: function_id.clone(),

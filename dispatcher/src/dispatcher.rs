@@ -506,8 +506,11 @@ impl Dispatcher {
                 .zip(composition_set_vecs.into_iter())
                 .zip(set_names)
                 .filter_map(|((index_option, sets), name)| {
-                    index_option.and_then(|index| {
-                        name.map(|name| (index, CompositionSet::from_item_list(name, sets)))
+                    index_option.map(|index| {
+                        (
+                            index,
+                            name.and_then(|name| CompositionSet::from_item_list(name, sets)),
+                        )
                     })
                 })
                 .collect(),
