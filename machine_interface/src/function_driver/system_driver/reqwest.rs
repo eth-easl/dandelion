@@ -1,9 +1,9 @@
 use crate::{
     composition::{CompositionSet, ItemData},
     function_driver::{
-        functions::{Function, FunctionAlternative, FunctionConfig},
+        functions::{Function, FunctionConfig},
         system_driver::{IoData, SystemFunction},
-        ComputeResource, Driver, EngineWorkQueue, Metadata, WorkDone, WorkToDo,
+        ComputeResource, Driver, EngineWorkQueue, WorkDone, WorkToDo,
     },
     memory_domain::{
         bytes_context::BytesContext, read_only::ReadOnlyContext, Context, ContextTrait, ContextType,
@@ -14,19 +14,21 @@ use crate::{
 use bytes::Bytes;
 use core_affinity::set_for_current;
 use dandelion_commons::{
-    dandelion_err, err_dandelion,
-    records::{RecordPoint, Recorder},
-    DandelionError, DandelionResult,
+    dandelion_err, err_dandelion, records::RecordPoint, DandelionError, DandelionResult,
 };
-use futures::future::join_all;
+use futures::{stream::FuturesUnordered, StreamExt};
 use http::{version::Version as HttpVersion, HeaderName, HeaderValue, Method as HttpMethod};
+use itertools::Itertools;
 use log::{debug, error, trace, warn};
 use memcache::Client as MemcachedClient;
 use reqwest::{header::HeaderMap, Client as HttpClient};
-use std::sync::{Arc, OnceLock};
+use std::{
+    future::Future,
+    sync::{Arc, OnceLock},
+};
 use tokio::{
     runtime::Builder,
-    sync::{RwLock, Semaphore},
+    sync::{AcquireError, OwnedSemaphorePermit, RwLock, Semaphore},
 };
 
 trait Request
@@ -436,20 +438,29 @@ async fn memcached_request(
     Ok(vec![header_context, body_context])
 }
 
-async fn resolve_item(
+async fn resolve_item<Ticket: Future<Output = Result<OwnedSemaphorePermit, AcquireError>>>(
+    outer_set_index: usize,
     mut item: DataItem,
     data: ItemData,
     client: HttpClient,
-) -> DandelionResult<(DataItem, ItemData)> {
+    permit: Option<Ticket>,
+) -> DandelionResult<(usize, DataItem, ItemData)> {
+    // hold on to ticket so it gets dropped at the end
+    let _ticket = if let Some(permit) = permit {
+        Some(permit.await.unwrap())
+    } else {
+        None
+    };
+
     debug!("Resolving item {:?}, data {:?}", item, data);
     match data {
-        ItemData::LocalData(_) => Ok((item, data)),
+        ItemData::LocalData(_) => Ok((outer_set_index, item, data)),
         ItemData::RemoteData(remote_data) => {
             let _remote_data_clone = remote_data.clone(); // avoid potential drop before resolve finishes
             let client = crate::composition::get_remote_data_client()?;
             let (context, position) = client.resolve_remote_data(remote_data).await?;
             item.data = position;
-            Ok((item, ItemData::LocalData(context)))
+            Ok((outer_set_index, item, ItemData::LocalData(context)))
         }
         ItemData::IoData(io_data) => {
             let IoData {
@@ -462,8 +473,16 @@ async fn resolve_item(
             // first need to check if original data was local or we still need to fetch that.
             let (mut item, request_input) = match *original_data {
                 ItemData::LocalData(context) => (item, context),
-                _ => match Box::pin(resolve_item(item, *original_data, client.clone())).await? {
-                    (item, ItemData::LocalData(context)) => {
+                _ => match Box::pin(resolve_item(
+                    set_index,
+                    item,
+                    *original_data,
+                    client.clone(),
+                    None::<Ticket>,
+                ))
+                .await?
+                {
+                    (_, item, ItemData::LocalData(context)) => {
                         original_position = item.data;
                         (item, context)
                     }
@@ -481,7 +500,7 @@ async fn resolve_item(
                     };
                     item.data.offset = 0;
                     item.data.size = context.size;
-                    Ok((item, ItemData::LocalData(context)))
+                    Ok((outer_set_index, item, ItemData::LocalData(context)))
                 }
                 SystemFunction::MEMCACHED => {
                     let outputs = resolved
@@ -493,76 +512,47 @@ async fn resolve_item(
                     };
                     item.data.offset = 0;
                     item.data.size = context.size;
-                    Ok((item, ItemData::LocalData(context)))
+                    Ok((outer_set_index, item, ItemData::LocalData(context)))
                 }
             }
         }
     }
 }
 
-async fn resolve_set(
-    set_option: Option<CompositionSet>,
+async fn resolve_all_sets(
     client: HttpClient,
-) -> DandelionResult<Option<CompositionSet>> {
-    if let Some(set) = set_option {
-        let set_name = set.get_name().clone();
-        let new_items_result: DandelionResult<Vec<_>> = join_all(
-            set.into_iter()
-                .map(|(item, data)| resolve_item(item, data, client.clone())),
-        )
-        .await
-        .into_iter()
-        .collect();
-        let new_items = new_items_result?;
-        trace!("joined on resolving all sets");
-        Ok(CompositionSet::from_item_list(set_name, new_items))
-    } else {
-        Ok(None)
-    }
-}
-
-async fn resolve_all_references(
-    queue: impl EngineWorkQueue + Send + 'static,
-    client: HttpClient,
-    debt: Debt,
-    function_id: Arc<String>,
-    function_alternatives: Vec<Arc<FunctionAlternative>>,
     input_sets: Vec<Option<CompositionSet>>,
-    metadata: Arc<Metadata>,
-    caching: bool,
-    mut recorder: Recorder,
-) {
-    recorder.record(RecordPoint::FetchingStart);
+    mut permits: Vec<impl Future<Output = Result<OwnedSemaphorePermit, AcquireError>>>,
+) -> DandelionResult<Vec<Option<CompositionSet>>> {
     // check if teh function id is for a system function
-    debug!("Resolving references for call to {}", function_id);
-    // TODO check if can await in parallel, look at comment in loop for things already attempted
-    let mut sets = Vec::with_capacity(input_sets.len());
-    let mut error = None;
-    for set in input_sets {
-        match resolve_set(set, client.clone()).await {
-            Ok(set) => sets.push(set),
-            Err(err) => {
-                error = Some(err);
-                break;
+    let mut sets_vec = Vec::with_capacity(input_sets.len());
+    sets_vec.resize(input_sets.len(), Vec::new());
+    let set_names = input_sets
+        .iter()
+        .map(|set_option| set_option.as_ref().map(|set| set.get_name().clone()))
+        .collect_vec();
+    let mut new_futures = FuturesUnordered::new();
+    for (set_index, set_option) in input_sets.into_iter().enumerate() {
+        if let Some(set) = set_option {
+            for (item, data) in set.into_iter() {
+                let permit = permits.pop();
+                assert!(permit.is_some());
+                debug!("pushing item {:?} for set {}", item, set_index);
+                new_futures.push(resolve_item(set_index, item, data, client.clone(), permit));
             }
         }
     }
-    recorder.record(RecordPoint::FetchingEnd);
-    if let Some(err) = error {
-        debt.fulfill(Err(err));
-    } else {
-        queue.requeu_engine_args(
-            WorkToDo::FunctionArguments {
-                function_id,
-                function_alternatives,
-                input_sets: sets,
-                metadata,
-                caching,
-                recorder,
-            },
-            debt,
-        );
+
+    while let Some(item_result) = new_futures.next().await {
+        let (set_index, item, data) = item_result?;
+        sets_vec[set_index].push((item, data));
     }
+
+    Ok(set_names
+        .into_iter()
+        .zip(sets_vec.into_iter())
+        .map(|(name, items)| name.and_then(|name| CompositionSet::from_item_list(name, items)))
+        .collect_vec())
 }
 
 /// Number of concurrent requests a single IO core should be handling
@@ -588,50 +578,61 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                 input_sets,
                 metadata,
                 caching, // ignoreing caching for system functions
-                recorder,
+                mut recorder,
             } => {
                 let client_clone = http_client.clone();
                 let queue_clone = queue.clone();
+                let item_number = input_sets
+                    .iter()
+                    .filter_map(|set| set.as_ref().map(|set| set.len()))
+                    .sum();
+                let mut ticket_vec = Vec::with_capacity(item_number);
+                for _ in 0..item_number {
+                    ticket_vec.push(semaphore.clone().acquire_owned());
+                }
                 tokio::spawn(async move {
-                    resolve_all_references(
-                        queue_clone,
-                        client_clone,
-                        debt,
-                        function_id,
-                        function_alternatives,
-                        input_sets,
-                        metadata,
-                        caching,
-                        recorder,
-                    )
-                    .await;
-                    drop(ticket);
+                    debug!("Resolving references for call to {}", function_id);
+                    recorder.record(RecordPoint::FetchingStart);
+                    let sets_result = resolve_all_sets(client_clone, input_sets, ticket_vec).await;
+                    recorder.record(RecordPoint::FetchingEnd);
+                    match sets_result {
+                        Err(err) => debt.fulfill(Err(err)),
+                        Ok(sets) => queue_clone.requeu_engine_args(
+                            WorkToDo::FunctionArguments {
+                                function_id,
+                                function_alternatives,
+                                input_sets: sets,
+                                metadata,
+                                caching,
+                                recorder,
+                            },
+                            debt,
+                        ),
+                    };
                 });
+                drop(ticket);
             }
             WorkToDo::SetsToResolve { input_sets } => {
                 let client_clone = http_client.clone();
+                let item_number = input_sets
+                    .iter()
+                    .filter_map(|set| set.as_ref().map(|set| set.len()))
+                    .sum();
+                let mut ticket_vec = Vec::with_capacity(item_number);
+                for _ in 0..item_number {
+                    ticket_vec.push(semaphore.clone().acquire_owned());
+                }
                 tokio::spawn(async move {
                     // TODO: check if there is nicer way to do this
                     // Tried futures join_all and OrderedSet, but they seem to hang for a while before resolving, unclear why
                     // Also tried with join handles in a vec, let to the same delay
-                    let mut sets = Vec::with_capacity(input_sets.len());
-                    let mut error = None;
-                    for set in input_sets {
-                        match resolve_set(set, client_clone.clone()).await {
-                            Ok(set) => sets.push(set),
-                            Err(err) => {
-                                error = Some(err);
-                                break;
-                            }
-                        }
+                    let sets_result = resolve_all_sets(client_clone, input_sets, ticket_vec).await;
+                    match sets_result {
+                        Ok(sets) => debt.fulfill(Ok(WorkDone::CompositionSet(sets))),
+                        Err(err) => debt.fulfill(Err(err)),
                     }
-                    if let Some(err) = error {
-                        debt.fulfill(Err(err));
-                    } else {
-                        debt.fulfill(Ok(WorkDone::CompositionSet(sets)));
-                    }
-                    drop(ticket);
                 });
+                drop(ticket);
             }
             WorkToDo::RemoteToDelete { remote_data } => {
                 tokio::spawn(async move {

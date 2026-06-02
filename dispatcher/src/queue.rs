@@ -311,15 +311,15 @@ impl WorkQueue {
         } = &work
         {
             let mut ref_map = std::collections::BTreeMap::new();
-            let mut total_reference_size = 0;
+            let mut total_input_size = 0;
             for (item, data) in input_sets
                 .iter()
                 .filter_map(|s| s.as_ref().map(|s| s.into_iter()))
                 .flatten()
             {
+                total_input_size += item.data.size;
                 if let machine_interface::composition::ItemData::RemoteData(remote_data) = data {
                     if item.data.size > 0 {
-                        total_reference_size += item.data.size;
                         use std::collections::btree_map::Entry;
                         match ref_map.entry(remote_data.node_id) {
                             Entry::Occupied(mut value) => *value.get_mut() += item.data.size,
@@ -330,7 +330,7 @@ impl WorkQueue {
                     }
                 }
             }
-            (ref_map, total_reference_size)
+            (ref_map, total_input_size)
         } else {
             (std::collections::BTreeMap::new(), 0)
         };
