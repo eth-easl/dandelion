@@ -5,7 +5,7 @@ use crate::{
 };
 extern crate alloc;
 use alloc::sync::Arc;
-use dandelion_commons::{records::Recorder, DandelionResult, RequestCancellation};
+use dandelion_commons::{records::Recorder, DandelionResult};
 
 pub mod compute_driver;
 pub mod functions;

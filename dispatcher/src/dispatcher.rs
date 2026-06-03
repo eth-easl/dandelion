@@ -310,20 +310,17 @@ impl Dispatcher {
             non_ready_functions.len()
         );
         loop {
-            let new_compositions_result = tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => {
-                    trace!("composition execution stopped after request cancellation");
-                    non_ready_functions.clear();
-                    return err_dandelion!(DandelionError::Dispatcher(
-                        DispatcherError::Cancelled,
-                    ));
-                }
-                result = awaited_sets.next() => match result {
-                    Some(r) => r,
-                    None => break,
-                },
+            let new_compositions_result = match awaited_sets.next().await {
+                Some(result) => result,
+                None => break,
             };
+            if cancellation.is_cancelled() {
+                trace!("composition execution stopped after request cancellation");
+                non_ready_functions.clear();
+                return err_dandelion!(DandelionError::Dispatcher(
+                    DispatcherError::Cancelled,
+                ));
+            }
             let (new_compositions, new_recorders) = new_compositions_result?;
             recorder.add_children(new_recorders);
 
@@ -470,18 +467,15 @@ impl Dispatcher {
             }
             let mut results = Vec::with_capacity(recorders.len());
             loop {
-                let result = tokio::select! {
-                    biased;
-                    _ = cancellation.cancelled() => {
-                        return err_dandelion!(DandelionError::Dispatcher(
-                            DispatcherError::Cancelled,
-                        ));
-                    }
-                    r = futures.next() => match r {
-                        Some(v) => v,
-                        None => break,
-                    },
+                let result = match futures.next().await {
+                    Some(result) => result,
+                    None => break,
                 };
+                if cancellation.is_cancelled() {
+                    return err_dandelion!(DandelionError::Dispatcher(
+                        DispatcherError::Cancelled,
+                    ));
+                }
                 results.push(result);
             }
             results.into_iter().collect()
