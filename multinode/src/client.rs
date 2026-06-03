@@ -15,6 +15,7 @@ use crate::{
 };
 use dandelion_commons::{
     err_dandelion, records::Recorder, DandelionError, DandelionResult, MultinodeError,
+    RequestCancellation,
 };
 use dispatcher::queue::{get_engine_flag, WorkQueue};
 use futures::{future::Either, stream::FuturesUnordered, FutureExt, StreamExt};
@@ -496,6 +497,7 @@ pub async fn remote_queue_client<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                                 inputs,
                                 is_cold: !caching,
                                 recorder,
+                                cancellation: RequestCancellation::new(),
                                 callback: callback_sender,
                             })
                             .await

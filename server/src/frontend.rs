@@ -5,6 +5,7 @@ use std::{
 use crate::TRACING_ARCHIVE;
 use dandelion_commons::{
     err_dandelion, records::Recorder, DandelionError, DandelionResult, FrontendError,
+    RequestCancellation,
 };
 use dandelion_server::DandelionBody;
 use dispatcher::dispatcher::DispatcherInput;
@@ -29,6 +30,32 @@ use tokio::{
 
 fn default_path() -> String {
     String::new()
+}
+
+struct RequestCancelGuard {
+    cancellation: RequestCancellation,
+    armed: bool,
+}
+
+impl RequestCancelGuard {
+    fn new(cancellation: RequestCancellation) -> Self {
+        Self {
+            cancellation,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for RequestCancelGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.cancellation.cancel();
+        }
+    }
 }
 
 //----------------------------------------
@@ -247,6 +274,8 @@ async fn handle_request(
     // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
 
     let (callback, output_recevier) = tokio::sync::oneshot::channel();
+    let cancellation = RequestCancellation::new();
+    let mut cancel_guard = RequestCancelGuard::new(cancellation.clone());
     if had_function_name {
         dispatcher
             .send(DispatcherCommand::FunctionRequest {
@@ -254,6 +283,7 @@ async fn handle_request(
                 inputs,
                 is_cold,
                 recorder,
+                cancellation,
                 callback,
             })
             .await
@@ -266,6 +296,7 @@ async fn handle_request(
                 inputs,
                 is_cold,
                 recorder,
+                cancellation,
                 callback,
             })
             .await
@@ -275,6 +306,7 @@ async fn handle_request(
         .await
         .unwrap()
         .expect("Should get result from function");
+    cancel_guard.disarm();
 
     let response_body = dandelion_server::DandelionBody::new(function_output, &recorder);
 

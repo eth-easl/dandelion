@@ -1,5 +1,6 @@
 use dandelion_commons::{
     err_dandelion, records::Recorder, DandelionError, DandelionResult, MultinodeError,
+    RequestCancellation,
 };
 use dispatcher::dispatcher::DispatcherInput;
 use machine_interface::composition::CompositionSet;
@@ -20,6 +21,7 @@ pub enum DispatcherCommand {
         inputs: Vec<DispatcherInput>,
         is_cold: bool,
         recorder: Recorder,
+        cancellation: RequestCancellation,
         callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
     },
     FunctionRegistration {
@@ -39,6 +41,7 @@ pub enum DispatcherCommand {
         inputs: Vec<Option<CompositionSet>>,
         is_cold: bool,
         recorder: Recorder,
+        cancellation: RequestCancellation,
         callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
     },
     CompositionRequest {
@@ -46,6 +49,7 @@ pub enum DispatcherCommand {
         inputs: Vec<DispatcherInput>,
         is_cold: bool,
         recorder: Recorder,
+        cancellation: RequestCancellation,
         callback: oneshot::Sender<DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>>,
     },
 }

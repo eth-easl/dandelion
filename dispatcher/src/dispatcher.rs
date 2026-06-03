@@ -405,7 +405,6 @@ impl Dispatcher {
                 awaited_sets.len(),
                 non_ready_functions.len()
             );
-            tokio::task::yield_now().await;
         }
 
         return Ok(output_sets);

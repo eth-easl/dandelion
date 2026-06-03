@@ -395,6 +395,7 @@ fn test_remote_queue_client() {
             inputs: _,
             is_cold,
             recorder: _,
+            cancellation: _,
             callback,
         })) => {
             assert!(!is_cold);
@@ -498,6 +499,7 @@ fn test_combined() {
             inputs,
             is_cold,
             recorder: _,
+            cancellation: _,
             callback,
         } => {
             assert_eq!("dummy_function", function_id.as_str());
