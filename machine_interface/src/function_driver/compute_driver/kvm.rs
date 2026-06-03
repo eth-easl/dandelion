@@ -11,14 +11,16 @@ use crate::{
     DataItem, DataRequirement, DataRequirementList, DataSet, Position,
 };
 use core_affinity;
-use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, UserError};
+use dandelion_commons::{
+    err_dandelion, DandelionError, DandelionResult, DispatcherError, RequestCancellation, UserError,
+};
 use kvm_bindings::{
     kvm_clock_data, kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES, KVM_MEM_LOG_DIRTY_PAGES,
 };
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::debug;
-use nix::sys::mman::{mmap, MapFlags, ProtFlags};
-use std::{num::NonZeroUsize, sync::Arc};
+use nix::sys::mman::{mmap, munmap, MapFlags, ProtFlags};
+use std::{num::NonZeroUsize, ptr::NonNull, sync::Arc};
 
 #[cfg(target_arch = "x86_64")]
 mod x86_64;
@@ -59,10 +61,28 @@ fn step_debug(vcpu: &VcpuFd) {
     })
     .unwrap();
 }
+fn detach_and_unmap(
+    vm: &VmFd,
+    mut region: kvm_userspace_memory_region,
+    mmap_regions: &[(NonNull<std::ffi::c_void>, usize)],
+) {
+    region.memory_size = 0;
+    unsafe {
+        vm.set_user_memory_region(region).unwrap();
+    }
+    for &(ptr, size) in mmap_regions {
+        unsafe {
+            munmap(ptr, size)
+                .unwrap_or_else(|e| log::warn!("munmap failed during KVM cleanup: {}", e));
+        }
+    }
+}
+
 struct KvmLoop {
     vm: VmFd,
     vcpu: VcpuFd,
     state: ResetState,
+    cancellation: Option<RequestCancellation>,
 }
 
 impl EngineLoop for KvmLoop {
@@ -88,7 +108,16 @@ impl EngineLoop for KvmLoop {
 
         let state = ResetState::new(&vm, &vcpu);
 
-        return Ok(Box::new(KvmLoop { vm, vcpu, state }));
+        return Ok(Box::new(KvmLoop {
+            vm,
+            vcpu,
+            state,
+            cancellation: None,
+        }));
+    }
+
+    fn set_cancellation(&mut self, cancellation: Option<RequestCancellation>) {
+        self.cancellation = cancellation;
     }
 
     fn get_engine_type(&self) -> crate::machine_config::EngineType {
@@ -123,6 +152,9 @@ impl EngineLoop for KvmLoop {
         let mut stack_start = kvm_context.storage.len();
         // vector containing the mapping where something should be, where it
         let mut mappings = Vec::with_capacity(kvm_context.overlay.len());
+        // tracks mmap pointers so they can be munmapped after execution
+        let mut mmap_regions: Vec<(NonNull<std::ffi::c_void>, usize)> =
+            Vec::with_capacity(kvm_context.overlay.len());
         // go through things that are overlayed and map, it was made sure in the transfer function, that it is full pages
         // TODO: when cursor is stabilized use that, so mappings can be removed if they were copied
         for (&overlay_end, (overlay_start, overlay_context)) in kvm_context.overlay.iter_mut() {
@@ -148,7 +180,7 @@ impl EngineLoop for KvmLoop {
                     let start_address = kvm_context.storage.as_ptr().addr() + stack_start;
                     let file_offset = (overlay_kvm_context.rangepool_start as usize) * PAGE_SIZE
                         + context_item.offset;
-                    unsafe {
+                    let ptr = unsafe {
                         mmap(
                             NonZeroUsize::new(start_address),
                             NonZeroUsize::new_unchecked(overlay_size),
@@ -159,6 +191,7 @@ impl EngineLoop for KvmLoop {
                         )
                         .unwrap()
                     };
+                    mmap_regions.push((ptr, overlay_size));
 
                     log::debug!(
                         "zero copy pages at physical: {}, virtual {}, with size {}",
@@ -178,7 +211,7 @@ impl EngineLoop for KvmLoop {
         }
 
         // attach VM memory
-        let mut region = kvm_userspace_memory_region {
+        let region = kvm_userspace_memory_region {
             slot: 0,
             flags: KVM_MEM_LOG_DIRTY_PAGES,
             guest_phys_addr: 0x0,
@@ -220,9 +253,19 @@ impl EngineLoop for KvmLoop {
             dump_regs(&self.vcpu);
         }
 
+        
         // start running the function
         // TODO: on unexpected break, mark function as failure
         loop {
+            if self
+                .cancellation
+                .as_ref()
+                .is_some_and(|c| c.is_cancelled())
+            {
+                detach_and_unmap(&self.vm, region, &mmap_regions);
+                log::debug!("KVM function cancelled due to RequestCancellation");
+                return err_dandelion!(DandelionError::Dispatcher(DispatcherError::Cancelled));
+            }
             let reason = self.vcpu.run().unwrap();
             match reason {
                 #[cfg(feature = "backend_debug")]
@@ -255,13 +298,7 @@ impl EngineLoop for KvmLoop {
         }
 
         let dirty_log = self.vm.get_dirty_log(0, kvm_context.storage.len()).unwrap();
-
-        // detach VM memory
-        // check if we need to do this, since we always set a new one, this should not be necessary
-        region.memory_size = 0;
-        unsafe {
-            self.vm.set_user_memory_region(region).unwrap();
-        }
+        detach_and_unmap(&self.vm, region, &mmap_regions);
 
         let mut dirty_index = 0;
         let mut contiguous_pages = 0;

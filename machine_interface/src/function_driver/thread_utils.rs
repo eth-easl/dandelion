@@ -8,7 +8,7 @@ use crate::{
 use core::marker::Send;
 use dandelion_commons::{
     err_dandelion, records::RecordPoint, DandelionError, DandelionResult, DispatcherError,
-    FunctionRegistryError,
+    FunctionRegistryError, RequestCancellation,
 };
 use std::thread::spawn;
 
@@ -16,6 +16,7 @@ extern crate alloc;
 
 pub trait EngineLoop {
     fn init(core_id: u8) -> DandelionResult<Box<Self>>;
+    fn set_cancellation(&mut self, _cancellation: Option<RequestCancellation>) {}
     fn run(
         &mut self,
         config: FunctionConfig,
@@ -238,6 +239,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
 
                 recorder.record(RecordPoint::EngineStart);
 
+                engine_state.set_cancellation(cancellation.clone());
                 let result = engine_state.run(
                     function.config.clone(),
                     function_context,

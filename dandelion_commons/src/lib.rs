@@ -1,14 +1,25 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::Notify;
 
 pub mod range_pool;
 pub mod records;
 
 pub type FunctionId = Arc<String>;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct RequestCancellation {
     cancelled: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+}
+
+impl Default for RequestCancellation {
+    fn default() -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            notify: Arc::new(Notify::new()),
+        }
+    }
 }
 
 impl RequestCancellation {
@@ -18,10 +29,23 @@ impl RequestCancellation {
 
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
     }
 
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
+    }
+
+    pub async fn cancelled(&self) {
+        if self.cancelled.load(Ordering::SeqCst) {
+            return;
+        }
+        let notified = self.notify.notified();
+        // double-check after registering the listener to close the race window
+        if self.cancelled.load(Ordering::SeqCst) {
+            return;
+        }
+        notified.await;
     }
 }
 

@@ -309,16 +309,23 @@ impl Dispatcher {
             num_running_functions,
             non_ready_functions.len()
         );
-        while let Some(new_compositions_result) = awaited_sets.next().await {
+        loop {
+            let new_compositions_result = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => {
+                    trace!("composition execution stopped after request cancellation");
+                    non_ready_functions.clear();
+                    return err_dandelion!(DandelionError::Dispatcher(
+                        DispatcherError::Cancelled,
+                    ));
+                }
+                result = awaited_sets.next() => match result {
+                    Some(r) => r,
+                    None => break,
+                },
+            };
             let (new_compositions, new_recorders) = new_compositions_result?;
             recorder.add_children(new_recorders);
-            if cancellation.is_cancelled() {
-                trace!("composition execution stopped after request cancellation");
-                non_ready_functions.clear();
-                return err_dandelion!(DandelionError::Dispatcher(
-                    DispatcherError::Cancelled,
-                ));
-            }
 
             for (composition_set_index, composition_set_option) in &new_compositions {
                 trace!(
@@ -398,6 +405,7 @@ impl Dispatcher {
                 awaited_sets.len(),
                 non_ready_functions.len()
             );
+            tokio::task::yield_now().await;
         }
 
         return Ok(output_sets);
@@ -462,13 +470,20 @@ impl Dispatcher {
                 futures.push(future_box);
             }
             let mut results = Vec::with_capacity(recorders.len());
-            while let Some(result) = futures.next().await {
+            loop {
+                let result = tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => {
+                        return err_dandelion!(DandelionError::Dispatcher(
+                            DispatcherError::Cancelled,
+                        ));
+                    }
+                    r = futures.next() => match r {
+                        Some(v) => v,
+                        None => break,
+                    },
+                };
                 results.push(result);
-                if cancellation.is_cancelled() {
-                    return err_dandelion!(DandelionError::Dispatcher(
-                        DispatcherError::Cancelled,
-                    ));
-                }
             }
             results.into_iter().collect()
             // TODO this is added to support functions with all functions defined as static sets
