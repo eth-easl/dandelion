@@ -7,10 +7,10 @@ use core::pin::Pin;
 use dandelion_commons::{
     err_dandelion,
     records::{RecordPoint, Recorder},
-    DandelionError, DandelionResult, DispatcherError, FunctionId,
+    DandelionError, DandelionResult, DispatcherError, FunctionId, RequestCancellation,
 };
 use futures::{
-    future::{join_all, ready, Either},
+    future::{ready, Either},
     stream::{FuturesUnordered, StreamExt},
     Future,
 };
@@ -31,35 +31,13 @@ use machine_interface::{
 };
 use std::{
     collections::BTreeMap,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::Arc,
 };
 
 #[derive(Debug, Clone)]
 pub enum DispatcherInput {
     None,
     Set(CompositionSet),
-}
-
-#[derive(Clone, Default)]
-pub struct RequestCancellation {
-    cancelled: Arc<AtomicBool>,
-}
-
-impl RequestCancellation {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::SeqCst);
-    }
-
-    pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::SeqCst)
-    }
 }
 
 // TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
@@ -337,7 +315,9 @@ impl Dispatcher {
             if cancellation.is_cancelled() {
                 trace!("composition execution stopped after request cancellation");
                 non_ready_functions.clear();
-                continue;
+                return err_dandelion!(DandelionError::Dispatcher(
+                    DispatcherError::Cancelled,
+                ));
             }
 
             for (composition_set_index, composition_set_option) in &new_compositions {
@@ -438,6 +418,11 @@ impl Dispatcher {
         recorder: Recorder,
         cancellation: RequestCancellation,
     ) -> DandelionResult<(Vec<(usize, Option<CompositionSet>)>, Vec<Recorder>)> {
+        if cancellation.is_cancelled() {
+            return err_dandelion!(DandelionError::Dispatcher(
+                DispatcherError::Cancelled,
+            ));
+        }
         trace!(
             "queue function {} sharded and input sets: {:?}",
             function_id,
@@ -463,22 +448,29 @@ impl Dispatcher {
             );
             let size_hint = sharded.len();
             recorders = Vec::with_capacity(size_hint);
-            let resutls: Vec<_> = sharded
-                .into_iter()
-                .map(|ins| {
-                    let new_recorder = Recorder::new_from_parent(function_id.clone(), &recorder);
-                    let future_box = Box::pin(self.queue_function(
-                        function_id.clone(),
-                        ins,
-                        caching,
-                        new_recorder.get_sub_recorder(),
-                        cancellation.clone(),
+            let mut futures = FuturesUnordered::new();
+            for ins in sharded.into_iter() {
+                let new_recorder = Recorder::new_from_parent(function_id.clone(), &recorder);
+                let future_box = Box::pin(self.queue_function(
+                    function_id.clone(),
+                    ins,
+                    caching,
+                    new_recorder.get_sub_recorder(),
+                    cancellation.clone(),
+                ));
+                recorders.push(new_recorder);
+                futures.push(future_box);
+            }
+            let mut results = Vec::with_capacity(recorders.len());
+            while let Some(result) = futures.next().await {
+                results.push(result);
+                if cancellation.is_cancelled() {
+                    return err_dandelion!(DandelionError::Dispatcher(
+                        DispatcherError::Cancelled,
                     ));
-                    recorders.push(new_recorder);
-                    future_box
-                })
-                .collect();
-            join_all(resutls).await.into_iter().collect()
+                }
+            }
+            results.into_iter().collect()
             // TODO this is added to support functions with all functions defined as static sets
             // might want to differentiate between those that have static sets and those that did not get input from predecessors
         } else {
@@ -546,8 +538,14 @@ impl Dispatcher {
     ) -> Pin<
         Box<dyn Future<Output = DandelionResult<Vec<Option<CompositionSet>>>> + 'dispatcher + Send>,
     > {
+ 
         debug!("Queueing function with id: {}", function_id);
         Box::pin(async move {
+            if cancellation.is_cancelled() {
+                return err_dandelion!(DandelionError::Dispatcher(
+                    DispatcherError::Cancelled,
+                ));
+            }
             // find an engine capable of running the function
             // TODO: think about more distinctions, that allow pushing chains of functions which can be executed by single engine,
             // or potentially or potentially even compositions that still need to be split.
@@ -581,9 +579,14 @@ impl Dispatcher {
                         metadata,
                         caching,
                         recorder: subrecoder,
+                        cancellation: Some(cancellation.clone()),
                     };
                     recorder.record(RecordPoint::ExecutionQueue);
-                    let context = self.work_queue.do_work(args).await?.get_context();
+                    let context = self
+                        .work_queue
+                        .do_work_cancellable(args, Some(cancellation))
+                        .await?
+                        .get_context();
                     recorder.record(RecordPoint::FutureReturn);
 
                     #[cfg(feature = "log_function_stdio")]

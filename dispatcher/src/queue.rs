@@ -1,9 +1,11 @@
-use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, DispatcherError};
+use dandelion_commons::{
+    err_dandelion, DandelionError, DandelionResult, DispatcherError, RequestCancellation,
+};
 use futures::{
     lock::{Mutex, MutexLockFuture},
     FutureExt,
 };
-use log::trace;
+use log::{debug, trace};
 use machine_interface::{
     composition::SystemInfo,
     function_driver::{EngineWorkQueue, WorkDone, WorkToDo},
@@ -48,6 +50,8 @@ struct QueueElement {
     work: WorkToDo,
     /// The Debt content of the queue element
     debt: Debt,
+    /// Cancellation token for the queued request.
+    cancellation: Option<RequestCancellation>,
 }
 
 struct WakerElement {
@@ -92,6 +96,30 @@ impl<'list> WaitFuture<'list> {
     }
 }
 
+fn fulfill_cancelled_work(cancelled_work: Vec<QueueElement>) {
+    if !cancelled_work.is_empty() {
+        debug!("Cancelling {} queued work items", cancelled_work.len());
+    }
+    for queue_element in cancelled_work {
+        queue_element
+            .debt
+            .fulfill(err_dandelion!(DandelionError::Dispatcher(
+                DispatcherError::Cancelled,
+            )));
+    }
+}
+
+fn take_cancelled_work(queue: &mut LinkedList<QueueElement>) -> Vec<QueueElement> {
+    queue
+        .extract_if(|queue_element| {
+            queue_element
+                .cancellation
+                .as_ref()
+                .is_some_and(|cancellation| cancellation.is_cancelled())
+        })
+        .collect()
+}
+
 impl Future for WaitFuture<'_> {
     type Output = (WorkToDo, Debt);
 
@@ -101,6 +129,7 @@ impl Future for WaitFuture<'_> {
     ) -> Poll<Self::Output> {
         // check if there is a lock option and if so if it is ready
         if let Poll::Ready(mut lock_guard) = self.lock.poll_unpin(cx) {
+            fulfill_cancelled_work(take_cancelled_work(&mut lock_guard.0));
             // check if there is any work with the flags we are looking for
             let result = lock_guard
                 .0
@@ -164,9 +193,20 @@ impl WorkQueue {
     /// Pushes the work and debt to the back of the queue and sets the flags accordingly.
     /// Returns an error if the queue is full.
     /// TODO: check or define here and other places, if the flags need to match fully, just checking that any flag is set would be enough
-    async fn push(&self, work: WorkToDo, debt: Debt, flags: u32) {
+    async fn push(
+        &self,
+        work: WorkToDo,
+        debt: Debt,
+        flags: u32,
+        cancellation: Option<RequestCancellation>,
+    ) {
         let mut queue_guard = self.queues.lock().await;
-        queue_guard.0.push_back(QueueElement { flags, work, debt });
+        queue_guard.0.push_back(QueueElement {
+            flags,
+            work,
+            debt,
+            cancellation,
+        });
         // call first waker with matching flags if there are any
         if let Some(waker_to_call) = queue_guard
             .1
@@ -182,6 +222,21 @@ impl WorkQueue {
     /// Inserts the work into the queue setting the flags according to the supported engines and
     /// awaits the future before returning the result.
     pub async fn do_work(&self, work: WorkToDo) -> DandelionResult<WorkDone> {
+        self.do_work_cancellable(work, None).await
+    }
+
+    /// Inserts the work into the queue setting the flags according to the supported engines and
+    /// awaits the future before returning the result.
+    pub async fn do_work_cancellable(
+        &self,
+        work: WorkToDo,
+        cancellation: Option<RequestCancellation>,
+    ) -> DandelionResult<WorkDone> {
+        if cancellation.as_ref().is_some_and(|c| c.is_cancelled()) {
+            return err_dandelion!(DandelionError::Dispatcher(
+                DispatcherError::Cancelled,
+            ));
+        }
         let flags = match &work {
             WorkToDo::Shutdown(engine_type) => get_engine_flag(*engine_type),
             WorkToDo::FunctionArguments {
@@ -191,6 +246,7 @@ impl WorkQueue {
                 metadata: _,
                 caching: _,
                 recorder: _,
+                cancellation: _,
             } => {
                 let mut flags = 0;
                 trace!(
@@ -206,7 +262,7 @@ impl WorkQueue {
         log::trace!("Enqueueing with flags: {}", flags);
 
         let (promise, debt) = self.promise_buffer.get_promise()?;
-        self.push(work, debt, flags).await;
+        self.push(work, debt, flags, cancellation).await;
         return promise.await;
     }
 
@@ -214,6 +270,7 @@ impl WorkQueue {
     pub fn try_get_work(&self, engine_flags: u32) -> Option<(WorkToDo, Debt)> {
         // May want to try lock here too, instead of lock, but since we have the ticket, should always succeed on locking
         self.queues.try_lock().and_then(|mut guard| {
+            fulfill_cancelled_work(take_cancelled_work(&mut guard.0));
             guard
                 .0
                 .extract_if(|queue_element| queue_element.flags & engine_flags != 0)
@@ -227,6 +284,7 @@ impl WorkQueue {
     pub fn try_get_work_no_shutdown(&self, engine_flags: u32) -> Option<(WorkToDo, Debt)> {
         // May want to try lock here too, instead of lock, but since we have the ticket, should always succeed on locking
         self.queues.try_lock().and_then(|mut guard| {
+            fulfill_cancelled_work(take_cancelled_work(&mut guard.0));
             guard
                 .0
                 .extract_if(|queue_element| {

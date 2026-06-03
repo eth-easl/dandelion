@@ -612,6 +612,7 @@ async fn engine_loop(queue: impl EngineWorkQueue + Send + 'static) -> Debt {
                 metadata,
                 caching,
                 mut recorder,
+                cancellation: _,
             } => {
                 debug_assert!(caching, "System functions should always be caching");
 

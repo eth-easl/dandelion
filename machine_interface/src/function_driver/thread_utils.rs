@@ -7,7 +7,8 @@ use crate::{
 };
 use core::marker::Send;
 use dandelion_commons::{
-    err_dandelion, records::RecordPoint, DandelionError, DandelionResult, FunctionRegistryError,
+    err_dandelion, records::RecordPoint, DandelionError, DandelionResult, DispatcherError,
+    FunctionRegistryError,
 };
 use std::thread::spawn;
 
@@ -155,7 +156,16 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                 metadata,
                 caching,
                 mut recorder,
+                cancellation,
             } => {
+                if cancellation.as_ref().is_some_and(|c| c.is_cancelled()) {
+                    drop(recorder);
+                    log::debug!("cancelled in threadutils");
+                    debt.fulfill(err_dandelion!(DandelionError::Dispatcher(
+                        DispatcherError::Cancelled,
+                    )));
+                    continue;
+                }
                 let engine_type = engine_state.get_engine_type();
                 let alternative = match function_alternatives
                     .into_iter()

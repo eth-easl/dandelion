@@ -229,6 +229,7 @@ pub async fn remote_queue_server<Stream: AsyncReadExt + AsyncWriteExt + std::mar
                                     metadata: _,
                                     caching,
                                     recorder: _,
+                                    cancellation: _,
                                 } => (function_id, input_sets, caching),
                                 WorkToDo::Shutdown(_) => {
                                     panic!("Should never get shutdown in remote engine queue")

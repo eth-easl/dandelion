@@ -38,6 +38,7 @@ def invoke_function(
     function_name: str,
     input_sets: list[dict],
     output_parser: Optional[Callable] = None,
+    timeout: float = 10,
 ) -> dict:
     payload = {
         "name": function_name,
@@ -48,7 +49,7 @@ def invoke_function(
         f"{BASE_URL}/hot/{function_name}",
         data=BSON.encode(payload),
         headers={"Content-Type": "application/octet-stream"},
-        timeout=10,
+        timeout=timeout,
     )
     response.raise_for_status()
 
@@ -76,6 +77,7 @@ def invoke_composition(
     composition_name: str,
     input_sets: list[dict],
     output_parser: Optional[Callable] = None,
+    timeout: float = 10,
 ) -> dict:
     payload = {
         "name": composition_name,
@@ -86,7 +88,7 @@ def invoke_composition(
         f"{BASE_URL}/hot/compute",
         data=BSON.encode(payload),
         headers={"Content-Type": "application/octet-stream"},
-        timeout=10,
+        timeout=timeout,
     )
     response.raise_for_status()
 

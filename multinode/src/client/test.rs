@@ -131,6 +131,7 @@ async fn mock_dispatcher(work_queue: WorkQueue, engine_type: machine_config::Eng
                     min_set_bytes: vec![],
                 }),
                 caching: false,
+                cancellation: None,
                 recorder: Recorder::new(function_id, Instant::now()),
             },
         )

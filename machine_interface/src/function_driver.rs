@@ -5,7 +5,7 @@ use crate::{
 };
 extern crate alloc;
 use alloc::sync::Arc;
-use dandelion_commons::{records::Recorder, DandelionResult};
+use dandelion_commons::{records::Recorder, DandelionResult, RequestCancellation};
 
 pub mod compute_driver;
 pub mod functions;
@@ -42,6 +42,7 @@ pub enum WorkToDo {
         metadata: Arc<Metadata>,
         caching: bool,
         recorder: Recorder,
+        cancellation: Option<dandelion_commons::RequestCancellation>,
     },
     Shutdown(EngineType),
 }

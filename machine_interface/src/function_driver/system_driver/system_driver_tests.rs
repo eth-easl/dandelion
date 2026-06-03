@@ -133,6 +133,7 @@ mod system_driver_tests {
             input_sets,
             metadata,
             caching: true,
+            cancellation: None,
             recorder: recorder,
         });
         let result_context = tokio::runtime::Builder::new_current_thread()
@@ -230,6 +231,7 @@ dolore magna aliquyam erat, sed diam voluptua."#,
             input_sets,
             metadata,
             caching: true,
+            cancellation: None,
             recorder,
         });
         let result_context = tokio::runtime::Builder::new_current_thread()

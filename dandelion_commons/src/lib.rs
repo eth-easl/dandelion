@@ -1,9 +1,29 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub mod range_pool;
 pub mod records;
 
 pub type FunctionId = Arc<String>;
+
+#[derive(Clone, Default)]
+pub struct RequestCancellation {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl RequestCancellation {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
 
 // TODO define error types, possibly better printing than debug
 // TODO make naming consistent and move groups to subtypes, e.g. DomainError -> Domain in main enum
@@ -239,6 +259,8 @@ pub enum DispatcherError {
     InvalidComposition,
     /// dispatcher got into an invalid system information state
     InvalidSytemInformation,
+    /// request was cancelled, either before queued work started or during execution
+    Cancelled,
 }
 
 #[derive(Debug, Clone, PartialEq)]

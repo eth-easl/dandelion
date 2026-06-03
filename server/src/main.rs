@@ -1,7 +1,7 @@
 use dandelion_commons::records::Archive;
 use dandelion_server::config::{self, FuncMetadata, PreloadFunc};
 use dispatcher::{
-    dispatcher::{Dispatcher, DispatcherInput, RequestCancellation},
+    dispatcher::{Dispatcher, DispatcherInput},
     queue::WorkQueue,
     resource_pool::ResourcePool,
 };
@@ -15,7 +15,7 @@ use machine_interface::{
 use multinode::DispatcherCommand;
 use nix::unistd::Pid;
 use std::{collections::BTreeMap, fs::read_to_string, sync::OnceLock};
-use tokio::{runtime::Builder, select, spawn, sync::mpsc};
+use tokio::{runtime::Builder, spawn, sync::mpsc};
 
 mod frontend;
 
@@ -33,10 +33,10 @@ async fn dispatcher_loop(
                 inputs,
                 is_cold,
                 recorder,
-                mut callback,
+                cancellation,
+                callback,
             } => {
                 debug!("Handling function request for function {}", function_id);
-                let cancellation = RequestCancellation::new();
                 let function_future = dispatcher.queue_function_by_name(
                     function_id,
                     inputs,
@@ -45,20 +45,8 @@ async fn dispatcher_loop(
                     cancellation.clone(),
                 );
                 spawn(async move {
-                    tokio::pin!(function_future);
-                    select! {
-                        function_output = &mut function_future => {
-                            // either get an ok, meaning the data was sent, or get the data back
-                            // no need to handle ok, and nothing useful to do with data if we get it back
-                            // drop it here to release resources
-                            let _ = callback.send(function_output);
-                        }
-                        _ = callback.closed() => {
-                            cancellation.cancel();
-                            let function_output = function_future.await;
-                            let _ = callback.send(function_output);
-                        }
-                    }
+                    let function_output = function_future.await;
+                    let _ = callback.send(function_output);
                 });
             }
             DispatcherCommand::CompositionRequest {
@@ -66,10 +54,10 @@ async fn dispatcher_loop(
                 inputs,
                 is_cold,
                 recorder,
-                mut callback,
+                cancellation,
+                callback,
             } => {
                 debug!("Handling composition request");
-                let cancellation = RequestCancellation::new();
                 let future = dispatcher.queue_unregistered_composition(
                     composition,
                     inputs,
@@ -78,17 +66,8 @@ async fn dispatcher_loop(
                     cancellation.clone(),
                 );
                 spawn(async move {
-                    tokio::pin!(future);
-                    select! {
-                        output = &mut future => {
-                            let _ = callback.send(output);
-                        }
-                        _ = callback.closed() => {
-                            cancellation.cancel();
-                            let output = future.await;
-                            let _ = callback.send(output);
-                        }
-                    }
+                    let output = future.await;
+                    let _ = callback.send(output);
                 });
             }
             DispatcherCommand::FunctionRegistration {
@@ -120,8 +99,9 @@ async fn dispatcher_loop(
                 function_id,
                 inputs,
                 recorder,
-                mut callback,
+                callback,
                 is_cold,
+                cancellation,
             } => {
                 debug!(
                     "Handling remote function request for function_id={}",
@@ -137,7 +117,6 @@ async fn dispatcher_loop(
                         }
                     })
                     .collect();
-                let cancellation = RequestCancellation::new();
                 let function_future = dispatcher.queue_function_by_name(
                     function_id,
                     dispatcher_input,
@@ -146,20 +125,8 @@ async fn dispatcher_loop(
                     cancellation.clone(),
                 );
                 spawn(async move {
-                    tokio::pin!(function_future);
-                    select! {
-                        function_output = &mut function_future => {
-                            // either get an ok, meaning the data was sent, or get the data back
-                            // no need to handle ok, and nothing useful to do with data if we get it back
-                            // drop it here to release resources
-                            let _ = callback.send(function_output);
-                        }
-                        _ = callback.closed() => {
-                            cancellation.cancel();
-                            let function_output = function_future.await;
-                            let _ = callback.send(function_output);
-                        }
-                    }
+                    let function_output = function_future.await;
+                    let _ = callback.send(function_output);
                 });
             }
         };
@@ -203,6 +170,7 @@ fn main() -> () {
     };
 
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_warn_level))
+        .format_timestamp_micros()
         .init();
 
     // check if there is a configuration file

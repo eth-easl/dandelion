@@ -32,3 +32,7 @@ misc/
 
 .venv
 __pycache__
+
+*.log
+*.md
+programs/minimal/test_composition.py

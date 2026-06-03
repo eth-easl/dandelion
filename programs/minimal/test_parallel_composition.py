@@ -16,24 +16,31 @@ FUNCTION_PATH = (
     / "../../machine_interface/tests/data/test_elf_kvm_x86_64_matmul"
 )
 
-def build_composition(num_calls: int = 1000) -> str:
-    """Build a composition that chains matmul calls."""
+
+def build_parallel_composition(num_parallel: int = 10, num_stages: int = 1000) -> str:
+    """Build a composition with parallel calls at every stage.
+
+    Each stage has `num_parallel` independent calls.
+    All calls are necessary: each stage's call i reads from the previous stage's call i.
+    """
     lines = ["function matmul(InMats) => (OutMats);", ""]
-    lines.append(f"composition k_matmul(InputMats) => (FinalMats) {{")
-    for i in range(num_calls):
-        if i == 0:
-            src = "InputMats"
-        else:
-            src = f"TempMats_{i - 1}"
-        if i == num_calls - 1:
-            dst = "FinalMats"
-        else:
-            dst = f"TempMats_{i}"
-        lines.append(f"    matmul(InMats = all {src}) => ({dst} = OutMats);")
+    lines.append(f"composition parallel_matmul(InputMats) => (FinalMats) {{")
+
+    for stage in range(num_stages):
+        for i in range(num_parallel):
+            if stage == 0:
+                src = "InputMats"
+            else:
+                src = f"Stage_{stage-1}_{i}"
+
+            if stage == num_stages - 1 and i == num_parallel - 1:
+                dst = "FinalMats"
+            else:
+                dst = f"Stage_{stage}_{i}"
+            lines.append(f"    matmul(InMats = all {src}) => ({dst} = OutMats);")
+
     lines.append("}")
     return "\n".join(lines)
-
-COMPOSITION = build_composition(10000)
 
 
 def build_matmul_input(matrix_dim: int) -> list[dict]:
@@ -65,10 +72,41 @@ def parse_matmul_output(decoded: dict) -> tuple:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--register", action="store_true", help="Register the function and composition before invoking")
-    parser.add_argument("--abort", action="store_true", help="Abort after 1 second by passing a 1s timeout to the request")
-    parser.add_argument("--print", action="store_true", help="Print the composition to stdout and exit")
+    parser.add_argument(
+        "--register",
+        action="store_true",
+        help="Register the function and composition before invoking",
+    )
+    parser.add_argument(
+        "--abort",
+        action="store_true",
+        help="Abort after 1 second by passing a 1s timeout to the request",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Register and then abort (1s timeout)",
+    )
+    parser.add_argument(
+        "--print",
+        action="store_true",
+        help="Print the composition to stdout and exit",
+    )
+    parser.add_argument(
+        "--parallel",
+        type=int,
+        default=10,
+        help="Number of parallel matmul calls in the first stage (default: 10)",
+    )
+    parser.add_argument(
+        "--chain",
+        type=int,
+        default=1000,
+        help="Number of chained matmul calls after the parallel stage (default: 1000)",
+    )
     args = parser.parse_args()
+
+    COMPOSITION = build_parallel_composition(args.parallel, args.chain)
 
     if args.print:
         print(COMPOSITION)
@@ -78,7 +116,7 @@ if __name__ == "__main__":
         raise FileNotFoundError(f"Function binary not found: {FUNCTION_PATH}")
 
     start = time.time()
-    if args.register:
+    if args.register or args.all:
         register_function(
             function_name="matmul",
             function_path=str(FUNCTION_PATH),
@@ -88,14 +126,16 @@ if __name__ == "__main__":
             output_sets=["OutMats"],
         )
         register_composition(COMPOSITION)
-    else:
+    if not args.register or args.all:
         try:
             invoke_composition(
-                composition_name="k_matmul",
+                composition_name="parallel_matmul",
                 input_sets=build_matmul_input(3),
                 output_parser=parse_matmul_output,
-                timeout=0.2 if args.abort else 10,
+                timeout=1 if (args.abort or args.all) else 10,
             )
         except Exception as e:
-            print(f"[{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}] Request failed: {e}")
+            print(
+                f"[{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}] Request failed: {e}"
+            )
     print(f"execution time: {time.time() - start:.3f}s")

@@ -93,6 +93,7 @@ mod compute_driver_tests {
             input_sets: vec![],
             metadata,
             caching: false,
+            cancellation: None,
             recorder,
         });
         let _ = tokio::runtime::Builder::new_current_thread()
@@ -136,6 +137,7 @@ mod compute_driver_tests {
             input_sets: vec![],
             metadata,
             caching: true,
+            cancellation: None,
             recorder,
         });
         let _ = tokio::runtime::Builder::new_current_thread()
@@ -187,6 +189,7 @@ mod compute_driver_tests {
             input_sets,
             metadata,
             caching: false,
+            cancellation: None,
             recorder,
         });
         let result_context = tokio::runtime::Builder::new_current_thread()
@@ -280,6 +283,7 @@ mod compute_driver_tests {
                 input_sets,
                 metadata,
                 caching: false,
+            cancellation: None,
                 recorder,
             });
             let result_context = tokio::runtime::Builder::new_current_thread()
@@ -387,6 +391,7 @@ mod compute_driver_tests {
             input_sets,
             metadata,
             caching: false,
+            cancellation: None,
             recorder,
         });
         let result_context = tokio::runtime::Builder::new_current_thread()
@@ -550,6 +555,7 @@ mod compute_driver_tests {
             input_sets,
             metadata,
             caching: false,
+            cancellation: None,
             recorder,
         });
         let result_context = tokio::runtime::Builder::new_current_thread()
