@@ -23,11 +23,13 @@ use log::{debug, error, trace, warn};
 use memcache::Client as MemcachedClient;
 use reqwest::{header::HeaderMap, Client as HttpClient};
 use std::{
+    collections::VecDeque,
     future::Future,
     sync::{Arc, OnceLock},
 };
 use tokio::{
     runtime::Builder,
+    spawn,
     sync::{AcquireError, OwnedSemaphorePermit, RwLock, Semaphore},
 };
 
@@ -438,22 +440,15 @@ async fn memcached_request(
     Ok(vec![header_context, body_context])
 }
 
-async fn resolve_item<Ticket: Future<Output = Result<OwnedSemaphorePermit, AcquireError>>>(
+async fn resolve_item(
     outer_set_index: usize,
     mut item: DataItem,
     data: ItemData,
     client: HttpClient,
-    permit: Option<Ticket>,
+    permit: Option<OwnedSemaphorePermit>,
 ) -> DandelionResult<(usize, DataItem, ItemData)> {
-    // hold on to ticket so it gets dropped at the end
-    let _ticket = if let Some(permit) = permit {
-        Some(permit.await.unwrap())
-    } else {
-        None
-    };
-
     debug!("Resolving item {:?}, data {:?}", item, data);
-    match data {
+    let results = match data {
         ItemData::LocalData(_) => Ok((outer_set_index, item, data)),
         ItemData::RemoteData(remote_data) => {
             let _remote_data_clone = remote_data.clone(); // avoid potential drop before resolve finishes
@@ -478,7 +473,7 @@ async fn resolve_item<Ticket: Future<Output = Result<OwnedSemaphorePermit, Acqui
                     item,
                     *original_data,
                     client.clone(),
-                    None::<Ticket>,
+                    None,
                 ))
                 .await?
                 {
@@ -516,13 +511,15 @@ async fn resolve_item<Ticket: Future<Output = Result<OwnedSemaphorePermit, Acqui
                 }
             }
         }
-    }
+    };
+    drop(permit);
+    results
 }
 
 async fn resolve_all_sets(
     client: HttpClient,
     input_sets: Vec<Option<CompositionSet>>,
-    mut permits: Vec<impl Future<Output = Result<OwnedSemaphorePermit, AcquireError>>>,
+    mut permits: VecDeque<impl Future<Output = Result<OwnedSemaphorePermit, AcquireError>>>,
 ) -> DandelionResult<Vec<Option<CompositionSet>>> {
     // check if teh function id is for a system function
     let mut sets_vec = Vec::with_capacity(input_sets.len());
@@ -535,16 +532,21 @@ async fn resolve_all_sets(
     for (set_index, set_option) in input_sets.into_iter().enumerate() {
         if let Some(set) = set_option {
             for (item, data) in set.into_iter() {
-                let permit = permits.pop();
-                assert!(permit.is_some());
+                let permit = permits.pop_front().unwrap().await.unwrap();
                 debug!("pushing item {:?} for set {}", item, set_index);
-                new_futures.push(resolve_item(set_index, item, data, client.clone(), permit));
+                new_futures.push(spawn(resolve_item(
+                    set_index,
+                    item,
+                    data,
+                    client.clone(),
+                    Some(permit),
+                )));
             }
         }
     }
 
     while let Some(item_result) = new_futures.next().await {
-        let (set_index, item, data) = item_result?;
+        let (set_index, item, data) = item_result.unwrap()?;
         sets_vec[set_index].push((item, data));
     }
 
@@ -586,9 +588,9 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                     .iter()
                     .filter_map(|set| set.as_ref().map(|set| set.len()))
                     .sum();
-                let mut ticket_vec = Vec::with_capacity(item_number);
+                let mut ticket_vec = VecDeque::with_capacity(item_number);
                 for _ in 0..item_number {
-                    ticket_vec.push(semaphore.clone().acquire_owned());
+                    ticket_vec.push_back(semaphore.clone().acquire_owned());
                 }
                 tokio::spawn(async move {
                     debug!("Resolving references for call to {}", function_id);
@@ -618,9 +620,9 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                     .iter()
                     .filter_map(|set| set.as_ref().map(|set| set.len()))
                     .sum();
-                let mut ticket_vec = Vec::with_capacity(item_number);
+                let mut ticket_vec = VecDeque::with_capacity(item_number);
                 for _ in 0..item_number {
-                    ticket_vec.push(semaphore.clone().acquire_owned());
+                    ticket_vec.push_back(semaphore.clone().acquire_owned());
                 }
                 tokio::spawn(async move {
                     // TODO: check if there is nicer way to do this
