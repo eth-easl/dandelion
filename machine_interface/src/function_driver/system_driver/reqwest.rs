@@ -22,15 +22,11 @@ use itertools::Itertools;
 use log::{debug, error, trace, warn};
 use memcache::Client as MemcachedClient;
 use reqwest::{header::HeaderMap, Client as HttpClient};
-use std::{
-    collections::VecDeque,
-    future::Future,
-    sync::{Arc, OnceLock},
-};
+use std::sync::{Arc, OnceLock};
 use tokio::{
     runtime::Builder,
     spawn,
-    sync::{AcquireError, OwnedSemaphorePermit, RwLock, Semaphore},
+    sync::{OwnedSemaphorePermit, RwLock, Semaphore},
 };
 
 trait Request
@@ -519,11 +515,15 @@ async fn resolve_item(
 async fn resolve_all_sets(
     client: HttpClient,
     input_sets: Vec<Option<CompositionSet>>,
-    mut permits: VecDeque<impl Future<Output = Result<OwnedSemaphorePermit, AcquireError>>>,
-) -> DandelionResult<Vec<Option<CompositionSet>>> {
-    // check if teh function id is for a system function
+    semaphore: Arc<Semaphore>,
+    ticket: OwnedSemaphorePermit,
+    result_sender: impl FnOnce(DandelionResult<Vec<Option<CompositionSet>>>) + 'static + Send,
+) {
+    // drop ticket so at least one will be available for the new tasks we spawn
+    drop(ticket);
+    // check if the function id is for a system function
+    let input_set_number = input_sets.len();
     let mut sets_vec = Vec::with_capacity(input_sets.len());
-    sets_vec.resize(input_sets.len(), Vec::new());
     let set_names = input_sets
         .iter()
         .map(|set_option| set_option.as_ref().map(|set| set.get_name().clone()))
@@ -532,8 +532,7 @@ async fn resolve_all_sets(
     for (set_index, set_option) in input_sets.into_iter().enumerate() {
         if let Some(set) = set_option {
             for (item, data) in set.into_iter() {
-                let permit = permits.pop_front().unwrap().await.unwrap();
-                debug!("pushing item {:?} for set {}", item, set_index);
+                let permit = semaphore.clone().acquire_owned().await.unwrap();
                 new_futures.push(spawn(resolve_item(
                     set_index,
                     item,
@@ -545,16 +544,33 @@ async fn resolve_all_sets(
         }
     }
 
-    while let Some(item_result) = new_futures.next().await {
-        let (set_index, item, data) = item_result.unwrap()?;
-        sets_vec[set_index].push((item, data));
-    }
+    spawn(async move {
+        sets_vec.resize(input_set_number, Vec::new());
+        let mut result = None;
+        while let Some(item_result) = new_futures.next().await {
+            let item_tuple = item_result.unwrap();
+            match item_tuple {
+                Ok((set_index, item, data)) => sets_vec[set_index].push((item, data)),
+                Err(err) => {
+                    result = Some(err);
+                    break;
+                }
+            }
+        }
 
-    Ok(set_names
-        .into_iter()
-        .zip(sets_vec.into_iter())
-        .map(|(name, items)| name.and_then(|name| CompositionSet::from_item_list(name, items)))
-        .collect_vec())
+        if let Some(error) = result {
+            result_sender(Err(error));
+        } else {
+            let sets = set_names
+                .into_iter()
+                .zip(sets_vec.into_iter())
+                .map(|(name, items)| {
+                    name.and_then(|name| CompositionSet::from_item_list(name, items))
+                })
+                .collect_vec();
+            result_sender(Ok(sets));
+        }
+    });
 }
 
 /// Number of concurrent requests a single IO core should be handling
@@ -584,57 +600,49 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
             } => {
                 let client_clone = http_client.clone();
                 let queue_clone = queue.clone();
-                let item_number = input_sets
-                    .iter()
-                    .filter_map(|set| set.as_ref().map(|set| set.len()))
-                    .sum();
-                let mut ticket_vec = VecDeque::with_capacity(item_number);
-                for _ in 0..item_number {
-                    ticket_vec.push_back(semaphore.clone().acquire_owned());
-                }
-                tokio::spawn(async move {
-                    debug!("Resolving references for call to {}", function_id);
-                    recorder.record(RecordPoint::FetchingStart);
-                    let sets_result = resolve_all_sets(client_clone, input_sets, ticket_vec).await;
-                    recorder.record(RecordPoint::FetchingEnd);
-                    match sets_result {
-                        Err(err) => debt.fulfill(Err(err)),
-                        Ok(sets) => queue_clone.requeu_engine_args(
-                            WorkToDo::FunctionArguments {
-                                function_id,
-                                function_alternatives,
-                                input_sets: sets,
-                                metadata,
-                                caching,
-                                recorder,
-                            },
-                            debt,
-                        ),
-                    };
-                });
-                drop(ticket);
+                debug!("Resolving references for call to {}", function_id);
+                recorder.record(RecordPoint::FetchingStart);
+
+                resolve_all_sets(
+                    client_clone,
+                    input_sets,
+                    semaphore.clone(),
+                    ticket,
+                    move |sets_result| {
+                        recorder.record(RecordPoint::FetchingEnd);
+                        match sets_result {
+                            Err(err) => debt.fulfill(Err(err)),
+                            Ok(sets) => queue_clone.requeu_engine_args(
+                                WorkToDo::FunctionArguments {
+                                    function_id,
+                                    function_alternatives,
+                                    input_sets: sets,
+                                    metadata,
+                                    caching,
+                                    recorder,
+                                },
+                                debt,
+                            ),
+                        };
+                    },
+                )
+                .await;
             }
             WorkToDo::SetsToResolve { input_sets } => {
                 let client_clone = http_client.clone();
-                let item_number = input_sets
-                    .iter()
-                    .filter_map(|set| set.as_ref().map(|set| set.len()))
-                    .sum();
-                let mut ticket_vec = VecDeque::with_capacity(item_number);
-                for _ in 0..item_number {
-                    ticket_vec.push_back(semaphore.clone().acquire_owned());
-                }
-                tokio::spawn(async move {
-                    // TODO: check if there is nicer way to do this
-                    // Tried futures join_all and OrderedSet, but they seem to hang for a while before resolving, unclear why
-                    // Also tried with join handles in a vec, let to the same delay
-                    let sets_result = resolve_all_sets(client_clone, input_sets, ticket_vec).await;
-                    match sets_result {
-                        Ok(sets) => debt.fulfill(Ok(WorkDone::CompositionSet(sets))),
-                        Err(err) => debt.fulfill(Err(err)),
-                    }
-                });
-                drop(ticket);
+                resolve_all_sets(
+                    client_clone,
+                    input_sets,
+                    semaphore.clone(),
+                    ticket,
+                    |sets_result| {
+                        match sets_result {
+                            Ok(sets) => debt.fulfill(Ok(WorkDone::CompositionSet(sets))),
+                            Err(err) => debt.fulfill(Err(err)),
+                        };
+                    },
+                )
+                .await;
             }
             WorkToDo::RemoteToDelete { remote_data } => {
                 tokio::spawn(async move {
