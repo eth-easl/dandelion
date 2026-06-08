@@ -8,7 +8,7 @@ use machine_interface::{
     memory_domain::{
         bytes_context::BytesContext, read_only::ReadOnlyContext, Context, ContextTrait, ContextType,
     },
-    DataItem, Position,
+    Position,
 };
 use prost::bytes;
 use std::{
@@ -111,22 +111,18 @@ impl ExportRegistry {
         self.node_id
     }
 
-    pub fn insert_function(
+    pub fn insert_context(
         &self,
-        item: &DataItem,
+        position: Position,
         context: Arc<Context>,
         delete_sender: Option<tokio::sync::mpsc::UnboundedSender<RemoteData>>,
     ) -> RemoteData {
         let mut inner = self.inner.lock().unwrap();
         let data_id = inner.next_data_id;
         inner.next_data_id += 1;
-        inner.data.insert(
-            data_id,
-            ExportedData {
-                context,
-                position: item.data,
-            },
-        );
+        inner
+            .data
+            .insert(data_id, ExportedData { context, position });
         if let Some(delete_sender) = delete_sender {
             RemoteData::delete_on_drop(self.node_id, data_id, delete_sender)
         } else {

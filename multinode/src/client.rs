@@ -2,15 +2,16 @@ use crate::{
     data::ExportRegistry,
     deserialize_node_info, deserialize_queue_message, deserialize_remote_message,
     proto::{
-        self, queue_message, remote_message, Invocation, NodeInfo, NodeUpdate, QueueMessage,
-        RemoteMessage, RepeatedEngines, Response,
+        self, queue_message, remote_message, CacheInsert, Invocation, NodeInfo, NodeUpdate,
+        QueueMessage, RemoteMessage, RepeatedEngines, Response,
     },
     serialize_node_info, serialize_queue_message, serialize_remote_message,
     util::{
         composition_sets_to_proto, composition_sets_to_proto_and_refs, engine_type_dtop,
         engine_type_ptod, pack_metadata_size_and_flags, proto_data_sets_to_composition_sets,
         proto_data_sets_to_composition_sets_with_delete_on_drop, recorder_add_timestamps,
-        recorder_dtop, unpack_metadata_size_and_flags, ADDITIONAL_DATA_BUFFER, NO_FLAGS,
+        recorder_dtop, remote_data_dtop, remote_data_ptod, unpack_metadata_size_and_flags,
+        ADDITIONAL_DATA_BUFFER, NO_FLAGS,
     },
     DispatcherCommand,
 };
@@ -21,9 +22,11 @@ use dispatcher::queue::{get_engine_flag, WorkQueue};
 use log::{error, trace, warn};
 use machine_interface::{
     composition::{CompositionSet, RemoteData},
-    function_driver::{WorkDone, WorkToDo},
+    function_driver::{system_driver::cache::HttpCacheEntry, WorkDone, WorkToDo},
     machine_config::{EngineType, IntoEnumIterator},
+    memory_domain::Context,
     promise::Debt,
+    Position,
 };
 use prost::bytes::{Bytes, BytesMut};
 use std::{
@@ -275,8 +278,8 @@ async fn remote_queue_server_logic(
                                 .as_micros();
                             let (metadata_sets, remote_data_references) =
                                 composition_sets_to_proto_and_refs(data_sets, |item, context| {
-                                    export_registry.insert_function(
-                                        item,
+                                    export_registry.insert_context(
+                                        item.data,
                                         context,
                                         Some(remote_data_deletion_sender.clone()),
                                     )
@@ -376,6 +379,31 @@ async fn remote_queue_server_logic(
                             error!("Failed to update remote core count: Total number of remote cores underflows.");
                         }
                     }
+                    remote_message::RemoteMessage::CacheInsert(cache_insert) => {
+                        debug_assert!(data_option.is_none());
+                        trace!(
+                            "Queue Server received cache insert for key {}",
+                            cache_insert.cache_key
+                        );
+                        {
+                            debug_assert!(cache_insert.cache_value.len() == 2);
+                            let header = remote_data_ptod(
+                                cache_insert.cache_value[0],
+                                Some(remote_data_deletion_sender.clone()),
+                            );
+                            let body = remote_data_ptod(
+                                cache_insert.cache_value[1],
+                                Some(remote_data_deletion_sender.clone()),
+                            );
+                            machine_interface::function_driver::system_driver::reqwest::insert_http_cache_entry(
+                                cache_insert.cache_key,
+                                HttpCacheEntry {
+                                    header,
+                                    body,
+                                },
+                            );
+                        }
+                    }
                 }
             }
             QueueOption::TryOffload(work, debt) => {
@@ -421,8 +449,8 @@ async fn remote_queue_server_logic(
                     .as_micros();
                 let (metadata_sets, remote_data_references) =
                     composition_sets_to_proto_and_refs(data_sets, |item, context| {
-                        export_registry.insert_function(
-                            item,
+                        export_registry.insert_context(
+                            item.data,
                             context,
                             Some(remote_data_deletion_sender.clone()),
                         )
@@ -461,6 +489,34 @@ async fn remote_queue_server_logic(
         }
     }
     warn!("Arrived at end of remtote_queue_server_logic, which should stay in the loop forever");
+}
+
+fn send_cache_insert(
+    cache_key: u64,
+    contexts: Vec<Arc<Context>>,
+    export_registry: ExportRegistry,
+    sender: mpsc::Sender<PollingOption>,
+) {
+    let cache_value = contexts
+        .into_iter()
+        .map(|context| {
+            let size = context.size;
+            let remote_data =
+                export_registry.insert_context(Position { offset: 0, size }, context, None);
+            remote_data_dtop(&remote_data, size)
+        })
+        .collect();
+    spawn(async move {
+        sender
+            .send(PollingOption::Results(
+                remote_message::RemoteMessage::CacheInsert(CacheInsert {
+                    cache_key,
+                    cache_value,
+                }),
+            ))
+            .await
+            .unwrap();
+    });
 }
 
 /// Handler for one remote node, polling the local queue for them.
@@ -608,7 +664,8 @@ impl ResultCallback {
         let response_message = match result {
             Ok((sets, recorder)) => {
                 let metadata_sets = composition_sets_to_proto(sets, |item, context| {
-                    self.export_registry.insert_function(item, context, None)
+                    self.export_registry
+                        .insert_context(item.data, context, None)
                 });
                 proto::response::Response::MetadataSets(proto::RepeatedMetadataSet {
                     metadata_sets,
@@ -834,6 +891,18 @@ pub async fn remote_queue_client(
     ));
     // start receiver loop
     let (poll_option_sender, poll_option_receiver) = mpsc::channel(64);
+    let notifier_sender = poll_option_sender.clone();
+    let notifier_export_registry = export_registry.clone();
+    machine_interface::function_driver::system_driver::set_io_data_cache_notifier(Arc::new(
+        move |cache_key, contexts| {
+            send_cache_insert(
+                cache_key,
+                contexts,
+                notifier_export_registry.clone(),
+                notifier_sender.clone(),
+            );
+        },
+    ));
     spawn(remote_queue_client_receiver(
         read_socket,
         poll_option_sender.clone(),

@@ -1,6 +1,6 @@
+pub mod cache;
 #[cfg(feature = "reqwest_io")]
 pub mod reqwest;
-pub mod cache;
 
 use crate::{
     composition::{CompositionSet, ItemData},
@@ -10,7 +10,7 @@ use crate::{
     DataItem, Position,
 };
 use dandelion_commons::{try_with_capacity, DandelionResult};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::OnceCell;
 
 /// HTTP function currently expects one set with requests formated by HTTP standard (in text).
@@ -83,6 +83,20 @@ pub struct IoData {
     pub function: SystemFunction,
     pub set_index: usize,
     // recorder: Recorder,
+}
+
+type IoDataCacheNotifier = dyn Fn(u64, Vec<Arc<Context>>) + Send + Sync + 'static;
+
+static IO_DATA_CACHE_NOTIFIER: OnceLock<Arc<IoDataCacheNotifier>> = OnceLock::new();
+
+pub fn set_io_data_cache_notifier(notifier: Arc<IoDataCacheNotifier>) {
+    let _ = IO_DATA_CACHE_NOTIFIER.set(notifier);
+}
+
+pub(crate) fn notify_io_data_cache(cache_key: u64, contexts: Vec<Arc<Context>>) {
+    if let Some(notifier) = IO_DATA_CACHE_NOTIFIER.get() {
+        notifier(cache_key, contexts);
+    }
 }
 
 /// Currently assumes the HTTP_INPUT_SETS and HTTP_OUTPUT_SETS
