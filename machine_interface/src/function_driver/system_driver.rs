@@ -1,6 +1,8 @@
 #[cfg(feature = "reqwest_io")]
 pub mod reqwest;
 
+pub mod async_runtime;
+
 use crate::{
     composition::{CompositionSet, ItemData},
     function_driver::{functions::SystemFunction, Metadata},
