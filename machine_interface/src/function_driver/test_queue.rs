@@ -2,76 +2,41 @@ use crate::{
     function_driver::{EngineWorkQueue, WorkToDo},
     promise::{Debt, Promise, PromiseBuffer},
 };
-use std::sync::{Arc, Condvar, Mutex};
-
-struct TestQueueInternal {
-    args: Option<(WorkToDo, Debt)>,
-}
+use std::sync::Arc;
+use tokio::sync::{
+    mpsc::{channel, Receiver, Sender},
+    Mutex,
+};
 
 #[derive(Clone)]
 pub struct TestQueue {
-    internal: Arc<(Mutex<TestQueueInternal>, Condvar)>,
+    sender: Sender<(WorkToDo, Debt)>,
+    reciever: Arc<Mutex<Receiver<(WorkToDo, Debt)>>>,
     promise_buffer: PromiseBuffer,
 }
 
 impl TestQueue {
     pub fn new() -> Self {
+        let (sender, reciever) = channel(1);
         return TestQueue {
-            internal: Arc::new((Mutex::new(TestQueueInternal { args: None }), Condvar::new())),
+            sender,
+            reciever: Arc::new(Mutex::new(reciever)),
             promise_buffer: PromiseBuffer::init(128),
         };
     }
     pub fn enqueu(&self, args: WorkToDo) -> Promise {
-        let (lock, arg_var) = self.internal.as_ref();
-        let mut lock_guard = lock.lock().expect("Test queue failed to lock on enqueuing");
-        if lock_guard.args.is_some() {
-            lock_guard = arg_var
-                .wait_while(lock_guard, |guard| guard.args.is_some())
-                .expect("Test queue enqueue failed waiting on inserting args");
-        }
         let (promise, debt) = self.promise_buffer.get_promise().unwrap();
-        if lock_guard.args.replace((args, debt)).is_some() {
-            panic!("Test queue replace args still present")
-        };
-        arg_var.notify_all();
+        self.sender.blocking_send((args, debt)).unwrap();
         return promise;
     }
 }
 
 impl EngineWorkQueue for TestQueue {
     async fn get_compute_engine_args(&self) -> (WorkToDo, Debt) {
-        let (lock, arg_var) = self.internal.as_ref();
-        let mut lock_guard = lock
-            .lock()
-            .expect("Test queue failed to lock on get_engine_args");
-        if lock_guard.args.is_none() {
-            lock_guard = arg_var
-                .wait_while(lock_guard, |guard| guard.args.is_none())
-                .expect("Test queue failed waiting to take args");
-        }
-        let args = lock_guard
-            .args
-            .take()
-            .expect("Test queue tried to take args from empty queue");
-        arg_var.notify_all();
-        args
+        self.reciever.lock().await.recv().await.unwrap()
     }
     async fn get_io_engine_args(&self) -> (WorkToDo, Debt) {
-        let (lock, arg_var) = self.internal.as_ref();
-        let mut lock_guard = lock
-            .lock()
-            .expect("Test queue failed to lock on get_engine_args");
-        if lock_guard.args.is_none() {
-            lock_guard = arg_var
-                .wait_while(lock_guard, |guard| guard.args.is_none())
-                .expect("Test queue failed waiting to take args");
-        }
-        let args = lock_guard
-            .args
-            .take()
-            .expect("Test queue tried to take args from empty queue");
-        arg_var.notify_all();
-        args
+        self.reciever.lock().await.recv().await.unwrap()
     }
 
     fn requeu_engine_args(&self, _work: WorkToDo, _debt: crate::promise::Debt) {

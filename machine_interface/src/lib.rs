@@ -1,3 +1,4 @@
+pub mod async_runtime;
 pub mod composition;
 pub mod function_driver;
 pub mod memory_domain;
