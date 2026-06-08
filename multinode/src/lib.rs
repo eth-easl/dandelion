@@ -235,12 +235,14 @@ fn test_serialize_invocation_request() {
     );
 
     let request = QueueMessage {
-        queue_message: Some(proto::queue_message::QueueMessage::Invocation(
-            crate::proto::Invocation {
-                function_id: expected_id.clone(),
-                metadata_sets: serialized_metadata_sets.clone(),
-                invocation_id: 7,
-                caching: true,
+        queue_message: Some(proto::queue_message::QueueMessage::Invocations(
+            proto::RepeatedInvocations {
+                invocations: vec![crate::proto::Invocation {
+                    function_id: expected_id.clone(),
+                    metadata_sets: serialized_metadata_sets.clone(),
+                    invocation_id: 7,
+                    caching: true,
+                }],
             },
         )),
     };
@@ -257,8 +259,12 @@ fn test_serialize_invocation_request() {
         function_id: deserialized_id,
         metadata_sets: deserialized_metadata_sets,
         caching,
-    } = if let queue_message::QueueMessage::Invocation(invocation) = message {
-        invocation
+    } = if let queue_message::QueueMessage::Invocations(proto::RepeatedInvocations {
+        invocations,
+    }) = message
+    {
+        assert_eq!(1, invocations.len());
+        invocations[0].clone()
     } else {
         panic!("Should have deserialized an invocation");
     };

@@ -8,7 +8,8 @@ use crate::{
     client::{remote_queue_client_logic, remote_queue_server_logic, QueueOption},
     data::ExportRegistry,
     proto::{
-        queue_message, remote_message, response, Engine, Invocation, RepeatedEngines, Response,
+        queue_message, remote_message, response, Engine, Invocation, RepeatedEngines,
+        RepeatedInvocations, Response,
     },
     DispatcherCommand,
 };
@@ -112,12 +113,14 @@ fn test_remote_queue_server() {
     // check that there should now be a response from the server
     assert_eq!(Poll::Pending, server_future.poll_unpin(&mut context));
     let first_invocation_id = match queue_message_receiver.try_recv().unwrap() {
-        queue_message::QueueMessage::Invocation(Invocation {
-            invocation_id,
-            function_id,
-            metadata_sets: _,
-            caching: _,
-        }) => {
+        queue_message::QueueMessage::Invocations(RepeatedInvocations { mut invocations }) => {
+            assert_eq!(1, invocations.len());
+            let Invocation {
+                invocation_id,
+                function_id,
+                metadata_sets: _,
+                caching: _,
+            } = invocations.pop().unwrap();
             assert_eq!("dummy_function", function_id);
             invocation_id
         }
@@ -140,12 +143,14 @@ fn test_remote_queue_server() {
     // check that we get work again
     assert_eq!(Poll::Pending, server_future.poll_unpin(&mut context));
     let second_invocation_id = match queue_message_receiver.try_recv().unwrap() {
-        queue_message::QueueMessage::Invocation(Invocation {
-            invocation_id,
-            function_id,
-            metadata_sets: _,
-            caching: _,
-        }) => {
+        queue_message::QueueMessage::Invocations(RepeatedInvocations { mut invocations }) => {
+            assert_eq!(1, invocations.len());
+            let Invocation {
+                invocation_id,
+                function_id,
+                metadata_sets: _,
+                caching: _,
+            } = invocations.pop().unwrap();
             assert_eq!("dummy_function", function_id);
             invocation_id
         }
@@ -218,12 +223,14 @@ fn test_remote_queue_server() {
     // check the third function is also sent out
     assert_eq!(Poll::Pending, server_future.poll_unpin(&mut context));
     let third_invocation_id = match queue_message_receiver.try_recv().unwrap() {
-        queue_message::QueueMessage::Invocation(Invocation {
-            invocation_id,
-            function_id,
-            metadata_sets: _,
-            caching: _,
-        }) => {
+        queue_message::QueueMessage::Invocations(RepeatedInvocations { mut invocations }) => {
+            assert_eq!(1, invocations.len());
+            let Invocation {
+                invocation_id,
+                function_id,
+                metadata_sets: _,
+                caching: _,
+            } = invocations.pop().unwrap();
             assert_eq!("dummy_function", function_id);
             invocation_id
         }
@@ -307,12 +314,16 @@ fn test_remote_queue_client() {
     // send work
     poll_option_sender
         .try_send(crate::client::PollingOption::Message(
-            Ok(queue_message::QueueMessage::Invocation(Invocation {
-                invocation_id: INVOCATION_ID,
-                function_id: expected_function_id.clone(),
-                metadata_sets: vec![],
-                caching: true,
-            })),
+            Ok(queue_message::QueueMessage::Invocations(
+                RepeatedInvocations {
+                    invocations: vec![Invocation {
+                        invocation_id: INVOCATION_ID,
+                        function_id: expected_function_id.clone(),
+                        metadata_sets: vec![],
+                        caching: true,
+                    }],
+                },
+            )),
             None,
         ))
         .unwrap();
@@ -379,12 +390,16 @@ fn test_remote_queue_client() {
     // send work
     poll_option_sender
         .try_send(crate::client::PollingOption::Message(
-            Ok(queue_message::QueueMessage::Invocation(Invocation {
-                invocation_id: INVOCATION_ID,
-                function_id: expected_function_id.clone(),
-                metadata_sets: vec![],
-                caching: true,
-            })),
+            Ok(queue_message::QueueMessage::Invocations(
+                RepeatedInvocations {
+                    invocations: vec![Invocation {
+                        invocation_id: INVOCATION_ID,
+                        function_id: expected_function_id.clone(),
+                        metadata_sets: vec![],
+                        caching: true,
+                    }],
+                },
+            )),
             None,
         ))
         .unwrap();

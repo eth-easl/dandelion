@@ -3,7 +3,7 @@ use crate::{
     deserialize_node_info, deserialize_queue_message, deserialize_remote_message,
     proto::{
         self, queue_message, remote_message, Invocation, NodeInfo, NodeUpdate, QueueMessage,
-        RemoteMessage, RepeatedEngines, Response,
+        RemoteMessage, RepeatedEngines, RepeatedInvocations, Response,
     },
     serialize_node_info, serialize_queue_message, serialize_remote_message,
     util::{
@@ -222,87 +222,104 @@ async fn remote_queue_server_logic(
                     remote_message::RemoteMessage::WorkRequest(work_request) => {
                         debug_assert!(data_option.is_none());
                         // For now just send one matching function
-                        let engines = work_request.engines;
-                        let mut engine_flags = 0;
-                        for engine in engines {
-                            engine_flags |=
-                                get_engine_flag(engine_type_ptod(engine.engine_type).unwrap());
-                        }
+                        // for each engine try to get as much work as possible up to the amount asked for
+
                         trace!(
-                            "Queue Server received work request for engine flags: {}",
-                            engine_flags
+                            "Queue Server received work request for engines: {:?}",
+                            work_request.engines
                         );
-                        // poll work
-                        let queue_message = if let Some((work, debt)) =
-                            queue.try_get_work_for_remote(engine_flags, node_id)
-                        {
-                            trace!("Found work, prepare to send out");
-                            // there is some work so send it out
-                            // find the local function id to use
-                            let promise_id = if let Some(free_id) = free_debt_ids.pop() {
-                                free_id
-                            } else {
-                                let promise_id = max_debt_id;
-                                max_debt_id += 1;
-                                promise_id
-                            };
-                            let (function_id, data_sets, recorder, &caching) = match &work {
-                                // Todo send along relevant information, like caching bool and recorder start time
-                                WorkToDo::FunctionArguments {
-                                    function_id,
-                                    function_alternatives: _,
-                                    input_sets,
-                                    metadata: _,
-                                    caching,
-                                    recorder,
-                                } => (function_id, input_sets, recorder, caching),
-                                WorkToDo::SetsToResolve { input_sets: _ }
-                                | WorkToDo::RemoteToDelete { remote_data: _ }
-                                | WorkToDo::Shutdown(_) => {
-                                    panic!("Should only get function arguments when polling for remote queue")
+                        let mut invocations = Vec::new();
+                        for engine in work_request.engines {
+                            let engine_flags =
+                                get_engine_flag(engine_type_ptod(engine.engine_type).unwrap());
+                            for _ in 0..engine.engine_capacity {
+                                let work_option =
+                                    queue.try_get_work_for_remote(engine_flags, node_id);
+                                if work_option.is_none() {
+                                    break;
                                 }
-                            };
-                            let mut new_recorder = recorder.clone();
-                            new_recorder
-                                .record(dandelion_commons::records::RecordPoint::RemoteTake);
-                            let start_reference = SystemTime::elapsed(&std::time::UNIX_EPOCH)
-                                .unwrap()
-                                .as_micros();
-                            let (metadata_sets, remote_data_references) =
-                                composition_sets_to_proto_and_refs(data_sets, |item, context| {
-                                    export_registry.insert_function(
-                                        item,
-                                        context,
-                                        Some(remote_data_deletion_sender.clone()),
-                                    )
+                                let (work, debt) = work_option.unwrap();
+                                trace!("Found work, prepare to send out");
+                                // there is some work so send it out
+                                // find the local function id to use
+                                let promise_id = if let Some(free_id) = free_debt_ids.pop() {
+                                    free_id
+                                } else {
+                                    let promise_id = max_debt_id;
+                                    max_debt_id += 1;
+                                    promise_id
+                                };
+                                let (function_id, data_sets, recorder, &caching) = match &work {
+                                    // Todo send along relevant information, like caching bool and recorder start time
+                                    WorkToDo::FunctionArguments {
+                                        function_id,
+                                        function_alternatives: _,
+                                        input_sets,
+                                        metadata: _,
+                                        caching,
+                                        recorder,
+                                    } => (function_id, input_sets, recorder, caching),
+                                    WorkToDo::SetsToResolve { input_sets: _ }
+                                    | WorkToDo::RemoteToDelete { remote_data: _ }
+                                    | WorkToDo::Shutdown(_) => {
+                                        panic!("Should only get function arguments when polling for remote queue")
+                                    }
+                                };
+                                let mut new_recorder = recorder.clone();
+                                new_recorder
+                                    .record(dandelion_commons::records::RecordPoint::RemoteTake);
+                                let start_reference = SystemTime::elapsed(&std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_micros();
+                                let (metadata_sets, remote_data_references) =
+                                    composition_sets_to_proto_and_refs(
+                                        data_sets,
+                                        |item, context| {
+                                            export_registry.insert_function(
+                                                item,
+                                                context,
+                                                Some(remote_data_deletion_sender.clone()),
+                                            )
+                                        },
+                                    );
+                                let caching = caching;
+                                let function_id = function_id.to_string();
+                                debt_map.insert(
+                                    promise_id,
+                                    (
+                                        debt,
+                                        new_recorder,
+                                        start_reference,
+                                        remote_data_references,
+                                        work,
+                                    ),
+                                );
+                                trace!("Prepared work, sending out now");
+                                invocations.push(Invocation {
+                                    metadata_sets,
+                                    function_id,
+                                    invocation_id: promise_id,
+                                    caching,
                                 });
-                            let caching = caching;
-                            let function_id = function_id.to_string();
-                            debt_map.insert(
-                                promise_id,
-                                (
-                                    debt,
-                                    new_recorder,
-                                    start_reference,
-                                    remote_data_references,
-                                    work,
-                                ),
-                            );
-                            trace!("Prepared work, sending out now");
-                            invocations_running += 1;
-                            queue_message::QueueMessage::Invocation(Invocation {
-                                metadata_sets,
-                                function_id,
-                                invocation_id: promise_id,
-                                caching,
-                            })
-                        } else {
+                            }
+                        }
+                        if invocations.is_empty() {
                             waiting_for_work = true;
                             trace!("No work available");
                             // there is no work, so send message accordingly
-                            queue_message::QueueMessage::NoWork(true)
-                        };
-                        message_sender.send(queue_message).await.unwrap();
+                            message_sender
+                                .send(queue_message::QueueMessage::NoWork(true))
+                                .await
+                                .unwrap();
+                        } else {
+                            invocations_running += invocations.len();
+                            message_sender
+                                .send(queue_message::QueueMessage::Invocations(
+                                    RepeatedInvocations { invocations },
+                                ))
+                                .await
+                                .unwrap();
+                        }
                     }
                     remote_message::RemoteMessage::Response(response) => {
                         invocations_running -= 1;
@@ -375,7 +392,7 @@ async fn remote_queue_server_logic(
             }
             QueueOption::TryOffload(work, debt) => {
                 // if this node already sent enough work for the remote to be at capacity don't send more
-                if invocations_running >= remote_num_cores {
+                if invocations_running >= remote_num_cores as usize {
                     queue.reenqueue(work, debt).await;
                     continue;
                 }
@@ -672,9 +689,8 @@ async fn remote_queue_client_logic(
                         }
                     }
                     // TODO for try offload decide when to refuse work
-                    queue_message::QueueMessage::TryOffload(invocation)
-                    | queue_message::QueueMessage::Invocation(invocation) => {
-                        trace!("Queue Client recieved invocation");
+                    queue_message::QueueMessage::TryOffload(invocation) => {
+                        trace!("Queue Client recieved try offload");
 
                         // mark remote as having work, so we ask for more as idle cores change
                         remote_had_work = true;
@@ -707,6 +723,45 @@ async fn remote_queue_client_logic(
                             })
                             .await
                             .unwrap();
+                    }
+                    queue_message::QueueMessage::Invocations(invocations) => {
+                        trace!("Queue Client recieved invocation");
+
+                        // mark remote as having work, so we ask for more as idle cores change
+                        remote_had_work = true;
+                        let start_instance = Instant::now();
+                        let start_time =
+                            std::time::SystemTime::elapsed(&std::time::SystemTime::UNIX_EPOCH)
+                                .unwrap();
+                        for invocation in invocations.invocations {
+                            let Invocation {
+                                invocation_id,
+                                function_id,
+                                metadata_sets,
+                                caching,
+                            } = invocation;
+                            let function_arc = Arc::new(function_id);
+                            let recorder = Recorder::new(function_arc.clone(), start_instance);
+                            let inputs = proto_data_sets_to_composition_sets(
+                                metadata_sets,
+                                data_option.clone(),
+                            );
+                            dispatcher_sender
+                                .send(DispatcherCommand::RemoteFunctionRequest {
+                                    function_id: function_arc,
+                                    inputs,
+                                    is_cold: !caching,
+                                    recorder,
+                                    callback: ResultCallback {
+                                        invocation_id,
+                                        start_time,
+                                        export_registry: export_registry.clone(),
+                                        sender: result_sender.clone(),
+                                    },
+                                })
+                                .await
+                                .unwrap();
+                        }
                     }
                 }
             }
