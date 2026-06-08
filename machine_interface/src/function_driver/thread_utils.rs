@@ -189,6 +189,13 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                 });
                 debt.fulfill(results);
             }
+            WorkToDo::FunctionReferences {
+                function_id: _,
+                input_sets: _,
+                metadata: _,
+            } => {
+                panic!("Compute engine should never get function references")
+            }
             WorkToDo::SetsToResolve { input_sets: _ } => {
                 panic!("Compute engine should never get sets to resolve")
             }

@@ -377,6 +377,11 @@ impl WorkQueue {
             WorkToDo::Shutdown(engine_type) => (get_engine_flag(*engine_type), true),
             WorkToDo::SetsToResolve { input_sets: _ } => (0, false),
             WorkToDo::RemoteToDelete { remote_data: _ } => (0, false),
+            WorkToDo::FunctionReferences {
+                function_id: _,
+                input_sets: _,
+                metadata: _,
+            } => (0, false),
             WorkToDo::FunctionArguments {
                 function_id: _,
                 function_alternatives,

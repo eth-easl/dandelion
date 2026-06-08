@@ -256,7 +256,12 @@ async fn remote_queue_server_logic(
                                     caching,
                                     recorder,
                                 } => (function_id, input_sets, recorder, caching),
-                                WorkToDo::SetsToResolve { input_sets: _ }
+                                WorkToDo::FunctionReferences {
+                                    function_id: _,
+                                    input_sets: _,
+                                    metadata: _,
+                                }
+                                | WorkToDo::SetsToResolve { input_sets: _ }
                                 | WorkToDo::RemoteToDelete { remote_data: _ }
                                 | WorkToDo::Shutdown(_) => {
                                     panic!("Should only get function arguments when polling for remote queue")
@@ -398,7 +403,12 @@ async fn remote_queue_server_logic(
                         caching,
                         recorder,
                     } => (function_id, input_sets, recorder, caching),
-                    WorkToDo::SetsToResolve { input_sets: _ }
+                    WorkToDo::FunctionReferences {
+                        function_id: _,
+                        input_sets: _,
+                        metadata: _,
+                    }
+                    | WorkToDo::SetsToResolve { input_sets: _ }
                     | WorkToDo::RemoteToDelete { remote_data: _ }
                     | WorkToDo::Shutdown(_) => {
                         panic!("Should only get function arguments when polling for remote queue")

@@ -44,6 +44,11 @@ pub enum WorkToDo {
         caching: bool,
         recorder: Recorder,
     },
+    FunctionReferences {
+        function_id: Arc<String>,
+        input_sets: Vec<Option<CompositionSet>>,
+        metadata: Arc<Metadata>,
+    },
     SetsToResolve {
         input_sets: Vec<Option<CompositionSet>>,
     },

@@ -1,5 +1,6 @@
 #[cfg(feature = "reqwest_io")]
 pub mod reqwest;
+pub mod cache;
 
 use crate::{
     composition::{CompositionSet, ItemData},
