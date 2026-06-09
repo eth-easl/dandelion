@@ -1,109 +1,97 @@
-use nix::sched::CpuSet;
+use log::debug;
+use nix::{sched::CpuSet, unistd::Pid};
 use std::{
+    collections::BTreeSet,
     future::Future,
     sync::{
-        mpsc::{channel, Receiver, Sender},
-        LazyLock, Mutex, OnceLock,
+        atomic::{AtomicUsize, Ordering},
+        Arc, LazyLock, Mutex, OnceLock,
     },
 };
 
-// / Number of worker threads to use, this means that cores 0 up to # will have a thread pinned to them.
-static CORE_INDEX: Mutex<usize> = Mutex::new(0);
-/// The set of cores that is used to limit on which cores spawn_blocking tasks can run.
-// TODO: check if this would need to change over time so we can adapt this set of cores also.
-pub static PERMANENT_IO_CORES: OnceLock<CpuSet> = OnceLock::new();
-
-// // TODO: use mpmc instead once it becomes stable
-// // TODO: think how to wake up specific core and if that is necessary
-// // TODO: think about using thread local state instead of global state to make it less fragile
-static CORE_BLOCKERS: OnceLock<Vec<Mutex<Receiver<()>>>> = OnceLock::new();
+pub static MAX_IO_CORES: OnceLock<usize> = OnceLock::new();
+pub static MIN_IO_CORESET: OnceLock<CpuSet> = OnceLock::new();
 
 /// Global runtime for all asynchronous
 /// The runtime is initiallized the first time it is dereferenced.
 /// At that point it will also check if the number of MAX_ASYNC_CORES has been set.
 /// If no limit has been set, it will initialize itself to possibly use all cores on the server.
 /// This means it spawns threads and pins them to each core, but blocks them from running until they are specifically enabled.
-pub static GLOBAL_RUNTIME: LazyLock<AysncRuntime> = LazyLock::new(|| {
-    let max_cores = num_cpus::get_physical();
-    *CORE_INDEX.lock().unwrap() = max_cores;
-    let mut core_unblockers = Vec::with_capacity(max_cores);
-    let mut core_blockers = Vec::with_capacity(max_cores);
-    for _ in 0..max_cores {
-        let (sender, receiver) = channel();
-        core_unblockers.push(sender);
-        core_blockers.push(Mutex::new(receiver));
-    }
-    // if no other permanent cores are set, only assume core 0
-    PERMANENT_IO_CORES.get_or_init(|| {
-        let mut coreset = nix::sched::CpuSet::new();
-        coreset.set(0).unwrap();
-        coreset
-    });
-    assert!(CORE_BLOCKERS.get().is_none());
-    CORE_BLOCKERS.set(core_blockers).unwrap();
-    AysncRuntime::new(core_unblockers)
-});
+pub static GLOBAL_RUNTIME: LazyLock<AysncRuntime> = LazyLock::new(|| AysncRuntime::new());
 
 /// The single async runtime for dandelion
 pub struct AysncRuntime {
     /// The runtime to use to drive the async tasks.
     runtime: tokio::runtime::Runtime,
-    /// The senders to wake up blocked threads on the runtime.
-    core_unblockers: Vec<Sender<()>>,
+    core_set: Mutex<nix::sched::CpuSet>,
+    threads: Arc<Mutex<BTreeSet<Pid>>>,
 }
 
 impl AysncRuntime {
-    pub fn new(core_unblockers: Vec<Sender<()>>) -> Self {
-        let start_func = || {
+    pub fn new() -> Self {
+        let max_io_cores = *MAX_IO_CORES.get_or_init(|| num_cpus::get_physical());
+        // TODO: should document the defaults better / think if these are sensible
+        let min_core_set = *MIN_IO_CORESET.get_or_init(|| {
+            let mut set = CpuSet::new();
+            set.set(0).unwrap();
+            set
+        });
+        let threads = Arc::new(Mutex::new(BTreeSet::new()));
+        let threads_function = threads.clone();
+        // set to +1 so we can subtract 1 enought times before the result is 0
+        let static_cores = Arc::new(AtomicUsize::new(max_io_cores + 1));
+        let start_func = move || {
             log::debug!("starting a new thread");
             let current_affinity =
                 nix::sched::sched_getaffinity(nix::unistd::Pid::from_raw(0)).unwrap();
             log::debug!("previous affinity: {:?}", current_affinity);
-            // Get the index of a core and pin thread to it
-            // all the non blocking threads should be spawned before any of the blocklig
-            // this means, that if the CORE_INDEX is at zero we only expect temporary blocking threads
-            let mut index_guard = CORE_INDEX.lock().unwrap();
-            if *index_guard > 0 {
+            // register all the worker threads to the thread set
+            let thread_index = static_cores
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |previous| {
+                    Some(previous.saturating_sub(1))
+                })
+                .unwrap();
+            if thread_index > 0 {
                 log::debug!("starting another thread that will block");
-                *index_guard -= 1;
-                let core_index = *index_guard;
-                drop(index_guard);
-                let mut coreset = nix::sched::CpuSet::new();
-                coreset.set(core_index).unwrap();
-                nix::sched::sched_setaffinity(nix::unistd::Pid::from_raw(0), &coreset).unwrap();
+                let tid = nix::unistd::gettid();
+                threads_function.lock().unwrap().insert(tid);
+                nix::sched::sched_setaffinity(nix::unistd::Pid::from_raw(0), &min_core_set)
+                    .unwrap();
                 // Whenever a thread starts, it should take a blocker out of the CORE_BLOCKERS,
                 // pin the thread to the associated core and run recv on it, to start in a blocked state.
-                todo!("This currenlty stops the progress at some point. If it is commented out the tests pass.");
-                todo!("It is unclear why that happens, as there is at least one thread working correclty that can be observed");
-                CORE_BLOCKERS.get().unwrap()[core_index]
-                    .lock()
-                    .unwrap()
-                    .recv()
-                    .unwrap();
-                log::debug!("Core {} unblocked", core_index);
             } else {
                 // Temporary blocking threads are spawned by the existing runtime threads,
                 // i.e. they inherit their affinity, don't need to set again.
                 // TODO: check what happens on thread panic,
                 // the runtime might try to restart a new workwer thread that now also falls into this case.
             }
+            log::debug!("Finish starting new thread");
         };
         AysncRuntime {
             runtime: tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(core_unblockers.len())
+                .worker_threads(max_io_cores)
                 .enable_io()
                 .enable_time()
                 .thread_name("GLOBAL_RUNTIME_THREAD")
                 .on_thread_start(start_func)
                 .build()
                 .unwrap(),
-            core_unblockers,
+            threads,
+            core_set: Mutex::new(min_core_set),
         }
     }
 
-    pub fn wake_core_by_index(&self, index: usize) {
+    pub fn add_core(&self, index: usize) {
         log::trace!("Unblocking core: {}", index);
-        self.core_unblockers[index].send(()).unwrap();
+        let mut core_set_guard = self.core_set.lock().unwrap();
+        core_set_guard.set(index).unwrap();
+        let new_set = *core_set_guard;
+        debug!("Updated async runtime core set now: {:?}", new_set);
+        drop(core_set_guard);
+        // adjust all core sets for all tids
+        for tid in self.threads.lock().unwrap().iter() {
+            nix::sched::sched_setaffinity(*tid, &new_set).unwrap();
+        }
     }
 
     pub fn spawn<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
