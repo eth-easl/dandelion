@@ -49,6 +49,10 @@ message Invocation {
     bool caching = 4;
 }
 
+message RepeatedInvocations {
+    repeated Invocation invocations = 1;
+}
+
 enum EngineType {
     ENGINE_REQWEST = 0;
     ENGINE_CHERI = 1;
@@ -120,7 +124,7 @@ message QueueMessage {
         // Message to indicate that there currently is no work, if true, if false, signify that there would be work to ask for
         bool no_work = 1;
         // Message containing the work for one function
-        Invocation invocation = 2;
+        RepeatedInvocations invocations = 2;
         // Message containing the work for one function, can be refused
         Invocation try_offload = 3;
         // TODO add message to cancel invocation
