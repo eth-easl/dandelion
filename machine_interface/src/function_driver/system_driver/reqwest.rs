@@ -587,7 +587,7 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
         let ticket = semaphore.clone().acquire_owned().await.unwrap();
         debug!("IO engine loop has ticket");
         let (args, debt) = queue.get_io_engine_args().await;
-        debug!("IO engine loop has ticket");
+        debug!("IO engine loop has work");
         match args {
             WorkToDo::FunctionArguments {
                 function_id,
@@ -686,7 +686,7 @@ impl Driver for ReqwestDriver {
         debug!("have global runtime reference");
         global_runtime.spawn(engine_loop(queue));
         debug!("spawned task on global runtiome");
-        global_runtime.wake_core_by_index(core_id.into());
+        global_runtime.add_core(core_id.into());
         debug!("sent wake up to core {}", core_id);
         return Ok(());
     }
