@@ -17,7 +17,7 @@ use std::{
     future::Future,
     net::SocketAddr,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{Arc, RwLock},
 };
 use tokio::{net::TcpListener, signal::unix::SignalKind};
 
@@ -93,14 +93,14 @@ struct ExportRegistryInner {
 #[derive(Clone)]
 pub struct ExportRegistry {
     node_id: u64,
-    inner: Arc<Mutex<ExportRegistryInner>>,
+    inner: Arc<RwLock<ExportRegistryInner>>,
 }
 
 impl ExportRegistry {
     pub fn new(node_id: u64) -> Self {
         Self {
             node_id,
-            inner: Arc::new(Mutex::new(ExportRegistryInner {
+            inner: Arc::new(RwLock::new(ExportRegistryInner {
                 next_data_id: 0,
                 data: BTreeMap::new(),
             })),
@@ -117,7 +117,7 @@ impl ExportRegistry {
         context: Arc<Context>,
         delete_sender: Option<tokio::sync::mpsc::UnboundedSender<RemoteData>>,
     ) -> RemoteData {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.write().unwrap();
         let data_id = inner.next_data_id;
         inner.next_data_id += 1;
         inner
@@ -136,7 +136,7 @@ impl ExportRegistry {
             self.node_id, data_id
         );
         let exported_data = {
-            let inner = self.inner.lock().unwrap();
+            let inner = self.inner.read().unwrap();
             inner.data.get(&data_id).cloned()
         };
 
@@ -154,7 +154,7 @@ impl ExportRegistry {
             "Deleting exported data: node_id={}, data_id={}",
             self.node_id, data_id
         );
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.write().unwrap();
         let Some(_) = inner.data.remove(&data_id) else {
             return err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
                 format!("Unknown remote data id {}", data_id),
