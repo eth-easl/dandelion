@@ -868,21 +868,21 @@ async fn convert_to_references(
 
                 if let ItemData::LocalData(context) = data {
                     let http_request = parse_request::<HttpRequest>(item.data, context)?;
-                    println!(
-                        "Making HTTP request with method {:?}, uri {}, and headers {:?}",
-                        http_request.method, http_request.uri, http_request.headermap
-                    );
+                    // println!(
+                    //     "Making HTTP request with method {:?}, uri {}, and headers {:?}",
+                    //     http_request.method, http_request.uri, http_request.headermap
+                    // );
                     if let Some(cache_key) = http_request.cache_key() {
                         if let Some(entry) = get_http_cache_entry(cache_key) {
-                            println!("Cache hit for request with key {}", cache_key);
+                            // println!("Cache hit for request with key {}", cache_key);
                             out_0_list.push((new_item.clone(), ItemData::RemoteData(entry.header)));
                             out_1_list.push((new_item, ItemData::RemoteData(entry.body)));
                         } else {
-                            println!("Cache miss for request with key {}", cache_key);
+                            // println!("Cache miss for request with key {}", cache_key);
                             cache_hit = false;
                         }
                     } else {
-                        println!("This request is not cacheable");
+                        // println!("This request is not cacheable");
                     }
                 } else {
                     panic!("should have resolved all data to local");
