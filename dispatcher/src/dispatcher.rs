@@ -569,7 +569,7 @@ impl Dispatcher {
                     caching,
                     recorder: recorder.clone(),
                 };
-                recorder.record(RecordPoint::ExecutionQueue);
+                // recorder.record(RecordPoint::ExecutionQueue);
                 let sets = self.work_queue.do_work(args).await?.get_composition();
                 recorder.record(RecordPoint::FutureReturn);
 

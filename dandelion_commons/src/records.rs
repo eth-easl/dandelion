@@ -5,10 +5,10 @@ use std::time::Instant;
 /// Maximum usize to expect when converting a record point to a usize
 /// By setting the last element to this explicitly, the compiler will throw an error,
 /// if there are more than this, because it enumerates from 0 and won't allow a number to be assigned twice.
-const LAST_RECORD_POINT: usize = 14;
+const LAST_RECORD_POINT: usize = 21;
 /// The first timestamp that should come from the engine running the function
-const FIRST_ENGINE_POINT: usize = 6;
-const LAST_ENGINE_POINT: usize = 13;
+const FIRST_ENGINE_POINT: usize = 13;
+const LAST_ENGINE_POINT: usize = 20;
 
 pub const ENGINE_RECORD_POINTS: usize = LAST_ENGINE_POINT - FIRST_ENGINE_POINT + 1;
 
@@ -20,7 +20,10 @@ pub enum RecordPoint {
     /// When the request first enters the dispatcher
     EnterDispatcher,
     /// Queue to get the function executed on the engine (async)
-    ExecutionQueue,
+    IOQueueStart,
+    IOQueueEnd,
+    ComputeQueueStart,
+    ComputeQueueEnd,
     /// Time spend fetching on the composition owner, before offloading.
     /// Only set when the function was offloaded, otherwise the fetching time is recorded in fetching start  and end.
     MasterFetchStart,
@@ -28,6 +31,10 @@ pub enum RecordPoint {
     /// Time when a request was taken from the queue to send to the remote.
     /// Used to anchor the remote timings.
     RemoteTake,
+    RemoteIOQueueStart,
+    RemoteIOQueueEnd,
+    RemoteComputeQueueStart,
+    RemoteComputeQueueEnd,
     /// Start of fetching input sets on the node the function ends up running on
     FetchingStart = FIRST_ENGINE_POINT,
     /// Finished the fetching, all input sets now local
@@ -222,12 +229,18 @@ impl fmt::Display for Recorder {
                             write!(_f, ",")?;
                         }
                         write!(_f, "[")?;
-                        for (i, r) in child_recorders.iter().enumerate() {
-                            if i < child_recorders.len() - 1 {
-                                write!(_f, "{},", r)?;
-                            } else {
-                                write!(_f, "{}", r)?;
+                        let mut has_prev = false;
+                        for r in child_recorders.iter() {
+                            // FIXME: we ignore the (empty) HTTP recorders, ideally we do not create
+                            //        them in the first place
+                            if *r.inner.function_id == "HTTP" {
+                                continue;
                             }
+                            if has_prev {
+                                write!(_f, ",")?;
+                            }
+                            write!(_f, "{}", r)?;
+                            has_prev = true;
                         }
                         write!(_f, "]")?;
                         need_comma = true;

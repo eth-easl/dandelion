@@ -1,4 +1,6 @@
-use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, DispatcherError};
+use dandelion_commons::{
+    err_dandelion, records::RecordPoint, DandelionError, DandelionResult, DispatcherError,
+};
 use log::trace;
 use machine_interface::{
     composition::SystemInfo,
@@ -123,12 +125,24 @@ impl Future for ComputeWaitFuture<'_> {
             .extract_if(|queue_element| queue_element.flags & self.flags != 0)
             .next()
             .map(|queue_element| (queue_element.work, queue_element.debt));
-        if let Some(result_tupple) = result {
+        if let Some(mut result_tupple) = result {
             // Poke the IO queue in case they were waiting for space to produce more results
             if let Some(waker) = lock_guard.io_waker_list.pop_front() {
                 waker.wake();
             }
             self.work_queue.queue_state_decrease();
+
+            if let WorkToDo::FunctionArguments {
+                function_id: _,
+                function_alternatives: _,
+                input_sets: _,
+                metadata: _,
+                caching: _,
+                recorder,
+            } = &mut result_tupple.0
+            {
+                recorder.record(RecordPoint::ComputeQueueEnd);
+            }
             Poll::Ready(result_tupple)
         } else {
             // Did not find any work, so need to add to waker queue
@@ -205,7 +219,19 @@ impl Future for IoWaitFuture<'_> {
         if is_fetching {
             lock_guard.fetching_in_progress += 1;
         }
-        if let Some(result_tupple) = result {
+        if let Some(mut result_tupple) = result {
+            if let WorkToDo::FunctionArguments {
+                function_id: _,
+                function_alternatives: _,
+                input_sets: _,
+                metadata: _,
+                caching: _,
+                recorder,
+            } = &mut result_tupple.0
+            {
+                recorder.record(RecordPoint::IOQueueEnd);
+            }
+
             // Found some work, so core is not idle
             Poll::Ready(result_tupple)
         } else {
@@ -271,7 +297,19 @@ impl WorkQueue {
     /// Pushes the work and debt to the back of the queue and sets the flags accordingly.
     /// Returns an error if the queue is full.
     /// TODO: check or define here and other places, if the flags need to match fully, just checking that any flag is set would be enough
-    fn push_compute(&self, work: WorkToDo, debt: Debt, flags: u32, had_fetching: bool) {
+    fn push_compute(&self, mut work: WorkToDo, debt: Debt, flags: u32, had_fetching: bool) {
+        if let WorkToDo::FunctionArguments {
+            function_id: _,
+            function_alternatives: _,
+            input_sets: _,
+            metadata: _,
+            caching: _,
+            recorder,
+        } = &mut work
+        {
+            recorder.record(RecordPoint::ComputeQueueStart);
+        }
+
         let mut queue_guard = self.inner.lock().unwrap();
         if had_fetching {
             queue_guard.fetching_in_progress -= 1;
@@ -294,11 +332,23 @@ impl WorkQueue {
 
     fn push_io(
         &self,
-        work: WorkToDo,
+        mut work: WorkToDo,
         debt: Debt,
         flags: u32,
         #[cfg(feature = "data_locallity")] try_offload: bool,
     ) {
+        if let WorkToDo::FunctionArguments {
+            function_id: _,
+            function_alternatives: _,
+            input_sets: _,
+            metadata: _,
+            caching: _,
+            recorder,
+        } = &mut work
+        {
+            recorder.record(RecordPoint::IOQueueStart);
+        }
+
         let mut queue_guard = self.inner.lock().unwrap();
         #[cfg(feature = "data_locallity")]
         let (remote_data, total_input_size) = if let WorkToDo::FunctionArguments {
