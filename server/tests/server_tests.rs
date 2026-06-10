@@ -359,8 +359,6 @@ mod server_tests {
             .arg(&preload_path)
             .arg("--port")
             .arg(remote_port.to_string())
-            .arg("--io-cores")
-            .arg("1")
             .arg("--node-id")
             .arg("1")
             .arg("--multinode-config")

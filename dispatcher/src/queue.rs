@@ -445,6 +445,7 @@ impl WorkQueue {
     ) -> Option<(WorkToDo, Debt)> {
         let mut lock = self.inner.lock().unwrap();
         // go through all the input sets and find the index of the one with the most data already on the node asking for work
+        // TODO: find better policy that does not require going through entire list
         if let Some((index, _)) = lock
             .io_queue
             .iter()
