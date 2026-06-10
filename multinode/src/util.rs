@@ -128,16 +128,16 @@ pub(crate) fn recorder_add_timestamps(
             // set all the timestamps we received from remote
             _recorder.set_timestamp(
                 RecordPoint::RemoteIOQueueStart,
-                fetching_start + io_queue_start,
+                io_queue_start + start_offset,
             );
-            _recorder.set_timestamp(RecordPoint::RemoteIOQueueEnd, fetching_start + io_queue_end);
+            _recorder.set_timestamp(RecordPoint::RemoteIOQueueEnd, io_queue_end + start_offset);
             _recorder.set_timestamp(
                 RecordPoint::RemoteComputeQueueStart,
-                fetching_start + compute_queue_start,
+                compute_queue_start + start_offset,
             );
             _recorder.set_timestamp(
                 RecordPoint::RemoteComputeQueueEnd,
-                fetching_start + compute_queue_end,
+                compute_queue_end + start_offset,
             );
             _recorder.set_timestamp(RecordPoint::FetchingStart, fetching_start + start_offset);
             _recorder.set_timestamp(RecordPoint::FetchingEnd, fetching_end + start_offset);

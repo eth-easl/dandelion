@@ -531,10 +531,23 @@ impl WorkQueue {
             let work_option = second_half.pop_front();
             lock.io_queue.append(&mut second_half);
             self.queue_state_decrease();
-            return work_option.map(|q_element| (q_element.work, q_element.debt));
+            return work_option.map(|mut q_element| {
+                if let WorkToDo::FunctionArguments {
+                    function_id: _,
+                    function_alternatives: _,
+                    input_sets: _,
+                    metadata: _,
+                    caching: _,
+                    recorder,
+                } = &mut q_element.work
+                {
+                    recorder.record(RecordPoint::IOQueueEnd);
+                }
+                (q_element.work, q_element.debt)
+            });
         }
         // did not find any work in the io_queue so check compute queue
-        if let Some(local_work) = lock
+        if let Some(mut local_work) = lock
             .compute_queue
             .extract_if(|queue_element| {
                 if let WorkToDo::FunctionArguments {
@@ -559,6 +572,17 @@ impl WorkQueue {
                 waker.wake();
             }
             self.queue_state_decrease();
+            if let WorkToDo::FunctionArguments {
+                function_id: _,
+                function_alternatives: _,
+                input_sets: _,
+                metadata: _,
+                caching: _,
+                recorder,
+            } = &mut local_work.work
+            {
+                recorder.record(RecordPoint::ComputeQueueEnd);
+            }
             return Some((local_work.work, local_work.debt));
         }
         None
@@ -575,7 +599,7 @@ impl WorkQueue {
     ) -> Option<(WorkToDo, Debt)> {
         let mut lock_guard = self.inner.lock().unwrap();
         // first check the queue with unresolved references, since those are easier to steal
-        if let Some(work_with_references) = lock_guard
+        if let Some(mut work_with_references) = lock_guard
             .io_queue
             .extract_if(|queue_element| {
                 if let WorkToDo::FunctionArguments {
@@ -595,10 +619,21 @@ impl WorkQueue {
             .next()
         {
             self.queue_state_decrease();
+            if let WorkToDo::FunctionArguments {
+                function_id: _,
+                function_alternatives: _,
+                input_sets: _,
+                metadata: _,
+                caching: _,
+                recorder,
+            } = &mut work_with_references.work
+            {
+                recorder.record(RecordPoint::IOQueueEnd);
+            }
             return Some((work_with_references.work, work_with_references.debt));
         }
         // did not find any work in the io_queue so check compute queue
-        if let Some(local_work) = lock_guard
+        if let Some(mut local_work) = lock_guard
             .compute_queue
             .extract_if(|queue_element| {
                 if let WorkToDo::FunctionArguments {
@@ -622,6 +657,17 @@ impl WorkQueue {
                 waker.wake();
             }
             self.queue_state_decrease();
+            if let WorkToDo::FunctionArguments {
+                function_id: _,
+                function_alternatives: _,
+                input_sets: _,
+                metadata: _,
+                caching: _,
+                recorder,
+            } = &mut local_work.work
+            {
+                recorder.record(RecordPoint::ComputeQueueEnd);
+            }
             return Some((local_work.work, local_work.debt));
         }
         None
