@@ -15,7 +15,6 @@ use crate::{
     DataItem, Position,
 };
 use bytes::Bytes;
-use core_affinity::set_for_current;
 use dandelion_commons::{
     dandelion_err, err_dandelion, records::RecordPoint, try_with_capacity, DandelionError,
     DandelionResult,
@@ -31,9 +30,8 @@ use std::{
     sync::{Arc, OnceLock},
 };
 use tokio::{
-    runtime::Builder,
     spawn,
-    sync::{OnceCell, OwnedSemaphorePermit, RwLock, Semaphore},
+    sync::{OnceCell, OwnedSemaphorePermit, Semaphore},
 };
 
 trait Request
@@ -605,12 +603,13 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
 
     let concurrency_limit = CONCURRENCY_LIMIT.get_or_init(|| DEFAULT_CONCURRENCY_LIMIT);
     let semaphore = Arc::new(Semaphore::new(*concurrency_limit));
-    let worker_lock = Arc::new(RwLock::new(()));
+    // let worker_lock = Arc::new(RwLock::new(()));
 
     loop {
         let ticket = semaphore.clone().acquire_owned().await.unwrap();
+        debug!("IO engine loop has ticket");
         let (args, debt) = queue.get_io_engine_args().await;
-
+        debug!("IO engine loop has work");
         match args {
             WorkToDo::FunctionArguments {
                 function_id,
@@ -706,33 +705,12 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                 });
             }
             WorkToDo::Shutdown(_) => {
-                let _ = worker_lock.write_owned().await;
-                return debt;
+                // TODO: if we still want this, get the current index from affinity.
+                // Then block on the correct blocker
+                unimplemented!("Shutdown for IO cores currently not implemented");
             }
         }
     }
-}
-
-fn outer_engine(core_id: u8, queue: impl EngineWorkQueue + Clone + Send + 'static) {
-    // set core affinity
-    if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
-        log::error!("core received core id that could not be set");
-        return;
-    }
-    let runtime = Builder::new_multi_thread()
-        .on_thread_start(move || {
-            if !set_for_current(core_affinity::CoreId { id: core_id.into() }) {
-                return;
-            }
-        })
-        .worker_threads(1)
-        .enable_all()
-        .build()
-        .or(err_dandelion!(DandelionError::EngineError))
-        .unwrap();
-    let debt = runtime.block_on(engine_loop(queue));
-    drop(runtime);
-    debt.fulfill(Ok(WorkDone::Resources(vec![ComputeResource::CPU(core_id)])));
 }
 
 pub struct ReqwestDriver {}
@@ -743,24 +721,17 @@ impl Driver for ReqwestDriver {
         resource: ComputeResource,
         queue: impl EngineWorkQueue + Clone + Send + 'static,
     ) -> DandelionResult<()> {
-        log::debug!("Starting hyper engine");
+        debug!("Starting hyper engine, by unblocking core on async runtime");
         let core_id = match resource {
             ComputeResource::CPU(core) => core,
             _ => return err_dandelion!(DandelionError::EngineResourceError),
         };
-        // check that core is available
-        let available_cores = match core_affinity::get_core_ids() {
-            None => return err_dandelion!(DandelionError::EngineResourceError),
-            Some(cores) => cores,
-        };
-        if !available_cores
-            .iter()
-            .find(|x| x.id == usize::from(core_id))
-            .is_some()
-        {
-            return err_dandelion!(DandelionError::EngineResourceError);
-        }
-        std::thread::spawn(move || outer_engine(core_id, queue));
+        let global_runtime = &crate::async_runtime::GLOBAL_RUNTIME;
+        debug!("have global runtime reference");
+        global_runtime.spawn(engine_loop(queue));
+        debug!("spawned task on global runtiome");
+        global_runtime.add_core(core_id.into());
+        debug!("sent wake up to core {}", core_id);
         return Ok(());
     }
 

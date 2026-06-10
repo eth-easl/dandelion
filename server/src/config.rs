@@ -1,4 +1,4 @@
-use core::{fmt, panic};
+use core::fmt;
 use std::{fs::File, path::Path, str::FromStr};
 
 use clap::Parser;
@@ -8,6 +8,7 @@ const DEFAULT_CONFIG_PATH: &str = "./dandelion.config";
 const DEFAULT_FOLDER_PATH: &str = "/tmp/dandelion_server";
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
+const DEFAULT_MIN_SYS_CORES: usize = 1;
 const DEFAULT_VIRTUAL_MAX_RAM_MULTIPLIER: usize = 2;
 const DEFAULT_MULTINODE_TIMEOUT: u64 = 50;
 use machine_interface::composition::DEFAULT_AUTOSHARDING_OFFLOAD_CONST;
@@ -132,13 +133,13 @@ pub struct DandelionConfig {
     pub port: u16,
     #[arg(long, env)]
     pub total_cores: Option<usize>,
+    /// Minimum number of cores to keep reserved for system tasks (includes IO).
+    #[arg(long, env, default_value_t = DEFAULT_MIN_SYS_CORES)]
+    pub min_sys_cores: usize,
     #[arg(long, env)]
-    pub dispatcher_cores: Option<usize>,
-    #[arg(long, env)]
-    pub frontend_cores: Option<usize>,
-    #[arg(long, env)]
-    pub io_cores: Option<usize>,
-    /// Number of concurrent requests to run per IO core
+    /// Maximum number of cores to use for system tasks (including IO), when not set get set to the same as the mimium.
+    pub max_sys_cores: Option<usize>,
+    /// Number of concurrent IO requests to run per system core
     #[arg(long, env, default_value_t = DEFAULT_CONCURRENCY_LIMIT)]
     #[serde(default)]
     pub io_concurrency: usize,
@@ -219,9 +220,8 @@ impl DandelionConfig {
         merge!(port, DEFAULT_PORT);
         merge_option!(test_mode);
         merge_option!(total_cores);
-        merge_option!(dispatcher_cores);
-        merge_option!(frontend_cores);
-        merge_option!(io_cores);
+        merge!(min_sys_cores, DEFAULT_MIN_SYS_CORES);
+        merge_option!(max_sys_cores);
         merge!(io_concurrency, DEFAULT_CONCURRENCY_LIMIT);
         merge!(timestamp_count, DEFAULT_TIMESTAMP_COUNT);
         merge!(
@@ -264,72 +264,18 @@ impl DandelionConfig {
         return cli_config;
     }
 
-    /// TODO depricate, and move as we move to single dispatcher core
-    pub fn get_dispatcher_cores(&self) -> Vec<u8> {
-        if self
-            .total_cores
-            .expect("Expect total cores to be set after init")
-            < 1
-        {
-            panic!("Less than 1 core to run system");
-        }
-        if let Some(disp_cores) = self.dispatcher_cores {
-            if disp_cores != 1 {
-                panic!("trying to allocate more than 1 dispatcher core");
-            }
-        }
-        return vec![0];
+    pub fn get_min_sys_cores(&self) -> usize {
+        assert!(self.total_cores.unwrap() >= self.min_sys_cores);
+        self.min_sys_cores
     }
-    /// TODO depricate as we move to dynamic allocation
-    pub fn get_frontend_cores(&self) -> Vec<u8> {
-        let total_cores = self
-            .total_cores
-            .expect("total_cores should be set after init");
-        let core_vec = if self.test_mode.is_some() {
-            vec![0]
-        } else {
-            if let Some(num_cores) = self.frontend_cores {
-                (1u8..(1 + num_cores as u8)).collect()
-            } else {
-                vec![0]
-            }
-        };
-        let max_core = core_vec
-            .iter()
-            .max()
-            .expect("should have at least 1 frontend core in core vec");
-        if *max_core as usize >= total_cores {
-            panic!("allocated core with higher number than total cores");
-        }
-        return core_vec;
+
+    pub fn get_max_sys_cores(&self) -> usize {
+        let max_io_cores = self.max_sys_cores.unwrap_or(self.min_sys_cores);
+        assert!(self.total_cores.unwrap() >= max_io_cores);
+        assert!(max_io_cores >= self.min_sys_cores);
+        max_io_cores
     }
-    /// TODO depricate as we move to dynamic allocation
-    pub fn get_communication_cores(&self) -> Vec<u8> {
-        let core_vec = if let Some(test_mode) = &self.test_mode {
-            match test_mode {
-                TestMode::SingleCore => vec![0],
-                TestMode::NoCompute => vec![0],
-                TestMode::NoEngine => vec![],
-            }
-        } else if let Some(comm_cores) = self.io_cores {
-            let lower_end = self
-                .frontend_cores
-                .and_then(|frontend_cores| Some(1 + frontend_cores as u8))
-                .unwrap_or(1u8);
-            (lower_end..lower_end + comm_cores as u8).collect()
-        } else {
-            vec![]
-        };
-        let total_cores = self
-            .total_cores
-            .expect("total_cores should be set after init");
-        if let Some(max_core) = core_vec.iter().max() {
-            if *max_core as usize >= total_cores {
-                panic!("allocated more cores than given in total");
-            }
-        };
-        return core_vec;
-    }
+
     /// TODO depricate as we move to dynamic allocation
     pub fn get_computation_cores(&self) -> Vec<u8> {
         let core_vec = if let Some(test_mode) = &self.test_mode {
@@ -343,12 +289,13 @@ impl DandelionConfig {
                 .total_cores
                 .expect("total_cores should be set after init");
             // 1 other core for dispatcher is fixed
-            let other_cores = self.dispatcher_cores.unwrap_or(1)
-                + self.frontend_cores.unwrap_or(0)
-                + self.io_cores.unwrap_or(0);
-            if other_cores >= max_core {
-                panic!("no cores for engines left");
-            }
+            let other_cores = self.get_max_sys_cores();
+            assert!(
+                max_core > other_cores,
+                "No cores for engines left, total cores {}, sys cores {}",
+                max_core,
+                other_cores
+            );
             (other_cores as u8..max_core as u8).collect()
         };
         return core_vec;
