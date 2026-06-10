@@ -11,7 +11,7 @@ use machine_interface::{
     memory_domain::MemoryResource,
 };
 use multinode::{data::ExportRegistry, DispatcherCommand};
-use nix::unistd::Pid;
+use nix::sched::CpuSet;
 use std::{collections::BTreeMap, fs::read_to_string, sync::Arc};
 use tokio::{runtime::Builder, select, spawn, sync::mpsc};
 
@@ -215,13 +215,26 @@ fn main() -> () {
 
     let resource_conversion = |core_index| ComputeResource::CPU(core_index);
 
-    let dispatcher_cores = config.get_dispatcher_cores();
-    let frontend_cores = config.get_frontend_cores();
-    let communication_cores = config
-        .get_communication_cores()
-        .into_iter()
-        .map(|core| resource_conversion(core))
+    // set the max sys core number
+    let max_sys_cores = config.get_max_sys_cores();
+    machine_interface::async_runtime::MAX_SYS_CORES
+        .set(max_sys_cores)
+        .unwrap();
+    let communication_cores = (0..max_sys_cores)
+        .map(|core_id| resource_conversion(core_id as u8))
         .collect();
+    // set the min sys core set
+    let min_sys_cores = config.get_min_sys_cores();
+    let mut core_set = CpuSet::new();
+    for core in 0..min_sys_cores {
+        core_set.set(core).unwrap();
+    }
+    machine_interface::async_runtime::MIN_SYS_CORESET
+        .set(core_set)
+        .unwrap();
+    // get the async runtime which uses the values set above for initialization
+    let system_runtime = &machine_interface::async_runtime::GLOBAL_RUNTIME;
+
     let compute_cores = config
         .get_computation_cores()
         .into_iter()
@@ -229,41 +242,11 @@ fn main() -> () {
         .collect();
 
     println!("core allocation:");
-    println!("frontend cores {:?}", frontend_cores);
-    println!("dispatcher cores: {:?}", dispatcher_cores);
-    println!("communication cores: {:?}", communication_cores);
+    println!("minimum system cores {}", min_sys_cores);
+    println!("maximum sysmte cores {}", max_sys_cores);
     println!("compute cores: {:?}", compute_cores);
 
-    // make multithreaded front end runtime
-    // set up tokio runtime, need io in any case
-    let frontent_core_num = frontend_cores.len();
-    let mut frontend_cpuset = nix::sched::CpuSet::new();
-    for cpu in frontend_cores {
-        frontend_cpuset.set(usize::from(cpu)).unwrap();
-    }
-    let mut runtime_builder = Builder::new_multi_thread();
-    runtime_builder.enable_io();
-    runtime_builder.enable_time();
-    runtime_builder.worker_threads(frontent_core_num);
-    runtime_builder.on_thread_start(move || {
-        nix::sched::sched_setaffinity(Pid::from_raw(0), &frontend_cpuset).unwrap()
-    });
-    runtime_builder.global_queue_interval(10);
-    runtime_builder.event_interval(10);
-    let runtime = runtime_builder.build().unwrap();
-
-    let dispatcher_core_num = dispatcher_cores.len();
-    let mut dispatcher_coreset = nix::sched::CpuSet::new();
-    for cpu in dispatcher_cores {
-        dispatcher_coreset.set(usize::from(cpu)).unwrap();
-    }
-    let dispatcher_runtime = Builder::new_multi_thread()
-        .worker_threads(dispatcher_core_num)
-        .on_thread_start(move || {
-            nix::sched::sched_setaffinity(Pid::from_raw(0), &dispatcher_coreset).unwrap()
-        })
-        .build()
-        .unwrap();
+    // TODO get rid of this since the are on the same runtime now anyway
     let (dispatcher_sender, dispatcher_recevier) = mpsc::channel(1000);
 
     // set up dispatcher configuration basics
@@ -335,7 +318,7 @@ fn main() -> () {
     ));
 
     // start dispatcher
-    dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
+    system_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
 
     // register preload functions
     let (preload_functions, preload_compositions) = config.get_preload_functions();
@@ -413,8 +396,6 @@ fn main() -> () {
             });
     }
 
-    let _guard = runtime.enter();
-
     // TODO would be nice to just print server ready with all enabled features if that would be possible
     print!("Server start with features:");
     #[cfg(feature = "cheri")]
@@ -437,13 +418,13 @@ fn main() -> () {
         if multinode_settings.queue_server.node_id == node_id {
             let (remote_data_deletion_sender, remote_data_deletion_receiver) =
                 mpsc::unbounded_channel();
-            runtime.spawn(delete_service_loop(remote_data_deletion_receiver));
+            system_runtime.spawn(delete_service_loop(remote_data_deletion_receiver));
 
             let queue_server_port =
                 multinode::config::queue_server_port(&multinode_settings.queue_server.url)
                     .unwrap_or_else(|err| panic!("Invalid queue server entry: {}", err));
             // listen for other nodes trying to poll from local work queue
-            runtime.spawn(remote_queue_server(
+            system_runtime.spawn(remote_queue_server(
                 queue_server_port,
                 work_queue,
                 export_registry.clone(),
@@ -451,7 +432,7 @@ fn main() -> () {
             ));
         } else {
             // start a thread to check if we should be checking remote queues
-            runtime.spawn(remote_queue_client(
+            system_runtime.spawn(remote_queue_client(
                 multinode::config::tcp_address(&multinode_settings.queue_server.url),
                 dispatcher_sender.clone(),
                 export_registry.clone(),
@@ -467,7 +448,7 @@ fn main() -> () {
             .unwrap_or_else(|err| {
                 panic!("Invalid data server entry for node {}: {}", node_id, err)
             });
-        runtime.spawn(multinode::data::service_loop(
+        system_runtime.spawn(multinode::data::service_loop(
             data_server_port,
             export_registry.clone(),
         ));
@@ -478,7 +459,7 @@ fn main() -> () {
     }
 
     // Run this server for... forever... unless I receive a signal!
-    runtime.block_on(frontend::service_loop(
+    system_runtime.block_on(frontend::service_loop(
         dispatcher_sender,
         folder_path,
         config.port,

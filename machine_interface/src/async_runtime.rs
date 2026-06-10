@@ -9,8 +9,8 @@ use std::{
     },
 };
 
-pub static MAX_IO_CORES: OnceLock<usize> = OnceLock::new();
-pub static MIN_IO_CORESET: OnceLock<CpuSet> = OnceLock::new();
+pub static MAX_SYS_CORES: OnceLock<usize> = OnceLock::new();
+pub static MIN_SYS_CORESET: OnceLock<CpuSet> = OnceLock::new();
 
 /// Global runtime for all asynchronous
 /// The runtime is initiallized the first time it is dereferenced.
@@ -29,9 +29,9 @@ pub struct AysncRuntime {
 
 impl AysncRuntime {
     pub fn new() -> Self {
-        let max_io_cores = *MAX_IO_CORES.get_or_init(|| num_cpus::get_physical());
+        let max_io_cores = *MAX_SYS_CORES.get_or_init(|| num_cpus::get_physical());
         // TODO: should document the defaults better / think if these are sensible
-        let min_core_set = *MIN_IO_CORESET.get_or_init(|| {
+        let min_core_set = *MIN_SYS_CORESET.get_or_init(|| {
             let mut set = CpuSet::new();
             set.set(0).unwrap();
             set
@@ -42,29 +42,23 @@ impl AysncRuntime {
         let static_cores = Arc::new(AtomicUsize::new(max_io_cores + 1));
         let start_func = move || {
             log::debug!("starting a new thread");
-            let current_affinity =
-                nix::sched::sched_getaffinity(nix::unistd::Pid::from_raw(0)).unwrap();
-            log::debug!("previous affinity: {:?}", current_affinity);
             // register all the worker threads to the thread set
             let thread_index = static_cores
                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |previous| {
                     Some(previous.saturating_sub(1))
                 })
                 .unwrap();
+            // For worker threads this should be > 0, then register to get set expanded if more cores are added later
             if thread_index > 0 {
                 log::debug!("starting another thread that will block");
                 let tid = nix::unistd::gettid();
                 threads_function.lock().unwrap().insert(tid);
-                nix::sched::sched_setaffinity(nix::unistd::Pid::from_raw(0), &min_core_set)
-                    .unwrap();
-                // Whenever a thread starts, it should take a blocker out of the CORE_BLOCKERS,
-                // pin the thread to the associated core and run recv on it, to start in a blocked state.
-            } else {
-                // Temporary blocking threads are spawned by the existing runtime threads,
-                // i.e. they inherit their affinity, don't need to set again.
-                // TODO: check what happens on thread panic,
-                // the runtime might try to restart a new workwer thread that now also falls into this case.
             }
+            // Temporary blocking threads are spawned by the existing runtime threads,
+            // i.e. they inherit their affinity, could leave out setting the affinity for those, if we don't expect to change the set.
+            // TODO: check what happens on thread panic,
+            // the runtime might try to restart a new workwer thread that now does not register to get the set extended.
+            nix::sched::sched_setaffinity(nix::unistd::Pid::from_raw(0), &min_core_set).unwrap();
             log::debug!("Finish starting new thread");
         };
         AysncRuntime {
@@ -82,7 +76,6 @@ impl AysncRuntime {
     }
 
     pub fn add_core(&self, index: usize) {
-        log::trace!("Unblocking core: {}", index);
         let mut core_set_guard = self.core_set.lock().unwrap();
         core_set_guard.set(index).unwrap();
         let new_set = *core_set_guard;
@@ -100,5 +93,9 @@ impl AysncRuntime {
         F::Output: Send + 'static,
     {
         self.runtime.spawn(future)
+    }
+
+    pub fn block_on<F: Future>(&self, future: F) -> F::Output {
+        self.runtime.block_on(future)
     }
 }
