@@ -285,14 +285,15 @@ impl DandelionConfig {
         let total_cores = self
             .total_cores
             .expect("total_cores should be set after init");
-        let core_vec = if self.test_mode.is_some() {
-            vec![0]
+        let no_test_mode_config = if let Some(num_cores) = self.frontend_cores {
+            (1u8..(1 + num_cores as u8)).collect()
         } else {
-            if let Some(num_cores) = self.frontend_cores {
-                (1u8..(1 + num_cores as u8)).collect()
-            } else {
-                vec![0]
-            }
+            vec![0]
+        };
+        let core_vec = match self.test_mode {
+            None | Some(TestMode::NoCompute) => no_test_mode_config,
+            Some(TestMode::SingleCore) => vec![0],
+            Some(TestMode::NoEngine) => vec![],
         };
         let max_core = core_vec
             .iter()
@@ -305,13 +306,7 @@ impl DandelionConfig {
     }
     /// TODO depricate as we move to dynamic allocation
     pub fn get_communication_cores(&self) -> Vec<u8> {
-        let core_vec = if let Some(test_mode) = &self.test_mode {
-            match test_mode {
-                TestMode::SingleCore => vec![0],
-                TestMode::NoCompute => vec![0],
-                TestMode::NoEngine => vec![],
-            }
-        } else if let Some(comm_cores) = self.io_cores {
+        let no_test_mode_cores = if let Some(comm_cores) = self.io_cores {
             let lower_end = self
                 .frontend_cores
                 .and_then(|frontend_cores| Some(1 + frontend_cores as u8))
@@ -319,6 +314,11 @@ impl DandelionConfig {
             (lower_end..lower_end + comm_cores as u8).collect()
         } else {
             vec![]
+        };
+        let core_vec = match &self.test_mode {
+            None | Some(TestMode::NoCompute) => no_test_mode_cores,
+            Some(TestMode::SingleCore) => vec![0],
+            Some(TestMode::NoEngine) => vec![],
         };
         let total_cores = self
             .total_cores

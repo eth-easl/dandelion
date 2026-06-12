@@ -169,6 +169,40 @@ impl<'list> IoWaitFuture<'list> {
 
 const LOCAL_WORK_PER_CORE: usize = 2;
 
+#[inline]
+fn io_extract_if(
+    queue_element: &IoQueueElement,
+    compute_length: usize,
+    already_fetching: usize,
+    local_cores: usize,
+    #[cfg(feature = "data_locallity")] idle_compute_cores: usize,
+) -> bool {
+    match queue_element.work {
+        WorkToDo::FunctionArguments {
+            function_id: _,
+            function_alternatives: _,
+            input_sets: _,
+            metadata: _,
+            caching: _,
+            recorder: _,
+        } => {
+            #[cfg(not(feature = "data_locallity"))]
+            let should_take = compute_length + already_fetching < LOCAL_WORK_PER_CORE * local_cores;
+
+            #[cfg(feature = "data_locallity")]
+            // additionally want to prevent fetching, if there is remote data and no local core is idle
+            // always take it if there are idle cores, only prefetch if it is prefetching via IO, not from other nodes
+            let should_take = idle_compute_cores > 0
+                || (compute_length + already_fetching < LOCAL_WORK_PER_CORE * local_cores
+                    && !queue_element.remote_data.is_empty());
+            // need to do it like this, because attributes on expressions are still experimental
+            should_take
+        }
+        // always take resolver work
+        _ => true,
+    }
+}
+
 impl Future for IoWaitFuture<'_> {
     type Output = (WorkToDo, Debt);
 
@@ -186,33 +220,21 @@ impl Future for IoWaitFuture<'_> {
         let mut is_fetching = false;
         let result = lock_guard
             .io_queue
-            .extract_if(|queue_element| match queue_element.work {
-                WorkToDo::FunctionArguments {
-                    function_id: _,
-                    function_alternatives: _,
-                    input_sets: _,
-                    metadata: _,
-                    caching: _,
-                    recorder: _,
-                } => {
-                    #[cfg(not(feature = "data_locallity"))]
-                    let should_take =
-                        compute_length + already_fetching < LOCAL_WORK_PER_CORE * local_cores;
-
-                    #[cfg(feature = "data_locallity")]
-                    // additionally want to prevent fetching, if there is remote data and no local core is idle
-                    // always take it if there are idle cores, only prefetch if it is prefetching via IO, not from other nodes
-                    let should_take = idle_compute_cores > 0
-                        || (compute_length + already_fetching < LOCAL_WORK_PER_CORE * local_cores
-                            && !queue_element.remote_data.is_empty());
-
-                    // If will take task that has prefetching, increase counter accordingly
-                    is_fetching = should_take;
-                    // need to do it like this, because attributes on expressions are still experimental
-                    should_take
-                }
-                // always take resolver work
-                _ => true,
+            .extract_if(|queue_element| {
+                #[cfg(not(feature = "data_locallity"))]
+                let should_take =
+                    io_extract_if(queue_element, compute_length, already_fetching, local_cores);
+                #[cfg(feature = "data_locallity")]
+                let should_take = io_extract_if(
+                    queue_element,
+                    compute_length,
+                    already_fetching,
+                    local_cores,
+                    idle_compute_cores,
+                );
+                // If will take task that has prefetching, increase counter accordingly
+                is_fetching = should_take;
+                should_take
             })
             .next()
             .map(|queue_element| (queue_element.work, queue_element.debt));
@@ -237,10 +259,6 @@ impl Future for IoWaitFuture<'_> {
         } else {
             // Did not find any work, so need to add to waker queue
             lock_guard.io_waker_list.push_back(cx.waker().clone());
-            // TODO: this is here, for the case where we have 0 compute engines, as this otherwise just always spins
-            // Mainly necessary for tests, find better overall policy
-            self.work_queue.queueing_notifier().notify_waiters();
-            // lock was ready once, need to set new one
             Poll::Pending
         }
     }
@@ -400,7 +418,8 @@ impl WorkQueue {
                 }
             }
         }
-        queue_guard.io_queue.push_back(IoQueueElement {
+
+        let new_element = IoQueueElement {
             flags,
             work,
             debt,
@@ -408,10 +427,32 @@ impl WorkQueue {
             remote_data,
             #[cfg(feature = "data_locallity")]
             total_input_size,
-        });
+        };
+        // check if an io core would take the element or not,
+        // if not, no reason to call waker
+        let compute_length = queue_guard.compute_queue.len();
+        let local_cores = *self.system_info.num_local_cores_watcher.borrow();
+        let already_fetching = queue_guard.fetching_in_progress;
+        #[cfg(feature = "data_locallity")]
+        let idle_compute_cores = queue_guard.compute_waker_list.len();
+        #[cfg(feature = "data_locallity")]
+        let would_process = io_extract_if(
+            &new_element,
+            compute_length,
+            already_fetching,
+            local_cores,
+            idle_compute_cores,
+        );
+        #[cfg(not(feature = "data_locallity"))]
+        let would_process =
+            io_extract_if(&new_element, compute_length, already_fetching, local_cores);
+
+        queue_guard.io_queue.push_back(new_element);
+
         // call first waker with matching flags if there are any
-        if let Some(waker_to_call) = queue_guard.io_waker_list.pop_front() {
-            waker_to_call.wake();
+        // only call waker if we know the core wants to take this element
+        if !queue_guard.io_waker_list.is_empty() && would_process {
+            queue_guard.io_waker_list.pop_front().unwrap().wake();
         } else {
             self.queuing_notifier.notify_waiters();
         }
@@ -568,6 +609,7 @@ impl WorkQueue {
             .next()
         {
             // poke the io cores to resolve more local work if some of it was taken
+            // TODO: check if we also need to put a backstop to make sure it does not spin
             if let Some(waker) = lock.io_waker_list.pop_front() {
                 waker.wake();
             }
