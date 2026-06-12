@@ -316,7 +316,9 @@ impl DandelionConfig {
             vec![]
         };
         let core_vec = match &self.test_mode {
-            None | Some(TestMode::NoCompute) => no_test_mode_cores,
+            None => no_test_mode_cores,
+            Some(TestMode::NoCompute) if no_test_mode_cores.is_empty() => vec![0],
+            Some(TestMode::NoCompute) => no_test_mode_cores,
             Some(TestMode::SingleCore) => vec![0],
             Some(TestMode::NoEngine) => vec![],
         };
