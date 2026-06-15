@@ -232,14 +232,17 @@ async fn remote_queue_server_logic(
                         for engine in work_request.engines {
                             let engine_flags =
                                 get_engine_flag(engine_type_ptod(engine.engine_type).unwrap());
-                            for _ in 0..engine.engine_capacity {
-                                let work_option =
-                                    queue.try_get_work_for_remote(engine_flags, node_id);
-                                if work_option.is_none() {
-                                    break;
-                                }
-                                let (work, debt) = work_option.unwrap();
-                                trace!("Found work, prepare to send out");
+                            let work_found = queue.try_get_work_for_remote(
+                                engine_flags,
+                                node_id,
+                                engine.engine_capacity as usize,
+                            );
+                            trace!(
+                                "Found work, adding {} invocations to response",
+                                work_found.len()
+                            );
+                            invocations.extend(work_found.into_iter().map(|(work, debt)|
+                            {
                                 // there is some work so send it out
                                 // find the local function id to use
                                 let promise_id = if let Some(free_id) = free_debt_ids.pop() {
@@ -294,14 +297,13 @@ async fn remote_queue_server_logic(
                                         work,
                                     ),
                                 );
-                                trace!("Prepared work, sending out now");
-                                invocations.push(Invocation {
+                                Invocation {
                                     metadata_sets,
                                     function_id,
                                     invocation_id: promise_id,
                                     caching,
-                                });
-                            }
+                                }
+                            }));
                         }
                         if invocations.is_empty() {
                             waiting_for_work = true;

@@ -533,101 +533,110 @@ impl WorkQueue {
         &self,
         engine_flags: u32,
         node_id: u64,
-    ) -> Option<(WorkToDo, Debt)> {
+        number_of_functions: usize,
+    ) -> Vec<(WorkToDo, Debt)> {
+        let mut functions = Vec::with_capacity(number_of_functions);
         let mut lock = self.inner.lock().unwrap();
         // go through all the input sets and find the index of the one with the most data already on the node asking for work
-        if let Some((index, _)) = lock
-            .io_queue
-            .iter()
-            .filter_map(|queue_element| {
-                if let WorkToDo::FunctionArguments {
-                    function_id: _,
-                    function_alternatives: _,
-                    input_sets: _,
-                    metadata: _,
-                    caching: _,
-                    recorder: _,
-                } = &queue_element.work
-                {
-                    if queue_element.flags & engine_flags != 0 {
-                        Some((
-                            node_id,
-                            queue_element
-                                .remote_data
-                                .get(&node_id)
-                                .copied()
-                                .unwrap_or(0usize),
-                        ))
+        functions.extend(
+            lock.io_queue
+                .extract_if(|queue_element| {
+                    if let WorkToDo::FunctionArguments {
+                        function_id: _,
+                        function_alternatives: _,
+                        input_sets: _,
+                        metadata: _,
+                        caching: _,
+                        recorder,
+                    } = &mut queue_element.work
+                    {
+                        let node_has_most_data = queue_element
+                            .remote_data
+                            .iter()
+                            .max_by_key(|(_, v)| **v)
+                            .map(|(max_id, _)| node_id == *max_id)
+                            .unwrap_or(false);
+                        if queue_element.flags & engine_flags != 0 && node_has_most_data {
+                            // we are taking the element so can set the recorder
+                            recorder.record(RecordPoint::IOQueueEnd);
+                            self.queue_state_decrease();
+                            true
+                        } else {
+                            false
+                        }
                     } else {
-                        None
+                        false
                     }
-                } else {
-                    None
-                }
-            })
-            .enumerate()
-            .max_by_key(|(_, data)| *data)
-        {
-            let mut second_half = lock.io_queue.split_off(index);
-            let work_option = second_half.pop_front();
-            lock.io_queue.append(&mut second_half);
-            self.queue_state_decrease();
-            return work_option.map(|mut q_element| {
-                if let WorkToDo::FunctionArguments {
-                    function_id: _,
-                    function_alternatives: _,
-                    input_sets: _,
-                    metadata: _,
-                    caching: _,
-                    recorder,
-                } = &mut q_element.work
-                {
-                    recorder.record(RecordPoint::IOQueueEnd);
-                }
-                (q_element.work, q_element.debt)
-            });
+                })
+                .map(|queue_element| (queue_element.work, queue_element.debt))
+                .take(number_of_functions),
+        );
+
+        // did not find enough work where the node has the majority of data, so take anything left over
+        if functions.len() < number_of_functions {
+            let still_needed = number_of_functions - functions.len();
+            functions.extend(
+                lock.io_queue
+                    .extract_if(|queue_element| {
+                        if let WorkToDo::FunctionArguments {
+                            function_id: _,
+                            function_alternatives: _,
+                            input_sets: _,
+                            metadata: _,
+                            caching: _,
+                            recorder,
+                        } = &mut queue_element.work
+                        {
+                            if queue_element.flags & engine_flags != 0 {
+                                recorder.record(RecordPoint::IOQueueEnd);
+                                self.queue_state_decrease();
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    })
+                    .map(|queue_element| (queue_element.work, queue_element.debt))
+                    .take(still_needed),
+            );
         }
-        // did not find any work in the io_queue so check compute queue
-        if let Some(mut local_work) = lock
-            .compute_queue
-            .extract_if(|queue_element| {
-                if let WorkToDo::FunctionArguments {
-                    function_id: _,
-                    function_alternatives: _,
-                    input_sets: _,
-                    metadata: _,
-                    caching: _,
-                    recorder: _,
-                } = &queue_element.work
-                {
-                    // TODO might want to prefer the one with the least total data
-                    queue_element.flags & engine_flags != 0
-                } else {
-                    false
-                }
-            })
-            .next()
-        {
-            // poke the io cores to resolve more local work if some of it was taken
-            // TODO: check if we also need to put a backstop to make sure it does not spin
-            if let Some(waker) = lock.io_waker_list.pop_front() {
-                waker.wake();
-            }
-            self.queue_state_decrease();
-            if let WorkToDo::FunctionArguments {
-                function_id: _,
-                function_alternatives: _,
-                input_sets: _,
-                metadata: _,
-                caching: _,
-                recorder,
-            } = &mut local_work.work
-            {
-                recorder.record(RecordPoint::ComputeQueueEnd);
-            }
-            return Some((local_work.work, local_work.debt));
+
+        // did not find enough work in the io_queue so check compute queue
+        if functions.len() < number_of_functions {
+            let still_needed = number_of_functions - functions.len();
+            functions.extend(
+                lock.compute_queue
+                    .extract_if(|queue_element| {
+                        if let WorkToDo::FunctionArguments {
+                            function_id: _,
+                            function_alternatives: _,
+                            input_sets: _,
+                            metadata: _,
+                            caching: _,
+                            recorder,
+                        } = &mut queue_element.work
+                        {
+                            if queue_element.flags & engine_flags != 0 {
+                                recorder.record(RecordPoint::ComputeQueueEnd);
+                                self.queue_state_decrease();
+                                // Don't need to wake IO cores to do more prefetching,
+                                // since those queues must be empty if we are taking from here.
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    })
+                    .map(|queue_element| (queue_element.work, queue_element.debt))
+                    .take(still_needed),
+            );
         }
-        None
+
+        functions
     }
 
     /// Tries to acquire some work that matches the given flags starting from the head of the queue.
@@ -638,81 +647,72 @@ impl WorkQueue {
         &self,
         engine_flags: u32,
         _node_id: u64,
-    ) -> Option<(WorkToDo, Debt)> {
+        number_of_functions: usize,
+    ) -> Vec<(WorkToDo, Debt)> {
+        let mut functions = Vec::with_capacity(number_of_functions);
         let mut lock_guard = self.inner.lock().unwrap();
         // first check the queue with unresolved references, since those are easier to steal
-        if let Some(mut work_with_references) = lock_guard
-            .io_queue
-            .extract_if(|queue_element| {
-                if let WorkToDo::FunctionArguments {
-                    function_id: _,
-                    function_alternatives: _,
-                    input_sets: _,
-                    metadata: _,
-                    caching: _,
-                    recorder: _,
-                } = &queue_element.work
-                {
-                    queue_element.flags & engine_flags != 0
-                } else {
-                    false
-                }
-            })
-            .next()
-        {
-            self.queue_state_decrease();
-            if let WorkToDo::FunctionArguments {
-                function_id: _,
-                function_alternatives: _,
-                input_sets: _,
-                metadata: _,
-                caching: _,
-                recorder,
-            } = &mut work_with_references.work
-            {
-                recorder.record(RecordPoint::IOQueueEnd);
-            }
-            return Some((work_with_references.work, work_with_references.debt));
+        functions.extend(
+            lock_guard
+                .io_queue
+                .extract_if(|queue_element| {
+                    if let WorkToDo::FunctionArguments {
+                        function_id: _,
+                        function_alternatives: _,
+                        input_sets: _,
+                        metadata: _,
+                        caching: _,
+                        recorder,
+                    } = &mut queue_element.work
+                    {
+                        if queue_element.flags & engine_flags != 0 {
+                            self.queue_state_decrease();
+                            recorder.record(RecordPoint::IOQueueEnd);
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                })
+                .map(|queue_element| (queue_element.work, queue_element.debt))
+                .take(number_of_functions),
+        );
+        // did not find enough work in the io_queue so check compute queue
+        if functions.len() < number_of_functions {
+            let still_needed = number_of_functions - functions.len();
+            functions.extend(
+                lock_guard
+                    .compute_queue
+                    .extract_if(|queue_element| {
+                        if let WorkToDo::FunctionArguments {
+                            function_id: _,
+                            function_alternatives: _,
+                            input_sets: _,
+                            metadata: _,
+                            caching: _,
+                            recorder,
+                        } = &mut queue_element.work
+                        {
+                            if queue_element.flags & engine_flags != 0 {
+                                recorder.record(RecordPoint::ComputeQueueEnd);
+                                self.queue_state_decrease();
+                                // don't need to poke IO cores to do more prefetching,
+                                // since those queues are empty if we are taking from here
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    })
+                    .map(|queue_element| (queue_element.work, queue_element.debt))
+                    .take(still_needed),
+            )
         }
-        // did not find any work in the io_queue so check compute queue
-        if let Some(mut local_work) = lock_guard
-            .compute_queue
-            .extract_if(|queue_element| {
-                if let WorkToDo::FunctionArguments {
-                    function_id: _,
-                    function_alternatives: _,
-                    input_sets: _,
-                    metadata: _,
-                    caching: _,
-                    recorder: _,
-                } = &queue_element.work
-                {
-                    queue_element.flags & engine_flags != 0
-                } else {
-                    false
-                }
-            })
-            .next()
-        {
-            // poke the io cores to resolve more local work if some of it was taken
-            if let Some(waker) = lock_guard.io_waker_list.pop_front() {
-                waker.wake();
-            }
-            self.queue_state_decrease();
-            if let WorkToDo::FunctionArguments {
-                function_id: _,
-                function_alternatives: _,
-                input_sets: _,
-                metadata: _,
-                caching: _,
-                recorder,
-            } = &mut local_work.work
-            {
-                recorder.record(RecordPoint::ComputeQueueEnd);
-            }
-            return Some((local_work.work, local_work.debt));
-        }
-        None
+        functions
     }
 
     /// Spins on the queue until it manages to acquire some work that matches the given flags.
