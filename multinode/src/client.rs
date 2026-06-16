@@ -12,12 +12,14 @@ use crate::{
         proto_data_sets_to_composition_sets_with_delete_on_drop, recorder_add_timestamps,
         recorder_dtop, unpack_metadata_size_and_flags, ADDITIONAL_DATA_BUFFER, NO_FLAGS,
     },
-    DispatcherCommand,
 };
 use dandelion_commons::{
     err_dandelion, records::Recorder, DandelionError, DandelionResult, MultinodeError,
 };
-use dispatcher::queue::{get_engine_flag, WorkQueue};
+use dispatcher::{
+    dispatcher::Dispatcher,
+    queue::{get_engine_flag, WorkQueue},
+};
 use log::{error, trace, warn};
 use machine_interface::{
     composition::{CompositionSet, RemoteData},
@@ -577,6 +579,8 @@ async fn remote_queue_client_sender(
     }
 }
 
+// TODO: think about limiting number of notification, to make sure we are not adding
+// additional load when the queue is filled / emptied in big strides
 async fn remote_queue_client_queue_state(
     mut receiver: watch::Receiver<usize>,
     sender: mpsc::Sender<PollingOption>,
@@ -606,48 +610,55 @@ async fn remote_queue_client_core_count(
     }
 }
 
-pub struct ResultCallback {
-    invocation_id: u32,
+async fn dispatcher_call(
+    dispatcher: &'static Dispatcher,
+    sender: mpsc::Sender<PollingOption>,
     export_registry: ExportRegistry,
     start_time: Duration,
-    sender: mpsc::Sender<PollingOption>,
-}
-
-impl ResultCallback {
-    pub async fn callback(self, result: DandelionResult<(Vec<Option<CompositionSet>>, Recorder)>) {
-        let response_message = match result {
-            Ok((sets, recorder)) => {
-                let metadata_sets = composition_sets_to_proto(sets, |item, context| {
-                    self.export_registry.insert_function(item, context, None)
-                });
-                proto::response::Response::MetadataSets(proto::RepeatedMetadataSet {
-                    metadata_sets,
-                    timestamps: recorder_dtop(recorder, self.start_time),
-                })
-            }
-            Err(err) => proto::response::Response::ErrorMsg(err.error.to_string()),
-        };
-        self.sender
-            .send(PollingOption::Results(
-                remote_message::RemoteMessage::Response(Response {
-                    invocation_id: self.invocation_id,
-                    response: Some(response_message),
-                }),
-                // None,
-            ))
-            .await
-            .unwrap();
-    }
+    invocation_id: u32,
+    function_id: Arc<String>,
+    input_sets: Vec<Option<CompositionSet>>,
+    caching: bool,
+    recorder: Recorder,
+) {
+    let function_result = dispatcher
+        .queue_function(function_id, input_sets, caching, recorder.clone())
+        .await;
+    let response_message = match function_result {
+        Ok(sets) => {
+            let metadata_sets = composition_sets_to_proto(sets, |item, context| {
+                export_registry.insert_function(item, context, None)
+            });
+            proto::response::Response::MetadataSets(proto::RepeatedMetadataSet {
+                metadata_sets,
+                timestamps: recorder_dtop(recorder, start_time),
+            })
+        }
+        Err(err) => proto::response::Response::ErrorMsg(err.error.to_string()),
+    };
+    sender
+        .send(PollingOption::Results(
+            remote_message::RemoteMessage::Response(Response {
+                invocation_id,
+                response: Some(response_message),
+            }),
+        ))
+        .await
+        .unwrap();
 }
 
 async fn remote_queue_client_logic(
     mut receiver: mpsc::Receiver<PollingOption>,
     message_sender: mpsc::Sender<remote_message::RemoteMessage>,
-    dispatcher_sender: mpsc::Sender<DispatcherCommand>,
-    result_sender: mpsc::Sender<PollingOption>,
-    // TODO: check how up to date we need to be with the queue state
-    // the current design is more clean, but there are cases where we look at an out of date queue state
-    // local_queue_state: watch::Receiver<usize>,
+    dispatcher_sender: impl Fn(
+        ExportRegistry,
+        Duration,
+        u32,
+        Arc<String>,
+        Vec<Option<CompositionSet>>,
+        bool,
+        Recorder,
+    ),
     export_registry: ExportRegistry,
     mut num_local_cores: usize,
 ) {
@@ -711,21 +722,15 @@ async fn remote_queue_client_logic(
                         let recorder = Recorder::new(function_arc.clone(), start_instance);
                         let inputs =
                             proto_data_sets_to_composition_sets(metadata_sets, data_option);
-                        dispatcher_sender
-                            .send(DispatcherCommand::RemoteFunctionRequest {
-                                function_id: function_arc,
-                                inputs,
-                                is_cold: !caching,
-                                recorder,
-                                callback: ResultCallback {
-                                    invocation_id,
-                                    start_time,
-                                    export_registry: export_registry.clone(),
-                                    sender: result_sender.clone(),
-                                },
-                            })
-                            .await
-                            .unwrap();
+                        dispatcher_sender(
+                            export_registry.clone(),
+                            start_time,
+                            invocation_id,
+                            function_arc,
+                            inputs,
+                            !caching,
+                            recorder,
+                        );
                     }
                     queue_message::QueueMessage::Invocations(invocations) => {
                         trace!("Queue Client recieved invocation");
@@ -749,21 +754,15 @@ async fn remote_queue_client_logic(
                                 metadata_sets,
                                 data_option.clone(),
                             );
-                            dispatcher_sender
-                                .send(DispatcherCommand::RemoteFunctionRequest {
-                                    function_id: function_arc,
-                                    inputs,
-                                    is_cold: !caching,
-                                    recorder,
-                                    callback: ResultCallback {
-                                        invocation_id,
-                                        start_time,
-                                        export_registry: export_registry.clone(),
-                                        sender: result_sender.clone(),
-                                    },
-                                })
-                                .await
-                                .unwrap();
+                            dispatcher_sender(
+                                export_registry.clone(),
+                                start_time,
+                                invocation_id,
+                                function_arc,
+                                inputs,
+                                !caching,
+                                recorder,
+                            )
                         }
                     }
                 }
@@ -847,7 +846,7 @@ async fn remote_queue_client_logic(
 /// should retrigger asking for more work if there are more idle cores.
 pub async fn remote_queue_client(
     socket: TcpStream,
-    dispatcher_sender: mpsc::Sender<DispatcherCommand>,
+    dispatcher: &'static Dispatcher,
     // TODO: might want a differnet mechanism, to wake them one after each other to go check
     // But each poller also needs to be able to check if there are still cores available,
     // in case the remote sends a message that there is work available
@@ -900,9 +899,20 @@ pub async fn remote_queue_client(
     remote_queue_client_logic(
         poll_option_receiver,
         remote_message_sender,
-        dispatcher_sender,
-        poll_option_sender,
-        // queue.queue_state_watcher(),
+        |registry, start_time, invocation_id, function_id, input_sets, caching, recorder| {
+            let sender_clone = poll_option_sender.clone();
+            spawn(dispatcher_call(
+                dispatcher,
+                sender_clone,
+                registry,
+                start_time,
+                invocation_id,
+                function_id,
+                input_sets,
+                caching,
+                recorder,
+            ));
+        },
         export_registry,
         local_core_count,
     )

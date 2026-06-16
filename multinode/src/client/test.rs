@@ -11,9 +11,8 @@ use crate::{
         queue_message, remote_message, response, Engine, Invocation, RepeatedEngines,
         RepeatedInvocations, Response,
     },
-    DispatcherCommand,
 };
-use dandelion_commons::{err_dandelion, records::Recorder, DandelionError};
+use dandelion_commons::{records::Recorder, DandelionError};
 use dispatcher::queue::WorkQueue;
 use futures::{
     task::{Context, Waker},
@@ -283,12 +282,26 @@ fn test_remote_queue_client() {
     let (poll_option_sender, poll_option_receiver) = mpsc::channel(64);
     let (remote_message_sender, mut remote_message_receiver) = mpsc::channel(64);
 
+    let dispatcher_send =
+        |registry, duration, invocation_id, function_id, inputs, is_cold, recorder| {
+            dispatcher_sender
+                .blocking_send((
+                    registry,
+                    duration,
+                    invocation_id,
+                    function_id,
+                    inputs,
+                    is_cold,
+                    recorder,
+                ))
+                .unwrap();
+        };
+
     let mut context = Context::from_waker(Waker::noop());
     let mut client_future = Box::pin(remote_queue_client_logic(
         poll_option_receiver,
         remote_message_sender,
-        dispatcher_sender,
-        poll_option_sender.clone(),
+        dispatcher_send,
         ExportRegistry::new(1),
         0,
     ));
@@ -345,36 +358,38 @@ fn test_remote_queue_client() {
 
     // poll client and check dispatcher queue for the work that was received
     assert_eq!(Poll::Pending, client_future.poll_unpin(&mut context));
-    let _work_sender_1 = match dispatcher_receiver.poll_recv(&mut context) {
-        Poll::Ready(Some(DispatcherCommand::RemoteFunctionRequest {
+    let _invocation_id_1 = match dispatcher_receiver.poll_recv(&mut context) {
+        Poll::Ready(Some((
+            _registry,
+            _duration,
+            invocation_id,
             function_id,
-            inputs: _,
+            _inputs,
             is_cold,
-            recorder: _,
-            callback,
-        })) => {
+            _recorder,
+        ))) => {
             assert!(!is_cold);
             assert_eq!(expected_function_id, function_id.as_str());
-            callback
+            invocation_id
         }
         Poll::Pending | Poll::Ready(None) => panic!("Should receive work now"),
-        Poll::Ready(Some(_)) => panic!("Received unexpected command"),
     };
     // there should be another function in the queue
-    let _work_sender_2 = match dispatcher_receiver.poll_recv(&mut context) {
-        Poll::Ready(Some(DispatcherCommand::RemoteFunctionRequest {
+    let _invocation_id_2 = match dispatcher_receiver.poll_recv(&mut context) {
+        Poll::Ready(Some((
+            _registry,
+            _duration,
+            invocation_id,
             function_id,
-            inputs: _,
+            _inputs,
             is_cold,
-            recorder: _,
-            callback,
-        })) => {
+            _recorder,
+        ))) => {
             assert!(!is_cold);
             assert_eq!(expected_function_id, function_id.as_str());
-            callback
+            invocation_id
         }
         Poll::Pending | Poll::Ready(None) => panic!("Should receive work now"),
-        Poll::Ready(Some(_)) => panic!("Received unexpected command"),
     };
 
     // notify that queue state has changed
@@ -411,20 +426,21 @@ fn test_remote_queue_client() {
 
     // check that we have more work on the reciever
     assert_eq!(Poll::Pending, client_future.poll_unpin(&mut context));
-    let work_sender_2 = match dispatcher_receiver.poll_recv(&mut context) {
-        Poll::Ready(Some(DispatcherCommand::RemoteFunctionRequest {
+    let invocation_id_3 = match dispatcher_receiver.poll_recv(&mut context) {
+        Poll::Ready(Some((
+            _registry,
+            _duration,
+            invocation_id,
             function_id,
-            inputs: _,
+            _inputs,
             is_cold,
-            recorder: _,
-            callback,
-        })) => {
+            _recorder,
+        ))) => {
             assert!(!is_cold);
             assert_eq!(expected_function_id, function_id.as_str());
-            callback
+            invocation_id
         }
         Poll::Pending | Poll::Ready(None) => panic!("Should receive work now"),
-        Poll::Ready(Some(_)) => panic!("Received unexpected command"),
     };
     // notify that queue state has changed, should not trigger asking for more work
     poll_option_sender
@@ -436,11 +452,17 @@ fn test_remote_queue_client() {
     assert!(dispatcher_receiver.is_empty());
 
     // send back a result, mark the queue as changed and poll to get it processed
-    assert!(
-        Box::pin(work_sender_2.callback(err_dandelion!(DandelionError::NotImplemented)))
-            .poll_unpin(&mut context)
-            .is_ready()
-    );
+    poll_option_sender
+        .try_send(crate::client::PollingOption::Results(
+            remote_message::RemoteMessage::Response(Response {
+                invocation_id: invocation_id_3,
+                response: Some(response::Response::ErrorMsg(
+                    DandelionError::NotImplemented.to_string(),
+                )),
+            }),
+        ))
+        .unwrap();
+
     poll_option_sender
         .try_send(crate::client::PollingOption::QueueStateChanged(2))
         .unwrap();
