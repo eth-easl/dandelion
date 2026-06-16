@@ -560,7 +560,16 @@ impl Dispatcher {
                         metadata.output_sets,
                         function_alternatives
                     );
-
+                #[cfg(feature = "timestamp")]
+                {
+                    let (total_items, total_size) =
+                        input_sets.iter().fold((0, 0), |(number, size), set| {
+                            set.as_ref()
+                                .map(|set| (number + set.len(), size + set.size()))
+                                .unwrap_or((number, size))
+                        });
+                    recorder.record_input(total_items as u64, total_size as u64);
+                }
                 let args = WorkToDo::FunctionArguments {
                     function_id: function_id.clone(),
                     function_alternatives,
@@ -569,7 +578,7 @@ impl Dispatcher {
                     caching,
                     recorder: recorder.clone(),
                 };
-                // recorder.record(RecordPoint::ExecutionQueue);
+
                 let sets = self.work_queue.do_work(args).await?.get_composition();
                 recorder.record(RecordPoint::FutureReturn);
 

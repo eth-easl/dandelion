@@ -95,10 +95,12 @@ pub(crate) fn recorder_add_timestamps(
     _recorder: &mut Recorder,
     _timestamps: Option<proto::Timestamps>,
     _local_reference: u128,
+    _node_id: u64,
 ) {
     #[cfg(feature = "timestamp")]
     {
         use dandelion_commons::records::RecordPoint;
+        _recorder.set_node_id(_node_id);
         if let Some(remote_time) = _timestamps {
             let proto::Timestamps {
                 start_epoch,

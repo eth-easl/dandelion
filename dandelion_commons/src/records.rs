@@ -2,6 +2,9 @@ use crate::FunctionId;
 use core::fmt;
 use std::time::Instant;
 
+#[cfg(feature = "timestamp")]
+use core::cell::{OnceCell, UnsafeCell};
+
 /// Maximum usize to expect when converting a record point to a usize
 /// By setting the last element to this explicitly, the compiler will throw an error,
 /// if there are more than this, because it enumerates from 0 and won't allow a number to be assigned twice.
@@ -58,7 +61,7 @@ pub enum RecordPoint {
 #[cfg(feature = "timestamp")]
 struct FunctionTimestamp {
     start_time: Instant,
-    time_points: [core::cell::UnsafeCell<std::time::Duration>; LAST_RECORD_POINT + 1],
+    time_points: [UnsafeCell<std::time::Duration>; LAST_RECORD_POINT + 1],
 }
 #[cfg(feature = "timestamp")]
 unsafe impl Send for FunctionTimestamp {}
@@ -70,7 +73,7 @@ impl FunctionTimestamp {
     fn new(start_time: Instant) -> Self {
         return Self {
             start_time,
-            time_points: [const { core::cell::UnsafeCell::new(std::time::Duration::ZERO) };
+            time_points: [const { UnsafeCell::new(std::time::Duration::ZERO) };
                 LAST_RECORD_POINT + 1],
         };
     }
@@ -79,7 +82,7 @@ impl FunctionTimestamp {
         let new_duration = self.start_time.elapsed();
         // each point is only present once in the code, so we can be sure we can write there safely,
         // and sice it is in arc know the memory exists and will not be dropped during writing
-        let reference = core::cell::UnsafeCell::raw_get(&self.time_points[current_point as usize]);
+        let reference = UnsafeCell::raw_get(&self.time_points[current_point as usize]);
         unsafe { *reference = new_duration };
     }
 }
@@ -115,10 +118,17 @@ struct InnerRecorder {
     function_id: FunctionId,
     /// The timestamps for this invocation of a function / composition
     timestamps: FunctionTimestamp,
+    /// Id of the node that executed the function if it was executed remotely.
+    /// Defaults to 0 for anything running locally regardless of actual node id.
+    remote_node_id: UnsafeCell<u64>,
+    /// Total number of input items
+    input_items: UnsafeCell<u64>,
+    /// Total size of all inputs
+    input_size: UnsafeCell<u64>,
     /// If the function was a composition collect the timestamps of the child functions.
     /// Each function can have sharding, which is why we have a Vec<Vec<_>>, the outer Vec
     /// is indexed per function, while the inner ones are separate entries for each invocation.
-    children: core::cell::OnceCell<Vec<Option<Vec<Recorder>>>>,
+    children: OnceCell<Vec<Option<Vec<Recorder>>>>,
 }
 
 /// Structure to to hold all timestamps related to a single function invocation
@@ -141,7 +151,10 @@ impl Recorder {
             inner: std::sync::Arc::new(InnerRecorder {
                 function_id: _function_id,
                 timestamps: FunctionTimestamp::new(_start),
-                children: core::cell::OnceCell::new(),
+                children: OnceCell::new(),
+                remote_node_id: UnsafeCell::new(0),
+                input_items: UnsafeCell::new(0),
+                input_size: UnsafeCell::new(0),
             }),
         };
     }
@@ -153,6 +166,9 @@ impl Recorder {
                 function_id: _function_id,
                 timestamps: FunctionTimestamp::new(_parent.inner.timestamps.start_time),
                 children: core::cell::OnceCell::new(),
+                remote_node_id: UnsafeCell::new(0),
+                input_items: UnsafeCell::new(0),
+                input_size: UnsafeCell::new(0),
             }),
         };
     }
@@ -167,6 +183,21 @@ impl Recorder {
         let _ = self.inner.children.set(_children);
     }
 
+    #[cfg(feature = "timestamp")]
+    pub fn record_input(&mut self, input_items: u64, input_size: u64) {
+        unsafe {
+            *UnsafeCell::raw_get(&self.inner.input_items) = input_items;
+            *UnsafeCell::raw_get(&self.inner.input_size) = input_size;
+        }
+    }
+
+    #[cfg(feature = "timestamp")]
+    pub fn set_node_id(&mut self, node_id: u64) {
+        unsafe {
+            *UnsafeCell::raw_get(&self.inner.remote_node_id) = node_id;
+        }
+    }
+
     /// Get a slice with the timestamps related to engine execution
     #[cfg(feature = "timestamp")]
     pub fn get_timestamp(&self, point: RecordPoint) -> std::time::Duration {
@@ -176,8 +207,7 @@ impl Recorder {
     #[cfg(feature = "timestamp")]
     pub fn set_timestamp(&mut self, point: RecordPoint, time_micros: u64) {
         use std::time::Duration;
-        let reference =
-            core::cell::UnsafeCell::raw_get(&self.inner.timestamps.time_points[point as usize]);
+        let reference = UnsafeCell::raw_get(&self.inner.timestamps.time_points[point as usize]);
         unsafe { *reference = Duration::from_micros(time_micros) };
     }
 
@@ -205,6 +235,9 @@ impl fmt::Debug for Recorder {
                 .field("Function ID", &self.inner.function_id)
                 .field("Timestamps", &self.inner.timestamps)
                 .field("Children", &self.inner.children)
+                .field("Node ID", &self.inner.remote_node_id)
+                .field("#Input items", &self.inner.input_items)
+                .field("Total input size", &self.inner.input_size)
                 .finish()
         }
         #[cfg(not(feature = "timestamp"))]
@@ -216,10 +249,13 @@ impl fmt::Display for Recorder {
     fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         #[cfg(feature = "timestamp")]
         {
+            let node_id = unsafe { *self.inner.remote_node_id.get() };
+            let input_items = unsafe { *self.inner.input_items.get() };
+            let input_size = unsafe { *self.inner.input_size.get() };
             write!(
                 _f,
-                "{{\"id\": \"{}\", \"ts\": {}, \"children\": [",
-                self.inner.function_id, self.inner.timestamps
+                "{{\"id\": \"{}\", \"ts\": {}, \"node id\": {}, \"items\": {}, \"input size\": {}, \"children\": [",
+                self.inner.function_id, self.inner.timestamps, node_id, input_items, input_size,
             )?;
             let mut need_comma = false;
             if let Some(children) = self.inner.children.get() {

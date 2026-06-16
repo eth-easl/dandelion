@@ -346,6 +346,7 @@ async fn remote_queue_server_logic(
                                         &mut recorder,
                                         metadata_sets.timestamps,
                                         start_epoch,
+                                        node_id,
                                     );
                                     Ok(WorkDone::CompositionSet(
                                         proto_data_sets_to_composition_sets_with_delete_on_drop(

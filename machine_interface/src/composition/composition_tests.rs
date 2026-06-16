@@ -15,10 +15,12 @@ use tokio::sync::watch;
 
 fn create_dummy_set(keys: Vec<u32>) -> CompositionSet {
     let dummy_context: Arc<Context> = Arc::new(ReadOnlyContext::new_static::<u8>(&mut []));
+    let mut total_size = 0;
     let items = keys
         .into_iter()
         .enumerate()
         .map(|(i, k)| {
+            total_size += 1;
             (
                 DataItem {
                     ident: i.to_string(),
@@ -33,7 +35,8 @@ fn create_dummy_set(keys: Vec<u32>) -> CompositionSet {
     CompositionSet {
         item_list: items,
         set_name: String::new(),
-        non_local_sets: 0,
+        non_local_items: 0,
+        total_size,
     }
 }
 
