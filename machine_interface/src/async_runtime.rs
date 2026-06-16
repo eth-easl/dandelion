@@ -53,12 +53,15 @@ impl AysncRuntime {
                 log::debug!("starting another thread that will block");
                 let tid = nix::unistd::gettid();
                 threads_function.lock().unwrap().insert(tid);
+                nix::sched::sched_setaffinity(nix::unistd::Pid::from_raw(0), &min_core_set)
+                    .unwrap();
+            } else {
+                // This branch only happens for temporary blocking threads,
+                // since tokio catches panicing futures, the threads should not be shut down on panics,
+                // meaning it does not need to restart the normal worker threads.
+                // Temporary blocking threads are spawned by the existing runtime threads and they inherit their affinity.
+                // Currently assume changes in the core set do not care for these ephemeral threads.
             }
-            // Temporary blocking threads are spawned by the existing runtime threads,
-            // i.e. they inherit their affinity, could leave out setting the affinity for those, if we don't expect to change the set.
-            // TODO: check what happens on thread panic,
-            // the runtime might try to restart a new workwer thread that now does not register to get the set extended.
-            nix::sched::sched_setaffinity(nix::unistd::Pid::from_raw(0), &min_core_set).unwrap();
             log::debug!("Finish starting new thread");
         };
         AysncRuntime {

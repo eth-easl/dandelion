@@ -349,7 +349,7 @@ impl Dispatcher {
                             )
                             .map(|((comp_index, function_index), (mode, optional))| {
                                 // if it was not optional skip executing and push all output sets
-                                // TODO: for left, right and outer joins, some sets may also be pseuto optional.
+                                // TODO: for left, right and outer joins, some sets may also be pseudo optional.
                                 // (i.e. an empty left set on a right join can still have functions that should run)
                                 // Fix either by adding attributes to easily check here or move to check optional together with sharding.
                                 if !optional && composition_set_option.is_none() {
