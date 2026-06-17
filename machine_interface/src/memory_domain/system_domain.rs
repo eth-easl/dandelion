@@ -1,5 +1,7 @@
-use crate::memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource};
-use bytes::{Buf, Bytes};
+use crate::{
+    memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource},
+    Position,
+};
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult};
 use log::{debug, warn};
 use std::{
@@ -10,29 +12,18 @@ use std::{
 };
 
 use super::transfer_memory;
-pub enum DataPosition {
-    ContextStorage(Arc<Context>, usize),
-    ResponseInformationStorage(Bytes),
-}
 
-impl std::fmt::Debug for DataPosition {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ContextStorage(context, size) => f
-                .debug_struct("DataPosition::ContextStorage")
-                .field("size", size)
-                .field("context", &context)
-                .finish(),
-            Self::ResponseInformationStorage(bytes) => f
-                .debug_struct("DataPosition::ResponseInformationStorage")
-                .field("size", &bytes.len())
-                .finish(),
-        }
-    }
+/// Type to hold data in a system context.
+#[derive(Debug)]
+pub(crate) struct DataPosition {
+    // The context holding the data
+    context: Arc<Context>,
+    // The position of the data in the context
+    position: Position,
 }
 
 #[derive(Debug)]
-/// This context does not have any real data in it. It only holds pointers to other contexts/Bytes, where
+/// This context does not have any real data in it. It only holds pointers to other contexts, where
 /// the data is. Everything else (including the metadata, where every item is) is as in any other context.
 /// Thus, offsets stored in Position for DataItems are only "virtual" and don't have actual meaning
 /// The size field of a Context does not matter internally for a SystemContext, since it does not hold any data,
@@ -43,7 +34,7 @@ impl std::fmt::Debug for DataPosition {
 pub struct SystemContext {
     /// Links virtual offset to corresponding data position and size of item
     /// Position is currently either in Arc<Context> with corresponding offset or in Bytes
-    pub(crate) local_offset_to_data_position: BTreeMap<usize, (DataPosition, usize)>,
+    pub(crate) local_offset_to_data_position: BTreeMap<usize, DataPosition>,
     pub(crate) size: usize,
 }
 
@@ -64,7 +55,9 @@ impl ContextTrait for SystemContext {
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         let mut total_bytes_read = 0;
         let read_buffer_size = core::mem::size_of::<T>() * read_buffer.len();
-
+        let byte_buffer = unsafe {
+            core::slice::from_raw_parts_mut(read_buffer.as_ptr() as *mut u8, read_buffer_size)
+        };
         if offset + read_buffer_size > self.size {
             debug!("Offset + read_buffer_size are larger than context size (read). Offset: {}, buffer_size: {}, context size: {}",
             offset, read_buffer_size, self.size);
@@ -72,54 +65,22 @@ impl ContextTrait for SystemContext {
         }
 
         while total_bytes_read < read_buffer_size {
-            let mut bytes_read = 0;
             let mut range = self
                 .local_offset_to_data_position
                 .range((Unbounded, Included(offset + total_bytes_read)));
-            if let Some((&item_offset, &(ref item_position, item_size))) = range.next_back() {
-                // debug!("Found item with offset {} and size {}", item_offset, item_size);
-                if (offset + total_bytes_read) < item_offset + item_size {
+            // get the item that starts closest before the current read start
+            if let Some((&item_offset, DataPosition { context, position })) = range.next_back() {
+                // know that the current item start is <= offset + total_bytes_read, need to check that it also does not end before the read offset
+                if (offset + total_bytes_read) < item_offset + position.size {
                     let offset_in_item = (offset + total_bytes_read) - item_offset;
-                    match item_position {
-                        DataPosition::ContextStorage(data_arc_context, actual_offset) => {
-                            return data_arc_context
-                                .read(*actual_offset + offset_in_item, read_buffer);
-                        }
-
-                        DataPosition::ResponseInformationStorage(ref body) => {
-                            // We clone the Bytes such that we can use the .advance() without changing the actual body
-                            let mut cloned_body = body.clone();
-                            let body_len = cloned_body.len();
-
-                            if offset % core::mem::align_of::<T>() != 0 {
-                                debug!("Misaligned write at offset {}", offset);
-                                return err_dandelion!(DandelionError::ReadMisaligned);
-                            }
-
-                            let read_memory = unsafe {
-                                core::slice::from_raw_parts_mut(
-                                    read_buffer.as_mut_ptr() as *mut u8,
-                                    read_buffer_size,
-                                )
-                            };
-
-                            while bytes_read < read_buffer_size && bytes_read < body_len {
-                                let chunk = cloned_body.chunk();
-                                if chunk.is_empty() {
-                                    return err_dandelion!(DandelionError::InvalidRead);
-                                }
-                                let reading = min(
-                                    read_buffer_size - (bytes_read + total_bytes_read),
-                                    chunk.len(),
-                                );
-                                read_memory[(bytes_read + total_bytes_read)
-                                    ..(bytes_read + total_bytes_read) + reading]
-                                    .copy_from_slice(&chunk[..reading]);
-                                cloned_body.advance(reading);
-                                bytes_read += reading;
-                            }
-                        }
-                    }
+                    let new_chunk = context.get_chunk_ref(
+                        position.offset + offset_in_item,
+                        read_buffer_size - total_bytes_read,
+                    )?;
+                    let new_bytes = new_chunk.len();
+                    byte_buffer[total_bytes_read..total_bytes_read + new_bytes]
+                        .copy_from_slice(new_chunk);
+                    total_bytes_read += new_bytes;
                 } else {
                     warn!(
                         "Read offset has no stored data in SystemContext (read). Offset: {}",
@@ -134,7 +95,6 @@ impl ContextTrait for SystemContext {
                 );
                 break;
             }
-            total_bytes_read += bytes_read;
         }
         return Ok(());
     }
@@ -148,24 +108,11 @@ impl ContextTrait for SystemContext {
         let mut range = self
             .local_offset_to_data_position
             .range((Unbounded, Included(offset)));
-        if let Some((&item_offset, &(ref item_position, item_size))) = range.next_back() {
-            if offset < item_offset + item_size {
+        if let Some((&item_offset, DataPosition { context, position })) = range.next_back() {
+            if offset < item_offset + position.size {
                 let offset_in_item = offset - item_offset;
-                match item_position {
-                    // For contextStorage, we propagate the call down
-                    DataPosition::ContextStorage(data_arc_context, actual_offset) => {
-                        let max_length = min(length, item_size);
-                        return data_arc_context
-                            .get_chunk_ref(*actual_offset + offset_in_item, max_length);
-                    }
-                    // For bytesStorage, we just return the current item at max
-                    DataPosition::ResponseInformationStorage(ref body) => {
-                        // We calculate the amount of bytes that are definitely contiguous, namely
-                        // at max the whole Bytes representing this item
-                        let max_length = min(length, item_size);
-                        return Ok(&body.as_ref()[offset_in_item..offset_in_item + max_length]);
-                    }
-                }
+                let max_length = min(length, position.size);
+                return context.get_chunk_ref(position.offset + offset_in_item, max_length);
             }
         }
         warn!(
@@ -194,28 +141,6 @@ impl MemoryDomain for SystemMemoryDomain {
 }
 
 /// We assume:
-///     size = size of source Bytes
-/// If another stored item starts at this exact offset, it is overwritten.
-pub fn system_context_write_from_bytes(
-    destination: &mut SystemContext,
-    source: Bytes,
-    destination_offset: usize,
-    size: usize,
-) {
-    assert_eq!(
-        size,
-        source.len(),
-        "size is not equal to source size (system_context_write_from_bytes)"
-    );
-    destination.local_offset_to_data_position.insert(
-        destination_offset,
-        (
-            DataPosition::ResponseInformationStorage(source.clone()),
-            size,
-        ),
-    );
-}
-/// We assume:
 ///      Only whole items are transfered. Meaning source_offset is the beginning of an item
 pub fn system_context_transfer(
     destination: &mut SystemContext,
@@ -226,7 +151,7 @@ pub fn system_context_transfer(
 ) -> DandelionResult<()> {
     let mut transfered_bytes = 0;
     while transfered_bytes < size {
-        let Some((data_position, item_size)) = source
+        let Some(DataPosition { context, position }) = source
             .local_offset_to_data_position
             .get(&(source_offset + transfered_bytes))
         else {
@@ -237,36 +162,24 @@ pub fn system_context_transfer(
             return err_dandelion!(DandelionError::InvalidRead);
         };
 
-        if transfered_bytes + item_size > size {
+        if transfered_bytes + position.size > size {
             warn!(
                 "Memory transfer would not involve whole item! (system_context_transfer). 
                 destination_offset: {}, transfered_bytes: {}, total_size: {}, item_size: {}",
-                destination_offset, transfered_bytes, size, item_size
+                destination_offset, transfered_bytes, size, position.size
             );
             return err_dandelion!(DandelionError::InvalidRead);
         }
 
-        match data_position {
-            DataPosition::ContextStorage(data_arc_context, actual_offset) => {
-                destination.local_offset_to_data_position.insert(
-                    destination_offset + transfered_bytes,
-                    (
-                        DataPosition::ContextStorage(data_arc_context.clone(), *actual_offset),
-                        *item_size,
-                    ),
-                );
-            }
-            DataPosition::ResponseInformationStorage(ref body) => {
-                destination.local_offset_to_data_position.insert(
-                    destination_offset + transfered_bytes,
-                    (
-                        DataPosition::ResponseInformationStorage(body.clone()),
-                        *item_size,
-                    ),
-                );
-            }
-        }
-        transfered_bytes += item_size;
+        destination.local_offset_to_data_position.insert(
+            destination_offset + transfered_bytes,
+            DataPosition {
+                context: context.clone(),
+                position: *position,
+            },
+        );
+
+        transfered_bytes += position.size;
     }
     Ok(())
 }
@@ -288,10 +201,13 @@ pub fn into_system_context_transfer(
     }
     destination.local_offset_to_data_position.insert(
         destination_offset,
-        (
-            DataPosition::ContextStorage(source.clone(), source_offset),
-            size,
-        ),
+        DataPosition {
+            context: source.clone(),
+            position: Position {
+                offset: source_offset,
+                size,
+            },
+        },
     );
     Ok(())
 }
@@ -308,7 +224,7 @@ pub fn out_of_system_context_transfer(
 ) -> DandelionResult<()> {
     let mut transfered_bytes = 0;
     while transfered_bytes < size {
-        let Some((data_position, item_size)) = source
+        let Some(DataPosition { context, position }) = source
             .local_offset_to_data_position
             .get(&(source_offset + transfered_bytes))
         else {
@@ -316,46 +232,23 @@ pub fn out_of_system_context_transfer(
             return err_dandelion!(DandelionError::InvalidRead);
         };
 
-        if transfered_bytes + item_size > size {
+        if transfered_bytes + position.size > size {
             warn!(
                 "Memory transfer would not involve whole item! (out_of_system_context_transfer). 
                 destination_offset: {}, transfered_bytes: {}, total_size: {}, item_size: {}",
-                destination_offset, transfered_bytes, size, item_size
+                destination_offset, transfered_bytes, size, position.size
             );
             return err_dandelion!(DandelionError::InvalidRead);
         }
 
-        match data_position {
-            DataPosition::ContextStorage(data_arc_context, actual_offset) => {
-                transfer_memory(
-                    destination,
-                    data_arc_context,
-                    destination_offset + transfered_bytes,
-                    *actual_offset,
-                    *item_size,
-                )?;
-            }
-            DataPosition::ResponseInformationStorage(ref body) => {
-                let body_len = body.len();
-
-                // We clone the Bytes and make it mutable for the advance method
-                let mut cloned_body = body.clone();
-                let mut bytes_read = 0;
-                while bytes_read < body_len {
-                    let chunk = cloned_body.chunk();
-                    let reading = chunk.len();
-                    destination.write(destination_offset + transfered_bytes + bytes_read, chunk)?;
-                    cloned_body.advance(reading);
-                    bytes_read += reading;
-                }
-                assert_eq!(
-                    0,
-                    cloned_body.remaining(),
-                    "Body should have non remaining as we have read the amount given as len in the beginning"
-                );
-            }
-        }
-        transfered_bytes += item_size;
+        transfer_memory(
+            destination,
+            context,
+            destination_offset + transfered_bytes,
+            position.offset,
+            position.size,
+        )?;
+        transfered_bytes += position.size;
     }
     Ok(())
 }

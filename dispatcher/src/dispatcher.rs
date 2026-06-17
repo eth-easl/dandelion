@@ -62,7 +62,7 @@ impl Dispatcher {
         }
 
         // create the function registry
-        let function_registry = FunctionRegistry::new(&domains);
+        let function_registry = FunctionRegistry::new();
 
         return Ok(Dispatcher {
             function_registry,
@@ -445,11 +445,7 @@ impl Dispatcher {
         // but still want to run if we queued it.
         let is_sharded = input_sets.len() != 0 && input_sets.iter().any(|opt| opt.is_some());
         let composition_results: DandelionResult<Vec<_>> = if is_sharded {
-            let min_set_bytes = self
-                .function_registry
-                .get_metadata(&function_id)?
-                .min_set_bytes
-                .clone();
+            let min_set_bytes = self.function_registry.get_min_set_bytes(&function_id)?;
             let sharded = get_sharding(
                 input_sets,
                 join_order,
@@ -533,12 +529,10 @@ impl Dispatcher {
         match self.function_registry.get_function(&function_id).unwrap() {
             // Defer actual execution of system functions (i.e. fetching),
             // by calling the system function to produce a composition set containing the reference to be resolved later
-            FunctionType::SystemFunction(func_info) => {
-                let metadata = func_info.metadata;
+            FunctionType::SystemFunction(sys_function) => {
                 let args = WorkToDo::FunctionReferences {
-                    function_id: function_id.clone(),
+                    function: sys_function,
                     input_sets,
-                    metadata,
                 };
                 self.work_queue
                     .do_work(args)

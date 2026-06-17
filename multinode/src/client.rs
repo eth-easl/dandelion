@@ -268,9 +268,8 @@ async fn remote_queue_server_logic(
                                         recorder,
                                     } => (function_id, input_sets, recorder, caching),
                                     WorkToDo::FunctionReferences {
-                                        function_id: _,
+                                        function: _,
                                         input_sets: _,
-                                        metadata: _,
                                     }
                                     | WorkToDo::SetsToResolve { input_sets: _ }
                                     | WorkToDo::RemoteToDelete { remote_data: _ }
@@ -454,9 +453,8 @@ async fn remote_queue_server_logic(
                         recorder,
                     } => (function_id, input_sets, recorder, caching),
                     WorkToDo::FunctionReferences {
-                        function_id: _,
+                        function: _,
                         input_sets: _,
-                        metadata: _,
                     }
                     | WorkToDo::SetsToResolve { input_sets: _ }
                     | WorkToDo::RemoteToDelete { remote_data: _ }

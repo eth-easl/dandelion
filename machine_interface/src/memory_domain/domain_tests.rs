@@ -656,59 +656,6 @@ macro_rules! systemsDomainTests {
                     Err(err) => panic!("Unexpected error from get_chunk_ref {:?}", err),
                 }
             }
-            #[test_log::test]
-            fn test_transfer_multiple_bytes() {
-                // Tests how transfers over multiple Bytes are handled
-                let mut preamble = "Start\n".to_string();
-                let preamble_bytes = bytes::Bytes::from(preamble.clone().into_bytes());
-                let pre_len = preamble_bytes.len();
-                let body = "body_body_body_body".to_string();
-                let body_bytes = bytes::Bytes::from(body.clone().into_bytes());
-                let body_len = body_bytes.len();
-                let mut initial_ctx = acquire::<SystemMemoryDomain>($init, 128);
-                match &mut initial_ctx.context {
-                    ContextType::System(initial_ctx_) => {
-                        crate::memory_domain::system_domain::system_context_write_from_bytes(
-                            initial_ctx_,
-                            preamble_bytes.clone(),
-                            0,
-                            pre_len,
-                        );
-                        crate::memory_domain::system_domain::system_context_write_from_bytes(
-                            initial_ctx_,
-                            body_bytes.clone(),
-                            pre_len,
-                            body_len,
-                        );
-                    }
-                    _ => {
-                        panic!("Error");
-                    }
-                }
-
-                let mut second_ctx = acquire::<$domain>($init, 128);
-                transfer_memory(
-                    &mut second_ctx,
-                    &Arc::from(initial_ctx),
-                    0,
-                    0,
-                    pre_len + body_len,
-                )
-                .expect("Transfer expected to be valid");
-                // read entire range
-                let mut return_string = String::new();
-                let mut read_bytes = 0;
-                while read_bytes < pre_len + body_len {
-                    let chunk_ref_result = second_ctx
-                        .get_chunk_ref(read_bytes, pre_len + body_len)
-                        .unwrap();
-                    read_bytes += chunk_ref_result.len();
-                    return_string.push_str(std::str::from_utf8(chunk_ref_result).unwrap());
-                }
-                // assemble one complete string
-                preamble.push_str(&body);
-                assert_eq!(preamble, return_string, "Not full string was returned");
-            }
         }
     };
 }

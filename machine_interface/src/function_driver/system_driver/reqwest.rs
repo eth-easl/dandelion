@@ -6,7 +6,7 @@ use crate::{
             cache::{CacheRegistry, HttpCacheEntry},
             notify_io_data_cache, IoData, SystemFunction,
         },
-        ComputeResource, Driver, EngineWorkQueue, Metadata, WorkDone, WorkToDo,
+        ComputeResource, Driver, EngineWorkQueue, WorkDone, WorkToDo,
     },
     memory_domain::{
         bytes_context::BytesContext, read_only::ReadOnlyContext, Context, ContextTrait, ContextType,
@@ -651,15 +651,13 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                 .await;
             }
             WorkToDo::FunctionReferences {
-                function_id,
+                function,
                 input_sets,
-                metadata,
             } => {
                 let client_clone = http_client.clone();
                 match convert_to_references(
-                    function_id,
+                    function,
                     input_sets,
-                    metadata,
                     client_clone,
                     semaphore.clone(),
                     ticket,
@@ -786,24 +784,17 @@ impl HttpRequest {
 }
 
 async fn convert_to_references(
-    function_id: Arc<String>,
+    function: SystemFunction,
     mut input_sets: Vec<Option<CompositionSet>>,
-    metadata: Arc<Metadata>,
     client: HttpClient,
     semaphore: Arc<Semaphore>,
     ticket: OwnedSemaphorePermit,
 ) -> DandelionResult<Vec<Option<CompositionSet>>> {
     // check that the function id contains string correcpsonding to system function
-    let function = SystemFunction::from(function_id.as_ref().as_str());
     debug_assert_eq!(
         1,
         input_sets.len(),
         "all current IO functions expect a single input set"
-    );
-    debug_assert_eq!(
-        2,
-        metadata.output_sets.len(),
-        "all current IO functions have 2 output sets"
     );
 
     if let SystemFunction::HTTP = function {

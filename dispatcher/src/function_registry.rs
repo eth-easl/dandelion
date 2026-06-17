@@ -7,10 +7,8 @@ use log::error;
 use machine_interface::{
     composition::Composition,
     function_driver::{
-        functions::{FunctionAlternative, FunctionConfig},
-        system_driver::{
-            get_system_function_input_sets, get_system_function_output_sets, SYSTEM_FUNCTIONS,
-        },
+        functions::{FunctionAlternative, SystemFunction},
+        system_driver::SYSTEM_FUNCTIONS,
         Metadata,
     },
     machine_config::EngineType,
@@ -64,10 +62,8 @@ pub struct CompositionInfo {
 
 #[derive(Debug, Clone)]
 pub enum FunctionType {
-    /// A system function. Cannot add more alternatives for this type after initialization.
-    /// TODO: replace with system function type, since metadata is always the same given the type
-    /// and there are no alternatives the dispatcher needs to select between.
-    SystemFunction(FunctionInfo),
+    /// A system function.
+    SystemFunction(SystemFunction),
     /// A user defined function.
     Function(FunctionInfo),
     /// A composition of functions.
@@ -83,26 +79,15 @@ fn fmap_insert_function(
     key: FunctionId,
     func_alt: FunctionAlternative,
     func_meta: Metadata,
-    is_system: bool,
 ) -> DandelionResult<()> {
     match fmap.get_mut(&(*key)) {
         Some(entry) => {
             let func_info = match entry {
-                FunctionType::SystemFunction(info) => {
-                    if !is_system {
-                        return err_dandelion!(DandelionError::FunctionRegistry(
-                            FunctionRegistryError::InvalidSystemInsert((*key).clone()),
-                        ));
-                    }
-                    info
-                }
-                FunctionType::Function(info) => {
-                    if is_system {
-                        return err_dandelion!(DandelionError::FunctionRegistry(
-                            FunctionRegistryError::InvalidUserInsert((*key).clone()),
-                        ));
-                    }
-                    info
+                FunctionType::Function(info) => info,
+                FunctionType::SystemFunction(_) => {
+                    return err_dandelion!(DandelionError::FunctionRegistry(
+                        FunctionRegistryError::InvalidSystemInsert((*key).clone()),
+                    ));
                 }
                 FunctionType::Composition(_) => {
                     return err_dandelion!(DandelionError::FunctionRegistry(
@@ -129,11 +114,7 @@ fn fmap_insert_function(
                 alternatives: Arc::new(RwLock::new(vec![Arc::new(func_alt)])),
                 metadata: Arc::new(func_meta),
             };
-            if is_system {
-                fmap.insert((*key).clone(), FunctionType::SystemFunction(func_info));
-            } else {
-                fmap.insert((*key).clone(), FunctionType::Function(func_info));
-            }
+            fmap.insert((*key).clone(), FunctionType::Function(func_info));
         }
     };
     Ok(())
@@ -177,46 +158,20 @@ pub struct FunctionRegistry {
 
 impl FunctionRegistry {
     /// Creates a new FunctionRegistry object.
-    pub fn new(domains: &Vec<Arc<Box<dyn MemoryDomain>>>) -> Self {
+    pub fn new() -> Self {
         let mut function_map = BTreeMap::new();
 
         // insert all system functons
-        for &(engine_type, system_function, context_size) in SYSTEM_FUNCTIONS {
-            let func_id = Arc::new(system_function.to_string());
-
-            // get the config from the parser
-            let function_config = engine_type
-                .parse_function(
-                    String::from(""),
-                    &domains[engine_type.get_domain_type() as usize],
-                )
-                .unwrap();
-            match function_config.config {
-                FunctionConfig::SysConfig(_) => (),
-                _ => panic!("parsing system function did not return system config"),
-            };
-            let func_alt = FunctionAlternative::new_loaded(
-                engine_type,
-                context_size,
-                String::new(),
-                domains[engine_type.get_domain_type() as usize].clone(),
-                Arc::new(function_config),
-            );
-
-            // get metadata
-            let func_metadata = Metadata {
-                input_sets: get_system_function_input_sets(system_function)
-                    .into_iter()
-                    .map(|name| (name, None))
-                    .collect(),
-                output_sets: get_system_function_output_sets(system_function),
-                min_set_bytes: vec![],
-            };
-
-            if let Err(err) =
-                fmap_insert_function(&mut function_map, func_id, func_alt, func_metadata, true)
-            {
-                error!("Failed to insert system function: {:?}", err);
+        for &system_function in SYSTEM_FUNCTIONS {
+            if let Some(previous) = function_map.insert(
+                system_function.to_string(),
+                FunctionType::SystemFunction(system_function),
+            ) {
+                error!(
+                    "Failed to insert system function: {:?} already present: {:?}",
+                    system_function.to_string(),
+                    previous
+                );
                 panic!("Function registry initialization failed!");
             }
         }
@@ -243,16 +198,18 @@ impl FunctionRegistry {
     }
 
     /// Returns an atomic reference to the metadata of the given function identifier.
-    pub fn get_metadata(&self, function_id: &FunctionId) -> DandelionResult<Arc<Metadata>> {
+    pub fn get_min_set_bytes(&self, function_id: &FunctionId) -> DandelionResult<Vec<usize>> {
         let lock_guard = self
             .function_map
             .read()
             .expect("Function registry lock poisoned!");
         match lock_guard.get(&(**function_id)) {
             Some(func_type) => match func_type {
-                FunctionType::SystemFunction(func_info) => Ok(func_info.metadata.clone()),
-                FunctionType::Function(func_info) => Ok(func_info.metadata.clone()),
-                FunctionType::Composition(comp_info) => Ok(comp_info.metadata.clone()),
+                FunctionType::Function(func_info) => Ok(func_info.metadata.min_set_bytes.clone()),
+                FunctionType::Composition(comp_info) => {
+                    Ok(comp_info.metadata.min_set_bytes.clone())
+                }
+                FunctionType::SystemFunction(_) => Ok(vec![]),
             },
             None => err_dandelion!(DandelionError::FunctionRegistry(
                 FunctionRegistryError::UnknownFunction((**function_id).clone()),
@@ -295,7 +252,7 @@ impl FunctionRegistry {
             .function_map
             .write()
             .expect("Function registry lock poisoned!");
-        fmap_insert_function(&mut lock_guard, function_id, func_alt, metadata, false)
+        fmap_insert_function(&mut lock_guard, function_id, func_alt, metadata)
     }
 
     /// For each composition the composition set indexes start enumerating the input sets from 0.

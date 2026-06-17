@@ -469,9 +469,8 @@ impl WorkQueue {
             WorkToDo::SetsToResolve { input_sets: _ } => (0, false),
             WorkToDo::RemoteToDelete { remote_data: _ } => (0, false),
             WorkToDo::FunctionReferences {
-                function_id: _,
+                function: _,
                 input_sets: _,
-                metadata: _,
             } => (0, false),
             WorkToDo::FunctionArguments {
                 function_id: _,

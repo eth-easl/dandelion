@@ -3,9 +3,8 @@ pub mod cache;
 pub mod reqwest;
 
 use crate::{
-    composition::{CompositionSet, ItemData},
-    function_driver::{functions::SystemFunction, Metadata},
-    machine_config::EngineType,
+    composition::{CompositionSet, ItemData, LocalCompositionSet},
+    function_driver::functions::SystemFunction,
     memory_domain::Context,
     DataItem, Position,
 };
@@ -37,12 +36,14 @@ const HTTP_INPUT_SETS: [&str; 1] = ["requests"];
 const HTTP_OUTPUT_SETS: [&str; 2] = ["headers", "bodies"];
 
 /// Provides the input set names for a given system function
-pub fn get_system_function_input_sets(function: SystemFunction) -> Vec<String> {
+pub fn get_system_function_input_sets(
+    function: SystemFunction,
+) -> Vec<(String, Option<LocalCompositionSet>)> {
     return match function {
         SystemFunction::HTTP => HTTP_INPUT_SETS,
         SystemFunction::MEMCACHED => HTTP_INPUT_SETS,
     }
-    .map(|name| name.to_string())
+    .map(|name| (name.to_string(), None))
     .to_vec();
 }
 
@@ -56,20 +57,9 @@ pub fn get_system_function_output_sets(function: SystemFunction) -> Vec<String> 
     .to_vec();
 }
 
-/// The system context only holds references to other contexts, so the size does not matter.
-/// System functions can create new contexts to return with appropriate sizes, so this does
-/// not matter to them either.
-// TODO: think about setting a max size for user fetchable data, i.e. limiting the response size.
-#[cfg(any(feature = "reqwest_io"))]
-const SYS_FUNC_DEFAULT_CONTEXT_SIZE: usize = usize::MAX;
-
-pub const SYSTEM_FUNCTIONS: &[(EngineType, SystemFunction, usize)] = &[
+pub const SYSTEM_FUNCTIONS: &[SystemFunction] = &[
     #[cfg(feature = "reqwest_io")]
-    (
-        EngineType::System,
-        SystemFunction::HTTP,
-        SYS_FUNC_DEFAULT_CONTEXT_SIZE,
-    ),
+    SystemFunction::HTTP,
 ];
 
 #[derive(Debug, Clone)]
@@ -101,22 +91,15 @@ pub(crate) fn notify_io_data_cache(cache_key: u64, contexts: Vec<Arc<Context>>) 
 
 /// Currently assumes the HTTP_INPUT_SETS and HTTP_OUTPUT_SETS
 pub fn convert_to_references(
-    function_id: Arc<String>,
+    function: SystemFunction,
     mut inputs: Vec<Option<CompositionSet>>,
-    metadata: Arc<Metadata>,
     // recorder: Recorder,
 ) -> DandelionResult<Vec<Option<CompositionSet>>> {
     // check that the function id contains string correcpsonding to system function
-    let function = SystemFunction::from(function_id.as_ref().as_str());
     debug_assert_eq!(
         1,
         inputs.len(),
         "all current IO functions expect a single input set"
-    );
-    debug_assert_eq!(
-        2,
-        metadata.output_sets.len(),
-        "all current IO functions have 2 output sets"
     );
 
     // go through all input sets and check if there is already a static one, or on in the input data
