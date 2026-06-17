@@ -310,7 +310,7 @@ impl WorkQueue {
 
     fn queue_state_decrease(&self) {
         self.queue_state_sender.send_if_modified(|current_state| {
-            *current_state -= 1;
+            *current_state = current_state.saturating_sub(1);
             *current_state < *self.system_info.num_local_cores_watcher.borrow()
         });
     }
