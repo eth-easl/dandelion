@@ -526,7 +526,7 @@ impl Dispatcher {
     ) -> DandelionResult<Vec<Option<CompositionSet>>> {
         debug!("Queueing function with id: {}", function_id);
         // find an engine capable of running the function
-        match self.function_registry.get_function(&function_id).unwrap() {
+        match self.function_registry.get_function(&function_id)? {
             // Defer actual execution of system functions (i.e. fetching),
             // by calling the system function to produce a composition set containing the reference to be resolved later
             FunctionType::SystemFunction(sys_function) => {
