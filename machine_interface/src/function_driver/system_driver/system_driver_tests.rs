@@ -3,21 +3,15 @@ mod system_driver_tests {
     use crate::{
         composition::CompositionSet,
         function_driver::{
-            system_driver::{
-                convert_to_references, get_system_function_input_sets,
-                get_system_function_output_sets, SystemFunction,
-            },
+            system_driver::{convert_to_references, SystemFunction},
             test_queue::TestQueue,
-            ComputeResource, Metadata, WorkToDo,
+            ComputeResource, WorkToDo,
         },
         machine_config::EngineType,
         memory_domain::{read_only::ReadOnlyContext, ContextTrait},
         DataItem, DataSet, Position,
     };
-    use std::{
-        process::{Child, Command},
-        sync::Arc,
-    };
+    use std::process::{Child, Command};
 
     struct HttpServer {
         proc_child: Child,
@@ -88,19 +82,9 @@ mod system_driver_tests {
             }],
         }));
 
-        let metadata = Arc::new(Metadata {
-            input_sets: get_system_function_input_sets(SystemFunction::HTTP)
-                .into_iter()
-                .map(|name| (name, None))
-                .collect(),
-            output_sets: get_system_function_output_sets(SystemFunction::HTTP),
-            min_set_bytes: vec![],
-        });
-
         let input_sets = convert_to_references(
-            Arc::new(String::from("HTTP")),
+            SystemFunction::HTTP,
             CompositionSet::from_context(input_context),
-            metadata,
         )
         .unwrap();
 
@@ -170,19 +154,9 @@ dolore magna aliquyam erat, sed diam voluptua."#,
             }],
         }));
 
-        let metadata = Arc::new(Metadata {
-            input_sets: get_system_function_input_sets(SystemFunction::HTTP)
-                .into_iter()
-                .map(|name| (name, None))
-                .collect(),
-            output_sets: get_system_function_output_sets(SystemFunction::HTTP),
-            min_set_bytes: vec![],
-        });
-
         let input_sets = convert_to_references(
-            Arc::new(String::from("HTTP")),
+            SystemFunction::HTTP,
             CompositionSet::from_context(input_context),
-            metadata,
         )
         .unwrap();
 

@@ -5,7 +5,7 @@ use itertools::Itertools;
 use machine_interface::{
     composition::{Composition, FunctionDependencies, InputSetDescriptor, ShardingMode},
     function_driver::Metadata,
-    machine_config::{get_available_domains, EngineType},
+    machine_config::EngineType,
     memory_domain::{malloc::MallocMemoryDomain, MemoryDomain},
 };
 use std::{collections::BTreeMap, ops::Range, sync::Arc, vec};
@@ -38,8 +38,7 @@ fn get_some_engine_type() -> EngineType {
 }
 
 fn create_test_function_registry(functions: &[(&str, &[&str], &[&str])]) -> FunctionRegistry {
-    let domains: Vec<Arc<Box<dyn MemoryDomain>>> = get_available_domains(BTreeMap::new());
-    let function_reg = FunctionRegistry::new(&domains);
+    let function_reg = FunctionRegistry::new();
 
     let dummy_engine_type = get_some_engine_type();
     let dummy_domain = Arc::new(

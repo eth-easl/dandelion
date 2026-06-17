@@ -12,7 +12,10 @@ use dparser::{FunctionApplication, FunctionDecl, Spanned};
 use itertools::Itertools;
 use machine_interface::{
     composition::{self, FunctionDependencies, InputSetDescriptor, JoinStrategy, ShardingMode},
-    function_driver::Metadata,
+    function_driver::{
+        system_driver::{get_system_function_input_sets, get_system_function_output_sets},
+        Metadata,
+    },
 };
 
 use crate::function_registry::{FunctionRegistry, FunctionType};
@@ -48,11 +51,20 @@ impl<'reg> CompositionBuilder<'reg> {
             .function_map
             .read()
             .expect("Function registry lock poisoned!");
-        let metadata = match lock_guard.get(&decl.v.name) {
+        let (input_sets, output_sets) = match lock_guard.get(&decl.v.name) {
             Some(func_type) => match func_type {
-                FunctionType::SystemFunction(func_info) => &func_info.metadata,
-                FunctionType::Function(func_info) => &func_info.metadata,
-                FunctionType::Composition(comp_info) => &comp_info.metadata,
+                FunctionType::SystemFunction(sys_function) => (
+                    &get_system_function_input_sets(*sys_function),
+                    &get_system_function_output_sets(*sys_function),
+                ),
+                FunctionType::Function(func_info) => (
+                    &func_info.metadata.input_sets,
+                    &func_info.metadata.output_sets,
+                ),
+                FunctionType::Composition(comp_info) => (
+                    &comp_info.metadata.input_sets,
+                    &comp_info.metadata.output_sets,
+                ),
             },
             None => {
                 return err_dandelion!(DandelionError::Composition(
@@ -65,12 +77,12 @@ impl<'reg> CompositionBuilder<'reg> {
         };
 
         // validate function arguments
-        if decl.v.params.len() != metadata.input_sets.len()
+        if decl.v.params.len() != input_sets.len()
             || decl
                 .v
                 .params
                 .iter()
-                .zip_eq(metadata.input_sets.iter())
+                .zip_eq(input_sets.iter())
                 .any(|(decl_name, (metadata_name, _))| *decl_name != *metadata_name)
         {
             return err_dandelion!(DandelionError::Composition(
@@ -82,12 +94,12 @@ impl<'reg> CompositionBuilder<'reg> {
         }
 
         // validated function returns
-        if decl.v.returns.len() != metadata.output_sets.len()
+        if decl.v.returns.len() != output_sets.len()
             || decl
                 .v
                 .returns
                 .iter()
-                .zip_eq(metadata.output_sets.iter())
+                .zip_eq(output_sets.iter())
                 .any(|(decl_name, metadata_name)| *decl_name != *metadata_name)
         {
             return err_dandelion!(DandelionError::Composition(
