@@ -11,7 +11,6 @@ pub use strum::{EnumCount, EnumIter};
 #[repr(u8)] // ensure that always safe to cast to usize
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, EnumCount, EnumIter)]
 pub enum EngineType {
-    #[cfg(feature = "reqwest_io")]
     System,
     #[cfg(feature = "cheri")]
     Cheri,
@@ -35,7 +34,6 @@ pub enum DomainType {
 impl EngineType {
     pub fn get_domain_type(&self) -> DomainType {
         match self {
-            #[cfg(feature = "reqwest_io")]
             EngineType::System => DomainType::System,
             #[cfg(feature = "cheri")]
             EngineType::Cheri => DomainType::Cheri,
@@ -52,7 +50,6 @@ impl EngineType {
         queue: impl EngineWorkQueue + Clone + Send + 'static,
     ) -> DandelionResult<()> {
         match self {
-            #[cfg(feature = "reqwest_io")]
             EngineType::System => crate::function_driver::system_driver::reqwest::ReqwestDriver {}
                 .start_engine(resource, queue),
             #[cfg(feature = "cheri")]
@@ -73,7 +70,6 @@ impl EngineType {
         static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
     ) -> DandelionResult<Function> {
         match self {
-            #[cfg(feature = "reqwest_io")]
             EngineType::System => crate::function_driver::system_driver::reqwest::ReqwestDriver {}
                 .parse_function(function_path, static_domain),
             #[cfg(feature = "cheri")]
@@ -143,7 +139,6 @@ pub fn create_engine_resource_map(
     pool_map.insert(engine_type, compute_cores);
 
     // communication engines
-    #[cfg(feature = "reqwest_io")]
     pool_map.insert(EngineType::System, communication_cores);
 
     pool_map

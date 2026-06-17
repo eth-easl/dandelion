@@ -3,7 +3,6 @@ mod dispatcher_tests {
     mod function_tests;
     mod registry_tests;
 
-    #[cfg(feature = "reqwest_io")]
     mod combination_tests;
 
     use dandelion_commons::FunctionId;
@@ -49,7 +48,6 @@ mod dispatcher_tests {
         pool_map.insert(engine_type, engine_resource);
 
         // insert a system engine if available
-        #[cfg(feature = "reqwest_io")]
         pool_map.insert(EngineType::System, vec![ComputeResource::CPU(0)]);
 
         let resource_pool = ResourcePool {
@@ -198,7 +196,6 @@ mod dispatcher_tests {
             }
 
             #[test_log::test]
-            #[cfg(feature = "reqwest_io")]
             fn test_fetch_compute() {
                 use crate::dispatcher_tests::combination_tests::fetch_compute;
                 let name = format!("test_{}_matmul", stringify!($name));

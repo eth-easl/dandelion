@@ -1,7 +1,4 @@
-#[cfg(all(
-    any(feature = "mmu", feature = "kvm", feature = "cheri"),
-    feature = "reqwest_io"
-))]
+#[cfg(any(feature = "mmu", feature = "kvm", feature = "cheri"))]
 mod server_tests {
 
     use byteorder::{LittleEndian, ReadBytesExt};

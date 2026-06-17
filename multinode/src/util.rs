@@ -18,7 +18,6 @@ use tokio::sync::{mpsc, OnceCell};
 /// Translates dandelion engine types to protocol engine types.
 pub(crate) fn engine_type_dtop(t: machine_config::EngineType) -> proto::EngineType {
     match t {
-        #[cfg(feature = "reqwest_io")]
         machine_config::EngineType::System => proto::EngineType::EngineReqwest,
         #[cfg(feature = "cheri")]
         machine_config::EngineType::Cheri => proto::EngineType::EngineCheri,
@@ -32,7 +31,6 @@ pub(crate) fn engine_type_dtop(t: machine_config::EngineType) -> proto::EngineTy
 /// Translates protocol engine types to dandelion engine types.
 pub(crate) fn engine_type_ptod(t: i32) -> DandelionResult<machine_config::EngineType> {
     match proto::EngineType::try_from(t).unwrap() {
-        #[cfg(feature = "reqwest_io")]
         proto::EngineType::EngineReqwest => Ok(machine_config::EngineType::System),
         #[cfg(feature = "cheri")]
         proto::EngineType::EngineCheri => Ok(machine_config::EngineType::Cheri),

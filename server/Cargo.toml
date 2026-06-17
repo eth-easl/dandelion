@@ -7,7 +7,7 @@ edition = "2021"
 ignored = ["openssl", "serde_bytes"]
 
 [dependencies]
-machine_interface = { path = "../machine_interface", features = ["bytes_context"] }
+machine_interface = { path = "../machine_interface" }
 dandelion_commons = { path = "../dandelion_commons" }
 dispatcher = { path = "../dispatcher" }
 multinode = { path = "../multinode" }
@@ -42,9 +42,8 @@ archive = []
 cheri = ["dispatcher/cheri", "multinode/cheri"]
 mmu = ["dispatcher/mmu", "multinode/mmu"]
 kvm = ["dispatcher/kvm", "multinode/kvm"]
-reqwest_io = ["dispatcher/reqwest_io", "multinode/reqwest_io"]
 timestamp = ["dispatcher/timestamp", "multinode/timestamp"]
 log_function_stdio = ["dispatcher/log_function_stdio"]
-data_locallity = ["dispatcher/data_locallity"]
+data_locality = ["dispatcher/data_locality"]
 vendored-ssl = ["dep:openssl"]
 blocking_queue = ["machine_interface/blocking_queue"]

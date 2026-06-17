@@ -270,7 +270,6 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
 }
 
 #[test_log::test]
-#[cfg(any(feature = "reqwest_io"))]
 fn test_insert_composition_with_http_func() {
     use std::collections::BTreeMap;
 

@@ -92,7 +92,6 @@ pub fn mmu_transfer(
     Ok(())
 }
 
-#[cfg(feature = "bytes_context")]
 pub fn bytest_to_mmu_transfer(
     destination: &mut MmuContext,
     source: &crate::memory_domain::bytes_context::BytesContext,

@@ -1,4 +1,3 @@
-#[cfg(feature = "reqwest_io")]
 pub mod reqwest;
 
 use crate::{
@@ -56,10 +55,7 @@ pub fn get_system_function_output_sets(function: SystemFunction) -> Vec<String> 
     .to_vec();
 }
 
-pub const SYSTEM_FUNCTIONS: &[SystemFunction] = &[
-    #[cfg(feature = "reqwest_io")]
-    SystemFunction::HTTP,
-];
+pub const SYSTEM_FUNCTIONS: &[SystemFunction] = &[SystemFunction::HTTP];
 
 #[derive(Debug, Clone)]
 pub struct IoData {

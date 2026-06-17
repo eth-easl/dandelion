@@ -28,7 +28,6 @@ pub enum QueueFlag {
 
 pub fn get_engine_flag(t: EngineType) -> u32 {
     match t {
-        #[cfg(feature = "reqwest_io")]
         EngineType::System => QueueFlag::EngineSystem as u32,
         #[cfg(feature = "cheri")]
         EngineType::Cheri => QueueFlag::EngineCheri as u32,
@@ -56,10 +55,10 @@ struct IoQueueElement {
     /// The Debt content of the queue element
     debt: Debt,
     /// Sizes of remote references if any
-    #[cfg(feature = "data_locallity")]
+    #[cfg(feature = "data_locality")]
     remote_data: std::collections::BTreeMap<u64, usize>,
     /// Total size of all inputs
-    #[cfg(feature = "data_locallity")]
+    #[cfg(feature = "data_locality")]
     total_input_size: usize,
 }
 
@@ -175,7 +174,7 @@ fn io_extract_if(
     compute_length: usize,
     already_fetching: usize,
     local_cores: usize,
-    #[cfg(feature = "data_locallity")] idle_compute_cores: usize,
+    #[cfg(feature = "data_locality")] idle_compute_cores: usize,
 ) -> bool {
     match queue_element.work {
         WorkToDo::FunctionArguments {
@@ -186,10 +185,10 @@ fn io_extract_if(
             caching: _,
             recorder: _,
         } => {
-            #[cfg(not(feature = "data_locallity"))]
+            #[cfg(not(feature = "data_locality"))]
             let should_take = compute_length + already_fetching < LOCAL_WORK_PER_CORE * local_cores;
 
-            #[cfg(feature = "data_locallity")]
+            #[cfg(feature = "data_locality")]
             // additionally want to prevent fetching, if there is remote data and no local core is idle
             // always take it if there are idle cores, only prefetch if it is prefetching via IO, not from other nodes
             let should_take = idle_compute_cores > 0
@@ -215,16 +214,16 @@ impl Future for IoWaitFuture<'_> {
         let compute_length = lock_guard.compute_queue.len();
         let local_cores = *self.work_queue.system_info.num_local_cores_watcher.borrow();
         let already_fetching = lock_guard.fetching_in_progress;
-        #[cfg(feature = "data_locallity")]
+        #[cfg(feature = "data_locality")]
         let idle_compute_cores = lock_guard.compute_waker_list.len();
         let mut is_fetching = false;
         let result = lock_guard
             .io_queue
             .extract_if(|queue_element| {
-                #[cfg(not(feature = "data_locallity"))]
+                #[cfg(not(feature = "data_locality"))]
                 let should_take =
                     io_extract_if(queue_element, compute_length, already_fetching, local_cores);
-                #[cfg(feature = "data_locallity")]
+                #[cfg(feature = "data_locality")]
                 let should_take = io_extract_if(
                     queue_element,
                     compute_length,
@@ -353,7 +352,7 @@ impl WorkQueue {
         mut work: WorkToDo,
         debt: Debt,
         flags: u32,
-        #[cfg(feature = "data_locallity")] try_offload: bool,
+        #[cfg(feature = "data_locality")] try_offload: bool,
     ) {
         if let WorkToDo::FunctionArguments {
             function_id: _,
@@ -368,7 +367,7 @@ impl WorkQueue {
         }
 
         let mut queue_guard = self.inner.lock().unwrap();
-        #[cfg(feature = "data_locallity")]
+        #[cfg(feature = "data_locality")]
         let (remote_data, total_input_size) = if let WorkToDo::FunctionArguments {
             function_id: _,
             function_alternatives: _,
@@ -403,7 +402,7 @@ impl WorkQueue {
             (std::collections::BTreeMap::new(), 0)
         };
         // TODO: think about if there is a better place to do this
-        #[cfg(feature = "data_locallity")]
+        #[cfg(feature = "data_locality")]
         {
             if try_offload {
                 if let Some((node_id, max_size)) = remote_data.iter().max() {
@@ -423,9 +422,9 @@ impl WorkQueue {
             flags,
             work,
             debt,
-            #[cfg(feature = "data_locallity")]
+            #[cfg(feature = "data_locality")]
             remote_data,
-            #[cfg(feature = "data_locallity")]
+            #[cfg(feature = "data_locality")]
             total_input_size,
         };
         // check if an io core would take the element or not,
@@ -433,9 +432,9 @@ impl WorkQueue {
         let compute_length = queue_guard.compute_queue.len();
         let local_cores = *self.system_info.num_local_cores_watcher.borrow();
         let already_fetching = queue_guard.fetching_in_progress;
-        #[cfg(feature = "data_locallity")]
+        #[cfg(feature = "data_locality")]
         let idle_compute_cores = queue_guard.compute_waker_list.len();
-        #[cfg(feature = "data_locallity")]
+        #[cfg(feature = "data_locality")]
         let would_process = io_extract_if(
             &new_element,
             compute_length,
@@ -443,7 +442,7 @@ impl WorkQueue {
             local_cores,
             idle_compute_cores,
         );
-        #[cfg(not(feature = "data_locallity"))]
+        #[cfg(not(feature = "data_locality"))]
         let would_process =
             io_extract_if(&new_element, compute_length, already_fetching, local_cores);
 
@@ -462,7 +461,7 @@ impl WorkQueue {
         &self,
         work: WorkToDo,
         debt: Debt,
-        #[cfg(feature = "data_locallity")] try_offload: bool,
+        #[cfg(feature = "data_locality")] try_offload: bool,
     ) {
         let (flags, local) = match &work {
             WorkToDo::Shutdown(engine_type) => (get_engine_flag(*engine_type), true),
@@ -507,9 +506,9 @@ impl WorkQueue {
         if local {
             self.push_compute(work, debt, flags, false);
         } else {
-            #[cfg(feature = "data_locallity")]
+            #[cfg(feature = "data_locality")]
             self.push_io(work, debt, flags, try_offload);
-            #[cfg(not(feature = "data_locallity"))]
+            #[cfg(not(feature = "data_locality"))]
             self.push_io(work, debt, flags);
         }
     }
@@ -518,9 +517,9 @@ impl WorkQueue {
     /// awaits the future before returning the result.
     pub async fn do_work(&self, work: WorkToDo) -> DandelionResult<WorkDone> {
         let (promise, debt) = self.promise_buffer.get_promise()?;
-        #[cfg(feature = "data_locallity")]
+        #[cfg(feature = "data_locality")]
         self.push(work, debt, true);
-        #[cfg(not(feature = "data_locallity"))]
+        #[cfg(not(feature = "data_locality"))]
         self.push(work, debt);
         return promise.await;
     }
@@ -528,7 +527,7 @@ impl WorkQueue {
     /// Tries to acquire some work that matches the given flags starting from the head of the queue.
     /// Ignores shutdown and fetch work, since that only makes sense to execute locally
     /// Version that takes node locality into account
-    #[cfg(feature = "data_locallity")]
+    #[cfg(feature = "data_locality")]
     pub fn try_get_work_for_remote(
         &self,
         engine_flags: u32,
@@ -642,7 +641,7 @@ impl WorkQueue {
     /// Tries to acquire some work that matches the given flags starting from the head of the queue.
     /// Ignores shutdown and fetch work, since that only makes sense to execute locally
     /// Base Version
-    #[cfg(not(feature = "data_locallity"))]
+    #[cfg(not(feature = "data_locality"))]
     pub fn try_get_work_for_remote(
         &self,
         engine_flags: u32,
@@ -773,9 +772,9 @@ impl WorkQueue {
 
     /// Put work back into queue after trying to offload without success
     pub async fn reenqueue(&self, work: WorkToDo, debt: Debt) {
-        #[cfg(feature = "data_locallity")]
+        #[cfg(feature = "data_locality")]
         self.push(work, debt, false);
-        #[cfg(not(feature = "data_locallity"))]
+        #[cfg(not(feature = "data_locality"))]
         self.push(work, debt);
     }
 

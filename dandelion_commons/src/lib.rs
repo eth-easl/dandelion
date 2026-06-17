@@ -23,9 +23,6 @@ pub enum DandelionError {
     UserError(UserError),
     /// Error in inter communication to other nodes
     Multinode(MultinodeError),
-    /// Default error, should never be used, but need it to implement Default,
-    /// which should never be constructed in normal operation
-    Default,
     /// trying to use a feature that is not yet implemented
     NotImplemented,
     // errors in configurations
