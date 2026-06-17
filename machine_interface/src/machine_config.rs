@@ -99,13 +99,7 @@ pub fn get_available_domains(
         #[cfg(feature = "kvm")]
         (DomainType::Kvm, MemoryResource::Anonymous { size: 0 }),
         #[cfg(feature = "mmu")]
-        (
-            DomainType::Process,
-            MemoryResource::Shared {
-                id: u64::MAX,
-                size: 0,
-            },
-        ),
+        (DomainType::Process, MemoryResource::Shared { size: 0 }),
     ]);
     for (dom, resource) in resources {
         default_resources.insert(dom, resource);

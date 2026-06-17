@@ -2,7 +2,7 @@ use dandelion_commons::{
     dandelion_err, err_dandelion, range_pool::RangePool, DandelionError, DandelionResult,
     DomainError,
 };
-use log::{debug, error};
+use log::{debug, error, trace, warn};
 use nix::{
     fcntl::OFlag,
     sys::{
@@ -59,7 +59,7 @@ impl MmapMemPool {
     // Create a memory-mapped file with the given size and protection flags.
     // If a filename is given, memory will be backed by that file,
     // otherwise it will be backed by an anonymous file.
-    pub fn create(size: usize, prot: ProtFlags, shared: Option<u64>) -> DandelionResult<Self> {
+    pub fn create(size: usize, prot: ProtFlags, shared: bool) -> DandelionResult<Self> {
         // use 1MB for minimal allocation granularity and u32 to keep track of them,
         assert!(size < (u32::MAX as usize) * SLAB_SIZE);
         let upper_end = u32::try_from(size / SLAB_SIZE)
@@ -76,21 +76,26 @@ impl MmapMemPool {
                 }),
             });
         }
-        let (fd, ptr, filename) = if let Some(shared_id) = shared {
-            let filename_string = format!("/shm_{:X}", shared_id);
-            log::trace!("ctx filename: {:?}", filename_string);
-            let fd = match shm_open(
-                filename_string.as_str(),
-                OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR,
-                Mode::S_IRUSR | Mode::S_IWUSR,
-            ) {
-                Err(err) => {
-                    error!("Error creating shared memory file: {}", err);
-                    return err_dandelion!(DandelionError::DomainError(DomainError::SharedOpen));
-                }
-                fd => fd.unwrap(),
+        let (fd, ptr, filename) = if shared {
+            // Try different ids until one works
+            let mut id = 0;
+            let fd = loop {
+                let filename_string = format!("/shm_{:X}", id);
+                trace!("ctx filename: {:?}", filename_string);
+                match shm_open(
+                    filename_string.as_str(),
+                    OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR,
+                    Mode::S_IRUSR | Mode::S_IWUSR,
+                ) {
+                    Err(err) => {
+                        warn!("Error creating shared memory file: {}", err);
+                    }
+                    Ok(fd) => break fd,
+                };
+                id += 1;
             };
 
+            let filename_string = format!("/shm_{:X}", id);
             match ftruncate(&fd, size as _) {
                 Err(err) => {
                     close(fd).unwrap();

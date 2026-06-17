@@ -31,6 +31,11 @@ jobs:
           compute_driver: mmu
           system_driver: reqwest_io
           additional_features: "log_function_stdio"
+        
+        - platform: ubuntu-24.04
+          compute_driver: mmu
+          system_driver: reqwest_io
+          additional_features: "blocking_queue"
 
     name: ${{matrix.platform}} - ${{matrix.compute_driver}}|${{matrix.system_driver}} - ${{ matrix.additional_features || 'core' }}
     runs-on: ${{matrix.platform}}

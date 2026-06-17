@@ -5,18 +5,12 @@ use crate::{
     },
     machine_config::EngineType,
     memory_domain::{self, Context},
-    promise::Debt,
 };
 use core::marker::Send;
 use dandelion_commons::{
     err_dandelion, records::RecordPoint, DandelionError, DandelionResult, FunctionRegistryError,
 };
-use std::{
-    future::Future,
-    sync::atomic::{AtomicBool, Ordering},
-    task::{Poll, RawWaker, RawWakerVTable, Waker},
-    thread::spawn,
-};
+use std::thread::spawn;
 
 extern crate alloc;
 
@@ -35,41 +29,111 @@ pub trait EngineLoop {
 
 // TODO: make sencond blocking waker
 // functions for the waker
-fn waker_clone(data: *const ()) -> RawWaker {
-    RawWaker::new(data, &WAKER_TABLE)
-}
+#[cfg(not(feature = "blocking_queue"))]
+mod waker {
+    use crate::{
+        function_driver::{EngineWorkQueue, WorkToDo},
+        promise::Debt,
+    };
+    use std::{
+        future::Future,
+        sync::atomic::{AtomicBool, Ordering},
+        task::{Poll, RawWaker, RawWakerVTable, Waker},
+    };
 
-fn waker_wake(data: *const ()) {
-    let atomic = unsafe { &*(data as *const AtomicBool) };
-    atomic.store(true, Ordering::Release);
-}
+    fn waker_clone(data: *const ()) -> RawWaker {
+        RawWaker::new(data, &WAKER_TABLE)
+    }
 
-unsafe fn waker_wake_by_ref(data: *const ()) {
-    waker_wake(data);
-}
+    fn waker_wake(data: *const ()) {
+        let atomic = unsafe { &*(data as *const AtomicBool) };
+        atomic.store(true, Ordering::Release);
+    }
 
-unsafe fn waker_drop(_: *const ()) {}
+    unsafe fn waker_wake_by_ref(data: *const ()) {
+        waker_wake(data);
+    }
 
-const WAKER_TABLE: RawWakerVTable =
-    RawWakerVTable::new(waker_clone, waker_wake, waker_wake_by_ref, waker_drop);
+    unsafe fn waker_drop(_: *const ()) {}
 
-fn manual_pull(queue: &mut impl EngineWorkQueue) -> (WorkToDo, Debt) {
-    let mut queue_future = core::pin::pin!(queue.get_compute_engine_args());
-    //
-    let new_atomic = AtomicBool::new(false);
-    let raw_waker = RawWaker::new(new_atomic.as_ptr() as *const (), &WAKER_TABLE);
-    let waker = unsafe { Waker::from_raw(raw_waker) };
-    let mut context = std::task::Context::from_waker(&waker);
-    loop {
-        if let Poll::Ready(work) = queue_future.as_mut().poll(&mut context) {
-            return work;
+    const WAKER_TABLE: RawWakerVTable =
+        RawWakerVTable::new(waker_clone, waker_wake, waker_wake_by_ref, waker_drop);
+
+    pub(super) fn manual_pull(queue: &mut impl EngineWorkQueue) -> (WorkToDo, Debt) {
+        let mut queue_future = core::pin::pin!(queue.get_compute_engine_args());
+
+        let new_atomic = AtomicBool::new(false);
+        let raw_waker = RawWaker::new(new_atomic.as_ptr() as *const (), &WAKER_TABLE);
+        let waker = unsafe { Waker::from_raw(raw_waker) };
+        let mut context = std::task::Context::from_waker(&waker);
+        loop {
+            if let Poll::Ready(work) = queue_future.as_mut().poll(&mut context) {
+                return work;
+            }
+            // means it is still pending, wait for waker to be woken
+            while new_atomic
+                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                core::hint::spin_loop();
+            }
         }
-        // means it is still pending, wait for waker to be woken
-        while new_atomic
-            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            core::hint::spin_loop();
+    }
+}
+
+#[cfg(feature = "blocking_queue")]
+mod waker {
+    use crate::{
+        function_driver::{EngineWorkQueue, WorkToDo},
+        promise::Debt,
+    };
+    use std::{
+        future::Future,
+        sync::mpsc::{channel, Sender},
+        task::{Poll, RawWaker, RawWakerVTable, Waker},
+    };
+
+    fn waker_clone(data: *const ()) -> RawWaker {
+        let box_ref = unsafe { Box::from_raw(data as *mut Sender<()>) };
+        let new_sender = box_ref.clone();
+        // don't drop the original box
+        let _ = Box::into_raw(box_ref);
+        RawWaker::new(Box::into_raw(new_sender) as *const (), &WAKER_TABLE)
+    }
+
+    fn waker_wake(data: *const ()) {
+        unsafe {
+            waker_wake_by_ref(data);
+            waker_drop(data);
+        }
+    }
+
+    unsafe fn waker_wake_by_ref(data: *const ()) {
+        let sender_ref = &*(data as *const Sender<()>);
+        sender_ref.send(()).unwrap();
+    }
+
+    unsafe fn waker_drop(data: *const ()) {
+        let _ = Box::from_raw(data as *mut Sender<()>);
+    }
+
+    const WAKER_TABLE: RawWakerVTable =
+        RawWakerVTable::new(waker_clone, waker_wake, waker_wake_by_ref, waker_drop);
+
+    pub(super) fn manual_pull(queue: &mut impl EngineWorkQueue) -> (WorkToDo, Debt) {
+        let mut queue_future = core::pin::pin!(queue.get_compute_engine_args());
+        //
+        let (sender, receiver) = channel::<()>();
+        let sender_box = Box::new(sender);
+        let raw_waker = RawWaker::new(Box::into_raw(sender_box) as *const (), &WAKER_TABLE);
+        let waker = unsafe { Waker::from_raw(raw_waker) };
+        let mut context = std::task::Context::from_waker(&waker);
+        loop {
+            if let Poll::Ready(work) = queue_future.as_mut().poll(&mut context) {
+                return work;
+            }
+            // means it is still pending, wait for waker to be woken
+            receiver.recv().unwrap();
         }
     }
 }
@@ -83,7 +147,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
     let mut engine_state = E::init(core_id).expect("Failed to initialize thread state");
     'engine: loop {
         // TODO catch unwind so we can always return an error or shut down gracefully
-        let (args, debt) = manual_pull(&mut queue);
+        let (args, debt) = waker::manual_pull(&mut queue);
         match args {
             WorkToDo::FunctionArguments {
                 function_id: _,

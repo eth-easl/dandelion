@@ -55,15 +55,7 @@ mod dispatcher_tests {
         let resource_pool = ResourcePool {
             engine_pool: futures::lock::Mutex::new(pool_map),
         };
-        let memory_resources = vec![memory_resource]
-            .into_iter()
-            .map(|(dom, resource)| {
-                (
-                    dom,
-                    machine_interface::memory_domain::test_resource::get_resource(resource),
-                )
-            })
-            .collect();
+        let memory_resources = BTreeMap::from_iter(vec![memory_resource].into_iter());
         let work_queue = WorkQueue::init();
         let dispatcher = Dispatcher::init(
             resource_pool,
@@ -233,9 +225,9 @@ mod dispatcher_tests {
             memory_domain::{mmu::MmuMemoryDomain, MemoryResource},
         };
         #[cfg(target_arch = "x86_64")]
-        dispatcherTests!(elf_mmu_x86_64; MmuMemoryDomain; (DomainType::Process ,MemoryResource::Shared { id: 0, size: (1<<30) }); EngineType::Process; vec![ComputeResource::CPU(1)]);
+        dispatcherTests!(elf_mmu_x86_64; MmuMemoryDomain; (DomainType::Process ,MemoryResource::Shared { size: (1<<30) }); EngineType::Process; vec![ComputeResource::CPU(1)]);
         #[cfg(target_arch = "aarch64")]
-        dispatcherTests!(elf_mmu_aarch64; MmuMemoryDomain; (DomainType::Process, MemoryResource::Shared { id: 0, size: (1<<30) }); EngineType::Process; vec![ComputeResource::CPU(1)]);
+        dispatcherTests!(elf_mmu_aarch64; MmuMemoryDomain; (DomainType::Process, MemoryResource::Shared { size: (1<<30) }); EngineType::Process; vec![ComputeResource::CPU(1)]);
     }
 
     #[cfg(feature = "kvm")]
