@@ -1,4 +1,6 @@
-use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, DispatcherError};
+use dandelion_commons::{
+    err_dandelion, records::RecordPoint, DandelionError, DandelionResult, DispatcherError,
+};
 use log::trace;
 use machine_interface::{
     composition::SystemInfo,
@@ -123,12 +125,24 @@ impl Future for ComputeWaitFuture<'_> {
             .extract_if(|queue_element| queue_element.flags & self.flags != 0)
             .next()
             .map(|queue_element| (queue_element.work, queue_element.debt));
-        if let Some(result_tupple) = result {
+        if let Some(mut result_tupple) = result {
             // Poke the IO queue in case they were waiting for space to produce more results
             if let Some(waker) = lock_guard.io_waker_list.pop_front() {
                 waker.wake();
             }
             self.work_queue.queue_state_decrease();
+
+            if let WorkToDo::FunctionArguments {
+                function_id: _,
+                function_alternatives: _,
+                input_sets: _,
+                metadata: _,
+                caching: _,
+                recorder,
+            } = &mut result_tupple.0
+            {
+                recorder.record(RecordPoint::ComputeQueueEnd);
+            }
             Poll::Ready(result_tupple)
         } else {
             // Did not find any work, so need to add to waker queue
@@ -155,6 +169,40 @@ impl<'list> IoWaitFuture<'list> {
 
 const LOCAL_WORK_PER_CORE: usize = 2;
 
+#[inline]
+fn io_extract_if(
+    queue_element: &IoQueueElement,
+    compute_length: usize,
+    already_fetching: usize,
+    local_cores: usize,
+    #[cfg(feature = "data_locallity")] idle_compute_cores: usize,
+) -> bool {
+    match queue_element.work {
+        WorkToDo::FunctionArguments {
+            function_id: _,
+            function_alternatives: _,
+            input_sets: _,
+            metadata: _,
+            caching: _,
+            recorder: _,
+        } => {
+            #[cfg(not(feature = "data_locallity"))]
+            let should_take = compute_length + already_fetching < LOCAL_WORK_PER_CORE * local_cores;
+
+            #[cfg(feature = "data_locallity")]
+            // additionally want to prevent fetching, if there is remote data and no local core is idle
+            // always take it if there are idle cores, only prefetch if it is prefetching via IO, not from other nodes
+            let should_take = idle_compute_cores > 0
+                || (compute_length + already_fetching < LOCAL_WORK_PER_CORE * local_cores
+                    && !queue_element.remote_data.is_empty());
+            // need to do it like this, because attributes on expressions are still experimental
+            should_take
+        }
+        // always take resolver work
+        _ => true,
+    }
+}
+
 impl Future for IoWaitFuture<'_> {
     type Output = (WorkToDo, Debt);
 
@@ -172,49 +220,45 @@ impl Future for IoWaitFuture<'_> {
         let mut is_fetching = false;
         let result = lock_guard
             .io_queue
-            .extract_if(|queue_element| match queue_element.work {
-                WorkToDo::FunctionArguments {
-                    function_id: _,
-                    function_alternatives: _,
-                    input_sets: _,
-                    metadata: _,
-                    caching: _,
-                    recorder: _,
-                } => {
-                    #[cfg(not(feature = "data_locallity"))]
-                    let should_take =
-                        compute_length + already_fetching < LOCAL_WORK_PER_CORE * local_cores;
-
-                    #[cfg(feature = "data_locallity")]
-                    // additionally want to prevent fetching, if there is remote data and no local core is idle
-                    // always take it if there are idle cores, only prefetch if it is prefetching via IO, not from other nodes
-                    let should_take = idle_compute_cores > 0
-                        || (compute_length + already_fetching < LOCAL_WORK_PER_CORE * local_cores
-                            && !queue_element.remote_data.is_empty());
-
-                    // If will take task that has prefetching, increase counter accordingly
-                    is_fetching = should_take;
-                    // need to do it like this, because attributes on expressions are still experimental
-                    should_take
-                }
-                // always take resolver work
-                _ => true,
+            .extract_if(|queue_element| {
+                #[cfg(not(feature = "data_locallity"))]
+                let should_take =
+                    io_extract_if(queue_element, compute_length, already_fetching, local_cores);
+                #[cfg(feature = "data_locallity")]
+                let should_take = io_extract_if(
+                    queue_element,
+                    compute_length,
+                    already_fetching,
+                    local_cores,
+                    idle_compute_cores,
+                );
+                // If will take task that has prefetching, increase counter accordingly
+                is_fetching = should_take;
+                should_take
             })
             .next()
             .map(|queue_element| (queue_element.work, queue_element.debt));
         if is_fetching {
             lock_guard.fetching_in_progress += 1;
         }
-        if let Some(result_tupple) = result {
+        if let Some(mut result_tupple) = result {
+            if let WorkToDo::FunctionArguments {
+                function_id: _,
+                function_alternatives: _,
+                input_sets: _,
+                metadata: _,
+                caching: _,
+                recorder,
+            } = &mut result_tupple.0
+            {
+                recorder.record(RecordPoint::IOQueueEnd);
+            }
+
             // Found some work, so core is not idle
             Poll::Ready(result_tupple)
         } else {
             // Did not find any work, so need to add to waker queue
             lock_guard.io_waker_list.push_back(cx.waker().clone());
-            // TODO: this is here, for the case where we have 0 compute engines, as this otherwise just always spins
-            // Mainly necessary for tests, find better overall policy
-            self.work_queue.queueing_notifier().notify_waiters();
-            // lock was ready once, need to set new one
             Poll::Pending
         }
     }
@@ -271,7 +315,19 @@ impl WorkQueue {
     /// Pushes the work and debt to the back of the queue and sets the flags accordingly.
     /// Returns an error if the queue is full.
     /// TODO: check or define here and other places, if the flags need to match fully, just checking that any flag is set would be enough
-    fn push_compute(&self, work: WorkToDo, debt: Debt, flags: u32, had_fetching: bool) {
+    fn push_compute(&self, mut work: WorkToDo, debt: Debt, flags: u32, had_fetching: bool) {
+        if let WorkToDo::FunctionArguments {
+            function_id: _,
+            function_alternatives: _,
+            input_sets: _,
+            metadata: _,
+            caching: _,
+            recorder,
+        } = &mut work
+        {
+            recorder.record(RecordPoint::ComputeQueueStart);
+        }
+
         let mut queue_guard = self.inner.lock().unwrap();
         if had_fetching {
             queue_guard.fetching_in_progress -= 1;
@@ -294,11 +350,23 @@ impl WorkQueue {
 
     fn push_io(
         &self,
-        work: WorkToDo,
+        mut work: WorkToDo,
         debt: Debt,
         flags: u32,
         #[cfg(feature = "data_locallity")] try_offload: bool,
     ) {
+        if let WorkToDo::FunctionArguments {
+            function_id: _,
+            function_alternatives: _,
+            input_sets: _,
+            metadata: _,
+            caching: _,
+            recorder,
+        } = &mut work
+        {
+            recorder.record(RecordPoint::IOQueueStart);
+        }
+
         let mut queue_guard = self.inner.lock().unwrap();
         #[cfg(feature = "data_locallity")]
         let (remote_data, total_input_size) = if let WorkToDo::FunctionArguments {
@@ -350,7 +418,8 @@ impl WorkQueue {
                 }
             }
         }
-        queue_guard.io_queue.push_back(IoQueueElement {
+
+        let new_element = IoQueueElement {
             flags,
             work,
             debt,
@@ -358,10 +427,32 @@ impl WorkQueue {
             remote_data,
             #[cfg(feature = "data_locallity")]
             total_input_size,
-        });
+        };
+        // check if an io core would take the element or not,
+        // if not, no reason to call waker
+        let compute_length = queue_guard.compute_queue.len();
+        let local_cores = *self.system_info.num_local_cores_watcher.borrow();
+        let already_fetching = queue_guard.fetching_in_progress;
+        #[cfg(feature = "data_locallity")]
+        let idle_compute_cores = queue_guard.compute_waker_list.len();
+        #[cfg(feature = "data_locallity")]
+        let would_process = io_extract_if(
+            &new_element,
+            compute_length,
+            already_fetching,
+            local_cores,
+            idle_compute_cores,
+        );
+        #[cfg(not(feature = "data_locallity"))]
+        let would_process =
+            io_extract_if(&new_element, compute_length, already_fetching, local_cores);
+
+        queue_guard.io_queue.push_back(new_element);
+
         // call first waker with matching flags if there are any
-        if let Some(waker_to_call) = queue_guard.io_waker_list.pop_front() {
-            waker_to_call.wake();
+        // only call waker if we know the core wants to take this element
+        if !queue_guard.io_waker_list.is_empty() && would_process {
+            queue_guard.io_waker_list.pop_front().unwrap().wake();
         } else {
             self.queuing_notifier.notify_waiters();
         }
@@ -447,77 +538,110 @@ impl WorkQueue {
         &self,
         engine_flags: u32,
         node_id: u64,
-    ) -> Option<(WorkToDo, Debt)> {
+        number_of_functions: usize,
+    ) -> Vec<(WorkToDo, Debt)> {
+        let mut functions = Vec::with_capacity(number_of_functions);
         let mut lock = self.inner.lock().unwrap();
         // go through all the input sets and find the index of the one with the most data already on the node asking for work
-        // TODO: find better policy that does not require going through entire list
-        if let Some((index, _)) = lock
-            .io_queue
-            .iter()
-            .filter_map(|queue_element| {
-                if let WorkToDo::FunctionArguments {
-                    function_id: _,
-                    function_alternatives: _,
-                    input_sets: _,
-                    metadata: _,
-                    caching: _,
-                    recorder: _,
-                } = &queue_element.work
-                {
-                    if queue_element.flags & engine_flags != 0 {
-                        Some((
-                            node_id,
-                            queue_element
-                                .remote_data
-                                .get(&node_id)
-                                .copied()
-                                .unwrap_or(0usize),
-                        ))
+        functions.extend(
+            lock.io_queue
+                .extract_if(|queue_element| {
+                    if let WorkToDo::FunctionArguments {
+                        function_id: _,
+                        function_alternatives: _,
+                        input_sets: _,
+                        metadata: _,
+                        caching: _,
+                        recorder,
+                    } = &mut queue_element.work
+                    {
+                        let node_has_most_data = queue_element
+                            .remote_data
+                            .iter()
+                            .max_by_key(|(_, v)| **v)
+                            .map(|(max_id, _)| node_id == *max_id)
+                            .unwrap_or(false);
+                        if queue_element.flags & engine_flags != 0 && node_has_most_data {
+                            // we are taking the element so can set the recorder
+                            recorder.record(RecordPoint::IOQueueEnd);
+                            self.queue_state_decrease();
+                            true
+                        } else {
+                            false
+                        }
                     } else {
-                        None
+                        false
                     }
-                } else {
-                    None
-                }
-            })
-            .enumerate()
-            .max_by_key(|(_, data)| *data)
-        {
-            let mut second_half = lock.io_queue.split_off(index);
-            let work_option = second_half.pop_front();
-            lock.io_queue.append(&mut second_half);
-            self.queue_state_decrease();
-            return work_option.map(|q_element| (q_element.work, q_element.debt));
+                })
+                .map(|queue_element| (queue_element.work, queue_element.debt))
+                .take(number_of_functions),
+        );
+
+        // did not find enough work where the node has the majority of data, so take anything left over
+        if functions.len() < number_of_functions {
+            let still_needed = number_of_functions - functions.len();
+            functions.extend(
+                lock.io_queue
+                    .extract_if(|queue_element| {
+                        if let WorkToDo::FunctionArguments {
+                            function_id: _,
+                            function_alternatives: _,
+                            input_sets: _,
+                            metadata: _,
+                            caching: _,
+                            recorder,
+                        } = &mut queue_element.work
+                        {
+                            if queue_element.flags & engine_flags != 0 {
+                                recorder.record(RecordPoint::IOQueueEnd);
+                                self.queue_state_decrease();
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    })
+                    .map(|queue_element| (queue_element.work, queue_element.debt))
+                    .take(still_needed),
+            );
         }
-        // did not find any work in the io_queue so check compute queue
-        if let Some(local_work) = lock
-            .compute_queue
-            .extract_if(|queue_element| {
-                if let WorkToDo::FunctionArguments {
-                    function_id: _,
-                    function_alternatives: _,
-                    input_sets: _,
-                    metadata: _,
-                    caching: _,
-                    recorder: _,
-                } = &queue_element.work
-                {
-                    // TODO might want to prefer the one with the least total data
-                    queue_element.flags & engine_flags != 0
-                } else {
-                    false
-                }
-            })
-            .next()
-        {
-            // poke the io cores to resolve more local work if some of it was taken
-            if let Some(waker) = lock.io_waker_list.pop_front() {
-                waker.wake();
-            }
-            self.queue_state_decrease();
-            return Some((local_work.work, local_work.debt));
+
+        // did not find enough work in the io_queue so check compute queue
+        if functions.len() < number_of_functions {
+            let still_needed = number_of_functions - functions.len();
+            functions.extend(
+                lock.compute_queue
+                    .extract_if(|queue_element| {
+                        if let WorkToDo::FunctionArguments {
+                            function_id: _,
+                            function_alternatives: _,
+                            input_sets: _,
+                            metadata: _,
+                            caching: _,
+                            recorder,
+                        } = &mut queue_element.work
+                        {
+                            if queue_element.flags & engine_flags != 0 {
+                                recorder.record(RecordPoint::ComputeQueueEnd);
+                                self.queue_state_decrease();
+                                // Don't need to wake IO cores to do more prefetching,
+                                // since those queues must be empty if we are taking from here.
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    })
+                    .map(|queue_element| (queue_element.work, queue_element.debt))
+                    .take(still_needed),
+            );
         }
-        None
+
+        functions
     }
 
     /// Tries to acquire some work that matches the given flags starting from the head of the queue.
@@ -528,59 +652,72 @@ impl WorkQueue {
         &self,
         engine_flags: u32,
         _node_id: u64,
-    ) -> Option<(WorkToDo, Debt)> {
+        number_of_functions: usize,
+    ) -> Vec<(WorkToDo, Debt)> {
+        let mut functions = Vec::with_capacity(number_of_functions);
         let mut lock_guard = self.inner.lock().unwrap();
         // first check the queue with unresolved references, since those are easier to steal
-        if let Some(work_with_references) = lock_guard
-            .io_queue
-            .extract_if(|queue_element| {
-                if let WorkToDo::FunctionArguments {
-                    function_id: _,
-                    function_alternatives: _,
-                    input_sets: _,
-                    metadata: _,
-                    caching: _,
-                    recorder: _,
-                } = &queue_element.work
-                {
-                    queue_element.flags & engine_flags != 0
-                } else {
-                    false
-                }
-            })
-            .next()
-        {
-            self.queue_state_decrease();
-            return Some((work_with_references.work, work_with_references.debt));
+        functions.extend(
+            lock_guard
+                .io_queue
+                .extract_if(|queue_element| {
+                    if let WorkToDo::FunctionArguments {
+                        function_id: _,
+                        function_alternatives: _,
+                        input_sets: _,
+                        metadata: _,
+                        caching: _,
+                        recorder,
+                    } = &mut queue_element.work
+                    {
+                        if queue_element.flags & engine_flags != 0 {
+                            self.queue_state_decrease();
+                            recorder.record(RecordPoint::IOQueueEnd);
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                })
+                .map(|queue_element| (queue_element.work, queue_element.debt))
+                .take(number_of_functions),
+        );
+        // did not find enough work in the io_queue so check compute queue
+        if functions.len() < number_of_functions {
+            let still_needed = number_of_functions - functions.len();
+            functions.extend(
+                lock_guard
+                    .compute_queue
+                    .extract_if(|queue_element| {
+                        if let WorkToDo::FunctionArguments {
+                            function_id: _,
+                            function_alternatives: _,
+                            input_sets: _,
+                            metadata: _,
+                            caching: _,
+                            recorder,
+                        } = &mut queue_element.work
+                        {
+                            if queue_element.flags & engine_flags != 0 {
+                                recorder.record(RecordPoint::ComputeQueueEnd);
+                                self.queue_state_decrease();
+                                // don't need to poke IO cores to do more prefetching,
+                                // since those queues are empty if we are taking from here
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    })
+                    .map(|queue_element| (queue_element.work, queue_element.debt))
+                    .take(still_needed),
+            )
         }
-        // did not find any work in the io_queue so check compute queue
-        if let Some(local_work) = lock_guard
-            .compute_queue
-            .extract_if(|queue_element| {
-                if let WorkToDo::FunctionArguments {
-                    function_id: _,
-                    function_alternatives: _,
-                    input_sets: _,
-                    metadata: _,
-                    caching: _,
-                    recorder: _,
-                } = &queue_element.work
-                {
-                    queue_element.flags & engine_flags != 0
-                } else {
-                    false
-                }
-            })
-            .next()
-        {
-            // poke the io cores to resolve more local work if some of it was taken
-            if let Some(waker) = lock_guard.io_waker_list.pop_front() {
-                waker.wake();
-            }
-            self.queue_state_decrease();
-            return Some((local_work.work, local_work.debt));
-        }
-        None
+        functions
     }
 
     /// Spins on the queue until it manages to acquire some work that matches the given flags.

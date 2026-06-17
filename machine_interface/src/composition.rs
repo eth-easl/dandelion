@@ -348,7 +348,9 @@ pub struct CompositionSet {
     /// The data: Position of the DataItem refers to offset and size within the Context.
     item_list: Vec<(DataItem, ItemData)>,
     set_name: String,
-    non_local_sets: usize,
+    non_local_items: usize,
+    /// The total data size of all items in the set
+    total_size: usize,
 }
 
 impl CompositionSet {
@@ -357,7 +359,7 @@ impl CompositionSet {
     }
 
     pub fn size(&self) -> usize {
-        self.item_list.iter().map(|(itm, _)| itm.data.size).sum()
+        self.total_size
     }
 
     pub fn get_name(&self) -> &String {
@@ -365,16 +367,17 @@ impl CompositionSet {
     }
 
     pub fn is_local(&self) -> bool {
-        self.non_local_sets == 0
+        self.non_local_items == 0
     }
 
     pub fn into_local(self) -> LocalCompositionSet {
         let CompositionSet {
             item_list,
             set_name,
-            non_local_sets,
+            non_local_items,
+            total_size: _,
         } = self;
-        debug_assert_eq!(0, non_local_sets);
+        debug_assert_eq!(0, non_local_items);
         LocalCompositionSet {
             item_list: item_list
                 .into_iter()
@@ -399,13 +402,16 @@ impl CompositionSet {
                         None
                     } else {
                         let mut item_list = Vec::with_capacity(buffers.len());
+                        let mut total_size = 0;
                         for item in buffers.into_iter() {
+                            total_size += item.data.size;
                             item_list.push((item, ItemData::LocalData(context_arc.clone())));
                         }
                         Some(CompositionSet {
                             item_list,
                             set_name: ident,
-                            non_local_sets: 0,
+                            non_local_items: 0,
+                            total_size,
                         })
                     }
                 } else {
@@ -423,17 +429,20 @@ impl CompositionSet {
             None
         } else {
             item_list.sort_unstable_by_key(|item| item.0.key);
-            let non_local_sets = (&item_list)
-                .into_iter()
-                .filter(|(_, data)| match data {
-                    ItemData::LocalData(_) => false,
-                    _ => true,
-                })
-                .count();
+            let mut non_local_items = 0;
+            let mut total_size = 0;
+            for (item, data) in &item_list {
+                if let ItemData::LocalData(_) = data {
+                } else {
+                    non_local_items += 1;
+                }
+                total_size += item.data.size;
+            }
             Some(Self {
-                non_local_sets,
+                non_local_items,
                 item_list,
                 set_name,
+                total_size,
             })
         }
     }
@@ -441,7 +450,8 @@ impl CompositionSet {
     pub fn combine(&mut self, additional: CompositionSet) {
         self.item_list.extend(additional.item_list.into_iter());
         self.item_list.sort_unstable_by_key(|a| a.0.key);
-        self.non_local_sets += additional.non_local_sets;
+        self.non_local_items += additional.non_local_items;
+        self.total_size += additional.total_size;
     }
 }
 

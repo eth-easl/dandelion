@@ -135,6 +135,7 @@ pub struct DandelionConfig {
     pub total_cores: Option<usize>,
     /// Minimum number of cores to keep reserved for system tasks (includes IO).
     #[arg(long, env, default_value_t = DEFAULT_MIN_SYS_CORES)]
+    #[serde(default)]
     pub min_sys_cores: usize,
     #[arg(long, env)]
     /// Maximum number of cores to use for system tasks (including IO), when not set get set to the same as the mimium.

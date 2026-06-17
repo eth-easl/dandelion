@@ -107,12 +107,14 @@ impl JoinIterator for SetEachIterator {
 
     fn fill_in(&mut self, to_fill: &mut Vec<Option<CompositionSet>>) {
         debug_assert!(self.item_idx < self.set.item_list.len());
+        let (item, data) = self.set.item_list[self.item_idx].clone();
         to_fill[self.write_idx] = Some(CompositionSet {
-            item_list: vec![self.set.item_list[self.item_idx].clone()],
+            total_size: item.data.size,
+            item_list: vec![(item, data)],
             // no need to clone the original set name, sharding is for functions that are to be run.
             // When the function is run, the set names from the metadata are used, so this would be ignored anyway
             set_name: String::new(),
-            non_local_sets: if let ItemData::LocalData(_) = self.set.item_list[self.item_idx].1 {
+            non_local_items: if let ItemData::LocalData(_) = self.set.item_list[self.item_idx].1 {
                 0
             } else {
                 1
@@ -321,22 +323,22 @@ impl JoinIterator for SetKeyIterator {
         if fill_this_set {
             let item_list =
                 self.set.item_list[self.key_groups[self.key_groups_idx].1.clone()].to_vec();
-            let non_local_sets = item_list
-                .iter()
-                .filter(|(_, data)| {
-                    if let ItemData::LocalData(_) = data {
-                        false
-                    } else {
-                        true
-                    }
-                })
-                .count();
+            let mut non_local_items = 0;
+            let mut total_size = 0;
+            for item in item_list.iter() {
+                if let ItemData::LocalData(_) = item.1 {
+                } else {
+                    non_local_items += 1;
+                }
+                total_size += item.0.data.size;
+            }
             to_fill[self.write_idx] = Some(CompositionSet {
                 item_list,
                 // no need to clone the original set name, sharding is for functions that are to be run.
                 // When the function is run, the set names from the metadata are used, so this would be ignored anyway
                 set_name: String::new(),
-                non_local_sets,
+                non_local_items,
+                total_size,
             });
         }
         if let Some(left) = &mut self.left {

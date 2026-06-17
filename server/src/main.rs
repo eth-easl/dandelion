@@ -10,10 +10,10 @@ use machine_interface::{
     machine_config::{create_engine_resource_map, DomainType, EngineType},
     memory_domain::MemoryResource,
 };
-use multinode::{data::ExportRegistry, DispatcherCommand};
+use multinode::data::ExportRegistry;
 use nix::sched::CpuSet;
 use std::{collections::BTreeMap, fs::read_to_string, sync::Arc};
-use tokio::{runtime::Builder, select, spawn, sync::mpsc};
+use tokio::{runtime::Builder, spawn, sync::mpsc};
 
 mod frontend;
 
@@ -36,109 +36,6 @@ async fn delete_service_loop(
             });
             continue;
         }
-    }
-}
-
-async fn dispatcher_loop(
-    mut request_receiver: mpsc::Receiver<DispatcherCommand>,
-    dispatcher: &'static Dispatcher,
-) {
-    loop {
-        let dispatcher_args = request_receiver.recv().await;
-        let Some(dispatcher_args) = dispatcher_args else {
-            break;
-        };
-        match dispatcher_args {
-            DispatcherCommand::FunctionRequest {
-                function_id,
-                inputs,
-                is_cold,
-                recorder,
-                mut callback,
-            } => {
-                debug!("Handling function request for function {}", function_id);
-                let function_future =
-                    dispatcher.queue_function_by_name(function_id, inputs, !is_cold, recorder);
-                spawn(async {
-                    select! {
-                        function_output = function_future => {
-                            // either get an ok, meaning the data was sent, or get the data back
-                            // no need to handle ok, and nothing useful to do with data if we get it back
-                            // drop it here to release resources
-                            let _ = callback.send(function_output);
-                        }
-                        _ = callback.closed() => ()
-                    }
-                });
-            }
-            DispatcherCommand::CompositionRequest {
-                composition,
-                inputs,
-                is_cold,
-                recorder,
-                mut callback,
-            } => {
-                debug!("Handling composition request");
-                let future = dispatcher.queue_unregistered_composition(
-                    composition,
-                    inputs,
-                    !is_cold,
-                    recorder,
-                );
-                spawn(async {
-                    select! {
-                        output = future => {
-                            let _ = callback.send(output);
-                        }
-                        _ = callback.closed() => ()
-                    }
-                });
-            }
-            DispatcherCommand::FunctionRegistration {
-                name,
-                engine_type,
-                context_size,
-                metadata,
-                callback,
-                path,
-            } => {
-                debug!("Handling function registration for {}", name);
-                let insertion_res =
-                    dispatcher.insert_function(name, engine_type, context_size, path, metadata);
-                callback
-                    .send(insertion_res)
-                    .expect("Function registration callback failed!");
-            }
-            DispatcherCommand::CompositionRegistration {
-                composition,
-                callback,
-            } => {
-                debug!("Handling composition registration");
-                let insertion_res = dispatcher.insert_compositions(composition);
-                callback
-                    .send(insertion_res)
-                    .expect("Composition registration callback failed!");
-            }
-            DispatcherCommand::RemoteFunctionRequest {
-                function_id,
-                inputs,
-                recorder,
-                callback,
-                is_cold,
-            } => {
-                debug!(
-                    "Handling remote function request for function_id={}",
-                    function_id
-                );
-                let function_future =
-                    dispatcher.queue_function(function_id, inputs, !is_cold, recorder.clone());
-                spawn(async {
-                    callback
-                        .callback(function_future.await.map(|sets| (sets, recorder)))
-                        .await;
-                });
-            }
-        };
     }
 }
 
@@ -172,13 +69,13 @@ async fn remote_queue_server(
 
 async fn remote_queue_client(
     remote_url: String,
-    sender: mpsc::Sender<DispatcherCommand>,
+    dispatcher: &'static Dispatcher,
     export_registry: ExportRegistry,
     queue: WorkQueue,
 ) {
     let connection = tokio::net::TcpStream::connect(remote_url).await.unwrap();
     connection.set_nodelay(true).unwrap();
-    multinode::client::remote_queue_client(connection, sender, export_registry, queue).await;
+    multinode::client::remote_queue_client(connection, dispatcher, export_registry, queue).await;
 }
 
 fn main() -> () {
@@ -245,9 +142,6 @@ fn main() -> () {
     println!("minimum system cores {}", min_sys_cores);
     println!("maximum sysmte cores {}", max_sys_cores);
     println!("compute cores: {:?}", compute_cores);
-
-    // TODO get rid of this since the are on the same runtime now anyway
-    let (dispatcher_sender, dispatcher_recevier) = mpsc::channel(1000);
 
     // set up dispatcher configuration basics
     let pool_map = create_engine_resource_map(compute_cores, communication_cores);
@@ -316,9 +210,6 @@ fn main() -> () {
         )
         .expect("Should be able to start dispatcher"),
     ));
-
-    // start dispatcher
-    system_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
 
     // register preload functions
     let (preload_functions, preload_compositions) = config.get_preload_functions();
@@ -434,7 +325,7 @@ fn main() -> () {
             // start a thread to check if we should be checking remote queues
             system_runtime.spawn(remote_queue_client(
                 multinode::config::tcp_address(&multinode_settings.queue_server.url),
-                dispatcher_sender.clone(),
+                dispatcher,
                 export_registry.clone(),
                 work_queue,
             ));
@@ -459,11 +350,7 @@ fn main() -> () {
     }
 
     // Run this server for... forever... unless I receive a signal!
-    system_runtime.block_on(frontend::service_loop(
-        dispatcher_sender,
-        folder_path,
-        config.port,
-    ));
+    system_runtime.block_on(frontend::service_loop(dispatcher, folder_path, config.port));
 
     // clean up folder in tmp that is used for function storage
     let removal_error = std::fs::remove_dir_all(folder_path);

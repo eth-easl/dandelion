@@ -56,6 +56,16 @@ pub(crate) fn recorder_dtop(
 
         Some(proto::Timestamps {
             start_epoch: _start_epoch.as_micros() as u64,
+            io_queue_start: _recorder
+                .get_timestamp(RecordPoint::IOQueueStart)
+                .as_micros() as u64,
+            io_queue_end: _recorder.get_timestamp(RecordPoint::IOQueueEnd).as_micros() as u64,
+            compute_queue_start: _recorder
+                .get_timestamp(RecordPoint::ComputeQueueStart)
+                .as_micros() as u64,
+            compute_queue_end: _recorder
+                .get_timestamp(RecordPoint::ComputeQueueEnd)
+                .as_micros() as u64,
             fetching_start: _recorder
                 .get_timestamp(RecordPoint::FetchingStart)
                 .as_micros() as u64,
@@ -85,13 +95,19 @@ pub(crate) fn recorder_add_timestamps(
     _recorder: &mut Recorder,
     _timestamps: Option<proto::Timestamps>,
     _local_reference: u128,
+    _node_id: u64,
 ) {
     #[cfg(feature = "timestamp")]
     {
         use dandelion_commons::records::RecordPoint;
+        _recorder.set_node_id(_node_id);
         if let Some(remote_time) = _timestamps {
             let proto::Timestamps {
                 start_epoch,
+                io_queue_start,
+                io_queue_end,
+                compute_queue_start,
+                compute_queue_end,
                 fetching_start,
                 fetching_end,
                 parsing_start,
@@ -112,6 +128,19 @@ pub(crate) fn recorder_add_timestamps(
             // preserve original timestamping for fetching
             _recorder.set_master_fetching();
             // set all the timestamps we received from remote
+            _recorder.set_timestamp(
+                RecordPoint::RemoteIOQueueStart,
+                io_queue_start + start_offset,
+            );
+            _recorder.set_timestamp(RecordPoint::RemoteIOQueueEnd, io_queue_end + start_offset);
+            _recorder.set_timestamp(
+                RecordPoint::RemoteComputeQueueStart,
+                compute_queue_start + start_offset,
+            );
+            _recorder.set_timestamp(
+                RecordPoint::RemoteComputeQueueEnd,
+                compute_queue_end + start_offset,
+            );
             _recorder.set_timestamp(RecordPoint::FetchingStart, fetching_start + start_offset);
             _recorder.set_timestamp(RecordPoint::FetchingEnd, fetching_end + start_offset);
             _recorder.set_timestamp(RecordPoint::ParsingStart, parsing_start + start_offset);

@@ -71,14 +71,18 @@ message RepeatedEngines {
 
 message Timestamps { 
     uint64 start_epoch = 1;
-    uint64 fetching_start = 2;
-    uint64 fetching_end = 3;
-    uint64 parsing_start = 4;
-    uint64 parsing_end = 5;
-    uint64 load_start = 6;
-    uint64 transfer_start = 7;
-    uint64 engine_start = 8;
-    uint64 engine_end = 9;
+    uint64 io_queue_start = 2;
+    uint64 io_queue_end = 3;
+    uint64 compute_queue_start = 4;
+    uint64 compute_queue_end = 5;
+    uint64 fetching_start = 6;
+    uint64 fetching_end = 7;
+    uint64 parsing_start = 8;
+    uint64 parsing_end = 9;
+    uint64 load_start = 10;
+    uint64 transfer_start = 11;
+    uint64 engine_start = 12;
+    uint64 engine_end = 13;
 }
 
 message RepeatedMetadataSet {
