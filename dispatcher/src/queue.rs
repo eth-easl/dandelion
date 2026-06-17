@@ -174,6 +174,7 @@ fn io_extract_if(
     compute_length: usize,
     already_fetching: usize,
     local_cores: usize,
+    is_prefetch: &mut bool,
     #[cfg(feature = "data_locality")] idle_compute_cores: usize,
 ) -> bool {
     match queue_element.work {
@@ -185,6 +186,8 @@ fn io_extract_if(
             caching: _,
             recorder: _,
         } => {
+            *is_prefetch = true;
+
             #[cfg(not(feature = "data_locality"))]
             let should_take = compute_length + already_fetching < LOCAL_WORK_PER_CORE * local_cores;
 
@@ -198,7 +201,10 @@ fn io_extract_if(
             should_take
         }
         // always take resolver work
-        _ => true,
+        _ => {
+            *is_prefetch = false;
+            true
+        }
     }
 }
 
@@ -216,28 +222,33 @@ impl Future for IoWaitFuture<'_> {
         let already_fetching = lock_guard.fetching_in_progress;
         #[cfg(feature = "data_locality")]
         let idle_compute_cores = lock_guard.compute_waker_list.len();
-        let mut is_fetching = false;
+        let mut is_prefetching = false;
         let result = lock_guard
             .io_queue
             .extract_if(|queue_element| {
                 #[cfg(not(feature = "data_locality"))]
-                let should_take =
-                    io_extract_if(queue_element, compute_length, already_fetching, local_cores);
+                let should_take = io_extract_if(
+                    queue_element,
+                    compute_length,
+                    already_fetching,
+                    local_cores,
+                    &mut is_prefetching,
+                );
                 #[cfg(feature = "data_locality")]
                 let should_take = io_extract_if(
                     queue_element,
                     compute_length,
                     already_fetching,
                     local_cores,
+                    &mut is_prefetching,
                     idle_compute_cores,
                 );
-                // If will take task that has prefetching, increase counter accordingly
-                is_fetching = should_take;
                 should_take
             })
             .next()
             .map(|queue_element| (queue_element.work, queue_element.debt));
-        if is_fetching {
+        // If the task is a prefetching task increase the counter accordinlgy
+        if is_prefetching {
             lock_guard.fetching_in_progress += 1;
         }
         if let Some(mut result_tupple) = result {
@@ -432,6 +443,7 @@ impl WorkQueue {
         let compute_length = queue_guard.compute_queue.len();
         let local_cores = *self.system_info.num_local_cores_watcher.borrow();
         let already_fetching = queue_guard.fetching_in_progress;
+        let mut _is_prefetching = false;
         #[cfg(feature = "data_locality")]
         let idle_compute_cores = queue_guard.compute_waker_list.len();
         #[cfg(feature = "data_locality")]
@@ -440,11 +452,17 @@ impl WorkQueue {
             compute_length,
             already_fetching,
             local_cores,
+            &mut _is_prefetching,
             idle_compute_cores,
         );
         #[cfg(not(feature = "data_locality"))]
-        let would_process =
-            io_extract_if(&new_element, compute_length, already_fetching, local_cores);
+        let would_process = io_extract_if(
+            &new_element,
+            compute_length,
+            already_fetching,
+            local_cores,
+            &mut _is_prefetching,
+        );
 
         queue_guard.io_queue.push_back(new_element);
 
