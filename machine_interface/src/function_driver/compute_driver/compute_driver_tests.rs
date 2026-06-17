@@ -7,10 +7,7 @@ mod compute_driver_tests {
             WorkToDo,
         },
         machine_config::EngineType,
-        memory_domain::{
-            read_only::ReadOnlyContext, test_resource::get_resource, ContextTrait, MemoryDomain,
-            MemoryResource,
-        },
+        memory_domain::{read_only::ReadOnlyContext, ContextTrait, MemoryDomain, MemoryResource},
         DataItem, DataSet, Position,
     };
     use core::panic;
@@ -27,7 +24,7 @@ mod compute_driver_tests {
     fn loader_empty<Dom: MemoryDomain>(dom_init: MemoryResource, engine_type: EngineType) {
         // load elf file
         let elf_path = String::new();
-        let domain = Dom::init(get_resource(dom_init)).expect("Should be able to get domain");
+        let domain = Dom::init(dom_init).expect("Should be able to get domain");
         engine_type
             .parse_function(elf_path, &domain)
             .expect("Empty string should return error");
@@ -58,8 +55,7 @@ mod compute_driver_tests {
         drv_init: Vec<ComputeResource>,
     ) -> (Arc<Box<dyn MemoryDomain>>, TestQueue) {
         let queue = TestQueue::new();
-        let domain =
-            Arc::new(Dom::init(get_resource(dom_init)).expect("Should have initialized domain"));
+        let domain = Arc::new(Dom::init(dom_init).expect("Should have initialized domain"));
         engine_type
             .start_engine(drv_init[0], queue.clone())
             .expect("Should be able to start engine");
@@ -692,7 +688,7 @@ mod compute_driver_tests {
             memory_domain::{mmu::MmuMemoryDomain, MemoryResource},
         };
         #[cfg(target_arch = "x86_64")]
-        driverTests!(elf_mmu_x86_64; MmuMemoryDomain; MemoryResource::Shared { id: 0, size: (1<<30) }; EngineType::Process;
+        driverTests!(elf_mmu_x86_64; MmuMemoryDomain; MemoryResource::Shared { size: (1<<30) }; EngineType::Process;
         core_affinity::get_core_ids()
            .and_then(
                 |core_vec|
@@ -705,7 +701,7 @@ mod compute_driver_tests {
             ComputeResource::GPU(0)
         ]);
         #[cfg(target_arch = "aarch64")]
-        driverTests!(elf_mmu_aarch64; MmuMemoryDomain; MemoryResource::Shared { id: 0, size: (1<<30) }; EngineType::Process;
+        driverTests!(elf_mmu_aarch64; MmuMemoryDomain; MemoryResource::Shared { size: (1<<30) }; EngineType::Process;
         core_affinity::get_core_ids()
             .and_then(
                 |core_vec|

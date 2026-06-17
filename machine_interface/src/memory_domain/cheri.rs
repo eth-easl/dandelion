@@ -53,7 +53,7 @@ impl MemoryDomain for CheriMemoryDomain {
         let memory_pool = MmapMemPool::create(
             size,
             ProtFlags::PROT_READ | ProtFlags::PROT_WRITE | ProtFlags::PROT_EXEC,
-            None,
+            false,
         )?;
         Ok(Box::new(CheriMemoryDomain { memory_pool }))
     }

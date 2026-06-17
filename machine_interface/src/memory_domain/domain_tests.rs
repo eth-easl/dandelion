@@ -1,6 +1,6 @@
 use crate::memory_domain::{
-    test_resource::get_resource, transfer_data_item, transfer_memory, Context, ContextTrait,
-    ContextType, MemoryDomain, MemoryResource,
+    transfer_data_item, transfer_memory, Context, ContextTrait, ContextType, MemoryDomain,
+    MemoryResource,
 };
 use dandelion_commons::{DError, DandelionError, DandelionResult, DomainError};
 use std::sync::Arc;
@@ -18,8 +18,7 @@ fn try_acquire<D: MemoryDomain>(
     acquisition_size: usize,
     expect_success: bool,
 ) {
-    let resource = get_resource(arg);
-    let init_result = D::init(resource);
+    let init_result = D::init(arg);
     let domain = init_result.expect("should have initialized memory domain");
     let context_result = domain.acquire_context(acquisition_size);
     if expect_success {
@@ -52,8 +51,7 @@ fn try_acquire<D: MemoryDomain>(
 /// Acquire a context with a given size and return it. Will panic if the
 /// context cannot be acquired.
 fn acquire<D: MemoryDomain>(arg: MemoryResource, size: usize) -> Context {
-    let resource = get_resource(arg);
-    let domain = init_domain::<D>(resource);
+    let domain = init_domain::<D>(arg);
     let context = domain
         .acquire_context(size)
         .expect("Context should be allocatable");
@@ -61,8 +59,7 @@ fn acquire<D: MemoryDomain>(arg: MemoryResource, size: usize) -> Context {
 }
 
 fn init_domain<D: MemoryDomain>(arg: MemoryResource) -> Box<dyn MemoryDomain> {
-    let resource = get_resource(arg);
-    let init_result = D::init(resource);
+    let init_result = D::init(arg);
     let domain = init_result.expect("memory domain should have been initialized");
     return domain;
 }
@@ -684,6 +681,6 @@ systemsDomainTests!(kvm_system; kvmType; MemoryResource::Anonymous { size: (2<<2
 #[cfg(feature = "mmu")]
 use super::mmu::MmuMemoryDomain as mmuType;
 #[cfg(feature = "mmu")]
-domainTests!(mmu; mmuType; MemoryResource::Shared { id: 0, size: (2<<22) }; DEFAULT_CHUNK_SIZE);
+domainTests!(mmu; mmuType; MemoryResource::Shared { size: (2<<22) }; DEFAULT_CHUNK_SIZE);
 #[cfg(feature = "mmu")]
-systemsDomainTests!(mmu_system; mmuType; MemoryResource::Shared {id: 0, size: (2<<22)});
+systemsDomainTests!(mmu_system; mmuType; MemoryResource::Shared { size: (2<<22)});

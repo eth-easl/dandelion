@@ -178,10 +178,7 @@ fn main() -> () {
             #[cfg(feature = "mmu")]
             (
                 DomainType::Process,
-                MemoryResource::Shared {
-                    id: 0,
-                    size: max_ram,
-                },
+                MemoryResource::Shared { size: max_ram },
             ),
         ]),
     };
