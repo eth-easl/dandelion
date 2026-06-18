@@ -767,6 +767,13 @@ impl Driver for ReqwestDriver {
 static HTTP_CACHE_REGISTRY: OnceLock<CacheRegistry> = OnceLock::new();
 
 #[cfg(feature = "http_cache")]
+pub fn set_http_cache_size(max_size: usize) {
+    HTTP_CACHE_REGISTRY
+        .get_or_init(CacheRegistry::new)
+        .set_max_size(max_size);
+}
+
+#[cfg(feature = "http_cache")]
 pub fn insert_http_cache_entry(key: u64, value: HttpCacheEntry) {
     HTTP_CACHE_REGISTRY
         .get_or_init(CacheRegistry::new)
@@ -842,7 +849,7 @@ async fn convert_to_references_with_cache(
             let mut out_1_list = try_with_capacity!(Vec, input_set.len())?;
             let mut cache_hit = true;
             for (item, data) in input_set {
-                let new_item = DataItem {
+                let base_item = DataItem {
                     data: crate::Position { offset: 0, size: 0 },
                     ident: item.ident.clone(),
                     key: item.key,
@@ -857,14 +864,29 @@ async fn convert_to_references_with_cache(
                     if let Some(cache_key) = http_request.cache_key() {
                         if let Some(entry) = get_http_cache_entry(cache_key) {
                             // println!("Cache hit for request with key {}", cache_key);
-                            out_0_list.push((new_item.clone(), ItemData::RemoteData(entry.header)));
-                            out_1_list.push((new_item, ItemData::RemoteData(entry.body)));
+                            let header_item = DataItem {
+                                data: crate::Position {
+                                    offset: 0,
+                                    size: entry.header_size,
+                                },
+                                ..base_item.clone()
+                            };
+                            let body_item = DataItem {
+                                data: crate::Position {
+                                    offset: 0,
+                                    size: entry.body_size,
+                                },
+                                ..base_item
+                            };
+                            out_0_list.push((header_item, ItemData::RemoteData(entry.header)));
+                            out_1_list.push((body_item, ItemData::RemoteData(entry.body)));
                         } else {
                             // println!("Cache miss for request with key {}", cache_key);
                             cache_hit = false;
                         }
                     } else {
                         // println!("This request is not cacheable");
+                        cache_hit = false;
                     }
                 } else {
                     panic!("should have resolved all data to local");

@@ -62,6 +62,7 @@ The default search path for the config file is `./dandelion.config`, but can be 
 - `dispatcher cores` number of cores to use for the dispatcher, default: 1
 - `frontend_cores` number of cores to use for the frontend
 - `io_cores` number of cores to use for the communication engines, default: 0
+- `http_cache_size` maximum HTTP cache size in bytes, default: 1073741824
 - `timestamp_count` how many timestamps to preallocate, default: 1000
 
 The number of compute engine cores is inferred from the total number of cores by deducting the number of other cores.

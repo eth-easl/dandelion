@@ -413,19 +413,25 @@ async fn remote_queue_server_logic(
                                 cache_insert.cache_key
                             );
                             debug_assert!(cache_insert.cache_value.len() == 2);
+                            let header_data = cache_insert.cache_value[0].clone();
+                            let body_data = cache_insert.cache_value[1].clone();
+                            let header_size = header_data.size as usize;
+                            let body_size = body_data.size as usize;
                             let header = remote_data_ptod(
-                                cache_insert.cache_value[0],
+                                header_data,
                                 Some(remote_data_deletion_sender.clone()),
                             );
                             let body = remote_data_ptod(
-                                cache_insert.cache_value[1],
+                                body_data,
                                 Some(remote_data_deletion_sender.clone()),
                             );
                             machine_interface::function_driver::system_driver::reqwest::insert_http_cache_entry(
                                 cache_insert.cache_key,
                                 HttpCacheEntry {
                                     header,
+                                    header_size,
                                     body,
+                                    body_size,
                                 },
                             );
                         }

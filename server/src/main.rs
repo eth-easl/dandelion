@@ -99,6 +99,11 @@ fn main() -> () {
     let _ = machine_interface::function_driver::system_driver::reqwest::CONCURRENCY_LIMIT
         .set(config.io_concurrency);
 
+    #[cfg(feature = "http_cache")]
+    machine_interface::function_driver::system_driver::reqwest::set_http_cache_size(
+        config.http_cache_size,
+    );
+
     // find available resources
     let num_phyiscal_cores = u8::try_from(num_cpus::get_physical()).unwrap();
     let num_virt_cores = u8::try_from(num_cpus::get()).unwrap();
