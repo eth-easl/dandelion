@@ -533,6 +533,7 @@ impl Dispatcher {
                 let args = WorkToDo::FunctionReferences {
                     function: sys_function,
                     input_sets,
+                    recorder,
                 };
                 self.work_queue
                     .do_work(args)

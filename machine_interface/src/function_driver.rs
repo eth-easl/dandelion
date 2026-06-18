@@ -48,6 +48,7 @@ pub enum WorkToDo {
     FunctionReferences {
         function: SystemFunction,
         input_sets: Vec<Option<CompositionSet>>,
+        recorder: Recorder,
     },
     SetsToResolve {
         input_sets: Vec<Option<CompositionSet>>,

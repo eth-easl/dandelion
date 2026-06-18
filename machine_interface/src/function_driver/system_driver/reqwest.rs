@@ -653,20 +653,25 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
             WorkToDo::FunctionReferences {
                 function,
                 input_sets,
+                recorder,
             } => {
                 let client_clone = http_client.clone();
-                match convert_to_references(
-                    function,
-                    input_sets,
-                    client_clone,
-                    semaphore.clone(),
-                    ticket,
-                )
-                .await
-                {
-                    Ok(sets) => debt.fulfill(Ok(WorkDone::CompositionSet(sets))),
-                    Err(err) => debt.fulfill(Err(err)),
-                };
+                let semaphore = semaphore.clone();
+                tokio::spawn(async move {
+                    match convert_to_references(
+                        function,
+                        input_sets,
+                        recorder,
+                        client_clone,
+                        semaphore.clone(),
+                        ticket,
+                    )
+                    .await
+                    {
+                        Ok(sets) => debt.fulfill(Ok(WorkDone::CompositionSet(sets))),
+                        Err(err) => debt.fulfill(Err(err)),
+                    };
+                });
             }
             WorkToDo::SetsToResolve { input_sets } => {
                 let client_clone = http_client.clone();
@@ -786,6 +791,7 @@ impl HttpRequest {
 async fn convert_to_references(
     function: SystemFunction,
     mut input_sets: Vec<Option<CompositionSet>>,
+    mut recorder: dandelion_commons::records::Recorder,
     client: HttpClient,
     semaphore: Arc<Semaphore>,
     ticket: OwnedSemaphorePermit,
@@ -800,6 +806,7 @@ async fn convert_to_references(
     if let SystemFunction::HTTP = function {
         // resolve all remote data in the input set
         let (result_sender, result_receiver) = tokio::sync::oneshot::channel();
+        recorder.record(RecordPoint::ResolveSetsStart);
         resolve_all_sets(
             client,
             input_sets.clone(),
@@ -812,11 +819,13 @@ async fn convert_to_references(
         )
         .await;
         let mut resolved_sets = result_receiver.await.unwrap()?;
+        recorder.record(RecordPoint::ResolveSetsEnd);
 
         let mut output_vec = try_with_capacity!(Vec, 2)?;
         output_vec.resize(2, None);
 
         if let Some(input_set) = resolved_sets[0].take() {
+            recorder.record(RecordPoint::CacheLookupStart);
             let input_set_name = input_set.get_name().clone();
             let mut out_0_list = try_with_capacity!(Vec, input_set.len())?;
             let mut out_1_list = try_with_capacity!(Vec, input_set.len())?;
@@ -850,6 +859,7 @@ async fn convert_to_references(
                     panic!("should have resolved all data to local");
                 }
             }
+            recorder.record(RecordPoint::CacheLookupEnd);
             output_vec[0] = CompositionSet::from_item_list(input_set_name.clone(), out_0_list);
             output_vec[1] = CompositionSet::from_item_list(input_set_name, out_1_list);
             if cache_hit {

@@ -256,6 +256,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
             WorkToDo::FunctionReferences {
                 function: _,
                 input_sets: _,
+                recorder: _,
             } => {
                 panic!("Compute engine should never get function references")
             }

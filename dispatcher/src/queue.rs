@@ -471,6 +471,7 @@ impl WorkQueue {
             WorkToDo::FunctionReferences {
                 function: _,
                 input_sets: _,
+                recorder: _,
             } => (0, false),
             WorkToDo::FunctionArguments {
                 function_id: _,
