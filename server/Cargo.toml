@@ -43,6 +43,12 @@ cheri = ["dispatcher/cheri", "multinode/cheri"]
 mmu = ["dispatcher/mmu", "multinode/mmu"]
 kvm = ["dispatcher/kvm", "multinode/kvm"]
 timestamp = ["dispatcher/timestamp", "multinode/timestamp"]
+http_cache = [
+    "dandelion_commons/http_cache",
+    "dispatcher/http_cache",
+    "machine_interface/http_cache",
+    "multinode/http_cache",
+]
 log_function_stdio = ["dispatcher/log_function_stdio"]
 data_locality = ["dispatcher/data_locality"]
 vendored-ssl = ["dep:openssl"]

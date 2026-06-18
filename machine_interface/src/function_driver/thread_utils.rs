@@ -253,6 +253,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                 });
                 debt.fulfill(results);
             }
+            #[cfg(feature = "http_cache")]
             WorkToDo::FunctionReferences {
                 function: _,
                 input_sets: _,

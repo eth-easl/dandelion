@@ -1,6 +1,7 @@
+#[cfg(feature = "http_cache")]
+use crate::function_driver::functions::SystemFunction;
 use crate::{
     composition::{CompositionSet, LocalCompositionSet, RemoteData},
-    function_driver::functions::SystemFunction,
     machine_config::EngineType,
     memory_domain::MemoryDomain,
 };
@@ -45,6 +46,7 @@ pub enum WorkToDo {
         caching: bool,
         recorder: Recorder,
     },
+    #[cfg(feature = "http_cache")]
     FunctionReferences {
         function: SystemFunction,
         input_sets: Vec<Option<CompositionSet>>,

@@ -16,6 +16,7 @@ kvm = ["std", "dep:kvm-bindings", "dep:kvm-ioctls"]
 backend_debug = []
 blocking_queue = []
 timestamp = ["dandelion_commons/timestamp"]
+http_cache = ["dandelion_commons/http_cache"]
 vendored-ssl = ["dep:openssl"]
 test_export = []
 

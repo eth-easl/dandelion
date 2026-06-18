@@ -1,17 +1,18 @@
+#[cfg(feature = "http_cache")]
+use crate::util::{remote_data_dtop, remote_data_ptod};
 use crate::{
     data::ExportRegistry,
     deserialize_node_info, deserialize_queue_message, deserialize_remote_message,
     proto::{
-        self, queue_message, remote_message, CacheInsert, Invocation, NodeInfo, NodeUpdate,
-        QueueMessage, RemoteMessage, RepeatedEngines, RepeatedInvocations, Response,
+        self, queue_message, remote_message, Invocation, NodeInfo, NodeUpdate, QueueMessage,
+        RemoteMessage, RepeatedEngines, RepeatedInvocations, Response,
     },
     serialize_node_info, serialize_queue_message, serialize_remote_message,
     util::{
         composition_sets_to_proto, composition_sets_to_proto_and_refs, engine_type_dtop,
         engine_type_ptod, pack_metadata_size_and_flags, proto_data_sets_to_composition_sets,
         proto_data_sets_to_composition_sets_with_delete_on_drop, recorder_add_timestamps,
-        recorder_dtop, remote_data_dtop, remote_data_ptod, unpack_metadata_size_and_flags,
-        ADDITIONAL_DATA_BUFFER, NO_FLAGS,
+        recorder_dtop, unpack_metadata_size_and_flags, ADDITIONAL_DATA_BUFFER, NO_FLAGS,
     },
 };
 use dandelion_commons::{
@@ -24,11 +25,13 @@ use dispatcher::{
 use log::{error, trace, warn};
 use machine_interface::{
     composition::{CompositionSet, RemoteData},
-    function_driver::{system_driver::cache::HttpCacheEntry, WorkDone, WorkToDo},
+    function_driver::{WorkDone, WorkToDo},
     machine_config::{EngineType, IntoEnumIterator},
-    memory_domain::Context,
     promise::Debt,
-    Position,
+};
+#[cfg(feature = "http_cache")]
+use machine_interface::{
+    function_driver::system_driver::cache::HttpCacheEntry, memory_domain::Context, Position,
 };
 use prost::bytes::{Bytes, BytesMut};
 use std::{
@@ -267,14 +270,7 @@ async fn remote_queue_server_logic(
                                         caching,
                                         recorder,
                                     } => (function_id, input_sets, recorder, caching),
-                                    WorkToDo::FunctionReferences {
-                                        function: _,
-                                        input_sets: _,
-                                        recorder: _,
-                                    }
-                                    | WorkToDo::SetsToResolve { input_sets: _ }
-                                    | WorkToDo::RemoteToDelete { remote_data: _ }
-                                    | WorkToDo::Shutdown(_) => {
+                                    _ => {
                                         panic!("Should only get function arguments when polling for remote queue")
                                     }
                                 };
@@ -403,11 +399,19 @@ async fn remote_queue_server_logic(
                     }
                     remote_message::RemoteMessage::CacheInsert(cache_insert) => {
                         debug_assert!(data_option.is_none());
-                        trace!(
-                            "Queue Server received cache insert for key {}",
-                            cache_insert.cache_key
-                        );
+                        #[cfg(not(feature = "http_cache"))]
                         {
+                            panic!(
+                                "Queue Server received cache insert for key {} but http_cache is disabled",
+                                cache_insert.cache_key
+                            );
+                        }
+                        #[cfg(feature = "http_cache")]
+                        {
+                            trace!(
+                                "Queue Server received cache insert for key {}",
+                                cache_insert.cache_key
+                            );
                             debug_assert!(cache_insert.cache_value.len() == 2);
                             let header = remote_data_ptod(
                                 cache_insert.cache_value[0],
@@ -453,14 +457,7 @@ async fn remote_queue_server_logic(
                         caching,
                         recorder,
                     } => (function_id, input_sets, recorder, caching),
-                    WorkToDo::FunctionReferences {
-                        function: _,
-                        input_sets: _,
-                        recorder: _,
-                    }
-                    | WorkToDo::SetsToResolve { input_sets: _ }
-                    | WorkToDo::RemoteToDelete { remote_data: _ }
-                    | WorkToDo::Shutdown(_) => {
+                    _ => {
                         panic!("Should only get function arguments when polling for remote queue")
                     }
                 };
@@ -513,6 +510,7 @@ async fn remote_queue_server_logic(
     warn!("Arrived at end of remtote_queue_server_logic, which should stay in the loop forever");
 }
 
+#[cfg(feature = "http_cache")]
 fn send_cache_insert(
     cache_key: u64,
     contexts: Vec<Arc<Context>>,
@@ -531,7 +529,7 @@ fn send_cache_insert(
     spawn(async move {
         sender
             .send(PollingOption::Results(
-                remote_message::RemoteMessage::CacheInsert(CacheInsert {
+                remote_message::RemoteMessage::CacheInsert(proto::CacheInsert {
                     cache_key,
                     cache_value,
                 }),
@@ -947,18 +945,21 @@ pub async fn remote_queue_client(
     ));
     // start receiver loop
     let (poll_option_sender, poll_option_receiver) = mpsc::channel(64);
-    let notifier_sender = poll_option_sender.clone();
-    let notifier_export_registry = export_registry.clone();
-    machine_interface::function_driver::system_driver::set_io_data_cache_notifier(Arc::new(
-        move |cache_key, contexts| {
-            send_cache_insert(
-                cache_key,
-                contexts,
-                notifier_export_registry.clone(),
-                notifier_sender.clone(),
-            );
-        },
-    ));
+    #[cfg(feature = "http_cache")]
+    {
+        let notifier_sender = poll_option_sender.clone();
+        let notifier_export_registry = export_registry.clone();
+        machine_interface::function_driver::system_driver::set_io_data_cache_notifier(Arc::new(
+            move |cache_key, contexts| {
+                send_cache_insert(
+                    cache_key,
+                    contexts,
+                    notifier_export_registry.clone(),
+                    notifier_sender.clone(),
+                );
+            },
+        ));
+    }
     spawn(remote_queue_client_receiver(
         read_socket,
         poll_option_sender.clone(),

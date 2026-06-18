@@ -2,10 +2,7 @@ use crate::{
     composition::{CompositionSet, ItemData},
     function_driver::{
         functions::{Function, FunctionConfig},
-        system_driver::{
-            cache::{CacheRegistry, HttpCacheEntry},
-            notify_io_data_cache, IoData, SystemFunction,
-        },
+        system_driver::{IoData, SystemFunction},
         ComputeResource, Driver, EngineWorkQueue, WorkDone, WorkToDo,
     },
     memory_domain::{
@@ -15,9 +12,10 @@ use crate::{
     DataItem, Position,
 };
 use bytes::Bytes;
+#[cfg(feature = "http_cache")]
+use dandelion_commons::try_with_capacity;
 use dandelion_commons::{
-    dandelion_err, err_dandelion, records::RecordPoint, try_with_capacity, DandelionError,
-    DandelionResult,
+    dandelion_err, err_dandelion, records::RecordPoint, DandelionError, DandelionResult,
 };
 use futures::{stream::FuturesUnordered, StreamExt};
 use http::{version::Version as HttpVersion, HeaderName, HeaderValue, Method as HttpMethod};
@@ -25,13 +23,18 @@ use itertools::Itertools;
 use log::{debug, error, trace, warn};
 use memcache::Client as MemcachedClient;
 use reqwest::{header::HeaderMap, Client as HttpClient};
-use std::{
-    hash::{DefaultHasher, Hash, Hasher},
-    sync::{Arc, OnceLock},
-};
+#[cfg(feature = "http_cache")]
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::{Arc, OnceLock};
 use tokio::{
     spawn,
-    sync::{OnceCell, OwnedSemaphorePermit, Semaphore},
+    sync::{OwnedSemaphorePermit, Semaphore},
+};
+
+#[cfg(feature = "http_cache")]
+use crate::function_driver::system_driver::{
+    cache::{CacheRegistry, HttpCacheEntry},
+    notify_io_data_cache,
 };
 
 trait Request
@@ -263,6 +266,7 @@ async fn http_request(
     context: Arc<Context>,
 ) -> DandelionResult<Vec<Arc<Context>>> {
     let http_request = parse_request::<HttpRequest>(position, context)?;
+    #[cfg(feature = "http_cache")]
     let cache_key = http_request.cache_key();
     let HttpRequest {
         method,
@@ -353,6 +357,7 @@ async fn http_request(
         body_length,
     ));
 
+    #[cfg(feature = "http_cache")]
     if let Some(cache_key) = cache_key {
         notify_io_data_cache(
             cache_key,
@@ -650,6 +655,7 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                 )
                 .await;
             }
+            #[cfg(feature = "http_cache")]
             WorkToDo::FunctionReferences {
                 function,
                 input_sets,
@@ -757,14 +763,17 @@ impl Driver for ReqwestDriver {
     }
 }
 
+#[cfg(feature = "http_cache")]
 static HTTP_CACHE_REGISTRY: OnceLock<CacheRegistry> = OnceLock::new();
 
+#[cfg(feature = "http_cache")]
 pub fn insert_http_cache_entry(key: u64, value: HttpCacheEntry) {
     HTTP_CACHE_REGISTRY
         .get_or_init(CacheRegistry::new)
         .insert(key, value);
 }
 
+#[cfg(feature = "http_cache")]
 fn get_http_cache_entry(key: u64) -> Option<HttpCacheEntry> {
     HTTP_CACHE_REGISTRY
         .get_or_init(CacheRegistry::new)
@@ -772,6 +781,7 @@ fn get_http_cache_entry(key: u64) -> Option<HttpCacheEntry> {
         .clone()
 }
 
+#[cfg(feature = "http_cache")]
 impl HttpRequest {
     fn cache_key(&self) -> Option<u64> {
         let mut hasher = DefaultHasher::new();
@@ -788,9 +798,10 @@ impl HttpRequest {
     }
 }
 
+#[cfg(feature = "http_cache")]
 async fn convert_to_references_with_cache(
     function: SystemFunction,
-    mut input_sets: Vec<Option<CompositionSet>>,
+    input_sets: Vec<Option<CompositionSet>>,
     mut recorder: dandelion_commons::records::Recorder,
     client: HttpClient,
     semaphore: Arc<Semaphore>,
@@ -868,40 +879,5 @@ async fn convert_to_references_with_cache(
         }
     }
 
-    // go through all input sets and check if there is already a static one, or on in the input data
-    let mut output_vec = try_with_capacity!(Vec, 2)?;
-    output_vec.resize(2, None);
-
-    if let Some(input_set) = input_sets[0].take() {
-        let input_set_name = input_set.get_name().clone();
-        let mut out_0_list = try_with_capacity!(Vec, input_set.len())?;
-        let mut out_1_list = try_with_capacity!(Vec, input_set.len())?;
-        for (item, data) in input_set {
-            let new_item = DataItem {
-                data: crate::Position { offset: 0, size: 0 },
-                ident: item.ident.clone(),
-                key: item.key,
-            };
-            let set_once = Arc::new(OnceCell::new());
-            let header_data = IoData {
-                original_position: item.data,
-                original_data: Box::new(data.clone()),
-                resolved: set_once.clone(),
-                function,
-                set_index: 0,
-            };
-            let body_data = IoData {
-                original_position: item.data,
-                original_data: Box::new(data),
-                resolved: set_once,
-                function,
-                set_index: 1,
-            };
-            out_0_list.push((new_item.clone(), ItemData::IoData(header_data)));
-            out_1_list.push((new_item, ItemData::IoData(body_data)));
-        }
-        output_vec[0] = CompositionSet::from_item_list(input_set_name.clone(), out_0_list);
-        output_vec[1] = CompositionSet::from_item_list(input_set_name, out_1_list);
-    }
-    Ok(output_vec)
+    super::convert_to_references(function, input_sets)
 }

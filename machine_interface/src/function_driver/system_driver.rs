@@ -1,3 +1,4 @@
+#[cfg(feature = "http_cache")]
 pub mod cache;
 pub mod reqwest;
 
@@ -8,7 +9,9 @@ use crate::{
     DataItem, Position,
 };
 use dandelion_commons::{try_with_capacity, DandelionResult};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
+#[cfg(feature = "http_cache")]
+use std::sync::OnceLock;
 use tokio::sync::OnceCell;
 
 /// HTTP function currently expects one set with requests formated by HTTP standard (in text).
@@ -71,14 +74,18 @@ pub struct IoData {
     // recorder: Recorder,
 }
 
+#[cfg(feature = "http_cache")]
 type IoDataCacheNotifier = dyn Fn(u64, Vec<Arc<Context>>) + Send + Sync + 'static;
 
+#[cfg(feature = "http_cache")]
 static IO_DATA_CACHE_NOTIFIER: OnceLock<Arc<IoDataCacheNotifier>> = OnceLock::new();
 
+#[cfg(feature = "http_cache")]
 pub fn set_io_data_cache_notifier(notifier: Arc<IoDataCacheNotifier>) {
     let _ = IO_DATA_CACHE_NOTIFIER.set(notifier);
 }
 
+#[cfg(feature = "http_cache")]
 fn notify_io_data_cache(cache_key: u64, contexts: Vec<Arc<Context>>) {
     if let Some(notifier) = IO_DATA_CACHE_NOTIFIER.get() {
         notifier(cache_key, contexts);

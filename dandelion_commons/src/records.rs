@@ -8,7 +8,10 @@ use core::cell::{OnceCell, UnsafeCell};
 /// Maximum usize to expect when converting a record point to a usize
 /// By setting the last element to this explicitly, the compiler will throw an error,
 /// if there are more than this, because it enumerates from 0 and won't allow a number to be assigned twice.
+#[cfg(feature = "http_cache")]
 const LAST_RECORD_POINT: usize = 25;
+#[cfg(not(feature = "http_cache"))]
+const LAST_RECORD_POINT: usize = 21;
 /// The first timestamp that should come from the engine running the function
 const FIRST_ENGINE_POINT: usize = 13;
 const LAST_ENGINE_POINT: usize = 20;
@@ -55,14 +58,22 @@ pub enum RecordPoint {
     /// End execution of the function on the engine (sync)
     EngineEnd = LAST_ENGINE_POINT,
     /// Return from execution engine (async)
+    #[cfg(not(feature = "http_cache"))]
+    FutureReturn = LAST_RECORD_POINT,
+    /// Return from execution engine (async)
+    #[cfg(feature = "http_cache")]
     FutureReturn,
     /// Start resolving input references inside system-function reference conversion.
+    #[cfg(feature = "http_cache")]
     ResolveSetsStart,
     /// Finished resolving input references inside system-function reference conversion.
+    #[cfg(feature = "http_cache")]
     ResolveSetsEnd,
     /// Start checking resolved HTTP requests against the HTTP cache.
+    #[cfg(feature = "http_cache")]
     CacheLookupStart,
     /// Finished checking resolved HTTP requests against the HTTP cache.
+    #[cfg(feature = "http_cache")]
     CacheLookupEnd = LAST_RECORD_POINT,
 }
 
@@ -275,6 +286,10 @@ impl fmt::Display for Recorder {
                         write!(_f, "[")?;
                         let mut has_prev = false;
                         for r in child_recorders.iter() {
+                            #[cfg(not(feature = "http_cache"))]
+                            if *r.inner.function_id == "HTTP" {
+                                continue;
+                            }
                             if has_prev {
                                 write!(_f, ",")?;
                             }
