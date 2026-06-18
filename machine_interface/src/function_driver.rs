@@ -1,5 +1,6 @@
 use crate::{
     composition::{CompositionSet, LocalCompositionSet, RemoteData},
+    function_driver::functions::SystemFunction,
     machine_config::EngineType,
     memory_domain::MemoryDomain,
 };
@@ -42,6 +43,11 @@ pub enum WorkToDo {
         input_sets: Vec<Option<CompositionSet>>,
         metadata: Arc<Metadata>,
         caching: bool,
+        recorder: Recorder,
+    },
+    FunctionReferences {
+        function: SystemFunction,
+        input_sets: Vec<Option<CompositionSet>>,
         recorder: Recorder,
     },
     SetsToResolve {

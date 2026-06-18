@@ -529,10 +529,15 @@ impl Dispatcher {
             // Defer actual execution of system functions (i.e. fetching),
             // by calling the system function to produce a composition set containing the reference to be resolved later
             FunctionType::SystemFunction(sys_function) => {
-                machine_interface::function_driver::system_driver::convert_to_references(
-                    sys_function,
+                let args = WorkToDo::FunctionReferences {
+                    function: sys_function,
                     input_sets,
-                )
+                    recorder,
+                };
+                self.work_queue
+                    .do_work(args)
+                    .await
+                    .map(|w| w.get_composition())
             }
             FunctionType::Function(func_info) => {
                 let function_alternatives = func_info

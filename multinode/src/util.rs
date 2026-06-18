@@ -166,7 +166,7 @@ pub(crate) fn system_function_dtop(
     }
 }
 
-fn remote_data_dtop(remote_data: &RemoteData, size: usize) -> proto::RemoteData {
+pub(crate) fn remote_data_dtop(remote_data: &RemoteData, size: usize) -> proto::RemoteData {
     proto::RemoteData {
         node_id: remote_data.node_id,
         data_id: remote_data.data_id,
@@ -274,7 +274,7 @@ fn item_data_and_ref(
     }
 }
 
-fn remote_data_ptod(
+pub(crate) fn remote_data_ptod(
     remote_data: proto::RemoteData,
     delete_sender: Option<mpsc::UnboundedSender<RemoteData>>,
 ) -> RemoteData {

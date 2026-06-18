@@ -102,6 +102,11 @@ message NodeUpdate {
     uint64 num_local_cores = 1;
 }
 
+message CacheInsert {
+    uint64 cache_key = 1;
+    repeated RemoteData cache_value = 2;
+}
+
 // Message from remote node to get work or return completed tasks
 message RemoteMessage {
     oneof remote_message {
@@ -111,6 +116,8 @@ message RemoteMessage {
         Response response = 2;
         // Update message to the server
         NodeUpdate node_update = 3;
+        // Cache entry produced by resolving remote IoData
+        CacheInsert cache_insert = 4;
     }
 }
 

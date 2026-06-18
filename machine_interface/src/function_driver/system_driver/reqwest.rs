@@ -2,7 +2,10 @@ use crate::{
     composition::{CompositionSet, ItemData},
     function_driver::{
         functions::{Function, FunctionConfig},
-        system_driver::{IoData, SystemFunction},
+        system_driver::{
+            cache::{CacheRegistry, HttpCacheEntry},
+            notify_io_data_cache, IoData, SystemFunction,
+        },
         ComputeResource, Driver, EngineWorkQueue, WorkDone, WorkToDo,
     },
     memory_domain::{
@@ -13,7 +16,8 @@ use crate::{
 };
 use bytes::Bytes;
 use dandelion_commons::{
-    dandelion_err, err_dandelion, records::RecordPoint, DandelionError, DandelionResult,
+    dandelion_err, err_dandelion, records::RecordPoint, try_with_capacity, DandelionError,
+    DandelionResult,
 };
 use futures::{stream::FuturesUnordered, StreamExt};
 use http::{version::Version as HttpVersion, HeaderName, HeaderValue, Method as HttpMethod};
@@ -21,10 +25,13 @@ use itertools::Itertools;
 use log::{debug, error, trace, warn};
 use memcache::Client as MemcachedClient;
 use reqwest::{header::HeaderMap, Client as HttpClient};
-use std::sync::{Arc, OnceLock};
+use std::{
+    hash::{DefaultHasher, Hash, Hasher},
+    sync::{Arc, OnceLock},
+};
 use tokio::{
     spawn,
-    sync::{OwnedSemaphorePermit, Semaphore},
+    sync::{OnceCell, OwnedSemaphorePermit, Semaphore},
 };
 
 trait Request
@@ -255,13 +262,15 @@ async fn http_request(
     position: Position,
     context: Arc<Context>,
 ) -> DandelionResult<Vec<Arc<Context>>> {
+    let http_request = parse_request::<HttpRequest>(position, context)?;
+    let cache_key = http_request.cache_key();
     let HttpRequest {
         method,
         uri,
         version,
         headermap,
         body,
-    } = parse_request(position, context)?;
+    } = http_request;
 
     let request_builder = match method {
         HttpMethod::PUT => client.put(uri.clone()),
@@ -344,6 +353,12 @@ async fn http_request(
         body_length,
     ));
 
+    if let Some(cache_key) = cache_key {
+        notify_io_data_cache(
+            cache_key,
+            [header_context.clone(), body_context.clone()].to_vec(),
+        );
+    }
     Ok(vec![header_context, body_context])
 }
 
@@ -440,6 +455,7 @@ async fn resolve_item(
     data: ItemData,
     client: HttpClient,
     permit: Option<OwnedSemaphorePermit>,
+    resolve_iodata: bool,
 ) -> DandelionResult<(usize, DataItem, ItemData)> {
     debug!("Resolving item {:?}, data {:?}", item, data);
     let results = match data {
@@ -452,6 +468,9 @@ async fn resolve_item(
             Ok((outer_set_index, item, ItemData::LocalData(context)))
         }
         ItemData::IoData(io_data) => {
+            if !resolve_iodata {
+                return Ok((outer_set_index, item, ItemData::IoData(io_data)));
+            }
             let IoData {
                 mut original_position,
                 original_data,
@@ -468,6 +487,7 @@ async fn resolve_item(
                     *original_data,
                     client.clone(),
                     None,
+                    true,
                 ))
                 .await?
                 {
@@ -516,6 +536,7 @@ async fn resolve_all_sets(
     semaphore: Arc<Semaphore>,
     ticket: OwnedSemaphorePermit,
     result_sender: impl FnOnce(DandelionResult<Vec<Option<CompositionSet>>>) + 'static + Send,
+    resolve_iodata: bool,
 ) {
     // drop ticket so at least one will be available for the new tasks we spawn
     drop(ticket);
@@ -537,6 +558,7 @@ async fn resolve_all_sets(
                     data,
                     client.clone(),
                     Some(permit),
+                    resolve_iodata,
                 )));
             }
         }
@@ -624,8 +646,32 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                             ),
                         };
                     },
+                    true,
                 )
                 .await;
+            }
+            WorkToDo::FunctionReferences {
+                function,
+                input_sets,
+                recorder,
+            } => {
+                let client_clone = http_client.clone();
+                let semaphore = semaphore.clone();
+                tokio::spawn(async move {
+                    match convert_to_references_with_cache(
+                        function,
+                        input_sets,
+                        recorder,
+                        client_clone,
+                        semaphore.clone(),
+                        ticket,
+                    )
+                    .await
+                    {
+                        Ok(sets) => debt.fulfill(Ok(WorkDone::CompositionSet(sets))),
+                        Err(err) => debt.fulfill(Err(err)),
+                    };
+                });
             }
             WorkToDo::SetsToResolve { input_sets } => {
                 let client_clone = http_client.clone();
@@ -640,6 +686,7 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                             Err(err) => debt.fulfill(Err(err)),
                         };
                     },
+                    false,
                 )
                 .await;
             }
@@ -708,4 +755,153 @@ impl Driver for ReqwestDriver {
             config: FunctionConfig::SysConfig(SystemFunction::HTTP),
         });
     }
+}
+
+static HTTP_CACHE_REGISTRY: OnceLock<CacheRegistry> = OnceLock::new();
+
+pub fn insert_http_cache_entry(key: u64, value: HttpCacheEntry) {
+    HTTP_CACHE_REGISTRY
+        .get_or_init(CacheRegistry::new)
+        .insert(key, value);
+}
+
+fn get_http_cache_entry(key: u64) -> Option<HttpCacheEntry> {
+    HTTP_CACHE_REGISTRY
+        .get_or_init(CacheRegistry::new)
+        .get(key)
+        .clone()
+}
+
+impl HttpRequest {
+    fn cache_key(&self) -> Option<u64> {
+        let mut hasher = DefaultHasher::new();
+        if self.method == HttpMethod::GET {
+            self.uri.hash(&mut hasher);
+            for (key, value) in self.headermap.iter() {
+                key.hash(&mut hasher);
+                value.hash(&mut hasher);
+            }
+            Some(hasher.finish())
+        } else {
+            None
+        }
+    }
+}
+
+async fn convert_to_references_with_cache(
+    function: SystemFunction,
+    mut input_sets: Vec<Option<CompositionSet>>,
+    mut recorder: dandelion_commons::records::Recorder,
+    client: HttpClient,
+    semaphore: Arc<Semaphore>,
+    ticket: OwnedSemaphorePermit,
+) -> DandelionResult<Vec<Option<CompositionSet>>> {
+    // check that the function id contains string correcpsonding to system function
+    debug_assert_eq!(
+        1,
+        input_sets.len(),
+        "all current IO functions expect a single input set"
+    );
+
+    if let SystemFunction::HTTP = function {
+        // resolve all remote data in the input set
+        let (result_sender, result_receiver) = tokio::sync::oneshot::channel();
+        recorder.record(RecordPoint::ResolveSetsStart);
+        resolve_all_sets(
+            client,
+            input_sets.clone(),
+            semaphore,
+            ticket,
+            |result| {
+                result_sender.send(result).unwrap();
+            },
+            false,
+        )
+        .await;
+        let mut resolved_sets = result_receiver.await.unwrap()?;
+        recorder.record(RecordPoint::ResolveSetsEnd);
+
+        let mut output_vec = try_with_capacity!(Vec, 2)?;
+        output_vec.resize(2, None);
+
+        if let Some(input_set) = resolved_sets[0].take() {
+            recorder.record(RecordPoint::CacheLookupStart);
+            let input_set_name = input_set.get_name().clone();
+            let mut out_0_list = try_with_capacity!(Vec, input_set.len())?;
+            let mut out_1_list = try_with_capacity!(Vec, input_set.len())?;
+            let mut cache_hit = true;
+            for (item, data) in input_set {
+                let new_item = DataItem {
+                    data: crate::Position { offset: 0, size: 0 },
+                    ident: item.ident.clone(),
+                    key: item.key,
+                };
+
+                if let ItemData::LocalData(context) = data {
+                    let http_request = parse_request::<HttpRequest>(item.data, context)?;
+                    // println!(
+                    //     "Making HTTP request with method {:?}, uri {}, and headers {:?}",
+                    //     http_request.method, http_request.uri, http_request.headermap
+                    // );
+                    if let Some(cache_key) = http_request.cache_key() {
+                        if let Some(entry) = get_http_cache_entry(cache_key) {
+                            // println!("Cache hit for request with key {}", cache_key);
+                            out_0_list.push((new_item.clone(), ItemData::RemoteData(entry.header)));
+                            out_1_list.push((new_item, ItemData::RemoteData(entry.body)));
+                        } else {
+                            // println!("Cache miss for request with key {}", cache_key);
+                            cache_hit = false;
+                        }
+                    } else {
+                        // println!("This request is not cacheable");
+                    }
+                } else {
+                    panic!("should have resolved all data to local");
+                }
+            }
+            recorder.record(RecordPoint::CacheLookupEnd);
+            output_vec[0] = CompositionSet::from_item_list(input_set_name.clone(), out_0_list);
+            output_vec[1] = CompositionSet::from_item_list(input_set_name, out_1_list);
+            if cache_hit {
+                return Ok(output_vec);
+            }
+        }
+    }
+
+    // go through all input sets and check if there is already a static one, or on in the input data
+    let mut output_vec = try_with_capacity!(Vec, 2)?;
+    output_vec.resize(2, None);
+
+    if let Some(input_set) = input_sets[0].take() {
+        let input_set_name = input_set.get_name().clone();
+        let mut out_0_list = try_with_capacity!(Vec, input_set.len())?;
+        let mut out_1_list = try_with_capacity!(Vec, input_set.len())?;
+        for (item, data) in input_set {
+            let new_item = DataItem {
+                data: crate::Position { offset: 0, size: 0 },
+                ident: item.ident.clone(),
+                key: item.key,
+            };
+            let set_once = Arc::new(OnceCell::new());
+            let header_data = IoData {
+                original_position: item.data,
+                original_data: Box::new(data.clone()),
+                resolved: set_once.clone(),
+                function,
+                set_index: 0,
+            };
+            let body_data = IoData {
+                original_position: item.data,
+                original_data: Box::new(data),
+                resolved: set_once,
+                function,
+                set_index: 1,
+            };
+            out_0_list.push((new_item.clone(), ItemData::IoData(header_data)));
+            out_1_list.push((new_item, ItemData::IoData(body_data)));
+        }
+        output_vec[0] = CompositionSet::from_item_list(input_set_name.clone(), out_0_list);
+        output_vec[1] = CompositionSet::from_item_list(input_set_name, out_1_list);
+    }
+    Ok(output_vec)
 }
