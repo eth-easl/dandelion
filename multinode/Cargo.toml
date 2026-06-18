@@ -11,6 +11,11 @@ tokio = { version = "1", features = ["time"] }
 futures = "0.3.32"
 prost = "0.14.1"
 log = "0.4.20"
+reqwest = { version = "0.12" }
+hyper = { version = "1.2", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [build-dependencies]
 prost-build = { version = "0.14.1"}
@@ -22,4 +27,4 @@ test-log = "0.2.16"
 cheri = ["dispatcher/cheri", "machine_interface/cheri"]
 mmu = ["dispatcher/mmu", "machine_interface/mmu"]
 kvm = ["dispatcher/kvm", "machine_interface/kvm"]
-reqwest_io = ["dispatcher/reqwest_io", "machine_interface/reqwest_io"]
+timestamp = ["dandelion_commons/timestamp"]

@@ -1,7 +1,14 @@
-#[cfg(feature = "reqwest_io")]
 pub mod reqwest;
 
-use crate::{function_driver::functions::SystemFunction, machine_config::EngineType};
+use crate::{
+    composition::{CompositionSet, ItemData, LocalCompositionSet},
+    function_driver::functions::SystemFunction,
+    memory_domain::Context,
+    DataItem, Position,
+};
+use dandelion_commons::{try_with_capacity, DandelionResult};
+use std::sync::Arc;
+use tokio::sync::OnceCell;
 
 /// HTTP function currently expects one set with requests formated by HTTP standard (in text).
 /// This means one line with the reqest method, a space, request url, another space and the protocol version
@@ -27,12 +34,14 @@ const HTTP_INPUT_SETS: [&str; 1] = ["requests"];
 const HTTP_OUTPUT_SETS: [&str; 2] = ["headers", "bodies"];
 
 /// Provides the input set names for a given system function
-pub fn get_system_function_input_sets(function: SystemFunction) -> Vec<String> {
+pub fn get_system_function_input_sets(
+    function: SystemFunction,
+) -> Vec<(String, Option<LocalCompositionSet>)> {
     return match function {
         SystemFunction::HTTP => HTTP_INPUT_SETS,
         SystemFunction::MEMCACHED => HTTP_INPUT_SETS,
     }
-    .map(|name| name.to_string())
+    .map(|name| (name.to_string(), None))
     .to_vec();
 }
 
@@ -46,21 +55,71 @@ pub fn get_system_function_output_sets(function: SystemFunction) -> Vec<String> 
     .to_vec();
 }
 
-/// The system context only holds references to other contexts, so the size does not matter.
-/// System functions can create new contexts to return with appropriate sizes, so this does
-/// not matter to them either.
-// TODO: think about setting a max size for user fetchable data, i.e. limiting the response size.
-#[cfg(any(feature = "reqwest_io"))]
-const SYS_FUNC_DEFAULT_CONTEXT_SIZE: usize = usize::MAX;
+pub const SYSTEM_FUNCTIONS: &[SystemFunction] = &[SystemFunction::HTTP];
 
-pub const SYSTEM_FUNCTIONS: &[(EngineType, SystemFunction, usize)] = &[
-    #[cfg(feature = "reqwest_io")]
-    (
-        EngineType::Reqwest,
-        SystemFunction::HTTP,
-        SYS_FUNC_DEFAULT_CONTEXT_SIZE,
-    ),
-];
+#[derive(Debug, Clone)]
+pub struct IoData {
+    pub original_position: Position,
+    pub original_data: Box<ItemData>,
+    // A vec with the resolved outputs for this IO request
+    // one entry for each output set of the function.
+    // The output item starts at 0 in the context and goes until the end of the context.
+    pub resolved: Arc<OnceCell<DandelionResult<Vec<Arc<Context>>>>>,
+    pub function: SystemFunction,
+    pub set_index: usize,
+    // recorder: Recorder,
+}
+
+/// Currently assumes the HTTP_INPUT_SETS and HTTP_OUTPUT_SETS
+pub fn convert_to_references(
+    function: SystemFunction,
+    mut inputs: Vec<Option<CompositionSet>>,
+    // recorder: Recorder,
+) -> DandelionResult<Vec<Option<CompositionSet>>> {
+    // check that the function id contains string correcpsonding to system function
+    debug_assert_eq!(
+        1,
+        inputs.len(),
+        "all current IO functions expect a single input set"
+    );
+
+    // go through all input sets and check if there is already a static one, or on in the input data
+    let mut output_vec = try_with_capacity!(Vec, 2)?;
+    output_vec.resize(2, None);
+
+    if let Some(input_set) = inputs[0].take() {
+        let input_set_name = input_set.get_name().clone();
+        let mut out_0_list = try_with_capacity!(Vec, input_set.len())?;
+        let mut out_1_list = try_with_capacity!(Vec, input_set.len())?;
+        for (item, data) in input_set {
+            let new_item = DataItem {
+                data: crate::Position { offset: 0, size: 0 },
+                ident: item.ident.clone(),
+                key: item.key,
+            };
+            let set_once = Arc::new(OnceCell::new());
+            let header_data = IoData {
+                original_position: item.data,
+                original_data: Box::new(data.clone()),
+                resolved: set_once.clone(),
+                function,
+                set_index: 0,
+            };
+            let body_data = IoData {
+                original_position: item.data,
+                original_data: Box::new(data),
+                resolved: set_once,
+                function,
+                set_index: 1,
+            };
+            out_0_list.push((new_item.clone(), ItemData::IoData(header_data)));
+            out_1_list.push((new_item, ItemData::IoData(body_data)));
+        }
+        output_vec[0] = CompositionSet::from_item_list(input_set_name.clone(), out_0_list);
+        output_vec[1] = CompositionSet::from_item_list(input_set_name, out_1_list);
+    }
+    Ok(output_vec)
+}
 
 #[cfg(test)]
 mod system_driver_tests;

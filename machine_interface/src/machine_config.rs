@@ -11,8 +11,7 @@ pub use strum::{EnumCount, EnumIter};
 #[repr(u8)] // ensure that always safe to cast to usize
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, EnumCount, EnumIter)]
 pub enum EngineType {
-    #[cfg(feature = "reqwest_io")]
-    Reqwest,
+    System,
     #[cfg(feature = "cheri")]
     Cheri,
     #[cfg(feature = "mmu")]
@@ -35,8 +34,7 @@ pub enum DomainType {
 impl EngineType {
     pub fn get_domain_type(&self) -> DomainType {
         match self {
-            #[cfg(feature = "reqwest_io")]
-            EngineType::Reqwest => DomainType::System,
+            EngineType::System => DomainType::System,
             #[cfg(feature = "cheri")]
             EngineType::Cheri => DomainType::Cheri,
             #[cfg(feature = "mmu")]
@@ -49,11 +47,10 @@ impl EngineType {
     pub fn start_engine(
         &self,
         resource: ComputeResource,
-        queue: impl EngineWorkQueue + Send + 'static,
+        queue: impl EngineWorkQueue + Clone + Send + 'static,
     ) -> DandelionResult<()> {
         match self {
-            #[cfg(feature = "reqwest_io")]
-            EngineType::Reqwest => crate::function_driver::system_driver::reqwest::ReqwestDriver {}
+            EngineType::System => crate::function_driver::system_driver::reqwest::ReqwestDriver {}
                 .start_engine(resource, queue),
             #[cfg(feature = "cheri")]
             EngineType::Cheri => crate::function_driver::compute_driver::cheri::CheriDriver {}
@@ -73,8 +70,7 @@ impl EngineType {
         static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
     ) -> DandelionResult<Function> {
         match self {
-            #[cfg(feature = "reqwest_io")]
-            EngineType::Reqwest => crate::function_driver::system_driver::reqwest::ReqwestDriver {}
+            EngineType::System => crate::function_driver::system_driver::reqwest::ReqwestDriver {}
                 .parse_function(function_path, static_domain),
             #[cfg(feature = "cheri")]
             EngineType::Cheri => crate::function_driver::compute_driver::cheri::CheriDriver {}
@@ -99,13 +95,7 @@ pub fn get_available_domains(
         #[cfg(feature = "kvm")]
         (DomainType::Kvm, MemoryResource::Anonymous { size: 0 }),
         #[cfg(feature = "mmu")]
-        (
-            DomainType::Process,
-            MemoryResource::Shared {
-                id: u64::MAX,
-                size: 0,
-            },
-        ),
+        (DomainType::Process, MemoryResource::Shared { size: 0 }),
     ]);
     for (dom, resource) in resources {
         default_resources.insert(dom, resource);
@@ -149,8 +139,7 @@ pub fn create_engine_resource_map(
     pool_map.insert(engine_type, compute_cores);
 
     // communication engines
-    #[cfg(feature = "reqwest_io")]
-    pool_map.insert(EngineType::Reqwest, communication_cores);
+    pool_map.insert(EngineType::System, communication_cores);
 
     pool_map
 }

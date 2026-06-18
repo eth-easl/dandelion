@@ -22,18 +22,34 @@ pub struct ElfConfig {
     pub(super) protection_flags: Arc<Vec<(u32, crate::Position)>>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum SystemFunction {
     HTTP,
     MEMCACHED,
 }
 
+impl From<&str> for SystemFunction {
+    fn from(value: &str) -> Self {
+        match value {
+            "HTTP" => Self::HTTP,
+            "MEMCACHED" => Self::MEMCACHED,
+            _ => panic!("trying to convert non existent system function"),
+        }
+    }
+}
+
+impl Into<&str> for &SystemFunction {
+    fn into(self) -> &'static str {
+        match self {
+            SystemFunction::HTTP => "HTTP",
+            SystemFunction::MEMCACHED => "MEMCACHED",
+        }
+    }
+}
+
 impl core::fmt::Display for SystemFunction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> core::fmt::Result {
-        return match self {
-            SystemFunction::HTTP => write!(f, "HTTP"),
-            SystemFunction::MEMCACHED => write!(f, "MEMCACHED"),
-        };
+        write!(f, "{}", Into::<&str>::into(self))
     }
 }
 

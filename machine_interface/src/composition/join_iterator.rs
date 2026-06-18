@@ -1,8 +1,7 @@
+use log::debug;
 use std::ops::Range;
 
-use log::debug;
-
-use crate::composition::{AnySetGroup, CompositionSet, JoinStrategy, ShardingMode};
+use crate::composition::{AnySetGroup, CompositionSet, ItemData, JoinStrategy, ShardingMode};
 
 pub(super) trait JoinIterator {
     /// Reduces the parallelism of all `AnyIterators` in the iterator chain by combining some sets.
@@ -108,11 +107,18 @@ impl JoinIterator for SetEachIterator {
 
     fn fill_in(&mut self, to_fill: &mut Vec<Option<CompositionSet>>) {
         debug_assert!(self.item_idx < self.set.item_list.len());
+        let (item, data) = self.set.item_list[self.item_idx].clone();
         to_fill[self.write_idx] = Some(CompositionSet {
-            item_list: vec![self.set.item_list[self.item_idx].clone()],
+            total_size: item.data.size,
+            item_list: vec![(item, data)],
             // no need to clone the original set name, sharding is for functions that are to be run.
             // When the function is run, the set names from the metadata are used, so this would be ignored anyway
             set_name: String::new(),
+            non_local_items: if let ItemData::LocalData(_) = self.set.item_list[self.item_idx].1 {
+                0
+            } else {
+                1
+            },
         });
         if let Some(left) = &mut self.left {
             left.fill_in(to_fill);
@@ -315,12 +321,24 @@ impl JoinIterator for SetKeyIterator {
         let fill_this_set = self.key_groups_idx < self.key_groups.len()
             && self.key == self.key_groups[self.key_groups_idx].0;
         if fill_this_set {
+            let item_list =
+                self.set.item_list[self.key_groups[self.key_groups_idx].1.clone()].to_vec();
+            let mut non_local_items = 0;
+            let mut total_size = 0;
+            for item in item_list.iter() {
+                if let ItemData::LocalData(_) = item.1 {
+                } else {
+                    non_local_items += 1;
+                }
+                total_size += item.0.data.size;
+            }
             to_fill[self.write_idx] = Some(CompositionSet {
-                item_list: self.set.item_list[self.key_groups[self.key_groups_idx].1.clone()]
-                    .to_vec(),
+                item_list,
                 // no need to clone the original set name, sharding is for functions that are to be run.
                 // When the function is run, the set names from the metadata are used, so this would be ignored anyway
                 set_name: String::new(),
+                non_local_items,
+                total_size,
             });
         }
         if let Some(left) = &mut self.left {
@@ -587,13 +605,21 @@ impl AnyIterator {
 
         if let Some(mut it) = inner_join_it {
             let mut total_sizes = Vec::new();
-            total_sizes.resize(num_sets, 0);
+            total_sizes.reserve(num_sets);
             let mut inner_sharding = Vec::new();
 
             // generate all sets
             let mut first_sets = Vec::with_capacity(num_sets);
             first_sets.resize(num_sets, None);
             it.fill_in(&mut first_sets);
+            for set_opt in first_sets.iter() {
+                let size = if let Some(set) = set_opt {
+                    set.size()
+                } else {
+                    0
+                };
+                total_sizes.push(size);
+            }
             inner_sharding.push(first_sets);
             while it.advance() {
                 let mut next_sets = Vec::with_capacity(num_sets);
@@ -643,11 +669,12 @@ impl JoinIterator for AnyIterator {
             .expect("Ran out of any_parallelisms.")
             .target_partitions;
 
-        // can only group into less groups than we currently have
-        debug_assert!(parallelism > 0);
+        // can only group into at most the same number of groups than we currently have
         debug_assert!(parallelism <= self.set_groups.len());
 
-        if self.min_set_bytes > 0 || parallelism < self.set_groups.len() {
+        // using a target parallelism of 0 implies we do not reduce this parallelism (also not based
+        // on `min_set_bytes`) -> this is important for system function reference sets which have size 0
+        if parallelism > 0 && (self.min_set_bytes > 0 || parallelism < self.set_groups.len()) {
             // split them into even groups
             let num_sets = self.set_groups[0].len();
             let mut new_set_groups = Vec::with_capacity(parallelism);

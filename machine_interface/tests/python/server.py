@@ -20,6 +20,16 @@ class BasicHandler(BaseHTTPRequestHandler):
         elif self.path == '/get_large':
             message = 'a' * 8192
             self._send_response(message)
+        elif self.path == "/matrix":
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.send_header('Content-Length', str(40))
+            self.end_headers()
+            self.wfile.write(b'\x02\x00\x00\x00\x00\x00\x00\x00')
+            self.wfile.write(b'\x01\x00\x00\x00\x00\x00\x00\x00')
+            self.wfile.write(b'\x02\x00\x00\x00\x00\x00\x00\x00')
+            self.wfile.write(b'\x03\x00\x00\x00\x00\x00\x00\x00')
+            self.wfile.write(b'\x04\x00\x00\x00\x00\x00\x00\x00')
         else:
             self.send_response(404)
 

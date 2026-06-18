@@ -1,46 +1,41 @@
 use crate::{
-    composition::CompositionSet,
+    composition::{CompositionSet, ItemData},
     function_driver::{
         functions::{Function, FunctionConfig},
-        system_driver::SystemFunction,
-        ComputeResource, Driver, EngineWorkQueue, Metadata, WorkDone, WorkToDo,
+        system_driver::{IoData, SystemFunction},
+        ComputeResource, Driver, EngineWorkQueue, WorkDone, WorkToDo,
     },
-    machine_config::EngineType,
-    memory_domain::{bytes_context::BytesContext, Context, ContextTrait, ContextType},
+    memory_domain::{
+        bytes_context::BytesContext, read_only::ReadOnlyContext, Context, ContextTrait, ContextType,
+    },
     promise::Debt,
-    DataItem, DataSet, Position,
+    DataItem, Position,
 };
 use bytes::Bytes;
-use core_affinity::set_for_current;
 use dandelion_commons::{
-    dandelion_err, err_dandelion,
-    records::{RecordPoint, Recorder},
-    DandelionError, DandelionResult, FunctionRegistryError,
+    dandelion_err, err_dandelion, records::RecordPoint, DandelionError, DandelionResult,
 };
-use futures::FutureExt;
+use futures::{stream::FuturesUnordered, StreamExt};
 use http::{version::Version as HttpVersion, HeaderName, HeaderValue, Method as HttpMethod};
-use log::{debug, error, warn};
+use itertools::Itertools;
+use log::{debug, error, trace, warn};
 use memcache::Client as MemcachedClient;
 use reqwest::{header::HeaderMap, Client as HttpClient};
 use std::sync::{Arc, OnceLock};
 use tokio::{
-    runtime::Builder,
-    sync::{RwLock, Semaphore},
+    spawn,
+    sync::{OwnedSemaphorePermit, Semaphore},
 };
 
 trait Request
 where
     Self: Sized,
 {
-    fn from_raw(raw_request: Vec<u8>, item_name: String, item_key: u32) -> DandelionResult<Self>;
+    fn from_raw(raw_request: Vec<u8>) -> DandelionResult<Self>;
 }
 
 /// Stores requestInformation for http
 struct HttpRequest {
-    /// name of the request item
-    item_name: String,
-    /// key of the request item
-    item_key: u32,
     method: HttpMethod,
     uri: String,
     version: HttpVersion,
@@ -55,34 +50,14 @@ enum MemcachedMethod {
 
 /// Stores requestInformation for memcached request
 struct MemcachedRequest {
-    /// name of the request item
-    item_name: String,
-    /// key of the request item
-    item_key: u32,
     method: MemcachedMethod,
     uri: String,
     memcached_identifier: String,
     body: Vec<u8>,
 }
 
-struct ResponseInformation {
-    /// name of the original request data item
-    item_name: String,
-    // key of the original request data item
-    item_key: u32,
-    /// contains both the status line as well as all headers
-    preamble: String,
-    body: Vec<bytes::Bytes>,
-    /// Total number of bytes the body contains
-    body_length: usize,
-}
-
 impl Request for HttpRequest {
-    fn from_raw(
-        mut raw_request: Vec<u8>,
-        item_name: String,
-        item_key: u32,
-    ) -> DandelionResult<Self> {
+    fn from_raw(mut raw_request: Vec<u8>) -> DandelionResult<Self> {
         // read first line to get request line
         let request_index = raw_request
             .iter()
@@ -185,11 +160,9 @@ impl Request for HttpRequest {
         } else {
             vec![]
         };
-        log::trace!("Reqwest body: {:?}", body);
+        trace!("Reqwest body: {:?}", body);
 
         Ok(HttpRequest {
-            item_name,
-            item_key,
             method,
             uri,
             version,
@@ -200,11 +173,7 @@ impl Request for HttpRequest {
 }
 
 impl Request for MemcachedRequest {
-    fn from_raw(
-        mut raw_request: Vec<u8>,
-        item_name: String,
-        item_key: u32,
-    ) -> DandelionResult<Self> {
+    fn from_raw(mut raw_request: Vec<u8>) -> DandelionResult<Self> {
         // read first line to get request line
         let request_index = raw_request
             .iter()
@@ -255,11 +224,9 @@ impl Request for MemcachedRequest {
         } else {
             vec![]
         };
-        log::trace!("Reqwest body: {:?}", body);
+        trace!("Reqwest body: {:?}", body);
 
         return Ok(Self {
-            item_name,
-            item_key,
             method,
             uri,
             memcached_identifier,
@@ -268,35 +235,33 @@ impl Request for MemcachedRequest {
     }
 }
 
-fn parse_requests<RequestType: Request>(
-    composition_set: CompositionSet,
-) -> DandelionResult<Vec<RequestType>> {
-    let request_info: DandelionResult<Vec<RequestType>> = composition_set
-        .into_iter()
-        .map(|(data_item, context)| {
-            let mut request_buffer = Vec::with_capacity(data_item.data.size);
-            request_buffer.resize(data_item.data.size, 0);
-            context.read(data_item.data.offset, &mut request_buffer)?;
-            // TODO: from raw may also take the vec of refs from the context (via the get_chunk interface), so we don't need to copy the request
-            RequestType::from_raw(request_buffer, data_item.ident, data_item.key)
-        })
-        .collect();
-    return request_info;
+fn parse_request<RequestType: Request>(
+    position: Position,
+    context: Arc<Context>,
+) -> DandelionResult<RequestType> {
+    let Position { offset, size } = position;
+    let mut request_buffer = Vec::with_capacity(size);
+    let mut bytes_read = 0;
+    while bytes_read < size {
+        let chunk = context.get_chunk_ref(offset + bytes_read, size - bytes_read)?;
+        request_buffer.extend_from_slice(chunk);
+        bytes_read += chunk.len();
+    }
+    RequestType::from_raw(request_buffer)
 }
 
 async fn http_request(
     client: HttpClient,
-    request_info: HttpRequest,
-) -> DandelionResult<ResponseInformation> {
+    position: Position,
+    context: Arc<Context>,
+) -> DandelionResult<Vec<Arc<Context>>> {
     let HttpRequest {
-        item_name,
-        item_key,
         method,
         uri,
         version,
         headermap,
         body,
-    } = request_info;
+    } = parse_request(position, context)?;
 
     let request_builder = match method {
         HttpMethod::PUT => client.put(uri.clone()),
@@ -326,7 +291,10 @@ async fn http_request(
     };
     let mut response = match client.execute(request).await {
         Ok(resp) => resp,
-        Err(_) => return err_dandelion!(DandelionError::SystemFuncResponseError),
+        Err(repsonse_error) => {
+            debug!("response error: {}", repsonse_error);
+            return err_dandelion!(DandelionError::SystemFuncResponseError);
+        }
     };
 
     // write the status line
@@ -366,25 +334,29 @@ async fn http_request(
             return err_dandelion!(DandelionError::SystemFuncResponseError);
         }
     }
-    let response_info = ResponseInformation {
-        item_name,
-        item_key,
-        preamble,
-        body,
+
+    let header_context = Arc::new(ReadOnlyContext::new(
+        preamble.into_bytes().into_boxed_slice(),
+    )?);
+
+    let body_context = Arc::new(Context::new(
+        ContextType::Bytes(Box::new(BytesContext::new(body))),
         body_length,
-    };
-    return Ok(response_info);
+    ));
+
+    Ok(vec![header_context, body_context])
 }
 
-async fn memcached_request(request_info: MemcachedRequest) -> DandelionResult<ResponseInformation> {
+async fn memcached_request(
+    position: Position,
+    context: Arc<Context>,
+) -> DandelionResult<Vec<Arc<Context>>> {
     let MemcachedRequest {
-        item_name,
-        item_key,
         method,
         uri,
         memcached_identifier,
         body,
-    } = request_info;
+    } = parse_request(position, context)?;
 
     // For simplicity, we use the same Methods as http.
     // Memcached Basic Text Protocol could have following methods:
@@ -424,6 +396,7 @@ async fn memcached_request(request_info: MemcachedRequest) -> DandelionResult<Re
         }
         MemcachedMethod::GET => {
             // Result<Option<Vec<u8>>, tokio_memcached::Error>
+            let debug_identifier = memcached_identifier.clone();
             let result = tokio::task::spawn_blocking(move || {
                 memcached_client.get::<Vec<u8>>(&memcached_identifier)
             })
@@ -432,7 +405,7 @@ async fn memcached_request(request_info: MemcachedRequest) -> DandelionResult<Re
             match result {
                 Ok(Ok(Some(response))) => (String::from("SUCCESS"), Bytes::from(response)),
                 Ok(Ok(None)) => {
-                    debug!("Key {} did not exist on memcached server", item_key);
+                    debug!("Key {} did not exist on memcached server", debug_identifier);
                     (String::from("ABSENT"), Bytes::from(vec![0u8]))
                 }
                 Ok(Err(e)) => {
@@ -448,269 +421,252 @@ async fn memcached_request(request_info: MemcachedRequest) -> DandelionResult<Re
     };
 
     let body_length = response_body.len();
-    let response_info = ResponseInformation {
-        item_name,
-        item_key,
-        preamble,
-        body: vec![response_body],
+
+    let header_context = Arc::new(ReadOnlyContext::new(
+        preamble.into_bytes().into_boxed_slice(),
+    )?);
+
+    let body_context = Arc::new(Context::new(
+        ContextType::Bytes(Box::new(BytesContext::new(vec![response_body]))),
         body_length,
-    };
-    return Ok(response_info);
+    ));
+
+    Ok(vec![header_context, body_context])
 }
 
-fn responses_write(
-    output_set_names: &Vec<String>,
-    debt: Debt,
-    mut recorder: Recorder,
-    responses: Vec<ResponseInformation>,
+async fn resolve_item(
+    outer_set_index: usize,
+    mut item: DataItem,
+    data: ItemData,
+    client: HttpClient,
+    permit: Option<OwnedSemaphorePermit>,
+) -> DandelionResult<(usize, DataItem, ItemData)> {
+    debug!("Resolving item {:?}, data {:?}", item, data);
+    let results = match data {
+        ItemData::LocalData(_) => Ok((outer_set_index, item, data)),
+        ItemData::RemoteData(remote_data) => {
+            let _remote_data_clone = remote_data.clone(); // avoid potential drop before resolve finishes
+            let client = crate::composition::get_remote_data_client()?;
+            let (context, position) = client.resolve_remote_data(remote_data).await?;
+            item.data = position;
+            Ok((outer_set_index, item, ItemData::LocalData(context)))
+        }
+        ItemData::IoData(io_data) => {
+            let IoData {
+                mut original_position,
+                original_data,
+                resolved,
+                function,
+                set_index,
+            } = io_data;
+            // first need to check if original data was local or we still need to fetch that.
+            let (mut item, request_input) = match *original_data {
+                ItemData::LocalData(context) => (item, context),
+                _ => match Box::pin(resolve_item(
+                    set_index,
+                    item,
+                    *original_data,
+                    client.clone(),
+                    None,
+                ))
+                .await?
+                {
+                    (_, item, ItemData::LocalData(context)) => {
+                        original_position = item.data;
+                        (item, context)
+                    }
+                    _ => unreachable!(),
+                },
+            };
+            match function {
+                SystemFunction::HTTP => {
+                    let outputs = resolved
+                        .get_or_init(move || http_request(client, original_position, request_input))
+                        .await;
+                    let context = match outputs {
+                        Ok(context_vec) => context_vec[set_index].clone(),
+                        Err(err) => return Err(err.clone()),
+                    };
+                    item.data.offset = 0;
+                    item.data.size = context.size;
+                    Ok((outer_set_index, item, ItemData::LocalData(context)))
+                }
+                SystemFunction::MEMCACHED => {
+                    let outputs = resolved
+                        .get_or_init(move || memcached_request(original_position, request_input))
+                        .await;
+                    let context = match outputs {
+                        Ok(context_vec) => context_vec[set_index].clone(),
+                        Err(err) => return Err(err.clone()),
+                    };
+                    item.data.offset = 0;
+                    item.data.size = context.size;
+                    Ok((outer_set_index, item, ItemData::LocalData(context)))
+                }
+            }
+        }
+    };
+    drop(permit);
+    results
+}
+
+async fn resolve_all_sets(
+    client: HttpClient,
+    input_sets: Vec<Option<CompositionSet>>,
+    semaphore: Arc<Semaphore>,
+    ticket: OwnedSemaphorePermit,
+    result_sender: impl FnOnce(DandelionResult<Vec<Option<CompositionSet>>>) + 'static + Send,
 ) {
-    let mut header_set = DataSet {
-        ident: "headers".to_string(),
-        buffers: vec![],
-    };
-    let mut body_set = DataSet {
-        ident: "bodies".to_string(),
-        buffers: vec![],
-    };
-    let mut frames = Vec::new();
-    // since output sets are taken from the function registration and not the composition,
-    // always expect the ones we define
-    assert_eq!(2, output_set_names.len());
-    assert_eq!("headers", output_set_names[0]);
-    assert_eq!("bodies", output_set_names[1]);
-    let mut context_offset = 0;
-    for response in responses.into_iter() {
-        let ResponseInformation {
-            item_name,
-            item_key,
-            preamble,
-            mut body,
-            body_length,
-        } = response;
-
-        let preamble_len = preamble.len();
-        header_set.buffers.push(DataItem {
-            ident: item_name.clone(),
-            data: Position {
-                offset: context_offset,
-                size: preamble_len,
-            },
-            key: item_key,
-        });
-        context_offset += preamble_len;
-        let preamble_bytes = bytes::Bytes::from(preamble.into_bytes());
-        frames.push(preamble_bytes);
-
-        body_set.buffers.push(DataItem {
-            ident: item_name,
-            data: Position {
-                offset: context_offset,
-                size: body_length,
-            },
-            key: item_key,
-        });
-        frames.append(&mut body);
-        context_offset += body_length;
+    // drop ticket so at least one will be available for the new tasks we spawn
+    drop(ticket);
+    // check if the function id is for a system function
+    let input_set_number = input_sets.len();
+    let mut sets_vec = Vec::with_capacity(input_sets.len());
+    let set_names = input_sets
+        .iter()
+        .map(|set_option| set_option.as_ref().map(|set| set.get_name().clone()))
+        .collect_vec();
+    let mut new_futures = FuturesUnordered::new();
+    for (set_index, set_option) in input_sets.into_iter().enumerate() {
+        if let Some(set) = set_option {
+            for (item, data) in set.into_iter() {
+                let permit = semaphore.clone().acquire_owned().await.unwrap();
+                new_futures.push(spawn(resolve_item(
+                    set_index,
+                    item,
+                    data,
+                    client.clone(),
+                    Some(permit),
+                )));
+            }
+        }
     }
 
-    let mut out_context = Context::new(
-        ContextType::Bytes(Box::new(BytesContext::new(frames))),
-        context_offset,
-    );
-    out_context.content = vec![Some(header_set), Some(body_set)];
-
-    recorder.record(RecordPoint::EngineEnd);
-    drop(recorder);
-    debt.fulfill(Ok(WorkDone::Context(out_context)));
-    return;
-}
-
-async fn run_http_request(
-    composition_set: CompositionSet,
-    client: HttpClient,
-    metadata: Arc<Metadata>,
-    debt: Debt,
-    recorder: Recorder,
-) -> () {
-    let request_vec = match parse_requests(composition_set) {
-        Ok(request) => request,
-        Err(err) => {
-            debt.fulfill(Err(err));
-            return;
+    spawn(async move {
+        sets_vec.resize(input_set_number, Vec::new());
+        let mut result = None;
+        while let Some(item_result) = new_futures.next().await {
+            let item_tuple = item_result.unwrap();
+            match item_tuple {
+                Ok((set_index, item, data)) => sets_vec[set_index].push((item, data)),
+                Err(err) => {
+                    result = Some(err);
+                    break;
+                }
+            }
         }
-    };
 
-    let responses = match futures::future::try_join_all(
-        request_vec
-            .into_iter()
-            .map(|request| http_request(client.clone(), request).boxed()),
-    )
-    .await
-    {
-        Ok(resp) => resp,
-        Err(err) => {
-            debt.fulfill(Err(err));
-            return;
+        if let Some(error) = result {
+            result_sender(Err(error));
+        } else {
+            let sets = set_names
+                .into_iter()
+                .zip(sets_vec.into_iter())
+                .map(|(name, items)| {
+                    name.and_then(|name| CompositionSet::from_item_list(name, items))
+                })
+                .collect_vec();
+            result_sender(Ok(sets));
         }
-    };
-
-    responses_write(&metadata.output_sets, debt, recorder, responses)
-}
-
-async fn run_memcached_request(
-    composition_set: CompositionSet,
-    metadata: Arc<Metadata>,
-    debt: Debt,
-    recorder: Recorder,
-) -> () {
-    let request_vec = match parse_requests(composition_set) {
-        Ok(request) => request,
-        Err(err) => {
-            debt.fulfill(Err(err));
-            return;
-        }
-    };
-
-    let responses = match futures::future::try_join_all(
-        request_vec
-            .into_iter()
-            .map(|request| memcached_request(request).boxed()),
-    )
-    .await
-    {
-        Ok(resp) => resp,
-        Err(err) => {
-            debt.fulfill(Err(err));
-            return;
-        }
-    };
-
-    responses_write(&metadata.output_sets, debt, recorder, responses)
+    });
 }
 
 /// Number of concurrent requests a single IO core should be handling
 pub const DEFAULT_CONCURRENCY_LIMIT: usize = 15;
 pub static CONCURRENCY_LIMIT: OnceLock<usize> = OnceLock::new();
 
-async fn engine_loop(queue: impl EngineWorkQueue + Send + 'static) -> Debt {
+async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> Debt {
     log::debug!("Reqwest engine Init");
     let http_client = HttpClient::new();
 
     let concurrency_limit = CONCURRENCY_LIMIT.get_or_init(|| DEFAULT_CONCURRENCY_LIMIT);
     let semaphore = Arc::new(Semaphore::new(*concurrency_limit));
-    let worker_lock = Arc::new(RwLock::new(()));
+    // let worker_lock = Arc::new(RwLock::new(()));
 
     loop {
         let ticket = semaphore.clone().acquire_owned().await.unwrap();
-        let (args, debt) = queue.get_engine_args().await;
-
+        debug!("IO engine loop has ticket");
+        let (args, debt) = queue.get_io_engine_args().await;
+        debug!("IO engine loop has work");
         match args {
             WorkToDo::FunctionArguments {
-                function_id: _,
+                function_id,
                 function_alternatives,
-                mut input_sets,
+                input_sets,
                 metadata,
-                caching,
+                caching, // ignoreing caching for system functions
                 mut recorder,
             } => {
-                debug_assert!(caching, "System functions should always be caching");
+                let client_clone = http_client.clone();
+                let queue_clone = queue.clone();
+                debug!("Resolving references for call to {}", function_id);
+                recorder.record(RecordPoint::FetchingStart);
 
-                let alternative = match function_alternatives
-                    .into_iter()
-                    .find(|alt| alt.engine == EngineType::Reqwest)
-                {
-                    Some(alt) => alt,
-                    None => {
-                        drop(recorder);
-                        debt.fulfill(err_dandelion!(DandelionError::FunctionRegistry(
-                            FunctionRegistryError::UnknownFunctionAlternative,
-                        )));
-                        continue;
-                    }
-                };
-                recorder.record(RecordPoint::EngineStart);
-
-                let function = alternative.load_function(true, &mut recorder).unwrap();
-
-                log::debug!("Reqwest engine running function");
-                let system_function = match function.config {
-                    FunctionConfig::SysConfig(sys_func) => sys_func,
-                    _ => {
-                        drop(recorder);
-                        debt.fulfill(err_dandelion!(DandelionError::ConfigMissmatch));
-                        continue;
-                    }
-                };
-
-                let input_option = metadata.input_sets[0]
-                    .1
-                    .as_ref()
-                    .and_then(|static_set| Some(static_set.clone()))
-                    .or_else(|| input_sets[0].take());
-                if let Some(request_set) = input_option {
-                    match system_function {
-                        SystemFunction::HTTP => {
-                            let client_clone = http_client.clone();
-                            tokio::spawn(async move {
-                                run_http_request(
-                                    request_set,
-                                    client_clone,
+                resolve_all_sets(
+                    client_clone,
+                    input_sets,
+                    semaphore.clone(),
+                    ticket,
+                    move |sets_result| {
+                        recorder.record(RecordPoint::FetchingEnd);
+                        match sets_result {
+                            Err(err) => debt.fulfill(Err(err)),
+                            Ok(sets) => queue_clone.requeu_engine_args(
+                                WorkToDo::FunctionArguments {
+                                    function_id,
+                                    function_alternatives,
+                                    input_sets: sets,
                                     metadata,
-                                    debt,
+                                    caching,
                                     recorder,
-                                )
-                                .await;
-                                drop(ticket);
-                            });
+                                },
+                                debt,
+                            ),
+                        };
+                    },
+                )
+                .await;
+            }
+            WorkToDo::SetsToResolve { input_sets } => {
+                let client_clone = http_client.clone();
+                resolve_all_sets(
+                    client_clone,
+                    input_sets,
+                    semaphore.clone(),
+                    ticket,
+                    |sets_result| {
+                        match sets_result {
+                            Ok(sets) => debt.fulfill(Ok(WorkDone::CompositionSet(sets))),
+                            Err(err) => debt.fulfill(Err(err)),
+                        };
+                    },
+                )
+                .await;
+            }
+            WorkToDo::RemoteToDelete { remote_data } => {
+                tokio::spawn(async move {
+                    match crate::composition::get_remote_data_client() {
+                        Ok(client) => {
+                            let result = client
+                                .delete_remote_data(remote_data)
+                                .await
+                                .map(|_| WorkDone::RemoteDeleted);
+                            debt.fulfill(result);
                         }
-                        SystemFunction::MEMCACHED => {
-                            tokio::spawn(async move {
-                                run_memcached_request(request_set, metadata, debt, recorder).await;
-                                drop(ticket);
-                            });
-                        }
-                        #[allow(unreachable_patterns)]
-                        _ => {
-                            drop(recorder);
-                            debt.fulfill(err_dandelion!(DandelionError::MalformedConfig));
+                        Err(err) => {
+                            debt.fulfill(Err(err));
                         }
                     };
-                } else {
-                    drop(recorder);
-                    debt.fulfill(err_dandelion!(DandelionError::MalformedSystemFuncArg(
-                        String::from("No request set",)
-                    )));
-                }
-                continue;
+                    drop(ticket);
+                });
             }
             WorkToDo::Shutdown(_) => {
-                let _ = worker_lock.write_owned().await;
-                return debt;
+                // TODO: if we still want this, get the current index from affinity.
+                // Then block on the correct blocker
+                unimplemented!("Shutdown for IO cores currently not implemented");
             }
         }
     }
-}
-
-fn outer_engine(core_id: u8, queue: impl EngineWorkQueue + Send + 'static) {
-    // set core affinity
-    if !core_affinity::set_for_current(core_affinity::CoreId { id: core_id.into() }) {
-        log::error!("core received core id that could not be set");
-        return;
-    }
-    let runtime = Builder::new_multi_thread()
-        .on_thread_start(move || {
-            if !set_for_current(core_affinity::CoreId { id: core_id.into() }) {
-                return;
-            }
-        })
-        .worker_threads(1)
-        .enable_all()
-        .build()
-        .or(err_dandelion!(DandelionError::EngineError))
-        .unwrap();
-    let debt = runtime.block_on(engine_loop(queue));
-    drop(runtime);
-    debt.fulfill(Ok(WorkDone::Resources(vec![ComputeResource::CPU(core_id)])));
 }
 
 pub struct ReqwestDriver {}
@@ -719,26 +675,19 @@ impl Driver for ReqwestDriver {
     fn start_engine(
         &self,
         resource: ComputeResource,
-        queue: impl EngineWorkQueue + Send + 'static,
+        queue: impl EngineWorkQueue + Clone + Send + 'static,
     ) -> DandelionResult<()> {
-        log::debug!("Starting hyper engine");
+        debug!("Starting hyper engine, by unblocking core on async runtime");
         let core_id = match resource {
             ComputeResource::CPU(core) => core,
             _ => return err_dandelion!(DandelionError::EngineResourceError),
         };
-        // check that core is available
-        let available_cores = match core_affinity::get_core_ids() {
-            None => return err_dandelion!(DandelionError::EngineResourceError),
-            Some(cores) => cores,
-        };
-        if !available_cores
-            .iter()
-            .find(|x| x.id == usize::from(core_id))
-            .is_some()
-        {
-            return err_dandelion!(DandelionError::EngineResourceError);
-        }
-        std::thread::spawn(move || outer_engine(core_id, queue));
+        let global_runtime = &crate::async_runtime::GLOBAL_RUNTIME;
+        debug!("have global runtime reference");
+        global_runtime.spawn(engine_loop(queue));
+        debug!("spawned task on global runtiome");
+        global_runtime.add_core(core_id.into());
+        debug!("sent wake up to core {}", core_id);
         return Ok(());
     }
 

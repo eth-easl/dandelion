@@ -4,13 +4,37 @@ package multinode_proto;
 // Node Information, sent to register new client on server
 message NodeInfo {
     uint32 version = 1;
-    uint64 num_local_cores = 2;
+    uint64 id = 2;
+    uint64 num_local_cores = 3;
+}
+
+enum SystemFunction {
+    HTTP = 0;
+}
+
+message ItemData {
+    oneof data {
+        RemoteData remote_data = 1;
+        IoData io_data = 2;
+    }
+}
+
+message IoData {
+    SystemFunction function = 1;
+    uint64 set_index = 2;
+    ItemData data = 3;
+}
+
+message RemoteData {
+    uint64 node_id = 1;
+    uint64 data_id = 2;
+    uint64 size = 3;
 }
 
 message MetadataItem {
     string ident = 1;
     uint32 key = 2;
-    uint64 end_offset = 3;
+    ItemData data = 3; 
 }
 
 message MetadataSet {
@@ -23,6 +47,10 @@ message Invocation {
     string function_id = 2;
     repeated MetadataSet metadata_sets = 3;
     bool caching = 4;
+}
+
+message RepeatedInvocations {
+    repeated Invocation invocations = 1;
 }
 
 enum EngineType {
@@ -41,8 +69,25 @@ message RepeatedEngines {
     repeated Engine engines = 1;
 }
 
+message Timestamps { 
+    uint64 start_epoch = 1;
+    uint64 io_queue_start = 2;
+    uint64 io_queue_end = 3;
+    uint64 compute_queue_start = 4;
+    uint64 compute_queue_end = 5;
+    uint64 fetching_start = 6;
+    uint64 fetching_end = 7;
+    uint64 parsing_start = 8;
+    uint64 parsing_end = 9;
+    uint64 load_start = 10;
+    uint64 transfer_start = 11;
+    uint64 engine_start = 12;
+    uint64 engine_end = 13;
+}
+
 message RepeatedMetadataSet {
     repeated MetadataSet metadata_sets = 1;
+    Timestamps timestamps = 2;
 }
 
 message Response {
@@ -76,7 +121,9 @@ message QueueMessage {
         // Message to indicate that there currently is no work, if true, if false, signify that there would be work to ask for
         bool no_work = 1;
         // Message containing the work for one function
-        Invocation invocation = 2;
+        RepeatedInvocations invocations = 2;
+        // Message containing the work for one function, can be refused
+        Invocation try_offload = 3;
         // TODO add message to cancel invocation
    }
 }

@@ -1,19 +1,24 @@
 use crate::{
-    composition::join_iterator::JoinIterator, memory_domain::Context, DataItem, DataSet, Position,
+    composition::join_iterator::JoinIterator, function_driver::system_driver::IoData,
+    memory_domain::Context, DataItem, DataSet, Position,
 };
-use core::fmt;
-use dandelion_commons::FunctionId;
-use log::{debug, trace};
+use dandelion_commons::{
+    err_dandelion, DandelionError, DandelionResult, FunctionId, MultinodeError,
+};
+use log::{debug, error, trace};
 use std::{
     cmp,
     collections::BTreeMap,
+    future::Future,
+    ops::Deref,
+    pin::Pin,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, OnceLock,
     },
     vec,
 };
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 mod join_iterator;
 
@@ -112,12 +117,24 @@ struct AnySetGroup {
 
 impl AnySetGroup {
     fn new(largest_set_size: usize, min_set_bytes: usize, max_partitions: usize) -> Self {
-        Self {
-            largest_set_size,
-            max_partitions,
-            target_partitions: 1,
-            min_set_bytes,
-            processed: false,
+        // if the largest set size is zero it is considered unknown (e.g. contains system function
+        // reference items) -> setting a target_partitions value of 0 leads to max sharding
+        if largest_set_size == 0 {
+            Self {
+                largest_set_size,
+                max_partitions,
+                target_partitions: 0,
+                min_set_bytes,
+                processed: true,
+            }
+        } else {
+            Self {
+                largest_set_size,
+                max_partitions,
+                target_partitions: 1,
+                min_set_bytes,
+                processed: false,
+            }
         }
     }
 }
@@ -152,59 +169,28 @@ pub enum AnyShardingMode {
 /// Struct that has all locations belonging to one set, that is potentially spread over multiple contexts.
 /// Should only be constructed from a context, returning a list of all sets in the contexts content.
 /// By construction, empty sets should not be allowed to exist, as they should return None instead on construction
-#[derive(Clone, Debug)]
-pub struct CompositionSet {
+/// This version of the struct is guaranteed to only contain data that is in local memory.
+#[derive(Debug, Clone)]
+pub struct LocalCompositionSet {
     /// Each tuple in the list contains the DataItem with the metadata and the Context in which the item is stored.
     /// The data: Position of the DataItem refers to offset and size within the Context.
     item_list: Vec<(DataItem, Arc<Context>)>,
     set_name: String,
 }
 
-impl CompositionSet {
+impl LocalCompositionSet {
     pub fn len(&self) -> usize {
         self.item_list.len()
-    }
-
-    pub fn size(&self) -> usize {
-        self.item_list.iter().map(|(itm, _)| itm.data.size).sum()
     }
 
     pub fn get_name(&self) -> &String {
         &self.set_name
     }
 
-    pub fn from_context(mut context: Context) -> Vec<Option<Self>> {
-        // take the content from the context before putting it into an arc
-        let sets = core::mem::take(&mut context.content);
-        let context_arc = Arc::new(context);
-        let mut composition_sets = Vec::with_capacity(sets.len());
-        for set_option in sets.into_iter() {
-            let composition_option = if let Some(set) = set_option {
-                let DataSet { ident, buffers } = set;
-                if buffers.len() == 0 {
-                    None
-                } else {
-                    let mut item_list = Vec::with_capacity(buffers.len());
-                    for item in buffers.into_iter() {
-                        item_list.push((item, context_arc.clone()));
-                    }
-                    Some(CompositionSet {
-                        item_list,
-                        set_name: ident,
-                    })
-                }
-            } else {
-                None
-            };
-            composition_sets.push(composition_option);
-        }
-        composition_sets
-    }
-
     // This is used on the frontend, to be depricated when we change function registration serialziation
     // DO NOT ADD USAGE
     pub fn from_byte_items(items: Vec<(String, Vec<u8>)>) -> Self {
-        CompositionSet {
+        Self {
             item_list: items
                 .into_iter()
                 .map(|(name, data)| {
@@ -230,15 +216,10 @@ impl CompositionSet {
             set_name: String::new(),
         }
     }
-
-    pub fn combine(&mut self, additional: CompositionSet) {
-        self.item_list.extend(additional.item_list.into_iter());
-        self.item_list.sort_unstable_by_key(|a| a.0.key);
-    }
 }
 
 /// Iterator over a reference of the composition set, not taking ownership
-impl<'origin> IntoIterator for &'origin CompositionSet {
+impl<'origin> IntoIterator for &'origin LocalCompositionSet {
     type Item = &'origin (DataItem, Arc<Context>);
     type IntoIter = std::slice::Iter<'origin, (DataItem, Arc<Context>)>;
     fn into_iter(self) -> Self::IntoIter {
@@ -247,7 +228,7 @@ impl<'origin> IntoIterator for &'origin CompositionSet {
 }
 
 /// Iterator taking ownership of the Compositon set
-impl IntoIterator for CompositionSet {
+impl IntoIterator for LocalCompositionSet {
     type Item = (DataItem, Arc<Context>);
     type IntoIter = std::vec::IntoIter<(DataItem, Arc<Context>)>;
     fn into_iter(self) -> Self::IntoIter {
@@ -255,16 +236,258 @@ impl IntoIterator for CompositionSet {
     }
 }
 
+// TODO: find a more reasonable place for RemoteData and RemoteDataClient
+#[derive(Clone, Debug)]
+pub struct RemoteData {
+    inner: Arc<RemoteDataInner>,
+}
+
+/// TODO: for the ones we create locally we are going through the sender too,
+/// think if it would be easiert to have a enum in the delete sender to perform local drop directly.
+#[derive(Debug)]
+pub struct RemoteDataInner {
+    pub node_id: u64,
+    pub data_id: u64,
+    delete_sender: Option<mpsc::UnboundedSender<RemoteData>>,
+}
+
+impl RemoteData {
+    pub fn new(node_id: u64, data_id: u64) -> Self {
+        Self {
+            inner: Arc::new(RemoteDataInner {
+                node_id,
+                data_id,
+                delete_sender: None,
+            }),
+        }
+    }
+
+    pub fn delete_on_drop(
+        node_id: u64,
+        data_id: u64,
+        delete_sender: mpsc::UnboundedSender<RemoteData>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(RemoteDataInner {
+                node_id,
+                data_id,
+                delete_sender: Some(delete_sender),
+            }),
+        }
+    }
+}
+
+impl Deref for RemoteData {
+    type Target = RemoteDataInner;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner.as_ref()
+    }
+}
+
+impl Drop for RemoteDataInner {
+    fn drop(&mut self) {
+        if let Some(delete_sender) = &self.delete_sender {
+            if let Err(err) = delete_sender.send(RemoteData::new(self.node_id, self.data_id)) {
+                error!(
+                    "Failed to send remote data deletion message for node_id {}, data_id {}: {}",
+                    self.node_id, self.data_id, err
+                );
+            }
+        }
+    }
+}
+
+pub trait RemoteDataClient: Send + Sync {
+    fn resolve_remote_data(
+        &self,
+        data: RemoteData,
+    ) -> Pin<Box<dyn Future<Output = DandelionResult<(Arc<Context>, Position)>> + Send + '_>>;
+
+    fn delete_remote_data(
+        &self,
+        data: RemoteData,
+    ) -> Pin<Box<dyn Future<Output = DandelionResult<()>> + Send + '_>>;
+}
+
+static REMOTE_DATA_CLIENT: OnceLock<Arc<dyn RemoteDataClient>> = OnceLock::new();
+
+pub fn set_remote_data_client(client: Arc<dyn RemoteDataClient>) {
+    let _ = REMOTE_DATA_CLIENT.set(client);
+}
+
+pub fn get_remote_data_client() -> DandelionResult<Arc<dyn RemoteDataClient>> {
+    match REMOTE_DATA_CLIENT.get() {
+        Some(client) => Ok(client.clone()),
+        None => {
+            err_dandelion!(DandelionError::Multinode(MultinodeError::ConfigError(
+                "No remote data client configured".to_string(),
+            )))
+        }
+    }
+}
+
+/// Enum to represent data in a composition set.
+#[derive(Clone, Debug)]
+pub enum ItemData {
+    /// Data that is available locally on the node to use for computation.
+    LocalData(Arc<Context>),
+    /// Data that is already on another node and can be fetched from there.
+    RemoteData(RemoteData),
+    /// Data that needs to be fetched using an IO function.
+    IoData(IoData),
+}
+
+/// Struct contianing refences for all data belonging to one set.
+/// Refences can either be to local data stored in contexts (from inputs or produced by functions running locally),
+/// or references to data that needs to be fetched remotely, either from another node or with an IO function.
+/// By construction, empty sets should not be allowed to exist, as they should return None instead on construction
+#[derive(Clone, Debug)]
+pub struct CompositionSet {
+    /// Each tuple in the list contains the DataItem with the metadata and the Context in which the item is stored.
+    /// The data: Position of the DataItem refers to offset and size within the Context.
+    item_list: Vec<(DataItem, ItemData)>,
+    set_name: String,
+    non_local_items: usize,
+    /// The total data size of all items in the set
+    total_size: usize,
+}
+
+impl CompositionSet {
+    pub fn len(&self) -> usize {
+        self.item_list.len()
+    }
+
+    pub fn size(&self) -> usize {
+        self.total_size
+    }
+
+    pub fn get_name(&self) -> &String {
+        &self.set_name
+    }
+
+    pub fn is_local(&self) -> bool {
+        self.non_local_items == 0
+    }
+
+    pub fn into_local(self) -> LocalCompositionSet {
+        let CompositionSet {
+            item_list,
+            set_name,
+            non_local_items,
+            total_size: _,
+        } = self;
+        debug_assert_eq!(0, non_local_items);
+        LocalCompositionSet {
+            item_list: item_list
+                .into_iter()
+                .map(|(item, data)| match data {
+                    ItemData::LocalData(context) => (item, context),
+                    _ => panic!("Converting CompositionSet with non local items"),
+                })
+                .collect(),
+            set_name: set_name,
+        }
+    }
+
+    pub fn from_context(mut context: Context) -> Vec<Option<Self>> {
+        // take the content from the context before putting it into an arc
+        let sets = core::mem::take(&mut context.content);
+        let context_arc = Arc::new(context);
+        sets.into_iter()
+            .map(|set_option| {
+                if let Some(set) = set_option {
+                    let DataSet { ident, buffers } = set;
+                    if buffers.len() == 0 {
+                        None
+                    } else {
+                        let mut item_list = Vec::with_capacity(buffers.len());
+                        let mut total_size = 0;
+                        for item in buffers.into_iter() {
+                            total_size += item.data.size;
+                            item_list.push((item, ItemData::LocalData(context_arc.clone())));
+                        }
+                        Some(CompositionSet {
+                            item_list,
+                            set_name: ident,
+                            non_local_items: 0,
+                            total_size,
+                        })
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub fn from_item_list(
+        set_name: String,
+        mut item_list: Vec<(DataItem, ItemData)>,
+    ) -> Option<Self> {
+        if item_list.is_empty() {
+            None
+        } else {
+            item_list.sort_unstable_by_key(|item| item.0.key);
+            let mut non_local_items = 0;
+            let mut total_size = 0;
+            for (item, data) in &item_list {
+                if let ItemData::LocalData(_) = data {
+                } else {
+                    non_local_items += 1;
+                }
+                total_size += item.data.size;
+            }
+            Some(Self {
+                non_local_items,
+                item_list,
+                set_name,
+                total_size,
+            })
+        }
+    }
+
+    pub fn combine(&mut self, additional: CompositionSet) {
+        self.item_list.extend(additional.item_list.into_iter());
+        self.item_list.sort_unstable_by_key(|a| a.0.key);
+        self.non_local_items += additional.non_local_items;
+        self.total_size += additional.total_size;
+    }
+}
+
+/// Iterator over a reference of the composition set, not taking ownership
+impl<'origin> IntoIterator for &'origin CompositionSet {
+    type Item = &'origin (DataItem, ItemData);
+    type IntoIter = std::slice::Iter<'origin, (DataItem, ItemData)>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.item_list.iter()
+    }
+}
+
+/// Iterator taking ownership of the Compositon set
+impl IntoIterator for CompositionSet {
+    type Item = (DataItem, ItemData);
+    type IntoIter = std::vec::IntoIter<(DataItem, ItemData)>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.item_list.into_iter()
+    }
+}
+
 /// A more concise display for the composition set that does not print the entire Context contents.
-impl fmt::Display for CompositionSet {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl core::fmt::Display for CompositionSet {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         write!(f, "items: [")?;
-        for (item, ctx) in self.item_list.iter() {
-            write!(
-                f,
-                "(item: {:?}, context: {{ type: {:?}, size: {}, state: {:?} }})",
-                item, ctx.context, ctx.size, ctx.state
-            )?;
+        for (item, data) in self.item_list.iter() {
+            write!(f, "(item: {:?}, ", item)?;
+            match data {
+                ItemData::LocalData(context) => write!(
+                    f,
+                    "LocalData: {{ context: {:?}, size: {}, state: {:?} }})",
+                    context.context, context.size, context.state
+                ),
+                ItemData::IoData(data) => write!(f, "IoData: {:?}", data),
+                ItemData::RemoteData(data) => write!(f, "RemoteData: {:?})", data),
+            }?;
         }
         write!(f, "]")
     }

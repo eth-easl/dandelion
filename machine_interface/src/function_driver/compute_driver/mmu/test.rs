@@ -16,13 +16,9 @@ fn test_loader_basic() {
         std::env::consts::ARCH
     );
     let driver = MmuDriver {};
-    let mmu_domain = MmuMemoryDomain::init(crate::memory_domain::test_resource::get_resource(
-        crate::memory_domain::MemoryResource::Shared {
-            id: 0,
-            size: (1 << 30),
-        },
-    ))
-    .expect("Should be able to get mmu domain");
+    let mmu_domain =
+        MmuMemoryDomain::init(crate::memory_domain::MemoryResource::Shared { size: (1 << 30) })
+            .expect("Should be able to get mmu domain");
     let Function {
         requirements,
         context,

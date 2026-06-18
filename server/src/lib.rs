@@ -3,7 +3,7 @@ pub mod config;
 use dandelion_commons::{records::Recorder, DandelionError};
 use hyper::body::Frame;
 use machine_interface::{
-    composition::CompositionSet,
+    composition::LocalCompositionSet,
     memory_domain::{Context, ContextTrait},
     DataItem,
 };
@@ -102,7 +102,7 @@ fn encode_item(
 }
 
 fn encode_sets(
-    sets: Vec<Option<CompositionSet>>,
+    sets: Vec<Option<LocalCompositionSet>>,
     response: &mut Vec<u8>,
     data_items: &mut Vec<ItemData>,
 ) -> usize {
@@ -153,7 +153,7 @@ fn encode_sets(
 }
 
 fn encode_response(
-    sets: Vec<Option<CompositionSet>>,
+    sets: Vec<Option<LocalCompositionSet>>,
     _timings: &Recorder,
 ) -> (usize, Vec<u8>, Vec<ItemData>) {
     // lenght of dict, list of items closing 0 byte
@@ -360,7 +360,7 @@ pub struct DandelionBody {
 }
 
 impl DandelionBody {
-    pub fn new(sets: Vec<Option<CompositionSet>>, timing: &Recorder) -> Self {
+    pub fn new(sets: Vec<Option<LocalCompositionSet>>, timing: &Recorder) -> Self {
         let (total_item_size, serial, items) = encode_response(sets, timing);
         let read_offset = if items.len() > 0 {
             if items[0].response_offset > 0 {
@@ -438,7 +438,8 @@ async fn test_dandelion_body_serialization_async(mut body: DandelionBody, expect
 #[test]
 fn test_dandelion_body_serialization() {
     use machine_interface::{
-        memory_domain::read_only::ReadOnlyContext, DataItem, DataSet, Position,
+        composition::CompositionSet, memory_domain::read_only::ReadOnlyContext, DataItem, DataSet,
+        Position,
     };
 
     let pattern = [0xCu8, 0xAu8, 0xFu8, 0xEu8];
@@ -477,7 +478,10 @@ fn test_dandelion_body_serialization() {
             },
         }],
     })];
-    let composition_set = CompositionSet::from_context(new_context);
+    let composition_set = CompositionSet::from_context(new_context)
+        .into_iter()
+        .map(|set| set.map(|set| set.into_local()))
+        .collect();
     let context_body = DandelionBody::new(composition_set, &recorder);
 
     tokio::runtime::Builder::new_current_thread()

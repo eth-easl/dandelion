@@ -53,8 +53,6 @@ pub enum DandelionError {
     InvalidWrite,
     /// found a case with a data item that is a set but has no entries
     EmptyDataSet,
-    /// tried to transfer a set index that is not in the content of the context
-    TransferInputNoSetAvailable,
     /// error converting pointers or integers
     UsizeTypeConversionError,
     /// context synchronization failed
@@ -76,6 +74,8 @@ pub enum DandelionError {
     /// there was a non recoverable issue when spawning or running the MMU worker
     MmuWorkerError,
     // system engine errors
+    /// The name does not belong to a system function
+    InvalidSystemFuncName,
     /// The arguments in the context handed to the system function are malformed or otherwise insufissient
     /// the string identifies the argument that was malformed or gives other information about the issue
     MalformedSystemFuncArg(String),
@@ -162,6 +162,7 @@ macro_rules! err_dandelion {
 #[macro_export]
 macro_rules! try_with_capacity {
     ($type:ident, $size:expr) => {{
+        use dandelion_commons::{dandelion_err, DandelionError};
         let mut container = $type::new();
         container
             .try_reserve($size)

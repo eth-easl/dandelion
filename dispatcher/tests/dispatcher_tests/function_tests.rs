@@ -1,6 +1,7 @@
-use super::{check_matrix, setup_dispatcher};
-use dandelion_commons::{records::Recorder, FunctionId};
+use super::{check_matrix, setup_dispatcher, zero_id};
+use dandelion_commons::records::Recorder;
 use dispatcher::dispatcher::Dispatcher;
+use log::debug;
 use machine_interface::{
     composition::{
         Composition, CompositionSet, FunctionDependencies, InputSetDescriptor, JoinStrategy,
@@ -13,11 +14,6 @@ use machine_interface::{
 };
 use std::{collections::BTreeMap, time::Instant};
 use std::{iter, sync::Arc};
-
-#[inline]
-fn zero_id() -> FunctionId {
-    Arc::new(0.to_string())
-}
 
 pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
     memory_resource: (DomainType, MemoryResource),
@@ -199,7 +195,7 @@ pub fn composition_optional<Domain: MemoryDomain>(
         memory_resource,
     );
 
-    // check case where the set is an input set, not optional and not present
+    debug!("Starting test for case where the set is an input set, not optional and not present");
     let composition1 = Composition {
         dependencies: vec![FunctionDependencies {
             function: function_id.clone(),
@@ -218,7 +214,7 @@ pub fn composition_optional<Domain: MemoryDomain>(
     assert_eq!(1, out_contexts.len());
     assert!(out_contexts[0].is_none());
 
-    // check case where the set is an input set, optional and not present
+    debug!("Starting test for case where the set is an input set, optional and not present");
     let composition2 = Composition {
         dependencies: vec![FunctionDependencies {
             function: function_id.clone(),
@@ -237,7 +233,9 @@ pub fn composition_optional<Domain: MemoryDomain>(
     assert_eq!(1, out_contexts.len());
     assert!(out_contexts[0].is_some());
 
-    // check case where the set is a composition set, not optional and not present
+    debug!(
+        "Starting test for case where the set is a composition set, not optional and not present"
+    );
     let composition5 = Composition {
         dependencies: vec![
             FunctionDependencies {
@@ -264,7 +262,7 @@ pub fn composition_optional<Domain: MemoryDomain>(
     assert_eq!(1, out_contexts.len());
     assert!(out_contexts[0].is_none());
 
-    // check case where the set is an input set, optional and not present
+    debug!("Starting test for case where the set is a composition set, optional and not present");
     let composition6 = Composition {
         dependencies: vec![
             FunctionDependencies {

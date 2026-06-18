@@ -1,5 +1,4 @@
 // list of memory domain implementations
-#[cfg(feature = "bytes_context")]
 pub mod bytes_context;
 #[cfg(feature = "cheri")]
 pub mod cheri;
@@ -35,7 +34,6 @@ pub trait ContextTrait: Send + Sync {
 pub enum ContextType {
     Malloc(Box<malloc::MallocContext>),
     ReadOnly(Box<read_only::ReadOnlyContext>),
-    #[cfg(feature = "bytes_context")]
     Bytes(Box<bytes_context::BytesContext>),
     #[cfg(feature = "cheri")]
     Cheri(Box<cheri::CheriContext>),
@@ -57,7 +55,6 @@ impl ContextTrait for ContextType {
             ContextType::Kvm(context) => context.write(offset, data),
             #[cfg(feature = "mmu")]
             ContextType::Mmu(context) => context.write(offset, data),
-            #[cfg(feature = "bytes_context")]
             ContextType::Bytes(context) => context.write(offset, data),
             ContextType::System(context) => context.write(offset, data),
         }
@@ -72,7 +69,6 @@ impl ContextTrait for ContextType {
             ContextType::Kvm(context) => context.read(offset, read_buffer),
             #[cfg(feature = "mmu")]
             ContextType::Mmu(context) => context.read(offset, read_buffer),
-            #[cfg(feature = "bytes_context")]
             ContextType::Bytes(context) => context.read(offset, read_buffer),
             ContextType::System(context) => context.read(offset, read_buffer),
         }
@@ -87,7 +83,6 @@ impl ContextTrait for ContextType {
             ContextType::Kvm(context) => context.get_chunk_ref(offset, length),
             #[cfg(feature = "mmu")]
             ContextType::Mmu(context) => context.get_chunk_ref(offset, length),
-            #[cfg(feature = "bytes_context")]
             ContextType::Bytes(context) => context.get_chunk_ref(offset, length),
             ContextType::System(context) => context.get_chunk_ref(offset, length),
         }
@@ -237,7 +232,7 @@ impl Context {
 pub enum MemoryResource {
     None,
     Anonymous { size: usize },
-    Shared { id: u64, size: usize },
+    Shared { size: usize },
 }
 
 pub trait MemoryDomain: Sync + Send {
@@ -284,7 +279,7 @@ pub fn transfer_memory(
             source_offset,
             size,
         ),
-        #[cfg(all(feature = "mmu", feature = "bytes_context"))]
+        #[cfg(feature = "mmu")]
         (ContextType::Mmu(destination_ctxt), ContextType::Bytes(source_ctxt)) => {
             mmu::bytest_to_mmu_transfer(
                 destination_ctxt,
@@ -406,24 +401,6 @@ pub fn transfer_data_item(
         source_offset,
         source_size,
     )
-}
-
-#[cfg(any(test, feature = "test_export"))]
-pub mod test_resource {
-    use crate::memory_domain::MemoryResource;
-    use std::sync::atomic::AtomicU64;
-
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    pub fn get_resource(arg: MemoryResource) -> MemoryResource {
-        match arg {
-            MemoryResource::Shared { id: _, size } => MemoryResource::Shared {
-                id: COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
-                size,
-            },
-            MemoryResource::Anonymous { size } => MemoryResource::Anonymous { size },
-            MemoryResource::None => MemoryResource::None,
-        }
-    }
 }
 
 #[cfg(test)]

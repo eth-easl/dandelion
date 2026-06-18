@@ -1,0 +1,16 @@
+{
+  "queue_server": {
+    "node_id": 0,
+    "url": "localhost:8082"
+  },
+  "data_servers": [
+    {
+      "node_id": 0,
+      "url": "localhost:10000"
+    },
+    {
+      "node_id": 1,
+      "url": "localhost:10001"
+    }
+  ]
+}

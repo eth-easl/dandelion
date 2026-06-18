@@ -90,7 +90,10 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
                     .expect("Path should be valid string")
                     .to_string(),
                 Metadata {
-                    input_sets: local_names,
+                    input_sets: local_names
+                        .into_iter()
+                        .map(|(name, set)| (name, set.map(|s| s.into_local())))
+                        .collect(),
                     output_sets: out_set_names.clone(),
                     min_set_bytes: vec![],
                 },
@@ -211,7 +214,10 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
                     .expect("Path should be valid string")
                     .to_string(),
                 Metadata {
-                    input_sets: local_names,
+                    input_sets: local_names
+                        .into_iter()
+                        .map(|(name, set_op)| (name, set_op.map(|set| set.into_local())))
+                        .collect(),
                     output_sets: out_set_names.clone(),
                     min_set_bytes: vec![],
                 },
@@ -264,7 +270,6 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
 }
 
 #[test_log::test]
-#[cfg(any(feature = "reqwest_io"))]
 fn test_insert_composition_with_http_func() {
     use std::collections::BTreeMap;
 

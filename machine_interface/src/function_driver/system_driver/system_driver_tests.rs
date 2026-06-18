@@ -1,37 +1,17 @@
-#[cfg(all(test, any(feature = "reqwest_io")))]
+#[cfg(test)]
 mod system_driver_tests {
     use crate::{
         composition::CompositionSet,
         function_driver::{
-            functions::FunctionAlternative,
-            system_driver::{
-                get_system_function_input_sets, get_system_function_output_sets, SystemFunction,
-                SYS_FUNC_DEFAULT_CONTEXT_SIZE,
-            },
+            system_driver::{convert_to_references, SystemFunction},
             test_queue::TestQueue,
-            ComputeResource, Metadata, WorkToDo,
+            ComputeResource, WorkToDo,
         },
         machine_config::EngineType,
-        memory_domain::{
-            read_only::ReadOnlyContext, test_resource::get_resource, ContextTrait, MemoryDomain,
-            MemoryResource,
-        },
+        memory_domain::{read_only::ReadOnlyContext, ContextTrait},
         DataItem, DataSet, Position,
     };
-    use dandelion_commons::{records::Recorder, FunctionId};
-    use std::{
-        process::{Child, Command},
-        sync::Arc,
-        thread,
-        time::{Duration, Instant},
-    };
-
-    const _CONTEXT_SIZE: usize = 2048 * 1024;
-
-    #[inline]
-    fn zero_id() -> FunctionId {
-        Arc::new(0.to_string())
-    }
+    use std::process::{Child, Command};
 
     struct HttpServer {
         proc_child: Child,
@@ -51,7 +31,7 @@ mod system_driver_tests {
                 .expect("Failed to start python script");
 
             // TODO: poll the server to figure out if we're started
-            thread::sleep(Duration::from_secs(1));
+            std::thread::sleep(std::time::Duration::from_secs(1));
 
             HttpServer { proc_child }
         }
@@ -76,24 +56,16 @@ mod system_driver_tests {
             .to_string();
     }
 
-    fn get_http<Dom: MemoryDomain>(
-        dom_init: MemoryResource,
+    fn get_http(
         engine_type: EngineType,
         drv_init: ComputeResource,
         uri: String,
         expected_body_size: usize,
     ) -> () {
-        let domain =
-            Arc::new(Dom::init(get_resource(dom_init)).expect("Should be able to get domain"));
         let queue = TestQueue::new();
         let _engine = engine_type
             .start_engine(drv_init, queue.clone())
             .expect("Should be able to get engine");
-        let function = Arc::new(
-            engine_type
-                .parse_function(String::from(""), &domain)
-                .unwrap(),
-        );
 
         let request = format!("GET {} HTTP/1.1", uri).as_bytes().to_vec();
         let request_length = request.len();
@@ -109,73 +81,48 @@ mod system_driver_tests {
                 key: 0,
             }],
         }));
-        let input_sets = CompositionSet::from_context(input_context);
 
-        let recorder = Recorder::new(zero_id(), Instant::now());
-        let metadata = Arc::new(Metadata {
-            input_sets: get_system_function_input_sets(SystemFunction::HTTP)
-                .into_iter()
-                .map(|name| (name, None))
-                .collect(),
-            output_sets: get_system_function_output_sets(SystemFunction::HTTP),
-            min_set_bytes: vec![],
-        });
-        let function_alternatives = vec![Arc::new(FunctionAlternative::new_loaded(
-            engine_type,
-            SYS_FUNC_DEFAULT_CONTEXT_SIZE,
-            String::new(),
-            domain,
-            function,
-        ))];
-        let promise = queue.enqueu(WorkToDo::FunctionArguments {
-            function_id: Arc::new(String::new()),
-            function_alternatives,
-            input_sets,
-            metadata,
-            caching: true,
-            recorder: recorder,
-        });
-        let result_context = tokio::runtime::Builder::new_current_thread()
+        let input_sets = convert_to_references(
+            SystemFunction::HTTP,
+            CompositionSet::from_context(input_context),
+        )
+        .unwrap();
+
+        // let recorder = Recorder::new(zero_id(), Instant::now());
+
+        let promise = queue.enqueu(WorkToDo::SetsToResolve { input_sets });
+        let mut result_sets = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(promise)
             .expect("Engine should return without error")
-            .get_context();
-        let header_set = result_context.content[0].as_ref().unwrap();
-        assert_eq!(1, header_set.buffers.len());
-        let status_item = &header_set.buffers[0];
+            .get_composition();
+
+        assert_eq!(2, result_sets.len());
+        let mut header_set = result_sets[0].take().unwrap().into_local().into_iter();
+        let (status_item, status_context) = header_set.next().unwrap();
+        assert_eq!(0, header_set.count());
         let mut response_buffer = Vec::<u8>::new();
         response_buffer.resize(status_item.data.size, 0);
-        result_context
+        status_context
             .read(status_item.data.offset, &mut response_buffer)
             .expect("Should be able to read status");
         let status = read_status(&response_buffer);
         assert_eq!("HTTP/1.1 200 OK", status);
 
         // check body
-        let body_set = result_context.content[1].as_ref().unwrap();
-        assert_eq!(1, body_set.buffers.len());
+        let mut body_set = result_sets[1].take().unwrap().into_local().into_iter();
+        let (body_item, _) = body_set.next().unwrap();
+        assert_eq!(0, body_set.count());
         // debug!("expected_body_len: {}", expected_body_len);
-        assert_eq!(expected_body_size, body_set.buffers[0].data.size);
+        assert_eq!(expected_body_size, body_item.data.size);
     }
 
-    fn post_http<Dom: MemoryDomain>(
-        dom_init: MemoryResource,
-        engine_type: EngineType,
-        drv_init: ComputeResource,
-        port: u16,
-    ) -> () {
+    fn post_http(engine_type: EngineType, drv_init: ComputeResource, port: u16) -> () {
         let queue = TestQueue::new();
-        let domain =
-            Arc::new(Dom::init(get_resource(dom_init)).expect("Should be able to get domain"));
         let _engine = engine_type
             .start_engine(drv_init, queue.clone())
             .expect("Should be able to get engine");
-        let function = Arc::new(
-            engine_type
-                .parse_function(String::from(""), &domain)
-                .unwrap(),
-        );
 
         let request = format!(
             r#"POST http://127.0.0.1:{}/post HTTP/1.1
@@ -206,45 +153,30 @@ dolore magna aliquyam erat, sed diam voluptua."#,
                 key: 0,
             }],
         }));
-        let input_sets = CompositionSet::from_context(input_context);
 
-        let recorder = Recorder::new(zero_id(), Instant::now());
-        let metadata = Arc::new(Metadata {
-            input_sets: get_system_function_input_sets(SystemFunction::HTTP)
-                .into_iter()
-                .map(|name| (name, None))
-                .collect(),
-            output_sets: get_system_function_output_sets(SystemFunction::HTTP),
-            min_set_bytes: vec![],
-        });
-        let function_alternatives = vec![Arc::new(FunctionAlternative::new_loaded(
-            engine_type,
-            SYS_FUNC_DEFAULT_CONTEXT_SIZE,
-            String::new(),
-            domain,
-            function,
-        ))];
-        let promise = queue.enqueu(WorkToDo::FunctionArguments {
-            function_id: Arc::new(String::new()),
-            function_alternatives,
-            input_sets,
-            metadata,
-            caching: true,
-            recorder,
-        });
-        let result_context = tokio::runtime::Builder::new_current_thread()
+        let input_sets = convert_to_references(
+            SystemFunction::HTTP,
+            CompositionSet::from_context(input_context),
+        )
+        .unwrap();
+
+        // let recorder = Recorder::new(zero_id(), Instant::now());
+
+        let promise = queue.enqueu(WorkToDo::SetsToResolve { input_sets });
+        let mut result_sets = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(promise)
             .expect("Engine should not fail")
-            .get_context();
+            .get_composition();
 
-        let header_set = result_context.content[0].as_ref().unwrap();
-        assert_eq!(1, header_set.buffers.len());
-        let header_item = &header_set.buffers[0];
+        assert_eq!(2, result_sets.len());
+        let mut header_set = result_sets[0].take().unwrap().into_local().into_iter();
+        let (header_item, header_context) = header_set.next().unwrap();
+        assert_eq!(0, header_set.count());
         let mut header_buffer = Vec::<u8>::new();
         header_buffer.resize(header_item.data.size, 0);
-        result_context
+        header_context
             .read(header_item.data.offset, &mut header_buffer)
             .expect("Should be able to read status");
         let status = read_status(&header_buffer);
@@ -252,13 +184,12 @@ dolore magna aliquyam erat, sed diam voluptua."#,
     }
 
     macro_rules! driverTests {
-        ($name : ident; $domain: ty; $dom_init: expr; $engine_type : expr ; $drv_init : expr ) => {
+        ($name : ident; $engine_type : expr ; $drv_init : expr ) => {
             #[test_log::test]
             fn test_http_get() {
                 let port = 9000;
                 let _server = super::HttpServer::start(port);
-                super::get_http::<$domain>(
-                    $dom_init,
+                super::get_http(
                     $engine_type,
                     $drv_init,
                     format!("http://127.0.0.1:{}/get", port),
@@ -270,8 +201,7 @@ dolore magna aliquyam erat, sed diam voluptua."#,
             fn test_http_get_large() {
                 let port = 9001;
                 let _server = super::HttpServer::start(port);
-                super::get_http::<$domain>(
-                    $dom_init,
+                super::get_http(
                     $engine_type,
                     $drv_init,
                     format!("http://127.0.0.1:{}/get_large", port),
@@ -283,18 +213,16 @@ dolore magna aliquyam erat, sed diam voluptua."#,
             fn test_http_post() {
                 let port = 9002;
                 let _server = super::HttpServer::start(port);
-                super::post_http::<$domain>($dom_init, $engine_type, $drv_init, port);
+                super::post_http($engine_type, $drv_init, port);
             }
         };
     }
 
-    #[cfg(feature = "reqwest_io")]
     mod reqwest_io {
         use crate::function_driver::ComputeResource;
         use crate::machine_config::EngineType;
         // use crate::memory_domain::malloc::MallocMemoryDomain as domain;
-        use crate::memory_domain::system_domain::SystemMemoryDomain as domain;
         // use crate::memory_domain::mmap::MmapMemoryDomain as domain;
-        driverTests!(reqwest_io; domain; crate::memory_domain::MemoryResource::Anonymous{size: (2<<22)}; EngineType::Reqwest; ComputeResource::CPU(1));
+        driverTests!(reqwest_io; EngineType::System; ComputeResource::CPU(1));
     }
 }

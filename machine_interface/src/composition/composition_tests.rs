@@ -1,6 +1,6 @@
 use crate::{
     composition::{
-        get_sharding, AnyShardingMode, AnyShardingParams, CompositionSet, JoinStrategy,
+        get_sharding, AnyShardingMode, AnyShardingParams, CompositionSet, ItemData, JoinStrategy,
         ShardingMode, SystemInfo,
     },
     memory_domain::{read_only::ReadOnlyContext, Context},
@@ -15,17 +15,19 @@ use tokio::sync::watch;
 
 fn create_dummy_set(keys: Vec<u32>) -> CompositionSet {
     let dummy_context: Arc<Context> = Arc::new(ReadOnlyContext::new_static::<u8>(&mut []));
+    let mut total_size = 0;
     let items = keys
         .into_iter()
         .enumerate()
         .map(|(i, k)| {
+            total_size += 1;
             (
                 DataItem {
                     ident: i.to_string(),
                     key: k,
-                    data: Position { offset: 0, size: 0 },
+                    data: Position { offset: 0, size: 1 },
                 },
-                dummy_context.clone(),
+                ItemData::LocalData(dummy_context.clone()),
             )
         })
         .sorted_by_key(|tuple| tuple.0.key)
@@ -33,6 +35,8 @@ fn create_dummy_set(keys: Vec<u32>) -> CompositionSet {
     CompositionSet {
         item_list: items,
         set_name: String::new(),
+        non_local_items: 0,
+        total_size,
     }
 }
 
@@ -980,6 +984,102 @@ fn join_it_any_auto_sharding_test_4() {
         ],
         vec![Some(vec![(0, 0)]), Some(vec![(2, 2)]), Some(vec![(2, 1)])],
         vec![Some(vec![(3, 3)]), Some(vec![(2, 2)]), Some(vec![(2, 1)])],
+    ];
+    print_sharding(&sharding);
+    check_sharding(sharding, expected);
+}
+
+#[test]
+fn join_it_any_auto_sharding_test_5() {
+    let mut sets = vec![
+        Some((ShardingMode::AnyEach, create_dummy_set(vec![0, 1, 2, 3]))),
+        Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 1, 2, 3]))),
+        Some((ShardingMode::AnyKey, create_dummy_set(vec![1, 2, 4, 5]))),
+    ];
+
+    let join_order = vec![1, 2, 0];
+    let join_strategies = vec![JoinStrategy::Inner, JoinStrategy::Cross];
+
+    // small offload_const, relevant min_set_size given but zero sized items
+    set_item_sizes(&mut sets, &[&[0, 0, 0, 0], &[100, 4, 4, 1], &[1, 1, 1, 1]]);
+    let sizes: Vec<usize> = sets
+        .iter()
+        .map(|x| if let Some((_, n)) = x { n.size() } else { 0 })
+        .collect();
+    println!("sizes: {:?}", sizes);
+    let (sender, receiver) = watch::channel(6);
+    let sharding = get_sharding(
+        sets.clone(),
+        join_order.clone(),
+        join_strategies.clone(),
+        &AnyShardingMode::AutoSharding(AnyShardingParams {
+            sys_info: Arc::new(SystemInfo {
+                num_local_cores_sender: sender,
+                num_local_cores_watcher: receiver,
+                num_remote_cores: AtomicUsize::new(2),
+            }),
+            offload_const: 1, // -> no offload overhead
+        }),
+        vec![4, 4, 4],
+    );
+    let expected = vec![
+        vec![Some(vec![(0, 0)]), Some(vec![(1, 1)]), Some(vec![(1, 0)])],
+        vec![Some(vec![(1, 1)]), Some(vec![(1, 1)]), Some(vec![(1, 0)])],
+        vec![Some(vec![(2, 2)]), Some(vec![(1, 1)]), Some(vec![(1, 0)])],
+        vec![Some(vec![(3, 3)]), Some(vec![(1, 1)]), Some(vec![(1, 0)])],
+        vec![Some(vec![(0, 0)]), Some(vec![(2, 2)]), Some(vec![(2, 1)])],
+        vec![Some(vec![(1, 1)]), Some(vec![(2, 2)]), Some(vec![(2, 1)])],
+        vec![Some(vec![(2, 2)]), Some(vec![(2, 2)]), Some(vec![(2, 1)])],
+        vec![Some(vec![(3, 3)]), Some(vec![(2, 2)]), Some(vec![(2, 1)])],
+    ];
+    print_sharding(&sharding);
+    check_sharding(sharding, expected);
+}
+
+#[test]
+fn join_it_any_auto_sharding_test_6() {
+    let mut sets = vec![
+        Some((ShardingMode::AnyEach, create_dummy_set(vec![0, 1, 2, 3]))),
+        Some((ShardingMode::AnyKey, create_dummy_set(vec![0, 1, 2, 3]))),
+        Some((ShardingMode::AnyKey, create_dummy_set(vec![1, 2, 4, 5]))),
+    ];
+
+    let join_order = vec![1, 2, 0];
+    let join_strategies = vec![JoinStrategy::Inner, JoinStrategy::Cross];
+
+    // small offload_const, relevant min_set_size -> should combine all each set items
+    set_item_sizes(&mut sets, &[&[1, 0, 0, 0], &[100, 4, 4, 1], &[1, 1, 1, 1]]);
+    let sizes: Vec<usize> = sets
+        .iter()
+        .map(|x| if let Some((_, n)) = x { n.size() } else { 0 })
+        .collect();
+    println!("sizes: {:?}", sizes);
+    let (sender, receiver) = watch::channel(6);
+    let sharding = get_sharding(
+        sets.clone(),
+        join_order.clone(),
+        join_strategies.clone(),
+        &AnyShardingMode::AutoSharding(AnyShardingParams {
+            sys_info: Arc::new(SystemInfo {
+                num_local_cores_sender: sender,
+                num_local_cores_watcher: receiver,
+                num_remote_cores: AtomicUsize::new(2),
+            }),
+            offload_const: 1, // -> no offload overhead
+        }),
+        vec![4, 4, 4],
+    );
+    let expected = vec![
+        vec![
+            Some(vec![(0, 0), (1, 1), (2, 2), (3, 3)]),
+            Some(vec![(1, 1)]),
+            Some(vec![(1, 0)]),
+        ],
+        vec![
+            Some(vec![(0, 0), (1, 1), (2, 2), (3, 3)]),
+            Some(vec![(2, 2)]),
+            Some(vec![(2, 1)]),
+        ],
     ];
     print_sharding(&sharding);
     check_sharding(sharding, expected);

@@ -47,8 +47,8 @@ pub struct MmuMemoryDomain {
 
 impl MemoryDomain for MmuMemoryDomain {
     fn init(config: MemoryResource) -> DandelionResult<Box<dyn MemoryDomain>> {
-        let (id, size) = match config {
-            MemoryResource::Shared { id, size } => (id, size),
+        let size = match config {
+            MemoryResource::Shared { size } => size,
             _ => {
                 return err_dandelion!(DandelionError::DomainError(
                     dandelion_commons::DomainError::ConfigMissmatch,
@@ -56,7 +56,7 @@ impl MemoryDomain for MmuMemoryDomain {
             }
         };
         let memory_pool =
-            MmapMemPool::create(size, ProtFlags::PROT_READ | ProtFlags::PROT_WRITE, Some(id))?;
+            MmapMemPool::create(size, ProtFlags::PROT_READ | ProtFlags::PROT_WRITE, true)?;
         Ok(Box::new(MmuMemoryDomain { memory_pool }))
     }
 
@@ -92,7 +92,6 @@ pub fn mmu_transfer(
     Ok(())
 }
 
-#[cfg(feature = "bytes_context")]
 pub fn bytest_to_mmu_transfer(
     destination: &mut MmuContext,
     source: &crate::memory_domain::bytes_context::BytesContext,

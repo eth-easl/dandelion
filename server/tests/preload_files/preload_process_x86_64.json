@@ -1,13 +1,25 @@
 {
-    "functions": [{
-        "name": "matmul",
-        "engineType": "Process",
-        "ctxSize": 33554432,
-        "binaryPath": "../machine_interface/tests/data/test_elf_mmu_x86_64_matmul",
-        "metadata": {
-            "inputSets": ["matrix_in"],
-            "outputSets": ["matrix_out"]
+    "functions": [
+        {
+            "name": "matmul",
+            "engineType": "Process",
+            "ctxSize": 33554432,
+            "binaryPath": "../machine_interface/tests/data/test_elf_mmu_x86_64_matmul",
+            "metadata": {
+                "inputSets": ["matrix_in"],
+                "outputSets": ["matrix_out"]
+            }
+        },
+        {
+            "name": "matmac",
+            "engineType": "Process",
+            "ctxSize": 33554432,
+            "binaryPath": "../machine_interface/tests/data/test_elf_mmu_x86_64_matmac",
+            "metadata": {
+                "inputSets": ["mul_left", "add_left", "add_right"],
+                "outputSets": ["matrix_out"]
+            }
         }
-    }],
+    ],
     "compositions": []
 }

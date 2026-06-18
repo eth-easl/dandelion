@@ -5,7 +5,7 @@ use itertools::Itertools;
 use machine_interface::{
     composition::{Composition, FunctionDependencies, InputSetDescriptor, ShardingMode},
     function_driver::Metadata,
-    machine_config::{get_available_domains, EngineType},
+    machine_config::EngineType,
     memory_domain::{malloc::MallocMemoryDomain, MemoryDomain},
 };
 use std::{collections::BTreeMap, ops::Range, sync::Arc, vec};
@@ -19,8 +19,7 @@ fn get_module(comp_string: &str) -> Module {
 
 #[allow(unreachable_code)]
 fn get_some_engine_type() -> EngineType {
-    #[cfg(feature = "reqwest_io")]
-    return EngineType::Reqwest;
+    return EngineType::System;
     #[cfg(feature = "cheri")]
     return EngineType::Cheri;
     #[cfg(feature = "mmu")]
@@ -28,18 +27,12 @@ fn get_some_engine_type() -> EngineType {
     #[cfg(feature = "kvm")]
     return EngineType::Kvm;
 
-    #[cfg(all(
-        not(feature = "reqwest_io"),
-        not(feature = "cheri"),
-        not(feature = "mmu"),
-        not(feature = "kvm")
-    ))]
-    compile_error!("Need to enable at least one engine type!");
+    #[cfg(not(any(feature = "cheri", feature = "mmu", feature = "kvm")))]
+    compile_error!("Need to enable at least one compute engine type!");
 }
 
 fn create_test_function_registry(functions: &[(&str, &[&str], &[&str])]) -> FunctionRegistry {
-    let domains: Vec<Arc<Box<dyn MemoryDomain>>> = get_available_domains(BTreeMap::new());
-    let function_reg = FunctionRegistry::new(&domains);
+    let function_reg = FunctionRegistry::new();
 
     let dummy_engine_type = get_some_engine_type();
     let dummy_domain = Arc::new(

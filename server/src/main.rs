@@ -1,147 +1,50 @@
-use dandelion_commons::records::Archive;
 use dandelion_server::config::{self, FuncMetadata, PreloadFunc};
-use dispatcher::{
-    dispatcher::{Dispatcher, DispatcherInput},
-    queue::WorkQueue,
-    resource_pool::ResourcePool,
-};
+use dispatcher::{dispatcher::Dispatcher, queue::WorkQueue, resource_pool::ResourcePool};
 use log::{debug, error, info, warn};
 use machine_interface::{
-    composition::{AnyShardingMode, AnyShardingParams, CompositionSet},
+    composition::{
+        get_remote_data_client, set_remote_data_client, AnyShardingMode, AnyShardingParams,
+        LocalCompositionSet, RemoteData,
+    },
     function_driver::{ComputeResource, Metadata},
     machine_config::{create_engine_resource_map, DomainType, EngineType},
     memory_domain::MemoryResource,
 };
-use multinode::DispatcherCommand;
-use nix::unistd::Pid;
-use std::{collections::BTreeMap, fs::read_to_string, sync::OnceLock};
-use tokio::{runtime::Builder, select, spawn, sync::mpsc};
+use multinode::data::ExportRegistry;
+use nix::sched::CpuSet;
+use std::{collections::BTreeMap, fs::read_to_string, sync::Arc};
+use tokio::{runtime::Builder, spawn, sync::mpsc};
 
 mod frontend;
 
-/// Recording setup
-static TRACING_ARCHIVE: OnceLock<Archive> = OnceLock::new();
-
-async fn dispatcher_loop(
-    mut request_receiver: mpsc::Receiver<DispatcherCommand>,
-    dispatcher: &'static Dispatcher,
+async fn delete_service_loop(
+    mut remote_data_deletion_receiver: mpsc::UnboundedReceiver<RemoteData>,
 ) {
-    while let Some(dispatcher_args) = request_receiver.recv().await {
-        match dispatcher_args {
-            DispatcherCommand::FunctionRequest {
-                function_id,
-                inputs,
-                is_cold,
-                recorder,
-                mut callback,
-            } => {
-                debug!("Handling function request for function {}", function_id);
-                let function_future =
-                    dispatcher.queue_function_by_name(function_id, inputs, !is_cold, recorder);
-                spawn(async {
-                    select! {
-                        function_output = function_future => {
-                            // either get an ok, meaning the data was sent, or get the data back
-                            // no need to handle ok, and nothing useful to do with data if we get it back
-                            // drop it here to release resources
-                            let _ = callback.send(function_output);
+    loop {
+        if let Some(remote_data) = remote_data_deletion_receiver.recv().await {
+            spawn(async move {
+                match get_remote_data_client() {
+                    Ok(client) => {
+                        if let Err(err) = client.delete_remote_data(remote_data).await {
+                            warn!("Failed to delete remote data: {}", err);
                         }
-                        _ = callback.closed() => ()
                     }
-                });
-            }
-            DispatcherCommand::CompositionRequest {
-                composition,
-                inputs,
-                is_cold,
-                recorder,
-                mut callback,
-            } => {
-                debug!("Handling composition request");
-                let future = dispatcher.queue_unregistered_composition(
-                    composition,
-                    inputs,
-                    !is_cold,
-                    recorder,
-                );
-                spawn(async {
-                    select! {
-                        output = future => {
-                            let _ = callback.send(output);
-                        }
-                        _ = callback.closed() => ()
+                    Err(err) => {
+                        warn!("Failed to delete remote data: {}", err);
                     }
-                });
-            }
-            DispatcherCommand::FunctionRegistration {
-                name,
-                engine_type,
-                context_size,
-                metadata,
-                callback,
-                path,
-            } => {
-                debug!("Handling function registration for {}", name);
-                let insertion_res =
-                    dispatcher.insert_function(name, engine_type, context_size, path, metadata);
-                callback
-                    .send(insertion_res)
-                    .expect("Function registration callback failed!");
-            }
-            DispatcherCommand::CompositionRegistration {
-                composition,
-                callback,
-            } => {
-                debug!("Handling composition registration");
-                let insertion_res = dispatcher.insert_compositions(composition);
-                callback
-                    .send(insertion_res)
-                    .expect("Composition registration callback failed!");
-            }
-            DispatcherCommand::RemoteFunctionRequest {
-                function_id,
-                inputs,
-                recorder,
-                mut callback,
-                is_cold,
-            } => {
-                debug!(
-                    "Handling remote function request for function_id={}",
-                    function_id
-                );
-                let dispatcher_input = inputs
-                    .into_iter()
-                    .map(|input_option| {
-                        if let Some(input_set) = input_option {
-                            DispatcherInput::Set(input_set)
-                        } else {
-                            DispatcherInput::None
-                        }
-                    })
-                    .collect();
-                let function_future = dispatcher.queue_function_by_name(
-                    function_id,
-                    dispatcher_input,
-                    !is_cold,
-                    recorder,
-                );
-                spawn(async {
-                    select! {
-                        function_output = function_future => {
-                            // either get an ok, meaning the data was sent, or get the data back
-                            // no need to handle ok, and nothing useful to do with data if we get it back
-                            // drop it here to release resources
-                            let _ = callback.send(function_output);
-                        }
-                        _ = callback.closed() => ()
-                    }
-                });
-            }
-        };
+                };
+            });
+            continue;
+        }
     }
 }
 
-async fn remote_queue_server(queue_port: u16, queue: WorkQueue) {
+async fn remote_queue_server(
+    queue_port: u16,
+    queue: WorkQueue,
+    export_registry: ExportRegistry,
+    remote_data_deletion_sender: mpsc::UnboundedSender<RemoteData>,
+) {
     // socket to listen to
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], queue_port));
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
@@ -150,9 +53,12 @@ async fn remote_queue_server(queue_port: u16, queue: WorkQueue) {
         // wait for new connection to arrive
         let accept_result = listener.accept().await;
         if let Ok((socket, _address)) = accept_result {
+            socket.set_nodelay(true).unwrap();
             spawn(multinode::client::remote_queue_server(
                 socket,
                 queue.clone(),
+                export_registry.clone(),
+                remote_data_deletion_sender.clone(),
             ));
         } else {
             // TODO handle errors on incomming request
@@ -163,11 +69,13 @@ async fn remote_queue_server(queue_port: u16, queue: WorkQueue) {
 
 async fn remote_queue_client(
     remote_url: String,
-    sender: mpsc::Sender<DispatcherCommand>,
+    dispatcher: &'static Dispatcher,
+    export_registry: ExportRegistry,
     queue: WorkQueue,
 ) {
     let connection = tokio::net::TcpStream::connect(remote_url).await.unwrap();
-    multinode::client::remote_queue_client(connection, sender, queue).await;
+    connection.set_nodelay(true).unwrap();
+    multinode::client::remote_queue_client(connection, dispatcher, export_registry, queue).await;
 }
 
 fn main() -> () {
@@ -187,14 +95,7 @@ fn main() -> () {
     // create globally available path to folder for data
     let folder_path: &'static str = Box::leak(config.folder_path.clone().into_boxed_str());
 
-    // Initilize metric collection
-    match TRACING_ARCHIVE.set(Archive::init()) {
-        Ok(_) => (),
-        Err(_) => panic!("Failed to initialize tracing archive"),
-    }
-
     // set the reqwest engine concurrency limit if it is available
-    #[cfg(feature = "reqwest_io")]
     let _ = machine_interface::function_driver::system_driver::reqwest::CONCURRENCY_LIMIT
         .set(config.io_concurrency);
 
@@ -210,13 +111,26 @@ fn main() -> () {
 
     let resource_conversion = |core_index| ComputeResource::CPU(core_index);
 
-    let dispatcher_cores = config.get_dispatcher_cores();
-    let frontend_cores = config.get_frontend_cores();
-    let communication_cores = config
-        .get_communication_cores()
-        .into_iter()
-        .map(|core| resource_conversion(core))
+    // set the max sys core number
+    let max_sys_cores = config.get_max_sys_cores();
+    machine_interface::async_runtime::MAX_SYS_CORES
+        .set(max_sys_cores)
+        .unwrap();
+    let communication_cores = (0..max_sys_cores)
+        .map(|core_id| resource_conversion(core_id as u8))
         .collect();
+    // set the min sys core set
+    let min_sys_cores = config.get_min_sys_cores();
+    let mut core_set = CpuSet::new();
+    for core in 0..min_sys_cores {
+        core_set.set(core).unwrap();
+    }
+    machine_interface::async_runtime::MIN_SYS_CORESET
+        .set(core_set)
+        .unwrap();
+    // get the async runtime which uses the values set above for initialization
+    let system_runtime = &machine_interface::async_runtime::GLOBAL_RUNTIME;
+
     let compute_cores = config
         .get_computation_cores()
         .into_iter()
@@ -224,42 +138,9 @@ fn main() -> () {
         .collect();
 
     println!("core allocation:");
-    println!("frontend cores {:?}", frontend_cores);
-    println!("dispatcher cores: {:?}", dispatcher_cores);
-    println!("communication cores: {:?}", communication_cores);
+    println!("minimum system cores {}", min_sys_cores);
+    println!("maximum sysmte cores {}", max_sys_cores);
     println!("compute cores: {:?}", compute_cores);
-
-    // make multithreaded front end runtime
-    // set up tokio runtime, need io in any case
-    let frontent_core_num = frontend_cores.len();
-    let mut frontend_cpuset = nix::sched::CpuSet::new();
-    for cpu in frontend_cores {
-        frontend_cpuset.set(usize::from(cpu)).unwrap();
-    }
-    let mut runtime_builder = Builder::new_multi_thread();
-    runtime_builder.enable_io();
-    runtime_builder.enable_time();
-    runtime_builder.worker_threads(frontent_core_num);
-    runtime_builder.on_thread_start(move || {
-        nix::sched::sched_setaffinity(Pid::from_raw(0), &frontend_cpuset).unwrap()
-    });
-    runtime_builder.global_queue_interval(10);
-    runtime_builder.event_interval(10);
-    let runtime = runtime_builder.build().unwrap();
-
-    let dispatcher_core_num = dispatcher_cores.len();
-    let mut dispatcher_coreset = nix::sched::CpuSet::new();
-    for cpu in dispatcher_cores {
-        dispatcher_coreset.set(usize::from(cpu)).unwrap();
-    }
-    let dispatcher_runtime = Builder::new_multi_thread()
-        .worker_threads(dispatcher_core_num)
-        .on_thread_start(move || {
-            nix::sched::sched_setaffinity(Pid::from_raw(0), &dispatcher_coreset).unwrap()
-        })
-        .build()
-        .unwrap();
-    let (dispatcher_sender, dispatcher_recevier) = mpsc::channel(1000);
 
     // set up dispatcher configuration basics
     let pool_map = create_engine_resource_map(compute_cores, communication_cores);
@@ -296,10 +177,7 @@ fn main() -> () {
             #[cfg(feature = "mmu")]
             (
                 DomainType::Process,
-                MemoryResource::Shared {
-                    id: 0,
-                    size: max_ram,
-                },
+                MemoryResource::Shared { size: max_ram },
             ),
         ]),
     };
@@ -328,9 +206,6 @@ fn main() -> () {
         )
         .expect("Should be able to start dispatcher"),
     ));
-
-    // start dispatcher
-    dispatcher_runtime.spawn(dispatcher_loop(dispatcher_recevier, dispatcher));
 
     // register preload functions
     let (preload_functions, preload_compositions) = config.get_preload_functions();
@@ -374,7 +249,7 @@ fn main() -> () {
                         }
                     };
 
-                    let input_sets: Vec<(String, Option<CompositionSet>)> =
+                    let input_sets: Vec<(String, Option<LocalCompositionSet>)> =
                         input_sets.into_iter().map(|s| (s, None)).collect();
                     let metadata = Metadata {
                         input_sets,
@@ -408,8 +283,6 @@ fn main() -> () {
             });
     }
 
-    let _guard = runtime.enter();
-
     // TODO would be nice to just print server ready with all enabled features if that would be possible
     print!("Server start with features:");
     #[cfg(feature = "cheri")]
@@ -418,30 +291,60 @@ fn main() -> () {
     print!(" mmu");
     #[cfg(feature = "kvm")]
     print!(" kvm");
-    #[cfg(feature = "reqwest_io")]
-    print!(" request_io");
     #[cfg(feature = "timestamp")]
     print!(" timestamp");
     print!("\n");
 
-    // listen for other nodes trying to poll from local work queue
-    runtime.spawn(remote_queue_server(config.q_port, work_queue.clone()));
+    if let Some(multinode_settings) =
+        multinode::config::MultinodeConfig::load(config.multinode_config.as_deref())
+    {
+        let node_id = config.node_id;
+        let export_registry = ExportRegistry::new(node_id);
+        if multinode_settings.queue_server.node_id == node_id {
+            let (remote_data_deletion_sender, remote_data_deletion_receiver) =
+                mpsc::unbounded_channel();
+            system_runtime.spawn(delete_service_loop(remote_data_deletion_receiver));
 
-    // start a thread to check if we should be checking remote queues
-    if let Some(remote_url) = config.remote_queue_url {
-        runtime.spawn(remote_queue_client(
-            remote_url,
-            dispatcher_sender.clone(),
-            work_queue,
+            let queue_server_port =
+                multinode::config::queue_server_port(&multinode_settings.queue_server.url)
+                    .unwrap_or_else(|err| panic!("Invalid queue server entry: {}", err));
+            // listen for other nodes trying to poll from local work queue
+            system_runtime.spawn(remote_queue_server(
+                queue_server_port,
+                work_queue,
+                export_registry.clone(),
+                remote_data_deletion_sender.clone(),
+            ));
+        } else {
+            // start a thread to check if we should be checking remote queues
+            system_runtime.spawn(remote_queue_client(
+                multinode::config::tcp_address(&multinode_settings.queue_server.url),
+                dispatcher,
+                export_registry.clone(),
+                work_queue,
+            ));
+        }
+
+        let data_server_urls = multinode_settings.data_server_urls();
+        let data_server_address = data_server_urls
+            .get(&node_id)
+            .unwrap_or_else(|| panic!("No data server entry for node {}", node_id));
+        let data_server_port = multinode::config::data_server_port(data_server_address)
+            .unwrap_or_else(|err| {
+                panic!("Invalid data server entry for node {}: {}", node_id, err)
+            });
+        system_runtime.spawn(multinode::data::service_loop(
+            data_server_port,
+            export_registry.clone(),
         ));
+        set_remote_data_client(Arc::new(multinode::data::HttpRemoteDataClient::new(
+            data_server_urls,
+            export_registry,
+        )));
     }
 
     // Run this server for... forever... unless I receive a signal!
-    runtime.block_on(frontend::service_loop(
-        dispatcher_sender,
-        folder_path,
-        config.port,
-    ));
+    system_runtime.block_on(frontend::service_loop(dispatcher, folder_path, config.port));
 
     // clean up folder in tmp that is used for function storage
     let removal_error = std::fs::remove_dir_all(folder_path);

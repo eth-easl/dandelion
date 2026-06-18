@@ -3,18 +3,25 @@ mod dispatcher_tests {
     mod function_tests;
     mod registry_tests;
 
+    mod combination_tests;
+
     use dandelion_commons::FunctionId;
     use dispatcher::{dispatcher::Dispatcher, queue::WorkQueue, resource_pool::ResourcePool};
     use machine_interface::{
-        composition::{AnyShardingMode, CompositionSet},
+        composition::{AnyShardingMode, CompositionSet, ItemData},
         function_driver::{ComputeResource, Metadata},
         machine_config::{DomainType, EngineType},
-        memory_domain::{Context, ContextTrait, MemoryDomain, MemoryResource},
+        memory_domain::{ContextTrait, MemoryDomain, MemoryResource},
         DataItem,
     };
     use std::{collections::BTreeMap, sync::Arc};
 
     const DEFAULT_CONTEXT_SIZE: usize = 0x800_0000; // 128MiB
+
+    #[inline]
+    fn zero_id() -> FunctionId {
+        Arc::new(0.to_string())
+    }
 
     fn setup_dispatcher<Dom: MemoryDomain>(
         name: &str,
@@ -30,24 +37,23 @@ mod dispatcher_tests {
         path.push(name);
         let path_string = path.to_str().expect("Path should be string").to_string();
         let metadata = Metadata {
-            input_sets: in_set_names,
+            input_sets: in_set_names
+                .into_iter()
+                .map(|(name, set_option)| (name, set_option.map(|set| set.into_local())))
+                .collect(),
             output_sets: out_set_names,
             min_set_bytes: vec![],
         };
         let mut pool_map = BTreeMap::new();
         pool_map.insert(engine_type, engine_resource);
+
+        // insert a system engine if available
+        pool_map.insert(EngineType::System, vec![ComputeResource::CPU(0)]);
+
         let resource_pool = ResourcePool {
             engine_pool: futures::lock::Mutex::new(pool_map),
         };
-        let memory_resources = vec![memory_resource]
-            .into_iter()
-            .map(|(dom, resource)| {
-                (
-                    dom,
-                    machine_interface::memory_domain::test_resource::get_resource(resource),
-                )
-            })
-            .collect();
+        let memory_resources = BTreeMap::from_iter(vec![memory_resource].into_iter());
         let work_queue = WorkQueue::init();
         let dispatcher = Dispatcher::init(
             resource_pool,
@@ -69,7 +75,11 @@ mod dispatcher_tests {
         return (dispatcher, function_id);
     }
 
-    fn check_matrix(context: &Context, item: &DataItem, rows: u64, expected: Vec<u64>) {
+    fn check_matrix(data: &ItemData, item: &DataItem, rows: u64, expected: Vec<u64>) {
+        let context = match data {
+            ItemData::LocalData(context) => context,
+            _ => panic!("Should not get non local item data"),
+        };
         let out_mat_position = item.data;
         let mut out_mat = Vec::<u64>::new();
         assert_eq!((expected.len() + 1) * 8, out_mat_position.size);
@@ -184,6 +194,13 @@ mod dispatcher_tests {
                 let name = format!("test_{}_matmac", stringify!($name));
                 multiple_input_fixed::<$domain>($init, &name, $engine_type, $engine_resource)
             }
+
+            #[test_log::test]
+            fn test_fetch_compute() {
+                use crate::dispatcher_tests::combination_tests::fetch_compute;
+                let name = format!("test_{}_matmul", stringify!($name));
+                fetch_compute::<$domain>($init, &name, $engine_type, $engine_resource)
+            }
         };
     }
 
@@ -205,9 +222,9 @@ mod dispatcher_tests {
             memory_domain::{mmu::MmuMemoryDomain, MemoryResource},
         };
         #[cfg(target_arch = "x86_64")]
-        dispatcherTests!(elf_mmu_x86_64; MmuMemoryDomain; (DomainType::Process ,MemoryResource::Shared { id: 0, size: (1<<30) }); EngineType::Process; vec![ComputeResource::CPU(1)]);
+        dispatcherTests!(elf_mmu_x86_64; MmuMemoryDomain; (DomainType::Process ,MemoryResource::Shared { size: (1<<30) }); EngineType::Process; vec![ComputeResource::CPU(1)]);
         #[cfg(target_arch = "aarch64")]
-        dispatcherTests!(elf_mmu_aarch64; MmuMemoryDomain; (DomainType::Process, MemoryResource::Shared { id: 0, size: (1<<30) }); EngineType::Process; vec![ComputeResource::CPU(1)]);
+        dispatcherTests!(elf_mmu_aarch64; MmuMemoryDomain; (DomainType::Process, MemoryResource::Shared { size: (1<<30) }); EngineType::Process; vec![ComputeResource::CPU(1)]);
     }
 
     #[cfg(feature = "kvm")]

@@ -1,7 +1,7 @@
 use crate::{
-    composition::CompositionSet,
+    composition::{CompositionSet, LocalCompositionSet, RemoteData},
     machine_config::EngineType,
-    memory_domain::{Context, MemoryDomain},
+    memory_domain::MemoryDomain,
 };
 extern crate alloc;
 use alloc::sync::Arc;
@@ -26,7 +26,7 @@ pub enum ComputeResource {
 pub struct Metadata {
     /// The input set names with an optional static composition set. If the static set is set it will
     /// prioritized and any other input for that set is ignored.
-    pub input_sets: Vec<(String, Option<CompositionSet>)>,
+    pub input_sets: Vec<(String, Option<LocalCompositionSet>)>,
     /// The output set names.
     pub output_sets: Vec<String>,
     /// The minimum size in bytes the largest set of a group of any sets should have. If given (i.e.
@@ -34,6 +34,7 @@ pub struct Metadata {
     pub min_set_bytes: Vec<usize>,
 }
 
+/// Struct holding function data comming from the dispatcher into the queueing.
 pub enum WorkToDo {
     FunctionArguments {
         function_id: Arc<String>,
@@ -43,28 +44,42 @@ pub enum WorkToDo {
         caching: bool,
         recorder: Recorder,
     },
+    SetsToResolve {
+        input_sets: Vec<Option<CompositionSet>>,
+    },
+    RemoteToDelete {
+        remote_data: RemoteData,
+    },
     Shutdown(EngineType),
 }
 
 pub enum WorkDone {
-    Context(Context),
+    CompositionSet(Vec<Option<CompositionSet>>),
     Resources(Vec<ComputeResource>),
+    RemoteDeleted,
 }
 
 impl WorkDone {
-    pub fn get_context(self) -> Context {
+    pub fn get_composition(self) -> Vec<Option<CompositionSet>> {
         return match self {
-            WorkDone::Context(context) => context,
+            WorkDone::CompositionSet(sets) => sets,
             _ => panic!("WorkDone is not context when context was expected"),
         };
     }
 }
 
 pub trait EngineWorkQueue {
-    fn get_engine_args(
+    fn get_compute_engine_args(
         &self,
     ) -> impl std::future::Future<Output = (WorkToDo, crate::promise::Debt)> + Send;
-    fn try_get_engine_args(&self) -> Option<(WorkToDo, crate::promise::Debt)>;
+    /// Function to get work for the IO engines
+    /// Unstable: This is a temproary addition to the interface use with caution
+    fn get_io_engine_args(
+        &self,
+    ) -> impl std::future::Future<Output = (WorkToDo, crate::promise::Debt)> + Send;
+    /// Function to return a Work to do to the queue after fetching all reference sets
+    /// Unstable: This is a temproary addition to the interface use with caution
+    fn requeu_engine_args(&self, work: WorkToDo, debt: crate::promise::Debt);
     fn remove_self_from_queue(&self);
 }
 
@@ -74,7 +89,7 @@ pub trait Driver: Send + Sync {
         &self,
         resource: ComputeResource,
         // TODO check out why this can't be impl instead of Box<dyn
-        queue: impl EngineWorkQueue + Send + 'static,
+        queue: impl EngineWorkQueue + Clone + Send + 'static,
     ) -> DandelionResult<()>;
 
     // parses an executable,

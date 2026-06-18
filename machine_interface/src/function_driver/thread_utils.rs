@@ -1,4 +1,5 @@
 use crate::{
+    composition::CompositionSet,
     function_driver::{
         functions::FunctionConfig, ComputeResource, EngineWorkQueue, WorkDone, WorkToDo,
     },
@@ -59,8 +60,8 @@ mod waker {
         RawWakerVTable::new(waker_clone, waker_wake, waker_wake_by_ref, waker_drop);
 
     pub(super) fn manual_pull(queue: &mut impl EngineWorkQueue) -> (WorkToDo, Debt) {
-        let mut queue_future = core::pin::pin!(queue.get_engine_args());
-        //
+        let mut queue_future = core::pin::pin!(queue.get_compute_engine_args());
+
         let new_atomic = AtomicBool::new(false);
         let raw_waker = RawWaker::new(new_atomic.as_ptr() as *const (), &WAKER_TABLE);
         let waker = unsafe { Waker::from_raw(raw_waker) };
@@ -120,7 +121,7 @@ mod waker {
         RawWakerVTable::new(waker_clone, waker_wake, waker_wake_by_ref, waker_drop);
 
     pub(super) fn manual_pull(queue: &mut impl EngineWorkQueue) -> (WorkToDo, Debt) {
-        let mut queue_future = core::pin::pin!(queue.get_engine_args());
+        let mut queue_future = core::pin::pin!(queue.get_compute_engine_args());
         //
         let (sender, receiver) = channel::<()>();
         let sender_box = Box::new(sender);
@@ -151,7 +152,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
             WorkToDo::FunctionArguments {
                 function_id: _,
                 function_alternatives,
-                input_sets,
+                mut input_sets,
                 metadata,
                 caching,
                 mut recorder,
@@ -199,15 +200,17 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                 {
                     // need to add each input set to the content
                     // the input_sets vec can have less entries than the functions defined sets (not all sets need to be used in composition)
-                    let transfer_option = static_set
-                        .as_ref()
-                        .or_else(|| input_sets.get(set_index).and_then(|set| set.as_ref()));
-                    let capacity = transfer_option.map_or(0, |set| set.len());
-                    function_context.content.push(Some(crate::DataSet {
-                        ident: input_set_name.clone(),
-                        buffers: Vec::with_capacity(capacity),
-                    }));
+                    let input_option = input_sets
+                        .get_mut(set_index)
+                        .map(|set_opt| set_opt.take().map(|set| set.into_local()))
+                        .flatten();
+                    let transfer_option = static_set.as_ref().or(input_option.as_ref());
+                    // Always push the content set, even if it is empty / not present, so keep numbering consistent
                     if let Some(transfer_set) = transfer_option {
+                        function_context.content.push(Some(crate::DataSet {
+                            ident: input_set_name.clone(),
+                            buffers: Vec::with_capacity(transfer_set.len()),
+                        }));
                         for (source_item, source_context) in transfer_set {
                             let transfer_result = memory_domain::transfer_data_item(
                                 &mut function_context,
@@ -223,6 +226,8 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                                 continue 'engine;
                             }
                         }
+                    } else {
+                        function_context.content.push(None);
                     }
                 }
 
@@ -235,14 +240,24 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                 );
 
                 if let Ok(ref context) = result {
-                    log::debug!("content: {:?}", context.content);
+                    log::debug!("content: {:?}, state: {:?}", context.content, context.state);
                 }
 
                 recorder.record(RecordPoint::EngineEnd);
                 drop(recorder);
 
-                let results = result.and_then(|context| Ok(WorkDone::Context(context)));
+                let results = result.and_then(|context| {
+                    Ok(WorkDone::CompositionSet(CompositionSet::from_context(
+                        context,
+                    )))
+                });
                 debt.fulfill(results);
+            }
+            WorkToDo::SetsToResolve { input_sets: _ } => {
+                panic!("Compute engine should never get sets to resolve")
+            }
+            WorkToDo::RemoteToDelete { remote_data: _ } => {
+                panic!("Compute engine should never get remote data to delete")
             }
             WorkToDo::Shutdown(_) => {
                 debt.fulfill(Ok(WorkDone::Resources(vec![ComputeResource::CPU(core_id)])));
