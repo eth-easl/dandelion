@@ -26,4 +26,4 @@ timestamp = ["dandelion_commons/timestamp"]
 log_function_stdio = []
 
 # Features for queue behaviour
-data_locallity = []
+data_locality = []

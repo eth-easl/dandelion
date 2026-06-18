@@ -8,15 +8,14 @@ ignored = ["openssl"]
 
 [features]
 # TODO remove as default feature and check everyting also works with no default feature
-default = ["bytes_context"]
+default = ["std"]
 std = []
 cheri = ["std"]
 mmu = ["std"]
 kvm = ["std", "dep:kvm-bindings", "dep:kvm-ioctls"]
 backend_debug = []
 blocking_queue = []
-reqwest_io = ["std", "dep:reqwest", "dep:http", "dep:bytes", "dep:memcache"]
-bytes_context = ["std", "dep:bytes"]
+reqwest_io = []
 timestamp = ["dandelion_commons/timestamp"]
 vendored-ssl = ["dep:openssl"]
 test_export = []
@@ -55,11 +54,11 @@ kvm-bindings = { version = "0.14", optional = true }
 kvm-ioctls = { version = "0.24", optional = true }
 
 # networking dependencies
-http = { version = "1.1", optional = true }
-reqwest = { version = "0.12", optional = true }
-memcache = { version = "0.18.0", optional = true }
-bytes = { version = "1.6", optional = true}
-# To make sure we can compile everywhere. 
+http = "1.1"
+reqwest = "0.12"
+memcache = "0.18.0"
+bytes = "1.6"
+# To make sure we can compile everywhere.
 # This sets it for the other dependencies we have that use it.
 openssl = { version = "0.10", features = ["vendored"], optional = true }
 

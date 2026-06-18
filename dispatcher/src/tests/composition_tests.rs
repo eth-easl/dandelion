@@ -28,13 +28,13 @@ fn get_some_engine_type() -> EngineType {
     #[cfg(feature = "kvm")]
     return EngineType::Kvm;
 
-    #[cfg(all(
-        not(feature = "reqwest_io"),
-        not(feature = "cheri"),
-        not(feature = "mmu"),
-        not(feature = "kvm")
-    ))]
-    compile_error!("Need to enable at least one engine type!");
+    #[cfg(not(any(
+        feature = "reqwest_io",
+        feature = "cheri",
+        feature = "mmu",
+        feature = "kvm"
+    )))]
+    compile_error!("Need to enable at least one compute engine type!");
 }
 
 fn create_test_function_registry(functions: &[(&str, &[&str], &[&str])]) -> FunctionRegistry {

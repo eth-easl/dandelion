@@ -17,10 +17,10 @@ The main code for dandelion is organized in the following rust modules:
   - **memory_domain** the code for interacting with the memory structures for setting up functions
   - **function_driver** the code for the engine, i.e. for running a function using a specific isolation technique
 - **dparser** code for parsing compositions
-- **dispatcher** registry and scheduler for the compositions, uses the domain and engine interferaces as well as the parser 
+- **dispatcher** registry and scheduler for the compositions, uses the domain and engine interferaces as well as the parser
 - **server** wrapper code arround the dispatcher for the http frontend
 
-# Cargo 
+# Cargo
 
 The tests can be run using `cargo test`, which if executed in the top level directory will run tests for all the modules.
 As a large number of tests need at least some engine enabled via a feature flag, only running test without any feature flags will not be very useful.
@@ -36,19 +36,18 @@ The server can also be run directly by replacing `build` with `run`.
 
 To make it easy to enable / disable different backends we hide them behind feature flags.
 All features are disabled by default and should be able to be enabled independently.
-The server module currently assumes only computation and one communication engine feature to be enabled, but should be fixed in the future.
+The server module currently assumes only computation engine feature to be enabled, but should be fixed in the future.
 
 Feature flags for computation engines:
 - `cheri` for enabling cheri backed isolation, requires a cheri capable compiler and hardware to run it.
 - `kvm` for enabling kvm backed isolation, requires KVM module installed and user to have permissions to access `/dev/kvm`, this backend is currently brocken for aarch64, if you need it, please let us know so we can prioritize it.
 - `mmu` for enabling process based isolation
 
-Feature flags for communcation engines:
-- `reqwest_io` for enabling the reqwest based communication
-
 Other features:
 
 `timestamp` enables timestamping, this also enables http requests to `/stat` on the running server to get timestamps information. The timestamps are preallocated at the start and thus have a limited number. Currently running out of preallocated timestamps causes errors on requests. When the stat interface is accessed the used timestamps are cleared and put back into the pool of available ones.
+
+`blocking_queue` sets the compute engines block when they are waiting for work. By default they do local spinning to work around the thread scheduling of the host OS.
 
 # Config
 
@@ -72,7 +71,7 @@ The number of compute engine cores is inferred from the total number of cores by
 Additional configuration:
 
 Dandelion respects `RUST_LOG` which can be used to set the log level, it can be set to the standard log levels: [`error`, `warn`, `info`, `debug`, `trace`]
-For additional information consult the rust log and env_log modules. 
+For additional information consult the rust log and env_log modules.
 
 To use a `mmu_worker` that is not at the original location it was built in, set the `PROCESS_WORKER_PATH` environment variable to point to the desired binary
 

@@ -228,7 +228,7 @@ impl Dispatcher {
             // Which index the function had in the function dependencies array.
             // used to differentiate between multiple functions with same ID in one invocation for debugging and tracing.
             function_index: usize,
-            inptut_sets: Vec<Option<(ShardingMode, CompositionSet)>>,
+            input_sets: Vec<Option<(ShardingMode, CompositionSet)>>,
             join_info: (Vec<usize>, Vec<JoinStrategy>),
             output_mapping: Vec<Option<usize>>,
             missing_sets: BTreeMap<(usize, usize), (ShardingMode, bool)>,
@@ -299,7 +299,7 @@ impl Dispatcher {
                 Some(FunctionArgs {
                     function_id: deps.function,
                     function_index: composition_index,
-                    inptut_sets: ready_inputs,
+                    input_sets: ready_inputs,
                     join_info: deps.join_info,
                     output_mapping: deps.output_set_ids,
                     missing_sets: missing_map,
@@ -312,7 +312,7 @@ impl Dispatcher {
             awaited_sets.push(Either::Right(self.queue_function_sharded(
                 args.function_id,
                 args.function_index,
-                args.inptut_sets,
+                args.input_sets,
                 args.join_info.0,
                 args.join_info.1,
                 args.output_mapping,
@@ -367,7 +367,7 @@ impl Dispatcher {
                                     )))));
                                     None
                                 } else {
-                                    args.inptut_sets[*function_index] =
+                                    args.input_sets[*function_index] =
                                         composition_set_option.clone().and_then(|set| {
                                             debug_assert_ne!(
                                                 0,
@@ -392,7 +392,7 @@ impl Dispatcher {
                             awaited_sets.push(Either::Right(self.queue_function_sharded(
                                 args.function_id,
                                 args.function_index,
-                                args.inptut_sets,
+                                args.input_sets,
                                 args.join_info.0,
                                 args.join_info.1,
                                 args.output_mapping,
@@ -526,7 +526,7 @@ impl Dispatcher {
     ) -> DandelionResult<Vec<Option<CompositionSet>>> {
         debug!("Queueing function with id: {}", function_id);
         // find an engine capable of running the function
-        match self.function_registry.get_function(&function_id).unwrap() {
+        match self.function_registry.get_function(&function_id)? {
             // Defer actual execution of system functions (i.e. fetching),
             // by calling the system function to produce a composition set containing the reference to be resolved later
             FunctionType::SystemFunction(sys_function) => {

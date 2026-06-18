@@ -96,7 +96,6 @@ fn main() -> () {
     let folder_path: &'static str = Box::leak(config.folder_path.clone().into_boxed_str());
 
     // set the reqwest engine concurrency limit if it is available
-    #[cfg(feature = "reqwest_io")]
     let _ = machine_interface::function_driver::system_driver::reqwest::CONCURRENCY_LIMIT
         .set(config.io_concurrency);
 
@@ -292,8 +291,6 @@ fn main() -> () {
     print!(" mmu");
     #[cfg(feature = "kvm")]
     print!(" kvm");
-    #[cfg(feature = "reqwest_io")]
-    print!(" request_io");
     #[cfg(feature = "timestamp")]
     print!(" timestamp");
     print!("\n");

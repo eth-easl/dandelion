@@ -16,7 +16,6 @@ jobs:
       # test different available compute engines with different system engines
       matrix:
         compute_driver: [ mmu ]
-        system_driver: [ reqwest_io ]
         platform: [ubuntu-24.04, ubuntu-24.04-arm]
         additional_features: [""]
 
@@ -24,12 +23,10 @@ jobs:
         include:
         - platform: ubuntu-24.04
           compute_driver: mmu
-          system_driver: reqwest_io
           additional_features: "timestamp"
         
         - platform: ubuntu-24.04
           compute_driver: mmu
-          system_driver: reqwest_io
           additional_features: "log_function_stdio"
         
         - platform: ubuntu-24.04

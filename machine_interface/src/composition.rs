@@ -5,7 +5,7 @@ use crate::{
 use dandelion_commons::{
     err_dandelion, DandelionError, DandelionResult, FunctionId, MultinodeError,
 };
-use log::{debug, trace};
+use log::{debug, error, trace};
 use std::{
     cmp,
     collections::BTreeMap,
@@ -289,7 +289,7 @@ impl Drop for RemoteDataInner {
     fn drop(&mut self) {
         if let Some(delete_sender) = &self.delete_sender {
             if let Err(err) = delete_sender.send(RemoteData::new(self.node_id, self.data_id)) {
-                panic!(
+                error!(
                     "Failed to send remote data deletion message for node_id {}, data_id {}: {}",
                     self.node_id, self.data_id, err
                 );

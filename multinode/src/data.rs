@@ -8,7 +8,7 @@ use machine_interface::{
     memory_domain::{
         bytes_context::BytesContext, read_only::ReadOnlyContext, Context, ContextTrait, ContextType,
     },
-    Position,
+    DataItem, Position,
 };
 use prost::bytes;
 use std::{

@@ -1,4 +1,4 @@
-#[cfg(all(test, any(feature = "reqwest_io")))]
+#[cfg(test)]
 mod system_driver_tests {
     use crate::{
         composition::CompositionSet,
@@ -218,7 +218,6 @@ dolore magna aliquyam erat, sed diam voluptua."#,
         };
     }
 
-    #[cfg(feature = "reqwest_io")]
     mod reqwest_io {
         use crate::function_driver::ComputeResource;
         use crate::machine_config::EngineType;
