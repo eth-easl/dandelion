@@ -580,6 +580,9 @@ async fn resolve_all_sets(
         }));
     }
 
+    // reaquire the ticket for the resolution task
+    let ticket = semaphore.acquire_owned().await.unwrap();
+
     spawn(async move {
         while let Some(item_result) = io_futures.next().await {
             let item_tuple = item_result.unwrap();
@@ -623,6 +626,7 @@ async fn resolve_all_sets(
             }
         }
         result_sender(Ok(output_sets));
+        drop(ticket);
     });
 }
 

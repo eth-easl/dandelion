@@ -9,7 +9,9 @@ use hyper::{
 use log::{debug, error, trace, warn};
 use machine_interface::{
     composition::{RemoteData, RemoteDataClient},
-    memory_domain::{bytes_context::BytesContext, Context, ContextTrait, ContextType},
+    memory_domain::{
+        bytes_context::BytesContext, read_only::ReadOnlyContext, Context, ContextTrait, ContextType,
+    },
     DataItem, Position,
 };
 use prost::bytes;
@@ -64,61 +66,35 @@ impl bytes::Buf for ExportedData {
     }
 }
 
-enum BodyFrame {
-    Error(VecDeque<u8>),
-    Data(ExportedData),
-}
-
-impl bytes::Buf for BodyFrame {
-    fn remaining(&self) -> usize {
-        match self {
-            BodyFrame::Error(metadata) => metadata.remaining(),
-            BodyFrame::Data(data) => data.remaining(),
-        }
-    }
-
-    fn advance(&mut self, cnt: usize) {
-        match self {
-            BodyFrame::Error(metadata) => metadata.advance(cnt),
-            BodyFrame::Data(data) => data.advance(cnt),
-        }
-    }
-
-    fn chunk(&self) -> &[u8] {
-        match self {
-            BodyFrame::Error(metadata) => metadata.chunk(),
-            BodyFrame::Data(data) => data.chunk(),
-        }
-    }
-
-    fn chunks_vectored<'a>(&'a self, dst: &mut [std::io::IoSlice<'a>]) -> usize {
-        match self {
-            BodyFrame::Error(metadata) => metadata.chunks_vectored(dst),
-            BodyFrame::Data(data) => data.chunks_vectored(dst),
-        }
-    }
-}
-
 struct ExportedBody {
-    inner: VecDeque<BodyFrame>,
+    inner: VecDeque<ExportedData>,
 }
 
 impl ExportedBody {
     fn new_error(string: String) -> Self {
         let mut inner = VecDeque::with_capacity(1);
-        inner.push_back(BodyFrame::Error(VecDeque::from(string.into_bytes())));
+        let string_size = string.len();
+        inner.push_back(ExportedData {
+            context: Arc::new(
+                ReadOnlyContext::new(string.into_bytes().into_boxed_slice()).unwrap(),
+            ),
+            position: Position {
+                offset: 0,
+                size: string_size,
+            },
+        });
         Self { inner }
     }
 
     fn new_single(data: ExportedData) -> Self {
         let mut inner = VecDeque::with_capacity(1);
-        inner.push_back(BodyFrame::Data(data));
+        inner.push_back(data);
         Self { inner }
     }
 }
 
 impl hyper::body::Body for ExportedBody {
-    type Data = BodyFrame;
+    type Data = ExportedData;
     type Error = DandelionError;
     fn poll_frame(
         mut self: std::pin::Pin<&mut Self>,
@@ -484,22 +460,33 @@ async fn service(
     }
     // read all the data ids
     let mut ids = Vec::with_capacity(total_size / size_of::<u64>());
+    let mut intermediate = [0u8; 8];
+    let mut offset = 0;
     for mut frame in frames {
+        if offset > 0 {
+            if frame.try_copy_to_slice(&mut intermediate[offset..]).is_ok() {
+                ids.push(u64::from_le_bytes(intermediate));
+            } else {
+                return convert_error_string(format!(
+                    "Body did not contain a full array of indices, need: {}, available {}",
+                    8 - offset,
+                    frame.remaining()
+                ));
+            }
+        }
         while let Ok(data_id) = frame.try_get_u64_le() {
             ids.push(data_id);
         }
-        // TODO: could fix this
-        assert_eq!(
-            0,
-            frame.remaining(),
-            "Currently don't handle frames not containing entire u64s"
-        );
+        if frame.remaining() > 0 {
+            offset = frame.remaining();
+            frame.copy_to_slice(&mut intermediate[..offset]);
+        }
     }
 
     let mut exports = VecDeque::with_capacity(ids.len());
     for id in ids {
         match export_registry.fetch_bytes(id) {
-            Ok(export) => exports.push_back(BodyFrame::Data(export)),
+            Ok(export) => exports.push_back(export),
             Err(err) => {
                 return convert_error_string(format!(
                     "Failed to retreive data for id {} with err {}",
