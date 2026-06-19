@@ -7,7 +7,7 @@ use super::super::{ComputeQueueElement, IoQueueElement};
 
 const LOCAL_WORK_PER_CORE: usize = 2;
 
-// Empty struct since the base policy does not use additional information for scheduling decisions.
+/// Empty struct since the base policy does not use additional information for scheduling decisions.
 pub struct IOElementData;
 
 /// Prepares the policy-specific element data for a new IO queue element.
@@ -25,12 +25,12 @@ pub fn prepare_io_element(
 /// Decides whether an IO queue element (FunctionArguments) should be taken by an IO worker.
 pub fn should_io_take(
     _element_data: &IOElementData,
-    compute_length: usize,
-    already_fetching: usize,
+    compute_pending: usize,
+    active_fetch_count: usize,
     local_cores: usize,
     _idle_compute_cores: usize,
 ) -> bool {
-    compute_length + already_fetching < LOCAL_WORK_PER_CORE * local_cores
+    compute_pending + active_fetch_count < LOCAL_WORK_PER_CORE * local_cores
 }
 
 /// Selects work items from the local queues to hand off to a remote node.

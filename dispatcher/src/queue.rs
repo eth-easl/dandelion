@@ -172,9 +172,9 @@ impl Future for IoWaitFuture<'_> {
         // Take FunctionArguments only if the local queue is smaller than a certain threshold.
         // Do this to avoid overloading the IO cores with too much parallel fetching and to make it easier for remotes
         // to find work where they can do their own fetching instead.
-        let compute_length = lock_guard.compute_queue.len();
+        let compute_pending = lock_guard.compute_queue.len();
         let local_cores = *self.work_queue.system_info.num_local_cores_watcher.borrow();
-        let already_fetching = lock_guard.fetching_in_progress;
+        let active_fetch_count = lock_guard.fetching_in_progress;
         let idle_compute_cores = lock_guard.compute_waker_list.len();
         let mut is_prefetching = false;
         let result = lock_guard
@@ -184,8 +184,8 @@ impl Future for IoWaitFuture<'_> {
                     is_prefetching = true;
                     policy::should_io_take(
                         &queue_element.policy_data,
-                        compute_length,
-                        already_fetching,
+                        compute_pending,
+                        active_fetch_count,
                         local_cores,
                         idle_compute_cores,
                     )
@@ -325,6 +325,7 @@ impl WorkQueue {
         let Some((work, debt, policy_data)) =
             policy::prepare_io_element(work, debt, try_offload, &self.remote_nodes)
         else {
+            // if prepare_io_element returned None it has already offloaded the work to a remote
             return;
         };
 

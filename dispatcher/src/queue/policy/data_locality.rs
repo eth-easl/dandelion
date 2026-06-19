@@ -74,15 +74,15 @@ pub fn prepare_io_element(
 /// Decides whether an IO queue element (FunctionArguments) should be taken by an IO worker.
 pub fn should_io_take(
     element_data: &IOElementData,
-    compute_length: usize,
-    already_fetching: usize,
+    compute_pending: usize,
+    active_fetch_count: usize,
     local_cores: usize,
     idle_compute_cores: usize,
 ) -> bool {
     // additionally want to prevent fetching, if there is remote data and no local core is idle
     // always take it if there are idle cores, only prefetch if it is prefetching via IO, not from other nodes
     idle_compute_cores > 0
-        || (compute_length + already_fetching < LOCAL_WORK_PER_CORE * local_cores
+        || (compute_pending + active_fetch_count < LOCAL_WORK_PER_CORE * local_cores
             && !element_data.remote_data.is_empty())
 }
 
