@@ -1,18 +1,20 @@
 use dandelion_commons::{
     dandelion_err, err_dandelion, DandelionError, DandelionResult, MultinodeError,
 };
-use hyper::{body::Incoming, service::service_fn, Method, Request, Response, StatusCode};
+use hyper::{
+    body::{Body, Buf, Incoming},
+    service::service_fn,
+    Method, Request, Response, StatusCode,
+};
 use log::{debug, error, trace, warn};
 use machine_interface::{
     composition::{RemoteData, RemoteDataClient},
-    memory_domain::{
-        bytes_context::BytesContext, read_only::ReadOnlyContext, Context, ContextTrait, ContextType,
-    },
+    memory_domain::{bytes_context::BytesContext, Context, ContextTrait, ContextType},
     DataItem, Position,
 };
 use prost::bytes;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     convert::Infallible,
     future::Future,
     net::SocketAddr,
@@ -62,22 +64,71 @@ impl bytes::Buf for ExportedData {
     }
 }
 
+enum BodyFrame {
+    Error(VecDeque<u8>),
+    Data(ExportedData),
+}
+
+impl bytes::Buf for BodyFrame {
+    fn remaining(&self) -> usize {
+        match self {
+            BodyFrame::Error(metadata) => metadata.remaining(),
+            BodyFrame::Data(data) => data.remaining(),
+        }
+    }
+
+    fn advance(&mut self, cnt: usize) {
+        match self {
+            BodyFrame::Error(metadata) => metadata.advance(cnt),
+            BodyFrame::Data(data) => data.advance(cnt),
+        }
+    }
+
+    fn chunk(&self) -> &[u8] {
+        match self {
+            BodyFrame::Error(metadata) => metadata.chunk(),
+            BodyFrame::Data(data) => data.chunk(),
+        }
+    }
+
+    fn chunks_vectored<'a>(&'a self, dst: &mut [std::io::IoSlice<'a>]) -> usize {
+        match self {
+            BodyFrame::Error(metadata) => metadata.chunks_vectored(dst),
+            BodyFrame::Data(data) => data.chunks_vectored(dst),
+        }
+    }
+}
+
 struct ExportedBody {
-    inner: Option<ExportedData>,
+    inner: VecDeque<BodyFrame>,
+}
+
+impl ExportedBody {
+    fn new_error(string: String) -> Self {
+        let mut inner = VecDeque::with_capacity(1);
+        inner.push_back(BodyFrame::Error(VecDeque::from(string.into_bytes())));
+        Self { inner }
+    }
+
+    fn new_single(data: ExportedData) -> Self {
+        let mut inner = VecDeque::with_capacity(1);
+        inner.push_back(BodyFrame::Data(data));
+        Self { inner }
+    }
 }
 
 impl hyper::body::Body for ExportedBody {
-    type Data = ExportedData;
+    type Data = BodyFrame;
     type Error = DandelionError;
     fn poll_frame(
         mut self: std::pin::Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
-        let frame = self
-            .inner
-            .take()
-            .and_then(|data| Some(Ok(hyper::body::Frame::data(data))));
-        return std::task::Poll::Ready(frame);
+        return std::task::Poll::Ready(
+            self.inner
+                .pop_front()
+                .map(|data| Ok(hyper::body::Frame::data(data))),
+        );
     }
 }
 
@@ -192,14 +243,14 @@ impl HttpRemoteDataClient {
         }
     }
 
-    fn remote_data_url(&self, data: RemoteData) -> DandelionResult<String> {
+    fn remote_data_url(&self, node_id: u64) -> DandelionResult<String> {
         let address =
             self.node_map
-                .get(&data.node_id)
+                .get(&node_id)
                 .ok_or(dandelion_err!(DandelionError::Multinode(
                     MultinodeError::ConfigError(format!(
                         "No data server configured for node {}",
-                        data.node_id
+                        node_id
                     ))
                 )))?;
         let base_url = if address.starts_with("http://") || address.starts_with("https://") {
@@ -207,11 +258,7 @@ impl HttpRemoteDataClient {
         } else {
             format!("http://{}", address)
         };
-        Ok(format!(
-            "{}/data/{}",
-            base_url.trim_end_matches('/'),
-            data.data_id
-        ))
+        Ok(format!("{}/data/", base_url.trim_end_matches('/'),))
     }
 }
 
@@ -230,7 +277,8 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 return self.local_registry.fetch_context(data.data_id);
             }
 
-            let url = self.remote_data_url(data)?;
+            let mut url = self.remote_data_url(data.node_id)?;
+            url.push_str(&format!("{}", data.data_id));
             let mut response = self.client.get(url).send().await.map_err(|err| {
                 dandelion_err!(DandelionError::Multinode(MultinodeError::ConnectionFailed(
                     err.to_string(),
@@ -254,6 +302,8 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 }
             }
             trace!("Finished resolving remote data");
+            // make sure data is only dropped once we have resolved it
+            drop(data);
             Ok((
                 Arc::new(Context::new(
                     ContextType::Bytes(Box::new(BytesContext::new(body))),
@@ -261,6 +311,71 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 )),
                 Position { offset: 0, size },
             ))
+        })
+    }
+
+    fn resolve_multiple_data<'meta>(
+        &'meta self,
+        metadata: &'meta mut Vec<(usize, DataItem)>,
+        remote_items: Vec<RemoteData>,
+    ) -> Pin<Box<dyn Future<Output = DandelionResult<Arc<Context>>> + Send + 'meta>> {
+        Box::pin(async move {
+            // collect all ids
+            let node_id = remote_items[0].node_id;
+            let mut body_data = Vec::with_capacity(remote_items.len() * size_of::<u64>());
+            for remote_item in remote_items.iter() {
+                body_data.extend(remote_item.data_id.to_le_bytes());
+            }
+
+            // for multi item we use the /data/ url without any item id
+            let url = self.remote_data_url(node_id)?;
+            let mut response =
+                self.client
+                    .get(url)
+                    .body(body_data)
+                    .send()
+                    .await
+                    .map_err(|err| {
+                        dandelion_err!(DandelionError::Multinode(MultinodeError::ConnectionFailed(
+                            err.to_string(),
+                        )))
+                    })?;
+            if !response.status().is_success() {
+                return err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
+                    response.status().to_string(),
+                )));
+            }
+
+            let mut size = 0;
+            let mut body = Vec::new();
+            loop {
+                match response.chunk().await {
+                    Ok(Some(frame)) => {
+                        size += frame.len();
+                        body.push(frame)
+                    }
+                    Ok(None) => break,
+                    Err(_) => return err_dandelion!(DandelionError::SystemFuncResponseError),
+                }
+            }
+            trace!("Finished resolving remote data");
+            // make sure data is only dropped once we have resolved it
+            drop(remote_items);
+
+            // assumes the local items sizes are correct
+            // also assumes that returned items have the same ordering as they were requested in
+            let mut offset = 0;
+            for (_, item) in metadata {
+                item.data.offset = offset;
+                offset += item.data.size;
+            }
+            // after updating all items, the total offset should be equal to the total amount of data that was received
+            assert_eq!(size, offset);
+
+            Ok(Arc::new(Context::new(
+                ContextType::Bytes(Box::new(BytesContext::new(body))),
+                size,
+            )))
         })
     }
 
@@ -278,7 +393,9 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 return self.local_registry.delete_exported_data(data.data_id);
             }
 
-            let url = self.remote_data_url(data)?;
+            let mut url = self.remote_data_url(data.node_id)?;
+            url.push_str(&format!("{}", data.data_id));
+
             let response = self.client.delete(url).send().await.map_err(|err| {
                 dandelion_err!(DandelionError::Multinode(MultinodeError::ConnectionFailed(
                     err.to_string(),
@@ -299,45 +416,100 @@ async fn service(
     req: Request<Incoming>,
     export_registry: ExportRegistry,
 ) -> Result<Response<ExportedBody>, Infallible> {
-    let result = match req.uri().path().strip_prefix("/data/") {
-        None => Err(format!("Unknown data server path {}", req.uri().path())),
-        Some(id_string) => match id_string.parse::<u64>() {
-            Err(err) => Err(format!("Invalid data id: {}", err)),
-            Ok(data_id) => match req.method() {
-                &Method::GET => export_registry
-                    .fetch_bytes(data_id)
-                    .map(|data| Some(data))
-                    .map_err(|err| err.to_string()),
-                &Method::DELETE => export_registry
-                    .delete_exported_data(data_id)
-                    .map(|_| None)
-                    .map_err(|err| err.to_string()),
-                method => Err(format!("Unsupported data server method {}", method)),
-            },
-        },
+    let convert_error_string = |err_string| {
+        warn!("Failed to serve remote data request: {}", err_string);
+        let mut response = Response::new(ExportedBody::new_error(err_string));
+        *response.status_mut() = StatusCode::BAD_REQUEST;
+        Ok(response)
     };
 
-    match result {
-        Ok(bytes) => Ok(Response::new(ExportedBody { inner: bytes })),
-        Err(err) => {
-            warn!("Failed to serve remote data request: {}", err);
-            let error_bytes = err.into_bytes();
-            let error_lenth = error_bytes.len();
-            let mut response = Response::new(ExportedBody {
-                inner: Some(ExportedData {
-                    context: Arc::new(
-                        ReadOnlyContext::new(error_bytes.into_boxed_slice()).unwrap(),
-                    ),
-                    position: Position {
-                        offset: 0,
-                        size: error_lenth,
-                    },
-                }),
-            });
-            *response.status_mut() = StatusCode::BAD_REQUEST;
-            Ok(response)
+    let id_string = match req.uri().path().strip_prefix("/data/") {
+        Some(id_string) => id_string,
+        None => {
+            return convert_error_string(format!("Unknown data server path {}", req.uri().path()))
+        }
+    };
+
+    match req.method() {
+        &Method::DELETE => match id_string.parse::<u64>() {
+            Err(err) => return convert_error_string(format!("Invalid data id: {}", err)),
+            Ok(data_id) => {
+                return match export_registry.delete_exported_data(data_id) {
+                    Err(err) => convert_error_string(format!("Delete failed with: {}", err)),
+                    Ok(()) => Ok(Response::new(ExportedBody {
+                        inner: VecDeque::new(),
+                    })),
+                }
+            }
+        },
+        &Method::GET => {
+            if !id_string.is_empty() {
+                match id_string.parse::<u64>() {
+                    Err(err) => return convert_error_string(format!("Invalid data id: {}", err)),
+                    Ok(data_id) => {
+                        return match export_registry.get_exported_data(data_id) {
+                            Err(err) => {
+                                convert_error_string(format!("Delete failed with: {}", err))
+                            }
+                            Ok(data) => Ok(Response::new(ExportedBody::new_single(data))),
+                        }
+                    }
+                }
+            }
+        }
+        method => {
+            return convert_error_string(format!("Unsupported data server method {}", method))
         }
     }
+    // arrive here means we had GET method, but no single item
+    let mut total_size = 0;
+    let mut body = req.into_body();
+    let mut body_pin = Pin::new(&mut body);
+    let mut frames = Vec::new();
+    // get the whole body
+    loop {
+        if let Some(frame_result) =
+            futures::future::poll_fn(|cx| body_pin.as_mut().poll_frame(cx)).await
+        {
+            let data_frame = frame_result.unwrap().into_data().unwrap();
+            total_size += data_frame.len();
+            frames.push(data_frame);
+        } else {
+            if body_pin.is_end_stream() {
+                break;
+            } else {
+                continue;
+            }
+        }
+    }
+    // read all the data ids
+    let mut ids = Vec::with_capacity(total_size / size_of::<u64>());
+    for mut frame in frames {
+        while let Ok(data_id) = frame.try_get_u64_le() {
+            ids.push(data_id);
+        }
+        // TODO: could fix this
+        assert_eq!(
+            0,
+            frame.remaining(),
+            "Currently don't handle frames not containing entire u64s"
+        );
+    }
+
+    let mut exports = VecDeque::with_capacity(ids.len());
+    for id in ids {
+        match export_registry.fetch_bytes(id) {
+            Ok(export) => exports.push_back(BodyFrame::Data(export)),
+            Err(err) => {
+                return convert_error_string(format!(
+                    "Failed to retreive data for id {} with err {}",
+                    id, err
+                ))
+            }
+        }
+    }
+
+    Ok(Response::new(ExportedBody { inner: exports }))
 }
 
 pub async fn service_loop(port: u16, export_registry: ExportRegistry) {

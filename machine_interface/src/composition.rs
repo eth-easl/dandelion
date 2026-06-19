@@ -301,8 +301,19 @@ impl Drop for RemoteDataInner {
 pub trait RemoteDataClient: Send + Sync {
     fn resolve_remote_data(
         &self,
+        // Since this assumes ownership should be careful not to drop until we have the data
         data: RemoteData,
     ) -> Pin<Box<dyn Future<Output = DandelionResult<(Arc<Context>, Position)>> + Send + '_>>;
+
+    /// Returns a single context containing all the items that were fetched and updates
+    /// their position metadata accordingly
+    fn resolve_multiple_data<'meta>(
+        &'meta self,
+        // Metadata needs to be updated, since the offsets are not correctly set yet
+        metadata: &'meta mut Vec<(usize, DataItem)>,
+        // Since this assumes ownership should be careful not to drop until we have the data
+        data: Vec<RemoteData>,
+    ) -> Pin<Box<dyn Future<Output = DandelionResult<Arc<Context>>> + Send + 'meta>>;
 
     fn delete_remote_data(
         &self,

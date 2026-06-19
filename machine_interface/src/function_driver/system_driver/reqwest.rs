@@ -9,7 +9,7 @@ use crate::{
         bytes_context::BytesContext, read_only::ReadOnlyContext, Context, ContextTrait, ContextType,
     },
     promise::Debt,
-    DataItem, Position,
+    Position,
 };
 use bytes::Bytes;
 use dandelion_commons::{
@@ -17,11 +17,13 @@ use dandelion_commons::{
 };
 use futures::{stream::FuturesUnordered, StreamExt};
 use http::{version::Version as HttpVersion, HeaderName, HeaderValue, Method as HttpMethod};
-use itertools::Itertools;
 use log::{debug, error, trace, warn};
 use memcache::Client as MemcachedClient;
 use reqwest::{header::HeaderMap, Client as HttpClient};
-use std::sync::{Arc, OnceLock};
+use std::{
+    collections::{btree_map::Entry, BTreeMap},
+    sync::{Arc, OnceLock},
+};
 use tokio::{
     spawn,
     sync::{OwnedSemaphorePermit, Semaphore},
@@ -434,80 +436,65 @@ async fn memcached_request(
     Ok(vec![header_context, body_context])
 }
 
-async fn resolve_item(
-    outer_set_index: usize,
-    mut item: DataItem,
-    data: ItemData,
+async fn resolve_io_item(
+    io_data: IoData,
     client: HttpClient,
-    permit: Option<OwnedSemaphorePermit>,
-) -> DandelionResult<(usize, DataItem, ItemData)> {
-    debug!("Resolving item {:?}, data {:?}", item, data);
-    let results = match data {
-        ItemData::LocalData(_) => Ok((outer_set_index, item, data)),
+) -> DandelionResult<(Position, Arc<Context>)> {
+    let IoData {
+        original_position,
+        original_data,
+        resolved,
+        function,
+        set_index,
+    } = io_data;
+    // first need to check if original data was local or we still need to fetch that.
+    let (input_position, input_context) = match *original_data {
+        ItemData::LocalData(context) => (original_position, context),
         ItemData::RemoteData(remote_data) => {
-            let _remote_data_clone = remote_data.clone(); // avoid potential drop before resolve finishes
             let client = crate::composition::get_remote_data_client()?;
             let (context, position) = client.resolve_remote_data(remote_data).await?;
-            item.data = position;
-            Ok((outer_set_index, item, ItemData::LocalData(context)))
+            (position, context)
         }
-        ItemData::IoData(io_data) => {
-            let IoData {
-                mut original_position,
-                original_data,
-                resolved,
-                function,
-                set_index,
-            } = io_data;
-            // first need to check if original data was local or we still need to fetch that.
-            let (mut item, request_input) = match *original_data {
-                ItemData::LocalData(context) => (item, context),
-                _ => match Box::pin(resolve_item(
-                    set_index,
-                    item,
-                    *original_data,
-                    client.clone(),
-                    None,
-                ))
-                .await?
-                {
-                    (_, item, ItemData::LocalData(context)) => {
-                        original_position = item.data;
-                        (item, context)
-                    }
-                    _ => unreachable!(),
-                },
-            };
-            match function {
-                SystemFunction::HTTP => {
-                    let outputs = resolved
-                        .get_or_init(move || http_request(client, original_position, request_input))
-                        .await;
-                    let context = match outputs {
-                        Ok(context_vec) => context_vec[set_index].clone(),
-                        Err(err) => return Err(err.clone()),
-                    };
-                    item.data.offset = 0;
-                    item.data.size = context.size;
-                    Ok((outer_set_index, item, ItemData::LocalData(context)))
-                }
-                SystemFunction::MEMCACHED => {
-                    let outputs = resolved
-                        .get_or_init(move || memcached_request(original_position, request_input))
-                        .await;
-                    let context = match outputs {
-                        Ok(context_vec) => context_vec[set_index].clone(),
-                        Err(err) => return Err(err.clone()),
-                    };
-                    item.data.offset = 0;
-                    item.data.size = context.size;
-                    Ok((outer_set_index, item, ItemData::LocalData(context)))
-                }
-            }
+        ItemData::IoData(nested_io_data) => {
+            let (position, context) =
+                Box::pin(resolve_io_item(nested_io_data, client.clone())).await?;
+            (position, context)
         }
     };
-    drop(permit);
-    results
+    match function {
+        SystemFunction::HTTP => {
+            let outputs = resolved
+                .get_or_init(move || http_request(client, input_position, input_context))
+                .await;
+            let context = match outputs {
+                Ok(context_vec) => context_vec[set_index].clone(),
+                Err(err) => return Err(err.clone()),
+            };
+            Ok((
+                Position {
+                    offset: 0,
+                    size: context.size,
+                },
+                context,
+            ))
+        }
+        SystemFunction::MEMCACHED => {
+            let outputs = resolved
+                .get_or_init(move || memcached_request(input_position, input_context))
+                .await;
+            let context = match outputs {
+                Ok(context_vec) => context_vec[set_index].clone(),
+                Err(err) => return Err(err.clone()),
+            };
+            Ok((
+                Position {
+                    offset: 0,
+                    size: context.size,
+                },
+                context,
+            ))
+        }
+    }
 }
 
 async fn resolve_all_sets(
@@ -519,55 +506,123 @@ async fn resolve_all_sets(
 ) {
     // drop ticket so at least one will be available for the new tasks we spawn
     drop(ticket);
-    // check if the function id is for a system function
+
     let input_set_number = input_sets.len();
-    let mut sets_vec = Vec::with_capacity(input_sets.len());
-    let set_names = input_sets
-        .iter()
-        .map(|set_option| set_option.as_ref().map(|set| set.get_name().clone()))
-        .collect_vec();
-    let mut new_futures = FuturesUnordered::new();
+    let mut output_sets = Vec::with_capacity(input_set_number);
+    output_sets.resize(input_set_number, None);
+    let mut sets_vec = Vec::with_capacity(input_set_number);
+    sets_vec.resize(input_set_number, Vec::new());
+    let mut set_names = Vec::with_capacity(input_set_number);
+    set_names.resize(input_set_number, None);
+    let mut io_futures = FuturesUnordered::new();
+    let mut remote_futures = FuturesUnordered::new();
+
+    // collect items that need to be fetched from one node
+    let mut fetching_nodes = BTreeMap::new();
+
     for (set_index, set_option) in input_sets.into_iter().enumerate() {
         if let Some(set) = set_option {
-            for (item, data) in set.into_iter() {
-                let permit = semaphore.clone().acquire_owned().await.unwrap();
-                new_futures.push(spawn(resolve_item(
-                    set_index,
-                    item,
-                    data,
-                    client.clone(),
-                    Some(permit),
-                )));
+            set_names[set_index] = Some(set.get_name().clone());
+            if set.is_local() {
+                output_sets[set_index] = Some(set);
+                continue;
+            }
+            for (mut item, data) in set.into_iter() {
+                match data {
+                    ItemData::LocalData(_) => {
+                        // a not entirely local set, directly push the items that are already local
+                        sets_vec[set_index].push((item, data));
+                    }
+                    ItemData::IoData(io_data) => {
+                        let permit = semaphore.clone().acquire_owned().await.unwrap();
+                        let client_clone = client.clone();
+                        io_futures.push(spawn(async move {
+                            let (position, context) =
+                                resolve_io_item(io_data, client_clone).await?;
+                            item.data = position;
+                            drop(permit);
+                            Ok((set_index, item, ItemData::LocalData(context)))
+                        }));
+                    }
+                    ItemData::RemoteData(remote_data) => {
+                        let node_id = remote_data.node_id;
+                        match fetching_nodes.entry(node_id) {
+                            Entry::Vacant(vacant) => {
+                                vacant.insert((vec![(set_index, item)], vec![remote_data]));
+                            }
+                            Entry::Occupied(mut occupied) => {
+                                occupied.get_mut().0.push((set_index, item));
+                                occupied.get_mut().1.push(remote_data);
+                            }
+                        };
+                    }
+                }
             }
         }
     }
 
+    // perform grouped fetching for all data from each node
+    for (mut item_metadata, remote_items) in fetching_nodes.into_values() {
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        remote_futures.push(spawn(async move {
+            let client = crate::composition::get_remote_data_client()?;
+            let new_context = client
+                .resolve_multiple_data(&mut item_metadata, remote_items)
+                .await?;
+            let items = item_metadata
+                .into_iter()
+                .map(|(set_index, item)| {
+                    (set_index, item, ItemData::LocalData(new_context.clone()))
+                })
+                .collect::<Vec<_>>();
+            drop(permit);
+            Ok(items)
+        }));
+    }
+
     spawn(async move {
-        sets_vec.resize(input_set_number, Vec::new());
-        let mut result = None;
-        while let Some(item_result) = new_futures.next().await {
+        while let Some(item_result) = io_futures.next().await {
             let item_tuple = item_result.unwrap();
             match item_tuple {
                 Ok((set_index, item, data)) => sets_vec[set_index].push((item, data)),
                 Err(err) => {
-                    result = Some(err);
-                    break;
+                    result_sender(Err(err));
+                    return;
                 }
             }
         }
 
-        if let Some(error) = result {
-            result_sender(Err(error));
-        } else {
-            let sets = set_names
-                .into_iter()
-                .zip(sets_vec.into_iter())
-                .map(|(name, items)| {
-                    name.and_then(|name| CompositionSet::from_item_list(name, items))
-                })
-                .collect_vec();
-            result_sender(Ok(sets));
+        while let Some(item_results) = remote_futures.next().await {
+            let item_vec = item_results.unwrap();
+            match item_vec {
+                Err(err) => {
+                    result_sender(Err(err));
+                    return;
+                }
+                Ok(items) => {
+                    for (set_index, item, data) in items {
+                        sets_vec[set_index].push((item, data));
+                    }
+                }
+            }
         }
+
+        for (set_index, (output_set, item_vec)) in
+            output_sets.iter_mut().zip(sets_vec.into_iter()).enumerate()
+        {
+            if let Some(_) = output_set {
+                debug_assert!(item_vec.is_empty());
+            } else {
+                if !item_vec.is_empty() {
+                    // if there are items with the set index, it must have had a name
+                    *output_set = CompositionSet::from_item_list(
+                        set_names[set_index].take().unwrap(),
+                        item_vec,
+                    )
+                }
+            }
+        }
+        result_sender(Ok(output_sets));
     });
 }
 
