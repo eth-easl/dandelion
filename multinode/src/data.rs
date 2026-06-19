@@ -438,18 +438,35 @@ async fn service(
         }
     }
     // arrive here means we had GET method, but no single item
-    let mut total_size = 0;
     let mut body = req.into_body();
     let mut body_pin = Pin::new(&mut body);
-    let mut frames = Vec::new();
-    // get the whole body
+    let mut ids = Vec::new();
+    let mut intermediate = [0u8; 8];
+    let mut offset = 0;
+    // read all the data ids
     loop {
         if let Some(frame_result) =
             futures::future::poll_fn(|cx| body_pin.as_mut().poll_frame(cx)).await
         {
-            let data_frame = frame_result.unwrap().into_data().unwrap();
-            total_size += data_frame.len();
-            frames.push(data_frame);
+            let mut frame = frame_result.unwrap().into_data().unwrap();
+            if offset > 0 {
+                if frame.try_copy_to_slice(&mut intermediate[offset..]).is_ok() {
+                    ids.push(u64::from_le_bytes(intermediate));
+                } else {
+                    return convert_error_string(format!(
+                        "Body did not contain a full array of indices, need: {}, available {}",
+                        8 - offset,
+                        frame.remaining()
+                    ));
+                }
+            }
+            while let Ok(data_id) = frame.try_get_u64_le() {
+                ids.push(data_id);
+            }
+            if frame.remaining() > 0 {
+                offset = frame.remaining();
+                frame.copy_to_slice(&mut intermediate[..offset]);
+            }
         } else {
             if body_pin.is_end_stream() {
                 break;
@@ -458,29 +475,11 @@ async fn service(
             }
         }
     }
-    // read all the data ids
-    let mut ids = Vec::with_capacity(total_size / size_of::<u64>());
-    let mut intermediate = [0u8; 8];
-    let mut offset = 0;
-    for mut frame in frames {
-        if offset > 0 {
-            if frame.try_copy_to_slice(&mut intermediate[offset..]).is_ok() {
-                ids.push(u64::from_le_bytes(intermediate));
-            } else {
-                return convert_error_string(format!(
-                    "Body did not contain a full array of indices, need: {}, available {}",
-                    8 - offset,
-                    frame.remaining()
-                ));
-            }
-        }
-        while let Ok(data_id) = frame.try_get_u64_le() {
-            ids.push(data_id);
-        }
-        if frame.remaining() > 0 {
-            offset = frame.remaining();
-            frame.copy_to_slice(&mut intermediate[..offset]);
-        }
+    if offset > 0 {
+        return convert_error_string(format!(
+            "Body did not contain a full array of indices, need: {}, with no more frames",
+            8 - offset,
+        ));
     }
 
     let mut exports = VecDeque::with_capacity(ids.len());
