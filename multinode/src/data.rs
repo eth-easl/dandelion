@@ -166,18 +166,38 @@ impl ExportRegistry {
             "Fetching exported data: node_id={}, data_id={}",
             self.node_id, data_id
         );
-        let exported_data = {
-            let inner = self.inner.lock().unwrap();
-            inner.data.get(&data_id).cloned()
-        };
 
-        let Some(exported_data) = exported_data else {
-            return err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
+        let inner = self.inner.lock().unwrap();
+        match inner.data.get(&data_id) {
+            Some(exported_data) => Ok(exported_data.clone()),
+            None => err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
                 format!("Unknown remote data id {}", data_id),
-            )));
-        };
+            ))),
+        }
+    }
 
-        Ok(exported_data)
+    fn get_multiple_data(&self, data_ids: Vec<u64>) -> DandelionResult<VecDeque<ExportedData>> {
+        debug!(
+            "Fetching exported data: node_id={}, data_ids={:?}",
+            self.node_id, data_ids
+        );
+        let mut result_data = VecDeque::with_capacity(data_ids.len());
+        let inner = self.inner.lock().unwrap();
+        for data_id in data_ids {
+            match inner.data.get(&data_id) {
+                Some(context) => result_data.push_back(context.clone()),
+                None => {
+                    return err_dandelion!(DandelionError::Multinode(
+                        MultinodeError::RequestFailed(format!(
+                            "Unknown remote data id {}",
+                            data_id
+                        ),)
+                    ));
+                }
+            };
+        }
+
+        Ok(result_data)
     }
 
     pub fn delete_exported_data(&self, data_id: u64) -> DandelionResult<()> {
@@ -192,10 +212,6 @@ impl ExportRegistry {
             )));
         };
         Ok(())
-    }
-
-    fn fetch_bytes(&self, data_id: u64) -> DandelionResult<ExportedData> {
-        self.get_exported_data(data_id)
     }
 
     pub fn fetch_context(&self, data_id: u64) -> DandelionResult<(Arc<Context>, Position)> {
@@ -450,8 +466,10 @@ async fn service(
         {
             let mut frame = frame_result.unwrap().into_data().unwrap();
             if offset > 0 {
+                // This assumes that the next frame should contain at least the remainder of the started u64.
                 if frame.try_copy_to_slice(&mut intermediate[offset..]).is_ok() {
                     ids.push(u64::from_le_bytes(intermediate));
+                    offset = 0;
                 } else {
                     return convert_error_string(format!(
                         "Body did not contain a full array of indices, need: {}, available {}",
@@ -482,20 +500,10 @@ async fn service(
         ));
     }
 
-    let mut exports = VecDeque::with_capacity(ids.len());
-    for id in ids {
-        match export_registry.fetch_bytes(id) {
-            Ok(export) => exports.push_back(export),
-            Err(err) => {
-                return convert_error_string(format!(
-                    "Failed to retreive data for id {} with err {}",
-                    id, err
-                ))
-            }
-        }
+    match export_registry.get_multiple_data(ids) {
+        Ok(exports) => Ok(Response::new(ExportedBody { inner: exports })),
+        Err(err) => convert_error_string(err.to_string()),
     }
-
-    Ok(Response::new(ExportedBody { inner: exports }))
 }
 
 pub async fn service_loop(port: u16, export_registry: ExportRegistry) {
