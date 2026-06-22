@@ -21,9 +21,9 @@ use std::{
     future::Future,
     net::SocketAddr,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
-use tokio::{net::TcpListener, signal::unix::SignalKind};
+use tokio::{net::TcpListener, signal::unix::SignalKind, sync::Semaphore};
 
 #[derive(Clone)]
 struct ExportedData {
@@ -403,11 +403,16 @@ impl RemoteDataClient for HttpRemoteDataClient {
     }
 }
 
+pub const DEFAULT_CONCURRENCY_LIMIT: usize = 15;
+pub static CONCURRENCY_LIMIT: OnceLock<usize> = OnceLock::new();
+
 // TODO: make data service handler copy free
 async fn service(
     req: Request<Incoming>,
     export_registry: ExportRegistry,
+    semaphore: Arc<Semaphore>,
 ) -> Result<Response<ExportedBody>, Infallible> {
+    let permit = semaphore.acquire_owned().await.unwrap();
     let convert_error_string = |err_string| {
         warn!("Failed to serve remote data request: {}", err_string);
         let mut response = Response::new(ExportedBody::new_error(err_string));
@@ -500,6 +505,8 @@ async fn service(
         ));
     }
 
+    drop(permit);
+
     match export_registry.get_multiple_data(ids) {
         Ok(exports) => Ok(Response::new(ExportedBody { inner: exports })),
         Err(err) => convert_error_string(err.to_string()),
@@ -515,9 +522,13 @@ pub async fn service_loop(port: u16, export_registry: ExportRegistry) {
     let mut sigint_stream = tokio::signal::unix::signal(SignalKind::interrupt()).unwrap();
     let mut sigquit_stream = tokio::signal::unix::signal(SignalKind::quit()).unwrap();
 
+    let concurrency_limit = CONCURRENCY_LIMIT.get_or_init(|| DEFAULT_CONCURRENCY_LIMIT);
+    let semaphore = Arc::new(Semaphore::new(*concurrency_limit));
+
     loop {
         tokio::select! {
             connection_pair = listener.accept() => {
+                let semaphore_clone = semaphore.clone();
                 let (stream, _) = connection_pair.unwrap();
                 let io = hyper_util::rt::TokioIo::new(stream);
                 let service_registry = export_registry.clone();
@@ -525,7 +536,7 @@ pub async fn service_loop(port: u16, export_registry: ExportRegistry) {
                     if let Err(err) = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
                         .serve_connection_with_upgrades(
                             io,
-                            service_fn(|req| service(req, service_registry.clone())),
+                            service_fn(|req| service(req, service_registry.clone(), semaphore_clone.clone())),
                         )
                         .await
                     {

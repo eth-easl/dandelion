@@ -12,7 +12,8 @@ const DEFAULT_MIN_SYS_CORES: usize = 1;
 const DEFAULT_VIRTUAL_MAX_RAM_MULTIPLIER: usize = 2;
 const DEFAULT_MULTINODE_TIMEOUT: u64 = 50;
 use machine_interface::composition::DEFAULT_AUTOSHARDING_OFFLOAD_CONST;
-use machine_interface::function_driver::system_driver::reqwest::DEFAULT_CONCURRENCY_LIMIT;
+use machine_interface::function_driver::system_driver::reqwest::DEFAULT_CONCURRENCY_LIMIT as DEFAULT_IO_CONCURRENCY;
+use multinode::data::DEFAULT_CONCURRENCY_LIMIT as DEFAULT_DATA_CONCURRENCY;
 
 #[derive(serde::Deserialize, Debug)]
 pub struct PreloadFunc {
@@ -141,9 +142,12 @@ pub struct DandelionConfig {
     /// Maximum number of cores to use for system tasks (including IO), when not set get set to the same as the mimium.
     pub max_sys_cores: Option<usize>,
     /// Number of concurrent IO requests to run per system core
-    #[arg(long, env, default_value_t = DEFAULT_CONCURRENCY_LIMIT)]
+    #[arg(long, env, default_value_t = DEFAULT_IO_CONCURRENCY)]
     #[serde(default)]
     pub io_concurrency: usize,
+    #[arg(long, env, default_value_t = DEFAULT_DATA_CONCURRENCY)]
+    #[serde(default)]
+    pub data_concurrency: usize,
     #[arg(long, env, default_value_t = DEFAULT_TIMESTAMP_COUNT)]
     #[serde(default)]
     pub timestamp_count: usize,
@@ -223,7 +227,8 @@ impl DandelionConfig {
         merge_option!(total_cores);
         merge!(min_sys_cores, DEFAULT_MIN_SYS_CORES);
         merge_option!(max_sys_cores);
-        merge!(io_concurrency, DEFAULT_CONCURRENCY_LIMIT);
+        merge!(io_concurrency, DEFAULT_IO_CONCURRENCY);
+        merge!(data_concurrency, DEFAULT_DATA_CONCURRENCY);
         merge!(timestamp_count, DEFAULT_TIMESTAMP_COUNT);
         merge!(
             virtual_max_ram_multiplier,

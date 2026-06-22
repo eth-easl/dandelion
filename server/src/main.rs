@@ -98,8 +98,13 @@ fn main() -> () {
     let folder_path: &'static str = Box::leak(config.folder_path.clone().into_boxed_str());
 
     // set the reqwest engine concurrency limit if it is available
-    let _ = machine_interface::function_driver::system_driver::reqwest::CONCURRENCY_LIMIT
-        .set(config.io_concurrency);
+    machine_interface::function_driver::system_driver::reqwest::CONCURRENCY_LIMIT
+        .set(config.io_concurrency)
+        .unwrap();
+    // set the limit for concurrent requests to the local data registry
+    multinode::data::CONCURRENCY_LIMIT
+        .set(config.data_concurrency)
+        .unwrap();
 
     // find available resources
     let num_phyiscal_cores = u8::try_from(num_cpus::get_physical()).unwrap();
