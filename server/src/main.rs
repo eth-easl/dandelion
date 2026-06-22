@@ -54,6 +54,7 @@ async fn remote_queue_server(
         let accept_result = listener.accept().await;
         if let Ok((socket, _address)) = accept_result {
             socket.set_nodelay(true).unwrap();
+            socket.set_quickack(true).unwrap();
             spawn(multinode::client::remote_queue_server(
                 socket,
                 queue.clone(),
@@ -75,6 +76,7 @@ async fn remote_queue_client(
 ) {
     let connection = tokio::net::TcpStream::connect(remote_url).await.unwrap();
     connection.set_nodelay(true).unwrap();
+    connection.set_quickack(true).unwrap();
     multinode::client::remote_queue_client(connection, dispatcher, export_registry, queue).await;
 }
 
