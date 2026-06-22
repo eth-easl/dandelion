@@ -290,6 +290,7 @@ async fn remote_queue_server_logic(
                                             )
                                         },
                                     );
+                                new_recorder.record(dandelion_commons::records::RecordPoint::RegistryInserted);
                                 let caching = caching;
                                 let function_id = function_id.to_string();
                                 debt_map.insert(

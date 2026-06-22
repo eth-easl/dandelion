@@ -8,10 +8,10 @@ use core::cell::{OnceCell, UnsafeCell};
 /// Maximum usize to expect when converting a record point to a usize
 /// By setting the last element to this explicitly, the compiler will throw an error,
 /// if there are more than this, because it enumerates from 0 and won't allow a number to be assigned twice.
-const LAST_RECORD_POINT: usize = 21;
+const LAST_RECORD_POINT: usize = 22;
 /// The first timestamp that should come from the engine running the function
-const FIRST_ENGINE_POINT: usize = 13;
-const LAST_ENGINE_POINT: usize = 20;
+const FIRST_ENGINE_POINT: usize = 14;
+const LAST_ENGINE_POINT: usize = 21;
 
 pub const ENGINE_RECORD_POINTS: usize = LAST_ENGINE_POINT - FIRST_ENGINE_POINT + 1;
 
@@ -34,6 +34,7 @@ pub enum RecordPoint {
     /// Time when a request was taken from the queue to send to the remote.
     /// Used to anchor the remote timings.
     RemoteTake,
+    RegistryInserted,
     RemoteIOQueueStart,
     RemoteIOQueueEnd,
     RemoteComputeQueueStart,
