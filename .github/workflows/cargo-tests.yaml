@@ -33,6 +33,10 @@ jobs:
           compute_driver: mmu
           additional_features: "blocking_queue"
 
+        - platform: ubuntu-24.04
+          compute_driver: mmu
+          additional_features: "data_locality"
+
     name: ${{matrix.platform}} - ${{matrix.compute_driver}}|${{matrix.system_driver}} - ${{ matrix.additional_features || 'core' }}
     runs-on: ${{matrix.platform}}
 
