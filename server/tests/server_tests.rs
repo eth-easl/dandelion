@@ -180,6 +180,7 @@ mod server_tests {
 
         let body = resp.bytes().unwrap();
         let response: DandelionDeserializeResponse = bson::from_slice(&body).unwrap();
+        assert_ne!(0, response.invocation_id);
         #[cfg(feature = "timestamp")]
         println!("{}", response.timestamps);
         assert_eq!(1, response.sets.len());

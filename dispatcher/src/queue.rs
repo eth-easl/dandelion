@@ -129,6 +129,7 @@ impl Future for ComputeWaitFuture<'_> {
             self.work_queue.queue_state_decrease();
 
             if let WorkToDo::FunctionArguments {
+                invocation_id: _,
                 function_id: _,
                 function_alternatives: _,
                 input_sets: _,
@@ -203,6 +204,7 @@ impl Future for IoWaitFuture<'_> {
         }
         if let Some(mut result_tupple) = result {
             if let WorkToDo::FunctionArguments {
+                invocation_id: _,
                 function_id: _,
                 function_alternatives: _,
                 input_sets: _,
@@ -277,6 +279,7 @@ impl WorkQueue {
     /// TODO: check or define here and other places, if the flags need to match fully, just checking that any flag is set would be enough
     fn push_compute(&self, mut work: WorkToDo, debt: Debt, flags: u32, had_fetching: bool) {
         if let WorkToDo::FunctionArguments {
+            invocation_id: _,
             function_id: _,
             function_alternatives: _,
             input_sets: _,
@@ -310,6 +313,7 @@ impl WorkQueue {
 
     fn push_io(&self, mut work: WorkToDo, debt: Debt, flags: u32, try_offload: bool) {
         if let WorkToDo::FunctionArguments {
+            invocation_id: _,
             function_id: _,
             function_alternatives: _,
             input_sets: _,
@@ -370,6 +374,7 @@ impl WorkQueue {
             WorkToDo::SetsToResolve { input_sets: _ } => (0, false),
             WorkToDo::RemoteToDelete { remote_data: _ } => (0, false),
             WorkToDo::FunctionArguments {
+                invocation_id: _,
                 function_id: _,
                 function_alternatives,
                 input_sets,
@@ -585,6 +590,7 @@ impl EngineWorkQueue for EngineQueue {
     fn requeu_engine_args(&self, work: WorkToDo, debt: Debt) {
         let flags = match &work {
             WorkToDo::FunctionArguments {
+                invocation_id: _,
                 function_id: _,
                 function_alternatives,
                 input_sets: _,

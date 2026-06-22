@@ -1,6 +1,6 @@
 pub mod config;
 
-use dandelion_commons::{records::Recorder, DandelionError};
+use dandelion_commons::{records::Recorder, DandelionError, InvocationId};
 use hyper::body::Frame;
 use machine_interface::{
     composition::LocalCompositionSet,
@@ -19,6 +19,8 @@ pub struct DandelionRequest<'data> {
 
 #[derive(Serialize, Deserialize)]
 pub struct DandelionDeserializeResponse<'data> {
+    #[serde(with = "uuid::serde::simple")]
+    pub invocation_id: InvocationId,
     #[serde(borrow)]
     pub sets: Vec<InputSet<'data>>,
     #[cfg(feature = "timestamp")]
@@ -163,6 +165,13 @@ fn encode_response(
     response.extend_from_slice(&0i32.to_le_bytes());
 
     // document always has an array of sets
+    response.push(2);
+    response.extend_from_slice("invocation_id\0".as_bytes());
+    let invocation_id = _timings.invocation_id().simple().to_string();
+    response.extend_from_slice(&((invocation_id.len() + 1) as i32).to_le_bytes());
+    response.extend_from_slice(invocation_id.as_bytes());
+    response.push(0);
+
     response.push(4);
     response.extend_from_slice("sets\0".as_bytes());
     let set_length_offset = response.len();
@@ -450,9 +459,14 @@ fn test_dandelion_body_serialization() {
     }
     let data_box = data.clone().into_boxed_slice();
 
-    let recorder = Recorder::new(Arc::new(0.to_string()), std::time::Instant::now());
+    let recorder = Recorder::new(
+        InvocationId::from_u128(7),
+        Arc::new(0.to_string()),
+        std::time::Instant::now(),
+    );
 
     let expected_response_struct = DandelionDeserializeResponse {
+        invocation_id: InvocationId::from_u128(7),
         sets: vec![InputSet {
             identifier: String::from("set_ident"),
             items: vec![InputItem {

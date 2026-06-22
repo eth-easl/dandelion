@@ -111,12 +111,20 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         let mut overwrite_inputs = inputs.clone();
         overwrite_inputs[i] = Some(mat_fault_composition_set.clone());
 
-        let mut recorder = Recorder::new(function_id.clone(), Instant::now());
+        let mut recorder = Recorder::new(
+            dandelion_commons::InvocationId::nil(),
+            function_id.clone(),
+            Instant::now(),
+        );
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(dispatcher.queue_function(function_id.clone(), inputs, false, recorder));
-        recorder = Recorder::new(function_id.clone(), Instant::now());
+        recorder = Recorder::new(
+            dandelion_commons::InvocationId::nil(),
+            function_id.clone(),
+            Instant::now(),
+        );
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -231,12 +239,20 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         overwrite_inputs[fixed_sets[0]] = Some(mat_fault_composition_set.clone());
         overwrite_inputs[fixed_sets[1]] = Some(mat_fault_composition_set.clone());
 
-        let mut recorder = Recorder::new(function_id.clone(), Instant::now());
+        let mut recorder = Recorder::new(
+            dandelion_commons::InvocationId::nil(),
+            function_id.clone(),
+            Instant::now(),
+        );
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(dispatcher.queue_function(function_id.clone(), inputs, false, recorder));
-        recorder = Recorder::new(function_id.clone(), Instant::now());
+        recorder = Recorder::new(
+            dandelion_commons::InvocationId::nil(),
+            function_id.clone(),
+            Instant::now(),
+        );
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()

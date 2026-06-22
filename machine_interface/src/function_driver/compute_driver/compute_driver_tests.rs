@@ -76,7 +76,11 @@ mod compute_driver_tests {
             min_set_bytes: vec![],
         });
 
-        let recorder = Recorder::new(Arc::new(0.to_string()), Instant::now());
+        let recorder = Recorder::new(
+            dandelion_commons::InvocationId::nil(),
+            Arc::new(0.to_string()),
+            Instant::now(),
+        );
         let function_alternatives = vec![Arc::new(FunctionAlternative::new_unloaded(
             engine_type,
             DEFAULT_CONTEXT_SIZE,
@@ -84,6 +88,7 @@ mod compute_driver_tests {
             domain,
         ))];
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            invocation_id: dandelion_commons::InvocationId::nil(),
             function_id: Arc::new(String::new()),
             function_alternatives,
             input_sets: vec![],
@@ -118,7 +123,11 @@ mod compute_driver_tests {
             min_set_bytes: vec![],
         });
 
-        let recorder = Recorder::new(Arc::new(0.to_string()), Instant::now());
+        let recorder = Recorder::new(
+            dandelion_commons::InvocationId::nil(),
+            Arc::new(0.to_string()),
+            Instant::now(),
+        );
         let function_alternatives = vec![Arc::new(FunctionAlternative::new_loaded(
             engine_type,
             DEFAULT_CONTEXT_SIZE,
@@ -127,6 +136,7 @@ mod compute_driver_tests {
             function,
         ))];
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            invocation_id: dandelion_commons::InvocationId::nil(),
             function_id: Arc::new(String::new()),
             function_alternatives,
             input_sets: vec![],
@@ -170,7 +180,7 @@ mod compute_driver_tests {
             min_set_bytes: vec![],
         });
 
-        let recorder = Recorder::new(zero_id(), Instant::now());
+        let recorder = Recorder::new(dandelion_commons::InvocationId::nil(), zero_id(), Instant::now());
         let function_alternatives = vec![Arc::new(FunctionAlternative::new_unloaded(
             engine_type,
             DEFAULT_CONTEXT_SIZE,
@@ -178,6 +188,7 @@ mod compute_driver_tests {
             domain,
         ))];
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            invocation_id: dandelion_commons::InvocationId::nil(),
             function_id: Arc::new(String::new()),
             function_alternatives,
             input_sets,
@@ -261,7 +272,11 @@ mod compute_driver_tests {
                 min_set_bytes: vec![],
             });
 
-            let recorder = Recorder::new(zero_id(), Instant::now());
+            let recorder = Recorder::new(
+                dandelion_commons::InvocationId::nil(),
+                zero_id(),
+                Instant::now(),
+            );
             let function_alternatives = vec![Arc::new(FunctionAlternative::new_unloaded(
                 engine_type,
                 DEFAULT_CONTEXT_SIZE,
@@ -269,6 +284,7 @@ mod compute_driver_tests {
                 domain,
             ))];
             let promise = queue.enqueu(WorkToDo::FunctionArguments {
+                invocation_id: dandelion_commons::InvocationId::nil(),
                 function_id: Arc::new(String::new()),
                 function_alternatives,
                 input_sets,
@@ -367,7 +383,7 @@ mod compute_driver_tests {
             min_set_bytes: vec![],
         });
 
-        let recorder = Recorder::new(zero_id(), Instant::now());
+        let recorder = Recorder::new(dandelion_commons::InvocationId::nil(), zero_id(), Instant::now());
         let function_alternatives = vec![Arc::new(FunctionAlternative::new_unloaded(
             engine_type,
             DEFAULT_CONTEXT_SIZE,
@@ -375,6 +391,7 @@ mod compute_driver_tests {
             domain,
         ))];
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            invocation_id: dandelion_commons::InvocationId::nil(),
             function_id: Arc::new(String::new()),
             function_alternatives,
             input_sets,
@@ -522,7 +539,7 @@ mod compute_driver_tests {
             min_set_bytes: vec![],
         });
 
-        let recorder = Recorder::new(zero_id(), Instant::now());
+        let recorder = Recorder::new(dandelion_commons::InvocationId::nil(), zero_id(), Instant::now());
         let function_alternatives = vec![Arc::new(FunctionAlternative::new_unloaded(
             engine_type,
             DEFAULT_CONTEXT_SIZE,
@@ -530,6 +547,7 @@ mod compute_driver_tests {
             domain,
         ))];
         let promise = queue.enqueu(WorkToDo::FunctionArguments {
+            invocation_id: dandelion_commons::InvocationId::nil(),
             function_id: Arc::new(String::new()),
             function_alternatives,
             input_sets,

@@ -634,6 +634,7 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
         debug!("IO engine loop has work");
         match args {
             WorkToDo::FunctionArguments {
+                invocation_id,
                 function_id,
                 function_alternatives,
                 input_sets,
@@ -657,6 +658,7 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                             Err(err) => debt.fulfill(Err(err)),
                             Ok(sets) => queue_clone.requeu_engine_args(
                                 WorkToDo::FunctionArguments {
+                                    invocation_id,
                                     function_id,
                                     function_alternatives,
                                     input_sets: sets,

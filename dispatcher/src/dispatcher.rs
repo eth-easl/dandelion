@@ -565,6 +565,7 @@ impl Dispatcher {
                     recorder.record_input(total_items as u64, total_size as u64);
                 }
                 let args = WorkToDo::FunctionArguments {
+                    invocation_id: recorder.invocation_id(),
                     function_id: function_id.clone(),
                     function_alternatives,
                     input_sets,

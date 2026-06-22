@@ -1,4 +1,4 @@
-use crate::FunctionId;
+use crate::{FunctionId, InvocationId};
 use core::fmt;
 use std::time::Instant;
 
@@ -113,6 +113,7 @@ impl fmt::Display for FunctionTimestamp {
 /// General implementation of recorder struct, additional functionality enabled by flags
 #[cfg(feature = "timestamp")]
 struct InnerRecorder {
+    invocation_id: InvocationId,
     /// The function ID for which this recorder was run.
     /// Needs to be enabled if any of the timestamp features are on.
     function_id: FunctionId,
@@ -135,6 +136,7 @@ struct InnerRecorder {
 /// All time is relative to the given global start time of the request
 #[derive(Clone)]
 pub struct Recorder {
+    invocation_id: InvocationId,
     #[cfg(feature = "timestamp")]
     inner: std::sync::Arc<InnerRecorder>,
 }
@@ -145,10 +147,12 @@ unsafe impl Send for Recorder {}
 unsafe impl Sync for Recorder {}
 
 impl Recorder {
-    pub fn new(_function_id: FunctionId, _start: Instant) -> Self {
+    pub fn new(_invocation_id: InvocationId, _function_id: FunctionId, _start: Instant) -> Self {
         return Self {
+            invocation_id: _invocation_id,
             #[cfg(feature = "timestamp")]
             inner: std::sync::Arc::new(InnerRecorder {
+                invocation_id: _invocation_id,
                 function_id: _function_id,
                 timestamps: FunctionTimestamp::new(_start),
                 children: OnceCell::new(),
@@ -161,8 +165,10 @@ impl Recorder {
 
     pub fn new_from_parent(_function_id: FunctionId, _parent: &Self) -> Self {
         return Self {
+            invocation_id: _parent.invocation_id,
             #[cfg(feature = "timestamp")]
             inner: std::sync::Arc::new(InnerRecorder {
+                invocation_id: _parent.inner.invocation_id,
                 function_id: _function_id,
                 timestamps: FunctionTimestamp::new(_parent.inner.timestamps.start_time),
                 children: core::cell::OnceCell::new(),
@@ -176,6 +182,10 @@ impl Recorder {
     pub fn record(&mut self, _current_point: RecordPoint) {
         #[cfg(feature = "timestamp")]
         self.inner.timestamps.record(_current_point);
+    }
+
+    pub fn invocation_id(&self) -> InvocationId {
+        self.invocation_id
     }
 
     pub fn add_children(&mut self, _children: Vec<Option<Vec<Recorder>>>) {
@@ -232,6 +242,7 @@ impl fmt::Debug for Recorder {
                 write!(_f, "Formatting Recorder with more than 1 references:\n")?;
             };
             _f.debug_struct("Recorder")
+                .field("Invocation ID", &self.invocation_id)
                 .field("Function ID", &self.inner.function_id)
                 .field("Timestamps", &self.inner.timestamps)
                 .field("Children", &self.inner.children)
@@ -254,8 +265,13 @@ impl fmt::Display for Recorder {
             let input_size = unsafe { *self.inner.input_size.get() };
             write!(
                 _f,
-                "{{\"id\": \"{}\", \"ts\": {}, \"node id\": {}, \"items\": {}, \"input size\": {}, \"children\": [",
-                self.inner.function_id, self.inner.timestamps, node_id, input_items, input_size,
+                "{{\"invocation_id\": {}, \"id\": \"{}\", \"ts\": {}, \"node id\": {}, \"items\": {}, \"input size\": {}, \"children\": [",
+                self.invocation_id,
+                self.inner.function_id,
+                self.inner.timestamps,
+                node_id,
+                input_items,
+                input_size,
             )?;
             let mut need_comma = false;
             if let Some(children) = self.inner.children.get() {

@@ -14,7 +14,8 @@ use crate::{
     },
 };
 use dandelion_commons::{
-    err_dandelion, records::Recorder, DandelionError, DandelionResult, MultinodeError,
+    err_dandelion, records::Recorder, DandelionError, DandelionResult, InvocationId,
+    MultinodeError,
 };
 use dispatcher::{
     dispatcher::Dispatcher,
@@ -293,6 +294,7 @@ async fn remote_queue_server_logic(
                                 let (function_id, data_sets, recorder, &caching) = match &work {
                                     // Todo send along relevant information, like caching bool and recorder start time
                                     WorkToDo::FunctionArguments {
+                                        invocation_id: _,
                                         function_id,
                                         function_alternatives: _,
                                         input_sets,
@@ -325,6 +327,7 @@ async fn remote_queue_server_logic(
                                     );
                                 let caching = caching;
                                 let function_id = function_id.to_string();
+                                let owner_invocation_id = recorder.invocation_id();
                                 debt_map.insert(
                                     promise_id,
                                     (
@@ -338,8 +341,9 @@ async fn remote_queue_server_logic(
                                 Invocation {
                                     metadata_sets,
                                     function_id,
-                                    invocation_id: promise_id,
+                                    remote_invocation_id: promise_id,
                                     caching,
+                                    owner_invocation_id: owner_invocation_id.to_string(),
                                 }
                             }));
                         }
@@ -372,15 +376,15 @@ async fn remote_queue_server_logic(
                         debug_assert!(data_option.is_none());
                         trace!("Queue Server received response");
                         let Response {
-                            invocation_id,
+                            remote_invocation_id,
                             response,
                         } = response;
                         // TODO: handle failure
                         let (debt, mut recorder, start_epoch, remote_data_references, work) =
-                            debt_map.remove(&invocation_id).expect(
+                            debt_map.remove(&remote_invocation_id).expect(
                                 "Should always get back function response for a present debt",
                             );
-                        free_debt_ids.push(invocation_id);
+                        free_debt_ids.push(remote_invocation_id);
                         drop(remote_data_references);
                         // remote did not do work, was a try offload request, reenqueu the work
                         if let Some(response) = response {
@@ -455,6 +459,7 @@ async fn remote_queue_server_logic(
                 let (function_id, data_sets, recorder, &caching) = match &work {
                     // Todo send along relevant information, like caching bool and recorder start time
                     WorkToDo::FunctionArguments {
+                        invocation_id: _,
                         function_id,
                         function_alternatives: _,
                         input_sets,
@@ -483,6 +488,7 @@ async fn remote_queue_server_logic(
                     });
                 let caching = caching;
                 let function_id = function_id.to_string();
+                let owner_invocation_id = recorder.invocation_id();
                 debt_map.insert(
                     promise_id,
                     (
@@ -495,10 +501,11 @@ async fn remote_queue_server_logic(
                 );
                 trace!("Prepared work, sending out now");
                 let try_offload_message = queue_message::QueueMessage::TryOffload(Invocation {
-                    invocation_id: promise_id,
+                    remote_invocation_id: promise_id,
                     function_id,
                     metadata_sets,
                     caching,
+                    owner_invocation_id: owner_invocation_id.to_string(),
                 });
                 if message_sender.send(try_offload_message).await.is_err() {
                     break;
@@ -725,7 +732,7 @@ async fn dispatcher_call(
     sender: mpsc::Sender<PollingOption>,
     export_registry: ExportRegistry,
     start_time: Duration,
-    invocation_id: u32,
+    remote_invocation_id: u32,
     function_id: Arc<String>,
     input_sets: Vec<Option<CompositionSet>>,
     caching: bool,
@@ -751,7 +758,7 @@ async fn dispatcher_call(
     let _ = sender
         .send(PollingOption::Results(
             remote_message::RemoteMessage::Response(Response {
-                invocation_id,
+                remote_invocation_id,
                 response: Some(response_message),
             }),
         ))
@@ -834,19 +841,27 @@ async fn remote_queue_client_logic(
                             std::time::SystemTime::elapsed(&std::time::SystemTime::UNIX_EPOCH)
                                 .unwrap();
                         let Invocation {
-                            invocation_id,
+                            remote_invocation_id,
                             function_id,
                             metadata_sets,
                             caching,
+                            owner_invocation_id,
                         } = invocation;
                         let function_arc = Arc::new(function_id);
-                        let recorder = Recorder::new(function_arc.clone(), start_instance);
+                        let owner_invocation_id = owner_invocation_id
+                            .parse::<InvocationId>()
+                            .expect("Owner invocation id should be a valid UUID");
+                        let recorder = Recorder::new(
+                            owner_invocation_id,
+                            function_arc.clone(),
+                            start_instance,
+                        );
                         let inputs =
                             proto_data_sets_to_composition_sets(metadata_sets, data_option);
                         dispatcher_sender(
                             export_registry.clone(),
                             start_time,
-                            invocation_id,
+                            remote_invocation_id,
                             function_arc,
                             inputs,
                             !caching,
@@ -865,13 +880,21 @@ async fn remote_queue_client_logic(
                                 .unwrap();
                         for invocation in invocations.invocations {
                             let Invocation {
-                                invocation_id,
+                                remote_invocation_id,
                                 function_id,
                                 metadata_sets,
                                 caching,
+                                owner_invocation_id,
                             } = invocation;
                             let function_arc = Arc::new(function_id);
-                            let recorder = Recorder::new(function_arc.clone(), start_instance);
+                            let owner_invocation_id = owner_invocation_id
+                                .parse::<InvocationId>()
+                                .expect("Owner invocation id should be a valid UUID");
+                            let recorder = Recorder::new(
+                                owner_invocation_id,
+                                function_arc.clone(),
+                                start_instance,
+                            );
                             let inputs = proto_data_sets_to_composition_sets(
                                 metadata_sets,
                                 data_option.clone(),
@@ -879,7 +902,7 @@ async fn remote_queue_client_logic(
                             dispatcher_sender(
                                 export_registry.clone(),
                                 start_time,
-                                invocation_id,
+                                remote_invocation_id,
                                 function_arc,
                                 inputs,
                                 !caching,
@@ -1072,14 +1095,14 @@ pub async fn remote_queue_client(
     remote_queue_client_logic(
         poll_option_receiver,
         remote_message_sender,
-        |registry, start_time, invocation_id, function_id, input_sets, caching, recorder| {
+        |registry, start_time, remote_invocation_id, function_id, input_sets, caching, recorder| {
             let sender_clone = poll_option_sender.clone();
             spawn(dispatcher_call(
                 dispatcher,
                 sender_clone,
                 registry,
                 start_time,
-                invocation_id,
+                remote_invocation_id,
                 function_id,
                 input_sets,
                 caching,

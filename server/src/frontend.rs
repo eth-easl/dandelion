@@ -3,7 +3,8 @@ use std::{
 };
 
 use dandelion_commons::{
-    err_dandelion, records::Recorder, DandelionError, DandelionResult, FrontendError,
+    err_dandelion, records::Recorder, CompositionError, DandelionError, DandelionResult,
+    FrontendError, FunctionRegistryError,
 };
 use dandelion_server::DandelionBody;
 use dispatcher::dispatcher::Dispatcher;
@@ -200,16 +201,19 @@ async fn handle_request(
     }
 
     // from context from frame bytes
-    let request_context_result = BytesContext::from_bytes_vec(frame_data, total_size).await;
-    if request_context_result.is_err() {
-        warn!("request parsing failed with: {:?}", request_context_result);
-    }
-
-    // TODO make single enum, so we cannot have the None None or Some Some case
-    let (function_name, composition, request_context) = request_context_result.unwrap();
+    let (function_name, composition, request_context) =
+        match BytesContext::from_bytes_vec(frame_data, total_size).await {
+            Ok(parsed_request) => parsed_request,
+            Err(parse_error) => {
+                warn!("request parsing failed with: {:?}", parse_error);
+                return Err(parse_error);
+            }
+        };
     let had_function_name = function_name.is_some();
     let function_id = Arc::new(function_name.unwrap_or_else(|| String::from("Composition")));
-    let mut recorder = Recorder::new(function_id.clone(), start_time);
+    // UUID v7 is roughly time-ordered and lexicographically sortable
+    let invocation_id = dandelion_commons::InvocationId::now_v7();
+    let mut recorder = Recorder::new(invocation_id, function_id.clone(), start_time);
     recorder.record(dandelion_commons::records::RecordPoint::DeserializationEnd);
     debug!("finished creating request context");
 
@@ -237,8 +241,7 @@ async fn handle_request(
                 recorder,
             )
             .await
-    }
-    .expect("Should get result from function");
+    }?;
 
     let response_body = dandelion_server::DandelionBody::new(function_output, &recorder);
 
@@ -296,9 +299,19 @@ async fn service(
                 format!("Failed to serve request: {}", err).into_bytes(),
             ));
             *response.status_mut() = match err.error {
-                DandelionError::RequestError(FrontendError::InvalidRequest(_)) => {
-                    StatusCode::BAD_REQUEST
-                }
+                DandelionError::RequestError(
+                    FrontendError::InvalidRequest(_)
+                    | FrontendError::StreamEnd
+                    | FrontendError::ViolatedSpec
+                    | FrontendError::MalformedMessage,
+                )
+                | DandelionError::FunctionRegistry(FunctionRegistryError::UnknownFunction(_))
+                | DandelionError::Composition(
+                    CompositionError::UnknownFunction(_)
+                    | CompositionError::UndefinedDataSet(_)
+                    | CompositionError::InvalidFunctionApplication(_)
+                    | CompositionError::InvalidFunctionDeclaration(_),
+                ) => StatusCode::BAD_REQUEST,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
             Ok::<_, Infallible>(response)

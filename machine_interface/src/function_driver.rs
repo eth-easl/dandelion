@@ -5,7 +5,7 @@ use crate::{
 };
 extern crate alloc;
 use alloc::sync::Arc;
-use dandelion_commons::{records::Recorder, DandelionResult};
+use dandelion_commons::{records::Recorder, DandelionResult, InvocationId};
 
 pub mod compute_driver;
 pub mod functions;
@@ -37,6 +37,7 @@ pub struct Metadata {
 /// Struct holding function data comming from the dispatcher into the queueing.
 pub enum WorkToDo {
     FunctionArguments {
+        invocation_id: InvocationId,
         function_id: Arc<String>,
         function_alternatives: Vec<Arc<functions::FunctionAlternative>>,
         input_sets: Vec<Option<CompositionSet>>,

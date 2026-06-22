@@ -66,6 +66,7 @@ fn deserialize_queue_message(buf: Bytes) -> DandelionResult<proto::QueueMessage>
 #[test]
 fn test_serialize_invocation_request() {
     use crate::proto::{item_data, queue_message, Invocation, QueueMessage};
+    use dandelion_commons::InvocationId;
     use machine_interface::{composition::ItemData, memory_domain::ContextTrait};
 
     // construct invocation data
@@ -198,8 +199,9 @@ fn test_serialize_invocation_request() {
                 invocations: vec![crate::proto::Invocation {
                     function_id: expected_id.clone(),
                     metadata_sets: serialized_metadata_sets.clone(),
-                    invocation_id: 7,
+                    remote_invocation_id: 7,
                     caching: true,
+                    owner_invocation_id: InvocationId::from_u128(11).to_string(),
                 }],
             },
         )),
@@ -213,10 +215,11 @@ fn test_serialize_invocation_request() {
         .queue_message
         .unwrap();
     let Invocation {
-        invocation_id,
+        remote_invocation_id,
         function_id: deserialized_id,
         metadata_sets: deserialized_metadata_sets,
         caching,
+        owner_invocation_id,
     } = if let queue_message::QueueMessage::Invocations(proto::RepeatedInvocations {
         invocations,
     }) = message
@@ -228,8 +231,9 @@ fn test_serialize_invocation_request() {
     };
     assert_eq!(expected_id, deserialized_id);
     assert_eq!(serialized_metadata_sets, deserialized_metadata_sets);
-    assert_eq!(invocation_id, 7);
+    assert_eq!(remote_invocation_id, 7);
     assert!(caching);
+    assert_eq!(owner_invocation_id, InvocationId::from_u128(11).to_string());
 
     // check the composition sets are as expected
     let mut sets = util::proto_data_sets_to_composition_sets(deserialized_metadata_sets, None);

@@ -12,7 +12,7 @@ use crate::{
         RepeatedInvocations, Response,
     },
 };
-use dandelion_commons::{records::Recorder, DandelionError};
+use dandelion_commons::{records::Recorder, DandelionError, InvocationId};
 use dispatcher::queue::WorkQueue;
 use futures::{
     task::{Context, Waker},
@@ -32,6 +32,7 @@ async fn mock_dispatcher(work_queue: WorkQueue, engine_type: machine_config::Eng
     let result = work_queue
         .do_work(
             machine_interface::function_driver::WorkToDo::FunctionArguments {
+                invocation_id: InvocationId::from_u128(17),
                 function_id: function_id.clone(),
                 function_alternatives: vec![Arc::new(FunctionAlternative {
                     engine: engine_type,
@@ -47,7 +48,7 @@ async fn mock_dispatcher(work_queue: WorkQueue, engine_type: machine_config::Eng
                     min_set_bytes: vec![],
                 }),
                 caching: false,
-                recorder: Recorder::new(function_id, Instant::now()),
+                recorder: Recorder::new(InvocationId::from_u128(17), function_id, Instant::now()),
             },
         )
         .await;
@@ -118,17 +119,19 @@ fn test_remote_queue_server() {
             queue_message::QueueMessage::Invocations(RepeatedInvocations { mut invocations }) => {
                 assert_eq!(2, invocations.len());
                 let Invocation {
-                    invocation_id: second_id,
+                    remote_invocation_id: second_id,
                     function_id,
                     metadata_sets: _,
                     caching: _,
+                    ..
                 } = invocations.pop().unwrap();
                 assert_eq!("dummy_function", function_id);
                 let Invocation {
-                    invocation_id: first_id,
+                    remote_invocation_id: first_id,
                     function_id,
                     metadata_sets: _,
                     caching: _,
+                    ..
                 } = invocations.pop().unwrap();
                 assert_eq!("dummy_function", function_id);
                 (first_id, second_id)
@@ -155,13 +158,14 @@ fn test_remote_queue_server() {
         queue_message::QueueMessage::Invocations(RepeatedInvocations { mut invocations }) => {
             assert_eq!(1, invocations.len());
             let Invocation {
-                invocation_id,
+                remote_invocation_id,
                 function_id,
                 metadata_sets: _,
                 caching: _,
+                ..
             } = invocations.pop().unwrap();
             assert_eq!("dummy_function", function_id);
-            invocation_id
+            remote_invocation_id
         }
         other => panic!("Should not receive other message: {:?}", other),
     };
@@ -190,7 +194,7 @@ fn test_remote_queue_server() {
     queue_option_sender
         .try_send(QueueOption::Message(
             remote_message::RemoteMessage::Response(Response {
-                invocation_id: third_invocation_id,
+                remote_invocation_id: third_invocation_id,
                 response: Some(response::Response::ErrorMsg(EXPECTED_ERROR.to_string())),
             }),
             None,
@@ -235,13 +239,14 @@ fn test_remote_queue_server() {
         queue_message::QueueMessage::Invocations(RepeatedInvocations { mut invocations }) => {
             assert_eq!(1, invocations.len());
             let Invocation {
-                invocation_id,
+                remote_invocation_id,
                 function_id,
                 metadata_sets: _,
                 caching: _,
+                ..
             } = invocations.pop().unwrap();
             assert_eq!("dummy_function", function_id);
-            invocation_id
+            remote_invocation_id
         }
         other => panic!("should not receive other message: {:?}", other),
     };
@@ -250,7 +255,7 @@ fn test_remote_queue_server() {
     queue_option_sender
         .try_send(QueueOption::Message(
             remote_message::RemoteMessage::Response(Response {
-                invocation_id: fourth_invocation_id,
+                remote_invocation_id: fourth_invocation_id,
                 response: Some(response::Response::ErrorMsg(EXPECTED_ERROR.to_string())),
             }),
             None,
@@ -259,7 +264,7 @@ fn test_remote_queue_server() {
     queue_option_sender
         .try_send(QueueOption::Message(
             remote_message::RemoteMessage::Response(Response {
-                invocation_id: first_invocation_id,
+                remote_invocation_id: first_invocation_id,
                 response: Some(response::Response::ErrorMsg(EXPECTED_ERROR.to_string())),
             }),
             None,
@@ -283,12 +288,12 @@ fn test_remote_queue_client() {
     let (remote_message_sender, mut remote_message_receiver) = mpsc::channel(64);
 
     let dispatcher_send =
-        |registry, duration, invocation_id, function_id, inputs, is_cold, recorder| {
+        |registry, duration, remote_invocation_id, function_id, inputs, is_cold, recorder| {
             dispatcher_sender
                 .blocking_send((
                     registry,
                     duration,
-                    invocation_id,
+                    remote_invocation_id,
                     function_id,
                     inputs,
                     is_cold,
@@ -338,16 +343,18 @@ fn test_remote_queue_client() {
                 RepeatedInvocations {
                     invocations: vec![
                         Invocation {
-                            invocation_id: INVOCATION_ID,
+                            remote_invocation_id: INVOCATION_ID,
                             function_id: expected_function_id.clone(),
                             metadata_sets: vec![],
                             caching: true,
+                            owner_invocation_id: InvocationId::from_u128(31).to_string(),
                         },
                         Invocation {
-                            invocation_id: INVOCATION_ID + 1,
+                            remote_invocation_id: INVOCATION_ID + 1,
                             function_id: expected_function_id.clone(),
                             metadata_sets: vec![],
                             caching: true,
+                            owner_invocation_id: InvocationId::from_u128(32).to_string(),
                         },
                     ],
                 },
@@ -362,7 +369,7 @@ fn test_remote_queue_client() {
         Poll::Ready(Some((
             _registry,
             _duration,
-            invocation_id,
+            remote_invocation_id,
             function_id,
             _inputs,
             is_cold,
@@ -370,7 +377,7 @@ fn test_remote_queue_client() {
         ))) => {
             assert!(!is_cold);
             assert_eq!(expected_function_id, function_id.as_str());
-            invocation_id
+            remote_invocation_id
         }
         Poll::Pending | Poll::Ready(None) => panic!("Should receive work now"),
     };
@@ -379,7 +386,7 @@ fn test_remote_queue_client() {
         Poll::Ready(Some((
             _registry,
             _duration,
-            invocation_id,
+            remote_invocation_id,
             function_id,
             _inputs,
             is_cold,
@@ -387,7 +394,7 @@ fn test_remote_queue_client() {
         ))) => {
             assert!(!is_cold);
             assert_eq!(expected_function_id, function_id.as_str());
-            invocation_id
+            remote_invocation_id
         }
         Poll::Pending | Poll::Ready(None) => panic!("Should receive work now"),
     };
@@ -413,10 +420,11 @@ fn test_remote_queue_client() {
             Ok(queue_message::QueueMessage::Invocations(
                 RepeatedInvocations {
                     invocations: vec![Invocation {
-                        invocation_id: INVOCATION_ID,
+                        remote_invocation_id: INVOCATION_ID,
                         function_id: expected_function_id.clone(),
                         metadata_sets: vec![],
                         caching: true,
+                        owner_invocation_id: InvocationId::from_u128(33).to_string(),
                     }],
                 },
             )),
@@ -430,7 +438,7 @@ fn test_remote_queue_client() {
         Poll::Ready(Some((
             _registry,
             _duration,
-            invocation_id,
+            remote_invocation_id,
             function_id,
             _inputs,
             is_cold,
@@ -438,7 +446,7 @@ fn test_remote_queue_client() {
         ))) => {
             assert!(!is_cold);
             assert_eq!(expected_function_id, function_id.as_str());
-            invocation_id
+            remote_invocation_id
         }
         Poll::Pending | Poll::Ready(None) => panic!("Should receive work now"),
     };
@@ -455,7 +463,7 @@ fn test_remote_queue_client() {
     poll_option_sender
         .try_send(crate::client::PollingOption::Results(
             remote_message::RemoteMessage::Response(Response {
-                invocation_id: invocation_id_3,
+                remote_invocation_id: invocation_id_3,
                 response: Some(response::Response::ErrorMsg(
                     DandelionError::NotImplemented.to_string(),
                 )),
@@ -472,10 +480,10 @@ fn test_remote_queue_client() {
     // check the results has been sent out
     match remote_message_receiver.try_recv().unwrap() {
         remote_message::RemoteMessage::Response(Response {
-            invocation_id,
+            remote_invocation_id,
             response,
         }) => {
-            assert_eq!(INVOCATION_ID, invocation_id);
+            assert_eq!(INVOCATION_ID, remote_invocation_id);
             match response.unwrap() {
                 response::Response::ErrorMsg(error_message) => {
                     assert_eq!(DandelionError::NotImplemented.to_string(), error_message)

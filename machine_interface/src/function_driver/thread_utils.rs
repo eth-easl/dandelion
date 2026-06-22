@@ -150,6 +150,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
         let (args, debt) = waker::manual_pull(&mut queue);
         match args {
             WorkToDo::FunctionArguments {
+                invocation_id: _,
                 function_id: _,
                 function_alternatives,
                 mut input_sets,

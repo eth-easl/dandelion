@@ -106,7 +106,7 @@ pub fn fetch_compute<Domain: MemoryDomain>(
         output_map: BTreeMap::from([(2, 0)]),
     };
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
+    let recorder = Recorder::new(dandelion_commons::InvocationId::nil(), zero_id(), Instant::now());
 
     let inputs = CompositionSet::from_context(in_context);
     let mut result_sets = tokio::runtime::Builder::new_current_thread()

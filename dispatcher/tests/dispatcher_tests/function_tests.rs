@@ -30,7 +30,7 @@ pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
         memory_resource,
     );
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
+    let recorder = Recorder::new(dandelion_commons::InvocationId::nil(), zero_id(), Instant::now());
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
@@ -75,7 +75,7 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
 
     let inputs = CompositionSet::from_context(in_context);
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
+    let recorder = Recorder::new(dandelion_commons::InvocationId::nil(), zero_id(), Instant::now());
 
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -141,7 +141,7 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
     };
     let inputs = CompositionSet::from_context(in_context);
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
+    let recorder = Recorder::new(dandelion_commons::InvocationId::nil(), zero_id(), Instant::now());
 
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -166,7 +166,7 @@ fn composition_option_helper(
     inputs: Vec<Option<CompositionSet>>,
     dispatcher: &mut Dispatcher,
 ) -> Vec<Option<CompositionSet>> {
-    let recorder = Recorder::new(zero_id(), Instant::now());
+    let recorder = Recorder::new(dandelion_commons::InvocationId::nil(), zero_id(), Instant::now());
 
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -350,7 +350,7 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
     };
     let inputs = CompositionSet::from_context(in_context);
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
+    let recorder = Recorder::new(dandelion_commons::InvocationId::nil(), zero_id(), Instant::now());
 
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -429,7 +429,7 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
         output_map: BTreeMap::from([(2, 0)]),
     };
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
+    let recorder = Recorder::new(dandelion_commons::InvocationId::nil(), zero_id(), Instant::now());
 
     let inputs = CompositionSet::from_context(in_context);
     let result = tokio::runtime::Builder::new_current_thread()
@@ -636,7 +636,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
         output_map: BTreeMap::from([(7, 0)]),
     };
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
+    let recorder = Recorder::new(dandelion_commons::InvocationId::nil(), zero_id(), Instant::now());
 
     let inputs = CompositionSet::from_context(in_context);
     let result = tokio::runtime::Builder::new_current_thread()
@@ -777,7 +777,11 @@ pub fn composition_chain_large_matmac<Domain: MemoryDomain>(
         output_map: BTreeMap::from([(chain_length + 2, 0)]),
     };
 
-    let recorder = Recorder::new(Arc::new(0.to_string()), Instant::now());
+    let recorder = Recorder::new(
+        dandelion_commons::InvocationId::nil(),
+        Arc::new(0.to_string()),
+        Instant::now(),
+    );
 
     let inputs = CompositionSet::from_context(in_context);
     let result = tokio::runtime::Builder::new_current_thread()
