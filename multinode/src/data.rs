@@ -403,9 +403,6 @@ impl RemoteDataClient for HttpRemoteDataClient {
     }
 }
 
-pub const DEFAULT_CONCURRENCY_LIMIT: usize = 15;
-pub static CONCURRENCY_LIMIT: OnceLock<usize> = OnceLock::new();
-
 // TODO: make data service handler copy free
 async fn service(
     req: Request<Incoming>,
@@ -513,6 +510,8 @@ async fn service(
     }
 }
 
+pub static CONCURRENCY_LIMIT: OnceLock<usize> = OnceLock::new();
+
 pub async fn service_loop(port: u16, export_registry: ExportRegistry) {
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await.unwrap();
@@ -522,7 +521,9 @@ pub async fn service_loop(port: u16, export_registry: ExportRegistry) {
     let mut sigint_stream = tokio::signal::unix::signal(SignalKind::interrupt()).unwrap();
     let mut sigquit_stream = tokio::signal::unix::signal(SignalKind::quit()).unwrap();
 
-    let concurrency_limit = CONCURRENCY_LIMIT.get_or_init(|| DEFAULT_CONCURRENCY_LIMIT);
+    let concurrency_limit = CONCURRENCY_LIMIT
+        .get()
+        .expect("Should always be initialized by server main in normal operation");
     let semaphore = Arc::new(Semaphore::new(*concurrency_limit));
 
     loop {

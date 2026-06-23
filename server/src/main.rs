@@ -103,7 +103,7 @@ fn main() -> () {
         .unwrap();
     // set the limit for concurrent requests to the local data registry
     multinode::data::CONCURRENCY_LIMIT
-        .set(config.data_concurrency)
+        .set(config.get_data_concurrency())
         .unwrap();
 
     // find available resources
