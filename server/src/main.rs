@@ -68,16 +68,60 @@ async fn remote_queue_server(
     }
 }
 
+/// How long to wait between attempts to (re-)connect to the master node.
+const RECONNECT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
 async fn remote_queue_client(
     remote_url: String,
     dispatcher: &'static Dispatcher,
     export_registry: ExportRegistry,
     queue: WorkQueue,
 ) {
-    let connection = tokio::net::TcpStream::connect(remote_url).await.unwrap();
-    connection.set_nodelay(true).unwrap();
-    connection.set_quickack(true).unwrap();
-    multinode::client::remote_queue_client(connection, dispatcher, export_registry, queue).await;
+    loop {
+        // Keep retrying to (re-)establish the connection to the master node so a transient
+        // failure or a master restart does not permanently take this worker out of the cluster.
+        let connection = match tokio::net::TcpStream::connect(&remote_url).await {
+            Ok(connection) => connection,
+            Err(err) => {
+                debug!(
+                    "Failed to connect to master node at {}: {}. Retrying in {:?}",
+                    remote_url, err, RECONNECT_INTERVAL
+                );
+                tokio::time::sleep(RECONNECT_INTERVAL).await;
+                continue;
+            }
+        };
+        if let Err(err) = connection.set_nodelay(true) {
+            warn!(
+                "Failed to set nodelay on connection to master node: {}",
+                err
+            );
+        }
+        if let Err(err) = connection.set_quickack(true) {
+            warn!(
+                "Failed to set quickack on connection to master node: {}",
+                err
+            );
+        }
+        info!("Established connection to master node at {}", remote_url);
+
+        multinode::client::remote_queue_client(
+            connection,
+            dispatcher,
+            export_registry.clone(),
+            queue.clone(),
+        )
+        .await;
+
+        // The connection was lost. Drop all contexts we were holding for the master node,
+        // since it will no longer fetch or delete them, then retry connecting.
+        info!(
+            "Lost connection to master node at {}, retrying in {:?}",
+            remote_url, RECONNECT_INTERVAL
+        );
+        export_registry.clear_exported_data();
+        tokio::time::sleep(RECONNECT_INTERVAL).await;
+    }
 }
 
 fn main() -> () {

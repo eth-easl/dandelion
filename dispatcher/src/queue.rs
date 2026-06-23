@@ -500,6 +500,11 @@ impl WorkQueue {
         self.remote_nodes.lock().unwrap().insert(node_id, channel);
     }
 
+    /// Removes the offload channel for a remote node, e.g. when it has disconnected.
+    pub fn remove_remote_channel(&self, node_id: u64) {
+        self.remote_nodes.lock().unwrap().remove(&node_id);
+    }
+
     /// Put work back into queue after trying to offload without success.
     pub async fn reenqueue(&self, work: WorkToDo, debt: Debt) {
         self.push(work, debt, false);

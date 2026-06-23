@@ -54,8 +54,21 @@ pub fn prepare_io_element(
             if max_size * 2 > total_input_size {
                 let maybe_sender = remote_nodes.lock().unwrap().get(node_id).cloned();
                 if let Some(node_sender) = maybe_sender {
-                    node_sender.send((work, debt)).unwrap();
-                    return None;
+                    // If the remote node has disconnected its receiver is gone, in which case
+                    // we recover the work and fall back to executing it locally.
+                    match node_sender.send((work, debt)) {
+                        Ok(()) => return None,
+                        Err(mpsc::error::SendError((work, debt))) => {
+                            return Some((
+                                work,
+                                debt,
+                                IOElementData {
+                                    remote_data,
+                                    total_input_size,
+                                },
+                            ));
+                        }
+                    }
                 }
             }
         }
