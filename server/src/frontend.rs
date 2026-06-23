@@ -121,18 +121,19 @@ async fn handle_function_registration(
         output_sets: request_map.output_sets,
         min_set_bytes: request_map.min_set_bytes,
     };
-    dispatcher
+    match dispatcher
         .insert_function(
             request_map.name,
             engine_type,
             request_map.context_size as usize,
             path_string,
             metadata,
-        )
-        .expect("Should be able to insert function");
-    return Ok(DandelionBody::from_vec(
-        "Function registered".as_bytes().to_vec(),
-    ));
+        ) {
+        Ok(()) => Ok(DandelionBody::from_vec(
+            "Function registered".as_bytes().to_vec(),
+        )),
+        Err(insertion_err) => Err(insertion_err),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -158,12 +159,7 @@ async fn handle_composition_registration(
         Ok(()) => Ok(DandelionBody::from_vec(
             "Function registered".as_bytes().to_vec(),
         )),
-        Err(insertion_err) => err_dandelion!(DandelionError::RequestError(
-            FrontendError::InternalError(format!(
-                "Failed to insert composition into dispatcher: {:?}",
-                insertion_err
-            ),)
-        )),
+        Err(insertion_err) => Err(insertion_err),
     }
 }
 
@@ -305,11 +301,20 @@ async fn service(
                     | FrontendError::ViolatedSpec
                     | FrontendError::MalformedMessage,
                 )
-                | DandelionError::FunctionRegistry(FunctionRegistryError::UnknownFunction(_))
+                | DandelionError::FunctionRegistry(
+                    FunctionRegistryError::DuplicateInsert(_)
+                    | FunctionRegistryError::TypeConflictInsert(_)
+                    | FunctionRegistryError::InvalidSystemInsert(_)
+                    | FunctionRegistryError::InvalidUserInsert(_)
+                    | FunctionRegistryError::UnknownFunction(_)
+                    | FunctionRegistryError::BinaryNotFound,
+                )
                 | DandelionError::Composition(
-                    CompositionError::UnknownFunction(_)
+                    CompositionError::DuplicateIdentifier(_)
+                    | CompositionError::UnknownFunction(_)
                     | CompositionError::UndefinedDataSet(_)
                     | CompositionError::InvalidFunctionApplication(_)
+                    | CompositionError::DuplicateSetName(_)
                     | CompositionError::InvalidFunctionDeclaration(_),
                 ) => StatusCode::BAD_REQUEST,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,

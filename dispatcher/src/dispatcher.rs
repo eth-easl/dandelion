@@ -27,7 +27,7 @@ use machine_interface::{
     machine_config::{get_available_domains, DomainType, EngineType, IntoEnumIterator},
     memory_domain::{MemoryDomain, MemoryResource},
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 // TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
 // the entire execution time anyway
@@ -94,6 +94,14 @@ impl Dispatcher {
     pub fn insert_compositions(&self, composition_desc: String) -> DandelionResult<()> {
         self.function_registry
             .insert_compositions(&composition_desc)
+    }
+
+    pub fn load_or_enable_registry_persistence(
+        &self,
+        path: PathBuf,
+    ) -> DandelionResult<(usize, usize)> {
+        self.function_registry
+            .load_or_enable_persistence(path, &self.domains)
     }
 
     pub async fn queue_function_by_name(

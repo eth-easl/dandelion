@@ -257,6 +257,16 @@ fn main() -> () {
         )
         .expect("Should be able to start dispatcher"),
     ));
+    let registry_snapshot_path = std::path::PathBuf::from(folder_path).join("registry_snapshot.json");
+    let (restored_functions, restored_compositions) = dispatcher
+        .load_or_enable_registry_persistence(registry_snapshot_path.clone())
+        .expect("Should be able to initialize registry persistence");
+    debug!(
+        "Registry persistence ready at {} (restored {} functions, {} compositions)",
+        registry_snapshot_path.display(),
+        restored_functions,
+        restored_compositions
+    );
 
     // register preload functions
     let (preload_functions, preload_compositions) = config.get_preload_functions();
@@ -397,10 +407,16 @@ fn main() -> () {
     // Run this server for... forever... unless I receive a signal!
     system_runtime.block_on(frontend::service_loop(dispatcher, folder_path, config.port));
 
-    // clean up folder in tmp that is used for function storage
-    let removal_error = std::fs::remove_dir_all(folder_path);
-    if let Err(err) = removal_error {
-        warn!("Removing function folder failed with: {}", err);
+    if config.persist {
+        debug!(
+            "Preserving registry folder {} across shutdown because --persist is enabled",
+            folder_path
+        );
+    } else {
+        let removal_error = std::fs::remove_dir_all(folder_path);
+        if let Err(err) = removal_error {
+            warn!("Removing function folder failed with: {}", err);
+        }
     }
     // clean up folder with shared files in case the context backed by shared files left some behind
     for shm_dir_entry in std::fs::read_dir("/dev/shm/").unwrap() {
