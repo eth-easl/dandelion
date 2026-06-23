@@ -1367,6 +1367,7 @@ dependencies = [
 name = "machine_interface"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "bytes",
  "cmake",
  "core_affinity",

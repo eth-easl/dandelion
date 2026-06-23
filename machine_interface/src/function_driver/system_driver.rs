@@ -1,4 +1,5 @@
 pub mod reqwest;
+pub mod recovery_log;
 
 use crate::{
     composition::{CompositionSet, ItemData, LocalCompositionSet},
@@ -7,6 +8,10 @@ use crate::{
     DataItem, Position,
 };
 use dandelion_commons::{try_with_capacity, DandelionResult, InvocationId};
+pub use recovery_log::{
+    decode_io_completion_payload, encode_io_completion_payload, IoCompletionItem,
+    IoCompletionOutputSet, IoCompletionRecord,
+};
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 

@@ -3,7 +3,14 @@ mod system_driver_tests {
     use crate::{
         composition::CompositionSet,
         function_driver::{
-            system_driver::{convert_to_references, SystemFunction},
+            system_driver::{
+                convert_to_references,
+                recovery_log::{
+                    decode_io_completion_payload, encode_io_completion_payload,
+                    IoCompletionItem, IoCompletionOutputSet,
+                },
+                SystemFunction,
+            },
             test_queue::TestQueue,
             ComputeResource, WorkToDo,
         },
@@ -185,6 +192,41 @@ dolore magna aliquyam erat, sed diam voluptua."#,
             .expect("Should be able to read status");
         let status = read_status(&header_buffer);
         assert_eq!("HTTP/1.1 200 OK", status);
+    }
+
+    #[test]
+    fn io_completion_payload_roundtrip() {
+        let outputs = vec![
+            IoCompletionOutputSet {
+                set_index: 0,
+                set_name: "headers".to_string(),
+                items: vec![IoCompletionItem {
+                    identifier: "".to_string(),
+                    key: 0,
+                    data: b"HTTP/1.1 200 OK\n".to_vec(),
+                }],
+            },
+            IoCompletionOutputSet {
+                set_index: 1,
+                set_name: "bodies".to_string(),
+                items: vec![IoCompletionItem {
+                    identifier: "body".to_string(),
+                    key: 7,
+                    data: vec![0, 1, 2, 255],
+                }],
+            },
+        ];
+
+        let payload = encode_io_completion_payload(&outputs).unwrap();
+        let decoded = decode_io_completion_payload(&payload).unwrap();
+
+        assert_eq!(2, decoded.len());
+        assert_eq!("headers", decoded[0].set_name);
+        assert_eq!(b"HTTP/1.1 200 OK\n".to_vec(), decoded[0].items[0].data);
+        assert_eq!("bodies", decoded[1].set_name);
+        assert_eq!("body", decoded[1].items[0].identifier);
+        assert_eq!(7, decoded[1].items[0].key);
+        assert_eq!(vec![0, 1, 2, 255], decoded[1].items[0].data);
     }
 
     macro_rules! driverTests {

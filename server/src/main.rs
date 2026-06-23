@@ -140,6 +140,10 @@ fn main() -> () {
 
     // create globally available path to folder for data
     let folder_path: &'static str = Box::leak(config.folder_path.clone().into_boxed_str());
+    machine_interface::function_driver::system_driver::recovery_log::set_recovery_log_root(
+        std::path::PathBuf::from(folder_path),
+    )
+    .expect("Should be able to initialize IO recovery log root");
 
     // set the reqwest engine concurrency limit if it is available
     machine_interface::function_driver::system_driver::reqwest::CONCURRENCY_LIMIT
