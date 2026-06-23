@@ -6,7 +6,7 @@ use crate::{
     memory_domain::Context,
     DataItem, Position,
 };
-use dandelion_commons::{try_with_capacity, DandelionResult};
+use dandelion_commons::{try_with_capacity, DandelionResult, InvocationId};
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 
@@ -59,6 +59,8 @@ pub const SYSTEM_FUNCTIONS: &[SystemFunction] = &[SystemFunction::HTTP];
 
 #[derive(Debug, Clone)]
 pub struct IoData {
+    pub invocation_id: InvocationId,
+    pub composition_node_id: Option<String>,
     pub original_position: Position,
     pub original_data: Box<ItemData>,
     // A vec with the resolved outputs for this IO request
@@ -73,6 +75,8 @@ pub struct IoData {
 /// Currently assumes the HTTP_INPUT_SETS and HTTP_OUTPUT_SETS
 pub fn convert_to_references(
     function: SystemFunction,
+    invocation_id: InvocationId,
+    composition_node_id: Option<String>,
     mut inputs: Vec<Option<CompositionSet>>,
     // recorder: Recorder,
 ) -> DandelionResult<Vec<Option<CompositionSet>>> {
@@ -99,6 +103,8 @@ pub fn convert_to_references(
             };
             let set_once = Arc::new(OnceCell::new());
             let header_data = IoData {
+                invocation_id,
+                composition_node_id: composition_node_id.clone(),
                 original_position: item.data,
                 original_data: Box::new(data.clone()),
                 resolved: set_once.clone(),
@@ -106,6 +112,8 @@ pub fn convert_to_references(
                 set_index: 0,
             };
             let body_data = IoData {
+                invocation_id,
+                composition_node_id: composition_node_id.clone(),
                 original_position: item.data,
                 original_data: Box::new(data),
                 resolved: set_once,

@@ -115,7 +115,7 @@ impl Dispatcher {
         recorder.record(RecordPoint::EnterDispatcher);
 
         let results = self
-            .queue_function(function_id, inputs, caching, recorder.clone())
+            .queue_function(function_id, inputs, caching, recorder.clone(), None)
             .await?;
 
         // if any set is not local send them trough reference resolution
@@ -179,6 +179,7 @@ impl Dispatcher {
         let results = self
             .queue_composition(
                 composition_meta_pairs[0].1.clone(),
+                None,
                 inputs,
                 caching,
                 recorder.clone(),
@@ -220,6 +221,7 @@ impl Dispatcher {
     pub async fn queue_composition(
         &self,
         composition: Composition,
+        composition_node_ids: Option<Arc<Vec<String>>>,
         inputs: Vec<Option<CompositionSet>>,
         caching: bool,
         mut recorder: Recorder,
@@ -235,6 +237,7 @@ impl Dispatcher {
             // Which index the function had in the function dependencies array.
             // used to differentiate between multiple functions with same ID in one invocation for debugging and tracing.
             function_index: usize,
+            composition_node_id: Option<String>,
             input_sets: Vec<Option<(ShardingMode, CompositionSet)>>,
             join_info: (Vec<usize>, Vec<JoinStrategy>),
             output_mapping: Vec<Option<usize>>,
@@ -306,6 +309,9 @@ impl Dispatcher {
                 Some(FunctionArgs {
                     function_id: deps.function,
                     function_index: composition_index,
+                    composition_node_id: composition_node_ids
+                        .as_ref()
+                        .and_then(|node_ids| node_ids.get(composition_index).cloned()),
                     input_sets: ready_inputs,
                     join_info: deps.join_info,
                     output_mapping: deps.output_set_ids,
@@ -319,6 +325,7 @@ impl Dispatcher {
             awaited_sets.push(Either::Right(self.queue_function_sharded(
                 args.function_id,
                 args.function_index,
+                args.composition_node_id,
                 args.input_sets,
                 args.join_info.0,
                 args.join_info.1,
@@ -399,6 +406,7 @@ impl Dispatcher {
                             awaited_sets.push(Either::Right(self.queue_function_sharded(
                                 args.function_id,
                                 args.function_index,
+                                args.composition_node_id,
                                 args.input_sets,
                                 args.join_info.0,
                                 args.join_info.1,
@@ -434,6 +442,7 @@ impl Dispatcher {
         function_id: FunctionId,
         // index of the function within the composition
         function_index: usize,
+        composition_node_id: Option<String>,
         input_sets: Vec<Option<(ShardingMode, CompositionSet)>>,
         join_order: Vec<usize>,
         join_strategies: Vec<JoinStrategy>,
@@ -471,6 +480,7 @@ impl Dispatcher {
                         ins,
                         caching,
                         new_recorder.clone(),
+                        composition_node_id.clone(),
                     ));
                     recorders.push(new_recorder);
                     future_box
@@ -482,7 +492,13 @@ impl Dispatcher {
         } else {
             let new_recorder = Recorder::new_from_parent(function_id.clone(), &recorder);
             let future_box = self
-                .queue_function(function_id, vec![], caching, new_recorder.clone())
+                .queue_function(
+                    function_id,
+                    vec![],
+                    caching,
+                    new_recorder.clone(),
+                    composition_node_id,
+                )
                 .await
                 .and_then(|result| Ok(vec![result]));
             recorders = vec![new_recorder];
@@ -530,6 +546,7 @@ impl Dispatcher {
         input_sets: Vec<Option<CompositionSet>>,
         caching: bool,
         mut recorder: Recorder,
+        composition_node_id: Option<String>,
     ) -> DandelionResult<Vec<Option<CompositionSet>>> {
         debug!("Queueing function with id: {}", function_id);
         // find an engine capable of running the function
@@ -539,6 +556,8 @@ impl Dispatcher {
             FunctionType::SystemFunction(sys_function) => {
                 machine_interface::function_driver::system_driver::convert_to_references(
                     sys_function,
+                    recorder.invocation_id(),
+                    composition_node_id,
                     input_sets,
                 )
             }
@@ -628,6 +647,7 @@ impl Dispatcher {
             FunctionType::Composition(comp_info) => {
                 self.queue_composition(
                     (*comp_info.composition).clone(),
+                    Some(comp_info.composition_node_ids.clone()),
                     input_sets,
                     caching,
                     recorder,

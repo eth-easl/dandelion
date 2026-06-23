@@ -112,7 +112,7 @@ pub fn fetch_compute<Domain: MemoryDomain>(
     let mut result_sets = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder))
+        .block_on(dispatcher.queue_composition(composition, None, inputs, false, recorder))
         .unwrap();
     assert_eq!(1, result_sets.len());
 

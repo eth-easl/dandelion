@@ -84,6 +84,8 @@ mod system_driver_tests {
 
         let input_sets = convert_to_references(
             SystemFunction::HTTP,
+            dandelion_commons::InvocationId::nil(),
+            None,
             CompositionSet::from_context(input_context),
         )
         .unwrap();
@@ -156,6 +158,8 @@ dolore magna aliquyam erat, sed diam voluptua."#,
 
         let input_sets = convert_to_references(
             SystemFunction::HTTP,
+            dandelion_commons::InvocationId::nil(),
+            None,
             CompositionSet::from_context(input_context),
         )
         .unwrap();

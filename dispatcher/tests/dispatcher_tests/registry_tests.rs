@@ -119,7 +119,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(function_id.clone(), inputs, false, recorder));
+            .block_on(dispatcher.queue_function(function_id.clone(), inputs, false, recorder, None));
         recorder = Recorder::new(
             dandelion_commons::InvocationId::nil(),
             function_id.clone(),
@@ -133,6 +133,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
                 overwrite_inputs,
                 false,
                 recorder,
+                None,
             ));
         let out_sets = match result {
             Ok(composition_sets) => composition_sets,
@@ -247,7 +248,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(function_id.clone(), inputs, false, recorder));
+            .block_on(dispatcher.queue_function(function_id.clone(), inputs, false, recorder, None));
         recorder = Recorder::new(
             dandelion_commons::InvocationId::nil(),
             function_id.clone(),
@@ -261,6 +262,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
                 overwrite_inputs,
                 false,
                 recorder,
+                None,
             ));
         let out_sets = match result {
             Ok(composition_sets) => composition_sets,

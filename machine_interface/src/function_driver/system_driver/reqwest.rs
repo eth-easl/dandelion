@@ -426,12 +426,20 @@ async fn resolve_io_item(
     client: HttpClient,
 ) -> DandelionResult<(Position, Arc<Context>)> {
     let IoData {
+        invocation_id,
+        composition_node_id,
         original_position,
         original_data,
         resolved,
         function,
         set_index,
     } = io_data;
+    debug!(
+        "Resolving IO item for invocation {} node {:?} function {}",
+        invocation_id,
+        composition_node_id,
+        function
+    );
     // first need to check if original data was local or we still need to fetch that.
     let (input_position, input_context) = match *original_data {
         ItemData::LocalData(context) => (original_position, context),
