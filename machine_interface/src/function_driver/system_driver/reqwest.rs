@@ -2,7 +2,13 @@ use crate::{
     composition::{CompositionSet, ItemData},
     function_driver::{
         functions::{Function, FunctionConfig},
-        system_driver::{IoData, SystemFunction},
+        system_driver::{
+            recovery_log::{
+                append_io_completion_record, IoCompletionItem, IoCompletionOutputSet,
+                IoCompletionRecord,
+            },
+            IoData, SystemFunction,
+        },
         ComputeResource, Driver, EngineWorkQueue, WorkDone, WorkToDo,
     },
     memory_domain::{
@@ -246,8 +252,53 @@ fn parse_request<RequestType: Request>(
     RequestType::from_raw(request_buffer)
 }
 
+fn read_context_bytes(context: &Arc<Context>) -> DandelionResult<Vec<u8>> {
+    let mut bytes = vec![0; context.size];
+    context.read(0, &mut bytes)?;
+    Ok(bytes)
+}
+
+fn append_http_completion_record(
+    invocation_id: dandelion_commons::InvocationId,
+    composition_node_id: Option<String>,
+    header_context: &Arc<Context>,
+    body_context: &Arc<Context>,
+) -> DandelionResult<()> {
+    let Some(composition_node_id) = composition_node_id else {
+        return Ok(());
+    };
+
+    append_io_completion_record(&IoCompletionRecord {
+        invocation_id,
+        composition_node_id,
+        function: SystemFunction::HTTP,
+        outputs: vec![
+            IoCompletionOutputSet {
+                set_index: 0,
+                set_name: "headers".to_string(),
+                items: vec![IoCompletionItem {
+                    identifier: String::new(),
+                    key: 0,
+                    data: read_context_bytes(header_context)?,
+                }],
+            },
+            IoCompletionOutputSet {
+                set_index: 1,
+                set_name: "bodies".to_string(),
+                items: vec![IoCompletionItem {
+                    identifier: String::new(),
+                    key: 0,
+                    data: read_context_bytes(body_context)?,
+                }],
+            },
+        ],
+    })
+}
+
 async fn http_request(
     client: HttpClient,
+    invocation_id: dandelion_commons::InvocationId,
+    composition_node_id: Option<String>,
     position: Position,
     context: Arc<Context>,
 ) -> DandelionResult<Vec<Arc<Context>>> {
@@ -330,6 +381,13 @@ async fn http_request(
         ContextType::Bytes(Box::new(BytesContext::new(body))),
         body_length,
     ));
+
+    append_http_completion_record(
+        invocation_id,
+        composition_node_id,
+        &header_context,
+        &body_context,
+    )?;
 
     Ok(vec![header_context, body_context])
 }
@@ -457,7 +515,15 @@ async fn resolve_io_item(
     match function {
         SystemFunction::HTTP => {
             let outputs = resolved
-                .get_or_init(move || http_request(client, input_position, input_context))
+                .get_or_init(move || {
+                    http_request(
+                        client,
+                        invocation_id,
+                        composition_node_id.clone(),
+                        input_position,
+                        input_context,
+                    )
+                })
                 .await;
             let context = match outputs {
                 Ok(context_vec) => context_vec[set_index].clone(),
@@ -580,7 +646,9 @@ async fn resolve_all_sets(
         while let Some(item_result) = io_futures.next().await {
             let item_tuple = item_result.unwrap();
             match item_tuple {
-                Ok((set_index, item, data)) => sets_vec[set_index].push((item, data)),
+                Ok((set_index, item, data)) => {
+                    sets_vec[set_index].push((item, data));
+                }
                 Err(err) => {
                     result_sender(Err(err));
                     return;
