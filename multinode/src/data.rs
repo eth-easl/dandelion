@@ -1,7 +1,11 @@
 use dandelion_commons::{
     dandelion_err, err_dandelion, DandelionError, DandelionResult, MultinodeError,
 };
-use hyper::{body::Incoming, service::service_fn, Method, Request, Response, StatusCode};
+use hyper::{
+    body::{Body, Buf, Incoming},
+    service::service_fn,
+    Method, Request, Response, StatusCode,
+};
 use log::{debug, error, trace, warn};
 use machine_interface::{
     composition::{RemoteData, RemoteDataClient},
@@ -12,14 +16,14 @@ use machine_interface::{
 };
 use prost::bytes;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     convert::Infallible,
     future::Future,
     net::SocketAddr,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
-use tokio::{net::TcpListener, signal::unix::SignalKind};
+use tokio::{net::TcpListener, signal::unix::SignalKind, sync::Semaphore};
 
 #[derive(Clone)]
 struct ExportedData {
@@ -63,7 +67,30 @@ impl bytes::Buf for ExportedData {
 }
 
 struct ExportedBody {
-    inner: Option<ExportedData>,
+    inner: VecDeque<ExportedData>,
+}
+
+impl ExportedBody {
+    fn new_error(string: String) -> Self {
+        let mut inner = VecDeque::with_capacity(1);
+        let string_size = string.len();
+        inner.push_back(ExportedData {
+            context: Arc::new(
+                ReadOnlyContext::new(string.into_bytes().into_boxed_slice()).unwrap(),
+            ),
+            position: Position {
+                offset: 0,
+                size: string_size,
+            },
+        });
+        Self { inner }
+    }
+
+    fn new_single(data: ExportedData) -> Self {
+        let mut inner = VecDeque::with_capacity(1);
+        inner.push_back(data);
+        Self { inner }
+    }
 }
 
 impl hyper::body::Body for ExportedBody {
@@ -73,11 +100,11 @@ impl hyper::body::Body for ExportedBody {
         mut self: std::pin::Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
-        let frame = self
-            .inner
-            .take()
-            .and_then(|data| Some(Ok(hyper::body::Frame::data(data))));
-        return std::task::Poll::Ready(frame);
+        return std::task::Poll::Ready(
+            self.inner
+                .pop_front()
+                .map(|data| Ok(hyper::body::Frame::data(data))),
+        );
     }
 }
 
@@ -139,18 +166,38 @@ impl ExportRegistry {
             "Fetching exported data: node_id={}, data_id={}",
             self.node_id, data_id
         );
-        let exported_data = {
-            let inner = self.inner.lock().unwrap();
-            inner.data.get(&data_id).cloned()
-        };
 
-        let Some(exported_data) = exported_data else {
-            return err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
+        let inner = self.inner.lock().unwrap();
+        match inner.data.get(&data_id) {
+            Some(exported_data) => Ok(exported_data.clone()),
+            None => err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
                 format!("Unknown remote data id {}", data_id),
-            )));
-        };
+            ))),
+        }
+    }
 
-        Ok(exported_data)
+    fn get_multiple_data(&self, data_ids: Vec<u64>) -> DandelionResult<VecDeque<ExportedData>> {
+        debug!(
+            "Fetching exported data: node_id={}, data_ids={:?}",
+            self.node_id, data_ids
+        );
+        let mut result_data = VecDeque::with_capacity(data_ids.len());
+        let inner = self.inner.lock().unwrap();
+        for data_id in data_ids {
+            match inner.data.get(&data_id) {
+                Some(context) => result_data.push_back(context.clone()),
+                None => {
+                    return err_dandelion!(DandelionError::Multinode(
+                        MultinodeError::RequestFailed(format!(
+                            "Unknown remote data id {}",
+                            data_id
+                        ),)
+                    ));
+                }
+            };
+        }
+
+        Ok(result_data)
     }
 
     pub fn delete_exported_data(&self, data_id: u64) -> DandelionResult<()> {
@@ -165,10 +212,6 @@ impl ExportRegistry {
             )));
         };
         Ok(())
-    }
-
-    fn fetch_bytes(&self, data_id: u64) -> DandelionResult<ExportedData> {
-        self.get_exported_data(data_id)
     }
 
     pub fn fetch_context(&self, data_id: u64) -> DandelionResult<(Arc<Context>, Position)> {
@@ -192,14 +235,14 @@ impl HttpRemoteDataClient {
         }
     }
 
-    fn remote_data_url(&self, data: RemoteData) -> DandelionResult<String> {
+    fn remote_data_url(&self, node_id: u64) -> DandelionResult<String> {
         let address =
             self.node_map
-                .get(&data.node_id)
+                .get(&node_id)
                 .ok_or(dandelion_err!(DandelionError::Multinode(
                     MultinodeError::ConfigError(format!(
                         "No data server configured for node {}",
-                        data.node_id
+                        node_id
                     ))
                 )))?;
         let base_url = if address.starts_with("http://") || address.starts_with("https://") {
@@ -207,11 +250,7 @@ impl HttpRemoteDataClient {
         } else {
             format!("http://{}", address)
         };
-        Ok(format!(
-            "{}/data/{}",
-            base_url.trim_end_matches('/'),
-            data.data_id
-        ))
+        Ok(format!("{}/data/", base_url.trim_end_matches('/'),))
     }
 }
 
@@ -230,7 +269,8 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 return self.local_registry.fetch_context(data.data_id);
             }
 
-            let url = self.remote_data_url(data)?;
+            let mut url = self.remote_data_url(data.node_id)?;
+            url.push_str(&format!("{}", data.data_id));
             let mut response = self.client.get(url).send().await.map_err(|err| {
                 dandelion_err!(DandelionError::Multinode(MultinodeError::ConnectionFailed(
                     err.to_string(),
@@ -254,6 +294,8 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 }
             }
             trace!("Finished resolving remote data");
+            // make sure data is only dropped once we have resolved it
+            drop(data);
             Ok((
                 Arc::new(Context::new(
                     ContextType::Bytes(Box::new(BytesContext::new(body))),
@@ -261,6 +303,71 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 )),
                 Position { offset: 0, size },
             ))
+        })
+    }
+
+    fn resolve_multiple_data<'meta>(
+        &'meta self,
+        metadata: &'meta mut Vec<(usize, DataItem)>,
+        remote_items: Vec<RemoteData>,
+    ) -> Pin<Box<dyn Future<Output = DandelionResult<Arc<Context>>> + Send + 'meta>> {
+        Box::pin(async move {
+            // collect all ids
+            let node_id = remote_items[0].node_id;
+            let mut body_data = Vec::with_capacity(remote_items.len() * size_of::<u64>());
+            for remote_item in remote_items.iter() {
+                body_data.extend(remote_item.data_id.to_le_bytes());
+            }
+
+            // for multi item we use the /data/ url without any item id
+            let url = self.remote_data_url(node_id)?;
+            let mut response =
+                self.client
+                    .get(url)
+                    .body(body_data)
+                    .send()
+                    .await
+                    .map_err(|err| {
+                        dandelion_err!(DandelionError::Multinode(MultinodeError::ConnectionFailed(
+                            err.to_string(),
+                        )))
+                    })?;
+            if !response.status().is_success() {
+                return err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
+                    response.status().to_string(),
+                )));
+            }
+
+            let mut size = 0;
+            let mut body = Vec::new();
+            loop {
+                match response.chunk().await {
+                    Ok(Some(frame)) => {
+                        size += frame.len();
+                        body.push(frame)
+                    }
+                    Ok(None) => break,
+                    Err(_) => return err_dandelion!(DandelionError::SystemFuncResponseError),
+                }
+            }
+            trace!("Finished resolving remote data");
+            // make sure data is only dropped once we have resolved it
+            drop(remote_items);
+
+            // assumes the local items sizes are correct
+            // also assumes that returned items have the same ordering as they were requested in
+            let mut offset = 0;
+            for (_, item) in metadata {
+                item.data.offset = offset;
+                offset += item.data.size;
+            }
+            // after updating all items, the total offset should be equal to the total amount of data that was received
+            assert_eq!(size, offset);
+
+            Ok(Arc::new(Context::new(
+                ContextType::Bytes(Box::new(BytesContext::new(body))),
+                size,
+            )))
         })
     }
 
@@ -278,7 +385,9 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 return self.local_registry.delete_exported_data(data.data_id);
             }
 
-            let url = self.remote_data_url(data)?;
+            let mut url = self.remote_data_url(data.node_id)?;
+            url.push_str(&format!("{}", data.data_id));
+
             let response = self.client.delete(url).send().await.map_err(|err| {
                 dandelion_err!(DandelionError::Multinode(MultinodeError::ConnectionFailed(
                     err.to_string(),
@@ -298,47 +407,117 @@ impl RemoteDataClient for HttpRemoteDataClient {
 async fn service(
     req: Request<Incoming>,
     export_registry: ExportRegistry,
+    semaphore: Arc<Semaphore>,
 ) -> Result<Response<ExportedBody>, Infallible> {
-    let result = match req.uri().path().strip_prefix("/data/") {
-        None => Err(format!("Unknown data server path {}", req.uri().path())),
-        Some(id_string) => match id_string.parse::<u64>() {
-            Err(err) => Err(format!("Invalid data id: {}", err)),
-            Ok(data_id) => match req.method() {
-                &Method::GET => export_registry
-                    .fetch_bytes(data_id)
-                    .map(|data| Some(data))
-                    .map_err(|err| err.to_string()),
-                &Method::DELETE => export_registry
-                    .delete_exported_data(data_id)
-                    .map(|_| None)
-                    .map_err(|err| err.to_string()),
-                method => Err(format!("Unsupported data server method {}", method)),
-            },
-        },
+    let permit = semaphore.acquire_owned().await.unwrap();
+    let convert_error_string = |err_string| {
+        warn!("Failed to serve remote data request: {}", err_string);
+        let mut response = Response::new(ExportedBody::new_error(err_string));
+        *response.status_mut() = StatusCode::BAD_REQUEST;
+        Ok(response)
     };
 
-    match result {
-        Ok(bytes) => Ok(Response::new(ExportedBody { inner: bytes })),
-        Err(err) => {
-            warn!("Failed to serve remote data request: {}", err);
-            let error_bytes = err.into_bytes();
-            let error_lenth = error_bytes.len();
-            let mut response = Response::new(ExportedBody {
-                inner: Some(ExportedData {
-                    context: Arc::new(
-                        ReadOnlyContext::new(error_bytes.into_boxed_slice()).unwrap(),
-                    ),
-                    position: Position {
-                        offset: 0,
-                        size: error_lenth,
-                    },
-                }),
-            });
-            *response.status_mut() = StatusCode::BAD_REQUEST;
-            Ok(response)
+    let id_string = match req.uri().path().strip_prefix("/data/") {
+        Some(id_string) => id_string,
+        None => {
+            return convert_error_string(format!("Unknown data server path {}", req.uri().path()))
+        }
+    };
+
+    match req.method() {
+        &Method::DELETE => match id_string.parse::<u64>() {
+            Err(err) => return convert_error_string(format!("Invalid data id: {}", err)),
+            Ok(data_id) => {
+                return match export_registry.delete_exported_data(data_id) {
+                    Err(err) => convert_error_string(format!("Delete failed with: {}", err)),
+                    Ok(()) => Ok(Response::new(ExportedBody {
+                        inner: VecDeque::new(),
+                    })),
+                }
+            }
+        },
+        &Method::GET => {
+            if !id_string.is_empty() {
+                match id_string.parse::<u64>() {
+                    Err(err) => return convert_error_string(format!("Invalid data id: {}", err)),
+                    Ok(data_id) => {
+                        return match export_registry.get_exported_data(data_id) {
+                            Err(err) => convert_error_string(format!("Get failed with: {}", err)),
+                            Ok(data) => Ok(Response::new(ExportedBody::new_single(data))),
+                        }
+                    }
+                }
+            }
+        }
+        method => {
+            return convert_error_string(format!("Unsupported data server method {}", method))
         }
     }
+    // arrive here means we had GET method, but no single item
+    let mut body = req.into_body();
+    let mut body_pin = Pin::new(&mut body);
+    let mut ids = Vec::new();
+    let mut intermediate = [0u8; 8];
+    let mut offset = 0;
+    // read all the data ids
+    while let Some(frame_result) =
+        futures::future::poll_fn(|cx| body_pin.as_mut().poll_frame(cx)).await
+    {
+        let mut frame = match frame_result.unwrap().into_data() {
+            Ok(frame) => frame,
+            Err(_) => {
+                // if the offset is 0, we can simply ignore trailer frames
+                if offset == 0 {
+                    break;
+                } else {
+                    return convert_error_string(format!(
+                        "Got trailer frame, but still need: {}, to complete data id",
+                        8 - offset,
+                    ));
+                }
+            }
+        };
+        if offset > 0 {
+            // This assumes that the next frame should contain at least the remainder of the started u64.
+            if frame.try_copy_to_slice(&mut intermediate[offset..]).is_ok() {
+                ids.push(u64::from_le_bytes(intermediate));
+                offset = 0;
+            } else {
+                return convert_error_string(format!(
+                    "Body did not contain a full array of indices, need: {}, available {}",
+                    8 - offset,
+                    frame.remaining()
+                ));
+            }
+        }
+        while let Ok(data_id) = frame.try_get_u64_le() {
+            ids.push(data_id);
+        }
+        if frame.remaining() > 0 {
+            offset = frame.remaining();
+            frame.copy_to_slice(&mut intermediate[..offset]);
+        }
+    }
+    if !body_pin.is_end_stream() {
+        warn!("Frame poll returned None, but is_end_stream is false");
+    }
+
+    if offset > 0 {
+        return convert_error_string(format!(
+            "Body did not contain a full array of indices, need: {}, with no more frames",
+            8 - offset,
+        ));
+    }
+
+    drop(permit);
+
+    match export_registry.get_multiple_data(ids) {
+        Ok(exports) => Ok(Response::new(ExportedBody { inner: exports })),
+        Err(err) => convert_error_string(err.to_string()),
+    }
 }
+
+pub static CONCURRENCY_LIMIT: OnceLock<usize> = OnceLock::new();
 
 pub async fn service_loop(port: u16, export_registry: ExportRegistry) {
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -349,9 +528,15 @@ pub async fn service_loop(port: u16, export_registry: ExportRegistry) {
     let mut sigint_stream = tokio::signal::unix::signal(SignalKind::interrupt()).unwrap();
     let mut sigquit_stream = tokio::signal::unix::signal(SignalKind::quit()).unwrap();
 
+    let concurrency_limit = CONCURRENCY_LIMIT
+        .get()
+        .expect("Should always be initialized by server main in normal operation");
+    let semaphore = Arc::new(Semaphore::new(*concurrency_limit));
+
     loop {
         tokio::select! {
             connection_pair = listener.accept() => {
+                let semaphore_clone = semaphore.clone();
                 let (stream, _) = connection_pair.unwrap();
                 let io = hyper_util::rt::TokioIo::new(stream);
                 let service_registry = export_registry.clone();
@@ -359,7 +544,7 @@ pub async fn service_loop(port: u16, export_registry: ExportRegistry) {
                     if let Err(err) = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
                         .serve_connection_with_upgrades(
                             io,
-                            service_fn(|req| service(req, service_registry.clone())),
+                            service_fn(|req| service(req, service_registry.clone(), semaphore_clone.clone())),
                         )
                         .await
                     {

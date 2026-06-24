@@ -144,6 +144,9 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = DEFAULT_CONCURRENCY_LIMIT)]
     #[serde(default)]
     pub io_concurrency: usize,
+    #[arg(long, env)]
+    #[serde(default)]
+    pub data_concurrency: Option<usize>,
     #[arg(long, env, default_value_t = DEFAULT_TIMESTAMP_COUNT)]
     #[serde(default)]
     pub timestamp_count: usize,
@@ -224,6 +227,7 @@ impl DandelionConfig {
         merge!(min_sys_cores, DEFAULT_MIN_SYS_CORES);
         merge_option!(max_sys_cores);
         merge!(io_concurrency, DEFAULT_CONCURRENCY_LIMIT);
+        merge_option!(data_concurrency);
         merge!(timestamp_count, DEFAULT_TIMESTAMP_COUNT);
         merge!(
             virtual_max_ram_multiplier,
@@ -350,5 +354,12 @@ impl DandelionConfig {
             return default_value;
         }
         (functions, compositions)
+    }
+
+    pub fn get_data_concurrency(&self) -> usize {
+        match self.data_concurrency {
+            Some(limit) => limit,
+            None => self.get_min_sys_cores(),
+        }
     }
 }
