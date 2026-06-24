@@ -19,7 +19,8 @@ pub fn prepare_io_element(
     work: WorkToDo,
     debt: Debt,
     try_offload: bool,
-    remote_nodes: &std::sync::Mutex<BTreeMap<u64, mpsc::UnboundedSender<(WorkToDo, Debt)>>>,
+    composition_id: usize,
+    remote_nodes: &std::sync::Mutex<BTreeMap<u64, mpsc::UnboundedSender<(WorkToDo, Debt, usize)>>>,
 ) -> Option<(WorkToDo, Debt, IOElementData)> {
     let (remote_data, total_input_size) =
         if let WorkToDo::FunctionArguments { ref input_sets, .. } = work {
@@ -54,7 +55,7 @@ pub fn prepare_io_element(
             if max_size * 2 > total_input_size {
                 let maybe_sender = remote_nodes.lock().unwrap().get(node_id).cloned();
                 if let Some(node_sender) = maybe_sender {
-                    node_sender.send((work, debt)).unwrap();
+                    node_sender.send((work, debt, composition_id)).unwrap();
                     return None;
                 }
             }
@@ -95,7 +96,7 @@ pub fn get_work_for_remote(
     node_id: u64,
     number_of_functions: usize,
     queue_state_decrease: &impl Fn(),
-) -> Vec<(WorkToDo, Debt)> {
+) -> Vec<(WorkToDo, Debt, usize)> {
     let mut functions = Vec::with_capacity(number_of_functions);
     // go through all the input sets and find those with the most data already on the node asking for work
     functions.extend(
@@ -120,7 +121,13 @@ pub fn get_work_for_remote(
                     false
                 }
             })
-            .map(|queue_element| (queue_element.work, queue_element.debt))
+            .map(|queue_element| {
+                (
+                    queue_element.work,
+                    queue_element.debt,
+                    queue_element.composition_id,
+                )
+            })
             .take(number_of_functions),
     );
 
@@ -142,7 +149,13 @@ pub fn get_work_for_remote(
                         false
                     }
                 })
-                .map(|queue_element| (queue_element.work, queue_element.debt))
+                .map(|queue_element| {
+                    (
+                        queue_element.work,
+                        queue_element.debt,
+                        queue_element.composition_id,
+                    )
+                })
                 .take(still_needed),
         );
     }
@@ -167,7 +180,13 @@ pub fn get_work_for_remote(
                         false
                     }
                 })
-                .map(|queue_element| (queue_element.work, queue_element.debt))
+                .map(|queue_element| {
+                    (
+                        queue_element.work,
+                        queue_element.debt,
+                        queue_element.composition_id,
+                    )
+                })
                 .take(still_needed),
         );
     }

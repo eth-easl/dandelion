@@ -76,10 +76,10 @@ pub trait EngineWorkQueue {
     /// Unstable: This is a temproary addition to the interface use with caution
     fn get_io_engine_args(
         &self,
-    ) -> impl std::future::Future<Output = (WorkToDo, crate::promise::Debt)> + Send;
+    ) -> impl std::future::Future<Output = (WorkToDo, crate::promise::Debt, Option<usize>)> + Send;
     /// Function to return a Work to do to the queue after fetching all reference sets
     /// Unstable: This is a temproary addition to the interface use with caution
-    fn requeu_engine_args(&self, work: WorkToDo, debt: crate::promise::Debt);
+    fn requeu_engine_args(&self, work: WorkToDo, debt: crate::promise::Debt, composition_id: usize);
     fn remove_self_from_queue(&self);
 }
 

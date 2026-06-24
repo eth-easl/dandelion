@@ -49,6 +49,7 @@ async fn mock_dispatcher(work_queue: WorkQueue, engine_type: machine_config::Eng
                 caching: false,
                 recorder: Recorder::new(function_id, Instant::now()),
             },
+            0,
         )
         .await;
     let error = if let Err(error) = result {

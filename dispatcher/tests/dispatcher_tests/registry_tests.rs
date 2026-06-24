@@ -115,12 +115,13 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(function_id.clone(), inputs, false, recorder));
+            .block_on(dispatcher.queue_function(0, function_id.clone(), inputs, false, recorder));
         recorder = Recorder::new(function_id.clone(), Instant::now());
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(dispatcher.queue_function(
+                0,
                 function_id.clone(),
                 overwrite_inputs,
                 false,
@@ -235,12 +236,13 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(function_id.clone(), inputs, false, recorder));
+            .block_on(dispatcher.queue_function(0, function_id.clone(), inputs, false, recorder));
         recorder = Recorder::new(function_id.clone(), Instant::now());
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(dispatcher.queue_function(
+                0,
                 function_id.clone(),
                 overwrite_inputs,
                 false,

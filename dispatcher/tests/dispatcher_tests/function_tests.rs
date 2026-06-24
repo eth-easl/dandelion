@@ -34,7 +34,7 @@ pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_function(function_id, Vec::new(), false, recorder));
+        .block_on(dispatcher.queue_function(0, function_id, Vec::new(), false, recorder));
     match result {
         Ok(_) => (),
         Err(err) => panic!("Failed with: {:?}", err),
@@ -80,7 +80,7 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_function(function_id, inputs, false, recorder));
+        .block_on(dispatcher.queue_function(0, function_id, inputs, false, recorder));
     let out_sets = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -146,7 +146,7 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(0, composition, inputs, false, recorder));
     let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -171,7 +171,7 @@ fn composition_option_helper(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(0, composition, inputs, false, recorder));
     let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -355,7 +355,7 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(0, composition, inputs, false, recorder));
     let out_vec = match result {
         Ok(v) => v,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -435,7 +435,7 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(0, composition, inputs, false, recorder));
     let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -642,7 +642,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(0, composition, inputs, false, recorder));
     let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -783,7 +783,7 @@ pub fn composition_chain_large_matmac<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(0, composition, inputs, false, recorder));
     let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),

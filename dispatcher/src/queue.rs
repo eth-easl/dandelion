@@ -41,6 +41,8 @@ pub fn get_engine_flag(t: EngineType) -> u32 {
 }
 
 struct ComputeQueueElement {
+    /// ID of the composition this work belongs to.
+    composition_id: usize,
     /// Flags indicating which engines can run this task
     flags: u32,
     /// The WorkToDo content of the queue element
@@ -50,6 +52,8 @@ struct ComputeQueueElement {
 }
 
 struct IoQueueElement {
+    /// ID of the composition this work belongs to.
+    composition_id: usize,
     /// Flags indicating which engines can run this task
     flags: u32,
     /// The WorkToDo content of the queue element
@@ -96,7 +100,7 @@ pub struct WorkQueue {
     /// Tracks current system informations used by the any sharding policy.
     pub system_info: Arc<SystemInfo>,
     /// Channels for asking remote node to take work
-    remote_nodes: Arc<Mutex<BTreeMap<u64, mpsc::UnboundedSender<(WorkToDo, Debt)>>>>,
+    remote_nodes: Arc<Mutex<BTreeMap<u64, mpsc::UnboundedSender<(WorkToDo, Debt, usize)>>>>,
 }
 
 struct ComputeWaitFuture<'queue> {
@@ -164,7 +168,7 @@ impl<'list> IoWaitFuture<'list> {
 }
 
 impl Future for IoWaitFuture<'_> {
-    type Output = (WorkToDo, Debt);
+    type Output = (WorkToDo, Debt, Option<usize>);
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let mut lock_guard = self.work_queue.inner.lock().unwrap();
@@ -196,26 +200,28 @@ impl Future for IoWaitFuture<'_> {
                 }
             })
             .next()
-            .map(|queue_element| (queue_element.work, queue_element.debt));
+            .map(|queue_element| {
+                (
+                    queue_element.work,
+                    queue_element.debt,
+                    queue_element.composition_id,
+                )
+            });
         // If the task is a prefetching task increase the counter accordingly
         if is_prefetching {
             lock_guard.fetching_in_progress += 1;
         }
-        if let Some(mut result_tupple) = result {
-            if let WorkToDo::FunctionArguments {
-                function_id: _,
-                function_alternatives: _,
-                input_sets: _,
-                metadata: _,
-                caching: _,
-                recorder,
-            } = &mut result_tupple.0
-            {
-                recorder.record(RecordPoint::IOQueueEnd);
-            }
+        if let Some((mut work, debt, composition_id)) = result {
+            let composition_id_option =
+                if let WorkToDo::FunctionArguments { recorder, .. } = &mut work {
+                    recorder.record(RecordPoint::IOQueueEnd);
+                    Some(composition_id)
+                } else {
+                    None
+                };
 
             // Found some work, so core is not idle
-            Poll::Ready(result_tupple)
+            Poll::Ready((work, debt, composition_id_option))
         } else {
             // Did not find any work, so need to add to waker queue
             lock_guard.io_waker_list.push_back(cx.waker().clone());
@@ -275,7 +281,14 @@ impl WorkQueue {
     /// Pushes the work and debt to the back of the queue and sets the flags accordingly.
     /// Returns an error if the queue is full.
     /// TODO: check or define here and other places, if the flags need to match fully, just checking that any flag is set would be enough
-    fn push_compute(&self, mut work: WorkToDo, debt: Debt, flags: u32, had_fetching: bool) {
+    fn push_compute(
+        &self,
+        mut work: WorkToDo,
+        debt: Debt,
+        flags: u32,
+        composition_id: usize,
+        had_fetching: bool,
+    ) {
         if let WorkToDo::FunctionArguments {
             function_id: _,
             function_alternatives: _,
@@ -292,9 +305,33 @@ impl WorkQueue {
         if had_fetching {
             queue_guard.fetching_in_progress -= 1;
         }
-        queue_guard
-            .compute_queue
-            .push_back(ComputeQueueElement { flags, work, debt });
+
+        let new_element = ComputeQueueElement {
+            composition_id,
+            flags,
+            work,
+            debt,
+        };
+        // if list empty or the back has the same or a smaller id just push to the back
+        if queue_guard.compute_queue.is_empty()
+            || queue_guard.compute_queue.back().unwrap().composition_id <= composition_id
+        {
+            queue_guard.compute_queue.push_back(new_element);
+        // check the front has same or bigger id so can just push front
+        } else if queue_guard.compute_queue.front().unwrap().composition_id >= composition_id {
+            queue_guard.compute_queue.push_front(new_element);
+        // find the place to insert
+        } else {
+            let index = queue_guard
+                .compute_queue
+                .iter()
+                .position(|elem| elem.composition_id > composition_id)
+                .unwrap();
+            let mut tail = queue_guard.compute_queue.split_off(index);
+            queue_guard.compute_queue.push_back(new_element);
+            queue_guard.compute_queue.append(&mut tail);
+        }
+
         // call first waker with matching flags if there are any
         if let Some(waker_to_call) = queue_guard
             .compute_waker_list
@@ -308,7 +345,14 @@ impl WorkQueue {
         }
     }
 
-    fn push_io(&self, mut work: WorkToDo, debt: Debt, flags: u32, try_offload: bool) {
+    fn push_io(
+        &self,
+        mut work: WorkToDo,
+        debt: Debt,
+        flags: u32,
+        composition_id: usize,
+        try_offload: bool,
+    ) {
         if let WorkToDo::FunctionArguments {
             function_id: _,
             function_alternatives: _,
@@ -323,7 +367,7 @@ impl WorkQueue {
 
         // Policy: compute element metadata and optionally offload to a remote node
         let Some((work, debt, policy_data)) =
-            policy::prepare_io_element(work, debt, try_offload, &self.remote_nodes)
+            policy::prepare_io_element(work, debt, try_offload, composition_id, &self.remote_nodes)
         else {
             // if prepare_io_element returned None it has already offloaded the work to a remote
             return;
@@ -331,6 +375,7 @@ impl WorkQueue {
 
         let mut queue_guard = self.inner.lock().unwrap();
         let new_element = IoQueueElement {
+            composition_id,
             flags,
             work,
             debt,
@@ -353,7 +398,25 @@ impl WorkQueue {
             _ => true,
         };
 
-        queue_guard.io_queue.push_back(new_element);
+        // if list empty or the back has the same or a smaller id just push to the back
+        if queue_guard.io_queue.is_empty()
+            || queue_guard.io_queue.back().unwrap().composition_id <= composition_id
+        {
+            queue_guard.io_queue.push_back(new_element);
+        // check the front has same or smaller id so can just push front
+        } else if queue_guard.io_queue.front().unwrap().composition_id >= composition_id {
+            queue_guard.io_queue.push_front(new_element);
+        // find the place to insert
+        } else {
+            let index = queue_guard
+                .io_queue
+                .iter()
+                .position(|elem| elem.composition_id > composition_id)
+                .unwrap();
+            let mut tail = queue_guard.io_queue.split_off(index);
+            queue_guard.io_queue.push_back(new_element);
+            queue_guard.io_queue.append(&mut tail);
+        }
 
         // call first waker with matching flags if there are any
         // only call waker if we know the core wants to take this element
@@ -364,18 +427,15 @@ impl WorkQueue {
         }
     }
 
-    fn push(&self, work: WorkToDo, debt: Debt, try_offload: bool) {
+    fn push(&self, work: WorkToDo, debt: Debt, composition_id: usize, try_offload: bool) {
         let (flags, local) = match &work {
             WorkToDo::Shutdown(engine_type) => (get_engine_flag(*engine_type), true),
-            WorkToDo::SetsToResolve { input_sets: _ } => (0, false),
-            WorkToDo::RemoteToDelete { remote_data: _ } => (0, false),
+            WorkToDo::SetsToResolve { .. } => (0, false),
+            WorkToDo::RemoteToDelete { .. } => (0, false),
             WorkToDo::FunctionArguments {
-                function_id: _,
                 function_alternatives,
                 input_sets,
-                metadata: _,
-                caching: _,
-                recorder: _,
+                ..
             } => {
                 // check if all the sets are already fully locally available
                 let local = input_sets.into_iter().all(|set_option| {
@@ -406,17 +466,21 @@ impl WorkQueue {
         );
 
         if local {
-            self.push_compute(work, debt, flags, false);
+            self.push_compute(work, debt, flags, composition_id, false);
         } else {
-            self.push_io(work, debt, flags, try_offload);
+            self.push_io(work, debt, flags, composition_id, try_offload);
         }
     }
 
     /// Inserts the work into the queue setting the flags according to the supported engines and
     /// awaits the future before returning the result.
-    pub async fn do_work(&self, work: WorkToDo) -> DandelionResult<WorkDone> {
+    pub async fn do_work(
+        &self,
+        work: WorkToDo,
+        composition_id: usize,
+    ) -> DandelionResult<WorkDone> {
         let (promise, debt) = self.promise_buffer.get_promise()?;
-        self.push(work, debt, true);
+        self.push(work, debt, composition_id, true);
         return promise.await;
     }
 
@@ -427,7 +491,7 @@ impl WorkQueue {
         engine_flags: u32,
         node_id: u64,
         number_of_functions: usize,
-    ) -> Vec<(WorkToDo, Debt)> {
+    ) -> Vec<(WorkToDo, Debt, usize)> {
         let mut guard = self.inner.lock().unwrap();
         let InnerQueue {
             compute_queue,
@@ -450,7 +514,7 @@ impl WorkQueue {
         ComputeWaitFuture::new(engine_flags, &self).await
     }
 
-    pub async fn get_io_work(&self) -> (WorkToDo, Debt) {
+    pub async fn get_io_work(&self) -> (WorkToDo, Debt, Option<usize>) {
         // try to get work, if there is none, insert self into waker and try again
         IoWaitFuture::new(&self).await
     }
@@ -495,14 +559,14 @@ impl WorkQueue {
     pub fn add_remote_channel(
         &self,
         node_id: u64,
-        channel: mpsc::UnboundedSender<(WorkToDo, Debt)>,
+        channel: mpsc::UnboundedSender<(WorkToDo, Debt, usize)>,
     ) {
         self.remote_nodes.lock().unwrap().insert(node_id, channel);
     }
 
     /// Put work back into queue after trying to offload without success.
-    pub async fn reenqueue(&self, work: WorkToDo, debt: Debt) {
-        self.push(work, debt, false);
+    pub async fn reenqueue(&self, work: WorkToDo, debt: Debt, composition_id: usize) {
+        self.push(work, debt, composition_id, false);
     }
 
     /// Increases the number of remote cores.
@@ -573,11 +637,11 @@ impl EngineWorkQueue for EngineQueue {
 
     fn get_io_engine_args(
         &self,
-    ) -> impl Future<Output = (WorkToDo, machine_interface::promise::Debt)> {
+    ) -> impl Future<Output = (WorkToDo, machine_interface::promise::Debt, Option<usize>)> {
         self.work_queue.get_io_work()
     }
 
-    fn requeu_engine_args(&self, work: WorkToDo, debt: Debt) {
+    fn requeu_engine_args(&self, work: WorkToDo, debt: Debt, composition_id: usize) {
         let flags = match &work {
             WorkToDo::FunctionArguments {
                 function_id: _,
@@ -592,7 +656,8 @@ impl EngineWorkQueue for EngineQueue {
             _ => panic!("Should not reenqueue non function arguments"),
         };
         trace!("Reenqueue with flags: {}", flags);
-        self.work_queue.push_compute(work, debt, flags, true)
+        self.work_queue
+            .push_compute(work, debt, flags, composition_id, true)
     }
 
     fn remove_self_from_queue(&self) {
