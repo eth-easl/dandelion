@@ -19,7 +19,8 @@ pub fn prepare_io_element(
     work: WorkToDo,
     debt: Debt,
     try_offload: bool,
-    remote_nodes: &std::sync::Mutex<BTreeMap<u64, mpsc::UnboundedSender<(WorkToDo, Debt)>>>,
+    composition_id: usize,
+    remote_nodes: &std::sync::Mutex<BTreeMap<u64, mpsc::UnboundedSender<(WorkToDo, Debt, usize)>>>,
 ) -> Option<(WorkToDo, Debt, IOElementData)> {
     let (remote_data, total_input_size) =
         if let WorkToDo::FunctionArguments { ref input_sets, .. } = work {
@@ -56,9 +57,9 @@ pub fn prepare_io_element(
                 if let Some(node_sender) = maybe_sender {
                     // If the remote node has disconnected its receiver is gone, in which case
                     // we recover the work and fall back to executing it locally.
-                    match node_sender.send((work, debt)) {
+                    match node_sender.send((work, debt, composition_id)) {
                         Ok(()) => return None,
-                        Err(mpsc::error::SendError((work, debt))) => {
+                        Err(mpsc::error::SendError((work, debt, composition_id))) => {
                             // since the sender does not work, remove it.
                             remote_nodes.lock().unwrap().remove(&node_id);
                             return Some((
@@ -110,7 +111,7 @@ pub fn get_work_for_remote(
     node_id: u64,
     number_of_functions: usize,
     queue_state_decrease: &impl Fn(),
-) -> Vec<(WorkToDo, Debt)> {
+) -> Vec<(WorkToDo, Debt, usize)> {
     let mut functions = Vec::with_capacity(number_of_functions);
     // go through all the input sets and find those with the most data already on the node asking for work
     functions.extend(
@@ -135,7 +136,13 @@ pub fn get_work_for_remote(
                     false
                 }
             })
-            .map(|queue_element| (queue_element.work, queue_element.debt))
+            .map(|queue_element| {
+                (
+                    queue_element.work,
+                    queue_element.debt,
+                    queue_element.composition_id,
+                )
+            })
             .take(number_of_functions),
     );
 
@@ -157,7 +164,13 @@ pub fn get_work_for_remote(
                         false
                     }
                 })
-                .map(|queue_element| (queue_element.work, queue_element.debt))
+                .map(|queue_element| {
+                    (
+                        queue_element.work,
+                        queue_element.debt,
+                        queue_element.composition_id,
+                    )
+                })
                 .take(still_needed),
         );
     }
@@ -182,7 +195,13 @@ pub fn get_work_for_remote(
                         false
                     }
                 })
-                .map(|queue_element| (queue_element.work, queue_element.debt))
+                .map(|queue_element| {
+                    (
+                        queue_element.work,
+                        queue_element.debt,
+                        queue_element.composition_id,
+                    )
+                })
                 .take(still_needed),
         );
     }

@@ -17,7 +17,8 @@ pub fn prepare_io_element(
     work: WorkToDo,
     debt: Debt,
     _try_offload: bool,
-    _remote_nodes: &std::sync::Mutex<BTreeMap<u64, mpsc::UnboundedSender<(WorkToDo, Debt)>>>,
+    _composition_id: usize,
+    _remote_nodes: &std::sync::Mutex<BTreeMap<u64, mpsc::UnboundedSender<(WorkToDo, Debt, usize)>>>,
 ) -> Option<(WorkToDo, Debt, IOElementData)> {
     Some((work, debt, IOElementData))
 }
@@ -41,7 +42,7 @@ pub fn get_work_for_remote(
     _node_id: u64,
     number_of_functions: usize,
     queue_state_decrease: &impl Fn(),
-) -> Vec<(WorkToDo, Debt)> {
+) -> Vec<(WorkToDo, Debt, usize)> {
     let mut functions = Vec::with_capacity(number_of_functions);
     // first check the queue with unresolved references, since those are easier to steal
     functions.extend(
@@ -59,7 +60,13 @@ pub fn get_work_for_remote(
                     false
                 }
             })
-            .map(|queue_element| (queue_element.work, queue_element.debt))
+            .map(|queue_element| {
+                (
+                    queue_element.work,
+                    queue_element.debt,
+                    queue_element.composition_id,
+                )
+            })
             .take(number_of_functions),
     );
     // did not find enough work in the io_queue so check compute queue
@@ -82,7 +89,13 @@ pub fn get_work_for_remote(
                         false
                     }
                 })
-                .map(|queue_element| (queue_element.work, queue_element.debt))
+                .map(|queue_element| {
+                    (
+                        queue_element.work,
+                        queue_element.debt,
+                        queue_element.composition_id,
+                    )
+                })
                 .take(still_needed),
         );
     }

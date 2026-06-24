@@ -155,7 +155,7 @@ async fn receive_message(
 enum QueueOption {
     Message(remote_message::RemoteMessage, Option<Bytes>),
     WorkAvailable,
-    TryOffload(WorkToDo, machine_interface::promise::Debt),
+    TryOffload(WorkToDo, machine_interface::promise::Debt, usize),
     /// The connection to the remote node was lost, so the server logic should tear down.
     Disconnected,
 }
@@ -220,14 +220,17 @@ async fn remote_queue_server_sender(
 
 /// Translating the messages from the queue for offlaoding into something the server logic understands
 async fn remote_queue_server_try_offload(
-    mut queue_receiver: mpsc::UnboundedReceiver<(WorkToDo, Debt)>,
+    mut queue_receiver: mpsc::UnboundedReceiver<(WorkToDo, Debt, usize)>,
     sender: mpsc::Sender<QueueOption>,
     queue: WorkQueue,
 ) {
-    while let Some((work, debt)) = queue_receiver.recv().await {
-        if let Err(send_err) = sender.send(QueueOption::TryOffload(work, debt)).await {
-            if let SendError(QueueOption::TryOffload(w, d)) = send_err {
-                queue.reenqueue(w, d);
+    while let Some((work, debt, composition_id)) = queue_receiver.recv().await {
+        if let Err(send_err) = sender
+            .send(QueueOption::TryOffload(work, debt, composition_id))
+            .await
+        {
+            if let SendError(QueueOption::TryOffload(w, d, id)) = send_err {
+                queue.reenqueue(w, d, id);
             }
             break;
         }
@@ -235,8 +238,8 @@ async fn remote_queue_server_try_offload(
     // can't send anymore so make sure the channel does not have things added to it.
     queue_receiver.close();
     // drain the channel, reqenque all the work
-    while let Some((work, debt)) = queue_receiver.recv().await {
-        queue.reenqueue(work, debt);
+    while let Some((work, debt, id)) = queue_receiver.recv().await {
+        queue.reenqueue(work, debt, id);
     }
 }
 
@@ -287,7 +290,7 @@ async fn remote_queue_server_logic(
                             // TODO: consider limiting the work we give to a node based on the know max capacity,
                             // to limit potential stragglers if we know the node asked for more than it can handle (possibly because of race conditions)
                             // do not give even more.
-                            invocations.extend(work_found.into_iter().map(|(work, debt)|
+                            invocations.extend(work_found.into_iter().map(|(work, debt, composition_id)|
                             {
                                 // there is some work so send it out
                                 // find the local function id to use
@@ -336,6 +339,7 @@ async fn remote_queue_server_logic(
                                 debt_map.insert(
                                     promise_id,
                                     (
+                                        composition_id,
                                         debt,
                                         new_recorder,
                                         start_reference,
@@ -384,10 +388,16 @@ async fn remote_queue_server_logic(
                             response,
                         } = response;
                         // TODO: handle failure
-                        let (debt, mut recorder, start_epoch, remote_data_references, work) =
-                            debt_map.remove(&invocation_id).expect(
-                                "Should always get back function response for a present debt",
-                            );
+                        let (
+                            composition_id,
+                            debt,
+                            mut recorder,
+                            start_epoch,
+                            remote_data_references,
+                            work,
+                        ) = debt_map
+                            .remove(&invocation_id)
+                            .expect("Should always get back function response for a present debt");
                         free_debt_ids.push(invocation_id);
                         drop(remote_data_references);
                         // remote did not do work, was a try offload request, reenqueu the work
@@ -417,7 +427,7 @@ async fn remote_queue_server_logic(
                             debt.fulfill(result)
                         } else {
                             // did not get response so need to reenqueue the work
-                            queue.reenqueue(work, debt);
+                            queue.reenqueue(work, debt, composition_id);
                         }
                     }
                     remote_message::RemoteMessage::NodeUpdate(node_update) => {
@@ -445,10 +455,10 @@ async fn remote_queue_server_logic(
                     }
                 }
             }
-            QueueOption::TryOffload(work, debt) => {
+            QueueOption::TryOffload(work, debt, composition_id) => {
                 // if this node already sent enough work for the remote to be at capacity don't send more
                 if invocations_running >= remote_num_cores as usize {
-                    queue.reenqueue(work, debt);
+                    queue.reenqueue(work, debt, composition_id);
                     continue;
                 }
                 invocations_running += 1;
@@ -494,6 +504,7 @@ async fn remote_queue_server_logic(
                 debt_map.insert(
                     promise_id,
                     (
+                        composition_id,
                         debt,
                         new_recorder,
                         start_reference,
@@ -549,15 +560,19 @@ async fn remote_queue_server_logic(
                 ()
             }
             // Reenqueue work that was tried to offload
-            QueueOption::TryOffload(work, debt) => {
-                queue.reenqueue(work, debt);
+            QueueOption::TryOffload(work, debt, composition_id) => {
+                queue.reenqueue(work, debt, composition_id);
             }
         }
     }
 
     // Recover any work that was offloaded but never completed, so it can be re-scheduled locally or on another node.
-    for (_promise_id, (debt, _recorder, _start_epoch, _remote_data_references, work)) in debt_map {
-        queue.reenqueue(work, debt);
+    for (
+        _promise_id,
+        (composition_id, debt, _recorder, _start_epoch, _remote_data_references, work),
+    ) in debt_map
+    {
+        queue.reenqueue(work, debt, composition_id);
     }
 }
 
@@ -753,8 +768,15 @@ async fn dispatcher_call(
     caching: bool,
     recorder: Recorder,
 ) {
+    let composition_id = dispatcher.get_composition_id();
     let function_result = dispatcher
-        .queue_function(function_id, input_sets, caching, recorder.clone())
+        .queue_function(
+            composition_id,
+            function_id,
+            input_sets,
+            caching,
+            recorder.clone(),
+        )
         .await;
     let response_message = match function_result {
         Ok(sets) => {

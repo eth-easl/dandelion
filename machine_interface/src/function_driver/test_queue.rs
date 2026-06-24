@@ -35,11 +35,17 @@ impl EngineWorkQueue for TestQueue {
     async fn get_compute_engine_args(&self) -> (WorkToDo, Debt) {
         self.reciever.lock().await.recv().await.unwrap()
     }
-    async fn get_io_engine_args(&self) -> (WorkToDo, Debt) {
-        self.reciever.lock().await.recv().await.unwrap()
+    async fn get_io_engine_args(&self) -> (WorkToDo, Debt, Option<usize>) {
+        let (work, debt) = self.reciever.lock().await.recv().await.unwrap();
+        (work, debt, Some(0))
     }
 
-    fn requeu_engine_args(&self, _work: WorkToDo, _debt: crate::promise::Debt) {
+    fn requeu_engine_args(
+        &self,
+        _work: WorkToDo,
+        _debt: crate::promise::Debt,
+        _composition_id: usize,
+    ) {
         panic!("should not requeue on the test queue");
     }
 
