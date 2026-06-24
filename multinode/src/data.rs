@@ -442,9 +442,7 @@ async fn service(
                     Err(err) => return convert_error_string(format!("Invalid data id: {}", err)),
                     Ok(data_id) => {
                         return match export_registry.get_exported_data(data_id) {
-                            Err(err) => {
-                                convert_error_string(format!("Delete failed with: {}", err))
-                            }
+                            Err(err) => convert_error_string(format!("Get failed with: {}", err)),
                             Ok(data) => Ok(Response::new(ExportedBody::new_single(data))),
                         }
                     }
@@ -462,39 +460,48 @@ async fn service(
     let mut intermediate = [0u8; 8];
     let mut offset = 0;
     // read all the data ids
-    loop {
-        if let Some(frame_result) =
-            futures::future::poll_fn(|cx| body_pin.as_mut().poll_frame(cx)).await
-        {
-            let mut frame = frame_result.unwrap().into_data().unwrap();
-            if offset > 0 {
-                // This assumes that the next frame should contain at least the remainder of the started u64.
-                if frame.try_copy_to_slice(&mut intermediate[offset..]).is_ok() {
-                    ids.push(u64::from_le_bytes(intermediate));
-                    offset = 0;
+    while let Some(frame_result) =
+        futures::future::poll_fn(|cx| body_pin.as_mut().poll_frame(cx)).await
+    {
+        let mut frame = match frame_result.unwrap().into_data() {
+            Ok(frame) => frame,
+            Err(_) => {
+                // if the offset is 0, we can simply ignore trailer frames
+                if offset == 0 {
+                    break;
                 } else {
                     return convert_error_string(format!(
-                        "Body did not contain a full array of indices, need: {}, available {}",
+                        "Got trailer frame, but still need: {}, to complete data id",
                         8 - offset,
-                        frame.remaining()
                     ));
                 }
             }
-            while let Ok(data_id) = frame.try_get_u64_le() {
-                ids.push(data_id);
-            }
-            if frame.remaining() > 0 {
-                offset = frame.remaining();
-                frame.copy_to_slice(&mut intermediate[..offset]);
-            }
-        } else {
-            if body_pin.is_end_stream() {
-                break;
+        };
+        if offset > 0 {
+            // This assumes that the next frame should contain at least the remainder of the started u64.
+            if frame.try_copy_to_slice(&mut intermediate[offset..]).is_ok() {
+                ids.push(u64::from_le_bytes(intermediate));
+                offset = 0;
             } else {
-                continue;
+                return convert_error_string(format!(
+                    "Body did not contain a full array of indices, need: {}, available {}",
+                    8 - offset,
+                    frame.remaining()
+                ));
             }
         }
+        while let Ok(data_id) = frame.try_get_u64_le() {
+            ids.push(data_id);
+        }
+        if frame.remaining() > 0 {
+            offset = frame.remaining();
+            frame.copy_to_slice(&mut intermediate[..offset]);
+        }
     }
+    if !body_pin.is_end_stream() {
+        warn!("Frame poll returned None, but is_end_stream is false");
+    }
+
     if offset > 0 {
         return convert_error_string(format!(
             "Body did not contain a full array of indices, need: {}, with no more frames",
