@@ -261,6 +261,8 @@ fn read_context_bytes(context: &Arc<Context>) -> DandelionResult<Vec<u8>> {
 fn append_http_completion_record(
     invocation_id: dandelion_commons::InvocationId,
     composition_node_id: Option<String>,
+    item_identifier: String,
+    item_key: u64,
     header_context: &Arc<Context>,
     body_context: &Arc<Context>,
 ) -> DandelionResult<()> {
@@ -277,8 +279,8 @@ fn append_http_completion_record(
                 set_index: 0,
                 set_name: "headers".to_string(),
                 items: vec![IoCompletionItem {
-                    identifier: String::new(),
-                    key: 0,
+                    identifier: item_identifier.clone(),
+                    key: item_key,
                     data: read_context_bytes(header_context)?,
                 }],
             },
@@ -286,8 +288,8 @@ fn append_http_completion_record(
                 set_index: 1,
                 set_name: "bodies".to_string(),
                 items: vec![IoCompletionItem {
-                    identifier: String::new(),
-                    key: 0,
+                    identifier: item_identifier,
+                    key: item_key,
                     data: read_context_bytes(body_context)?,
                 }],
             },
@@ -299,6 +301,8 @@ async fn http_request(
     client: HttpClient,
     invocation_id: dandelion_commons::InvocationId,
     composition_node_id: Option<String>,
+    item_identifier: String,
+    item_key: u64,
     position: Position,
     context: Arc<Context>,
 ) -> DandelionResult<Vec<Arc<Context>>> {
@@ -385,6 +389,8 @@ async fn http_request(
     append_http_completion_record(
         invocation_id,
         composition_node_id,
+        item_identifier,
+        item_key,
         &header_context,
         &body_context,
     )?;
@@ -520,6 +526,8 @@ async fn resolve_io_item(
                         client,
                         invocation_id,
                         composition_node_id.clone(),
+                        String::new(),
+                        0,
                         input_position,
                         input_context,
                     )

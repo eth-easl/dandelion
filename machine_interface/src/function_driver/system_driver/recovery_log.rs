@@ -2,6 +2,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use dandelion_commons::{
     dandelion_err, err_dandelion, DandelionError, DandelionResult, FrontendError, InvocationId,
 };
+use log::warn;
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, OpenOptions},
@@ -10,13 +11,20 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-use crate::function_driver::functions::SystemFunction;
+use crate::{
+    function_driver::functions::SystemFunction,
+    memory_domain::read_only::ReadOnlyContext,
+};
 
 const IO_LOG_DIR_NAME: &str = "io_logs";
 static RECOVERY_LOG_ROOT: OnceLock<PathBuf> = OnceLock::new();
 static INVOCATION_LOG_LOCKS: OnceLock<Mutex<HashMap<InvocationId, Arc<Mutex<()>>>>> =
     OnceLock::new();
 static ACTIVE_ASYNC_INVOCATIONS: OnceLock<Mutex<HashSet<InvocationId>>> = OnceLock::new();
+static RECOVERED_IO_OUTPUTS: OnceLock<
+    Mutex<HashMap<RecoveredIoKey, HashMap<usize, Arc<crate::memory_domain::Context>>>>,
+> =
+    OnceLock::new();
 
 /// In-memory representation of one durable `io_function_completed` recovery event.
 #[derive(Debug, Clone)]
@@ -43,6 +51,15 @@ pub struct IoCompletionItem {
     pub data: Vec<u8>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RecoveredIoKey {
+    invocation_id: InvocationId,
+    composition_node_id: String,
+    function: SystemFunction,
+    identifier: String,
+    key: u64,
+}
+
 fn internal_error(message: impl Into<String>) -> dandelion_commons::DError {
     dandelion_err!(DandelionError::RequestError(FrontendError::InternalError(
         message.into(),
@@ -51,6 +68,12 @@ fn internal_error(message: impl Into<String>) -> dandelion_commons::DError {
 
 fn io_log_dir(root: &Path) -> PathBuf {
     root.join(IO_LOG_DIR_NAME)
+}
+
+fn parse_log_fields(line: &str) -> HashMap<&str, &str> {
+    line.split_whitespace()
+        .filter_map(|part| part.split_once('='))
+        .collect()
 }
 
 pub fn set_recovery_log_root(root: PathBuf) -> DandelionResult<()> {
@@ -83,6 +106,29 @@ pub fn recovery_log_root() -> DandelionResult<&'static Path> {
         .ok_or(internal_error(
             "IO recovery log root was not configured before use",
         ))
+}
+
+// list all invocation ids in the recovery log directory
+pub fn list_invocation_log_ids() -> DandelionResult<Vec<InvocationId>> {
+    let mut invocation_ids = Vec::new();
+    for entry in fs::read_dir(io_log_dir(recovery_log_root()?)).map_err(|_| {
+        internal_error("Failed to read invocation log directory".to_string())
+    })? {
+        let entry = entry.map_err(|_| internal_error("Failed to iterate invocation logs".to_string()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("log") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        match InvocationId::parse_str(stem) {
+            Ok(invocation_id) => invocation_ids.push(invocation_id),
+            Err(_) => warn!("Ignoring invocation log with invalid file name {}", stem),
+        }
+    }
+    invocation_ids.sort_unstable();
+    Ok(invocation_ids)
 }
 
 pub fn invocation_log_path(invocation_id: InvocationId) -> DandelionResult<PathBuf> {
@@ -149,6 +195,24 @@ pub fn append_invocation_log_line(
                 log_path.display()
             ))
         })?;
+    // TODO this is not pretty, we should have a better way to do this
+    let needs_newline_prefix = file
+        .metadata()
+        .map(|metadata| metadata.len() > 0)
+        .unwrap_or(false)
+        && fs::read(&log_path)
+            .ok()
+            .and_then(|bytes| bytes.last().copied())
+            .map(|last_byte| last_byte != b'\n')
+            .unwrap_or(false);
+    if needs_newline_prefix {
+        file.write_all(b"\n").map_err(|_| {
+            internal_error(format!(
+                "Failed to append newline separator to invocation log {}",
+                log_path.display()
+            ))
+        })?;
+    }
     file.write_all(line.as_bytes()).map_err(|_| {
         internal_error(format!(
             "Failed to append invocation log {}",
@@ -171,6 +235,130 @@ pub fn read_invocation_log(invocation_id: InvocationId) -> DandelionResult<Strin
             format!("Unknown async invocation {}", invocation_id.simple())
         )))
     })
+}
+
+pub fn parse_io_completion_line(line: &str) -> DandelionResult<Option<IoCompletionRecord>> {
+    let fields = parse_log_fields(line);
+    if fields.get("event").copied() != Some("io_function_completed") {
+        return Ok(None);
+    }
+    let invocation_id = fields
+        .get("invocation_id")
+        .copied()
+        .ok_or(internal_error(
+            "Missing invocation_id field in IO completion record",
+        ))
+        .and_then(|raw| {
+            InvocationId::parse_str(raw)
+                .map_err(|_| internal_error("Invalid invocation_id in IO completion record"))
+        })?;
+    let composition_node_id = fields
+        .get("composition_node_id")
+        .copied()
+        .ok_or(internal_error(
+            "Missing composition_node_id field in IO completion record",
+        ))?
+        .to_string();
+    let function = SystemFunction::from(
+        fields
+            .get("function")
+            .copied()
+            .ok_or(internal_error(
+                "Missing function field in IO completion record",
+            ))?,
+    );
+    let outputs = decode_io_completion_payload(
+        fields
+            .get("payload_b64")
+            .copied()
+            .ok_or(internal_error(
+                "Missing payload_b64 field in IO completion record",
+            ))?,
+    )?;
+    Ok(Some(IoCompletionRecord {
+        invocation_id,
+        composition_node_id,
+        function,
+        outputs,
+    }))
+}
+
+pub fn load_io_completion_records(invocation_id: InvocationId) -> DandelionResult<Vec<IoCompletionRecord>> {
+    let content = read_invocation_log(invocation_id)?;
+    let mut records = Vec::new();
+    for line in content.lines() {
+        if let Some(record) = parse_io_completion_line(line)? {
+            records.push(record);
+        }
+    }
+    Ok(records)
+}
+
+fn recovered_io_outputs(
+) -> &'static Mutex<HashMap<RecoveredIoKey, HashMap<usize, Arc<crate::memory_domain::Context>>>> {
+    RECOVERED_IO_OUTPUTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn install_recovered_io_records(
+    invocation_id: InvocationId,
+    records: Vec<IoCompletionRecord>,
+) -> DandelionResult<()> {
+    let mut recovered_outputs = recovered_io_outputs()
+        .lock()
+        .expect("Recovered IO output map poisoned");
+    for record in records {
+        for output in &record.outputs {
+            for item in &output.items {
+                let context = Arc::new(ReadOnlyContext::new(item.data.clone().into_boxed_slice())?);
+                recovered_outputs
+                    .entry(RecoveredIoKey {
+                        invocation_id,
+                        composition_node_id: record.composition_node_id.clone(),
+                        function: record.function,
+                        identifier: item.identifier.clone(),
+                        key: item.key,
+                    })
+                    .or_default()
+                    .insert(output.set_index, context);
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn get_recovered_io_outputs(
+    invocation_id: InvocationId,
+    composition_node_id: Option<&str>,
+    function: SystemFunction,
+    identifier: &str,
+    key: u64,
+) -> Option<Vec<Arc<crate::memory_domain::Context>>> {
+    let composition_node_id = composition_node_id?;
+    let recovered = recovered_io_outputs()
+        .lock()
+        .expect("Recovered IO output map poisoned")
+        .get(&RecoveredIoKey {
+            invocation_id,
+            composition_node_id: composition_node_id.to_string(),
+            function,
+            identifier: identifier.to_string(),
+            key,
+        })
+        .cloned()?;
+
+    let max_set_index = recovered.keys().copied().max()?;
+    let mut outputs = Vec::with_capacity(max_set_index + 1);
+    for set_index in 0..=max_set_index {
+        outputs.push(recovered.get(&set_index)?.clone());
+    }
+    Some(outputs)
+}
+
+pub fn clear_recovered_io(invocation_id: InvocationId) {
+    recovered_io_outputs()
+        .lock()
+        .expect("Recovered IO output map poisoned")
+        .retain(|entry_key, _| entry_key.invocation_id != invocation_id);
 }
 
 fn push_u32(buffer: &mut Vec<u8>, value: usize) -> DandelionResult<()> {

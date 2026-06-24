@@ -262,16 +262,21 @@ fn main() -> () {
         )
         .expect("Should be able to start dispatcher"),
     ));
-    let registry_snapshot_path = std::path::PathBuf::from(folder_path).join("registry_snapshot.json");
-    let (restored_functions, restored_compositions) = dispatcher
-        .load_or_enable_registry_persistence(registry_snapshot_path.clone())
-        .expect("Should be able to initialize registry persistence");
-    debug!(
-        "Registry persistence ready at {} (restored {} functions, {} compositions)",
-        registry_snapshot_path.display(),
-        restored_functions,
-        restored_compositions
-    );
+    if config.recovery {
+        let registry_snapshot_path =
+            std::path::PathBuf::from(folder_path).join("registry_snapshot.json");
+        let (restored_functions, restored_compositions) = dispatcher
+            .load_or_enable_registry_persistence(registry_snapshot_path.clone())
+            .expect("Should be able to initialize registry persistence");
+        debug!(
+            "Registry persistence ready at {} (restored {} functions, {} compositions)",
+            registry_snapshot_path.display(),
+            restored_functions,
+            restored_compositions
+        );
+    } else {
+        debug!("Recovery disabled, registry persistence is inactive");
+    }
 
     // register preload functions
     let (preload_functions, preload_compositions) = config.get_preload_functions();
@@ -409,12 +414,18 @@ fn main() -> () {
         )));
     }
 
+    if config.recovery {
+        system_runtime
+            .block_on(frontend::resume_recoverable_invocations(dispatcher))
+            .expect("Should be able to resume recoverable invocations");
+    }
+
     // Run this server for... forever... unless I receive a signal!
     system_runtime.block_on(frontend::service_loop(dispatcher, folder_path, config.port));
 
-    if config.persist {
+    if config.recovery {
         debug!(
-            "Preserving registry folder {} across shutdown because --persist is enabled",
+            "Preserving registry folder {} across shutdown because --recovery is enabled",
             folder_path
         );
     } else {

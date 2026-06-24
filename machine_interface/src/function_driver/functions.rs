@@ -22,7 +22,7 @@ pub struct ElfConfig {
     pub(super) protection_flags: Arc<Vec<(u32, crate::Position)>>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SystemFunction {
     HTTP,
     MEMCACHED,

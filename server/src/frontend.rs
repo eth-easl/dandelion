@@ -2,6 +2,7 @@ use std::{
     convert::Infallible, io::Write, net::SocketAddr, path::PathBuf, sync::Arc, time::Instant,
 };
 
+use bytes::Bytes;
 use dandelion_commons::{
     err_dandelion, records::Recorder, CompositionError, DandelionError, DandelionResult,
     FrontendError, FunctionRegistryError,
@@ -174,11 +175,75 @@ struct ParsedInvocationRequest {
     composition: Option<String>,
     inputs: Vec<Option<CompositionSet>>,
     recorder: Recorder,
+    raw_request_bytes: Vec<u8>,
+}
+
+fn build_parsed_invocation_request(
+    function_name: Option<String>,
+    composition: Option<String>,
+    request_context: machine_interface::memory_domain::Context,
+    invocation_id: dandelion_commons::InvocationId,
+    start_time: Instant,
+    raw_request_bytes: Vec<u8>,
+) -> ParsedInvocationRequest {
+    let had_function_name = function_name.is_some();
+    let function_id = Arc::new(function_name.unwrap_or_else(|| String::from("Composition")));
+    let mut recorder = Recorder::new(invocation_id, function_id.clone(), start_time);
+    recorder.record(dandelion_commons::records::RecordPoint::DeserializationEnd);
+    debug!("finished creating request context");
+
+    // TODO match set names to assign sets to composition sets
+    // map sets in the order they are in the request
+    let request_number = request_context.content.len();
+    debug!("Request number of request_context: {}", request_number);
+    let inputs = CompositionSet::from_context(request_context)
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    ParsedInvocationRequest {
+        had_function_name,
+        function_id,
+        composition,
+        inputs,
+        recorder,
+        raw_request_bytes,
+    }
+}
+
+async fn parse_invocation_request_bytes(
+    raw_request_bytes: Vec<u8>,
+    invocation_id: dandelion_commons::InvocationId,
+) -> DandelionResult<ParsedInvocationRequest> {
+    let start_time = Instant::now();
+
+    // from context from frame bytes
+    let (function_name, composition, request_context) =
+        match BytesContext::from_bytes_vec(
+            vec![Bytes::from(raw_request_bytes.clone())],
+            raw_request_bytes.len(),
+        )
+        .await
+        {
+            Ok(parsed_request) => parsed_request,
+            Err(parse_error) => {
+                warn!("request parsing failed with: {:?}", parse_error);
+                return Err(parse_error);
+            }
+        };
+    Ok(build_parsed_invocation_request(
+        function_name,
+        composition,
+        request_context,
+        invocation_id,
+        start_time,
+        raw_request_bytes,
+    ))
 }
 
 async fn parse_invocation_request(req: Request<Incoming>) -> DandelionResult<ParsedInvocationRequest> {
     debug!("Starting to serve request");
-
+    // UUID v7 is roughly time-ordered and lexicographically sortable
+    let invocation_id = dandelion_commons::InvocationId::now_v7();
     let start_time = Instant::now();
 
     // pull all frames from the network
@@ -198,7 +263,6 @@ async fn parse_invocation_request(req: Request<Incoming>) -> DandelionResult<Par
         }
     }
 
-    // from context from frame bytes
     let (function_name, composition, request_context) =
         match BytesContext::from_bytes_vec(frame_data, total_size).await {
             Ok(parsed_request) => parsed_request,
@@ -207,29 +271,30 @@ async fn parse_invocation_request(req: Request<Incoming>) -> DandelionResult<Par
                 return Err(parse_error);
             }
         };
-    let had_function_name = function_name.is_some();
-    let function_id = Arc::new(function_name.unwrap_or_else(|| String::from("Composition")));
+
+    Ok(build_parsed_invocation_request(
+        function_name,
+        composition,
+        request_context,
+        invocation_id,
+        start_time,
+        Vec::new(),
+    ))
+}
+
+async fn parse_async_invocation_request(
+    req: Request<Incoming>,
+) -> DandelionResult<ParsedInvocationRequest> {
+    debug!("Starting to serve request");
+    let raw_request_bytes = req
+        .collect()
+        .await
+        .expect("Failed to extract body from invocation request")
+        .to_bytes()
+        .to_vec();
     // UUID v7 is roughly time-ordered and lexicographically sortable
     let invocation_id = dandelion_commons::InvocationId::now_v7();
-    let mut recorder = Recorder::new(invocation_id, function_id.clone(), start_time);
-    recorder.record(dandelion_commons::records::RecordPoint::DeserializationEnd);
-    debug!("finished creating request context");
-
-    // TODO match set names to assign sets to composition sets
-    // map sets in the order they are in the request
-    let request_number = request_context.content.len();
-    debug!("Request number of request_context: {}", request_number);
-    let inputs = CompositionSet::from_context(request_context)
-        .into_iter()
-        .collect::<Vec<_>>();
-
-    Ok(ParsedInvocationRequest {
-        had_function_name,
-        function_id,
-        composition,
-        inputs,
-        recorder,
-    })
+    parse_invocation_request_bytes(raw_request_bytes, invocation_id).await
 }
 
 async fn dispatch_invocation(
@@ -243,6 +308,7 @@ async fn dispatch_invocation(
         composition,
         inputs,
         recorder,
+        raw_request_bytes: _,
     } = parsed;
 
     // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
@@ -285,47 +351,11 @@ async fn handle_async_request(
     req: Request<Incoming>,
     dispatcher: &'static Dispatcher,
 ) -> DandelionResult<DandelionBody> {
-    let parsed = parse_invocation_request(req).await?;
+    let parsed = parse_async_invocation_request(req).await?;
     let invocation_id = parsed.recorder.invocation_id();
 
-    crate::async_invocation::persist_submitted(invocation_id)?;
-    machine_interface::function_driver::system_driver::recovery_log::activate_async_invocation_logging(
-        invocation_id,
-    );
-
-    tokio::spawn(async move {
-        let dispatch_result = dispatch_invocation(is_cold, parsed, dispatcher).await;
-        match dispatch_result {
-            Ok((function_output, recorder)) => {
-                let response_bytes =
-                    dandelion_server::DandelionBody::new(function_output, &recorder).into_bytes();
-                if let Err(err) =
-                    crate::async_invocation::persist_completed(invocation_id, &response_bytes)
-                {
-                    error!(
-                        "Failed to persist completed async invocation {}: {}",
-                        invocation_id, err
-                    );
-                    let _ = crate::async_invocation::persist_failed(
-                        invocation_id,
-                        format!("Failed to persist async result: {}", err),
-                    );
-                }
-            }
-            Err(err) => {
-                if let Err(persist_err) =
-                    crate::async_invocation::persist_failed(invocation_id, format!("{}", err))
-                {
-                    error!(
-                        "Failed to persist failed async invocation {}: {}",
-                        invocation_id, persist_err
-                    );
-                }
-            }
-        }
-
-        // machine_interface::function_driver::system_driver::recovery_log::deactivate_async_invocation_logging(invocation_id);
-    });
+    crate::async_invocation::persist_submitted(invocation_id, &parsed.raw_request_bytes)?;
+    spawn_async_invocation(dispatcher, is_cold, parsed);
 
     Ok(DandelionBody::from_vec(serialize_bson_response(
         &AsyncInvocationAcceptedResponse {
@@ -361,6 +391,66 @@ async fn handle_async_result(path: &str) -> DandelionResult<(StatusCode, Dandeli
             ))
         }
     }
+}
+
+fn spawn_async_invocation(
+    dispatcher: &'static Dispatcher,
+    is_cold: bool,
+    parsed: ParsedInvocationRequest,
+) {
+    let invocation_id = parsed.recorder.invocation_id();
+    machine_interface::function_driver::system_driver::recovery_log::activate_async_invocation_logging(
+        invocation_id,
+    );
+    tokio::spawn(async move {
+        let dispatch_result = dispatch_invocation(is_cold, parsed, dispatcher).await;
+        match dispatch_result {
+            Ok((function_output, recorder)) => {
+                let response_bytes =
+                    dandelion_server::DandelionBody::new(function_output, &recorder).into_bytes();
+                if let Err(err) =
+                    crate::async_invocation::persist_completed(invocation_id, &response_bytes)
+                {
+                    error!(
+                        "Failed to persist completed async invocation {}: {}",
+                        invocation_id, err
+                    );
+                    let _ = crate::async_invocation::persist_failed(
+                        invocation_id,
+                        format!("Failed to persist async result: {}", err),
+                    );
+                }
+            }
+            Err(err) => {
+                if let Err(persist_err) =
+                    crate::async_invocation::persist_failed(invocation_id, format!("{}", err))
+                {
+                    error!(
+                        "Failed to persist failed async invocation {}: {}",
+                        invocation_id, persist_err
+                    );
+                }
+            }
+        }
+
+        machine_interface::function_driver::system_driver::recovery_log::deactivate_async_invocation_logging(invocation_id);
+        machine_interface::function_driver::system_driver::recovery_log::clear_recovered_io(invocation_id);
+    });
+}
+
+pub async fn resume_recoverable_invocations(dispatcher: &'static Dispatcher) -> DandelionResult<()> {
+    for recoverable in crate::async_invocation::list_recoverable_invocations()? {
+        let invocation_id = recoverable.invocation_id;
+        let parsed = parse_invocation_request_bytes(recoverable.request_bytes, invocation_id).await?;
+        let recovered_io = machine_interface::function_driver::system_driver::recovery_log::load_io_completion_records(invocation_id)?;
+        // add the recovered io to the cache
+        machine_interface::function_driver::system_driver::recovery_log::install_recovered_io_records(
+            invocation_id,
+            recovered_io,
+        )?;
+        spawn_async_invocation(dispatcher, false, parsed);
+    }
+    Ok(())
 }
 
 //-----------------------

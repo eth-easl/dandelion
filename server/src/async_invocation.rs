@@ -4,8 +4,9 @@ use dandelion_commons::{
 };
 use dandelion_server::{AsyncInvocationState, AsyncInvocationStatusResponse};
 use machine_interface::function_driver::system_driver::recovery_log::{
-    append_invocation_log_line, read_invocation_log,
+    append_invocation_log_line, list_invocation_log_ids, read_invocation_log,
 };
+use std::collections::HashMap;
 
 fn internal_error(message: impl Into<String>) -> dandelion_commons::DError {
     dandelion_err!(DandelionError::RequestError(FrontendError::InternalError(
@@ -30,18 +31,25 @@ fn append_event(invocation_id: InvocationId, event: &str) -> DandelionResult<()>
     append_invocation_log_line(invocation_id, event)
 }
 
-fn parse_log_fields(line: &str) -> std::collections::HashMap<&str, &str> {
+fn parse_log_fields(line: &str) -> HashMap<&str, &str> {
     line.split_whitespace()
         .filter_map(|part| part.split_once('='))
         .collect()
 }
 
-pub fn persist_submitted(invocation_id: InvocationId) -> DandelionResult<()> {
+#[derive(Debug, Clone)]
+pub struct RecoverableInvocation {
+    pub invocation_id: InvocationId,
+    pub request_bytes: Vec<u8>,
+}
+
+pub fn persist_submitted(invocation_id: InvocationId, request_bytes: &[u8]) -> DandelionResult<()> {
     append_event(
         invocation_id,
         &format!(
-            "event=invocation_submitted invocation_id={}\n",
-            invocation_id
+            "event=invocation_submitted invocation_id={} request_b64={}\n",
+            invocation_id,
+            encode_base64(request_bytes)
         ),
     )
 }
@@ -181,9 +189,52 @@ pub fn load_result(invocation_id: InvocationId) -> DandelionResult<Option<Vec<u8
     Ok(latest_result)
 }
 
+pub fn list_recoverable_invocations() -> DandelionResult<Vec<RecoverableInvocation>> {
+    let mut recoverable = Vec::new();
+    for invocation_id in list_invocation_log_ids()? {
+        let content = read_invocation_log(invocation_id)?;
+        let mut saw_submission = false;
+        let mut terminal = false;
+        let mut request_bytes = None;
+
+        for line in content.lines() {
+            let fields = parse_log_fields(line);
+            match fields.get("event").copied() {
+                Some("invocation_submitted") => {
+                    saw_submission = true;
+                    terminal = false;
+                    request_bytes = Some(decode_base64(
+                        fields.get("request_b64").copied().ok_or(internal_error(
+                            "Missing request_b64 field in async invocation submission record",
+                        ))?,
+                        "request_b64",
+                    )?);
+                }
+                Some("invocation_completed") | Some("invocation_failed") => {
+                    terminal = true;
+                }
+                _ => {}
+            }
+        }
+
+        if saw_submission && !terminal {
+            if let Some(request_bytes) = request_bytes {
+                recoverable.push(RecoverableInvocation {
+                    invocation_id,
+                    request_bytes,
+                });
+            }
+        }
+    }
+    Ok(recoverable)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{load_result, load_status, persist_completed, persist_failed, persist_submitted};
+    use super::{
+        list_recoverable_invocations, load_result, load_status, persist_completed, persist_failed,
+        persist_submitted,
+    };
     use dandelion_commons::InvocationId;
     use dandelion_server::AsyncInvocationState;
     use std::{
@@ -216,7 +267,7 @@ mod tests {
         let invocation_id = InvocationId::now_v7();
         let result = vec![1, 2, 3, 4];
 
-        persist_submitted(invocation_id).unwrap();
+        persist_submitted(invocation_id, b"request").unwrap();
         assert_eq!(
             load_status(invocation_id).unwrap().state,
             AsyncInvocationState::Running
@@ -240,11 +291,34 @@ mod tests {
         .unwrap();
         let invocation_id = InvocationId::now_v7();
 
-        persist_submitted(invocation_id).unwrap();
+        persist_submitted(invocation_id, b"request").unwrap();
         persist_failed(invocation_id, "boom".to_string()).unwrap();
 
         let status = load_status(invocation_id).unwrap();
         assert_eq!(status.state, AsyncInvocationState::Failed);
         assert_eq!(status.error.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn lists_unfinished_invocations_for_recovery() {
+        let root = test_root();
+        machine_interface::function_driver::system_driver::recovery_log::set_recovery_log_root(
+            root,
+        )
+        .unwrap();
+        let running_invocation = InvocationId::now_v7();
+        let completed_invocation = InvocationId::now_v7();
+
+        persist_submitted(running_invocation, b"running").unwrap();
+        persist_submitted(completed_invocation, b"completed").unwrap();
+        persist_completed(completed_invocation, b"done").unwrap();
+
+        let recoverable = list_recoverable_invocations().unwrap();
+        assert!(recoverable
+            .iter()
+            .any(|entry| entry.invocation_id == running_invocation && entry.request_bytes == b"running"));
+        assert!(recoverable
+            .iter()
+            .all(|entry| entry.invocation_id != completed_invocation));
     }
 }

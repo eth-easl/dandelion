@@ -5,13 +5,13 @@ use clap::Parser;
 use log::{error, warn};
 
 const DEFAULT_CONFIG_PATH: &str = "./dandelion.config";
-const DEFAULT_FOLDER_PATH: &str = "/tmp/dandelion_server";
+const DEFAULT_FOLDER_PATH: &str = "./.dandelion_recovery";
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
 const DEFAULT_MIN_SYS_CORES: usize = 1;
 const DEFAULT_VIRTUAL_MAX_RAM_MULTIPLIER: usize = 2;
 const DEFAULT_MULTINODE_TIMEOUT: u64 = 50;
-const DEFAULT_PERSIST: bool = false;
+const DEFAULT_RECOVERY: bool = false;
 use machine_interface::composition::DEFAULT_AUTOSHARDING_OFFLOAD_CONST;
 use machine_interface::function_driver::system_driver::reqwest::DEFAULT_CONCURRENCY_LIMIT;
 
@@ -168,10 +168,10 @@ pub struct DandelionConfig {
     #[serde(default)]
     pub folder_path: String,
 
-    /// Persist registry data and uploaded binaries across shutdown.
-    #[arg(long, env, default_value_t = DEFAULT_PERSIST)]
+    /// Enable persisted registry state and async invocation recovery across restart.
+    #[arg(long, env, default_value_t = DEFAULT_RECOVERY)]
     #[serde(default)]
-    pub persist: bool,
+    pub recovery: bool,
 
     /// Static identifier for this Dandelion node
     #[arg(long, env, default_value_t = 0)]
@@ -245,7 +245,7 @@ impl DandelionConfig {
         );
         merge_clone!(bin_preload_path, String::from(""));
         merge_clone!(folder_path, String::from(DEFAULT_FOLDER_PATH));
-        merge!(persist, DEFAULT_PERSIST);
+        merge!(recovery, DEFAULT_RECOVERY);
         merge!(node_id, 0);
         merge_option!(multinode_config);
         merge!(multinode_timeout_ms, DEFAULT_MULTINODE_TIMEOUT);
