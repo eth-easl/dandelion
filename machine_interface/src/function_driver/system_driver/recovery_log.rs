@@ -3,7 +3,7 @@ use dandelion_commons::{
     dandelion_err, err_dandelion, DandelionError, DandelionResult, FrontendError, InvocationId,
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -16,6 +16,7 @@ const IO_LOG_DIR_NAME: &str = "io_logs";
 static RECOVERY_LOG_ROOT: OnceLock<PathBuf> = OnceLock::new();
 static INVOCATION_LOG_LOCKS: OnceLock<Mutex<HashMap<InvocationId, Arc<Mutex<()>>>>> =
     OnceLock::new();
+static ACTIVE_ASYNC_INVOCATIONS: OnceLock<Mutex<HashSet<InvocationId>>> = OnceLock::new();
 
 /// In-memory representation of one durable `io_function_completed` recovery event.
 #[derive(Debug, Clone)]
@@ -97,6 +98,79 @@ fn invocation_log_lock(invocation_id: InvocationId) -> Arc<Mutex<()>> {
         .entry(invocation_id)
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
+}
+
+fn active_async_invocations() -> &'static Mutex<HashSet<InvocationId>> {
+    ACTIVE_ASYNC_INVOCATIONS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+pub fn activate_async_invocation_logging(invocation_id: InvocationId) {
+    active_async_invocations()
+        .lock()
+        .expect("Async invocation logging set poisoned")
+        .insert(invocation_id);
+}
+
+pub fn deactivate_async_invocation_logging(invocation_id: InvocationId) {
+    active_async_invocations()
+        .lock()
+        .expect("Async invocation logging set poisoned")
+        .remove(&invocation_id);
+}
+
+pub fn delete_invocation_log(invocation_id: InvocationId) -> DandelionResult<()> {
+    let log_path = invocation_log_path(invocation_id)?;
+    match fs::remove_file(&log_path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(internal_error(format!(
+            "Failed to delete IO recovery log {}",
+            log_path.display()
+        ))),
+    }
+}
+
+pub fn append_invocation_log_line(
+    invocation_id: InvocationId,
+    line: &str,
+) -> DandelionResult<()> {
+    let log_path = invocation_log_path(invocation_id)?;
+    let invocation_lock = invocation_log_lock(invocation_id);
+    let _invocation_lock_guard = invocation_lock
+        .lock()
+        .expect("IO recovery invocation log lock poisoned");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|_| {
+            internal_error(format!(
+                "Failed to open invocation log {}",
+                log_path.display()
+            ))
+        })?;
+    file.write_all(line.as_bytes()).map_err(|_| {
+        internal_error(format!(
+            "Failed to append invocation log {}",
+            log_path.display()
+        ))
+    })?;
+    file.flush().map_err(|_| {
+        internal_error(format!(
+            "Failed to flush invocation log {}",
+            log_path.display()
+        ))
+    })?;
+    Ok(())
+}
+
+pub fn read_invocation_log(invocation_id: InvocationId) -> DandelionResult<String> {
+    let log_path = invocation_log_path(invocation_id)?;
+    fs::read_to_string(&log_path).map_err(|_| {
+        dandelion_err!(DandelionError::RequestError(FrontendError::InvalidRequest(
+            format!("Unknown async invocation {}", invocation_id.simple())
+        )))
+    })
 }
 
 fn push_u32(buffer: &mut Vec<u8>, value: usize) -> DandelionResult<()> {
@@ -225,42 +299,23 @@ pub fn format_io_completion_line(record: &IoCompletionRecord) -> DandelionResult
 }
 
 pub fn append_io_completion_record(record: &IoCompletionRecord) -> DandelionResult<()> {
-    let log_path = invocation_log_path(record.invocation_id)?;
-    let invocation_lock = invocation_log_lock(record.invocation_id);
-    let _invocation_lock_guard = invocation_lock
+    if !active_async_invocations()
         .lock()
-        .expect("IO recovery invocation log lock poisoned");
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|_| {
-            internal_error(format!(
-                "Failed to open IO recovery log {}",
-                log_path.display()
-            ))
-        })?;
+        .expect("Async invocation logging set poisoned")
+        .contains(&record.invocation_id)
+    {
+        return Ok(());
+    }
     let line = format_io_completion_line(record)?;
-    file.write_all(line.as_bytes()).map_err(|_| {
-        internal_error(format!(
-            "Failed to append IO recovery log {}",
-            log_path.display()
-        ))
-    })?;
-    file.flush().map_err(|_| {
-        internal_error(format!(
-            "Failed to flush IO recovery log {}",
-            log_path.display()
-        ))
-    })?;
-    Ok(())
+    append_invocation_log_line(record.invocation_id, &line)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        append_io_completion_record, format_io_completion_line, invocation_log_path,
-        IoCompletionItem, IoCompletionOutputSet, IoCompletionRecord,
+        activate_async_invocation_logging, append_io_completion_record,
+        format_io_completion_line, invocation_log_path, IoCompletionItem,
+        IoCompletionOutputSet, IoCompletionRecord,
     };
     use crate::function_driver::functions::SystemFunction;
     use dandelion_commons::InvocationId;
@@ -317,6 +372,7 @@ mod tests {
         let root = test_root();
         super::set_recovery_log_root(root.clone()).unwrap();
         let record = sample_record();
+        activate_async_invocation_logging(record.invocation_id);
         append_io_completion_record(&record).unwrap();
 
         let log_path = invocation_log_path(record.invocation_id).unwrap();
@@ -334,6 +390,7 @@ mod tests {
         let mut threads = Vec::new();
         for index in 0..8 {
             threads.push(thread::spawn(move || {
+                activate_async_invocation_logging(invocation_id);
                 let record = IoCompletionRecord {
                     invocation_id,
                     composition_node_id: format!("node_{index}"),

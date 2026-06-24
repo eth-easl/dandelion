@@ -6,7 +6,9 @@ use dandelion_commons::{
     err_dandelion, records::Recorder, CompositionError, DandelionError, DandelionResult,
     FrontendError, FunctionRegistryError,
 };
-use dandelion_server::DandelionBody;
+use dandelion_server::{
+    serialize_bson_response, AsyncInvocationAcceptedResponse, AsyncInvocationState, DandelionBody,
+};
 use dispatcher::dispatcher::Dispatcher;
 use http_body_util::BodyExt;
 use hyper::{
@@ -166,11 +168,15 @@ async fn handle_composition_registration(
 //----------------
 // user invoction
 
-async fn handle_request(
-    is_cold: bool,
-    req: Request<Incoming>,
-    dispatcher: &'static Dispatcher,
-) -> DandelionResult<DandelionBody> {
+struct ParsedInvocationRequest {
+    had_function_name: bool,
+    function_id: Arc<String>,
+    composition: Option<String>,
+    inputs: Vec<Option<CompositionSet>>,
+    recorder: Recorder,
+}
+
+async fn parse_invocation_request(req: Request<Incoming>) -> DandelionResult<ParsedInvocationRequest> {
     debug!("Starting to serve request");
 
     let start_time = Instant::now();
@@ -187,12 +193,8 @@ async fn handle_request(
             let data_frame = frame_result.unwrap().into_data().unwrap();
             total_size += data_frame.len();
             frame_data.push(data_frame);
-        } else {
-            if body_pin.is_end_stream() {
-                break;
-            } else {
-                continue;
-            }
+        } else if body_pin.is_end_stream() {
+            break;
         }
     }
 
@@ -221,9 +223,30 @@ async fn handle_request(
         .into_iter()
         .collect::<Vec<_>>();
 
-    // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
+    Ok(ParsedInvocationRequest {
+        had_function_name,
+        function_id,
+        composition,
+        inputs,
+        recorder,
+    })
+}
 
-    let (function_output, recorder) = if had_function_name {
+async fn dispatch_invocation(
+    is_cold: bool,
+    parsed: ParsedInvocationRequest,
+    dispatcher: &'static Dispatcher,
+) -> DandelionResult<(Vec<Option<LocalCompositionSet>>, Recorder)> {
+    let ParsedInvocationRequest {
+        had_function_name,
+        function_id,
+        composition,
+        inputs,
+        recorder,
+    } = parsed;
+
+    // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
+    if had_function_name {
         dispatcher
             .queue_function_by_name(function_id, inputs, is_cold, recorder)
             .await
@@ -237,7 +260,16 @@ async fn handle_request(
                 recorder,
             )
             .await
-    }?;
+    }
+}
+
+async fn handle_request(
+    is_cold: bool,
+    req: Request<Incoming>,
+    dispatcher: &'static Dispatcher,
+) -> DandelionResult<DandelionBody> {
+    let parsed = parse_invocation_request(req).await?;
+    let (function_output, recorder) = dispatch_invocation(is_cold, parsed, dispatcher).await?;
 
     let response_body = dandelion_server::DandelionBody::new(function_output, &recorder);
 
@@ -246,6 +278,89 @@ async fn handle_request(
     TRACING_ARCHIVE.get().unwrap().insert_recorder(recorder);
 
     Ok(response_body)
+}
+
+async fn handle_async_request(
+    is_cold: bool,
+    req: Request<Incoming>,
+    dispatcher: &'static Dispatcher,
+) -> DandelionResult<DandelionBody> {
+    let parsed = parse_invocation_request(req).await?;
+    let invocation_id = parsed.recorder.invocation_id();
+
+    crate::async_invocation::persist_submitted(invocation_id)?;
+    machine_interface::function_driver::system_driver::recovery_log::activate_async_invocation_logging(
+        invocation_id,
+    );
+
+    tokio::spawn(async move {
+        let dispatch_result = dispatch_invocation(is_cold, parsed, dispatcher).await;
+        match dispatch_result {
+            Ok((function_output, recorder)) => {
+                let response_bytes =
+                    dandelion_server::DandelionBody::new(function_output, &recorder).into_bytes();
+                if let Err(err) =
+                    crate::async_invocation::persist_completed(invocation_id, &response_bytes)
+                {
+                    error!(
+                        "Failed to persist completed async invocation {}: {}",
+                        invocation_id, err
+                    );
+                    let _ = crate::async_invocation::persist_failed(
+                        invocation_id,
+                        format!("Failed to persist async result: {}", err),
+                    );
+                }
+            }
+            Err(err) => {
+                if let Err(persist_err) =
+                    crate::async_invocation::persist_failed(invocation_id, format!("{}", err))
+                {
+                    error!(
+                        "Failed to persist failed async invocation {}: {}",
+                        invocation_id, persist_err
+                    );
+                }
+            }
+        }
+
+        // machine_interface::function_driver::system_driver::recovery_log::deactivate_async_invocation_logging(invocation_id);
+    });
+
+    Ok(DandelionBody::from_vec(serialize_bson_response(
+        &AsyncInvocationAcceptedResponse {
+            invocation_id,
+            state: AsyncInvocationState::Running,
+        },
+    )))
+}
+
+fn parse_invocation_id(path: &str) -> DandelionResult<dandelion_commons::InvocationId> {
+    dandelion_commons::InvocationId::parse_str(path).map_err(|_| {
+        dandelion_commons::dandelion_err!(DandelionError::RequestError(
+            FrontendError::InvalidRequest(format!("Invalid invocation id {}", path))
+        ))
+    })
+}
+
+async fn handle_async_status(path: &str) -> DandelionResult<DandelionBody> {
+    let invocation_id = parse_invocation_id(path)?;
+    let status = crate::async_invocation::load_status(invocation_id)?;
+    Ok(DandelionBody::from_vec(serialize_bson_response(&status)))
+}
+
+async fn handle_async_result(path: &str) -> DandelionResult<(StatusCode, DandelionBody)> {
+    let invocation_id = parse_invocation_id(path)?;
+    match crate::async_invocation::load_result(invocation_id)? {
+        Some(result) => Ok((StatusCode::OK, DandelionBody::from_vec(result))),
+        None => {
+            let status = crate::async_invocation::load_status(invocation_id)?;
+            Ok((
+                StatusCode::ACCEPTED,
+                DandelionBody::from_vec(serialize_bson_response(&status)),
+            ))
+        }
+    }
 }
 
 //-----------------------
@@ -257,9 +372,14 @@ async fn service(
     folder_path: &'static str,
 ) -> Result<Response<DandelionBody>, Infallible> {
     // handle request
-    let res = match req.uri().path() {
-        "/register/function" => handle_function_registration(req, dispatcher, folder_path).await,
-        "/register/composition" => handle_composition_registration(req, dispatcher).await,
+    let path = req.uri().path().to_string();
+    let res = match path.as_str() {
+        "/register/function" => handle_function_registration(req, dispatcher, folder_path)
+            .await
+            .map(|body| (StatusCode::OK, body)),
+        "/register/composition" => handle_composition_registration(req, dispatcher)
+            .await
+            .map(|body| (StatusCode::OK, body)),
         // TODO: rename to cold func and hot func, remove matmul, compute, io
         "/cold/matmul"
         | "/cold/matmulstore"
@@ -268,7 +388,9 @@ async fn service(
         | "/cold/chain_scaling"
         | "/cold/middleware_app"
         | "/cold/compression_app"
-        | "/cold/python_app" => handle_request(true, req, dispatcher).await,
+        | "/cold/python_app" => handle_request(true, req, dispatcher)
+            .await
+            .map(|body| (StatusCode::OK, body)),
         "/hot/matmul"
         | "/hot/matmulstore"
         | "/hot/compute"
@@ -276,18 +398,38 @@ async fn service(
         | "/hot/chain_scaling"
         | "/hot/middleware_app"
         | "/hot/compression_app"
-        | "/hot/python_app" => handle_request(false, req, dispatcher).await,
+        | "/hot/python_app" => handle_request(false, req, dispatcher)
+            .await
+            .map(|body| (StatusCode::OK, body)),
+        "/async" => handle_async_request(false, req, dispatcher)
+            .await
+            .map(|body| (StatusCode::ACCEPTED, body)),
         other_uri => {
-            debug!("Received request on {}", other_uri);
-            Ok(DandelionBody::from_vec(
-                format!("Hello, World\n").into_bytes(),
-            ))
+            if let Some(invocation_path) = other_uri.strip_prefix("/async/invocation/") {
+                if let Some(invocation_id) = invocation_path.strip_suffix("/result") {
+                    handle_async_result(invocation_id).await
+                } else {
+                    handle_async_status(invocation_path)
+                        .await
+                        .map(|body| (StatusCode::OK, body))
+                }
+            } else {
+                debug!("Received request on {}", other_uri);
+                Ok((
+                    StatusCode::OK,
+                    DandelionBody::from_vec(format!("Hello, World\n").into_bytes()),
+                ))
+            }
         }
     };
 
     // create response
     match res {
-        Ok(body) => Ok::<_, Infallible>(Response::new(body)),
+        Ok((status_code, body)) => {
+            let mut response = Response::new(body);
+            *response.status_mut() = status_code;
+            Ok::<_, Infallible>(response)
+        }
         Err(err) => {
             warn!("Failed to serve request: {}", err);
             // for all other requests set response status to something not ok and write the error in the response body

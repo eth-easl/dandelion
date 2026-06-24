@@ -16,6 +16,7 @@ use std::{collections::BTreeMap, fs::read_to_string, sync::Arc};
 use tokio::{runtime::Builder, spawn, sync::mpsc};
 
 mod frontend;
+mod async_invocation;
 
 async fn delete_service_loop(
     mut remote_data_deletion_receiver: mpsc::UnboundedReceiver<RemoteData>,

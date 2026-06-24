@@ -27,6 +27,29 @@ pub struct DandelionDeserializeResponse<'data> {
     pub timestamps: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AsyncInvocationState {
+    Running,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AsyncInvocationAcceptedResponse {
+    #[serde(with = "uuid::serde::simple")]
+    pub invocation_id: InvocationId,
+    pub state: AsyncInvocationState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AsyncInvocationStatusResponse {
+    #[serde(with = "uuid::serde::simple")]
+    pub invocation_id: InvocationId,
+    pub state: AsyncInvocationState,
+    pub error: Option<String>,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct InputSet<'data> {
     pub identifier: String,
@@ -209,6 +232,10 @@ fn encode_response(
     response[0..4].copy_from_slice(&doc_length.to_le_bytes());
 
     return (all_items, response, data_items);
+}
+
+pub fn serialize_bson_response<T: Serialize>(value: &T) -> Vec<u8> {
+    bson::to_vec(value).expect("Failed to serialize BSON response")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -399,6 +426,24 @@ impl DandelionBody {
             }),
         };
     }
+
+    pub fn into_bytes(mut self) -> Vec<u8> {
+        use bytes::Buf;
+
+        let Some(mut buffer) = self.buffer.take() else {
+            return Vec::new();
+        };
+        let mut bytes = Vec::with_capacity(buffer.remaining());
+        while buffer.remaining() > 0 {
+            let chunk = buffer.chunk();
+            if chunk.is_empty() {
+                break;
+            }
+            bytes.extend_from_slice(chunk);
+            buffer.advance(chunk.len());
+        }
+        bytes
+    }
 }
 
 impl hyper::body::Body for DandelionBody {
@@ -492,10 +537,12 @@ fn test_dandelion_body_serialization() {
             },
         }],
     })];
-    let composition_set = CompositionSet::from_context(new_context)
+    let composition_set: Vec<Option<LocalCompositionSet>> = CompositionSet::from_context(new_context)
         .into_iter()
         .map(|set| set.map(|set| set.into_local()))
         .collect();
+    let context_body = DandelionBody::new(composition_set.clone(), &recorder);
+    assert_eq!(expected_response, context_body.into_bytes());
     let context_body = DandelionBody::new(composition_set, &recorder);
 
     tokio::runtime::Builder::new_current_thread()
