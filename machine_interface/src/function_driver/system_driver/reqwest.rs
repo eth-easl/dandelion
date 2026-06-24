@@ -75,23 +75,17 @@ impl Request for HttpRequest {
         };
         let mut request_iter = request_line.split_ascii_whitespace();
 
-        let method_item = request_iter.next();
-        let method = match method_item {
-            Some(method_string) if method_string == "GET" => HttpMethod::GET,
-            Some(method_string) if method_string == "POST" => HttpMethod::POST,
-            Some(method_string) if method_string == "PUT" => HttpMethod::PUT,
-            Some(method_string) => {
-                return err_dandelion!(DandelionError::InvalidSystemFuncArg(format!(
-                    "Unsupported Method: {}",
-                    method_string
-                )))
-            }
-            _ => {
-                return err_dandelion!(DandelionError::MalformedSystemFuncArg(String::from(
-                    "No method found",
-                )))
-            }
-        };
+        let method_item = request_iter.next().ok_or_else(|| {
+            dandelion_err!(DandelionError::MalformedSystemFuncArg(String::from(
+                "No method found",
+            )))
+        })?;
+        let method = HttpMethod::from_bytes(method_item.as_bytes()).map_err(|parsing_err| {
+            dandelion_err!(DandelionError::InvalidSystemFuncArg(format!(
+                "Invalid HTTP Method: {}",
+                parsing_err
+            )))
+        })?;
 
         let uri = String::from(request_iter.next().ok_or(dandelion_err!(
             DandelionError::MalformedSystemFuncArg(String::from("No uri in request"))
@@ -265,16 +259,7 @@ async fn http_request(
         body,
     } = parse_request(position, context)?;
 
-    let request_builder = match method {
-        HttpMethod::PUT => client.put(uri.clone()),
-        HttpMethod::POST => client.post(uri.clone()),
-        HttpMethod::GET => client.get(uri.clone()),
-        _ => {
-            return err_dandelion!(DandelionError::MalformedSystemFuncArg(String::from(
-                "Unsupported Method",
-            )))
-        }
-    };
+    let request_builder = client.request(method, &uri);
 
     let request = match request_builder
         .headers(headermap)
