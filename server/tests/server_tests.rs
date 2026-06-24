@@ -56,6 +56,31 @@ mod server_tests {
             }
             let _ = self.server.stdout.insert(reader.into_inner());
         }
+
+        /// Reads the server's stderr (where the logs are written) until each of `markers`
+        /// has appeared, in order, printing every line on the way. This is used both to
+        /// synchronize the test with the server's progress and to assert that the expected
+        /// log lines are produced. A single reader is kept for the whole scan so no buffered
+        /// log lines are lost between markers. Panics if the process exits before all markers
+        /// are seen.
+        fn wait_for_stderr(&mut self, markers: &[&str]) {
+            let mut reader = BufReader::new(self.server.stderr.take().unwrap());
+            let mut next = 0;
+            while next < markers.len() {
+                let mut buf = String::new();
+                let len = reader.read_line(&mut buf).unwrap();
+                assert_ne!(
+                    len, 0,
+                    "{} exited before logging {:?}",
+                    self.name, markers[next]
+                );
+                print!("{} err: {}", self.name, buf);
+                if buf.contains(markers[next]) {
+                    next += 1;
+                }
+            }
+            let _ = self.server.stderr.insert(reader.into_inner());
+        }
     }
 
     impl Drop for ServerKiller {
@@ -315,15 +340,17 @@ mod server_tests {
         )
     }
 
-    fn start_multinode_servers() -> MultinodeServers {
-        let preload_path = multinode_preload_path();
-        println!("Preload_path: {}", preload_path);
-        let multinode_config = format!(
+    fn multinode_config_path() -> String {
+        format!(
             "{}/tests/manifests/multinode_config.json",
             env!("CARGO_MANIFEST_DIR"),
-        );
+        )
+    }
 
-        let remote_port = 8081;
+    fn start_master() -> ServerKiller {
+        let preload_path = multinode_preload_path();
+        let multinode_config = multinode_config_path();
+
         let mut master_cmd = Command::new(assert_cmd::cargo::cargo_bin!());
         let master_server = master_cmd
             .stdout(Stdio::piped())
@@ -346,7 +373,14 @@ mod server_tests {
             server: master_server,
         };
         master.check_for_start();
+        master
+    }
 
+    fn start_worker() -> ServerKiller {
+        let preload_path = multinode_preload_path();
+        let multinode_config = multinode_config_path();
+
+        let remote_port = 8081;
         let mut worker_cmd = Command::new(assert_cmd::cargo::cargo_bin!());
         let worker_server = worker_cmd
             .stdout(Stdio::piped())
@@ -367,7 +401,13 @@ mod server_tests {
             server: worker_server,
         };
         worker.check_for_start();
+        worker
+    }
 
+    fn start_multinode_servers() -> MultinodeServers {
+        println!("Preload_path: {}", multinode_preload_path());
+        let master = start_master();
+        let worker = start_worker();
         MultinodeServers { master, worker }
     }
 
@@ -511,6 +551,48 @@ mod server_tests {
             client,
         );
 
+        servers.assert_running();
+    }
+
+    /// Checks that a worker node which loses its connection to the master node notices the
+    /// loss, cleans up after it, and automatically re-establishes the connection once the
+    /// master is reachable again, all without either node panicking.
+    #[test]
+    #[serial]
+    fn serve_multinode_reconnect() {
+        let mut servers = start_multinode_servers();
+
+        // Make sure the cluster has actually formed before we tear it down: the worker
+        // connects to the master and the master registers the worker with its cores.
+        servers
+            .worker
+            .wait_for_stderr(&["Established connection to master node"]);
+        servers
+            .master
+            .wait_for_stderr(&["Established connection to worker node"]);
+
+        // Drop the master to sever the worker's connection (also prints the master's output).
+        drop(servers.master);
+
+        // Bring the master back up. The worker should notice the lost connection and keep
+        // retrying until it can reconnect to the new master.
+        let mut master = start_master();
+
+        // The worker logs that it lost the connection (the code path that also clears its
+        // ExportRegistry) and then that it re-established it, confirming the reconnect loop.
+        servers.worker.wait_for_stderr(&[
+            "Lost connection to master node",
+            "Established connection to master node",
+        ]);
+
+        // The (freshly started) master accepts the worker rejoining the cluster.
+        master.wait_for_stderr(&["Established connection to worker node"]);
+
+        // Neither node panicked through the disconnect and reconnect.
+        let servers = MultinodeServers {
+            master,
+            worker: servers.worker,
+        };
         servers.assert_running();
     }
 }
