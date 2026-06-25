@@ -34,7 +34,7 @@ pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_function(function_id, Vec::new(), false, recorder, None));
+        .block_on(dispatcher.queue_function(function_id, Vec::new(), false, recorder, None, None));
     match result {
         Ok(_) => (),
         Err(err) => panic!("Failed with: {:?}", err),
@@ -80,7 +80,7 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_function(function_id, inputs, false, recorder, None));
+        .block_on(dispatcher.queue_function(function_id, inputs, false, recorder, None, None));
     let out_sets = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),

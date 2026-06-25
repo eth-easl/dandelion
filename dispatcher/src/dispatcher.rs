@@ -27,7 +27,13 @@ use machine_interface::{
     machine_config::{get_available_domains, DomainType, EngineType, IntoEnumIterator},
     memory_domain::{MemoryDomain, MemoryResource},
 };
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::PathBuf,
+    sync::Arc,
+};
+
+pub type RecoveredNodeOutputs = Arc<HashMap<String, Vec<Option<CompositionSet>>>>;
 
 // TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
 // the entire execution time anyway
@@ -110,12 +116,20 @@ impl Dispatcher {
         inputs: Vec<Option<CompositionSet>>,
         caching: bool,
         mut recorder: Recorder,
+        recovered_nodes: Option<RecoveredNodeOutputs>,
     ) -> DandelionResult<(Vec<Option<LocalCompositionSet>>, Recorder)> {
         debug!("Queuing function {}", function_id);
         recorder.record(RecordPoint::EnterDispatcher);
 
         let results = self
-            .queue_function(function_id, inputs, caching, recorder.clone(), None)
+            .queue_function(
+                function_id,
+                inputs,
+                caching,
+                recorder.clone(),
+                None,
+                recovered_nodes,
+            )
             .await?;
 
         // if any set is not local send them trough reference resolution
@@ -157,6 +171,7 @@ impl Dispatcher {
         inputs: Vec<Option<CompositionSet>>,
         caching: bool,
         recorder: Recorder,
+        recovered_nodes: Option<RecoveredNodeOutputs>,
     ) -> DandelionResult<(Vec<Option<LocalCompositionSet>>, Recorder)> {
         debug!("Parsing single use composition");
         let composition_meta_pairs = self
@@ -183,6 +198,7 @@ impl Dispatcher {
                 inputs,
                 caching,
                 recorder.clone(),
+                recovered_nodes,
             )
             .await?;
 
@@ -225,6 +241,7 @@ impl Dispatcher {
         inputs: Vec<Option<CompositionSet>>,
         caching: bool,
         mut recorder: Recorder,
+        recovered_nodes: Option<RecoveredNodeOutputs>,
     ) -> DandelionResult<Vec<Option<CompositionSet>>> {
         // build up ready sets
         trace!("queue composition");
@@ -264,6 +281,27 @@ impl Dispatcher {
             .into_iter()
             .enumerate()
             .filter_map(|(composition_index, deps)| {
+                let composition_node_id = composition_node_ids
+                    .as_ref()
+                    .and_then(|node_ids| node_ids.get(composition_index).cloned());
+                if let Some(recovered_sets) = composition_node_id
+                    .as_ref()
+                    .and_then(|node_id| recovered_nodes.as_ref().and_then(|nodes| nodes.get(node_id)))
+                {
+                    let new_sets = deps
+                        .output_set_ids
+                        .iter()
+                        .cloned()
+                        .zip(recovered_sets.iter().cloned())
+                        .filter_map(|(index_opt, set)| index_opt.map(|index| (index, set)))
+                        .collect();
+                    awaited_sets.push(Either::Left(ready(Ok((
+                        new_sets,
+                        composition_index,
+                        Vec::new(),
+                    )))));
+                    return None;
+                }
                 let mut missing_map = BTreeMap::new();
                 let input_set_number: usize = deps.input_set_ids.len();
                 let mut ready_inputs = Vec::with_capacity(input_set_number);
@@ -309,9 +347,7 @@ impl Dispatcher {
                 Some(FunctionArgs {
                     function_id: deps.function,
                     function_index: composition_index,
-                    composition_node_id: composition_node_ids
-                        .as_ref()
-                        .and_then(|node_ids| node_ids.get(composition_index).cloned()),
+                    composition_node_id,
                     input_sets: ready_inputs,
                     join_info: deps.join_info,
                     output_mapping: deps.output_set_ids,
@@ -332,6 +368,7 @@ impl Dispatcher {
                 args.output_mapping,
                 caching,
                 recorder.clone(),
+                recovered_nodes.clone(),
             )));
         }
         let num_running_functions = awaited_sets.len();
@@ -413,6 +450,7 @@ impl Dispatcher {
                                 args.output_mapping,
                                 caching,
                                 recorder.clone(),
+                                recovered_nodes.clone(),
                             )));
                             None
                         } else {
@@ -449,6 +487,7 @@ impl Dispatcher {
         output_mapping: Vec<Option<usize>>,
         caching: bool,
         recorder: Recorder,
+        recovered_nodes: Option<RecoveredNodeOutputs>,
     ) -> DandelionResult<(Vec<(usize, Option<CompositionSet>)>, usize, Vec<Recorder>)> {
         trace!(
             "queue function {} sharded and input sets: {:?}",
@@ -481,6 +520,7 @@ impl Dispatcher {
                         caching,
                         new_recorder.clone(),
                         composition_node_id.clone(),
+                        recovered_nodes.clone(),
                     ));
                     recorders.push(new_recorder);
                     future_box
@@ -498,6 +538,7 @@ impl Dispatcher {
                     caching,
                     new_recorder.clone(),
                     composition_node_id,
+                    recovered_nodes,
                 )
                 .await
                 .and_then(|result| Ok(vec![result]));
@@ -547,6 +588,7 @@ impl Dispatcher {
         caching: bool,
         mut recorder: Recorder,
         composition_node_id: Option<String>,
+        recovered_nodes: Option<RecoveredNodeOutputs>,
     ) -> DandelionResult<Vec<Option<CompositionSet>>> {
         debug!("Queueing function with id: {}", function_id);
         // find an engine capable of running the function
@@ -651,6 +693,7 @@ impl Dispatcher {
                     input_sets,
                     caching,
                     recorder,
+                    recovered_nodes,
                 )
                 .await
             }

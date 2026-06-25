@@ -176,6 +176,7 @@ struct ParsedInvocationRequest {
     inputs: Vec<Option<CompositionSet>>,
     recorder: Recorder,
     raw_request_bytes: Vec<u8>,
+    recovered_nodes: Option<dispatcher::dispatcher::RecoveredNodeOutputs>,
 }
 
 fn build_parsed_invocation_request(
@@ -207,6 +208,7 @@ fn build_parsed_invocation_request(
         inputs,
         recorder,
         raw_request_bytes,
+        recovered_nodes: None,
     }
 }
 
@@ -309,12 +311,13 @@ async fn dispatch_invocation(
         inputs,
         recorder,
         raw_request_bytes: _,
+        recovered_nodes,
     } = parsed;
 
     // want a 1 to 1 mapping of all outputs the functions gives as long as we don't add user input on what they want
     if had_function_name {
         dispatcher
-            .queue_function_by_name(function_id, inputs, is_cold, recorder)
+            .queue_function_by_name(function_id, inputs, is_cold, recorder, recovered_nodes)
             .await
     } else {
         dispatcher
@@ -324,6 +327,7 @@ async fn dispatch_invocation(
                 inputs,
                 is_cold,
                 recorder,
+                recovered_nodes,
             )
             .await
     }
@@ -433,7 +437,7 @@ fn spawn_async_invocation(
             }
         }
 
-        machine_interface::function_driver::system_driver::recovery_log::deactivate_async_invocation_logging(invocation_id);
+        // machine_interface::function_driver::system_driver::recovery_log::deactivate_async_invocation_logging(invocation_id);
         machine_interface::function_driver::system_driver::recovery_log::clear_recovered_io(invocation_id);
     });
 }
@@ -441,13 +445,17 @@ fn spawn_async_invocation(
 pub async fn resume_recoverable_invocations(dispatcher: &'static Dispatcher) -> DandelionResult<()> {
     for recoverable in crate::async_invocation::list_recoverable_invocations()? {
         let invocation_id = recoverable.invocation_id;
-        let parsed = parse_invocation_request_bytes(recoverable.request_bytes, invocation_id).await?;
+        let mut parsed =
+            parse_invocation_request_bytes(recoverable.request_bytes, invocation_id).await?;
         let recovered_io = machine_interface::function_driver::system_driver::recovery_log::load_io_completion_records(invocation_id)?;
+        let recovered_nodes =
+            machine_interface::function_driver::system_driver::recovery_log::recovered_composition_nodes(&recovered_io)?;
         // add the recovered io to the cache
         machine_interface::function_driver::system_driver::recovery_log::install_recovered_io_records(
             invocation_id,
             recovered_io,
         )?;
+        parsed.recovered_nodes = Some(std::sync::Arc::new(recovered_nodes));
         spawn_async_invocation(dispatcher, false, parsed);
     }
     Ok(())

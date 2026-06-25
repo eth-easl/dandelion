@@ -12,8 +12,10 @@ use std::{
 };
 
 use crate::{
+    composition::{CompositionSet, ItemData},
     function_driver::functions::SystemFunction,
     memory_domain::read_only::ReadOnlyContext,
+    DataItem, Position,
 };
 
 const IO_LOG_DIR_NAME: &str = "io_logs";
@@ -292,6 +294,48 @@ pub fn load_io_completion_records(invocation_id: InvocationId) -> DandelionResul
         }
     }
     Ok(records)
+}
+
+pub fn recovered_composition_nodes(
+    records: &[IoCompletionRecord],
+) -> DandelionResult<HashMap<String, Vec<Option<CompositionSet>>>> {
+    let mut recovered_nodes = HashMap::new();
+    for record in records {
+        let max_set_index = record
+            .outputs
+            .iter()
+            .map(|output| output.set_index)
+            .max()
+            .unwrap_or(0);
+        let mut outputs = Vec::with_capacity(max_set_index + 1);
+        outputs.resize(max_set_index + 1, None);
+
+        for output in &record.outputs {
+            let mut items = Vec::with_capacity(output.items.len());
+            for item in &output.items {
+                let key = u32::try_from(item.key).map_err(|_| {
+                    internal_error("Recovered IO key exceeds u32".to_string())
+                })?;
+                let context = Arc::new(ReadOnlyContext::new(item.data.clone().into_boxed_slice())?);
+                items.push((
+                    DataItem {
+                        ident: item.identifier.clone(),
+                        data: Position {
+                            offset: 0,
+                            size: item.data.len(),
+                        },
+                        key,
+                    },
+                    ItemData::LocalData(context),
+                ));
+            }
+            outputs[output.set_index] =
+                CompositionSet::from_item_list(output.set_name.clone(), items);
+        }
+
+        recovered_nodes.insert(record.composition_node_id.clone(), outputs);
+    }
+    Ok(recovered_nodes)
 }
 
 fn recovered_io_outputs(
