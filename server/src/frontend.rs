@@ -355,6 +355,7 @@ async fn handle_async_request(
     req: Request<Incoming>,
     dispatcher: &'static Dispatcher,
 ) -> DandelionResult<DandelionBody> {
+    // TODO: check if this is slowing us down and if we need to persist/parse everything in the request
     let parsed = parse_async_invocation_request(req).await?;
     let invocation_id = parsed.recorder.invocation_id();
 
