@@ -437,7 +437,7 @@ fn spawn_async_invocation(
             }
         }
 
-        // machine_interface::function_driver::system_driver::recovery_log::deactivate_async_invocation_logging(invocation_id);
+        machine_interface::function_driver::system_driver::recovery_log::deactivate_async_invocation_logging(invocation_id);
         machine_interface::function_driver::system_driver::recovery_log::clear_recovered_io(invocation_id);
     });
 }
