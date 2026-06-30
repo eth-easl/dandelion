@@ -695,35 +695,13 @@ async fn remote_queue_client_logic(
                     queue_message::QueueMessage::NoWork(true) => {
                         trace!("Queue Client recieved NoWork(true)");
                         debug_assert!(data_option.is_none());
-
-                        remote_had_work = false
+                        remote_had_work = false;
                     }
                     // remote signals it may have work so can ask for it, if we have capacity
                     queue_message::QueueMessage::NoWork(false) => {
                         trace!("Queue Client recieved NoWork(false)");
                         debug_assert!(data_option.is_none());
-
-                        // let current_jobs_queued = *local_queue_state.borrow();
-                        let occupancy = std::cmp::max(queue_state, work_from_remote);
-                        if occupancy < num_local_cores {
-                            let engines = EngineType::iter()
-                                .map(|engine_type| proto::Engine {
-                                    engine_type: engine_type_dtop(engine_type) as i32,
-                                    engine_capacity: (num_local_cores - occupancy) as u32,
-                                })
-                                .collect();
-                            message_sender
-                                .send(remote_message::RemoteMessage::WorkRequest(
-                                    RepeatedEngines { engines },
-                                ))
-                                .await
-                                .unwrap();
-                            remote_had_work = false;
-                        } else {
-                            // Only set to true, if we did not send out a message already,
-                            // otherwise avoid retriggering sending a message on state change, before we get answer.
-                            remote_had_work = true;
-                        }
+                        remote_had_work = true;
                     }
                     // TODO for try offload decide when to refuse work
                     queue_message::QueueMessage::TryOffload(invocation) => {
@@ -732,7 +710,6 @@ async fn remote_queue_client_logic(
                         work_from_remote += 1;
 
                         // mark remote as having work, so we ask for more as idle cores change
-                        remote_had_work = true;
                         let start_instance = Instant::now();
                         let start_time =
                             std::time::SystemTime::elapsed(&std::time::SystemTime::UNIX_EPOCH)
@@ -756,12 +733,12 @@ async fn remote_queue_client_logic(
                             !caching,
                             recorder,
                         );
+                        remote_had_work = true;
                     }
                     queue_message::QueueMessage::Invocations(invocations) => {
                         trace!("Queue Client recieved invocation");
 
                         // mark remote as having work, so we ask for more as idle cores change
-                        remote_had_work = true;
                         work_from_remote += invocations.invocations.len();
                         let start_instance = Instant::now();
                         let start_time =
@@ -790,6 +767,7 @@ async fn remote_queue_client_logic(
                                 recorder,
                             )
                         }
+                        remote_had_work = true;
                     }
                 }
             }
@@ -801,26 +779,6 @@ async fn remote_queue_client_logic(
                 trace!("Queue Client sending out result");
                 work_from_remote -= 1;
                 message_sender.send(results).await.unwrap();
-                let occupancy = std::cmp::max(queue_state, work_from_remote);
-                if remote_had_work && occupancy < num_local_cores {
-                    let engines: Vec<_> = EngineType::iter()
-                        .map(|engine_type| proto::Engine {
-                            engine_type: engine_type_dtop(engine_type) as i32,
-                            engine_capacity: (num_local_cores - occupancy) as u32,
-                        })
-                        .collect();
-
-                    trace!("Asking for more work");
-                    message_sender
-                        .send(remote_message::RemoteMessage::WorkRequest(
-                            RepeatedEngines { engines },
-                        ))
-                        .await
-                        .unwrap();
-                    trace!("Finished sending the message asking for more work");
-                    // set false, to avoid double sending if multiple cores become idle, but did not have a response in between
-                    remote_had_work = false;
-                }
             }
             // getting a notification so should poll the queue
             PollingOption::QueueStateChanged(current_queue_state) => {
@@ -830,27 +788,6 @@ async fn remote_queue_client_logic(
                     remote_had_work,
                 );
                 queue_state = current_queue_state;
-                // send message to get work if we have not asked already
-                let occupancy = std::cmp::max(queue_state, work_from_remote);
-                if remote_had_work && occupancy < num_local_cores {
-                    let engines: Vec<_> = EngineType::iter()
-                        .map(|engine_type| proto::Engine {
-                            engine_type: engine_type_dtop(engine_type) as i32,
-                            engine_capacity: (num_local_cores - occupancy) as u32,
-                        })
-                        .collect();
-
-                    trace!("Asking for more work");
-                    message_sender
-                        .send(remote_message::RemoteMessage::WorkRequest(
-                            RepeatedEngines { engines },
-                        ))
-                        .await
-                        .unwrap();
-                    trace!("Finished sending the message asking for more work");
-                    // set false, to avoid double sending if multiple cores become idle, but did not have a response in between
-                    remote_had_work = false;
-                }
             }
             PollingOption::LocalCoreCountChanged(new_core_number) => {
                 trace!("Sending new local core count: {}", new_core_number);
@@ -861,28 +798,26 @@ async fn remote_queue_client_logic(
                     }))
                     .await
                     .unwrap();
-                // check if we now want to get more work
-                let occupancy = std::cmp::max(queue_state, work_from_remote);
-                if remote_had_work && occupancy < num_local_cores {
-                    let engines: Vec<_> = EngineType::iter()
-                        .map(|engine_type| proto::Engine {
-                            engine_type: engine_type_dtop(engine_type) as i32,
-                            engine_capacity: (num_local_cores - occupancy) as u32,
-                        })
-                        .collect();
-
-                    trace!("Asking for more work");
-                    message_sender
-                        .send(remote_message::RemoteMessage::WorkRequest(
-                            RepeatedEngines { engines },
-                        ))
-                        .await
-                        .unwrap();
-                    trace!("Finished sending the message asking for more work");
-                    // set false, to avoid double sending if multiple cores become idle, but did not have a response in between
-                    remote_had_work = false;
-                }
             }
+        }
+        let occupancy = std::cmp::max(queue_state, work_from_remote);
+        if remote_had_work && occupancy < num_local_cores {
+            trace!("Asking for more work");
+            let engines = EngineType::iter()
+                .map(|engine_type| proto::Engine {
+                    engine_type: engine_type_dtop(engine_type) as i32,
+                    engine_capacity: (num_local_cores - occupancy) as u32,
+                })
+                .collect();
+            message_sender
+                .send(remote_message::RemoteMessage::WorkRequest(
+                    RepeatedEngines { engines },
+                ))
+                .await
+                .unwrap();
+            trace!("Finished sending message asking for more work");
+            // set false, to avoid double sending if multiple cores become idle, but did not have a response in between
+            remote_had_work = false;
         }
     }
     warn!("Arrived at end of remote_qeueu_client_logic, which should stay in the loop forever");
