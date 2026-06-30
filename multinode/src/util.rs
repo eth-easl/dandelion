@@ -194,6 +194,8 @@ fn item_data_dtop(
             let IoData {
                 invocation_id: _,
                 composition_node_id: _,
+                item_identifier: _,
+                item_key: _,
                 original_position,
                 original_data,
                 resolved: _,
@@ -244,6 +246,8 @@ fn item_data_and_ref(
             let IoData {
                 invocation_id: _,
                 composition_node_id: _,
+                item_identifier: _,
+                item_key: _,
                 original_position,
                 original_data,
                 resolved: _,
@@ -316,6 +320,8 @@ fn item_data_ptod(
                 ItemData::IoData(IoData {
                     invocation_id: dandelion_commons::InvocationId::nil(),
                     composition_node_id: None,
+                    item_identifier: String::new(),
+                    item_key: 0,
                     original_position: Position { offset: 0, size: 0 },
                     resolved: Arc::new(OnceCell::new()),
                     original_data: Box::new(item_data_ptod(*input_data.unwrap(), delete_sender).0),

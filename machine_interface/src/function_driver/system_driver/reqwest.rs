@@ -4,8 +4,8 @@ use crate::{
         functions::{Function, FunctionConfig},
         system_driver::{
             recovery_log::{
-                append_io_completion_record, IoCompletionItem, IoCompletionOutputSet,
-                IoCompletionRecord,
+                append_io_completion_record, get_recovered_io_outputs, IoCompletionItem,
+                IoCompletionOutputSet, IoCompletionRecord,
             },
             IoData, SystemFunction,
         },
@@ -492,6 +492,8 @@ async fn resolve_io_item(
     let IoData {
         invocation_id,
         composition_node_id,
+        item_identifier,
+        item_key,
         original_position,
         original_data,
         resolved,
@@ -514,14 +516,30 @@ async fn resolve_io_item(
     };
     match function {
         SystemFunction::HTTP => {
+            if let Some(recovered_outputs) = get_recovered_io_outputs(
+                invocation_id,
+                composition_node_id.as_deref(),
+                function,
+                &item_identifier,
+                item_key,
+            ) {
+                let context = recovered_outputs[set_index].clone();
+                return Ok((
+                    Position {
+                        offset: 0,
+                        size: context.size,
+                    },
+                    context,
+                ));
+            }
             let outputs = resolved
                 .get_or_init(move || {
                     http_request(
                         client,
                         invocation_id,
                         composition_node_id.clone(),
-                        String::new(),
-                        0,
+                        item_identifier,
+                        item_key,
                         input_position,
                         input_context,
                     )

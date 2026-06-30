@@ -1,18 +1,20 @@
 use super::{check_matrix, setup_dispatcher, zero_id};
 use dandelion_commons::records::Recorder;
-use dispatcher::dispatcher::Dispatcher;
+use dispatcher::dispatcher::{Dispatcher, RecoveredNodeOutputs};
 use log::debug;
 use machine_interface::{
     composition::{
-        Composition, CompositionSet, FunctionDependencies, InputSetDescriptor, JoinStrategy,
-        ShardingMode,
+        Composition, CompositionSet, FunctionDependencies, InputSetDescriptor, ItemData,
+        JoinStrategy, ShardingMode,
     },
     function_driver::ComputeResource,
     machine_config::{DomainType, EngineType},
-    memory_domain::{read_only::ReadOnlyContext, MemoryDomain, MemoryResource},
+    memory_domain::{
+        read_only::ReadOnlyContext, Context, ContextTrait, MemoryDomain, MemoryResource,
+    },
     DataItem, DataSet, Position,
 };
-use std::{collections::BTreeMap, time::Instant};
+use std::{collections::BTreeMap, collections::HashMap, time::Instant};
 use std::{iter, sync::Arc};
 
 pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
@@ -146,7 +148,7 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, None, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(composition, None, inputs, false, recorder, None));
     let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -171,13 +173,98 @@ fn composition_option_helper(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, None, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(composition, None, inputs, false, recorder, None));
     let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
     };
 
     return out_contexts;
+}
+
+fn read_single_matrix(set: &CompositionSet) -> Vec<u64> {
+    let mut iter = set.into_iter();
+    let (item, data) = iter.next().expect("Expected a single output item");
+    assert!(iter.next().is_none());
+    let context = match data {
+        ItemData::LocalData(context) => context,
+        _ => panic!("Expected local output data"),
+    };
+    let len = item.data.size / core::mem::size_of::<u64>();
+    let mut matrix = vec![0u64; len];
+    context
+        .context
+        .read(item.data.offset, &mut matrix)
+        .expect("Should read output matrix");
+    matrix
+}
+
+fn make_matmul_input_context() -> Context {
+    let data = vec![2u64, 1, 2, 3, 4];
+    let data_len = data.len();
+    let mut in_context = ReadOnlyContext::new(data.into_boxed_slice())
+        .expect("Should be able to create read only context");
+    in_context.content = vec![Some(DataSet {
+        ident: String::from(""),
+        buffers: vec![DataItem {
+            ident: String::from(""),
+            data: Position {
+                offset: 0,
+                size: data_len * core::mem::size_of::<u64>(),
+            },
+            key: 0,
+        }],
+    })];
+    in_context
+}
+
+fn make_matmac_input_context() -> Context {
+    let mat_a = vec![1u64, 7];
+    let mat_b = vec![1u64, 1, 2, 3, 5];
+    let mat_bt = vec![4, 1, 2, 3, 5];
+
+    let mut data = vec![];
+    data.extend_from_slice(&mat_a);
+    data.extend_from_slice(&mat_b);
+    data.extend_from_slice(&mat_bt);
+    let mut in_context = ReadOnlyContext::new(data.into_boxed_slice())
+        .expect("Should be able to create read only context");
+    in_context.content = vec![
+        Some(DataSet {
+            ident: String::from("A set"),
+            buffers: vec![DataItem {
+                ident: String::from("A"),
+                data: Position {
+                    offset: 0,
+                    size: mat_a.len() * core::mem::size_of::<u64>(),
+                },
+                key: 0,
+            }],
+        }),
+        Some(DataSet {
+            ident: String::from("B set"),
+            buffers: vec![DataItem {
+                ident: String::from("B"),
+                data: Position {
+                    offset: mat_a.len() * core::mem::size_of::<u64>(),
+                    size: mat_b.len() * core::mem::size_of::<u64>(),
+                },
+                key: 0,
+            }],
+        }),
+        Some(DataSet {
+            ident: String::from("BT set"),
+            buffers: vec![DataItem {
+                ident: String::from("BT"),
+                data: Position {
+                    offset: (mat_a.len() + mat_b.len()) * core::mem::size_of::<u64>(),
+                    size: mat_b.len() * core::mem::size_of::<u64>(),
+                },
+                key: 0,
+            }],
+        }),
+    ];
+    in_context
 }
 
 pub fn composition_optional<Domain: MemoryDomain>(
@@ -355,7 +442,7 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, None, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(composition, None, inputs, false, recorder, None));
     let out_vec = match result {
         Ok(v) => v,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -369,6 +456,92 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
         assert!(item.key == 1 || item.key == 0);
         check_matrix(&matrix_context, item, 2, vec![5, 11, 11, 25]);
     }
+}
+
+pub fn composition_recovered_parallel_sibling_still_runs<Domain: MemoryDomain>(
+    memory_resource: (DomainType, MemoryResource),
+    relative_path: &str,
+    engine_type: EngineType,
+    engine_resource: Vec<ComputeResource>,
+) {
+    let (dispatcher, function_id) = setup_dispatcher::<Domain>(
+        relative_path,
+        vec![(String::from(""), None)],
+        vec![String::from("")],
+        engine_type,
+        engine_resource,
+        memory_resource,
+    );
+    let inputs = CompositionSet::from_context(make_matmul_input_context());
+    let recovered_output = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(dispatcher.queue_function(
+            function_id.clone(),
+            inputs.clone(),
+            false,
+            Recorder::new(
+                dandelion_commons::InvocationId::nil(),
+                zero_id(),
+                Instant::now(),
+            ),
+            Some("node-left".to_string()),
+            None,
+        ))
+        .expect("Should compute recovered output");
+
+    let recovered_nodes: RecoveredNodeOutputs = Arc::new(HashMap::from([(
+        "node-left".to_string(),
+        recovered_output,
+    )]));
+    let composition = Composition {
+        dependencies: vec![
+            FunctionDependencies {
+                function: function_id.clone(),
+                join_info: (vec![0], vec![]),
+                input_set_ids: vec![Some(InputSetDescriptor {
+                    composition_id: 0,
+                    sharding: ShardingMode::All,
+                    optional: false,
+                })],
+                output_set_ids: vec![Some(1)],
+            },
+            FunctionDependencies {
+                function: function_id,
+                join_info: (vec![0], vec![]),
+                input_set_ids: vec![Some(InputSetDescriptor {
+                    composition_id: 0,
+                    sharding: ShardingMode::All,
+                    optional: false,
+                })],
+                output_set_ids: vec![Some(2)],
+            },
+        ],
+        output_map: BTreeMap::from([(1, 0), (2, 1)]),
+    };
+    let outputs = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(dispatcher.queue_composition(
+            composition,
+            Some(Arc::new(vec![
+                "node-left".to_string(),
+                "node-right".to_string(),
+            ])),
+            inputs,
+            false,
+            Recorder::new(dandelion_commons::InvocationId::nil(), zero_id(), Instant::now()),
+            Some(recovered_nodes),
+        ))
+        .expect("Recovered composition should succeed");
+
+    assert_eq!(2, outputs.len());
+    let left = outputs[0].as_ref().expect("Recovered branch should produce output");
+    let right = outputs[1]
+        .as_ref()
+        .expect("Non-recovered sibling should still run");
+    assert_eq!(vec![2, 5, 11, 11, 25], read_single_matrix(left));
+    assert_eq!(vec![2, 5, 11, 11, 25], read_single_matrix(right));
 }
 
 pub fn composition_chain_matmul<Domain: MemoryDomain>(
@@ -435,7 +608,7 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, None, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(composition, None, inputs, false, recorder, None));
     let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -642,7 +815,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, None, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(composition, None, inputs, false, recorder, None));
     let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -661,6 +834,158 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
             105, 210, 315, 525, 210, 420, 630, 1050, 315, 630, 945, 1575, 525, 1050, 1575, 2625,
         ],
     );
+}
+
+pub fn composition_recovered_node_unblocks_downstream<Domain: MemoryDomain>(
+    memory_resource: (DomainType, MemoryResource),
+    relative_path: &str,
+    engine_type: EngineType,
+    engine_resource: Vec<ComputeResource>,
+) {
+    let (dispatcher, function_id) = setup_dispatcher::<Domain>(
+        relative_path,
+        vec![
+            (String::from(""), None),
+            (String::from(""), None),
+            (String::from(""), None),
+        ],
+        vec![String::from("")],
+        engine_type,
+        engine_resource,
+        memory_resource,
+    );
+    let composition = Composition {
+        dependencies: vec![
+            FunctionDependencies {
+                function: function_id.clone(),
+                join_info: (
+                    vec![0, 1, 2],
+                    vec![JoinStrategy::Cross, JoinStrategy::Cross],
+                ),
+                input_set_ids: vec![
+                    Some(InputSetDescriptor {
+                        composition_id: 0,
+                        sharding: ShardingMode::All,
+                        optional: false,
+                    }),
+                    Some(InputSetDescriptor {
+                        composition_id: 1,
+                        sharding: ShardingMode::All,
+                        optional: false,
+                    }),
+                    None,
+                ],
+                output_set_ids: vec![Some(3)],
+            },
+            FunctionDependencies {
+                function: function_id.clone(),
+                join_info: (
+                    vec![0, 1, 2],
+                    vec![JoinStrategy::Cross, JoinStrategy::Cross],
+                ),
+                input_set_ids: vec![
+                    Some(InputSetDescriptor {
+                        composition_id: 2,
+                        sharding: ShardingMode::All,
+                        optional: false,
+                    }),
+                    Some(InputSetDescriptor {
+                        composition_id: 0,
+                        sharding: ShardingMode::All,
+                        optional: false,
+                    }),
+                    None,
+                ],
+                output_set_ids: vec![Some(4)],
+            },
+            FunctionDependencies {
+                function: function_id.clone(),
+                join_info: (
+                    vec![0, 1, 2],
+                    vec![JoinStrategy::Cross, JoinStrategy::Cross],
+                ),
+                input_set_ids: vec![
+                    Some(InputSetDescriptor {
+                        composition_id: 4,
+                        sharding: ShardingMode::All,
+                        optional: false,
+                    }),
+                    Some(InputSetDescriptor {
+                        composition_id: 3,
+                        sharding: ShardingMode::All,
+                        optional: false,
+                    }),
+                    None,
+                ],
+                output_set_ids: vec![Some(5)],
+            },
+        ],
+        output_map: BTreeMap::from([(5, 0)]),
+    };
+
+    let baseline_outputs = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(dispatcher.queue_composition(
+            composition.clone(),
+            Some(Arc::new(vec![
+                "node-c".to_string(),
+                "node-d".to_string(),
+                "node-g".to_string(),
+            ])),
+            CompositionSet::from_context(make_matmac_input_context()),
+            false,
+            Recorder::new(dandelion_commons::InvocationId::nil(), zero_id(), Instant::now()),
+            None,
+        ))
+        .expect("Baseline composition should succeed");
+    let baseline_matrix = read_single_matrix(
+        baseline_outputs[0]
+            .as_ref()
+            .expect("Baseline output should be present"),
+    );
+
+    let inputs = CompositionSet::from_context(make_matmac_input_context());
+    let recovered_output = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(dispatcher.queue_function(
+            function_id,
+            vec![inputs[0].clone(), inputs[1].clone(), None],
+            false,
+            Recorder::new(dandelion_commons::InvocationId::nil(), zero_id(), Instant::now()),
+            Some("node-c".to_string()),
+            None,
+        ))
+        .expect("Should compute recovered node output");
+    let recovered_nodes: RecoveredNodeOutputs = Arc::new(HashMap::from([(
+        "node-c".to_string(),
+        recovered_output,
+    )]));
+
+    let recovered_outputs = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(dispatcher.queue_composition(
+            composition,
+            Some(Arc::new(vec![
+                "node-c".to_string(),
+                "node-d".to_string(),
+                "node-g".to_string(),
+            ])),
+            inputs,
+            false,
+            Recorder::new(dandelion_commons::InvocationId::nil(), zero_id(), Instant::now()),
+            Some(recovered_nodes),
+        ))
+        .expect("Recovered composition should succeed");
+    let recovered_matrix = read_single_matrix(
+        recovered_outputs[0]
+            .as_ref()
+            .expect("Recovered output should be present"),
+    );
+
+    assert_eq!(baseline_matrix, recovered_matrix);
 }
 
 pub fn composition_chain_large_matmac<Domain: MemoryDomain>(
@@ -787,7 +1112,7 @@ pub fn composition_chain_large_matmac<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(composition, None, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(composition, None, inputs, false, recorder, None));
     let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),

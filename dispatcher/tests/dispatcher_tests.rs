@@ -114,6 +114,8 @@ mod dispatcher_tests {
                 function_tests::{
                     composition_chain_large_matmac, composition_chain_matmul,
                     composition_diamond_matmac, composition_optional, composition_parallel_matmul,
+                    composition_recovered_node_unblocks_downstream,
+                    composition_recovered_parallel_sibling_still_runs,
                     composition_single_matmul, single_domain_and_engine_basic,
                     single_domain_and_engine_matmul,
                 },
@@ -161,6 +163,17 @@ mod dispatcher_tests {
             }
 
             #[test_log::test]
+            fn test_composition_recovered_parallel_sibling() {
+                let name = format!("test_{}_matmul", stringify!($name));
+                composition_recovered_parallel_sibling_still_runs::<$domain>(
+                    $init,
+                    &name,
+                    $engine_type,
+                    $engine_resource,
+                )
+            }
+
+            #[test_log::test]
             fn test_composition_chain() {
                 let name = format!("test_{}_matmul", stringify!($name));
                 composition_chain_matmul::<$domain>($init, &name, $engine_type, $engine_resource)
@@ -170,6 +183,17 @@ mod dispatcher_tests {
             fn test_composition_diamond() {
                 let name = format!("test_{}_matmac", stringify!($name));
                 composition_diamond_matmac::<$domain>($init, &name, $engine_type, $engine_resource)
+            }
+
+            #[test_log::test]
+            fn test_composition_recovered_downstream() {
+                let name = format!("test_{}_matmac", stringify!($name));
+                composition_recovered_node_unblocks_downstream::<$domain>(
+                    $init,
+                    &name,
+                    $engine_type,
+                    $engine_resource,
+                )
             }
 
             #[test_log::test]

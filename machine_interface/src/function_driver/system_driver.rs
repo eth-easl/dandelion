@@ -66,6 +66,8 @@ pub const SYSTEM_FUNCTIONS: &[SystemFunction] = &[SystemFunction::HTTP];
 pub struct IoData {
     pub invocation_id: InvocationId,
     pub composition_node_id: Option<String>,
+    pub item_identifier: String,
+    pub item_key: u64,
     pub original_position: Position,
     pub original_data: Box<ItemData>,
     // A vec with the resolved outputs for this IO request
@@ -110,6 +112,8 @@ pub fn convert_to_references(
             let header_data = IoData {
                 invocation_id,
                 composition_node_id: composition_node_id.clone(),
+                item_identifier: item.ident.clone(),
+                item_key: item.key.into(),
                 original_position: item.data,
                 original_data: Box::new(data.clone()),
                 resolved: set_once.clone(),
@@ -119,6 +123,8 @@ pub fn convert_to_references(
             let body_data = IoData {
                 invocation_id,
                 composition_node_id: composition_node_id.clone(),
+                item_identifier: item.ident.clone(),
+                item_key: item.key.into(),
                 original_position: item.data,
                 original_data: Box::new(data),
                 resolved: set_once,

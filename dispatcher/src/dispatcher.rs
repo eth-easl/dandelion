@@ -284,23 +284,26 @@ impl Dispatcher {
                 let composition_node_id = composition_node_ids
                     .as_ref()
                     .and_then(|node_ids| node_ids.get(composition_index).cloned());
-                if let Some(recovered_sets) = composition_node_id
-                    .as_ref()
-                    .and_then(|node_id| recovered_nodes.as_ref().and_then(|nodes| nodes.get(node_id)))
-                {
-                    let new_sets = deps
-                        .output_set_ids
-                        .iter()
-                        .cloned()
-                        .zip(recovered_sets.iter().cloned())
-                        .filter_map(|(index_opt, set)| index_opt.map(|index| (index, set)))
-                        .collect();
-                    awaited_sets.push(Either::Left(ready(Ok((
-                        new_sets,
-                        composition_index,
-                        Vec::new(),
-                    )))));
-                    return None;
+                let is_http_system_function = deps.function.as_str() == "HTTP";
+                if !is_http_system_function {
+                    if let Some(recovered_sets) = composition_node_id
+                        .as_ref()
+                        .and_then(|node_id| recovered_nodes.as_ref().and_then(|nodes| nodes.get(node_id)))
+                    {
+                        let new_sets = deps
+                            .output_set_ids
+                            .iter()
+                            .cloned()
+                            .zip(recovered_sets.iter().cloned())
+                            .filter_map(|(index_opt, set)| index_opt.map(|index| (index, set)))
+                            .collect();
+                        awaited_sets.push(Either::Left(ready(Ok((
+                            new_sets,
+                            composition_index,
+                            Vec::new(),
+                        )))));
+                        return None;
+                    }
                 }
                 let mut missing_map = BTreeMap::new();
                 let input_set_number: usize = deps.input_set_ids.len();
