@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 
 use super::super::{ComputeQueueElement, IoQueueElement};
 
-const LOCAL_WORK_PER_CORE: usize = 2;
+pub const PREFETCH_PER_CORE: usize = 1;
 
 pub struct IOElementData {
     pub remote_data: BTreeMap<u64, usize>,
@@ -59,7 +59,7 @@ pub fn prepare_io_element(
                     // we recover the work and fall back to executing it locally.
                     match node_sender.send((work, debt, composition_id)) {
                         Ok(()) => return None,
-                        Err(mpsc::error::SendError((work, debt, composition_id))) => {
+                        Err(mpsc::error::SendError((work, debt, _))) => {
                             // since the sender does not work, remove it.
                             remote_nodes.lock().unwrap().remove(&node_id);
                             return Some((
@@ -98,7 +98,7 @@ pub fn should_io_take(
     // additionally want to prevent fetching, if there is remote data and no local core is idle
     // always take it if there are idle cores, only prefetch if it is prefetching via IO, not from other nodes
     idle_compute_cores > 0
-        || (compute_pending + active_fetch_count < LOCAL_WORK_PER_CORE * local_cores
+        || (compute_pending + active_fetch_count < PREFETCH_PER_CORE * local_cores
             && element_data.remote_data.is_empty())
 }
 
