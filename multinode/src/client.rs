@@ -677,6 +677,7 @@ async fn remote_queue_client_logic(
         bool,
         Recorder,
     ),
+    prefetch_multiplier: usize,
     export_registry: ExportRegistry,
     mut num_local_cores: usize,
 ) {
@@ -800,15 +801,24 @@ async fn remote_queue_client_logic(
                     .unwrap();
             }
         }
-        let occupancy = std::cmp::max(queue_state, work_from_remote);
-        if remote_had_work && occupancy < num_local_cores {
-            trace!("Asking for more work");
+        if remote_had_work {
+            let occupancy = std::cmp::max(queue_state, work_from_remote);
+            // ask for work for the local idle cores
+            let engine_number = if occupancy < num_local_cores {
+                num_local_cores - occupancy
+            } else if occupancy < num_local_cores + num_local_cores * prefetch_multiplier {
+                num_local_cores + num_local_cores * prefetch_multiplier - occupancy
+            } else {
+                continue;
+            };
             let engines = EngineType::iter()
                 .map(|engine_type| proto::Engine {
                     engine_type: engine_type_dtop(engine_type) as i32,
-                    engine_capacity: (num_local_cores - occupancy) as u32,
+                    engine_capacity: engine_number as u32,
                 })
                 .collect();
+
+            trace!("Asking for more work");
             message_sender
                 .send(remote_message::RemoteMessage::WorkRequest(
                     RepeatedEngines { engines },
@@ -897,6 +907,7 @@ pub async fn remote_queue_client(
                 recorder,
             ));
         },
+        dispatcher::queue::PREFETCH_PER_CORE,
         export_registry,
         local_core_count,
     )

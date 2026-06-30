@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 
 use super::super::{ComputeQueueElement, IoQueueElement};
 
-const LOCAL_WORK_PER_CORE: usize = 2;
+pub const PREFETCH_PER_CORE: usize = 1;
 
 /// Empty struct since the base policy does not use additional information for scheduling decisions.
 pub struct IOElementData;
@@ -31,7 +31,7 @@ pub fn should_io_take(
     local_cores: usize,
     _idle_compute_cores: usize,
 ) -> bool {
-    compute_pending + active_fetch_count < LOCAL_WORK_PER_CORE * local_cores
+    compute_pending + active_fetch_count < PREFETCH_PER_CORE * local_cores
 }
 
 /// Selects work items from the local queues to hand off to a remote node.

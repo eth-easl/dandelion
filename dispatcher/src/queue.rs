@@ -1,4 +1,5 @@
 mod policy;
+pub use policy::PREFETCH_PER_CORE;
 
 use dandelion_commons::{
     err_dandelion, records::RecordPoint, DandelionError, DandelionResult, DispatcherError,
@@ -79,7 +80,7 @@ struct InnerQueue {
     /// List of io engines ready to take more work
     io_waker_list: LinkedList<Waker>,
     /// The number of functions for which we are currently prefetching
-    fetching_in_progress: usize,
+    prefetching_in_progress: usize,
 }
 
 const MAX_QUEUE: usize = 4096;
@@ -178,7 +179,7 @@ impl Future for IoWaitFuture<'_> {
         // to find work where they can do their own fetching instead.
         let compute_pending = lock_guard.compute_queue.len();
         let local_cores = *self.work_queue.system_info.num_local_cores_watcher.borrow();
-        let active_fetch_count = lock_guard.fetching_in_progress;
+        let active_fetch_count = lock_guard.prefetching_in_progress;
         let idle_compute_cores = lock_guard.compute_waker_list.len();
         let mut is_prefetching = false;
         let result = lock_guard
@@ -209,7 +210,7 @@ impl Future for IoWaitFuture<'_> {
             });
         // If the task is a prefetching task increase the counter accordingly
         if is_prefetching {
-            lock_guard.fetching_in_progress += 1;
+            lock_guard.prefetching_in_progress += 1;
         }
         if let Some((mut work, debt, composition_id)) = result {
             let composition_id_option =
@@ -241,7 +242,7 @@ impl WorkQueue {
                 io_queue: LinkedList::new(),
                 compute_waker_list: LinkedList::new(),
                 io_waker_list: LinkedList::new(),
-                fetching_in_progress: 0,
+                prefetching_in_progress: 0,
             })),
             promise_buffer: PromiseBuffer::init(MAX_QUEUE),
             queue_state_sender,
@@ -256,12 +257,12 @@ impl WorkQueue {
         }
     }
 
-    pub fn queue_state_watcher(&self) -> watch::Receiver<usize> {
-        self.queue_state_receiver.clone()
-    }
-
     pub fn queueing_notifier(&self) -> Arc<Notify> {
         self.queuing_notifier.clone()
+    }
+
+    pub fn queue_state_watcher(&self) -> watch::Receiver<usize> {
+        self.queue_state_receiver.clone()
     }
 
     fn queue_state_decrease(&self) {
@@ -303,7 +304,7 @@ impl WorkQueue {
 
         let mut queue_guard = self.inner.lock().unwrap();
         if had_fetching {
-            queue_guard.fetching_in_progress -= 1;
+            queue_guard.prefetching_in_progress -= 1;
         }
 
         let new_element = ComputeQueueElement {
@@ -385,7 +386,7 @@ impl WorkQueue {
         // if not, no reason to call waker
         let compute_length = queue_guard.compute_queue.len();
         let local_cores = *self.system_info.num_local_cores_watcher.borrow();
-        let already_fetching = queue_guard.fetching_in_progress;
+        let already_fetching = queue_guard.prefetching_in_progress;
         let idle_compute_cores = queue_guard.compute_waker_list.len();
         let would_process = match &new_element.work {
             WorkToDo::FunctionArguments { .. } => policy::should_io_take(
