@@ -246,8 +246,10 @@ async fn remote_queue_server_logic(
                             // TODO: consider limiting the work we give to a node based on the know max capacity,
                             // to limit potential stragglers if we know the node asked for more than it can handle (possibly because of race conditions)
                             // do not give even more.
-                            invocations.extend(work_found.into_iter().map(|(work, debt)|
-                            {
+                            invocations.extend(work_found.into_iter().filter_map(|(work, debt)| {
+                                if !debt.is_alive() {
+                                    return None;
+                                }
                                 // there is some work so send it out
                                 // find the local function id to use
                                 let promise_id = if let Some(free_id) = free_debt_ids.pop() {
@@ -302,12 +304,12 @@ async fn remote_queue_server_logic(
                                         work,
                                     ),
                                 );
-                                Invocation {
+                                Some(Invocation {
                                     metadata_sets,
                                     function_id,
                                     invocation_id: promise_id,
                                     caching,
-                                }
+                                })
                             }));
                         }
                         if invocations.is_empty() {
@@ -399,6 +401,9 @@ async fn remote_queue_server_logic(
                 }
             }
             QueueOption::TryOffload(work, debt) => {
+                if !debt.is_alive() {
+                    continue;
+                }
                 // if this node already sent enough work for the remote to be at capacity don't send more
                 if invocations_running >= remote_num_cores as usize {
                     queue.reenqueue(work, debt).await;
