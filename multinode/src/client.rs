@@ -124,7 +124,6 @@ async fn receive_message(
 ) -> std::io::Result<(Bytes, Option<Bytes>)> {
     let packed_metadata = receiver.read_u64().await?;
     let (metadata_size, _) = unpack_metadata_size_and_flags(packed_metadata);
-    trace!("strart receiving: {}", metadata_size);
 
     // new buffer with size of message
     let mut metadata_buffer = BytesMut::with_capacity(metadata_size as usize);
@@ -135,7 +134,6 @@ async fn receive_message(
             return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
         }
     }
-    trace!("finish receiving");
 
     // Keep for when we want to send additional data long with requests
     // if (flags & ADDITIONAL_DATA_BUFFER) != 0 {
@@ -254,6 +252,7 @@ async fn remote_queue_server_logic(
     mut remote_num_cores: u64,
 ) {
     let mut waiting_for_work = false;
+    // TODO remove, can also just look at the size of the dept map
     let mut invocations_running = 0;
 
     let mut debt_map = BTreeMap::new();
@@ -382,7 +381,10 @@ async fn remote_queue_server_logic(
                     remote_message::RemoteMessage::Response(response) => {
                         invocations_running -= 1;
                         debug_assert!(data_option.is_none());
-                        trace!("Queue Server received response");
+                        trace!(
+                            "Queue Server received response, outstanding: {}",
+                            invocations_running
+                        );
                         let Response {
                             invocation_id,
                             response,
@@ -818,6 +820,7 @@ async fn remote_queue_client_logic(
     mut num_local_cores: usize,
 ) {
     let mut remote_had_work = true;
+    let mut invocation_request_in_flight = false;
     // This makes sure we don't overfetch from this node.
     // TODO: think about the general issue of state synchronization between the dispatcher and multinode client adding things,
     // and the engines and server taking things.
@@ -831,6 +834,8 @@ async fn remote_queue_client_logic(
                     queue_message::QueueMessage::NoWork(true) => {
                         trace!("Queue Client recieved NoWork(true)");
                         debug_assert!(data_option.is_none());
+                        assert!(invocation_request_in_flight);
+                        invocation_request_in_flight = false;
                         remote_had_work = false;
                     }
                     // remote signals it may have work so can ask for it, if we have capacity
@@ -872,7 +877,12 @@ async fn remote_queue_client_logic(
                         remote_had_work = true;
                     }
                     queue_message::QueueMessage::Invocations(invocations) => {
-                        trace!("Queue Client recieved invocation");
+                        trace!(
+                            "Queue Client recieved {} invocations",
+                            invocations.invocations.len()
+                        );
+                        assert!(invocation_request_in_flight);
+                        invocation_request_in_flight = false;
 
                         // mark remote as having work, so we ask for more as idle cores change
                         work_from_remote += invocations.invocations.len();
@@ -918,8 +928,10 @@ async fn remote_queue_client_logic(
                 break;
             }
             PollingOption::Results(results) => {
-                trace!("Queue Client sending out result");
                 work_from_remote -= 1;
+                trace!("Queue Client sending out result, {} outstanding", {
+                    work_from_remote
+                });
                 if message_sender.send(results).await.is_err() {
                     break;
                 }
@@ -945,7 +957,12 @@ async fn remote_queue_client_logic(
                 }
             }
         }
-        if remote_had_work {
+        trace!(
+            "remote had work: {}, invocation in flight: {}",
+            remote_had_work,
+            invocation_request_in_flight
+        );
+        if remote_had_work && !invocation_request_in_flight {
             // ! This currently assumes all works in the queue comes from a single remote master.
             // ! The assumption starts to break if there are things directly enqueued or come from multiple master.
             // ! The reason we need this assumption is, because otherwise, the client cannot get a good bound
@@ -977,7 +994,7 @@ async fn remote_queue_client_logic(
                     engine_capacity: engine_number as u32,
                 })
                 .collect();
-            trace!("Asking for more work");
+            trace!("Asking for more work for {} engines", engine_number);
             if message_sender
                 .send(remote_message::RemoteMessage::WorkRequest(
                     RepeatedEngines { engines },
@@ -989,7 +1006,7 @@ async fn remote_queue_client_logic(
             }
             trace!("Finished sending message asking for more work");
             // set false, to avoid double sending if multiple cores become idle, but did not have a response in between
-            remote_had_work = false;
+            invocation_request_in_flight = true;
         }
     }
     // Reaching here means the connection was lost; the caller will attempt to reconnect.
