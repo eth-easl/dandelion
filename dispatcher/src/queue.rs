@@ -127,6 +127,10 @@ impl Future for ComputeWaitFuture<'_> {
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Self::Output> {
         let mut lock_guard = self.work_queue.inner.lock().unwrap();
+        trace!(
+            "Compute trying to take task with {} in queue",
+            lock_guard.compute_queue.len()
+        );
         // check if there is any work with the flags we are looking for
         let result = lock_guard
             .compute_queue
@@ -150,9 +154,7 @@ impl Future for ComputeWaitFuture<'_> {
             {
                 recorder.record(RecordPoint::ComputeQueueEnd);
             }
-            if self.was_idle {
-                self.work_queue.idle_notifier.notify_waiters();
-            }
+            self.work_queue.idle_notifier.notify_one();
             Poll::Ready(result_tupple)
         } else {
             // Did not find any work, so need to add to waker queue
@@ -163,10 +165,9 @@ impl Future for ComputeWaitFuture<'_> {
             lock_guard.compute_waker_list.push_back(waker_element);
             // have newly become idle
             if !self.was_idle {
-                self.work_queue.idle_notifier.notify_waiters();
+                self.work_queue.idle_notifier.notify_one();
                 self.was_idle = true;
             }
-            // lock was ready once, need to set new one
             Poll::Pending
         }
     }
@@ -187,6 +188,10 @@ impl Future for IoWaitFuture<'_> {
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let mut lock_guard = self.work_queue.inner.lock().unwrap();
+        trace!(
+            "Io trying to take task with {} in queue",
+            lock_guard.io_queue.len()
+        );
         // Always take work that is not FunctionArguments.
         // Take FunctionArguments only if the local queue is smaller than a certain threshold.
         // Do this to avoid overloading the IO cores with too much parallel fetching and to make it easier for remotes
@@ -223,10 +228,10 @@ impl Future for IoWaitFuture<'_> {
                 )
             });
         // If the task is a prefetching task increase the counter accordingly
-        if is_prefetching {
-            lock_guard.prefetching_in_progress += 1;
-        }
         if let Some((mut work, debt, composition_id)) = result {
+            if is_prefetching {
+                lock_guard.prefetching_in_progress += 1;
+            }
             let composition_id_option =
                 if let WorkToDo::FunctionArguments { recorder, .. } = &mut work {
                     recorder.record(RecordPoint::IOQueueEnd);
@@ -234,11 +239,26 @@ impl Future for IoWaitFuture<'_> {
                 } else {
                     None
                 };
-
+            trace!(
+                "Io did find task, {} in queue, idle_compute_cores {}, compute_pending {}, active_fetch_count {}, local_cores {}",
+                lock_guard.io_queue.len(),
+                idle_compute_cores,
+                compute_pending,
+                active_fetch_count,
+                local_cores,
+            );
             // Found some work, so core is not idle
             Poll::Ready((work, debt, composition_id_option))
         } else {
             // Did not find any work, so need to add to waker queue
+            trace!(
+                "Io did not find task, {} in queue, idle_compute_cores {}, compute_pending {}, active_fetch_count {}, local_cores {}",
+                lock_guard.io_queue.len(),
+                idle_compute_cores,
+                compute_pending,
+                active_fetch_count,
+                local_cores,
+            );
             lock_guard.io_waker_list.push_back(cx.waker().clone());
             Poll::Pending
         }
@@ -482,7 +502,7 @@ impl WorkQueue {
     ) -> DandelionResult<WorkDone> {
         let (promise, debt) = self.promise_buffer.get_promise()?;
         self.push(work, debt, composition_id, true);
-        return promise.await;
+        promise.await
     }
 
     /// Tries to acquire some work that matches the given flags starting from the head of the queue.
@@ -499,6 +519,11 @@ impl WorkQueue {
             io_queue,
             ..
         } = &mut *guard;
+        trace!(
+            "Trying to get work for remote from io queue ({}), compute queue ({})",
+            io_queue.len(),
+            compute_queue.len()
+        );
         policy::get_work_for_remote(
             io_queue,
             compute_queue,
