@@ -148,6 +148,11 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
     'engine: loop {
         // TODO catch unwind so we can always return an error or shut down gracefully
         let (args, debt) = waker::manual_pull(&mut queue);
+
+        if !debt.is_alive() {
+            continue 'engine;
+        }
+
         match args {
             WorkToDo::FunctionArguments {
                 function_id: _,
@@ -232,6 +237,10 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                 }
 
                 recorder.record(RecordPoint::EngineStart);
+
+                if !debt.is_alive() {
+                    continue 'engine;
+                }
 
                 let result = engine_state.run(
                     function.config.clone(),
