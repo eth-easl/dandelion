@@ -36,7 +36,7 @@ pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_function(function_id, Vec::new(), false, recorder, None, None));
+        .block_on(dispatcher.queue_function(function_id, Vec::new(), false, recorder, None, None, None));
     match result {
         Ok(_) => (),
         Err(err) => panic!("Failed with: {:?}", err),
@@ -82,7 +82,7 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_function(function_id, inputs, false, recorder, None, None));
+        .block_on(dispatcher.queue_function(function_id, inputs, false, recorder, None, None, None));
     let out_sets = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -487,12 +487,15 @@ pub fn composition_recovered_parallel_sibling_still_runs<Domain: MemoryDomain>(
             ),
             Some("node-left".to_string()),
             None,
+            None,
         ))
         .expect("Should compute recovered output");
 
     let recovered_nodes: RecoveredNodeOutputs = Arc::new(HashMap::from([(
-        "node-left".to_string(),
-        recovered_output,
+        1usize,
+        recovered_output[0]
+            .clone()
+            .expect("Recovered function should produce composition output"),
     )]));
     let composition = Composition {
         dependencies: vec![
@@ -524,10 +527,7 @@ pub fn composition_recovered_parallel_sibling_still_runs<Domain: MemoryDomain>(
         .unwrap()
         .block_on(dispatcher.queue_composition(
             composition,
-            Some(Arc::new(vec![
-                "node-left".to_string(),
-                "node-right".to_string(),
-            ])),
+            None,
             inputs,
             false,
             Recorder::new(dandelion_commons::InvocationId::nil(), zero_id(), Instant::now()),
@@ -928,11 +928,7 @@ pub fn composition_recovered_node_unblocks_downstream<Domain: MemoryDomain>(
         .unwrap()
         .block_on(dispatcher.queue_composition(
             composition.clone(),
-            Some(Arc::new(vec![
-                "node-c".to_string(),
-                "node-d".to_string(),
-                "node-g".to_string(),
-            ])),
+            None,
             CompositionSet::from_context(make_matmac_input_context()),
             false,
             Recorder::new(dandelion_commons::InvocationId::nil(), zero_id(), Instant::now()),
@@ -956,11 +952,14 @@ pub fn composition_recovered_node_unblocks_downstream<Domain: MemoryDomain>(
             Recorder::new(dandelion_commons::InvocationId::nil(), zero_id(), Instant::now()),
             Some("node-c".to_string()),
             None,
+            None,
         ))
         .expect("Should compute recovered node output");
     let recovered_nodes: RecoveredNodeOutputs = Arc::new(HashMap::from([(
-        "node-c".to_string(),
-        recovered_output,
+        3usize,
+        recovered_output[0]
+            .clone()
+            .expect("Recovered function should produce composition output"),
     )]));
 
     let recovered_outputs = tokio::runtime::Builder::new_current_thread()
@@ -968,11 +967,7 @@ pub fn composition_recovered_node_unblocks_downstream<Domain: MemoryDomain>(
         .unwrap()
         .block_on(dispatcher.queue_composition(
             composition,
-            Some(Arc::new(vec![
-                "node-c".to_string(),
-                "node-d".to_string(),
-                "node-g".to_string(),
-            ])),
+            None,
             inputs,
             false,
             Recorder::new(dandelion_commons::InvocationId::nil(), zero_id(), Instant::now()),

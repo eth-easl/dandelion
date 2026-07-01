@@ -198,6 +198,7 @@ dolore magna aliquyam erat, sed diam voluptua."#,
     fn io_completion_payload_roundtrip() {
         let outputs = vec![
             IoCompletionOutputSet {
+                composition_output_set_id: Some(0),
                 set_index: 0,
                 set_name: "headers".to_string(),
                 items: vec![IoCompletionItem {
@@ -207,6 +208,7 @@ dolore magna aliquyam erat, sed diam voluptua."#,
                 }],
             },
             IoCompletionOutputSet {
+                composition_output_set_id: Some(1),
                 set_index: 1,
                 set_name: "bodies".to_string(),
                 items: vec![IoCompletionItem {
