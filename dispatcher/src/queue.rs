@@ -93,9 +93,8 @@ pub struct WorkQueue {
     /// Holds the two queues, first one for work ready to be run locally, second one for engines waiting for fitting work to arrive
     inner: Arc<Mutex<InnerQueue>>,
     promise_buffer: PromiseBuffer,
-    /// Used to keep track of the total number of jobs currently in the queue
-    queue_state_sender: watch::Sender<usize>,
-    queue_state_receiver: watch::Receiver<usize>,
+    /// Notifier to indicate that the number of idle cores has changed
+    idle_notifier: Arc<Notify>,
     /// Notifier to send out notification that queueing is happening
     queuing_notifier: Arc<Notify>,
     /// Tracks current system informations used by the any sharding policy.
@@ -105,20 +104,28 @@ pub struct WorkQueue {
 }
 
 struct ComputeWaitFuture<'queue> {
+    was_idle: bool,
     flags: u32,
     work_queue: &'queue WorkQueue,
 }
 
 impl<'list> ComputeWaitFuture<'list> {
     fn new(flags: u32, work_queue: &'list WorkQueue) -> ComputeWaitFuture<'list> {
-        Self { flags, work_queue }
+        Self {
+            was_idle: false,
+            flags,
+            work_queue,
+        }
     }
 }
 
 impl Future for ComputeWaitFuture<'_> {
     type Output = (WorkToDo, Debt);
 
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Self::Output> {
         let mut lock_guard = self.work_queue.inner.lock().unwrap();
         // check if there is any work with the flags we are looking for
         let result = lock_guard
@@ -131,7 +138,6 @@ impl Future for ComputeWaitFuture<'_> {
             if let Some(waker) = lock_guard.io_waker_list.pop_front() {
                 waker.wake();
             }
-            self.work_queue.queue_state_decrease();
 
             if let WorkToDo::FunctionArguments {
                 function_id: _,
@@ -144,6 +150,9 @@ impl Future for ComputeWaitFuture<'_> {
             {
                 recorder.record(RecordPoint::ComputeQueueEnd);
             }
+            if self.was_idle {
+                self.work_queue.idle_notifier.notify_waiters();
+            }
             Poll::Ready(result_tupple)
         } else {
             // Did not find any work, so need to add to waker queue
@@ -152,6 +161,11 @@ impl Future for ComputeWaitFuture<'_> {
                 waker: cx.waker().clone(),
             };
             lock_guard.compute_waker_list.push_back(waker_element);
+            // have newly become idle
+            if !self.was_idle {
+                self.work_queue.idle_notifier.notify_waiters();
+                self.was_idle = true;
+            }
             // lock was ready once, need to set new one
             Poll::Pending
         }
@@ -234,7 +248,6 @@ impl Future for IoWaitFuture<'_> {
 impl WorkQueue {
     /// Creates a new WorkQueue of given size.
     pub fn init() -> Self {
-        let (queue_state_sender, queue_state_receiver) = watch::channel(0);
         let (num_local_cores_sender, num_local_cores_watcher) = watch::channel(0);
         WorkQueue {
             inner: Arc::new(Mutex::new(InnerQueue {
@@ -245,8 +258,7 @@ impl WorkQueue {
                 prefetching_in_progress: 0,
             })),
             promise_buffer: PromiseBuffer::init(MAX_QUEUE),
-            queue_state_sender,
-            queue_state_receiver,
+            idle_notifier: Arc::new(Notify::new()),
             queuing_notifier: Arc::new(Notify::new()),
             system_info: Arc::new(SystemInfo {
                 num_local_cores_watcher,
@@ -261,22 +273,12 @@ impl WorkQueue {
         self.queuing_notifier.clone()
     }
 
-    pub fn queue_state_watcher(&self) -> watch::Receiver<usize> {
-        self.queue_state_receiver.clone()
+    pub fn idle_notifier(&self) -> Arc<Notify> {
+        self.idle_notifier.clone()
     }
 
-    fn queue_state_decrease(&self) {
-        self.queue_state_sender.send_if_modified(|current_state| {
-            *current_state = current_state.saturating_sub(1);
-            *current_state < *self.system_info.num_local_cores_watcher.borrow()
-        });
-    }
-
-    fn queue_state_increase(&self) {
-        self.queue_state_sender.send_if_modified(|current_state| {
-            *current_state += 1;
-            *current_state < *self.system_info.num_local_cores_watcher.borrow()
-        });
+    pub fn idle_cores(&self) -> usize {
+        self.inner.lock().unwrap().compute_waker_list.len()
     }
 
     /// Pushes the work and debt to the back of the queue and sets the flags accordingly.
@@ -454,8 +456,6 @@ impl WorkQueue {
                 for alternative in function_alternatives {
                     flags |= get_engine_flag(alternative.engine);
                 }
-                // only want to count the actual functions to execute
-                self.queue_state_increase();
                 // check if system flag is set, if so, put in system queue
                 (flags, local)
             }
@@ -505,7 +505,6 @@ impl WorkQueue {
             engine_flags,
             node_id,
             number_of_functions,
-            &|| self.queue_state_decrease(),
         )
     }
 

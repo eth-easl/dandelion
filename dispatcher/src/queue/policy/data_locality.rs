@@ -95,7 +95,6 @@ pub fn get_work_for_remote(
     engine_flags: u32,
     node_id: u64,
     number_of_functions: usize,
-    queue_state_decrease: &impl Fn(),
 ) -> Vec<(WorkToDo, Debt, usize)> {
     let mut functions = Vec::with_capacity(number_of_functions);
     // go through all the input sets and find those with the most data already on the node asking for work
@@ -112,7 +111,6 @@ pub fn get_work_for_remote(
                         .unwrap_or(false);
                     if queue_element.flags & engine_flags != 0 && node_has_most_data {
                         recorder.record(RecordPoint::IOQueueEnd);
-                        queue_state_decrease();
                         true
                     } else {
                         false
@@ -140,7 +138,6 @@ pub fn get_work_for_remote(
                     if let WorkToDo::FunctionArguments { recorder, .. } = &mut queue_element.work {
                         if queue_element.flags & engine_flags != 0 {
                             recorder.record(RecordPoint::IOQueueEnd);
-                            queue_state_decrease();
                             true
                         } else {
                             false
@@ -169,7 +166,6 @@ pub fn get_work_for_remote(
                     if let WorkToDo::FunctionArguments { recorder, .. } = &mut queue_element.work {
                         if queue_element.flags & engine_flags != 0 {
                             recorder.record(RecordPoint::ComputeQueueEnd);
-                            queue_state_decrease();
                             // Don't need to wake IO cores to do more prefetching,
                             // since those queues must be empty if we are taking from here.
                             true

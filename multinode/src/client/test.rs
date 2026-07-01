@@ -1,5 +1,8 @@
 use std::{
-    sync::{Arc, RwLock},
+    sync::{
+        atomic::{AtomicUsize, Ordering::SeqCst},
+        Arc, RwLock,
+    },
     task::Poll,
     time::Instant,
 };
@@ -283,6 +286,9 @@ fn test_remote_queue_client() {
     let (poll_option_sender, poll_option_receiver) = mpsc::channel(64);
     let (remote_message_sender, mut remote_message_receiver) = mpsc::channel(64);
 
+    let idle_cores = Arc::new(AtomicUsize::new(0));
+    let idle_clone = idle_cores.clone();
+
     let dispatcher_send =
         |registry, duration, invocation_id, function_id, inputs, is_cold, recorder| {
             dispatcher_sender
@@ -303,6 +309,7 @@ fn test_remote_queue_client() {
         poll_option_receiver,
         remote_message_sender,
         dispatcher_send,
+        || idle_clone.load(SeqCst),
         0,
         ExportRegistry::new(1),
         0,
@@ -312,6 +319,7 @@ fn test_remote_queue_client() {
     poll_option_sender
         .try_send(crate::client::PollingOption::LocalCoreCountChanged(3))
         .unwrap();
+    idle_cores.store(3, SeqCst);
 
     // receive the message about the updated core count
     assert_eq!(Poll::Pending, client_future.poll_unpin(&mut context));
@@ -320,11 +328,7 @@ fn test_remote_queue_client() {
         remote_message => panic!("Expected work request not {:?}", remote_message),
     }
 
-    // update local queue state, expect message asking for work
-    poll_option_sender
-        .try_send(crate::client::PollingOption::QueueStateChanged(0))
-        .unwrap();
-    assert_eq!(Poll::Pending, client_future.poll_unpin(&mut context));
+    // Should also send a work request for idle cores with the node update
     match remote_message_receiver.try_recv().unwrap() {
         remote_message::RemoteMessage::WorkRequest(engines) => {
             assert!(engines.engines.len() > 0);
@@ -394,13 +398,7 @@ fn test_remote_queue_client() {
         Poll::Pending | Poll::Ready(None) => panic!("Should receive work now"),
     };
 
-    // notify that queue state has changed
-    poll_option_sender
-        .try_send(crate::client::PollingOption::QueueStateChanged(2))
-        .unwrap();
-
-    // should now send request for more work
-    assert_eq!(Poll::Pending, client_future.poll_unpin(&mut context));
+    // expect it to ask for 1 more immediately when receiveing the work and seeing there is still capacity to prefetch
     match remote_message_receiver.try_recv().unwrap() {
         remote_message::RemoteMessage::WorkRequest(engines) => {
             assert!(engines.engines.len() > 0);
@@ -408,6 +406,19 @@ fn test_remote_queue_client() {
         }
         remote_message => panic!("Expected work request not {:?}", remote_message),
     }
+
+    // notify that number of idle cores has changed
+    idle_cores.store(1, SeqCst);
+    poll_option_sender
+        .try_send(crate::client::PollingOption::IdleChanged)
+        .unwrap();
+
+    // should now send request for more work, since it should prefetch one
+    assert_eq!(Poll::Pending, client_future.poll_unpin(&mut context));
+    // should not get another message asking for work, since still waiting for the last
+    remote_message_receiver
+        .try_recv()
+        .expect_err("Should not have another message yet");
 
     // send work
     poll_option_sender
@@ -444,13 +455,17 @@ fn test_remote_queue_client() {
         }
         Poll::Pending | Poll::Ready(None) => panic!("Should receive work now"),
     };
-    // Notify that queue state has changed, should not trigger asking for more work,
-    // since prefetch capacity is 0.
+    // expecting no more message for work, since prefetching is set to 0
+    remote_message_receiver.try_recv().unwrap_err();
+
+    // Notify that no more cores are idle, still should not trigger more work
+    idle_cores.store(0, SeqCst);
     poll_option_sender
-        .try_send(crate::client::PollingOption::QueueStateChanged(3))
+        .try_send(crate::client::PollingOption::IdleChanged)
         .unwrap();
     assert_eq!(Poll::Pending, client_future.poll_unpin(&mut context));
     assert!(dispatcher_receiver.is_empty());
+    remote_message_receiver.try_recv().unwrap_err();
 
     // send back a result, mark the queue as changed and poll to get it processed
     poll_option_sender
@@ -463,10 +478,7 @@ fn test_remote_queue_client() {
             }),
         ))
         .unwrap();
-
-    poll_option_sender
-        .try_send(crate::client::PollingOption::QueueStateChanged(2))
-        .unwrap();
+    idle_cores.store(1, SeqCst);
 
     assert_eq!(Poll::Pending, client_future.poll_unpin(&mut context));
 
@@ -487,14 +499,13 @@ fn test_remote_queue_client() {
         remote_message => panic!("Expected reponse not {:?}", remote_message),
     }
 
-    // check that client send out a request for more.
-    // (since it got the result and the queue change, should be able to process both)
+    // check that client send out a request for more, since it should have capacity again
     match remote_message_receiver.try_recv().unwrap() {
         remote_message::RemoteMessage::WorkRequest(_) => (),
         remote_message => panic!("Expected work request not {:?}", remote_message),
     }
 
-    // send back that there is some
+    // send back that there is none
     poll_option_sender
         .try_send(crate::client::PollingOption::Message(
             Ok(queue_message::QueueMessage::NoWork(true)),
@@ -534,6 +545,9 @@ fn test_remote_queue_client_prefetch() {
     let (poll_option_sender, poll_option_receiver) = mpsc::channel(64);
     let (remote_message_sender, mut remote_message_receiver) = mpsc::channel(64);
 
+    let idle_cores = Arc::new(AtomicUsize::new(0));
+    let idle_clone = idle_cores.clone();
+
     let dispatcher_send =
         |registry, duration, invocation_id, function_id, inputs, is_cold, recorder| {
             dispatcher_sender
@@ -554,6 +568,7 @@ fn test_remote_queue_client_prefetch() {
         poll_option_receiver,
         remote_message_sender,
         dispatcher_send,
+        || idle_clone.load(SeqCst),
         1,
         ExportRegistry::new(1),
         0,
@@ -563,6 +578,7 @@ fn test_remote_queue_client_prefetch() {
     poll_option_sender
         .try_send(crate::client::PollingOption::LocalCoreCountChanged(1))
         .unwrap();
+    idle_cores.store(1, SeqCst);
 
     assert_eq!(Poll::Pending, client_future.poll_unpin(&mut context));
     match remote_message_receiver.try_recv().unwrap() {
@@ -615,6 +631,13 @@ fn test_remote_queue_client_prefetch() {
         }
         Poll::Pending | Poll::Ready(None) => panic!("Should receive work now"),
     };
+
+    // notify the client that the number of idle cores went to 0, so should now prefetch one more
+    idle_cores.store(0, SeqCst);
+    poll_option_sender
+        .try_send(crate::client::PollingOption::IdleChanged)
+        .unwrap();
+    assert_eq!(Poll::Pending, client_future.poll_unpin(&mut context));
 
     // expect it to ask for 1 more work given the prefetch capacity
     match remote_message_receiver.try_recv().unwrap() {

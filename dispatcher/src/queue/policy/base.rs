@@ -41,7 +41,6 @@ pub fn get_work_for_remote(
     engine_flags: u32,
     _node_id: u64,
     number_of_functions: usize,
-    queue_state_decrease: &impl Fn(),
 ) -> Vec<(WorkToDo, Debt, usize)> {
     let mut functions = Vec::with_capacity(number_of_functions);
     // first check the queue with unresolved references, since those are easier to steal
@@ -50,7 +49,6 @@ pub fn get_work_for_remote(
             .extract_if(|queue_element| {
                 if let WorkToDo::FunctionArguments { recorder, .. } = &mut queue_element.work {
                     if queue_element.flags & engine_flags != 0 {
-                        queue_state_decrease();
                         recorder.record(RecordPoint::IOQueueEnd);
                         true
                     } else {
@@ -78,7 +76,6 @@ pub fn get_work_for_remote(
                     if let WorkToDo::FunctionArguments { recorder, .. } = &mut queue_element.work {
                         if queue_element.flags & engine_flags != 0 {
                             recorder.record(RecordPoint::ComputeQueueEnd);
-                            queue_state_decrease();
                             // don't need to poke IO cores to do more prefetching,
                             // since those queues are empty if we are taking from here
                             true

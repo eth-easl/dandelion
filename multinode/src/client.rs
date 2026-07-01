@@ -557,7 +557,7 @@ pub async fn remote_queue_server(
 
 pub enum PollingOption {
     Message(DandelionResult<queue_message::QueueMessage>, Option<Bytes>),
-    QueueStateChanged(usize),
+    IdleChanged,
     LocalCoreCountChanged(usize),
     // Results(RemoteMessage, Option<(Vec<Option<CompositionSet>>, u64)>),
     Results(remote_message::RemoteMessage),
@@ -593,17 +593,16 @@ async fn remote_queue_client_sender(
 // TODO: think about limiting number of notification, to make sure we are not adding
 // additional load when the queue is filled / emptied in big strides
 async fn remote_queue_client_queue_state(
-    mut receiver: watch::Receiver<usize>,
+    receiver: Arc<Notify>,
     sender: mpsc::Sender<PollingOption>,
 ) {
+    // Send a initial idle changed message, to make sure it always asks once.
+    // An idle machine otherwise would never start asking for work
+    sender.send(PollingOption::IdleChanged).await.unwrap();
     loop {
-        receiver.changed().await.unwrap();
-        trace!("received local queue state");
-        let queue_state = *receiver.borrow_and_update();
-        sender
-            .send(PollingOption::QueueStateChanged(queue_state))
-            .await
-            .unwrap();
+        receiver.notified().await;
+        trace!("received capacity notification");
+        sender.send(PollingOption::IdleChanged).await.unwrap();
     }
 }
 
@@ -677,12 +676,12 @@ async fn remote_queue_client_logic(
         bool,
         Recorder,
     ),
+    idle_cores: impl Fn() -> usize,
     prefetch_multiplier: usize,
     export_registry: ExportRegistry,
     mut num_local_cores: usize,
 ) {
     let mut remote_had_work = true;
-    let mut queue_state = 0;
     // This makes sure we don't overfetch from this node.
     // TODO: think about the general issue of state synchronization between the dispatcher and multinode client adding things,
     // and the engines and server taking things.
@@ -782,13 +781,11 @@ async fn remote_queue_client_logic(
                 message_sender.send(results).await.unwrap();
             }
             // getting a notification so should poll the queue
-            PollingOption::QueueStateChanged(current_queue_state) => {
+            PollingOption::IdleChanged => {
                 trace!(
-                    "Queue Client checking updated queue state: {:?}, remote_had_work {}",
-                    current_queue_state,
+                    "Queue Client checking updated queue state, remote_had_work {}",
                     remote_had_work,
                 );
-                queue_state = current_queue_state;
             }
             PollingOption::LocalCoreCountChanged(new_core_number) => {
                 trace!("Sending new local core count: {}", new_core_number);
@@ -802,12 +799,28 @@ async fn remote_queue_client_logic(
             }
         }
         if remote_had_work {
-            let occupancy = std::cmp::max(queue_state, work_from_remote);
-            // ask for work for the local idle cores
-            let engine_number = if occupancy < num_local_cores {
-                num_local_cores - occupancy
-            } else if occupancy < num_local_cores + num_local_cores * prefetch_multiplier {
-                num_local_cores + num_local_cores * prefetch_multiplier - occupancy
+            // ! This currently assumes all works in the queue comes from a single remote master.
+            // ! The assumption starts to break if there are things directly enqueued or come from multiple master.
+            // ! The reason we need this assumption is, because otherwise, the client cannot get a good bound
+            // ! of how full the the queue is, since the dispatcher may not have processed new invocations added by
+            // ! a message received to the work queue yet when we perform this check.
+            let idle = idle_cores();
+            // Want to make sure we fill the prefetching buffer.
+            let max_prefetch = num_local_cores * prefetch_multiplier;
+            // The amount of work that is in the system from the remote, need to subtract the amount actually running on a compute core
+            // everything else is still in prefetching
+            let current_prefetch = work_from_remote.saturating_sub(num_local_cores - idle);
+            // If we have 0 prefetching, ask for as much as we have idle cores
+            let engine_number = if prefetch_multiplier == 0 {
+                if work_from_remote < num_local_cores {
+                    num_local_cores - work_from_remote
+                } else {
+                    continue;
+                }
+            // otherwise check how much prefetch capacity we have and check if we have already reached it
+            } else if max_prefetch > current_prefetch {
+                max_prefetch - current_prefetch
+            // if neither do not ask for more work
             } else {
                 continue;
             };
@@ -861,12 +874,6 @@ pub async fn remote_queue_client(
     send_message(&node_info_buffer, &mut write_socket, None).await;
     trace!("Queue Client sent out initial message");
 
-    // Create a second copy of the watcher to wait on asynchronously, marke changed to check once in the beginning,
-    // in case there are already idle cores
-    let mut local_queue_state = queue.queue_state_watcher();
-    // needs to be marked changed, so a server with an empty queue and already stead number of local cores starts to poll
-    local_queue_state.mark_changed();
-
     // start sender loop
     let (remote_message_sender, remote_message_reciever) = mpsc::channel(64);
     spawn(remote_queue_client_sender(
@@ -885,8 +892,9 @@ pub async fn remote_queue_client(
         poll_option_sender.clone(),
     ));
     // spawn queue state loop
+    let local_idle_notifier = queue.idle_notifier();
     spawn(remote_queue_client_queue_state(
-        local_queue_state,
+        local_idle_notifier,
         poll_option_sender.clone(),
     ));
 
@@ -907,6 +915,7 @@ pub async fn remote_queue_client(
                 recorder,
             ));
         },
+        || queue.idle_cores(),
         dispatcher::queue::PREFETCH_PER_CORE,
         export_registry,
         local_core_count,
