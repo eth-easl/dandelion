@@ -235,12 +235,13 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                         function_context.content.push(None);
                     }
                 }
-
-                recorder.record(RecordPoint::EngineStart);
-
+                
                 if !debt.is_alive() {
                     continue 'engine;
                 }
+
+                recorder.record(RecordPoint::EngineStart);
+
 
                 let result = engine_state.run(
                     function.config.clone(),
