@@ -193,7 +193,7 @@ fn item_data_dtop(
         ItemData::IoData(io_data) => {
             let IoData {
                 invocation_id: _,
-                composition_node_id: _,
+                composition_output_set_ids: _,
                 item_identifier: _,
                 item_key: _,
                 original_position,
@@ -245,7 +245,7 @@ fn item_data_and_ref(
         ItemData::IoData(io_data) => {
             let IoData {
                 invocation_id: _,
-                composition_node_id: _,
+                composition_output_set_ids: _,
                 item_identifier: _,
                 item_key: _,
                 original_position,
@@ -319,7 +319,7 @@ fn item_data_ptod(
             (
                 ItemData::IoData(IoData {
                     invocation_id: dandelion_commons::InvocationId::nil(),
-                    composition_node_id: None,
+                    composition_output_set_ids: Arc::new(Vec::new()),
                     item_identifier: String::new(),
                     item_key: 0,
                     original_position: Position { offset: 0, size: 0 },

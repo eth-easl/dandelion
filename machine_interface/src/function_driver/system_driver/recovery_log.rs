@@ -32,7 +32,6 @@ static RECOVERED_IO_OUTPUTS: OnceLock<
 #[derive(Debug, Clone)]
 pub struct IoCompletionRecord {
     pub invocation_id: InvocationId,
-    pub composition_node_id: String,
     pub function: SystemFunction,
     pub outputs: Vec<IoCompletionOutputSet>,
 }
@@ -40,6 +39,7 @@ pub struct IoCompletionRecord {
 /// One output set emitted by a completed IO function.
 #[derive(Debug, Clone)]
 pub struct IoCompletionOutputSet {
+    pub composition_output_set_id: Option<usize>,
     pub set_index: usize,
     pub set_name: String,
     pub items: Vec<IoCompletionItem>,
@@ -56,7 +56,7 @@ pub struct IoCompletionItem {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RecoveredIoKey {
     invocation_id: InvocationId,
-    composition_node_id: String,
+    composition_output_set_id: usize,
     function: SystemFunction,
     identifier: String,
     key: u64,
@@ -254,13 +254,6 @@ pub fn parse_io_completion_line(line: &str) -> DandelionResult<Option<IoCompleti
             InvocationId::parse_str(raw)
                 .map_err(|_| internal_error("Invalid invocation_id in IO completion record"))
         })?;
-    let composition_node_id = fields
-        .get("composition_node_id")
-        .copied()
-        .ok_or(internal_error(
-            "Missing composition_node_id field in IO completion record",
-        ))?
-        .to_string();
     let function = SystemFunction::from(
         fields
             .get("function")
@@ -279,7 +272,6 @@ pub fn parse_io_completion_line(line: &str) -> DandelionResult<Option<IoCompleti
     )?;
     Ok(Some(IoCompletionRecord {
         invocation_id,
-        composition_node_id,
         function,
         outputs,
     }))
@@ -298,19 +290,13 @@ pub fn load_io_completion_records(invocation_id: InvocationId) -> DandelionResul
 
 pub fn recovered_composition_nodes(
     records: &[IoCompletionRecord],
-) -> DandelionResult<HashMap<String, Vec<Option<CompositionSet>>>> {
-    let mut recovered_nodes = HashMap::new();
+) -> DandelionResult<HashMap<usize, CompositionSet>> {
+    let mut recovered_nodes: HashMap<usize, CompositionSet> = HashMap::new();
     for record in records {
-        let max_set_index = record
-            .outputs
-            .iter()
-            .map(|output| output.set_index)
-            .max()
-            .unwrap_or(0);
-        let mut outputs = Vec::with_capacity(max_set_index + 1);
-        outputs.resize(max_set_index + 1, None);
-
         for output in &record.outputs {
+            let Some(composition_output_set_id) = output.composition_output_set_id else {
+                continue;
+            };
             let mut items = Vec::with_capacity(output.items.len());
             for item in &output.items {
                 let key = u32::try_from(item.key).map_err(|_| {
@@ -329,11 +315,24 @@ pub fn recovered_composition_nodes(
                     ItemData::LocalData(context),
                 ));
             }
-            outputs[output.set_index] =
-                CompositionSet::from_item_list(output.set_name.clone(), items);
+            if let Some(new_set) = CompositionSet::from_item_list(output.set_name.clone(), items) {
+                // Each HTTP completion record contributes one item per output set. Merge records
+                // targeting the same composition set id so batched recovery rebuilds the full set.
+                match recovered_nodes.remove(&composition_output_set_id) {
+                    Some(existing_set) => {
+                        let set_name = existing_set.get_name().clone();
+                        let merged_items = existing_set.into_iter().chain(new_set.into_iter()).collect();
+                        if let Some(merged_set) = CompositionSet::from_item_list(set_name, merged_items)
+                        {
+                            recovered_nodes.insert(composition_output_set_id, merged_set);
+                        }
+                    }
+                    None => {
+                        recovered_nodes.insert(composition_output_set_id, new_set);
+                    }
+                }
+            }
         }
-
-        recovered_nodes.insert(record.composition_node_id.clone(), outputs);
     }
     Ok(recovered_nodes)
 }
@@ -357,7 +356,10 @@ pub fn install_recovered_io_records(
                 recovered_outputs
                     .entry(RecoveredIoKey {
                         invocation_id,
-                        composition_node_id: record.composition_node_id.clone(),
+                        composition_output_set_id: match output.composition_output_set_id {
+                            Some(id) => id,
+                            None => continue,
+                        },
                         function: record.function,
                         identifier: item.identifier.clone(),
                         key: item.key,
@@ -370,32 +372,27 @@ pub fn install_recovered_io_records(
     Ok(())
 }
 
-pub fn get_recovered_io_outputs(
+pub fn get_recovered_io_output(
     invocation_id: InvocationId,
-    composition_node_id: Option<&str>,
+    composition_output_set_id: Option<usize>,
     function: SystemFunction,
     identifier: &str,
     key: u64,
-) -> Option<Vec<Arc<crate::memory_domain::Context>>> {
-    let composition_node_id = composition_node_id?;
+) -> Option<Arc<crate::memory_domain::Context>> {
+    let composition_output_set_id = composition_output_set_id?;
     let recovered = recovered_io_outputs()
         .lock()
         .expect("Recovered IO output map poisoned")
         .get(&RecoveredIoKey {
             invocation_id,
-            composition_node_id: composition_node_id.to_string(),
+            composition_output_set_id,
             function,
             identifier: identifier.to_string(),
             key,
         })
-        .cloned()?;
+        .and_then(|recovered| recovered.values().next().cloned())?;
 
-    let max_set_index = recovered.keys().copied().max()?;
-    let mut outputs = Vec::with_capacity(max_set_index + 1);
-    for set_index in 0..=max_set_index {
-        outputs.push(recovered.get(&set_index)?.clone());
-    }
-    Some(outputs)
+    Some(recovered)
 }
 
 pub fn clear_recovered_io(invocation_id: InvocationId) {
@@ -421,6 +418,19 @@ fn push_string(buffer: &mut Vec<u8>, value: &str) -> DandelionResult<()> {
     Ok(())
 }
 
+fn push_optional_u32(buffer: &mut Vec<u8>, value: Option<usize>) -> DandelionResult<()> {
+    let raw = match value {
+        Some(value) => u32::try_from(value).map_err(|_| {
+            dandelion_err!(DandelionError::RequestError(FrontendError::InternalError(
+                "IO completion payload length exceeds u32".to_string(),
+            )))
+        })?,
+        None => u32::MAX,
+    };
+    buffer.extend_from_slice(&raw.to_le_bytes());
+    Ok(())
+}
+
 fn read_u32(buffer: &[u8], offset: &mut usize) -> DandelionResult<u32> {
     let end = *offset + std::mem::size_of::<u32>();
     let bytes = buffer.get(*offset..end).ok_or(dandelion_err!(
@@ -441,6 +451,15 @@ fn read_u64(buffer: &[u8], offset: &mut usize) -> DandelionResult<u64> {
     ))?;
     *offset = end;
     Ok(u64::from_le_bytes(bytes.try_into().unwrap()))
+}
+
+fn read_optional_u32(buffer: &[u8], offset: &mut usize) -> DandelionResult<Option<usize>> {
+    let value = read_u32(buffer, offset)?;
+    if value == u32::MAX {
+        Ok(None)
+    } else {
+        Ok(Some(value as usize))
+    }
 }
 
 fn read_bytes(buffer: &[u8], offset: &mut usize, length: usize) -> DandelionResult<Vec<u8>> {
@@ -468,6 +487,7 @@ pub fn encode_io_completion_payload(outputs: &[IoCompletionOutputSet]) -> Dandel
     let mut buffer = Vec::new();
     push_u32(&mut buffer, outputs.len())?;
     for output in outputs {
+        push_optional_u32(&mut buffer, output.composition_output_set_id)?;
         push_u32(&mut buffer, output.set_index)?;
         push_string(&mut buffer, &output.set_name)?;
         push_u32(&mut buffer, output.items.len())?;
@@ -493,6 +513,7 @@ pub fn decode_io_completion_payload(
     let set_count = read_u32(&payload, &mut offset)? as usize;
     let mut outputs = Vec::with_capacity(set_count);
     for _ in 0..set_count {
+        let composition_output_set_id = read_optional_u32(&payload, &mut offset)?;
         let set_index = read_u32(&payload, &mut offset)? as usize;
         let set_name = read_string(&payload, &mut offset)?;
         let item_count = read_u32(&payload, &mut offset)? as usize;
@@ -509,6 +530,7 @@ pub fn decode_io_completion_payload(
             });
         }
         outputs.push(IoCompletionOutputSet {
+            composition_output_set_id,
             set_index,
             set_name,
             items,
@@ -525,8 +547,8 @@ pub fn decode_io_completion_payload(
 pub fn format_io_completion_line(record: &IoCompletionRecord) -> DandelionResult<String> {
     let payload_b64 = encode_io_completion_payload(&record.outputs)?;
     Ok(format!(
-        "event=io_function_completed invocation_id={} composition_node_id={} function={} payload_b64={}\n",
-        record.invocation_id, record.composition_node_id, record.function, payload_b64
+        "event=io_function_completed invocation_id={} function={} payload_b64={}\n",
+        record.invocation_id, record.function, payload_b64
     ))
 }
 
@@ -576,9 +598,9 @@ mod tests {
     fn sample_record() -> IoCompletionRecord {
         IoCompletionRecord {
             invocation_id: InvocationId::nil(),
-            composition_node_id: "node_hash".to_string(),
             function: SystemFunction::HTTP,
             outputs: vec![IoCompletionOutputSet {
+                composition_output_set_id: Some(17),
                 set_index: 0,
                 set_name: "headers".to_string(),
                 items: vec![IoCompletionItem {
@@ -594,7 +616,7 @@ mod tests {
     fn completion_line_has_human_readable_prefix() {
         let line = format_io_completion_line(&sample_record()).unwrap();
         assert!(line.starts_with(
-            "event=io_function_completed invocation_id=00000000-0000-0000-0000-000000000000 composition_node_id=node_hash function=HTTP payload_b64="
+            "event=io_function_completed invocation_id=00000000-0000-0000-0000-000000000000 function=HTTP payload_b64="
         ));
         assert!(line.ends_with('\n'));
     }
@@ -610,7 +632,7 @@ mod tests {
         let log_path = invocation_log_path(record.invocation_id).unwrap();
         let content = fs::read_to_string(&log_path).unwrap();
         assert!(content.contains("event=io_function_completed"));
-        assert!(content.contains("composition_node_id=node_hash"));
+        assert!(content.contains("function=HTTP"));
     }
 
     #[test]
@@ -625,9 +647,9 @@ mod tests {
                 activate_async_invocation_logging(invocation_id);
                 let record = IoCompletionRecord {
                     invocation_id,
-                    composition_node_id: format!("node_{index}"),
                     function: SystemFunction::HTTP,
                     outputs: vec![IoCompletionOutputSet {
+                        composition_output_set_id: Some(index as usize),
                         set_index: 0,
                         set_name: "headers".to_string(),
                         items: vec![IoCompletionItem {
@@ -653,8 +675,8 @@ mod tests {
             assert!(
                 lines
                     .iter()
-                    .any(|line| line.contains(&format!("composition_node_id=node_{index}"))),
-                "missing line for node_{index}"
+                    .any(|line| line.contains("function=HTTP")),
+                "missing HTTP recovery line for index {index}"
             );
             assert!(lines.iter().all(|line| line.starts_with("event=io_function_completed ")));
         }

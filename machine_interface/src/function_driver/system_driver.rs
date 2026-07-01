@@ -65,7 +65,7 @@ pub const SYSTEM_FUNCTIONS: &[SystemFunction] = &[SystemFunction::HTTP];
 #[derive(Debug, Clone)]
 pub struct IoData {
     pub invocation_id: InvocationId,
-    pub composition_node_id: Option<String>,
+    pub composition_output_set_ids: Arc<Vec<Option<usize>>>,
     pub item_identifier: String,
     pub item_key: u64,
     pub original_position: Position,
@@ -83,7 +83,7 @@ pub struct IoData {
 pub fn convert_to_references(
     function: SystemFunction,
     invocation_id: InvocationId,
-    composition_node_id: Option<String>,
+    composition_output_set_ids: Option<Vec<Option<usize>>>,
     mut inputs: Vec<Option<CompositionSet>>,
     // recorder: Recorder,
 ) -> DandelionResult<Vec<Option<CompositionSet>>> {
@@ -97,6 +97,9 @@ pub fn convert_to_references(
     // go through all input sets and check if there is already a static one, or on in the input data
     let mut output_vec = try_with_capacity!(Vec, 2)?;
     output_vec.resize(2, None);
+    let composition_output_set_ids = Arc::new(
+        composition_output_set_ids.unwrap_or_else(|| vec![None; output_vec.len()]),
+    );
 
     if let Some(input_set) = inputs[0].take() {
         let input_set_name = input_set.get_name().clone();
@@ -111,7 +114,7 @@ pub fn convert_to_references(
             let set_once = Arc::new(OnceCell::new());
             let header_data = IoData {
                 invocation_id,
-                composition_node_id: composition_node_id.clone(),
+                composition_output_set_ids: composition_output_set_ids.clone(),
                 item_identifier: item.ident.clone(),
                 item_key: item.key.into(),
                 original_position: item.data,
@@ -122,7 +125,7 @@ pub fn convert_to_references(
             };
             let body_data = IoData {
                 invocation_id,
-                composition_node_id: composition_node_id.clone(),
+                composition_output_set_ids: composition_output_set_ids.clone(),
                 item_identifier: item.ident.clone(),
                 item_key: item.key.into(),
                 original_position: item.data,

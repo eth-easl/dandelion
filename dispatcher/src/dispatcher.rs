@@ -33,7 +33,7 @@ use std::{
     sync::Arc,
 };
 
-pub type RecoveredNodeOutputs = Arc<HashMap<String, Vec<Option<CompositionSet>>>>;
+pub type RecoveredNodeOutputs = Arc<HashMap<usize, CompositionSet>>;
 
 // TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
 // the entire execution time anyway
@@ -127,6 +127,7 @@ impl Dispatcher {
                 inputs,
                 caching,
                 recorder.clone(),
+                None,
                 None,
                 recovered_nodes,
             )
@@ -237,7 +238,7 @@ impl Dispatcher {
     pub async fn queue_composition(
         &self,
         composition: Composition,
-        composition_node_ids: Option<Arc<Vec<String>>>,
+        _composition_node_ids: Option<Arc<Vec<String>>>,
         inputs: Vec<Option<CompositionSet>>,
         caching: bool,
         mut recorder: Recorder,
@@ -281,29 +282,55 @@ impl Dispatcher {
             .into_iter()
             .enumerate()
             .filter_map(|(composition_index, deps)| {
-                let composition_node_id = composition_node_ids
-                    .as_ref()
-                    .and_then(|node_ids| node_ids.get(composition_index).cloned());
-                let is_http_system_function = deps.function.as_str() == "HTTP";
-                if !is_http_system_function {
-                    if let Some(recovered_sets) = composition_node_id
-                        .as_ref()
-                        .and_then(|node_id| recovered_nodes.as_ref().and_then(|nodes| nodes.get(node_id)))
-                    {
-                        let new_sets = deps
-                            .output_set_ids
-                            .iter()
-                            .cloned()
-                            .zip(recovered_sets.iter().cloned())
-                            .filter_map(|(index_opt, set)| index_opt.map(|index| (index, set)))
-                            .collect();
-                        awaited_sets.push(Either::Left(ready(Ok((
-                            new_sets,
-                            composition_index,
-                            Vec::new(),
-                        )))));
-                        return None;
-                    }
+                // Recovery is keyed by composition output set id. If every output set
+                // produced by this node is already present, we can feed those recovered sets
+                // back into the scheduler as if the node had just finished.
+                let recovered_sets = deps
+                    .output_set_ids
+                    .iter()
+                    .filter_map(|index_opt| {
+                        index_opt.and_then(|index| {
+                            recovered_nodes
+                                .as_ref()
+                                .and_then(|sets| sets.get(&index))
+                                .cloned()
+                                .map(|set| (index, Some(set)))
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let is_system_function = machine_interface::function_driver::system_driver::SYSTEM_FUNCTIONS
+                    .iter()
+                    .any(|system_function| deps.function.as_str() == Into::<&str>::into(system_function));
+                let recovered_all_outputs = deps
+                    .output_set_ids
+                    .iter()
+                    .filter_map(|index_opt| *index_opt)
+                    .all(|index| {
+                        recovered_nodes
+                            .as_ref()
+                            .is_some_and(|sets| sets.contains_key(&index))
+                    });
+                // Batched HTTP nodes can be only partially recovered item-by-item, so they still
+                // go through the deferred IO path. For a single request item we can skip the node
+                // entirely once both composition-visible outputs are present.
+                let can_skip_system_function_dispatch = is_system_function
+                    && deps
+                        .input_set_ids
+                        .iter()
+                        .flatten()
+                        .all(|descriptor| {
+                            inputs
+                                .get(descriptor.composition_id)
+                                .and_then(|set| set.as_ref())
+                                .is_some_and(|set| set.len() <= 1)
+                        });
+                if recovered_all_outputs && (!is_system_function || can_skip_system_function_dispatch) {
+                    awaited_sets.push(Either::Left(ready(Ok((
+                        recovered_sets,
+                        composition_index,
+                        Vec::new(),
+                    )))));
+                    return None;
                 }
                 let mut missing_map = BTreeMap::new();
                 let input_set_number: usize = deps.input_set_ids.len();
@@ -350,7 +377,7 @@ impl Dispatcher {
                 Some(FunctionArgs {
                     function_id: deps.function,
                     function_index: composition_index,
-                    composition_node_id,
+                    composition_node_id: None,
                     input_sets: ready_inputs,
                     join_info: deps.join_info,
                     output_mapping: deps.output_set_ids,
@@ -523,6 +550,7 @@ impl Dispatcher {
                         caching,
                         new_recorder.clone(),
                         composition_node_id.clone(),
+                        Some(output_mapping.clone()),
                         recovered_nodes.clone(),
                     ));
                     recorders.push(new_recorder);
@@ -541,6 +569,7 @@ impl Dispatcher {
                     caching,
                     new_recorder.clone(),
                     composition_node_id,
+                    Some(output_mapping.clone()),
                     recovered_nodes,
                 )
                 .await
@@ -590,7 +619,8 @@ impl Dispatcher {
         input_sets: Vec<Option<CompositionSet>>,
         caching: bool,
         mut recorder: Recorder,
-        composition_node_id: Option<String>,
+        _composition_node_id: Option<String>,
+        composition_output_set_ids: Option<Vec<Option<usize>>>,
         recovered_nodes: Option<RecoveredNodeOutputs>,
     ) -> DandelionResult<Vec<Option<CompositionSet>>> {
         debug!("Queueing function with id: {}", function_id);
@@ -602,7 +632,7 @@ impl Dispatcher {
                 machine_interface::function_driver::system_driver::convert_to_references(
                     sys_function,
                     recorder.invocation_id(),
-                    composition_node_id,
+                    composition_output_set_ids,
                     input_sets,
                 )
             }

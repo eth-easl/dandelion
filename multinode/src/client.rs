@@ -739,7 +739,7 @@ async fn dispatcher_call(
     recorder: Recorder,
 ) {
     let function_result = dispatcher
-        .queue_function(function_id, input_sets, caching, recorder.clone(), None, None)
+        .queue_function(function_id, input_sets, caching, recorder.clone(), None, None, None)
         .await;
     let response_message = match function_result {
         Ok(sets) => {
