@@ -146,7 +146,7 @@ fn main() -> () {
 
     println!("core allocation:");
     println!("minimum system cores {}", min_sys_cores);
-    println!("maximum sysmte cores {}", max_sys_cores);
+    println!("maximum system cores {}", max_sys_cores);
     println!("compute cores: {:?}", compute_cores);
 
     // set up dispatcher configuration basics

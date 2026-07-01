@@ -28,6 +28,7 @@ use machine_interface::{
     memory_domain::{MemoryDomain, MemoryResource},
 };
 use std::{collections::BTreeMap, sync::Arc};
+use tokio::task::yield_now;
 
 // TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
 // the entire execution time anyway
@@ -410,6 +411,7 @@ impl Dispatcher {
                 awaited_sets.len(),
                 non_ready_functions.len()
             );
+            yield_now().await;
         }
 
         recorder.add_children(recorders);
