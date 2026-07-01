@@ -61,10 +61,6 @@ pub struct CompositionInfo {
     pub composition: Arc<Composition>,
     /// The metadata that applies to all function alternatives.
     pub metadata: Arc<Metadata>,
-    /// Stable ids for each composition node in parser order.
-    pub composition_node_ids: Arc<Vec<String>>,
-    /// Stable hash of the composition definition.
-    pub composition_sha256: Arc<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -133,8 +129,6 @@ fn fmap_insert_composition(
     key: FunctionId,
     composition: Composition,
     metadata: Metadata,
-    composition_node_ids: Vec<String>,
-    composition_sha256: String,
 ) -> DandelionResult<()> {
     match fmap.get(&(*key)) {
         Some(_) => {
@@ -146,8 +140,6 @@ fn fmap_insert_composition(
             let comp_info = CompositionInfo {
                 composition: Arc::new(composition),
                 metadata: Arc::new(metadata),
-                composition_node_ids: Arc::new(composition_node_ids),
-                composition_sha256: Arc::new(composition_sha256),
             };
             fmap.insert((*key).clone(), FunctionType::Composition(comp_info))
         }
@@ -198,12 +190,10 @@ struct PersistedFunctionRegistration {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedCompositionRegistration {
     name: String,
-    composition_sha256: String,
     metadata: PersistedMetadata,
-    composition_node_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct PersistedMetadata {
     input_sets: Vec<String>,
     output_sets: Vec<String>,
@@ -266,78 +256,6 @@ fn hash_file(path: &Path) -> DandelionResult<String> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
-fn sha256_hex(bytes: impl AsRef<[u8]>) -> String {
-    format!("{:x}", Sha256::digest(bytes.as_ref()))
-}
-
-fn join_strategy_name(strategy: &dparser::JoinFilterStrategy) -> &'static str {
-    match strategy {
-        dparser::JoinFilterStrategy::Cross => "cross",
-        dparser::JoinFilterStrategy::Inner => "inner",
-        dparser::JoinFilterStrategy::Left => "left",
-        dparser::JoinFilterStrategy::Right => "right",
-        dparser::JoinFilterStrategy::Full => "full",
-    }
-}
-
-
-// collect all material needed to uniquely identify a composition node
-fn composition_node_material(
-    composition: &dparser::Composition,
-    statement_index: usize,
-    function_application: &dparser::FunctionApplication,
-) -> String {
-    let mut material = format!(
-        "composition={}\nstatement_index={}\nfunction={}\n",
-        composition.name, statement_index, function_application.name
-    );
-    for input in &function_application.args {
-        material.push_str(&format!(
-            "input:{}:{}:{}:{}\n",
-            input.v.name,
-            input.v.ident,
-            input.v.optional,
-            match input.v.sharding {
-                dparser::Sharding::All => "all",
-                dparser::Sharding::Keyed => "keyed",
-                dparser::Sharding::Each => "each",
-                dparser::Sharding::AnyKeyed => "anyKeyed",
-                dparser::Sharding::AnyEach => "anyEach",
-            }
-        ));
-    }
-    for output in &function_application.rets {
-        material.push_str(&format!("output:{}:{}\n", output.v.ident, output.v.name));
-    }
-    if let Some(join_strategy) = &function_application.join_strategy {
-        for (name, strategy) in join_strategy
-            .join_strategy_order
-            .iter()
-            .zip(join_strategy.join_strategies.iter())
-        {
-            material.push_str(&format!("join:{}:{}\n", name, join_strategy_name(strategy)));
-        }
-        if join_strategy.join_strategy_order.len() > join_strategy.join_strategies.len() {
-            let last_name = &join_strategy.join_strategy_order[join_strategy.join_strategies.len()];
-            material.push_str(&format!("join_terminal:{}\n", last_name));
-        }
-    }
-    material
-}
-
-// Returns a stable hash of the composition node material
-fn composition_node_id(
-    composition: &dparser::Composition,
-    statement_index: usize,
-    function_application: &dparser::FunctionApplication,
-) -> String {
-    sha256_hex(composition_node_material(
-        composition,
-        statement_index,
-        function_application,
-    ))
-}
-
 fn persisted_metadata_from_composition(composition: &dparser::Composition) -> PersistedMetadata {
     PersistedMetadata {
         input_sets: composition.params.clone(),
@@ -349,35 +267,9 @@ fn persisted_metadata_from_composition(composition: &dparser::Composition) -> Pe
 fn persisted_composition_registration(
     composition: &dparser::Composition,
 ) -> PersistedCompositionRegistration {
-    let composition_node_ids = composition
-        .statements
-        .iter()
-        .enumerate()
-        .map(|(statement_index, statement)| match statement {
-            dparser::Statement::FunctionApplication(function_application) => {
-                composition_node_id(composition, statement_index, &function_application.v)
-            }
-            dparser::Statement::Loop(_) => {
-                unimplemented!("loop semantics need to be fleshed out before persistence")
-            }
-        })
-        .collect::<Vec<_>>();
-
-    let mut composition_material = format!(
-        "name={}\nparams={:?}\nreturns={:?}\n",
-        composition.name, composition.params, composition.returns
-    );
-    for node_id in &composition_node_ids {
-        composition_material.push_str("node_id=");
-        composition_material.push_str(node_id);
-        composition_material.push('\n');
-    }
-
     PersistedCompositionRegistration {
         name: composition.name.clone(),
-        composition_sha256: sha256_hex(composition_material),
         metadata: persisted_metadata_from_composition(composition),
-        composition_node_ids,
     }
 }
 
@@ -644,8 +536,8 @@ impl FunctionRegistry {
             for ((comp_name, composition, metadata), computed) in
                 comp_vec.into_iter().zip(computed_persisted.into_iter())
             {
-                // if the snapshot version is 2 or higher, check that the persisted composition metadata matches the computed metadata
-                // version 2 adds the composition sha256 and node ids to the persisted metadata
+                // If the snapshot contains persisted composition metadata, verify that the
+                // re-parsed composition still matches before accepting the restored entry.
                 if state.version >= 2 {
                     let Some(persisted) = composition_iter.next() else {
                         return err_dandelion!(DandelionError::RequestError(
@@ -656,8 +548,7 @@ impl FunctionRegistry {
                         ));
                     };
                     if persisted.name != computed.name
-                        || persisted.composition_sha256 != computed.composition_sha256
-                        || persisted.composition_node_ids != computed.composition_node_ids
+                        || persisted.metadata != computed.metadata
                     {
                         return err_dandelion!(DandelionError::RequestError(
                             FrontendError::InternalError(format!(
@@ -672,8 +563,6 @@ impl FunctionRegistry {
                         comp_name,
                         composition,
                         metadata,
-                        persisted.composition_node_ids.clone(),
-                        persisted.composition_sha256.clone(),
                     )?;
                 } else {
                     // insert the computed composition into the function map
@@ -682,8 +571,6 @@ impl FunctionRegistry {
                         comp_name,
                         composition,
                         metadata,
-                        computed.composition_node_ids,
-                        computed.composition_sha256,
                     )?;
                 }
                 restored_compositions += 1;
@@ -852,8 +739,6 @@ impl FunctionRegistry {
                 comp_name,
                 composition,
                 metadata,
-                persisted.composition_node_ids.clone(),
-                persisted.composition_sha256.clone(),
             )?;
         }
         drop(lock_guard);
@@ -943,62 +828,24 @@ mod tests {
             snapshot["compositions"][0]["name"].as_str().unwrap()
         );
         assert_eq!(
-            1,
-            snapshot["compositions"][0]["composition_node_ids"]
+            vec!["comp_requests"],
+            snapshot["compositions"][0]["metadata"]["input_sets"]
                 .as_array()
                 .unwrap()
-                .len()
+                .iter()
+                .map(|value| value.as_str().unwrap())
+                .collect::<Vec<_>>()
         );
-        assert!(!snapshot["compositions"][0]["composition_sha256"]
-            .as_str()
-            .unwrap()
-            .is_empty());
+        assert_eq!(
+            vec!["comp_headers", "comp_bodies"],
+            snapshot["compositions"][0]["metadata"]["output_sets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_str().unwrap())
+                .collect::<Vec<_>>()
+        );
         let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn persists_stable_composition_node_ids() {
-        let registry = FunctionRegistry::new();
-        let path = snapshot_path("registry_node_ids");
-        registry.enable_persistence(path.clone()).unwrap();
-        let composition = r#"
-            function HTTP (requests) => (headers, bodies);
-            composition Composition (comp_requests) => (comp_headers, comp_bodies) {
-                HTTP (requests = all comp_requests) => (comp_headers = headers, comp_bodies = bodies);
-            }
-        "#;
-
-        registry.insert_compositions(composition).unwrap();
-        let first_snapshot: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        let first_node_id = first_snapshot["compositions"][0]["composition_node_ids"][0]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let first_hash = first_snapshot["compositions"][0]["composition_sha256"]
-            .as_str()
-            .unwrap()
-            .to_string();
-
-        let second_path = snapshot_path("registry_node_ids_second");
-        let second_registry = FunctionRegistry::new();
-        second_registry
-            .enable_persistence(second_path.clone())
-            .unwrap();
-        second_registry.insert_compositions(composition).unwrap();
-        let second_snapshot: Value =
-            serde_json::from_slice(&fs::read(&second_path).unwrap()).unwrap();
-        let second_node_id = second_snapshot["compositions"][0]["composition_node_ids"][0]
-            .as_str()
-            .unwrap();
-        let second_hash = second_snapshot["compositions"][0]["composition_sha256"]
-            .as_str()
-            .unwrap();
-
-        assert_eq!(first_node_id, second_node_id);
-        assert_eq!(first_hash, second_hash);
-
-        let _ = fs::remove_file(path);
-        let _ = fs::remove_file(second_path);
     }
 
     #[test]
@@ -1026,10 +873,7 @@ mod tests {
             .get_function(&Arc::new(String::from("Composition")))
             .unwrap()
         {
-            FunctionType::Composition(comp) => {
-                assert_eq!(1, comp.composition_node_ids.len());
-                assert!(!comp.composition_sha256.is_empty());
-            }
+            FunctionType::Composition(_) => {}
             other => panic!("Expected composition, got {other:?}"),
         }
 

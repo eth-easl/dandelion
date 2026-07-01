@@ -195,7 +195,6 @@ impl Dispatcher {
         let results = self
             .queue_composition(
                 composition_meta_pairs[0].1.clone(),
-                None,
                 inputs,
                 caching,
                 recorder.clone(),
@@ -238,7 +237,6 @@ impl Dispatcher {
     pub async fn queue_composition(
         &self,
         composition: Composition,
-        _composition_node_ids: Option<Arc<Vec<String>>>,
         inputs: Vec<Option<CompositionSet>>,
         caching: bool,
         mut recorder: Recorder,
@@ -722,7 +720,6 @@ impl Dispatcher {
             FunctionType::Composition(comp_info) => {
                 self.queue_composition(
                     (*comp_info.composition).clone(),
-                    Some(comp_info.composition_node_ids.clone()),
                     input_sets,
                     caching,
                     recorder,
