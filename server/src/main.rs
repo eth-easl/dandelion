@@ -68,14 +68,12 @@ async fn remote_queue_server(
     }
 }
 
-/// How long to wait between attempts to (re-)connect to the master node.
-const RECONNECT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
-
 async fn remote_queue_client(
     remote_url: String,
     dispatcher: &'static Dispatcher,
     export_registry: ExportRegistry,
     queue: WorkQueue,
+    reconnect_interval: std::time::Duration,
 ) {
     loop {
         // Keep retrying to (re-)establish the connection to the master node so a transient
@@ -85,9 +83,9 @@ async fn remote_queue_client(
             Err(err) => {
                 debug!(
                     "Failed to connect to master node at {}: {}. Retrying in {:?}",
-                    remote_url, err, RECONNECT_INTERVAL
+                    remote_url, err, reconnect_interval
                 );
-                tokio::time::sleep(RECONNECT_INTERVAL).await;
+                tokio::time::sleep(reconnect_interval).await;
                 continue;
             }
         };
@@ -117,10 +115,13 @@ async fn remote_queue_client(
         // since it will no longer fetch or delete them, then retry connecting.
         info!(
             "Lost connection to master node at {}, retrying in {:?}",
-            remote_url, RECONNECT_INTERVAL
+            remote_url, reconnect_interval
         );
+        // NOTE: we currently assume a centralized scheduler that owns the data. If this assumption
+        //       changes we need to update this function to only clear the exported data belonging
+        //       to this node.
         export_registry.clear_exported_data();
-        tokio::time::sleep(RECONNECT_INTERVAL).await;
+        tokio::time::sleep(reconnect_interval).await;
     }
 }
 
@@ -373,6 +374,7 @@ fn main() -> () {
                 dispatcher,
                 export_registry.clone(),
                 work_queue,
+                std::time::Duration::from_millis(config.multinode_reconnect_interval_ms),
             ));
         }
 

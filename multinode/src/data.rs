@@ -217,6 +217,8 @@ impl ExportRegistry {
     /// Drops all exported data. Used when the connection to the node that manages these
     /// contexts is lost, so the worker does not hold on to contexts that will never be
     /// fetched or explicitly deleted anymore.
+    /// NOTE: We currently assume a centralized scheduler that owns the data. If this assumption
+    ///       changes we need to update this function to consider to which master owns the data.
     pub fn clear_exported_data(&self) {
         let mut inner = self.inner.lock().unwrap();
         let cleared = inner.data.len();
@@ -224,10 +226,6 @@ impl ExportRegistry {
         if cleared > 0 {
             debug!("Cleared {} exported data contexts", cleared);
         }
-    }
-
-    fn fetch_bytes(&self, data_id: u64) -> DandelionResult<ExportedData> {
-        self.get_exported_data(data_id)
     }
 
     pub fn fetch_context(&self, data_id: u64) -> DandelionResult<(Arc<Context>, Position)> {

@@ -506,7 +506,7 @@ impl WorkQueue {
     }
 
     /// Put work back into queue after trying to offload without success.
-    pub async fn reenqueue(&self, work: WorkToDo, debt: Debt) {
+    pub fn reenqueue(&self, work: WorkToDo, debt: Debt) {
         self.push(work, debt, false);
     }
 

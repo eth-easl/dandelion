@@ -40,7 +40,10 @@ use tokio::{
         TcpStream,
     },
     spawn,
-    sync::{mpsc, watch, Notify},
+    sync::{
+        mpsc::{self, error::SendError},
+        watch, Notify,
+    },
 };
 
 #[cfg(test)]
@@ -109,8 +112,7 @@ async fn send_message(
     //         }
     //     }
     // }
-    sender.flush().await?;
-    Ok(())
+    sender.flush().await
 }
 
 /// For small messages we are expecting repeteatly, could have spezial read function with permanent preallocated buffers
@@ -196,8 +198,8 @@ async fn remote_queue_server_receiver(
     }
 }
 
-/// The sender docket handling for the remote queue server check if we can unite this and the
-/// receiver with the other one, by using traits.
+/// The sender socket handling for the remote queue server.
+/// TODO: check if we can unite this and the receiver with the other client, by using traits.
 async fn remote_queue_server_sender(
     mut socket: OwnedWriteHalf,
     mut receiver: mpsc::Receiver<queue_message::QueueMessage>,
@@ -220,13 +222,13 @@ async fn remote_queue_server_sender(
 async fn remote_queue_server_try_offload(
     mut queue_receiver: mpsc::UnboundedReceiver<(WorkToDo, Debt)>,
     sender: mpsc::Sender<QueueOption>,
+    queue: WorkQueue,
 ) {
     while let Some((work, debt)) = queue_receiver.recv().await {
-        if sender
-            .send(QueueOption::TryOffload(work, debt))
-            .await
-            .is_err()
-        {
+        if let Err(send_err) = sender.send(QueueOption::TryOffload(work, debt)).await {
+            if let SendError(QueueOption::TryOffload(w, d)) = send_err {
+                queue.reenqueue(w, d);
+            }
             break;
         }
     }
@@ -409,7 +411,7 @@ async fn remote_queue_server_logic(
                             debt.fulfill(result)
                         } else {
                             // did not get response so need to reenqueue the work
-                            queue.reenqueue(work, debt).await;
+                            queue.reenqueue(work, debt);
                         }
                     }
                     remote_message::RemoteMessage::NodeUpdate(node_update) => {
@@ -440,7 +442,7 @@ async fn remote_queue_server_logic(
             QueueOption::TryOffload(work, debt) => {
                 // if this node already sent enough work for the remote to be at capacity don't send more
                 if invocations_running >= remote_num_cores as usize {
-                    queue.reenqueue(work, debt).await;
+                    queue.reenqueue(work, debt);
                     continue;
                 }
                 invocations_running += 1;
@@ -531,7 +533,7 @@ async fn remote_queue_server_logic(
     let _ = queue.remove_remote_cores(remote_num_cores as usize);
     queue.remove_remote_channel(node_id);
     for (_promise_id, (debt, _recorder, _start_epoch, _remote_data_references, work)) in debt_map {
-        queue.reenqueue(work, debt).await;
+        queue.reenqueue(work, debt);
     }
 }
 
@@ -605,6 +607,7 @@ pub async fn remote_queue_server(
     let offload_handle = spawn(remote_queue_server_try_offload(
         offload_receiver,
         queue_option_sender,
+        queue.clone(),
     ));
 
     remote_queue_server_logic(
