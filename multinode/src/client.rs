@@ -232,6 +232,12 @@ async fn remote_queue_server_try_offload(
             break;
         }
     }
+    // can't send anymore so make sure the channel does not have things added to it.
+    queue_receiver.close();
+    // drain the channel, reqenque all the work
+    while let Some((work, debt)) = queue_receiver.recv().await {
+        queue.reenqueue(work, debt);
+    }
 }
 
 /// The protocol logic handling for the remote queue server
@@ -526,12 +532,30 @@ async fn remote_queue_server_logic(
         }
     }
 
-    // The connection to the remote node was lost (or the channel was closed). Undo the bookkeeping
-    // for this node and recover any work that was offloaded but never completed, so it can be
-    // re-scheduled locally or on another node.
+    // The connection to the remote node was lost (or the channel was closed).
+    // Close the message receiver so all senders will also shut down and no more messages can be enqueued.
     info!("Lost connection to worker node {}", node_id);
+    message_receiver.close();
+
+    // Undo the bookkeeping for this node
     let _ = queue.remove_remote_cores(remote_num_cores as usize);
     queue.remove_remote_channel(node_id);
+
+    // Drain any remaining messages.
+    while let Some(message) = message_receiver.recv().await {
+        match message {
+            // Ignore messages that have no effect on the clean up
+            QueueOption::WorkAvailable | QueueOption::Disconnected | QueueOption::Message(_, _) => {
+                ()
+            }
+            // Reenqueue work that was tried to offload
+            QueueOption::TryOffload(work, debt) => {
+                queue.reenqueue(work, debt);
+            }
+        }
+    }
+
+    // Recover any work that was offloaded but never completed, so it can be re-scheduled locally or on another node.
     for (_promise_id, (debt, _recorder, _start_epoch, _remote_data_references, work)) in debt_map {
         queue.reenqueue(work, debt);
     }
@@ -604,7 +628,7 @@ pub async fn remote_queue_server(
     // spawn loop to check for queue trying to offload
     let (offload_sender, offload_receiver) = mpsc::unbounded_channel();
     queue.add_remote_channel(node_id, offload_sender);
-    let offload_handle = spawn(remote_queue_server_try_offload(
+    spawn(remote_queue_server_try_offload(
         offload_receiver,
         queue_option_sender,
         queue.clone(),
@@ -626,7 +650,6 @@ pub async fn remote_queue_server(
     sender_handle.abort();
     receiver_handle.abort();
     notification_handle.abort();
-    offload_handle.abort();
 }
 
 pub enum PollingOption {
@@ -689,9 +712,7 @@ async fn remote_queue_client_queue_state(
     sender: mpsc::Sender<PollingOption>,
 ) {
     loop {
-        if receiver.changed().await.is_err() {
-            break;
-        }
+        receiver.changed().await.unwrap();
         trace!("received local queue state");
         let queue_state = *receiver.borrow_and_update();
         if sender
@@ -709,9 +730,7 @@ async fn remote_queue_client_core_count(
     sender: mpsc::Sender<PollingOption>,
 ) {
     loop {
-        if receiver.changed().await.is_err() {
-            break;
-        }
+        receiver.changed().await.unwrap();
         let num_local_cores = *receiver.borrow_and_update();
         if sender
             .send(PollingOption::LocalCoreCountChanged(num_local_cores))

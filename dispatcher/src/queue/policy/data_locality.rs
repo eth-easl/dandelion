@@ -59,6 +59,8 @@ pub fn prepare_io_element(
                     match node_sender.send((work, debt)) {
                         Ok(()) => return None,
                         Err(mpsc::error::SendError((work, debt))) => {
+                            // since the sender does not work, remove it.
+                            remote_nodes.lock().unwrap().remove(&node_id);
                             return Some((
                                 work,
                                 debt,
