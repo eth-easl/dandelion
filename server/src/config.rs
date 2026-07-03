@@ -10,7 +10,7 @@ const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;
 const DEFAULT_MIN_SYS_CORES: usize = 1;
 const DEFAULT_VIRTUAL_MAX_RAM_MULTIPLIER: usize = 2;
-const DEFAULT_MULTINODE_TIMEOUT: u64 = 50;
+const DEFAULT_MULTINODE_RECONNECT_INTERVAL: u64 = 1000;
 use machine_interface::composition::DEFAULT_AUTOSHARDING_OFFLOAD_CONST;
 use machine_interface::function_driver::system_driver::reqwest::DEFAULT_CONCURRENCY_LIMIT;
 
@@ -177,10 +177,10 @@ pub struct DandelionConfig {
     #[serde(default)]
     pub multinode_config: Option<String>,
 
-    /// Timeout for how long to try to establish a connection to another node
-    #[arg(long, env, default_value_t = DEFAULT_MULTINODE_TIMEOUT)]
+    /// Multinode: how long to wait between attempts to (re-)connect to the master node.
+    #[arg(long, env, default_value_t = DEFAULT_MULTINODE_RECONNECT_INTERVAL)]
     #[serde(default)]
-    pub multinode_timeout_ms: u64,
+    pub multinode_reconnect_interval_ms: u64,
 
     /// Special modes for testing
     #[arg(long, env, value_enum)]
@@ -241,7 +241,10 @@ impl DandelionConfig {
         merge_clone!(folder_path, String::from(DEFAULT_FOLDER_PATH));
         merge!(node_id, 0);
         merge_option!(multinode_config);
-        merge!(multinode_timeout_ms, DEFAULT_MULTINODE_TIMEOUT);
+        merge!(
+            multinode_reconnect_interval_ms,
+            DEFAULT_MULTINODE_RECONNECT_INTERVAL
+        );
     }
 
     /// Get the config from the arguments, environment and possibly config file
