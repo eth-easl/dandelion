@@ -176,31 +176,31 @@ impl Future for IoWaitFuture<'_> {
         let local_cores = *self.work_queue.system_info.num_local_cores_watcher.borrow();
         let active_fetch_count = lock_guard.fetching_in_progress;
         let idle_compute_cores = lock_guard.compute_waker_list.len();
-        let mut is_prefetching = false;
-        let result = lock_guard
+        let extracted = lock_guard
             .io_queue
             .extract_if(|queue_element| match &queue_element.work {
-                WorkToDo::FunctionArguments { .. } => {
-                    is_prefetching = true;
-                    policy::should_io_take(
-                        &queue_element.policy_data,
-                        compute_pending,
-                        active_fetch_count,
-                        local_cores,
-                        idle_compute_cores,
-                    )
-                }
-                _ => {
-                    is_prefetching = false;
-                    true
-                }
+                WorkToDo::FunctionArguments { .. } => policy::should_io_take(
+                    &queue_element.policy_data,
+                    compute_pending,
+                    active_fetch_count,
+                    local_cores,
+                    idle_compute_cores,
+                ),
+                _ => true,
             })
-            .next()
-            .map(|queue_element| (queue_element.work, queue_element.debt));
-        // If the task is a prefetching task increase the counter accordingly
+            .next();
+        // If the extracted task is a prefetching task increase the counter accordingly
+        let is_prefetching = matches!(
+            &extracted,
+            Some(IoQueueElement {
+                work: WorkToDo::FunctionArguments { .. },
+                ..
+            })
+        );
         if is_prefetching {
             lock_guard.fetching_in_progress += 1;
         }
+        let result = extracted.map(|queue_element| (queue_element.work, queue_element.debt));
         if let Some(mut result_tupple) = result {
             if let WorkToDo::FunctionArguments {
                 function_id: _,
