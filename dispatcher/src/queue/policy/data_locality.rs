@@ -98,7 +98,7 @@ pub fn should_io_take(
     // always take it if there are idle cores, only prefetch if it is prefetching via IO, not from other nodes
     idle_compute_cores > 0
         || (compute_pending + active_fetch_count < LOCAL_WORK_PER_CORE * local_cores
-            && !element_data.remote_data.is_empty())
+            && element_data.remote_data.is_empty())
 }
 
 /// Selects work items from the local queues to hand off to a remote node,
