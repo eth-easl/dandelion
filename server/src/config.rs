@@ -1,5 +1,5 @@
 use core::fmt;
-use std::{fs::File, path::Path, str::FromStr};
+use std::{env, fs::File, path::Path, str::FromStr};
 
 use clap::Parser;
 use log::{error, warn};
@@ -13,6 +13,22 @@ const DEFAULT_VIRTUAL_MAX_RAM_MULTIPLIER: usize = 2;
 const DEFAULT_MULTINODE_RECONNECT_INTERVAL: u64 = 1000;
 use machine_interface::composition::DEFAULT_AUTOSHARDING_OFFLOAD_CONST;
 use machine_interface::function_driver::system_driver::reqwest::DEFAULT_CONCURRENCY_LIMIT;
+
+/// Expand a leading `~` (or `~/...`) in a path to the current user's home directory,
+/// same as a shell would. Paths that don't start with `~` are returned unchanged.
+fn expand_tilde(path: &str) -> String {
+    let Some(home) = env::var_os("HOME") else {
+        return path.to_string();
+    };
+    let home = home.to_string_lossy();
+    if path == "~" {
+        home.into_owned()
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        format!("{}/{}", home.trim_end_matches('/'), rest)
+    } else {
+        path.to_string()
+    }
+}
 
 #[derive(serde::Deserialize, Debug)]
 pub struct PreloadFunc {
@@ -254,17 +270,20 @@ impl DandelionConfig {
 
         // if a config path is given -> read + parse it and merge into args config
         if !cli_config.config_path.is_empty() {
-            match File::open(Path::new(&cli_config.config_path)) {
-                Err(err) => warn!(
-                    "Could not load config file {}: {}",
-                    cli_config.config_path, err
-                ),
+            let config_path = expand_tilde(&cli_config.config_path);
+            match File::open(Path::new(&config_path)) {
+                Err(err) => warn!("Could not load config file {}: {}", config_path, err),
                 Ok(config_file) => match serde_json::from_reader(config_file) {
                     Ok(file_config) => cli_config.merge_serde_into_args(file_config),
                     Err(err) => warn!("Could not load config file: {}", err),
                 },
             };
         }
+
+        // expand `~` in any configuration parameters that are file system paths
+        cli_config.bin_preload_path = expand_tilde(&cli_config.bin_preload_path);
+        cli_config.folder_path = expand_tilde(&cli_config.folder_path);
+        cli_config.multinode_config = cli_config.multinode_config.as_deref().map(expand_tilde);
 
         cli_config
             .total_cores
@@ -324,7 +343,7 @@ impl DandelionConfig {
             Ok(f) => f,
         };
         let PreloadFile {
-            functions,
+            mut functions,
             compositions,
         } = match serde_json::from_reader(reader) {
             Err(err) => {
@@ -333,6 +352,9 @@ impl DandelionConfig {
             }
             Ok(json) => json,
         };
+        for func in functions.iter_mut() {
+            func.bin_path = expand_tilde(&func.bin_path);
+        }
 
         // sanity checks
         if !functions.iter().all(|pf| {
