@@ -279,12 +279,22 @@ impl WorkQueue {
         if let WorkToDo::FunctionArguments {
             function_id: _,
             function_alternatives: _,
-            input_sets: _,
+            input_sets: _input_sets,
             metadata: _,
             caching: _,
             recorder,
         } = &mut work
         {
+            #[cfg(feature = "timestamp")]
+            {
+                let (total_items, total_size) =
+                    _input_sets.iter().fold((0, 0), |(number, size), set| {
+                        set.as_ref()
+                            .map(|set| (number + set.len(), size + set.size()))
+                            .unwrap_or((number, size))
+                    });
+                recorder.record_input(total_items as u64, total_size as u64);
+            }
             recorder.record(RecordPoint::ComputeQueueStart);
         }
 
