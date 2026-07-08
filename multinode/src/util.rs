@@ -52,8 +52,11 @@ pub(crate) fn recorder_dtop(
     {
         use dandelion_commons::records::RecordPoint;
 
+        let (input_items, input_size) = _recorder.get_input();
         Some(proto::Timestamps {
             start_epoch: _start_epoch.as_micros() as u64,
+            input_items,
+            input_size,
             io_queue_start: _recorder
                 .get_timestamp(RecordPoint::IOQueueStart)
                 .as_micros() as u64,
@@ -114,7 +117,10 @@ pub(crate) fn recorder_add_timestamps(
                 transfer_start,
                 engine_start,
                 engine_end,
+                input_items,
+                input_size,
             } = remote_time;
+            _recorder.record_input(input_items, input_size);
             // The local RemoteTake and the local_reference were taken at approximately same time.
             // Both the local reference and the start_epoch are offsets from unix epoch start.
             // The every remote timestamp is an offset from the start_epoch.

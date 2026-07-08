@@ -361,7 +361,7 @@ impl Dispatcher {
                                         .collect();
                                     awaited_sets.push(Either::Left(ready(Ok((
                                         new_sets,
-                                        *function_index,
+                                        args.function_index,
                                         Vec::new(),
                                     )))));
                                     None
