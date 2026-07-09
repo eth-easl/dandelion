@@ -904,7 +904,7 @@ async fn remote_queue_client_logic(
                                 invocation_id,
                                 function_arc,
                                 inputs,
-                                !caching,
+                                caching,
                                 recorder,
                             )
                         }
