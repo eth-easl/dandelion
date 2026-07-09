@@ -1,5 +1,5 @@
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult};
-use kvm_bindings::{kvm_fpu, kvm_regs, kvm_segment, kvm_sregs, kvm_xcrs};
+use kvm_bindings::{kvm_fpu, kvm_msr_entry, kvm_regs, kvm_segment, kvm_sregs, kvm_xcrs, Msrs};
 use kvm_ioctls::{VcpuFd, VmFd};
 use log::{debug, trace};
 use std::{os::raw::c_void, slice};
@@ -195,6 +195,26 @@ impl ResetState {
             ..Default::default()
         })
         .unwrap();
+
+        // reset the cpu time step counter register
+        let msrs = Msrs::from_entries(&[
+            // set the MSR_IA32_TSC
+            kvm_msr_entry {
+                index: 0x10,
+                data: 0,
+                ..Default::default()
+            },
+        ])
+        .unwrap();
+        assert_eq!(1, vcpu.set_msrs(&msrs).unwrap());
+        let msrs = Msrs::from_entries(&[kvm_msr_entry {
+            index: 0x3b,
+            data: 0,
+            ..Default::default()
+        }])
+        .unwrap();
+        assert_eq!(1, vcpu.set_msrs(&msrs).unwrap());
+
         Ok(page_fault_metadata)
     }
 }

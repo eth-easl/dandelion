@@ -283,7 +283,7 @@ fn test_remote_queue_client() {
     let (remote_message_sender, mut remote_message_receiver) = mpsc::channel(64);
 
     let dispatcher_send =
-        |registry, duration, invocation_id, function_id, inputs, is_cold, recorder| {
+        |registry, duration, invocation_id, function_id, inputs, caching, recorder| {
             dispatcher_sender
                 .blocking_send((
                     registry,
@@ -291,7 +291,7 @@ fn test_remote_queue_client() {
                     invocation_id,
                     function_id,
                     inputs,
-                    is_cold,
+                    caching,
                     recorder,
                 ))
                 .unwrap();
@@ -365,10 +365,10 @@ fn test_remote_queue_client() {
             invocation_id,
             function_id,
             _inputs,
-            is_cold,
+            caching,
             _recorder,
         ))) => {
-            assert!(!is_cold);
+            assert!(caching);
             assert_eq!(expected_function_id, function_id.as_str());
             invocation_id
         }
@@ -382,10 +382,10 @@ fn test_remote_queue_client() {
             invocation_id,
             function_id,
             _inputs,
-            is_cold,
+            caching,
             _recorder,
         ))) => {
-            assert!(!is_cold);
+            assert!(caching);
             assert_eq!(expected_function_id, function_id.as_str());
             invocation_id
         }
@@ -433,10 +433,10 @@ fn test_remote_queue_client() {
             invocation_id,
             function_id,
             _inputs,
-            is_cold,
+            caching,
             _recorder,
         ))) => {
-            assert!(!is_cold);
+            assert!(caching);
             assert_eq!(expected_function_id, function_id.as_str());
             invocation_id
         }
