@@ -193,12 +193,7 @@ impl Recorder {
 
     #[cfg(feature = "timestamp")]
     pub fn get_input(&self) -> (u64, u64) {
-        unsafe {
-            (
-                *self.inner.input_items.get(),
-                *self.inner.input_size.get(),
-            )
-        }
+        unsafe { (*self.inner.input_items.get(), *self.inner.input_size.get()) }
     }
 
     #[cfg(feature = "timestamp")]
