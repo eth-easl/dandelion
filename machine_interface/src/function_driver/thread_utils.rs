@@ -122,7 +122,6 @@ mod waker {
 
     pub(super) fn manual_pull(queue: &mut impl EngineWorkQueue) -> (WorkToDo, Debt) {
         let mut queue_future = core::pin::pin!(queue.get_compute_engine_args());
-        //
         let (sender, receiver) = channel::<()>();
         let sender_box = Box::new(sender);
         let raw_waker = RawWaker::new(Box::into_raw(sender_box) as *const (), &WAKER_TABLE);
@@ -253,10 +252,10 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                 });
                 debt.fulfill(results);
             }
-            WorkToDo::SetsToResolve { input_sets: _ } => {
+            WorkToDo::SetsToResolve { .. } => {
                 panic!("Compute engine should never get sets to resolve")
             }
-            WorkToDo::RemoteToDelete { remote_data: _ } => {
+            WorkToDo::RemoteToDelete { .. } => {
                 panic!("Compute engine should never get remote data to delete")
             }
             WorkToDo::Shutdown(_) => {
