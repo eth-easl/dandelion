@@ -549,7 +549,7 @@ fn test_remote_queue_client_prefetch() {
     let idle_clone = idle_cores.clone();
 
     let dispatcher_send =
-        |registry, duration, invocation_id, function_id, inputs, is_cold, recorder| {
+        |registry, duration, invocation_id, function_id, inputs, caching, recorder| {
             dispatcher_sender
                 .blocking_send((
                     registry,
@@ -557,7 +557,7 @@ fn test_remote_queue_client_prefetch() {
                     invocation_id,
                     function_id,
                     inputs,
-                    is_cold,
+                    caching,
                     recorder,
                 ))
                 .unwrap();
@@ -622,10 +622,10 @@ fn test_remote_queue_client_prefetch() {
             invocation_id,
             function_id,
             _inputs,
-            is_cold,
+            caching,
             _recorder,
         ))) => {
-            assert!(!is_cold);
+            assert!(caching);
             assert_eq!(expected_function_id, function_id.as_str());
             invocation_id
         }
