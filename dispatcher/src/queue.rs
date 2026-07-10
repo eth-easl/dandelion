@@ -213,14 +213,6 @@ impl Future for IoWaitFuture<'_> {
                 _ => true,
             })
             .next();
-        // If the extracted task is a prefetching task increase the counter accordingly
-        let is_prefetching = matches!(
-            &extracted,
-            Some(IoQueueElement {
-                work: WorkToDo::FunctionArguments { .. },
-                ..
-            })
-        );
         let result = extracted.map(|queue_element| {
             (
                 queue_element.work,
@@ -229,12 +221,11 @@ impl Future for IoWaitFuture<'_> {
             )
         });
         if let Some((mut work, debt, composition_id)) = result {
-            if is_prefetching {
-                lock_guard.prefetching_in_progress += 1;
-            }
             let composition_id_option =
                 if let WorkToDo::FunctionArguments { recorder, .. } = &mut work {
                     recorder.record(RecordPoint::IOQueueEnd);
+                    // If the extracted task is a prefetching task increase the counter accordingly
+                    lock_guard.prefetching_in_progress += 1;
                     Some(composition_id)
                 } else {
                     None
