@@ -78,6 +78,7 @@ fn test_remote_queue_server() {
     let mut context = Context::from_waker(Waker::noop());
     let mut server_future = Box::pin(remote_queue_server_logic(
         queue_option_receiver,
+        queue_option_sender.clone(),
         queue_message_sender,
         work_queue.clone(),
         ExportRegistry::new(1),
@@ -454,6 +455,7 @@ fn test_remote_queue_client() {
     // send back a result, mark the queue as changed and poll to get it processed
     poll_option_sender
         .try_send(crate::client::PollingOption::Results(
+            invocation_id_3,
             remote_message::RemoteMessage::Response(Response {
                 invocation_id: invocation_id_3,
                 response: Some(response::Response::ErrorMsg(

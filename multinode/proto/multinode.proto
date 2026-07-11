@@ -124,6 +124,7 @@ message QueueMessage {
         RepeatedInvocations invocations = 2;
         // Message containing the work for one function, can be refused
         Invocation try_offload = 3;
-        // TODO add message to cancel invocation
+        // Message indicating remote invocation should not be scheduled
+        uint32 cancel_invocation = 4;
    }
 }
