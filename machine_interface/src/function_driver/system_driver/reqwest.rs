@@ -630,7 +630,7 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
     loop {
         let ticket = semaphore.clone().acquire_owned().await.unwrap();
         debug!("IO engine loop has ticket");
-        let (args, debt) = queue.get_io_engine_args().await;
+        let (args, debt, id_option) = queue.get_io_engine_args().await;
         debug!("IO engine loop has work");
         match args {
             WorkToDo::FunctionArguments {
@@ -645,6 +645,7 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                 let queue_clone = queue.clone();
                 debug!("Resolving references for call to {}", function_id);
                 recorder.record(RecordPoint::FetchingStart);
+                let composition_id = id_option.unwrap();
 
                 resolve_all_sets(
                     client_clone,
@@ -654,6 +655,10 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                     move |sets_result| {
                         recorder.record(RecordPoint::FetchingEnd);
                         match sets_result {
+                            // FIXME: this leaks the queue's `fetching_in_progress` count, since
+                            // that is only decremented in `requeu_engine_args`. Repeated fetch
+                            // failures permanently inflate the count and can starve the io queue
+                            // of taking any more prefetch work.
                             Err(err) => debt.fulfill(Err(err)),
                             Ok(sets) => queue_clone.requeu_engine_args(
                                 WorkToDo::FunctionArguments {
@@ -665,6 +670,7 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                                     recorder,
                                 },
                                 debt,
+                                composition_id,
                             ),
                         };
                     },

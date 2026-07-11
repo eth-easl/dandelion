@@ -192,6 +192,11 @@ impl Recorder {
     }
 
     #[cfg(feature = "timestamp")]
+    pub fn get_input(&self) -> (u64, u64) {
+        unsafe { (*self.inner.input_items.get(), *self.inner.input_size.get()) }
+    }
+
+    #[cfg(feature = "timestamp")]
     pub fn set_node_id(&mut self, node_id: u64) {
         unsafe {
             *UnsafeCell::raw_get(&self.inner.remote_node_id) = node_id;

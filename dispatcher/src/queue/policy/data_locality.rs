@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 
 use super::super::{ComputeQueueElement, IoQueueElement};
 
-const LOCAL_WORK_PER_CORE: usize = 2;
+pub const PREFETCH_PER_CORE: usize = 1;
 
 pub struct IOElementData {
     pub remote_data: BTreeMap<u64, usize>,
@@ -19,7 +19,8 @@ pub fn prepare_io_element(
     work: WorkToDo,
     debt: Debt,
     try_offload: bool,
-    remote_nodes: &std::sync::Mutex<BTreeMap<u64, mpsc::UnboundedSender<(WorkToDo, Debt)>>>,
+    composition_id: usize,
+    remote_nodes: &std::sync::Mutex<BTreeMap<u64, mpsc::UnboundedSender<(WorkToDo, Debt, usize)>>>,
 ) -> Option<(WorkToDo, Debt, IOElementData)> {
     let (remote_data, total_input_size) =
         if let WorkToDo::FunctionArguments { ref input_sets, .. } = work {
@@ -54,8 +55,23 @@ pub fn prepare_io_element(
             if max_size * 2 > total_input_size {
                 let maybe_sender = remote_nodes.lock().unwrap().get(node_id).cloned();
                 if let Some(node_sender) = maybe_sender {
-                    node_sender.send((work, debt)).unwrap();
-                    return None;
+                    // If the remote node has disconnected its receiver is gone, in which case
+                    // we recover the work and fall back to executing it locally.
+                    match node_sender.send((work, debt, composition_id)) {
+                        Ok(()) => return None,
+                        Err(mpsc::error::SendError((work, debt, _))) => {
+                            // since the sender does not work, remove it.
+                            remote_nodes.lock().unwrap().remove(&node_id);
+                            return Some((
+                                work,
+                                debt,
+                                IOElementData {
+                                    remote_data,
+                                    total_input_size,
+                                },
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -82,8 +98,8 @@ pub fn should_io_take(
     // additionally want to prevent fetching, if there is remote data and no local core is idle
     // always take it if there are idle cores, only prefetch if it is prefetching via IO, not from other nodes
     idle_compute_cores > 0
-        || (compute_pending + active_fetch_count < LOCAL_WORK_PER_CORE * local_cores
-            && !element_data.remote_data.is_empty())
+        || (compute_pending + active_fetch_count < PREFETCH_PER_CORE * local_cores
+            && element_data.remote_data.is_empty())
 }
 
 /// Selects work items from the local queues to hand off to a remote node,
@@ -94,8 +110,7 @@ pub fn get_work_for_remote(
     engine_flags: u32,
     node_id: u64,
     number_of_functions: usize,
-    queue_state_decrease: &impl Fn(),
-) -> Vec<(WorkToDo, Debt)> {
+) -> Vec<(WorkToDo, Debt, usize)> {
     let mut functions = Vec::with_capacity(number_of_functions);
     // go through all the input sets and find those with the most data already on the node asking for work
     functions.extend(
@@ -111,7 +126,6 @@ pub fn get_work_for_remote(
                         .unwrap_or(false);
                     if queue_element.flags & engine_flags != 0 && node_has_most_data {
                         recorder.record(RecordPoint::IOQueueEnd);
-                        queue_state_decrease();
                         true
                     } else {
                         false
@@ -120,7 +134,13 @@ pub fn get_work_for_remote(
                     false
                 }
             })
-            .map(|queue_element| (queue_element.work, queue_element.debt))
+            .map(|queue_element| {
+                (
+                    queue_element.work,
+                    queue_element.debt,
+                    queue_element.composition_id,
+                )
+            })
             .take(number_of_functions),
     );
 
@@ -133,7 +153,6 @@ pub fn get_work_for_remote(
                     if let WorkToDo::FunctionArguments { recorder, .. } = &mut queue_element.work {
                         if queue_element.flags & engine_flags != 0 {
                             recorder.record(RecordPoint::IOQueueEnd);
-                            queue_state_decrease();
                             true
                         } else {
                             false
@@ -142,7 +161,13 @@ pub fn get_work_for_remote(
                         false
                     }
                 })
-                .map(|queue_element| (queue_element.work, queue_element.debt))
+                .map(|queue_element| {
+                    (
+                        queue_element.work,
+                        queue_element.debt,
+                        queue_element.composition_id,
+                    )
+                })
                 .take(still_needed),
         );
     }
@@ -156,7 +181,6 @@ pub fn get_work_for_remote(
                     if let WorkToDo::FunctionArguments { recorder, .. } = &mut queue_element.work {
                         if queue_element.flags & engine_flags != 0 {
                             recorder.record(RecordPoint::ComputeQueueEnd);
-                            queue_state_decrease();
                             // Don't need to wake IO cores to do more prefetching,
                             // since those queues must be empty if we are taking from here.
                             true
@@ -167,7 +191,13 @@ pub fn get_work_for_remote(
                         false
                     }
                 })
-                .map(|queue_element| (queue_element.work, queue_element.debt))
+                .map(|queue_element| {
+                    (
+                        queue_element.work,
+                        queue_element.debt,
+                        queue_element.composition_id,
+                    )
+                })
                 .take(still_needed),
         );
     }

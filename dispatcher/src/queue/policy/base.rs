@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 
 use super::super::{ComputeQueueElement, IoQueueElement};
 
-const LOCAL_WORK_PER_CORE: usize = 2;
+pub const PREFETCH_PER_CORE: usize = 1;
 
 /// Empty struct since the base policy does not use additional information for scheduling decisions.
 pub struct IOElementData;
@@ -17,7 +17,8 @@ pub fn prepare_io_element(
     work: WorkToDo,
     debt: Debt,
     _try_offload: bool,
-    _remote_nodes: &std::sync::Mutex<BTreeMap<u64, mpsc::UnboundedSender<(WorkToDo, Debt)>>>,
+    _composition_id: usize,
+    _remote_nodes: &std::sync::Mutex<BTreeMap<u64, mpsc::UnboundedSender<(WorkToDo, Debt, usize)>>>,
 ) -> Option<(WorkToDo, Debt, IOElementData)> {
     Some((work, debt, IOElementData))
 }
@@ -30,7 +31,7 @@ pub fn should_io_take(
     local_cores: usize,
     _idle_compute_cores: usize,
 ) -> bool {
-    compute_pending + active_fetch_count < LOCAL_WORK_PER_CORE * local_cores
+    compute_pending + active_fetch_count < PREFETCH_PER_CORE * local_cores
 }
 
 /// Selects work items from the local queues to hand off to a remote node.
@@ -40,8 +41,7 @@ pub fn get_work_for_remote(
     engine_flags: u32,
     _node_id: u64,
     number_of_functions: usize,
-    queue_state_decrease: &impl Fn(),
-) -> Vec<(WorkToDo, Debt)> {
+) -> Vec<(WorkToDo, Debt, usize)> {
     let mut functions = Vec::with_capacity(number_of_functions);
     // first check the queue with unresolved references, since those are easier to steal
     functions.extend(
@@ -49,7 +49,6 @@ pub fn get_work_for_remote(
             .extract_if(|queue_element| {
                 if let WorkToDo::FunctionArguments { recorder, .. } = &mut queue_element.work {
                     if queue_element.flags & engine_flags != 0 {
-                        queue_state_decrease();
                         recorder.record(RecordPoint::IOQueueEnd);
                         true
                     } else {
@@ -59,7 +58,13 @@ pub fn get_work_for_remote(
                     false
                 }
             })
-            .map(|queue_element| (queue_element.work, queue_element.debt))
+            .map(|queue_element| {
+                (
+                    queue_element.work,
+                    queue_element.debt,
+                    queue_element.composition_id,
+                )
+            })
             .take(number_of_functions),
     );
     // did not find enough work in the io_queue so check compute queue
@@ -71,7 +76,6 @@ pub fn get_work_for_remote(
                     if let WorkToDo::FunctionArguments { recorder, .. } = &mut queue_element.work {
                         if queue_element.flags & engine_flags != 0 {
                             recorder.record(RecordPoint::ComputeQueueEnd);
-                            queue_state_decrease();
                             // don't need to poke IO cores to do more prefetching,
                             // since those queues are empty if we are taking from here
                             true
@@ -82,7 +86,13 @@ pub fn get_work_for_remote(
                         false
                     }
                 })
-                .map(|queue_element| (queue_element.work, queue_element.debt))
+                .map(|queue_element| {
+                    (
+                        queue_element.work,
+                        queue_element.debt,
+                        queue_element.composition_id,
+                    )
+                })
                 .take(still_needed),
         );
     }

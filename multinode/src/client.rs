@@ -20,7 +20,7 @@ use dispatcher::{
     dispatcher::Dispatcher,
     queue::{get_engine_flag, WorkQueue},
 };
-use log::{error, trace, warn};
+use log::{error, info, trace, warn};
 use machine_interface::{
     composition::{CompositionSet, RemoteData},
     function_driver::{WorkDone, WorkToDo},
@@ -40,7 +40,10 @@ use tokio::{
         TcpStream,
     },
     spawn,
-    sync::{mpsc, watch, Notify},
+    sync::{
+        mpsc::{self, error::SendError},
+        watch, Notify,
+    },
 };
 
 #[cfg(test)]
@@ -51,14 +54,15 @@ const _: () = assert!(size_of::<u64>() == size_of::<usize>());
 // TODO ADDITIONAL_DATA_BUFFER and data_buffer are currently used only to carry IoData
 // We should consider removing this when recursive resolution of IoData is implemented,
 // as then all sets will be exchanged via the remote data server.
-// TODO handle connection failure
 /// To send a message between nodes, always first send the length of the message,
 /// then the message, so the other side knows when one message ends.
+/// Returns an error if the underlying connection failed, so the caller can tear down
+/// the connection instead of panicking.
 async fn send_message(
     metadata_buffer: &Bytes,
     mut sender: impl AsyncWriteExt + Unpin,
     data_buffer: Option<(Vec<Option<CompositionSet>>, u64)>,
-) {
+) -> std::io::Result<()> {
     let metadata_size: u32 = metadata_buffer.len().try_into().unwrap();
     let flags = match data_buffer {
         Some((_, total_size)) => {
@@ -70,8 +74,8 @@ async fn send_message(
 
     let packed_metadata = pack_metadata_size_and_flags(metadata_size, flags);
 
-    sender.write_u64(packed_metadata).await.unwrap();
-    sender.write_all(metadata_buffer).await.unwrap();
+    sender.write_u64(packed_metadata).await?;
+    sender.write_all(metadata_buffer).await?;
 
     // Code for sending data along with the request if needed
     // Keeping for later when we want to send small items along with requests / responses.
@@ -108,23 +112,28 @@ async fn send_message(
     //         }
     //     }
     // }
-    sender.flush().await.unwrap();
+    sender.flush().await
 }
 
-// TODO handle connection failure
-// For small messages we are expecting repeteatly, could have spezial read function with permanent preallocated buffers
-// Issue: serialization does not give constant sizes, so would need to find an upper bound first
-async fn receive_message(mut receiver: impl AsyncReadExt + Unpin) -> (Bytes, Option<Bytes>) {
-    let packed_metadata = receiver.read_u64().await.unwrap();
+/// For small messages we are expecting repeteatly, could have spezial read function with permanent preallocated buffers
+/// Issue: serialization does not give constant sizes, so would need to find an upper bound first
+/// Returns an error if the underlying connection failed (or was closed mid-message),
+/// so the caller can tear down the connection instead of panicking.
+async fn receive_message(
+    mut receiver: impl AsyncReadExt + Unpin,
+) -> std::io::Result<(Bytes, Option<Bytes>)> {
+    let packed_metadata = receiver.read_u64().await?;
     let (metadata_size, _) = unpack_metadata_size_and_flags(packed_metadata);
-    trace!("strart receiving: {}", metadata_size);
 
     // new buffer with size of message
     let mut metadata_buffer = BytesMut::with_capacity(metadata_size as usize);
     while metadata_buffer.len() < metadata_size as usize {
-        receiver.read_buf(&mut metadata_buffer).await.unwrap();
+        // A read of 0 bytes means the peer closed the connection before sending the
+        // full message, treat it as an unexpected end of file.
+        if receiver.read_buf(&mut metadata_buffer).await? == 0 {
+            return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
+        }
     }
-    trace!("finish receiving");
 
     // Keep for when we want to send additional data long with requests
     // if (flags & ADDITIONAL_DATA_BUFFER) != 0 {
@@ -138,20 +147,25 @@ async fn receive_message(mut receiver: impl AsyncReadExt + Unpin) -> (Bytes, Opt
     // } else {
     //     return (metadata_buffer.freeze(), None);
     // }
-    (metadata_buffer.freeze(), None)
+    Ok((metadata_buffer.freeze(), None))
 }
 
 enum QueueOption {
     Message(remote_message::RemoteMessage, Option<Bytes>),
     WorkAvailable,
-    TryOffload(WorkToDo, machine_interface::promise::Debt),
+    TryOffload(WorkToDo, machine_interface::promise::Debt, usize),
     CancelRemote(u32),
+    /// The connection to the remote node was lost, so the server logic should tear down.
+    Disconnected,
 }
 
 async fn remote_queue_sever_notification(receiver: Arc<Notify>, sender: mpsc::Sender<QueueOption>) {
     loop {
         receiver.notified().await;
-        sender.send(QueueOption::WorkAvailable).await.unwrap();
+        if sender.send(QueueOption::WorkAvailable).await.is_err() {
+            // logic loop has shut down, nothing left to notify
+            break;
+        }
     }
 }
 
@@ -161,20 +175,30 @@ async fn remote_queue_server_receiver(
     sender: mpsc::Sender<QueueOption>,
 ) {
     loop {
-        let (message_buffer, _) = receive_message(&mut socket).await;
+        let message_buffer = match receive_message(&mut socket).await {
+            Ok((message_buffer, _)) => message_buffer,
+            Err(_) => {
+                // The connection was lost, inform the logic loop so it can clean up.
+                let _ = sender.send(QueueOption::Disconnected).await;
+                break;
+            }
+        };
         let message = deserialize_remote_message(message_buffer)
             .unwrap()
             .remote_message
             .unwrap();
-        sender
+        if sender
             .send(QueueOption::Message(message, None))
             .await
-            .unwrap();
+            .is_err()
+        {
+            break;
+        }
     }
 }
 
-/// The sender docket handling for the remote queue server
-/// check if we can unite this and the reciever with the other one, by using traits
+/// The sender socket handling for the remote queue server.
+/// TODO: check if we can unite this and the receiver with the other client, by using traits.
 async fn remote_queue_server_sender(
     mut socket: OwnedWriteHalf,
     mut receiver: mpsc::Receiver<queue_message::QueueMessage>,
@@ -183,20 +207,38 @@ async fn remote_queue_server_sender(
         let message_buffer = serialize_queue_message(QueueMessage {
             queue_message: Some(queue_message),
         });
-        send_message(&message_buffer, &mut socket, None).await;
+        if send_message(&message_buffer, &mut socket, None)
+            .await
+            .is_err()
+        {
+            // connection lost, the receiver side will trigger the teardown
+            break;
+        }
     }
 }
 
 /// Translating the messages from the queue for offlaoding into something the server logic understands
 async fn remote_queue_server_try_offload(
-    mut queue_receiver: mpsc::UnboundedReceiver<(WorkToDo, Debt)>,
+    mut queue_receiver: mpsc::UnboundedReceiver<(WorkToDo, Debt, usize)>,
     sender: mpsc::Sender<QueueOption>,
+    queue: WorkQueue,
 ) {
-    while let Some((work, debt)) = queue_receiver.recv().await {
-        sender
-            .send(QueueOption::TryOffload(work, debt))
+    while let Some((work, debt, composition_id)) = queue_receiver.recv().await {
+        if let Err(send_err) = sender
+            .send(QueueOption::TryOffload(work, debt, composition_id))
             .await
-            .unwrap();
+        {
+            if let SendError(QueueOption::TryOffload(w, d, id)) = send_err {
+                queue.reenqueue(w, d, id);
+            }
+            break;
+        }
+    }
+    // can't send anymore so make sure the channel does not have things added to it.
+    queue_receiver.close();
+    // drain the channel, reqenque all the work
+    while let Some((work, debt, id)) = queue_receiver.recv().await {
+        queue.reenqueue(work, debt, id);
     }
 }
 
@@ -212,7 +254,6 @@ async fn remote_queue_server_logic(
     mut remote_num_cores: u64,
 ) {
     let mut waiting_for_work = false;
-    let mut invocations_running = 0;
 
     let mut debt_map = BTreeMap::new();
     let mut cancelled_debt_ids = BTreeSet::new();
@@ -249,7 +290,8 @@ async fn remote_queue_server_logic(
                             // TODO: consider limiting the work we give to a node based on the know max capacity,
                             // to limit potential stragglers if we know the node asked for more than it can handle (possibly because of race conditions)
                             // do not give even more.
-                            invocations.extend(work_found.into_iter().filter_map(|(work, debt)| {
+                            invocations.extend(work_found.into_iter().filter_map(
+                                |(work, debt, composition_id)| {
                                 if !debt.is_alive() {
                                     return None;
                                 }
@@ -312,6 +354,7 @@ async fn remote_queue_server_logic(
                                 debt_map.insert(
                                     promise_id,
                                     (
+                                        composition_id,
                                         debt,
                                         new_recorder,
                                         start_reference,
@@ -325,43 +368,59 @@ async fn remote_queue_server_logic(
                                     invocation_id: promise_id,
                                     caching,
                                 })
-                            }));
+                            },
+                            ));
                         }
                         if invocations.is_empty() {
                             waiting_for_work = true;
                             trace!("No work available");
                             // there is no work, so send message accordingly
-                            message_sender
+                            if message_sender
                                 .send(queue_message::QueueMessage::NoWork(true))
                                 .await
-                                .unwrap();
+                                .is_err()
+                            {
+                                break;
+                            }
                         } else {
-                            invocations_running += invocations.len();
-                            message_sender
+                            if message_sender
                                 .send(queue_message::QueueMessage::Invocations(
                                     RepeatedInvocations { invocations },
                                 ))
                                 .await
-                                .unwrap();
+                                .is_err()
+                            {
+                                break;
+                            }
                         }
                     }
                     remote_message::RemoteMessage::Response(response) => {
-                        invocations_running -= 1;
                         debug_assert!(data_option.is_none());
-                        trace!("Queue Server received response");
+                        trace!(
+                            "Queue Server received response, outstanding: {}",
+                            debt_map.len()
+                        );
                         let Response {
                             invocation_id,
                             response,
                         } = response;
                         // TODO: handle failure
-                        let Some((debt, mut recorder, start_epoch, remote_data_references, work)) =
-                            debt_map.remove(&invocation_id)
+                        let Some((
+                            composition_id,
+                            debt,
+                            mut recorder,
+                            start_epoch,
+                            remote_data_references,
+                            work,
+                        )) = debt_map.remove(&invocation_id)
                         else {
                             if cancelled_debt_ids.remove(&invocation_id) {
-                                // Do not reuse this ID: the cancellation message can arrive at the
-                                // worker after an earlier result, where it would otherwise remain
-                                // queued and incorrectly cancel a later invocation with the same ID.
-                                trace!("Received cancellation acknowledgement for remote invocation {}", invocation_id);
+                                // Do not reuse this ID: a delayed cancellation can otherwise
+                                // cancel a later invocation with the same ID.
+                                trace!(
+                                    "Received cancellation acknowledgement for remote invocation {}",
+                                    invocation_id
+                                );
                             } else {
                                 warn!(
                                     "Received response for unknown remote invocation {}",
@@ -399,7 +458,7 @@ async fn remote_queue_server_logic(
                             debt.fulfill(result)
                         } else {
                             // did not get response so need to reenqueue the work
-                            queue.reenqueue(work, debt).await;
+                            queue.reenqueue(work, debt, composition_id);
                         }
                     }
                     remote_message::RemoteMessage::NodeUpdate(node_update) => {
@@ -427,16 +486,15 @@ async fn remote_queue_server_logic(
                     }
                 }
             }
-            QueueOption::TryOffload(work, debt) => {
+            QueueOption::TryOffload(work, debt, composition_id) => {
                 if !debt.is_alive() {
                     continue;
                 }
                 // if this node already sent enough work for the remote to be at capacity don't send more
-                if invocations_running >= remote_num_cores as usize {
-                    queue.reenqueue(work, debt).await;
+                if debt_map.len() >= remote_num_cores as usize {
+                    queue.reenqueue(work, debt, composition_id);
                     continue;
                 }
-                invocations_running += 1;
                 // Ask remote if it can take the invocation, otherwise requeue it locally
                 let promise_id = if let Some(free_id) = free_debt_ids.pop() {
                     free_id
@@ -491,6 +549,7 @@ async fn remote_queue_server_logic(
                 debt_map.insert(
                     promise_id,
                     (
+                        composition_id,
                         debt,
                         new_recorder,
                         start_reference,
@@ -505,21 +564,32 @@ async fn remote_queue_server_logic(
                     metadata_sets,
                     caching,
                 });
-                message_sender.send(try_offload_message).await.unwrap();
+                if message_sender.send(try_offload_message).await.is_err() {
+                    break;
+                }
             }
             QueueOption::WorkAvailable => {
                 trace!("Queue Server received work available notification");
                 if waiting_for_work {
                     waiting_for_work = false;
-                    message_sender
+                    if message_sender
                         .send(queue_message::QueueMessage::NoWork(false))
                         .await
-                        .unwrap();
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
             }
             QueueOption::CancelRemote(invocation_id) => {
-                if let Some((_debt, _recorder, _start_epoch, remote_data_references, _work)) =
-                    debt_map.remove(&invocation_id)
+                if let Some((
+                    _composition_id,
+                    _debt,
+                    _recorder,
+                    _start_epoch,
+                    remote_data_references,
+                    _work,
+                )) = debt_map.remove(&invocation_id)
                 {
                     drop(remote_data_references);
                     cancelled_debt_ids.insert(invocation_id);
@@ -532,9 +602,45 @@ async fn remote_queue_server_logic(
                     }
                 }
             }
+            QueueOption::Disconnected => {
+                // The remote node disconnected, stop the loop and run the cleanup below.
+                break;
+            }
         }
     }
-    warn!("Arrived at end of remtote_queue_server_logic, which should stay in the loop forever");
+
+    // The connection to the remote node was lost (or the channel was closed).
+    // Close the message receiver so all senders will also shut down and no more messages can be enqueued.
+    info!("Lost connection to worker node {}", node_id);
+    message_receiver.close();
+
+    // Undo the bookkeeping for this node
+    let _ = queue.remove_remote_cores(remote_num_cores as usize);
+    queue.remove_remote_channel(node_id);
+
+    // Drain any remaining messages.
+    while let Some(message) = message_receiver.recv().await {
+        match message {
+            // Ignore messages that have no effect on the clean up
+            QueueOption::WorkAvailable
+            | QueueOption::Disconnected
+            | QueueOption::Message(_, _)
+            | QueueOption::CancelRemote(_) => (),
+            // Reenqueue work that was tried to offload
+            QueueOption::TryOffload(work, debt, composition_id) => {
+                queue.reenqueue(work, debt, composition_id);
+            }
+        }
+    }
+
+    // Recover any work that was offloaded but never completed, so it can be re-scheduled locally or on another node.
+    for (
+        _promise_id,
+        (composition_id, debt, _recorder, _start_epoch, _remote_data_references, work),
+    ) in debt_map
+    {
+        queue.reenqueue(work, debt, composition_id);
+    }
 }
 
 /// Handler for one remote node, polling the local queue for them.
@@ -556,33 +662,48 @@ pub async fn remote_queue_server(
     // First ask for the information about the other node
     // Currently not using engine information
     trace!("Queue Server wait for initial message");
-    let (node_info_buffer, node_info_data) = receive_message(&mut read_socket).await;
-    debug_assert!(node_info_data.is_none());
+    let node_info_buffer = match receive_message(&mut read_socket).await {
+        Ok((node_info_buffer, node_info_data)) => {
+            debug_assert!(node_info_data.is_none());
+            node_info_buffer
+        }
+        Err(err) => {
+            // The connection dropped before we could identify the node, nothing to clean up.
+            warn!(
+                "Failed to receive initial message from worker node: {}",
+                err
+            );
+            return;
+        }
+    };
     let NodeInfo {
         version,
         id: node_id,
         num_local_cores,
     } = deserialize_node_info(node_info_buffer).unwrap();
     assert_eq!(version, 1);
-    trace!("Queue Server received initial message");
+    info!(
+        "Established connection to worker node {} ({} cores)",
+        node_id, num_local_cores
+    );
 
     // tell the queue about the remote cores
     queue.add_remote_cores(num_local_cores as usize);
 
     // start sender loop
     let (queue_message_sender, queue_message_reciever) = mpsc::channel(64);
-    spawn(remote_queue_server_sender(
+    let sender_handle = spawn(remote_queue_server_sender(
         write_socket,
         queue_message_reciever,
     ));
     // start receiver loop
     let (queue_option_sender, queue_option_receiver) = mpsc::channel(64);
-    spawn(remote_queue_server_receiver(
+    let receiver_handle = spawn(remote_queue_server_receiver(
         read_socket,
         queue_option_sender.clone(),
     ));
     // spawn notificaiton loop
-    spawn(remote_queue_sever_notification(
+    let notification_handle = spawn(remote_queue_sever_notification(
         queue.queueing_notifier(),
         queue_option_sender.clone(),
     ));
@@ -592,6 +713,7 @@ pub async fn remote_queue_server(
     spawn(remote_queue_server_try_offload(
         offload_receiver,
         queue_option_sender.clone(),
+        queue.clone(),
     ));
 
     remote_queue_server_logic(
@@ -605,14 +727,22 @@ pub async fn remote_queue_server(
         num_local_cores,
     )
     .await;
+
+    // The logic loop returned because the connection was lost, stop the helper tasks so they do not
+    // linger waiting on a dead socket or closed channels.
+    sender_handle.abort();
+    receiver_handle.abort();
+    notification_handle.abort();
 }
 
 pub enum PollingOption {
     Message(DandelionResult<queue_message::QueueMessage>, Option<Bytes>),
-    QueueStateChanged(usize),
+    IdleChanged,
     LocalCoreCountChanged(usize),
     // Results(RemoteMessage, Option<(Vec<Option<CompositionSet>>, u64)>),
     Results(u32, remote_message::RemoteMessage),
+    /// The connection to the remote node was lost, so the client logic should tear down.
+    Disconnected,
 }
 
 async fn remote_queue_client_receiver(
@@ -620,13 +750,23 @@ async fn remote_queue_client_receiver(
     sender: mpsc::Sender<PollingOption>,
 ) {
     loop {
-        let (message_buffer, _) = receive_message(&mut socket).await;
+        let message_buffer = match receive_message(&mut socket).await {
+            Ok((message_buffer, _)) => message_buffer,
+            Err(_) => {
+                // The connection was lost, inform the logic loop so it can clean up.
+                let _ = sender.send(PollingOption::Disconnected).await;
+                break;
+            }
+        };
         let message = deserialize_queue_message(message_buffer)
             .and_then(|message| Ok(message.queue_message.unwrap()));
-        sender
+        if sender
             .send(PollingOption::Message(message, None))
             .await
-            .unwrap();
+            .is_err()
+        {
+            break;
+        }
     }
 }
 
@@ -638,24 +778,31 @@ async fn remote_queue_client_sender(
         let message_buffer = serialize_remote_message(RemoteMessage {
             remote_message: Some(remote_message),
         });
-        send_message(&message_buffer, &mut socket, None).await;
+        if send_message(&message_buffer, &mut socket, None)
+            .await
+            .is_err()
+        {
+            // connection lost, the receiver side will trigger the teardown
+            break;
+        }
     }
 }
 
 // TODO: think about limiting number of notification, to make sure we are not adding
 // additional load when the queue is filled / emptied in big strides
 async fn remote_queue_client_queue_state(
-    mut receiver: watch::Receiver<usize>,
+    receiver: Arc<Notify>,
     sender: mpsc::Sender<PollingOption>,
 ) {
+    // Send a initial idle changed message, to make sure it always asks once.
+    // An idle machine otherwise would never start asking for work
+    sender.send(PollingOption::IdleChanged).await.unwrap();
     loop {
-        receiver.changed().await.unwrap();
-        trace!("received local queue state");
-        let queue_state = *receiver.borrow_and_update();
-        sender
-            .send(PollingOption::QueueStateChanged(queue_state))
-            .await
-            .unwrap();
+        receiver.notified().await;
+        trace!("received capacity notification");
+        if sender.send(PollingOption::IdleChanged).await.is_err() {
+            break;
+        }
     }
 }
 
@@ -666,10 +813,13 @@ async fn remote_queue_client_core_count(
     loop {
         receiver.changed().await.unwrap();
         let num_local_cores = *receiver.borrow_and_update();
-        sender
+        if sender
             .send(PollingOption::LocalCoreCountChanged(num_local_cores))
             .await
-            .unwrap();
+            .is_err()
+        {
+            break;
+        }
     }
 }
 
@@ -684,8 +834,15 @@ async fn dispatcher_call(
     caching: bool,
     recorder: Recorder,
 ) {
+    let composition_id = dispatcher.get_composition_id();
     let function_result = dispatcher
-        .queue_function(function_id, input_sets, caching, recorder.clone())
+        .queue_function(
+            composition_id,
+            function_id,
+            input_sets,
+            caching,
+            recorder.clone(),
+        )
         .await;
     let response_message = match function_result {
         Ok(sets) => {
@@ -699,7 +856,9 @@ async fn dispatcher_call(
         }
         Err(err) => proto::response::Response::ErrorMsg(err.error.to_string()),
     };
-    sender
+    // If the connection was lost in the meantime the logic loop is gone; dropping the result is
+    // fine, the master will reenqueue the work after detecting the disconnect.
+    let _ = sender
         .send(PollingOption::Results(
             invocation_id,
             remote_message::RemoteMessage::Response(Response {
@@ -707,8 +866,7 @@ async fn dispatcher_call(
                 response: Some(response_message),
             }),
         ))
-        .await
-        .unwrap();
+        .await;
 }
 
 async fn remote_queue_client_logic(
@@ -723,15 +881,17 @@ async fn remote_queue_client_logic(
         bool,
         Recorder,
     ),
+    idle_cores: impl Fn() -> usize,
+    prefetch_multiplier: usize,
     export_registry: ExportRegistry,
     mut num_local_cores: usize,
 ) {
     let mut remote_had_work = true;
-    let mut queue_state = 0;
+    let mut invocation_request_in_flight = false;
     // This makes sure we don't overfetch from this node.
     // TODO: think about the general issue of state synchronization between the dispatcher and multinode client adding things,
     // and the engines and server taking things.
-    let mut work_from_remote = 0;
+    let mut work_from_remote: usize = 0;
     let mut cancelled_remote_invocations = BTreeSet::new();
 
     while let Some(current_future) = receiver.recv().await {
@@ -742,35 +902,15 @@ async fn remote_queue_client_logic(
                     queue_message::QueueMessage::NoWork(true) => {
                         trace!("Queue Client recieved NoWork(true)");
                         debug_assert!(data_option.is_none());
-
-                        remote_had_work = false
+                        assert!(invocation_request_in_flight);
+                        invocation_request_in_flight = false;
+                        remote_had_work = false;
                     }
                     // remote signals it may have work so can ask for it, if we have capacity
                     queue_message::QueueMessage::NoWork(false) => {
                         trace!("Queue Client recieved NoWork(false)");
                         debug_assert!(data_option.is_none());
-
-                        // let current_jobs_queued = *local_queue_state.borrow();
-                        let occupancy = std::cmp::max(queue_state, work_from_remote);
-                        if occupancy < num_local_cores {
-                            let engines = EngineType::iter()
-                                .map(|engine_type| proto::Engine {
-                                    engine_type: engine_type_dtop(engine_type) as i32,
-                                    engine_capacity: (num_local_cores - occupancy) as u32,
-                                })
-                                .collect();
-                            message_sender
-                                .send(remote_message::RemoteMessage::WorkRequest(
-                                    RepeatedEngines { engines },
-                                ))
-                                .await
-                                .unwrap();
-                            remote_had_work = false;
-                        } else {
-                            // Only set to true, if we did not send out a message already,
-                            // otherwise avoid retriggering sending a message on state change, before we get answer.
-                            remote_had_work = true;
-                        }
+                        remote_had_work = true;
                     }
                     queue_message::QueueMessage::CancelInvocation(invocation_id) => {
                         trace!(
@@ -783,10 +923,7 @@ async fn remote_queue_client_logic(
                     queue_message::QueueMessage::TryOffload(invocation) => {
                         trace!("Queue Client recieved try offload");
 
-                        work_from_remote += 1;
-
                         // mark remote as having work, so we ask for more as idle cores change
-                        remote_had_work = true;
                         let start_instance = Instant::now();
                         let start_time =
                             std::time::SystemTime::elapsed(&std::time::SystemTime::UNIX_EPOCH)
@@ -799,15 +936,19 @@ async fn remote_queue_client_logic(
                         } = invocation;
                         if cancelled_remote_invocations.remove(&invocation_id) {
                             trace!("Skipping canceled try-offload invocation {}", invocation_id);
-                            message_sender
+                            if message_sender
                                 .send(remote_message::RemoteMessage::Response(Response {
                                     invocation_id,
                                     response: None,
                                 }))
                                 .await
-                                .unwrap();
+                                .is_err()
+                            {
+                                break;
+                            }
                             continue;
                         }
+                        work_from_remote += 1;
                         let function_arc = Arc::new(function_id);
                         let recorder = Recorder::new(function_arc.clone(), start_instance);
                         let inputs =
@@ -818,15 +959,20 @@ async fn remote_queue_client_logic(
                             invocation_id,
                             function_arc,
                             inputs,
-                            !caching,
+                            caching,
                             recorder,
                         );
+                        remote_had_work = true;
                     }
                     queue_message::QueueMessage::Invocations(invocations) => {
-                        trace!("Queue Client recieved invocation");
+                        trace!(
+                            "Queue Client recieved {} invocations",
+                            invocations.invocations.len()
+                        );
+                        assert!(invocation_request_in_flight);
+                        invocation_request_in_flight = false;
 
                         // mark remote as having work, so we ask for more as idle cores change
-                        remote_had_work = true;
                         let start_instance = Instant::now();
                         let start_time =
                             std::time::SystemTime::elapsed(&std::time::SystemTime::UNIX_EPOCH)
@@ -840,13 +986,16 @@ async fn remote_queue_client_logic(
                             } = invocation;
                             if cancelled_remote_invocations.remove(&invocation_id) {
                                 trace!("Skipping canceled invocation {}", invocation_id);
-                                message_sender
+                                if message_sender
                                     .send(remote_message::RemoteMessage::Response(Response {
                                         invocation_id,
                                         response: None,
                                     }))
                                     .await
-                                    .unwrap();
+                                    .is_err()
+                                {
+                                    break;
+                                }
                                 continue;
                             }
                             work_from_remote += 1;
@@ -862,16 +1011,23 @@ async fn remote_queue_client_logic(
                                 invocation_id,
                                 function_arc,
                                 inputs,
-                                !caching,
+                                caching,
                                 recorder,
                             )
                         }
+                        remote_had_work = true;
                     }
                 }
             }
             PollingOption::Message(Err(error), _) => {
-                // TODO: recover from message reception failure
-                panic!("Receiving remote queue message faied with: {}", error);
+                // A malformed message means the connection is unusable, tear it down so
+                // the caller can re-establish it instead of crashing the whole node.
+                error!("Receiving remote queue message failed with: {}", error);
+                break;
+            }
+            PollingOption::Disconnected => {
+                // The remote node disconnected, stop the loop so the caller can reconnect.
+                break;
             }
             PollingOption::Results(invocation_id, results) => {
                 work_from_remote -= 1;
@@ -880,95 +1036,101 @@ async fn remote_queue_client_logic(
                         "Suppressing result for canceled remote invocation {}",
                         invocation_id
                     );
-                } else {
-                    trace!("Queue Client sending out result");
-                    message_sender.send(results).await.unwrap();
-                }
-                let occupancy = std::cmp::max(queue_state, work_from_remote);
-                if remote_had_work && occupancy < num_local_cores {
-                    let engines: Vec<_> = EngineType::iter()
-                        .map(|engine_type| proto::Engine {
-                            engine_type: engine_type_dtop(engine_type) as i32,
-                            engine_capacity: (num_local_cores - occupancy) as u32,
-                        })
-                        .collect();
-
-                    trace!("Asking for more work");
-                    message_sender
-                        .send(remote_message::RemoteMessage::WorkRequest(
-                            RepeatedEngines { engines },
-                        ))
+                    if message_sender
+                        .send(remote_message::RemoteMessage::Response(Response {
+                            invocation_id,
+                            response: None,
+                        }))
                         .await
-                        .unwrap();
-                    trace!("Finished sending the message asking for more work");
-                    // set false, to avoid double sending if multiple cores become idle, but did not have a response in between
-                    remote_had_work = false;
+                        .is_err()
+                    {
+                        break;
+                    }
+                } else {
+                    trace!(
+                        "Queue Client sending out result, {} outstanding",
+                        work_from_remote
+                    );
+                    if message_sender.send(results).await.is_err() {
+                        break;
+                    }
                 }
             }
             // getting a notification so should poll the queue
-            PollingOption::QueueStateChanged(current_queue_state) => {
+            PollingOption::IdleChanged => {
                 trace!(
-                    "Queue Client checking updated queue state: {:?}, remote_had_work {}",
-                    current_queue_state,
+                    "Queue Client checking updated queue state, remote_had_work {}",
                     remote_had_work,
                 );
-                queue_state = current_queue_state;
-                // send message to get work if we have not asked already
-                let occupancy = std::cmp::max(queue_state, work_from_remote);
-                if remote_had_work && occupancy < num_local_cores {
-                    let engines: Vec<_> = EngineType::iter()
-                        .map(|engine_type| proto::Engine {
-                            engine_type: engine_type_dtop(engine_type) as i32,
-                            engine_capacity: (num_local_cores - occupancy) as u32,
-                        })
-                        .collect();
-
-                    trace!("Asking for more work");
-                    message_sender
-                        .send(remote_message::RemoteMessage::WorkRequest(
-                            RepeatedEngines { engines },
-                        ))
-                        .await
-                        .unwrap();
-                    trace!("Finished sending the message asking for more work");
-                    // set false, to avoid double sending if multiple cores become idle, but did not have a response in between
-                    remote_had_work = false;
-                }
             }
             PollingOption::LocalCoreCountChanged(new_core_number) => {
                 trace!("Sending new local core count: {}", new_core_number);
                 num_local_cores = new_core_number;
-                message_sender
+                if message_sender
                     .send(remote_message::RemoteMessage::NodeUpdate(NodeUpdate {
                         num_local_cores: new_core_number as u64,
                     }))
                     .await
-                    .unwrap();
-                // check if we now want to get more work
-                let occupancy = std::cmp::max(queue_state, work_from_remote);
-                if remote_had_work && occupancy < num_local_cores {
-                    let engines: Vec<_> = EngineType::iter()
-                        .map(|engine_type| proto::Engine {
-                            engine_type: engine_type_dtop(engine_type) as i32,
-                            engine_capacity: (num_local_cores - occupancy) as u32,
-                        })
-                        .collect();
-
-                    trace!("Asking for more work");
-                    message_sender
-                        .send(remote_message::RemoteMessage::WorkRequest(
-                            RepeatedEngines { engines },
-                        ))
-                        .await
-                        .unwrap();
-                    trace!("Finished sending the message asking for more work");
-                    // set false, to avoid double sending if multiple cores become idle, but did not have a response in between
-                    remote_had_work = false;
+                    .is_err()
+                {
+                    break;
                 }
             }
         }
+        trace!(
+            "remote had work: {}, invocation in flight: {}",
+            remote_had_work,
+            invocation_request_in_flight
+        );
+        if remote_had_work && !invocation_request_in_flight {
+            // ! This currently assumes all works in the queue comes from a single remote master.
+            // ! The assumption starts to break if there are things directly enqueued or come from multiple master.
+            // ! The reason we need this assumption is, because otherwise, the client cannot get a good bound
+            // ! of how full the the queue is, since the dispatcher may not have processed new invocations added by
+            // ! a message received to the work queue yet when we perform this check.
+            let idle = idle_cores();
+            // Want to make sure we fill the prefetching buffer.
+            let max_prefetch = num_local_cores * prefetch_multiplier;
+            // The amount of work that is in the system from the remote, need to subtract the amount actually running on a compute core
+            // everything else is still in prefetching
+            let current_prefetch = work_from_remote.saturating_sub(num_local_cores - idle);
+            // If we have 0 prefetching, ask for as much as we have idle cores
+            let engine_number = if prefetch_multiplier == 0 {
+                if work_from_remote < num_local_cores {
+                    num_local_cores - work_from_remote
+                } else {
+                    continue;
+                }
+            // otherwise check how much prefetch capacity we have and check if we have already reached it
+            } else if max_prefetch > current_prefetch {
+                max_prefetch - current_prefetch
+            // if neither do not ask for more work
+            } else {
+                continue;
+            };
+            let engines = EngineType::iter()
+                .map(|engine_type| proto::Engine {
+                    engine_type: engine_type_dtop(engine_type) as i32,
+                    engine_capacity: engine_number as u32,
+                })
+                .collect();
+            trace!("Asking for more work for {} engines", engine_number);
+            if message_sender
+                .send(remote_message::RemoteMessage::WorkRequest(
+                    RepeatedEngines { engines },
+                ))
+                .await
+                .is_err()
+            {
+                break;
+            }
+            trace!("Finished sending message asking for more work");
+            // set false, to avoid double sending if multiple cores become idle, but did not have a response in between
+            invocation_request_in_flight = true;
+        }
     }
-    warn!("Arrived at end of remote_qeueu_client_logic, which should stay in the loop forever");
+    // Reaching here means the connection was lost; the caller will attempt to reconnect.
+    trace!("remote_queue_client_logic exited, connection to remote was lost");
 }
 
 /// Client to ask for work from a remote queue.
@@ -996,35 +1158,37 @@ pub async fn remote_queue_client(
 
     let (read_socket, mut write_socket) = socket.into_split();
 
-    send_message(&node_info_buffer, &mut write_socket, None).await;
+    if send_message(&node_info_buffer, &mut write_socket, None)
+        .await
+        .is_err()
+    {
+        // Could not even send the initial message, let the caller retry the connection.
+        warn!("Failed to send initial message to remote queue, connection lost");
+        return;
+    }
     trace!("Queue Client sent out initial message");
-
-    // Create a second copy of the watcher to wait on asynchronously, marke changed to check once in the beginning,
-    // in case there are already idle cores
-    let mut local_queue_state = queue.queue_state_watcher();
-    // needs to be marked changed, so a server with an empty queue and already stead number of local cores starts to poll
-    local_queue_state.mark_changed();
 
     // start sender loop
     let (remote_message_sender, remote_message_reciever) = mpsc::channel(64);
-    spawn(remote_queue_client_sender(
+    let sender_handle = spawn(remote_queue_client_sender(
         write_socket,
         remote_message_reciever,
     ));
     // start receiver loop
     let (poll_option_sender, poll_option_receiver) = mpsc::channel(64);
-    spawn(remote_queue_client_receiver(
+    let receiver_handle = spawn(remote_queue_client_receiver(
         read_socket,
         poll_option_sender.clone(),
     ));
     // start core count loop
-    spawn(remote_queue_client_core_count(
+    let core_count_handle = spawn(remote_queue_client_core_count(
         local_core_watcher,
         poll_option_sender.clone(),
     ));
     // spawn queue state loop
-    spawn(remote_queue_client_queue_state(
-        local_queue_state,
+    let local_idle_notifier = queue.idle_notifier();
+    let queue_state_handle = spawn(remote_queue_client_queue_state(
+        local_idle_notifier,
         poll_option_sender.clone(),
     ));
 
@@ -1045,8 +1209,17 @@ pub async fn remote_queue_client(
                 recorder,
             ));
         },
+        || queue.idle_cores(),
+        dispatcher::queue::PREFETCH_PER_CORE,
         export_registry,
         local_core_count,
     )
     .await;
+
+    // The logic loop returned because the connection was lost, stop the helper tasks so they do not
+    // linger waiting on a dead socket or closed channels.
+    sender_handle.abort();
+    receiver_handle.abort();
+    core_count_handle.abort();
+    queue_state_handle.abort();
 }

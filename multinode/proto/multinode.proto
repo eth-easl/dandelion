@@ -83,6 +83,8 @@ message Timestamps {
     uint64 transfer_start = 11;
     uint64 engine_start = 12;
     uint64 engine_end = 13;
+    uint64 input_items = 14;
+    uint64 input_size = 15;
 }
 
 message RepeatedMetadataSet {

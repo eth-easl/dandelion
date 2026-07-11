@@ -21,22 +21,28 @@ use machine_interface::memory_domain::ContextTrait;
 use machine_interface::{
     composition::{
         get_sharding, AnyShardingMode, Composition, CompositionSet, InputSetDescriptor,
-        JoinStrategy, LocalCompositionSet, RemoteData, ShardingMode,
+        JoinStrategy, LocalCompositionSet, ShardingMode,
     },
     function_driver::{Metadata, WorkToDo},
     machine_config::{get_available_domains, DomainType, EngineType, IntoEnumIterator},
     memory_domain::{MemoryDomain, MemoryResource},
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{atomic::AtomicUsize, Arc},
+};
 use tokio::task::yield_now;
 
 // TODO also here and in registry replace Arc Box with static references from leaked boxes for things we expect to be there for
 // the entire execution time anyway
+// TODO: the composition ids currently just go up from 0, there is no overflow handling.
+// We are not expecting to overflow, but this should be handled for proper deployments.
 pub struct Dispatcher {
     function_registry: FunctionRegistry,
     work_queue: WorkQueue,
     domains: Vec<Arc<Box<dyn MemoryDomain>>>,
     any_sharding_mode: AnyShardingMode,
+    composition_id: AtomicUsize,
 }
 
 impl Dispatcher {
@@ -69,7 +75,13 @@ impl Dispatcher {
             work_queue,
             domains,
             any_sharding_mode,
+            composition_id: AtomicUsize::new(0),
         });
+    }
+
+    pub fn get_composition_id(&self) -> usize {
+        self.composition_id
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
     }
 
     pub fn insert_function(
@@ -106,9 +118,15 @@ impl Dispatcher {
     ) -> DandelionResult<(Vec<Option<LocalCompositionSet>>, Recorder)> {
         debug!("Queuing function {}", function_id);
         recorder.record(RecordPoint::EnterDispatcher);
-
+        let composition_id = self.get_composition_id();
         let results = self
-            .queue_function(function_id, inputs, caching, recorder.clone())
+            .queue_function(
+                composition_id,
+                function_id,
+                inputs,
+                caching,
+                recorder.clone(),
+            )
             .await?;
 
         // if any set is not local send them trough reference resolution
@@ -120,9 +138,12 @@ impl Dispatcher {
             }
         }) {
             self.work_queue
-                .do_work(WorkToDo::SetsToResolve {
-                    input_sets: results,
-                })
+                .do_work(
+                    WorkToDo::SetsToResolve {
+                        input_sets: results,
+                    },
+                    composition_id,
+                )
                 .await?
                 .get_composition()
         } else {
@@ -137,13 +158,6 @@ impl Dispatcher {
         Ok((local_results, recorder))
     }
 
-    pub async fn delete_remote_data(&self, remote_data: RemoteData) -> DandelionResult<()> {
-        self.work_queue
-            .do_work(WorkToDo::RemoteToDelete { remote_data })
-            .await
-            .map(|_| ())
-    }
-
     pub async fn queue_unregistered_composition(
         &self,
         composition_desc: String,
@@ -152,6 +166,7 @@ impl Dispatcher {
         recorder: Recorder,
     ) -> DandelionResult<(Vec<Option<LocalCompositionSet>>, Recorder)> {
         debug!("Parsing single use composition");
+
         let composition_meta_pairs = self
             .function_registry
             .parse_compositions(&composition_desc.as_str())?;
@@ -165,12 +180,14 @@ impl Dispatcher {
             ));
         }
 
+        let composition_id = self.get_composition_id();
         debug!(
-            "Queuing single use composition {}",
-            composition_meta_pairs[0].0
+            "Queuing single use composition {} with id {}",
+            composition_meta_pairs[0].0, composition_id,
         );
         let results = self
             .queue_composition(
+                composition_id,
                 composition_meta_pairs[0].1.clone(),
                 inputs,
                 caching,
@@ -187,9 +204,12 @@ impl Dispatcher {
             }
         }) {
             self.work_queue
-                .do_work(WorkToDo::SetsToResolve {
-                    input_sets: results,
-                })
+                .do_work(
+                    WorkToDo::SetsToResolve {
+                        input_sets: results,
+                    },
+                    composition_id,
+                )
                 .await?
                 .get_composition()
         } else {
@@ -212,6 +232,7 @@ impl Dispatcher {
     /// * `inputs` vec of input set options, where the index in the vec is the input set number
     pub async fn queue_composition(
         &self,
+        composition_id: usize,
         composition: Composition,
         inputs: Vec<Option<CompositionSet>>,
         caching: bool,
@@ -310,6 +331,7 @@ impl Dispatcher {
         // start all functions that are ready and insert their sets into the awaited ones
         for args in ready_functions.into_iter() {
             awaited_sets.push(Either::Right(self.queue_function_sharded(
+                composition_id,
                 args.function_id,
                 args.function_index,
                 args.input_sets,
@@ -362,7 +384,7 @@ impl Dispatcher {
                                         .collect();
                                     awaited_sets.push(Either::Left(ready(Ok((
                                         new_sets,
-                                        *function_index,
+                                        args.function_index,
                                         Vec::new(),
                                     )))));
                                     None
@@ -390,6 +412,7 @@ impl Dispatcher {
                         }
                         if args.missing_sets.is_empty() {
                             awaited_sets.push(Either::Right(self.queue_function_sharded(
+                                composition_id,
                                 args.function_id,
                                 args.function_index,
                                 args.input_sets,
@@ -425,6 +448,7 @@ impl Dispatcher {
     /// Also handles sharing of sets
     async fn queue_function_sharded<'context>(
         &self,
+        composition_id: usize,
         function_id: FunctionId,
         // index of the function within the composition
         function_index: usize,
@@ -461,6 +485,7 @@ impl Dispatcher {
                 .map(|ins| {
                     let new_recorder = Recorder::new_from_parent(function_id.clone(), &recorder);
                     let future_box = Box::pin(self.queue_function(
+                        composition_id,
                         function_id.clone(),
                         ins,
                         caching,
@@ -476,7 +501,13 @@ impl Dispatcher {
         } else {
             let new_recorder = Recorder::new_from_parent(function_id.clone(), &recorder);
             let future_box = self
-                .queue_function(function_id, vec![], caching, new_recorder.clone())
+                .queue_function(
+                    composition_id,
+                    function_id,
+                    vec![],
+                    caching,
+                    new_recorder.clone(),
+                )
                 .await
                 .and_then(|result| Ok(vec![result]));
             recorders = vec![new_recorder];
@@ -520,6 +551,7 @@ impl Dispatcher {
     /// the index describes which output set the composition belongs to.
     pub async fn queue_function<'dispatcher>(
         &'dispatcher self,
+        composition_id: usize,
         function_id: FunctionId,
         input_sets: Vec<Option<CompositionSet>>,
         caching: bool,
@@ -556,16 +588,6 @@ impl Dispatcher {
                         metadata.output_sets,
                         function_alternatives
                     );
-                #[cfg(feature = "timestamp")]
-                {
-                    let (total_items, total_size) =
-                        input_sets.iter().fold((0, 0), |(number, size), set| {
-                            set.as_ref()
-                                .map(|set| (number + set.len(), size + set.size()))
-                                .unwrap_or((number, size))
-                        });
-                    recorder.record_input(total_items as u64, total_size as u64);
-                }
                 let args = WorkToDo::FunctionArguments {
                     function_id: function_id.clone(),
                     function_alternatives,
@@ -575,7 +597,11 @@ impl Dispatcher {
                     recorder: recorder.clone(),
                 };
 
-                let sets = self.work_queue.do_work(args).await?.get_composition();
+                let sets = self
+                    .work_queue
+                    .do_work(args, composition_id)
+                    .await?
+                    .get_composition();
                 recorder.record(RecordPoint::FutureReturn);
 
                 #[cfg(feature = "log_function_stdio")]
@@ -620,6 +646,7 @@ impl Dispatcher {
             }
             FunctionType::Composition(comp_info) => {
                 self.queue_composition(
+                    composition_id,
                     (*comp_info.composition).clone(),
                     input_sets,
                     caching,
