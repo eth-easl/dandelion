@@ -680,6 +680,8 @@ impl JoinIterator for AnyIterator {
             let mut new_set_groups = Vec::with_capacity(parallelism);
             let base_size = self.set_groups.len() / parallelism;
             let remainder = self.set_groups.len() % parallelism;
+            // Vec that contains the sets to combine, can be reused, since the combine call empties it.
+            let mut combine_sets = Vec::with_capacity(base_size + 1);
             // If a min_set_bytes is given we make sure the set groups of the largest set have at least
             // that size. This might lead to less groups than the `any_parallelism` given.
             // We sort the set_groups by size to get a more even partitioning in most cases.
@@ -708,25 +710,20 @@ impl JoinIterator for AnyIterator {
                     // set is at least self.min_set_bytes big
                     let start_idx = curr_idx;
                     {
-                        let mut curr_set: Option<CompositionSet> = None;
                         let mut curr_set_size = 0;
                         while curr_idx < self.set_groups.len()
                             && (curr_idx < min_end_idx || curr_set_size < self.min_set_bytes)
                         {
-                            if let Some(set) = &mut curr_set {
-                                if let Some(next_set) =
-                                    self.set_groups[curr_idx][self.largest_set_idx].take()
-                                {
-                                    curr_set_size += next_set.size();
-                                    set.combine(next_set);
-                                }
-                            } else {
-                                curr_set = self.set_groups[curr_idx][self.largest_set_idx].take();
-                                curr_set_size = curr_set.as_ref().unwrap().size();
+                            if let Some(next_set) =
+                                self.set_groups[curr_idx][self.largest_set_idx].take()
+                            {
+                                curr_set_size += next_set.size();
+                                combine_sets.push(next_set);
                             }
                             curr_idx += 1;
                         }
-                        set_group[self.largest_set_idx] = curr_set;
+                        set_group[self.largest_set_idx] =
+                            CompositionSet::combine(&mut combine_sets);
                     }
 
                     // create the set group for all other sets
@@ -734,17 +731,12 @@ impl JoinIterator for AnyIterator {
                         if set_idx == self.largest_set_idx {
                             continue;
                         }
-                        let mut curr_set: Option<CompositionSet> = None;
                         for i in start_idx..curr_idx {
-                            if let Some(set) = &mut curr_set {
-                                if let Some(next_set) = self.set_groups[i][set_idx].take() {
-                                    set.combine(next_set);
-                                }
-                            } else {
-                                curr_set = self.set_groups[i][set_idx].take();
+                            if let Some(next_set) = self.set_groups[i][set_idx].take() {
+                                combine_sets.push(next_set);
                             }
                         }
-                        set_group[set_idx] = curr_set;
+                        set_group[set_idx] = CompositionSet::combine(&mut combine_sets);
                     }
                     new_set_groups.push(set_group);
                 }
@@ -758,17 +750,12 @@ impl JoinIterator for AnyIterator {
 
                     let mut set_group = Vec::with_capacity(num_sets);
                     for set_idx in 0..num_sets {
-                        let mut curr_set: Option<CompositionSet> = None;
                         for i in start_idx..end_idx {
-                            if let Some(set) = &mut curr_set {
-                                if let Some(next_set) = self.set_groups[i][set_idx].take() {
-                                    set.combine(next_set);
-                                }
-                            } else {
-                                curr_set = self.set_groups[i][set_idx].take();
+                            if let Some(next_set) = self.set_groups[i][set_idx].take() {
+                                combine_sets.push(next_set);
                             }
                         }
-                        set_group.push(curr_set);
+                        set_group.push(CompositionSet::combine(&mut combine_sets));
                     }
                     new_set_groups.push(set_group);
                     start_idx = end_idx;

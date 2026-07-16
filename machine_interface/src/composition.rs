@@ -458,11 +458,30 @@ impl CompositionSet {
         }
     }
 
-    pub fn combine(&mut self, additional: CompositionSet) {
-        self.item_list.extend(additional.item_list.into_iter());
-        self.item_list.sort_unstable_by_key(|a| a.0.key);
-        self.non_local_items += additional.non_local_items;
-        self.total_size += additional.total_size;
+    /// Takes all sets from a Vec and combines them into a single set.
+    /// The vec is empty after the call.
+    pub fn combine(sets: &mut Vec<CompositionSet>) -> Option<CompositionSet> {
+        // either is none if the vec was empty or has the last element
+        let set_option = sets.pop();
+        // if here is nothing else can return None or the element we popped
+        if sets.is_empty() {
+            return set_option;
+        }
+        // if the vec is not empty the first pop was an element
+        let mut set = set_option.unwrap();
+        while let Some(new_set) = sets.pop() {
+            let CompositionSet {
+                item_list,
+                non_local_items,
+                total_size,
+                ..
+            } = new_set;
+            set.item_list.extend(item_list.into_iter());
+            set.non_local_items += non_local_items;
+            set.total_size += total_size;
+        }
+        set.item_list.sort_unstable_by_key(|a| a.0.key);
+        Some(set)
     }
 }
 
