@@ -415,8 +415,9 @@ async fn remote_queue_server_logic(
                         )) = debt_map.remove(&invocation_id)
                         else {
                             if cancelled_debt_ids.remove(&invocation_id) {
-                                // Do not reuse this ID: a delayed cancellation can otherwise
-                                // cancel a later invocation with the same ID.
+                                // The acknowledgement guarantees that the remote will not send a
+                                // delayed response that could be mistaken for a later invocation.
+                                free_debt_ids.push(invocation_id);
                                 trace!(
                                     "Received cancellation acknowledgement for remote invocation {}",
                                     invocation_id
