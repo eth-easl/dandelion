@@ -137,12 +137,11 @@ impl Future for ComputeWaitFuture<'_> {
             .extract_if(|queue_element| queue_element.flags & self.flags != 0)
             .next()
             .map(|queue_element| (queue_element.work, queue_element.debt));
+        // Poke the IO queue in case they were waiting either for more space in the compute queue or an idle compute core
+        if let Some(waker) = lock_guard.io_waker_list.pop_front() {
+            waker.wake();
+        }
         if let Some(mut result_tupple) = result {
-            // Poke the IO queue in case they were waiting for space to produce more results
-            if let Some(waker) = lock_guard.io_waker_list.pop_front() {
-                waker.wake();
-            }
-
             if let WorkToDo::FunctionArguments {
                 function_id: _,
                 function_alternatives: _,
