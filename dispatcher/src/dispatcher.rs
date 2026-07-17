@@ -463,6 +463,7 @@ impl Dispatcher {
             input_sets
         );
         let mut recorders;
+        let sharding_start = std::time::Instant::now();
 
         // check if there are no input sets or all of them are none, then don't need sharding,
         // but still want to run if we queued it.
@@ -481,7 +482,9 @@ impl Dispatcher {
             let resutls: Vec<_> = sharded
                 .into_iter()
                 .map(|ins| {
-                    let new_recorder = Recorder::new_from_parent(function_id.clone(), &recorder);
+                    let mut new_recorder =
+                        Recorder::new_from_parent(function_id.clone(), &recorder);
+                    new_recorder.prerecorded(RecordPoint::ShardingStart, sharding_start);
                     let future_box = Box::pin(self.queue_function(
                         composition_id,
                         function_id.clone(),
@@ -497,7 +500,8 @@ impl Dispatcher {
             // TODO this is added to support functions with all functions defined as static sets
             // might want to differentiate between those that have static sets and those that did not get input from predecessors
         } else {
-            let new_recorder = Recorder::new_from_parent(function_id.clone(), &recorder);
+            let mut new_recorder = Recorder::new_from_parent(function_id.clone(), &recorder);
+            new_recorder.prerecorded(RecordPoint::ShardingStart, sharding_start);
             let future_box = self
                 .queue_function(
                     composition_id,
