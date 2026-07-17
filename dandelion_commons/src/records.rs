@@ -8,10 +8,10 @@ use core::cell::{OnceCell, UnsafeCell};
 /// Maximum usize to expect when converting a record point to a usize
 /// By setting the last element to this explicitly, the compiler will throw an error,
 /// if there are more than this, because it enumerates from 0 and won't allow a number to be assigned twice.
-const LAST_RECORD_POINT: usize = 22;
+const LAST_RECORD_POINT: usize = 23;
 /// The first timestamp that should come from the engine running the function
-const FIRST_ENGINE_POINT: usize = 14;
-const LAST_ENGINE_POINT: usize = 21;
+const FIRST_ENGINE_POINT: usize = 15;
+const LAST_ENGINE_POINT: usize = 22;
 
 pub const ENGINE_RECORD_POINTS: usize = LAST_ENGINE_POINT - FIRST_ENGINE_POINT + 1;
 
@@ -22,6 +22,8 @@ pub enum RecordPoint {
     DeserializationEnd,
     /// When the request first enters the dispatcher
     EnterDispatcher,
+    /// For requests with dynamic compositions
+    DynamicParsingEnd,
     /// Start sharding the function
     ShardingStart,
     /// Queue to get the function executed on the engine (async)

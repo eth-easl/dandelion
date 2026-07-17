@@ -162,13 +162,16 @@ impl Dispatcher {
         composition_desc: String,
         inputs: Vec<Option<CompositionSet>>,
         caching: bool,
-        recorder: Recorder,
+        mut recorder: Recorder,
     ) -> DandelionResult<(Vec<Option<LocalCompositionSet>>, Recorder)> {
         debug!("Parsing single use composition");
+        recorder.record(RecordPoint::EnterDispatcher);
 
         let composition_meta_pairs = self
             .function_registry
             .parse_compositions(&composition_desc.as_str())?;
+        recorder.record(RecordPoint::DynamicParsingEnd);
+
         if composition_meta_pairs.len() != 1 {
             debug!(
                 "Expected exactly one composition got {}",
