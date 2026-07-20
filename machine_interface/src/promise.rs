@@ -6,29 +6,29 @@ use core::{
     pin::Pin,
     ptr,
     sync::atomic::{AtomicPtr, AtomicU8, Ordering},
-    task::{Poll, Waker},
+    task::Poll,
 };
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, PromiseError};
-use std::sync::{Arc, Mutex};
+use futures::task::AtomicWaker;
+use std::{
+    mem::MaybeUninit,
+    sync::{atomic::Ordering::Acquire, Arc},
+};
 
-static WAKER_INDEX: u8 = 0b0000_0001;
-static DEBT_ALIVE: u8 = 0b0001_0000;
-static PROMISE_ALIVE: u8 = 0b0010_0000;
-static CONTENT_SET: u8 = 0b0100_0000;
-static ALIVE: u8 = DEBT_ALIVE | PROMISE_ALIVE;
+// debt sets content on drop so this is both the alive flag and the content lock
+static DEBT_ALIVE: u8 = 0b0000_0001;
+static PROMISE_ALIVE: u8 = 0b0000_0010;
+static ABORT_SET: u8 = 0b0000_0100;
 
 type AbortHandle = Box<dyn FnOnce() + Send + 'static>;
 
-// TODO replace 2 wakers with a futures::task::AtomicWaker
 struct PromiseData {
     /// Abort handle, only to be called once, as long as this value
     ///non null that means the function has not been aborted or terminated on it's own
-    abort_handle: Mutex<Option<AbortHandle>>,
+    abort_handle: MaybeUninit<AbortHandle>,
     /// Points to raw box of the results the engine has put in there
     results: Cell<DandelionResult<WorkDone>>,
-    /// TODO replace Option<Waker> with only waker when Waker::noop stabilizes,
-    /// and we can use it as default and use clone_from() on the cells
-    wakers: [Cell<Option<Waker>>; 2],
+    waker: AtomicWaker,
     flags: AtomicU8,
 }
 
@@ -84,22 +84,18 @@ impl PromiseBufferInternal {
         return Ok(current);
     }
 
-    fn drop_promise_data(&self, data_ptr: *mut DataWrapper, drop_origin: u8) {
-        let data = unsafe { &(&*data_ptr).data };
-        let previous_flags = data.flags.fetch_and(!drop_origin, Ordering::SeqCst);
-        if ((previous_flags & !drop_origin) & ALIVE) == 0 {
-            // drop data in union so we can reuse
-            unsafe { ManuallyDrop::<PromiseData>::drop(&mut (*data_ptr).data) };
-            // reinsert at head
-            let mut head = self.head.load(Ordering::Acquire);
+    fn drop_promise_data(&self, data_ptr: *mut DataWrapper) {
+        // drop data in union so we can reuse
+        unsafe { ManuallyDrop::<PromiseData>::drop(&mut (*data_ptr).data) };
+        // reinsert at head
+        let mut head = self.head.load(Ordering::Acquire);
+        unsafe { (*data_ptr).next = head };
+        while let Err(current_head) =
+            self.head
+                .compare_exchange(head, data_ptr, Ordering::AcqRel, Ordering::Acquire)
+        {
+            head = current_head;
             unsafe { (*data_ptr).next = head };
-            while let Err(current_head) =
-                self.head
-                    .compare_exchange(head, data_ptr, Ordering::AcqRel, Ordering::Acquire)
-            {
-                head = current_head;
-                unsafe { (*data_ptr).next = head };
-            }
         }
     }
 }
@@ -120,11 +116,11 @@ impl PromiseBuffer {
         let data_ptr = self.internal.get_promise_data()?;
         let data = unsafe { &mut (&mut *data_ptr).data };
         let default = ManuallyDrop::new(PromiseData {
-            abort_handle: Mutex::new(None),
+            abort_handle: MaybeUninit::uninit(),
             results: Cell::new(err_dandelion!(DandelionError::PromiseError(
-                PromiseError::Default
+                PromiseError::DroppedDebt
             ))),
-            wakers: [Cell::new(None), Cell::new(None)],
+            waker: AtomicWaker::new(),
             flags: AtomicU8::new(DEBT_ALIVE | PROMISE_ALIVE),
         });
         *data = default;
@@ -153,9 +149,11 @@ impl Promise {
     }
     fn abort_internal(&mut self) {
         let data = unsafe { &(&*self.data).data };
-        let abort_handle = data.abort_handle.lock().unwrap().take();
-        if let Some(abort_handle) = abort_handle {
-            abort_handle()
+        // check there is an abort handle and the debt has not already been dropped
+        let flags = data.flags.load(Acquire);
+        if flags & (ABORT_SET | DEBT_ALIVE) == (ABORT_SET | DEBT_ALIVE) {
+            let abort_hanlder = unsafe { data.abort_handle.assume_init_read() };
+            abort_hanlder();
         }
     }
 }
@@ -166,29 +164,14 @@ impl futures::future::Future for Promise {
     // handle this by returning pending again
     fn poll(self: Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
         let data = unsafe { &(&*self.data).data };
-        let flags = data.flags.load(Ordering::SeqCst);
 
         // update the waker
-        let waker_index = (flags & WAKER_INDEX) ^ WAKER_INDEX;
-        data.wakers[usize::from(waker_index)].set(Some(cx.waker().clone()));
+        data.waker.register(cx.waker());
 
-        // set waker to next one, to ensure the fulfill never reads a waker wrie in progress,
-        // because of 2 polls after each other where the fulfill has the index of the second
-        // waker being written. This is automatically avoided, by checking for changes in the
-        // debt flags.
-        // want to take content if there is some and flip index
-        let new_flags = (flags ^ WAKER_INDEX) & !CONTENT_SET;
-        let current_flags =
-            match data
-                .flags
-                .compare_exchange(flags, new_flags, Ordering::SeqCst, Ordering::SeqCst)
-            {
-                Ok(changed_flags) | Err(changed_flags) => changed_flags,
-            };
-
+        let flags = data.flags.load(Ordering::Acquire);
         // the only changes the debt ever does is set the content or get dropped, which also sets content
         // if there was an error it could only have been seting the content.
-        if current_flags & CONTENT_SET != 0 {
+        if flags & DEBT_ALIVE == 0 {
             return Poll::Ready(data.results.replace(err_dandelion!(
                 DandelionError::PromiseError(PromiseError::TakenPromise,)
             )));
@@ -201,7 +184,11 @@ impl futures::future::Future for Promise {
 impl Drop for Promise {
     fn drop(&mut self) {
         self.abort_internal();
-        self.origin.drop_promise_data(self.data, PROMISE_ALIVE);
+        let data = unsafe { &(&*self.data).data };
+        let previous_flags = data.flags.fetch_and(!PROMISE_ALIVE, Ordering::SeqCst);
+        if (previous_flags & DEBT_ALIVE) == 0 {
+            self.origin.drop_promise_data(self.data);
+        }
     }
 }
 
@@ -219,48 +206,33 @@ impl Debt {
 
     pub fn fulfill(self, results: DandelionResult<WorkDone>) {
         let data = unsafe { &(&*self.data).data };
-        // prevent a later abort from invoking the callback
-        data.abort_handle.lock().unwrap().take();
-        // write a result
+        // write a result, the flag will be set and the waker called when the drop is executed
         data.results.set(results);
-        let flags = data.flags.fetch_or(CONTENT_SET, Ordering::SeqCst);
-        let waker_index = flags & WAKER_INDEX;
-        if let Some(waker) = data.wakers[usize::from(waker_index)].take() {
-            waker.wake();
-        }
     }
+
+    // The installer needs to be able to deal with the abort arriving after the debt has been dropped.
+    // This can happen due to race conditions when dropping / fulfilling the debt and calls to the abort.
     pub fn install_abort_handle<F>(&self, handle: F)
     where
         F: FnOnce() + Send + 'static,
     {
-        let data = unsafe { &(&*self.data).data };
-        *data.abort_handle.lock().unwrap() = Some(Box::new(handle));
+        let data = unsafe { &mut (&mut *self.data).data };
+        data.abort_handle.write(Box::new(handle));
+        data.flags.fetch_or(ABORT_SET, Ordering::AcqRel);
     }
 }
 
 impl Drop for Debt {
     fn drop(&mut self) {
         let data = unsafe { &(&*self.data).data };
-        // prevent a later abort from invoking the callback
-        data.abort_handle.lock().unwrap().take();
-        // if promise is still alive, there is still a promise waiting for a result
-        let flags = data.flags.load(Ordering::SeqCst);
-        if flags & PROMISE_ALIVE == 1 {
-            // always pay your debts
-            if flags & CONTENT_SET == 0 {
-                data.results
-                    .set(err_dandelion!(DandelionError::PromiseError(
-                        PromiseError::DroppedDebt
-                    )));
-                data.flags.fetch_or(CONTENT_SET, Ordering::SeqCst);
-            }
-            let waker_index = data.flags.load(Ordering::SeqCst) & WAKER_INDEX;
-            if let Some(waker) = data.wakers[usize::from(waker_index)].take() {
-                waker.wake();
-            }
+        // mark debt as dropped
+        let previous_flags = data.flags.fetch_and(!DEBT_ALIVE, Ordering::SeqCst);
+
+        // call waker, if the promise has been dropped the waker should be able to deal with a delayed signal
+        data.waker.wake();
+
+        if previous_flags & PROMISE_ALIVE == 0 {
+            self.origin.as_ref().drop_promise_data(self.data);
         }
-        self.origin
-            .as_ref()
-            .drop_promise_data(self.data, DEBT_ALIVE);
     }
 }
