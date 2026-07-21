@@ -47,23 +47,21 @@ pub fn get_work_for_remote(
     functions.extend(
         io_queue
             .extract_if(|queue_element| {
-                if let WorkToDo::FunctionArguments { recorder, .. } = &mut queue_element.work {
-                    if queue_element.flags & engine_flags != 0 {
-                        recorder.record(RecordPoint::IOQueueEnd);
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
+                matches!(&queue_element.work, WorkToDo::FunctionArguments { .. })
+                    && queue_element.flags & engine_flags != 0
             })
-            .map(|queue_element| {
-                (
+            .filter_map(|mut queue_element| {
+                if !queue_element.debt.is_alive() {
+                    return None;
+                }
+                if let WorkToDo::FunctionArguments { recorder, .. } = &mut queue_element.work {
+                    recorder.record(RecordPoint::IOQueueEnd);
+                }
+                Some((
                     queue_element.work,
                     queue_element.debt,
                     queue_element.composition_id,
-                )
+                ))
             })
             .take(number_of_functions),
     );
@@ -73,25 +71,21 @@ pub fn get_work_for_remote(
         functions.extend(
             compute_queue
                 .extract_if(|queue_element| {
-                    if let WorkToDo::FunctionArguments { recorder, .. } = &mut queue_element.work {
-                        if queue_element.flags & engine_flags != 0 {
-                            recorder.record(RecordPoint::ComputeQueueEnd);
-                            // don't need to poke IO cores to do more prefetching,
-                            // since those queues are empty if we are taking from here
-                            true
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    }
+                    matches!(&queue_element.work, WorkToDo::FunctionArguments { .. })
+                        && queue_element.flags & engine_flags != 0
                 })
-                .map(|queue_element| {
-                    (
+                .filter_map(|mut queue_element| {
+                    if !queue_element.debt.is_alive() {
+                        return None;
+                    }
+                    if let WorkToDo::FunctionArguments { recorder, .. } = &mut queue_element.work {
+                        recorder.record(RecordPoint::ComputeQueueEnd);
+                    }
+                    Some((
                         queue_element.work,
                         queue_element.debt,
                         queue_element.composition_id,
-                    )
+                    ))
                 })
                 .take(still_needed),
         );
