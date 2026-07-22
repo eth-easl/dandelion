@@ -458,6 +458,24 @@ impl CompositionSet {
         }
     }
 
+    pub fn from_sorted_items(
+        set_name: String,
+        item_list: Vec<(DataItem, ItemData)>,
+        total_size: usize,
+        non_local_items: usize,
+    ) -> Option<Self> {
+        if item_list.is_empty() {
+            None
+        } else {
+            Some(Self {
+                non_local_items,
+                item_list,
+                set_name,
+                total_size,
+            })
+        }
+    }
+
     /// Takes all sets from a Vec and combines them into a single set.
     /// The vec is empty after the call.
     pub fn combine(sets: &mut Vec<CompositionSet>) -> Option<CompositionSet> {

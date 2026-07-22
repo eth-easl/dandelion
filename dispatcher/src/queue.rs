@@ -1,9 +1,11 @@
 mod policy;
+
 pub use policy::PREFETCH_PER_CORE;
 
 use dandelion_commons::{
     err_dandelion, records::RecordPoint, DandelionError, DandelionResult, DispatcherError,
 };
+use futures::{stream::FuturesUnordered, StreamExt};
 use log::trace;
 use machine_interface::{
     composition::SystemInfo,
@@ -255,6 +257,38 @@ impl Future for IoWaitFuture<'_> {
     }
 }
 
+fn get_flags(work: &WorkToDo) -> (u32, bool) {
+    match &work {
+        WorkToDo::Shutdown(engine_type) => (get_engine_flag(*engine_type), true),
+        WorkToDo::SetsToResolve { .. } => (0, false),
+        WorkToDo::RemoteToDelete { .. } => (0, false),
+        WorkToDo::FunctionArguments {
+            function_alternatives,
+            input_sets,
+            ..
+        } => {
+            // check if all the sets are already fully locally available
+            let local = input_sets.into_iter().all(|set_option| {
+                if let Some(set) = set_option {
+                    set.is_local()
+                } else {
+                    true
+                }
+            });
+            let mut flags = 0;
+            trace!(
+                "found function arguments with alternatives: {:?}",
+                function_alternatives
+            );
+            for alternative in function_alternatives {
+                flags |= get_engine_flag(alternative.engine);
+            }
+            // check if system flag is set, if so, put in system queue
+            (flags, local)
+        }
+    }
+}
+
 impl WorkQueue {
     /// Creates a new WorkQueue of given size.
     pub fn init() -> Self {
@@ -303,12 +337,9 @@ impl WorkQueue {
         had_fetching: bool,
     ) {
         if let WorkToDo::FunctionArguments {
-            function_id: _,
-            function_alternatives: _,
             input_sets: _input_sets,
-            metadata: _,
-            caching: _,
             recorder,
+            ..
         } = &mut work
         {
             #[cfg(feature = "timestamp")]
@@ -451,35 +482,7 @@ impl WorkQueue {
     }
 
     fn push(&self, work: WorkToDo, debt: Debt, composition_id: usize, try_offload: bool) {
-        let (flags, local) = match &work {
-            WorkToDo::Shutdown(engine_type) => (get_engine_flag(*engine_type), true),
-            WorkToDo::SetsToResolve { .. } => (0, false),
-            WorkToDo::RemoteToDelete { .. } => (0, false),
-            WorkToDo::FunctionArguments {
-                function_alternatives,
-                input_sets,
-                ..
-            } => {
-                // check if all the sets are already fully locally available
-                let local = input_sets.into_iter().all(|set_option| {
-                    if let Some(set) = set_option {
-                        set.is_local()
-                    } else {
-                        true
-                    }
-                });
-                let mut flags = 0;
-                trace!(
-                    "found function arguments with alternatives: {:?}",
-                    function_alternatives
-                );
-                for alternative in function_alternatives {
-                    flags |= get_engine_flag(alternative.engine);
-                }
-                // check if system flag is set, if so, put in system queue
-                (flags, local)
-            }
-        };
+        let (flags, local) = get_flags(&work);
         log::trace!(
             "Enqueueing function with all local data {}, with engine flags: {}",
             local,
@@ -503,6 +506,157 @@ impl WorkQueue {
         let (promise, debt) = self.promise_buffer.get_promise()?;
         self.push(work, debt, composition_id, true);
         promise.await
+    }
+
+    /// Inserts a vector of work at once.
+    /// Assumes all the work is uniform, i.e the flags for all invocations are the same.
+    pub async fn do_work_many(
+        &self,
+        work_vec: Vec<WorkToDo>,
+        composition_id: usize,
+    ) -> DandelionResult<Vec<WorkDone>> {
+        let mut debts = Vec::with_capacity(work_vec.len());
+        let mut promises = FuturesUnordered::new();
+        let mut results = Vec::with_capacity(work_vec.len());
+        for _ in 0..work_vec.len() {
+            let (promise, debt) = self.promise_buffer.get_promise()?;
+            debts.push(debt);
+            promises.push(promise);
+        }
+        // Transform into either a IO element or a compute queue element
+        let mut compute_elements = LinkedList::new();
+        let mut io_elements = LinkedList::new();
+        // first transforming all then pushing to not hold lock while evaluating policy
+        let mut global_flags = 0;
+        for mut work in work_vec.into_iter() {
+            // determine if local and figure out flags
+            let (flags, local) = get_flags(&work);
+            global_flags = flags;
+            if local {
+                #[cfg(feature = "timestamp")]
+                {
+                    if let WorkToDo::FunctionArguments {
+                        input_sets,
+                        recorder,
+                        ..
+                    } = &mut work
+                    {
+                        let (total_items, total_size) =
+                            input_sets.iter().fold((0, 0), |(number, size), set| {
+                                set.as_ref()
+                                    .map(|set| (number + set.len(), size + set.size()))
+                                    .unwrap_or((number, size))
+                            });
+                        recorder.record_input(total_items as u64, total_size as u64);
+                        recorder.record(RecordPoint::ComputeQueueStart);
+                    }
+                }
+                compute_elements.push_back(ComputeQueueElement {
+                    composition_id,
+                    flags,
+                    work,
+                    debt: debts.pop().unwrap(),
+                });
+            } else {
+                if let WorkToDo::FunctionArguments { recorder, .. } = &mut work {
+                    recorder.record(RecordPoint::IOQueueStart);
+                }
+                if let Some((work, debt, policy_data)) = policy::prepare_io_element(
+                    work,
+                    debts.pop().unwrap(),
+                    true,
+                    composition_id,
+                    &self.remote_nodes,
+                ) {
+                    io_elements.push_back(IoQueueElement {
+                        composition_id,
+                        flags,
+                        work,
+                        debt,
+                        policy_data,
+                    });
+                }
+            }
+        }
+
+        {
+            let mut queue_guard = self.inner.lock().unwrap();
+
+            if !compute_elements.is_empty() {
+                if queue_guard.compute_queue.is_empty()
+                    || queue_guard.compute_queue.back().unwrap().composition_id <= composition_id
+                {
+                    queue_guard.compute_queue.append(&mut compute_elements);
+                // check the front has same or bigger id so can just push front
+                } else if queue_guard.compute_queue.front().unwrap().composition_id
+                    >= composition_id
+                {
+                    compute_elements.append(&mut queue_guard.compute_queue);
+                    queue_guard.compute_queue = compute_elements;
+                // find the place to insert
+                } else {
+                    let index = queue_guard
+                        .compute_queue
+                        .iter()
+                        .position(|elem| elem.composition_id > composition_id)
+                        .unwrap();
+                    let mut tail = queue_guard.compute_queue.split_off(index);
+                    queue_guard.compute_queue.append(&mut compute_elements);
+                    queue_guard.compute_queue.append(&mut tail);
+                }
+
+                // call first waker with matching flags if there are any
+                if let Some(waker_to_call) = queue_guard
+                    .compute_waker_list
+                    .extract_if(|queue_element| queue_element.flags & global_flags == global_flags)
+                    .next()
+                {
+                    log::trace!("Notifying one waker");
+                    waker_to_call.waker.wake();
+                } else {
+                }
+                self.queuing_notifier.notify_waiters();
+            }
+
+            if !io_elements.is_empty() {
+                // check if an io core would take the element or not;
+                // if not, no reason to call waker
+                if queue_guard.io_queue.is_empty()
+                    || queue_guard.io_queue.back().unwrap().composition_id <= composition_id
+                {
+                    queue_guard.io_queue.append(&mut io_elements);
+                // check the front has same or smaller id so can just push front
+                } else if queue_guard.io_queue.front().unwrap().composition_id >= composition_id {
+                    io_elements.append(&mut queue_guard.io_queue);
+                    queue_guard.io_queue = io_elements;
+                // find the place to insert
+                } else {
+                    let index = queue_guard
+                        .io_queue
+                        .iter()
+                        .position(|elem| elem.composition_id > composition_id)
+                        .unwrap();
+                    let mut tail = queue_guard.io_queue.split_off(index);
+                    queue_guard.io_queue.append(&mut io_elements);
+                    queue_guard.io_queue.append(&mut tail);
+                }
+
+                // call first waker with matching flags if there are any
+                // only call waker if we know the core wants to take this element
+                // TODO: have removed check for multiple wakeups / queueing notifications, need to consider if we need to reintroduce it or not
+                // and have a good way to decide when to notify the remotes, since this may add an amount of work where parts of it can be done locally,
+                // and parts should be done remotely (or all)
+                if let Some(waker) = queue_guard.io_waker_list.pop_front() {
+                    waker.wake();
+                }
+                self.queuing_notifier.notify_waiters();
+            }
+        }
+        while let Some(done) = promises.next().await {
+            results.push(done?);
+        }
+
+        Ok(results)
     }
 
     /// Tries to acquire some work that matches the given flags starting from the head of the queue.
