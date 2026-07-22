@@ -536,7 +536,7 @@ impl Dispatcher {
                                 input_sets,
                                 metadata: metadata.clone(),
                                 caching,
-                                recorder: recorder.clone(),
+                                recorder: new_recorder.clone(),
                             };
                             recorders.push(new_recorder);
                             work_to_do
@@ -548,8 +548,8 @@ impl Dispatcher {
                         .do_work_many(work_vec, composition_id)
                         .await?;
 
-                    for recorder in recorders.iter_mut() {
-                        recorder.record(RecordPoint::FutureReturn);
+                    for new_recorder in recorders.iter_mut() {
+                        new_recorder.record(RecordPoint::FutureReturn);
                     }
 
                     let mut composition_set_vecs = Vec::with_capacity(output_mapping.len());
