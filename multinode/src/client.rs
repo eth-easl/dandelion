@@ -580,14 +580,8 @@ async fn remote_queue_server_logic(
                 }
             }
             QueueOption::CancelRemote(invocation_id) => {
-                if let Some((
-                    _composition_id,
-                    _debt,
-                    _recorder,
-                    _start_epoch,
-                    remote_data_references,
-                    _work,
-                )) = debt_map.remove(&invocation_id)
+                if let Some((_, _, _, _, remote_data_references, _)) =
+                    debt_map.remove(&invocation_id)
                 {
                     drop(remote_data_references);
                     cancelled_debt_ids.insert(invocation_id);
