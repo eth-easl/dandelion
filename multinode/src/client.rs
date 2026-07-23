@@ -927,18 +927,10 @@ async fn remote_queue_client_logic(
                             caching,
                         } = invocation;
                         if cancelled_remote_invocations.remove(&invocation_id) {
-                            trace!("Skipping canceled try-offload invocation {}", invocation_id);
-                            if message_sender
-                                .send(remote_message::RemoteMessage::Response(Response {
-                                    invocation_id,
-                                    response: None,
-                                }))
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                            continue;
+                            trace!(
+                                "Cleared stale cancellation before reusing invocation {}",
+                                invocation_id
+                            );
                         }
                         work_from_remote += 1;
                         let function_arc = Arc::new(function_id);
@@ -977,18 +969,10 @@ async fn remote_queue_client_logic(
                                 caching,
                             } = invocation;
                             if cancelled_remote_invocations.remove(&invocation_id) {
-                                trace!("Skipping canceled invocation {}", invocation_id);
-                                if message_sender
-                                    .send(remote_message::RemoteMessage::Response(Response {
-                                        invocation_id,
-                                        response: None,
-                                    }))
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                                continue;
+                                trace!(
+                                    "Cleared stale cancellation before reusing invocation {}",
+                                    invocation_id
+                                );
                             }
                             work_from_remote += 1;
                             let function_arc = Arc::new(function_id);
