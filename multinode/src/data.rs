@@ -23,7 +23,11 @@ use std::{
     pin::Pin,
     sync::{Arc, Mutex, OnceLock},
 };
-use tokio::{net::TcpListener, signal::unix::SignalKind, sync::Semaphore};
+use tokio::{
+    net::TcpListener,
+    signal::unix::SignalKind,
+    sync::{Notify, Semaphore},
+};
 
 #[derive(Clone)]
 struct ExportedData {
@@ -120,6 +124,7 @@ struct ExportRegistryInner {
 #[derive(Clone)]
 pub struct ExportRegistry {
     node_id: u64,
+    empty: Arc<Notify>,
     inner: Arc<Mutex<ExportRegistryInner>>,
 }
 
@@ -127,6 +132,7 @@ impl ExportRegistry {
     pub fn new(node_id: u64) -> Self {
         Self {
             node_id,
+            empty: Arc::new(Notify::new()),
             inner: Arc::new(Mutex::new(ExportRegistryInner {
                 next_data_id: 0,
                 data: BTreeMap::new(),
@@ -211,6 +217,9 @@ impl ExportRegistry {
                 format!("Unknown remote data id {}", data_id),
             )));
         };
+        if inner.data.is_empty() {
+            self.empty.notify_waiters();
+        }
         Ok(())
     }
 
@@ -231,6 +240,17 @@ impl ExportRegistry {
     pub fn fetch_context(&self, data_id: u64) -> DandelionResult<(Arc<Context>, Position)> {
         let exported_data = self.get_exported_data(data_id)?;
         Ok((exported_data.context, exported_data.position))
+    }
+
+    /// A future that completes the next time the export registry has no items in it.
+    pub async fn empty(&self) {
+        // First take the notified, so we cannot miss any wakeups between release of the mutex and awaiting.
+        let notified = self.empty.notified();
+        // Check first if already empty, only need to wait if not.
+        if self.inner.lock().unwrap().data.is_empty() {
+            return;
+        };
+        notified.await;
     }
 }
 
