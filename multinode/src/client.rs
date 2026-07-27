@@ -2,8 +2,8 @@ use crate::{
     data::ExportRegistry,
     deserialize_node_info, deserialize_queue_message, deserialize_remote_message,
     proto::{
-        self, queue_message, remote_message, Invocation, NodeInfo, NodeUpdate, QueueMessage,
-        RemoteMessage, RepeatedEngines, RepeatedInvocations, Response,
+        self, queue_message, remote_message, CancelAcknowledgement, Invocation, NodeInfo,
+        NodeUpdate, QueueMessage, RemoteMessage, RepeatedEngines, RepeatedInvocations, Response,
     },
     serialize_node_info, serialize_queue_message, serialize_remote_message,
     util::{
@@ -29,7 +29,7 @@ use machine_interface::{
 };
 use prost::bytes::{Bytes, BytesMut};
 use std::{
-    collections::{BTreeMap, BinaryHeap},
+    collections::{BTreeMap, BTreeSet, BinaryHeap},
     sync::Arc,
     time::{Duration, Instant, SystemTime},
 };
@@ -154,6 +154,7 @@ enum QueueOption {
     Message(remote_message::RemoteMessage, Option<Bytes>),
     WorkAvailable,
     TryOffload(WorkToDo, machine_interface::promise::Debt, usize),
+    CancelRemote(u32),
     /// The connection to the remote node was lost, so the server logic should tear down.
     Disconnected,
 }
@@ -244,6 +245,7 @@ async fn remote_queue_server_try_offload(
 /// The protocol logic handling for the remote queue server
 async fn remote_queue_server_logic(
     mut message_receiver: mpsc::Receiver<QueueOption>,
+    local_sender: mpsc::Sender<QueueOption>,
     message_sender: mpsc::Sender<queue_message::QueueMessage>,
     queue: WorkQueue,
     export_registry: ExportRegistry,
@@ -254,6 +256,7 @@ async fn remote_queue_server_logic(
     let mut waiting_for_work = false;
 
     let mut debt_map = BTreeMap::new();
+    let mut cancelled_debt_ids = BTreeSet::new();
     let mut free_debt_ids = BinaryHeap::new();
     let mut max_debt_id = 0;
 
@@ -287,8 +290,8 @@ async fn remote_queue_server_logic(
                             // TODO: consider limiting the work we give to a node based on the know max capacity,
                             // to limit potential stragglers if we know the node asked for more than it can handle (possibly because of race conditions)
                             // do not give even more.
-                            invocations.extend(work_found.into_iter().map(|(work, debt, composition_id)|
-                            {
+                            invocations.extend(work_found.into_iter().map(
+                                |(work, debt, composition_id)| {
                                 // there is some work so send it out
                                 // find the local function id to use
                                 let promise_id = if let Some(free_id) = free_debt_ids.pop() {
@@ -333,6 +336,18 @@ async fn remote_queue_server_logic(
                                     );
                                 let caching = caching;
                                 let function_id = function_id.to_string();
+                                let cancel_sender = local_sender.clone();
+                                debt.install_abort_handle(move || {
+                                    if cancel_sender
+                                        .try_send(QueueOption::CancelRemote(promise_id))
+                                        .is_err()
+                                    {
+                                        warn!(
+                                            "Failed to enqueue cancellation for remote invocation {}",
+                                            promise_id
+                                        );
+                                    }
+                                });
                                 debt_map.insert(
                                     promise_id,
                                     (
@@ -350,7 +365,8 @@ async fn remote_queue_server_logic(
                                     invocation_id: promise_id,
                                     caching,
                                 }
-                            }));
+                            },
+                            ));
                         }
                         if invocations.is_empty() {
                             waiting_for_work = true;
@@ -385,17 +401,31 @@ async fn remote_queue_server_logic(
                             invocation_id,
                             response,
                         } = response;
+                        if cancelled_debt_ids.contains(&invocation_id) {
+                            // A result and its cancellation can cross in flight. Only an explicit
+                            // cancellation acknowledgement permits this id to be reused.
+                            trace!(
+                                "Ignoring crossed result for canceled remote invocation {}",
+                                invocation_id
+                            );
+                            continue;
+                        }
                         // TODO: handle failure
-                        let (
+                        let Some((
                             composition_id,
                             debt,
                             mut recorder,
                             start_epoch,
                             remote_data_references,
                             work,
-                        ) = debt_map
-                            .remove(&invocation_id)
-                            .expect("Should always get back function response for a present debt");
+                        )) = debt_map.remove(&invocation_id)
+                        else {
+                            warn!(
+                                "Received response for unknown remote invocation {}",
+                                invocation_id
+                            );
+                            continue;
+                        };
                         free_debt_ids.push(invocation_id);
                         drop(remote_data_references);
                         // remote did not do work, was a try offload request, reenqueu the work
@@ -428,6 +458,22 @@ async fn remote_queue_server_logic(
                             queue.reenqueue(work, debt, composition_id);
                         }
                     }
+                    remote_message::RemoteMessage::CancelAcknowledgement(acknowledgement) => {
+                        debug_assert!(data_option.is_none());
+                        let invocation_id = acknowledgement.invocation_id;
+                        if cancelled_debt_ids.remove(&invocation_id) {
+                            free_debt_ids.push(invocation_id);
+                            trace!(
+                                "Received cancellation acknowledgement for remote invocation {}",
+                                invocation_id
+                            );
+                        } else {
+                            warn!(
+                                "Received cancellation acknowledgement for unknown remote invocation {}",
+                                invocation_id
+                            );
+                        }
+                    }
                     remote_message::RemoteMessage::NodeUpdate(node_update) => {
                         trace!(
                             "Queue Server received node update with new local count: {}",
@@ -454,6 +500,9 @@ async fn remote_queue_server_logic(
                 }
             }
             QueueOption::TryOffload(work, debt, composition_id) => {
+                if !debt.is_alive() {
+                    continue;
+                }
                 // if this node already sent enough work for the remote to be at capacity don't send more
                 if debt_map.len() >= remote_num_cores as usize {
                     queue.reenqueue(work, debt, composition_id);
@@ -498,6 +547,18 @@ async fn remote_queue_server_logic(
                     });
                 let caching = caching;
                 let function_id = function_id.to_string();
+                let cancel_sender = local_sender.clone();
+                debt.install_abort_handle(move || {
+                    if cancel_sender
+                        .try_send(QueueOption::CancelRemote(promise_id))
+                        .is_err()
+                    {
+                        warn!(
+                            "Failed to enqueue cancellation for remote invocation {}",
+                            promise_id
+                        );
+                    }
+                });
                 debt_map.insert(
                     promise_id,
                     (
@@ -533,6 +594,21 @@ async fn remote_queue_server_logic(
                     }
                 }
             }
+            QueueOption::CancelRemote(invocation_id) => {
+                if let Some((_, _, _, _, remote_data_references, _)) =
+                    debt_map.remove(&invocation_id)
+                {
+                    drop(remote_data_references);
+                    cancelled_debt_ids.insert(invocation_id);
+                    if message_sender
+                        .send(queue_message::QueueMessage::CancelInvocation(invocation_id))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
             QueueOption::Disconnected => {
                 // The remote node disconnected, stop the loop and run the cleanup below.
                 break;
@@ -553,9 +629,10 @@ async fn remote_queue_server_logic(
     while let Some(message) = message_receiver.recv().await {
         match message {
             // Ignore messages that have no effect on the clean up
-            QueueOption::WorkAvailable | QueueOption::Disconnected | QueueOption::Message(_, _) => {
-                ()
-            }
+            QueueOption::WorkAvailable
+            | QueueOption::Disconnected
+            | QueueOption::Message(_, _)
+            | QueueOption::CancelRemote(_) => (),
             // Reenqueue work that was tried to offload
             QueueOption::TryOffload(work, debt, composition_id) => {
                 queue.reenqueue(work, debt, composition_id);
@@ -642,12 +719,13 @@ pub async fn remote_queue_server(
     queue.add_remote_channel(node_id, offload_sender);
     spawn(remote_queue_server_try_offload(
         offload_receiver,
-        queue_option_sender,
+        queue_option_sender.clone(),
         queue.clone(),
     ));
 
     remote_queue_server_logic(
         queue_option_receiver,
+        queue_option_sender.clone(),
         queue_message_sender,
         queue,
         export_registry,
@@ -668,8 +746,11 @@ pub enum PollingOption {
     Message(DandelionResult<queue_message::QueueMessage>, Option<Bytes>),
     IdleChanged,
     LocalCoreCountChanged(usize),
-    // Results(RemoteMessage, Option<(Vec<Option<CompositionSet>>, u64)>),
-    Results(remote_message::RemoteMessage),
+    Results {
+        invocation_id: u32,
+        message: remote_message::RemoteMessage,
+        exported_data_ids: Vec<u64>,
+    },
     /// The connection to the remote node was lost, so the client logic should tear down.
     Disconnected,
 }
@@ -773,28 +854,67 @@ async fn dispatcher_call(
             recorder.clone(),
         )
         .await;
-    let response_message = match function_result {
+    let (response_message, exported_data_ids) = match function_result {
         Ok(sets) => {
+            let mut exported_data_ids = Vec::new();
             let metadata_sets = composition_sets_to_proto(sets, |item, context| {
-                export_registry.insert_function(item, context, None)
+                let remote_data = export_registry.insert_function(item, context, None);
+                exported_data_ids.push(remote_data.data_id);
+                remote_data
             });
-            proto::response::Response::MetadataSets(proto::RepeatedMetadataSet {
-                metadata_sets,
-                timestamps: recorder_dtop(recorder, start_time),
-            })
+            (
+                proto::response::Response::MetadataSets(proto::RepeatedMetadataSet {
+                    metadata_sets,
+                    timestamps: recorder_dtop(recorder, start_time),
+                }),
+                exported_data_ids,
+            )
         }
-        Err(err) => proto::response::Response::ErrorMsg(err.error.to_string()),
+        Err(err) => (
+            proto::response::Response::ErrorMsg(err.error.to_string()),
+            Vec::new(),
+        ),
     };
     // If the connection was lost in the meantime the logic loop is gone; dropping the result is
     // fine, the master will reenqueue the work after detecting the disconnect.
     let _ = sender
-        .send(PollingOption::Results(
-            remote_message::RemoteMessage::Response(Response {
+        .send(PollingOption::Results {
+            invocation_id,
+            message: remote_message::RemoteMessage::Response(Response {
                 invocation_id,
                 response: Some(response_message),
             }),
-        ))
+            exported_data_ids,
+        })
         .await;
+}
+
+fn delete_invocation_exports(
+    export_registry: &ExportRegistry,
+    invocation_id: u32,
+    exported_data_ids: Vec<u64>,
+) -> DandelionResult<()> {
+    for data_id in exported_data_ids {
+        let deleted = export_registry.delete_exported_data_if_present(data_id)?;
+        trace!(
+            "Cancellation cleanup for invocation {}: export {} existed={}",
+            invocation_id,
+            data_id,
+            deleted
+        );
+    }
+    Ok(())
+}
+
+async fn send_cancel_acknowledgement(
+    message_sender: &mpsc::Sender<remote_message::RemoteMessage>,
+    invocation_id: u32,
+) -> Result<(), SendError<remote_message::RemoteMessage>> {
+    message_sender
+        .send(remote_message::RemoteMessage::CancelAcknowledgement(
+            CancelAcknowledgement { invocation_id },
+        ))
+        .await
 }
 
 async fn remote_queue_client_logic(
@@ -819,7 +939,12 @@ async fn remote_queue_client_logic(
     // This makes sure we don't overfetch from this node.
     // TODO: think about the general issue of state synchronization between the dispatcher and multinode client adding things,
     // and the engines and server taking things.
-    let mut work_from_remote = 0;
+    let mut work_from_remote: usize = 0;
+    let mut cancelled_remote_invocations = BTreeSet::new();
+    // Results and cancellations travel in opposite directions and can cross in flight. Retain
+    // only the exported data ids so a cancellation received after local completion can still
+    // clean up its exports. Entries are removed on cancellation or invocation-id reuse.
+    let mut completed_remote_invocation_exports = BTreeMap::<u32, Vec<u64>>::new();
 
     while let Some(current_future) = receiver.recv().await {
         match current_future {
@@ -839,11 +964,38 @@ async fn remote_queue_client_logic(
                         debug_assert!(data_option.is_none());
                         remote_had_work = true;
                     }
+                    queue_message::QueueMessage::CancelInvocation(invocation_id) => {
+                        trace!(
+                            "Queue Client received cancellation for invocation {}",
+                            invocation_id
+                        );
+                        cancelled_remote_invocations.insert(invocation_id);
+                        if let Some(exported_data_ids) =
+                            completed_remote_invocation_exports.remove(&invocation_id)
+                        {
+                            if let Err(error) = delete_invocation_exports(
+                                &export_registry,
+                                invocation_id,
+                                exported_data_ids,
+                            ) {
+                                error!(
+                                    "Failed to clean exports for canceled remote invocation {}: {}",
+                                    invocation_id, error
+                                );
+                                break;
+                            }
+                            cancelled_remote_invocations.remove(&invocation_id);
+                            if send_cancel_acknowledgement(&message_sender, invocation_id)
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    }
                     // TODO for try offload decide when to refuse work
                     queue_message::QueueMessage::TryOffload(invocation) => {
                         trace!("Queue Client recieved try offload");
-
-                        work_from_remote += 1;
 
                         // mark remote as having work, so we ask for more as idle cores change
                         let start_instance = Instant::now();
@@ -856,6 +1008,14 @@ async fn remote_queue_client_logic(
                             metadata_sets,
                             caching,
                         } = invocation;
+                        completed_remote_invocation_exports.remove(&invocation_id);
+                        if cancelled_remote_invocations.remove(&invocation_id) {
+                            trace!(
+                                "Cleared stale cancellation before reusing invocation {}",
+                                invocation_id
+                            );
+                        }
+                        work_from_remote += 1;
                         let function_arc = Arc::new(function_id);
                         let recorder = Recorder::new(function_arc.clone(), start_instance);
                         let inputs =
@@ -880,7 +1040,6 @@ async fn remote_queue_client_logic(
                         invocation_request_in_flight = false;
 
                         // mark remote as having work, so we ask for more as idle cores change
-                        work_from_remote += invocations.invocations.len();
                         let start_instance = Instant::now();
                         let start_time =
                             std::time::SystemTime::elapsed(&std::time::SystemTime::UNIX_EPOCH)
@@ -892,6 +1051,14 @@ async fn remote_queue_client_logic(
                                 metadata_sets,
                                 caching,
                             } = invocation;
+                            completed_remote_invocation_exports.remove(&invocation_id);
+                            if cancelled_remote_invocations.remove(&invocation_id) {
+                                trace!(
+                                    "Cleared stale cancellation before reusing invocation {}",
+                                    invocation_id
+                                );
+                            }
+                            work_from_remote += 1;
                             let function_arc = Arc::new(function_id);
                             let recorder = Recorder::new(function_arc.clone(), start_instance);
                             let inputs = proto_data_sets_to_composition_sets(
@@ -922,13 +1089,43 @@ async fn remote_queue_client_logic(
                 // The remote node disconnected, stop the loop so the caller can reconnect.
                 break;
             }
-            PollingOption::Results(results) => {
+            PollingOption::Results {
+                invocation_id,
+                message,
+                exported_data_ids,
+            } => {
                 work_from_remote -= 1;
-                trace!("Queue Client sending out result, {} outstanding", {
-                    work_from_remote
-                });
-                if message_sender.send(results).await.is_err() {
-                    break;
+                if cancelled_remote_invocations.remove(&invocation_id) {
+                    trace!(
+                        "Suppressing result for canceled remote invocation {}",
+                        invocation_id
+                    );
+                    if let Err(error) = delete_invocation_exports(
+                        &export_registry,
+                        invocation_id,
+                        exported_data_ids,
+                    ) {
+                        error!(
+                            "Failed to clean exports for canceled remote invocation {}: {}",
+                            invocation_id, error
+                        );
+                        break;
+                    }
+                    if send_cancel_acknowledgement(&message_sender, invocation_id)
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                } else {
+                    completed_remote_invocation_exports.insert(invocation_id, exported_data_ids);
+                    trace!(
+                        "Queue Client sending out result, {} outstanding",
+                        work_from_remote
+                    );
+                    if message_sender.send(message).await.is_err() {
+                        break;
+                    }
                 }
             }
             // getting a notification so should poll the queue
