@@ -104,6 +104,10 @@ message NodeUpdate {
     uint64 num_local_cores = 1;
 }
 
+message CancelAcknowledgement {
+    uint32 invocation_id = 1;
+}
+
 // Message from remote node to get work or return completed tasks
 message RemoteMessage {
     oneof remote_message {
@@ -113,6 +117,8 @@ message RemoteMessage {
         Response response = 2;
         // Update message to the server
         NodeUpdate node_update = 3;
+        // Confirms that a canceled invocation completed its local cleanup
+        CancelAcknowledgement cancel_acknowledgement = 4;
     }
 }
 

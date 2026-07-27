@@ -214,6 +214,19 @@ impl ExportRegistry {
         Ok(())
     }
 
+    /// Deletes exported data when it is still present.
+    ///
+    /// Cancellation cleanup can race with the regular deletion of a remote reference, so a
+    /// missing entry means the requested cleanup has already happened rather than being an error.
+    pub fn delete_exported_data_if_present(&self, data_id: u64) -> DandelionResult<bool> {
+        debug!(
+            "Deleting exported data if present: node_id={}, data_id={}",
+            self.node_id, data_id
+        );
+        let mut inner = self.inner.lock().unwrap();
+        Ok(inner.data.remove(&data_id).is_some())
+    }
+
     /// Drops all exported data. Used when the connection to the node that manages these
     /// contexts is lost, so the worker does not hold on to contexts that will never be
     /// fetched or explicitly deleted anymore.
