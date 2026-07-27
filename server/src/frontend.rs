@@ -1,7 +1,3 @@
-use std::{
-    convert::Infallible, io::Write, net::SocketAddr, path::PathBuf, sync::Arc, time::Instant,
-};
-
 use dandelion_commons::{
     err_dandelion, records::Recorder, DandelionError, DandelionResult, FrontendError,
 };
@@ -13,7 +9,7 @@ use hyper::{
     service::service_fn,
     Request, Response, StatusCode,
 };
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use machine_interface::{
     composition::{CompositionSet, LocalCompositionSet},
     function_driver::Metadata,
@@ -21,7 +17,23 @@ use machine_interface::{
     memory_domain::bytes_context::BytesContext,
 };
 use serde::Deserialize;
-use tokio::{net::TcpListener, signal::unix::SignalKind};
+use std::{
+    convert::Infallible,
+    io::Write,
+    net::SocketAddr,
+    path::PathBuf,
+    println,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Instant,
+};
+use tokio::{
+    net::TcpListener,
+    signal::unix::SignalKind,
+    sync::{oneshot, watch, Notify},
+};
 
 fn default_path() -> String {
     String::new()
@@ -256,7 +268,9 @@ async fn service(
     req: Request<Incoming>,
     dispatcher: &'static Dispatcher,
     folder_path: &'static str,
+    request_counter: Arc<(AtomicUsize, Notify)>,
 ) -> Result<Response<DandelionBody>, Infallible> {
+    request_counter.0.fetch_add(1, Ordering::AcqRel);
     // handle request
     let res = match req.uri().path() {
         "/register/function" => handle_function_registration(req, dispatcher, folder_path).await,
@@ -286,6 +300,10 @@ async fn service(
         }
     };
 
+    let current_requests = request_counter.0.fetch_sub(1, Ordering::AcqRel);
+    if current_requests - 1 == 0 {
+        request_counter.1.notify_waiters();
+    }
     // create response
     match res {
         Ok(body) => Ok::<_, Infallible>(Response::new(body)),
@@ -306,11 +324,21 @@ async fn service(
     }
 }
 
-pub async fn service_loop(dispatcher: &'static Dispatcher, folder_path: &'static str, port: u16) {
+pub async fn service_loop(
+    dispatcher: &'static Dispatcher,
+    folder_path: &'static str,
+    port: u16,
+    client_shutdown_option: Option<(watch::Sender<bool>, oneshot::Receiver<()>)>,
+) {
     // socket to listen to
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await.unwrap();
     println!("Socket ready");
+    // request bookkeeping (there is probably some way to use the arcs accounting instead of a separate atomic,
+    // but seems probably harder to use safely).
+    // TODO: currently aborted requests may not properly decrease count. (Would be fixed by using the arc counter, since it is decremented on drop)
+    // May just implement struct that implements the parts of the arc we need and does notifiy when counter is low
+    let running_requests = Arc::new((AtomicUsize::new(0), Notify::new()));
 
     // signal handlers for gracefull shutdown
     let mut sigterm_stream = tokio::signal::unix::signal(SignalKind::terminate()).unwrap();
@@ -322,11 +350,13 @@ pub async fn service_loop(dispatcher: &'static Dispatcher, folder_path: &'static
             connection_pair = listener.accept() => {
                 let (stream,_) = connection_pair.unwrap();
                 let io = hyper_util::rt::TokioIo::new(stream);
+                let request_counter = running_requests.clone();
                 tokio::task::spawn(async move {
+                    let counter_clone = request_counter.clone();
                     if let Err(err) = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
                         .serve_connection_with_upgrades(
                             io,
-                            service_fn(|req| service(req, dispatcher, folder_path)),
+                            service_fn(|req| service(req, dispatcher, folder_path, counter_clone.clone())),
                         )
                         .await
                     {
@@ -334,9 +364,28 @@ pub async fn service_loop(dispatcher: &'static Dispatcher, folder_path: &'static
                     }
                 });
             }
-            _ = sigterm_stream.recv() => return,
-            _ = sigint_stream.recv() => return,
-            _ = sigquit_stream.recv() => return,
+            _ = sigterm_stream.recv() => break,
+            _ = sigint_stream.recv() => break,
+            _ = sigquit_stream.recv() => break,
         }
+    }
+
+    info!("Broke frontend loop, startig graceful shutdown");
+
+    // if there is a remote client, stop receiving work
+    if let Some((shutdown_sender, completion_receiver)) = client_shutdown_option {
+        shutdown_sender.send_replace(true);
+        // await completion, receiving completion implies, that all remote requests have returned and the export registry is empty
+        completion_receiver.await.unwrap();
+    }
+    // remote work has already drained, if there was work submitted to this node directly, wait for that to drain
+    let notifer = running_requests.1.notified();
+    let remaining_requests = running_requests.0.load(Ordering::Acquire);
+    info!(
+        "finished waiting for remote, checking local queue for completion, {} requests remaining",
+        remaining_requests
+    );
+    if remaining_requests != 0 {
+        notifer.await;
     }
 }
