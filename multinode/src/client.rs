@@ -242,6 +242,20 @@ async fn remote_queue_server_try_offload(
     }
 }
 
+fn drop_response_exports(
+    response: Option<proto::response::Response>,
+    data_option: Option<Bytes>,
+    remote_data_deletion_sender: &mpsc::UnboundedSender<RemoteData>,
+) {
+    if let Some(proto::response::Response::MetadataSets(metadata_sets)) = response {
+        drop(proto_data_sets_to_composition_sets_with_delete_on_drop(
+            metadata_sets.metadata_sets,
+            data_option,
+            remote_data_deletion_sender.clone(),
+        ));
+    }
+}
+
 /// The protocol logic handling for the remote queue server
 async fn remote_queue_server_logic(
     mut message_receiver: mpsc::Receiver<QueueOption>,
@@ -401,11 +415,17 @@ async fn remote_queue_server_logic(
                             invocation_id,
                             response,
                         } = response;
-                        if cancelled_debt_ids.contains(&invocation_id) {
-                            // A result and its cancellation can cross in flight. Only an explicit
-                            // cancellation acknowledgement permits this id to be reused.
+                        if cancelled_debt_ids.remove(&invocation_id) {
+                            // The result crossed the cancellation in flight. Drop any remote
+                            // references from the discarded result so their owners delete them.
+                            drop_response_exports(
+                                response,
+                                data_option,
+                                &remote_data_deletion_sender,
+                            );
+                            free_debt_ids.push(invocation_id);
                             trace!(
-                                "Ignoring crossed result for canceled remote invocation {}",
+                                "Discarded crossed result for canceled remote invocation {}",
                                 invocation_id
                             );
                             continue;
@@ -941,10 +961,6 @@ async fn remote_queue_client_logic(
     // and the engines and server taking things.
     let mut work_from_remote: usize = 0;
     let mut cancelled_remote_invocations = BTreeSet::new();
-    // Results and cancellations travel in opposite directions and can cross in flight. Retain
-    // only the exported data ids so a cancellation received after local completion can still
-    // clean up its exports. Entries are removed on cancellation or invocation-id reuse.
-    let mut completed_remote_invocation_exports = BTreeMap::<u32, Vec<u64>>::new();
 
     while let Some(current_future) = receiver.recv().await {
         match current_future {
@@ -970,28 +986,6 @@ async fn remote_queue_client_logic(
                             invocation_id
                         );
                         cancelled_remote_invocations.insert(invocation_id);
-                        if let Some(exported_data_ids) =
-                            completed_remote_invocation_exports.remove(&invocation_id)
-                        {
-                            if let Err(error) = delete_invocation_exports(
-                                &export_registry,
-                                invocation_id,
-                                exported_data_ids,
-                            ) {
-                                error!(
-                                    "Failed to clean exports for canceled remote invocation {}: {}",
-                                    invocation_id, error
-                                );
-                                break;
-                            }
-                            cancelled_remote_invocations.remove(&invocation_id);
-                            if send_cancel_acknowledgement(&message_sender, invocation_id)
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
                     }
                     // TODO for try offload decide when to refuse work
                     queue_message::QueueMessage::TryOffload(invocation) => {
@@ -1008,7 +1002,6 @@ async fn remote_queue_client_logic(
                             metadata_sets,
                             caching,
                         } = invocation;
-                        completed_remote_invocation_exports.remove(&invocation_id);
                         if cancelled_remote_invocations.remove(&invocation_id) {
                             trace!(
                                 "Cleared stale cancellation before reusing invocation {}",
@@ -1051,7 +1044,6 @@ async fn remote_queue_client_logic(
                                 metadata_sets,
                                 caching,
                             } = invocation;
-                            completed_remote_invocation_exports.remove(&invocation_id);
                             if cancelled_remote_invocations.remove(&invocation_id) {
                                 trace!(
                                     "Cleared stale cancellation before reusing invocation {}",
@@ -1118,7 +1110,6 @@ async fn remote_queue_client_logic(
                         break;
                     }
                 } else {
-                    completed_remote_invocation_exports.insert(invocation_id, exported_data_ids);
                     trace!(
                         "Queue Client sending out result, {} outstanding",
                         work_from_remote
