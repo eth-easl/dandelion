@@ -20,7 +20,7 @@ use dispatcher::{
     dispatcher::Dispatcher,
     queue::{get_engine_flag, WorkQueue},
 };
-use log::{error, info, trace, warn};
+use log::{debug, error, info, trace, warn};
 use machine_interface::{
     composition::{CompositionSet, RemoteData},
     function_driver::{WorkDone, WorkToDo},
@@ -256,12 +256,25 @@ async fn remote_queue_server_logic(
     let mut debt_map = BTreeMap::new();
     let mut free_debt_ids = BinaryHeap::new();
     let mut max_debt_id = 0;
+    let mut remote_graceful_shutdown = false;
 
     // are ready, wait for the remote to ask for work or return completed tasks
     while let Some(queue_option) = message_receiver.recv().await {
         match queue_option {
             QueueOption::Message(message, data_option) => {
                 match message {
+                    remote_message::RemoteMessage::Shutdown(_) => {
+                        // remote is requesting shutdown, remove from offload list and acknowledge shutdown
+                        remote_graceful_shutdown = true;
+                        queue.remove_remote_channel(node_id);
+                        if message_sender
+                            .send(queue_message::QueueMessage::Shutdown(true))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
                     remote_message::RemoteMessage::WorkRequest(work_request) => {
                         debug_assert!(data_option.is_none());
                         // For now just send one matching function
@@ -271,6 +284,12 @@ async fn remote_queue_server_logic(
                             "Queue Server received work request for engines: {:?}",
                             work_request.engines
                         );
+
+                        // ignore if shutting down
+                        if remote_graceful_shutdown {
+                            continue;
+                        }
+
                         let mut invocations = Vec::new();
                         for engine in work_request.engines {
                             let engine_flags =
@@ -427,6 +446,10 @@ async fn remote_queue_server_logic(
                             // did not get response so need to reenqueue the work
                             queue.reenqueue(work, debt, composition_id);
                         }
+                        // remote does not want more work and has returned everything it has so can do a graceful break here
+                        if remote_graceful_shutdown && debt_map.is_empty() {
+                            break;
+                        }
                     }
                     remote_message::RemoteMessage::NodeUpdate(node_update) => {
                         trace!(
@@ -455,7 +478,7 @@ async fn remote_queue_server_logic(
             }
             QueueOption::TryOffload(work, debt, composition_id) => {
                 // if this node already sent enough work for the remote to be at capacity don't send more
-                if debt_map.len() >= remote_num_cores as usize {
+                if debt_map.len() >= remote_num_cores as usize || remote_graceful_shutdown {
                     queue.reenqueue(work, debt, composition_id);
                     continue;
                 }
@@ -547,7 +570,11 @@ async fn remote_queue_server_logic(
 
     // Undo the bookkeeping for this node
     let _ = queue.remove_remote_cores(remote_num_cores as usize);
-    queue.remove_remote_channel(node_id);
+
+    // already removed if it was graceful shutdown
+    if !remote_graceful_shutdown {
+        queue.remove_remote_channel(node_id);
+    }
 
     // Drain any remaining messages.
     while let Some(message) = message_receiver.recv().await {
@@ -833,6 +860,7 @@ async fn remote_queue_client_logic(
     let mut remote_had_work = true;
     let mut invocation_request_in_flight = false;
     let mut shutdown = false;
+    let mut remote_shutdown = false;
     // This makes sure we don't overfetch from this node.
     // TODO: think about the general issue of state synchronization between the dispatcher and multinode client adding things,
     // and the engines and server taking things.
@@ -842,6 +870,15 @@ async fn remote_queue_client_logic(
         match current_future {
             PollingOption::Message(Ok(message), data_option) => {
                 match message {
+                    queue_message::QueueMessage::Shutdown(_) => {
+                        // either get this as acknowledgement for our shutdown or to initiate it from the server
+                        remote_shutdown = true;
+                        shutdown = true;
+                        // either case, can shutdown now if we have no more work from the remote
+                        if work_from_remote == 0 {
+                            break;
+                        }
+                    }
                     // remote did not have work, can ignore local capacity to work until we get a message the more is available
                     queue_message::QueueMessage::NoWork(true) => {
                         trace!("Queue Client recieved NoWork(true)");
@@ -863,6 +900,9 @@ async fn remote_queue_client_logic(
                         // Should still add message to reject them or more generally message to tell master we are shutting down.
                         trace!("Queue Client recieved try offload");
 
+                        if remote_shutdown {
+                            debug!("Should not get offload invocations after remote indicates shutdown");
+                        }
                         work_from_remote += 1;
 
                         // mark remote as having work, so we ask for more as idle cores change
@@ -896,6 +936,9 @@ async fn remote_queue_client_logic(
                             "Queue Client recieved {} invocations",
                             invocations.invocations.len()
                         );
+                        if remote_shutdown {
+                            debug!("Should not get offload invocations after remote indicates shutdown");
+                        }
                         assert!(invocation_request_in_flight);
                         invocation_request_in_flight = false;
 
@@ -950,7 +993,7 @@ async fn remote_queue_client_logic(
                 if message_sender.send(results).await.is_err() {
                     break;
                 }
-                if shutdown && work_from_remote == 0 {
+                if shutdown && remote_shutdown && work_from_remote == 0 {
                     break;
                 }
             }
@@ -976,7 +1019,12 @@ async fn remote_queue_client_logic(
             }
             PollingOption::Shutdown => {
                 shutdown = true;
-                if work_from_remote == 0 {
+                // announce to server that we have no more cores
+                if message_sender
+                    .send(remote_message::RemoteMessage::Shutdown(true))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
