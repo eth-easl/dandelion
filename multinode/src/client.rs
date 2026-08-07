@@ -244,15 +244,39 @@ async fn remote_queue_server_try_offload(
 
 fn drop_response_exports(
     response: Option<proto::response::Response>,
-    data_option: Option<Bytes>,
     remote_data_deletion_sender: &mpsc::UnboundedSender<RemoteData>,
 ) {
     if let Some(proto::response::Response::MetadataSets(metadata_sets)) = response {
-        drop(proto_data_sets_to_composition_sets_with_delete_on_drop(
-            metadata_sets.metadata_sets,
-            data_option,
-            remote_data_deletion_sender.clone(),
-        ));
+        for metadata_item in metadata_sets
+            .metadata_sets
+            .into_iter()
+            .flat_map(|metadata_set| metadata_set.items)
+        {
+            if let Some(item_data) = metadata_item.data {
+                enqueue_item_data_for_deletion(item_data, remote_data_deletion_sender);
+            }
+        }
+    }
+}
+
+fn enqueue_item_data_for_deletion(
+    item_data: proto::ItemData,
+    remote_data_deletion_sender: &mpsc::UnboundedSender<RemoteData>,
+) {
+    match item_data.data {
+        Some(proto::item_data::Data::RemoteData(remote_data)) => {
+            if let Err(error) = remote_data_deletion_sender
+                .send(RemoteData::new(remote_data.node_id, remote_data.data_id))
+            {
+                warn!("Failed to enqueue remote data deletion: {}", error);
+            }
+        }
+        Some(proto::item_data::Data::IoData(io_data)) => {
+            if let Some(item_data) = io_data.data {
+                enqueue_item_data_for_deletion(*item_data, remote_data_deletion_sender);
+            }
+        }
+        None => warn!("Discarded response contained metadata without item data"),
     }
 }
 
@@ -418,11 +442,7 @@ async fn remote_queue_server_logic(
                         if cancelled_debt_ids.remove(&invocation_id) {
                             // The result crossed the cancellation in flight. Drop any remote
                             // references from the discarded result so their owners delete them.
-                            drop_response_exports(
-                                response,
-                                data_option,
-                                &remote_data_deletion_sender,
-                            );
+                            drop_response_exports(response, &remote_data_deletion_sender);
                             free_debt_ids.push(invocation_id);
                             trace!(
                                 "Discarded crossed result for canceled remote invocation {}",
@@ -986,6 +1006,12 @@ async fn remote_queue_client_logic(
                             invocation_id
                         );
                         cancelled_remote_invocations.insert(invocation_id);
+                        if send_cancel_acknowledgement(&message_sender, invocation_id)
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
                     // TODO for try offload decide when to refuse work
                     queue_message::QueueMessage::TryOffload(invocation) => {
@@ -1101,12 +1127,6 @@ async fn remote_queue_client_logic(
                             "Failed to clean exports for canceled remote invocation {}: {}",
                             invocation_id, error
                         );
-                        break;
-                    }
-                    if send_cancel_acknowledgement(&message_sender, invocation_id)
-                        .await
-                        .is_err()
-                    {
                         break;
                     }
                 } else {
