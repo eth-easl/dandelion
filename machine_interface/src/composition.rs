@@ -1,3 +1,5 @@
+#[cfg(feature = "at-least-once")]
+use crate::function_driver::functions::SystemFunction;
 use crate::{
     composition::join_iterator::JoinIterator, function_driver::system_driver::IoData,
     memory_domain::Context, DataItem, DataSet, Position,
@@ -299,6 +301,8 @@ impl Drop for RemoteDataInner {
 }
 
 pub trait RemoteDataClient: Send + Sync {
+    fn local_node_id(&self) -> u64;
+
     fn resolve_remote_data(
         &self,
         // Since this assumes ownership should be careful not to drop until we have the data
@@ -319,6 +323,98 @@ pub trait RemoteDataClient: Send + Sync {
         &self,
         data: RemoteData,
     ) -> Pin<Box<dyn Future<Output = DandelionResult<()>> + Send + '_>>;
+
+    /// Persists successful lazy-I/O outputs locally and queues their delivery to the owner.
+    #[cfg(feature = "at-least-once")]
+    fn publish_io_completion(
+        &self,
+        completion: IoCoordinationCompletion,
+    ) -> Pin<Box<dyn Future<Output = DandelionResult<()>> + Send + '_>>;
+
+    /// Resolves one logical lazy I/O operation through its owner. The first caller is elected to
+    /// execute the operation; concurrent callers wait for, or reuse, its published result.
+    #[cfg(feature = "exactly-once")]
+    fn resolve_io(
+        &self,
+        request: IoResolveRequest,
+    ) -> Pin<Box<dyn Future<Output = DandelionResult<IoResolveOutcome>> + Send + '_>>;
+
+    /// Publishes the terminal result of a won lazy I/O resolution to its owner.
+    #[cfg(feature = "exactly-once")]
+    fn publish_io_resolution(
+        &self,
+        completion: IoCoordinationCompletion,
+    ) -> Pin<Box<dyn Future<Output = DandelionResult<()>> + Send + '_>>;
+
+    #[cfg(feature = "exactly-once")]
+    fn clear_io_coordination(
+        &self,
+        invocation_id: dandelion_commons::InvocationId,
+    ) -> Pin<Box<dyn Future<Output = DandelionResult<()>> + Send + '_>>;
+}
+
+#[cfg(feature = "at-least-once")]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct IoCoordinationKey {
+    pub invocation_id: dandelion_commons::InvocationId,
+    pub composition_set_id: usize,
+    pub function: SystemFunction,
+    pub identifier: String,
+    pub item_key: u64,
+}
+
+#[cfg(feature = "exactly-once")]
+#[derive(Clone, Debug)]
+pub struct IoResolveRequest {
+    pub owner_node_id: u64,
+    pub key: IoCoordinationKey,
+    pub set_index: usize,
+    /// The owner inlines owner-local request bytes in the winning resolve response. A reference to
+    /// a third node is preserved so the winner can fetch it directly without owner proxying.
+    pub original_data: Option<(RemoteData, usize)>,
+}
+
+#[cfg(feature = "exactly-once")]
+#[derive(Clone, Debug)]
+pub enum IoResolveOutcome {
+    Execute { input: Option<IoResolveInput> },
+    Completed { data: RemoteData },
+    Failed(String),
+}
+
+#[cfg(feature = "exactly-once")]
+#[derive(Clone, Debug)]
+pub enum IoResolveInput {
+    Inline {
+        context: Arc<Context>,
+        position: Position,
+    },
+    Remote {
+        data: RemoteData,
+        size: usize,
+    },
+}
+
+#[cfg(feature = "at-least-once")]
+#[derive(Clone, Debug)]
+pub enum IoCompletionOutcome {
+    Completed(Vec<IoCompletedOutput>),
+    Failed(String),
+}
+
+#[cfg(feature = "at-least-once")]
+#[derive(Clone, Debug)]
+pub struct IoCompletedOutput {
+    pub item: DataItem,
+    pub context: Arc<Context>,
+}
+
+#[cfg(feature = "at-least-once")]
+#[derive(Clone, Debug)]
+pub struct IoCoordinationCompletion {
+    pub owner_node_id: u64,
+    pub key: IoCoordinationKey,
+    pub outcome: IoCompletionOutcome,
 }
 
 static REMOTE_DATA_CLIENT: OnceLock<Arc<dyn RemoteDataClient>> = OnceLock::new();
@@ -347,6 +443,8 @@ pub enum ItemData {
     RemoteData(RemoteData),
     /// Data that needs to be fetched using an IO function.
     IoData(IoData),
+    #[cfg(feature = "at-least-once")]
+    CoordinatedIoData(crate::function_driver::system_driver::CoordinatedIoData),
 }
 
 /// Struct contianing refences for all data belonging to one set.
@@ -497,6 +595,8 @@ impl core::fmt::Display for CompositionSet {
                     context.context, context.size, context.state
                 ),
                 ItemData::IoData(data) => write!(f, "IoData: {:?}", data),
+                #[cfg(feature = "at-least-once")]
+                ItemData::CoordinatedIoData(data) => write!(f, "CoordinatedIoData: {:?}", data),
                 ItemData::RemoteData(data) => write!(f, "RemoteData: {:?})", data),
             }?;
         }

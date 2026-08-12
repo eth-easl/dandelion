@@ -11,7 +11,7 @@ tokio = { version = "1", features = ["time"] }
 futures = "0.3.32"
 prost = "0.14.1"
 log = "0.4.20"
-reqwest = { version = "0.12" }
+reqwest = { version = "0.12", features = ["json"] }
 hyper = { version = "1.2", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -28,3 +28,5 @@ cheri = ["dispatcher/cheri", "machine_interface/cheri"]
 mmu = ["dispatcher/mmu", "machine_interface/mmu"]
 kvm = ["dispatcher/kvm", "machine_interface/kvm"]
 timestamp = ["dandelion_commons/timestamp"]
+at-least-once = ["dispatcher/at-least-once", "machine_interface/at-least-once"]
+exactly-once = ["at-least-once", "dispatcher/exactly-once", "machine_interface/exactly-once"]

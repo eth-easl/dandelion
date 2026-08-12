@@ -15,7 +15,7 @@ use crate::{
         RepeatedInvocations, Response,
     },
 };
-use dandelion_commons::{records::Recorder, DandelionError};
+use dandelion_commons::{records::Recorder, DandelionError, InvocationId};
 use dispatcher::queue::WorkQueue;
 use futures::{
     task::{Context, Waker},
@@ -29,32 +29,47 @@ use machine_interface::{
 use tokio::sync::mpsc;
 
 const EXPECTED_ERROR: DandelionError = DandelionError::NotImplemented;
+fn compute_invocation(
+    remote_invocation_id: u32,
+    function_id: String,
+    caching: bool,
+    owner_invocation_id: InvocationId,
+) -> Invocation {
+    Invocation {
+        remote_invocation_id,
+        function_id,
+        metadata_sets: vec![],
+        caching,
+        owner_invocation_id: owner_invocation_id.to_string(),
+    }
+}
+
+fn dummy_work(
+    engine_type: machine_config::EngineType,
+) -> machine_interface::function_driver::WorkToDo {
+    let function_id = Arc::new("dummy_function".to_string());
+    machine_interface::function_driver::WorkToDo::FunctionArguments {
+        function_id: function_id.clone(),
+        function_alternatives: vec![Arc::new(FunctionAlternative {
+            engine: engine_type,
+            context_size: 0,
+            path: "".to_string(),
+            domain: Arc::new(Box::new(MallocMemoryDomain {})),
+            function: RwLock::new(None),
+        })],
+        input_sets: vec![],
+        metadata: Arc::new(Metadata {
+            input_sets: vec![],
+            output_sets: vec![],
+            min_set_bytes: vec![],
+        }),
+        caching: false,
+        recorder: Recorder::new(InvocationId::from_u128(17), function_id, Instant::now()),
+    }
+}
 
 async fn mock_dispatcher(work_queue: WorkQueue, engine_type: machine_config::EngineType) {
-    let function_id = Arc::new("dummy_function".to_string());
-    let result = work_queue
-        .do_work(
-            machine_interface::function_driver::WorkToDo::FunctionArguments {
-                function_id: function_id.clone(),
-                function_alternatives: vec![Arc::new(FunctionAlternative {
-                    engine: engine_type,
-                    context_size: 0,
-                    path: "".to_string(),
-                    domain: Arc::new(Box::new(MallocMemoryDomain {})),
-                    function: RwLock::new(None),
-                })],
-                input_sets: vec![],
-                metadata: Arc::new(Metadata {
-                    input_sets: vec![],
-                    output_sets: vec![],
-                    min_set_bytes: vec![],
-                }),
-                caching: false,
-                recorder: Recorder::new(function_id, Instant::now()),
-            },
-            0,
-        )
-        .await;
+    let result = work_queue.do_work(dummy_work(engine_type), 0).await;
     let error = if let Err(error) = result {
         error.error
     } else {
@@ -82,6 +97,7 @@ fn test_remote_queue_server() {
     let mut context = Context::from_waker(Waker::noop());
     let mut server_future = Box::pin(remote_queue_server_logic(
         queue_option_receiver,
+        queue_option_sender.clone(),
         queue_message_sender,
         work_queue.clone(),
         ExportRegistry::new(1),
@@ -122,17 +138,19 @@ fn test_remote_queue_server() {
             queue_message::QueueMessage::Invocations(RepeatedInvocations { mut invocations }) => {
                 assert_eq!(2, invocations.len());
                 let Invocation {
-                    invocation_id: second_id,
+                    remote_invocation_id: second_id,
                     function_id,
                     metadata_sets: _,
                     caching: _,
+                    ..
                 } = invocations.pop().unwrap();
                 assert_eq!("dummy_function", function_id);
                 let Invocation {
-                    invocation_id: first_id,
+                    remote_invocation_id: first_id,
                     function_id,
                     metadata_sets: _,
                     caching: _,
+                    ..
                 } = invocations.pop().unwrap();
                 assert_eq!("dummy_function", function_id);
                 (first_id, second_id)
@@ -159,13 +177,14 @@ fn test_remote_queue_server() {
         queue_message::QueueMessage::Invocations(RepeatedInvocations { mut invocations }) => {
             assert_eq!(1, invocations.len());
             let Invocation {
-                invocation_id,
+                remote_invocation_id,
                 function_id,
                 metadata_sets: _,
                 caching: _,
+                ..
             } = invocations.pop().unwrap();
             assert_eq!("dummy_function", function_id);
-            invocation_id
+            remote_invocation_id
         }
         other => panic!("Should not receive other message: {:?}", other),
     };
@@ -194,7 +213,7 @@ fn test_remote_queue_server() {
     queue_option_sender
         .try_send(QueueOption::Message(
             remote_message::RemoteMessage::Response(Response {
-                invocation_id: third_invocation_id,
+                remote_invocation_id: third_invocation_id,
                 response: Some(response::Response::ErrorMsg(EXPECTED_ERROR.to_string())),
             }),
             None,
@@ -239,13 +258,14 @@ fn test_remote_queue_server() {
         queue_message::QueueMessage::Invocations(RepeatedInvocations { mut invocations }) => {
             assert_eq!(1, invocations.len());
             let Invocation {
-                invocation_id,
+                remote_invocation_id,
                 function_id,
                 metadata_sets: _,
                 caching: _,
+                ..
             } = invocations.pop().unwrap();
             assert_eq!("dummy_function", function_id);
-            invocation_id
+            remote_invocation_id
         }
         other => panic!("should not receive other message: {:?}", other),
     };
@@ -254,7 +274,7 @@ fn test_remote_queue_server() {
     queue_option_sender
         .try_send(QueueOption::Message(
             remote_message::RemoteMessage::Response(Response {
-                invocation_id: fourth_invocation_id,
+                remote_invocation_id: fourth_invocation_id,
                 response: Some(response::Response::ErrorMsg(EXPECTED_ERROR.to_string())),
             }),
             None,
@@ -263,7 +283,7 @@ fn test_remote_queue_server() {
     queue_option_sender
         .try_send(QueueOption::Message(
             remote_message::RemoteMessage::Response(Response {
-                invocation_id: first_invocation_id,
+                remote_invocation_id: first_invocation_id,
                 response: Some(response::Response::ErrorMsg(EXPECTED_ERROR.to_string())),
             }),
             None,
@@ -275,7 +295,6 @@ fn test_remote_queue_server() {
     assert_eq!(Poll::Ready(()), test_composition_1.poll_unpin(&mut context));
     assert_eq!(Poll::Ready(()), test_composition_4.poll_unpin(&mut context))
 }
-
 #[test_log::test]
 fn test_remote_queue_client() {
     // constants used in the test
@@ -286,19 +305,16 @@ fn test_remote_queue_client() {
     let (poll_option_sender, poll_option_receiver) = mpsc::channel(64);
     let (remote_message_sender, mut remote_message_receiver) = mpsc::channel(64);
 
-    let idle_cores = Arc::new(AtomicUsize::new(0));
-    let idle_clone = idle_cores.clone();
-
     let dispatcher_send =
-        |registry, duration, invocation_id, function_id, inputs, caching, recorder| {
+        |registry, duration, remote_invocation_id, function_id, caching, inputs, recorder| {
             dispatcher_sender
                 .blocking_send((
                     registry,
                     duration,
-                    invocation_id,
+                    remote_invocation_id,
                     function_id,
-                    inputs,
                     caching,
+                    inputs,
                     recorder,
                 ))
                 .unwrap();
@@ -309,7 +325,7 @@ fn test_remote_queue_client() {
         poll_option_receiver,
         remote_message_sender,
         dispatcher_send,
-        || idle_clone.load(SeqCst),
+        || 0,
         0,
         ExportRegistry::new(1),
         0,
@@ -319,7 +335,6 @@ fn test_remote_queue_client() {
     poll_option_sender
         .try_send(crate::client::PollingOption::LocalCoreCountChanged(3))
         .unwrap();
-    idle_cores.store(3, SeqCst);
 
     // receive the message about the updated core count
     assert_eq!(Poll::Pending, client_future.poll_unpin(&mut context));
@@ -328,7 +343,11 @@ fn test_remote_queue_client() {
         remote_message => panic!("Expected work request not {:?}", remote_message),
     }
 
-    // Should also send a work request for idle cores with the node update
+    // update local queue state
+    poll_option_sender
+        .try_send(crate::client::PollingOption::IdleChanged)
+        .unwrap();
+    assert_eq!(Poll::Pending, client_future.poll_unpin(&mut context));
     match remote_message_receiver.try_recv().unwrap() {
         remote_message::RemoteMessage::WorkRequest(engines) => {
             assert!(engines.engines.len() > 0);
@@ -343,18 +362,18 @@ fn test_remote_queue_client() {
             Ok(queue_message::QueueMessage::Invocations(
                 RepeatedInvocations {
                     invocations: vec![
-                        Invocation {
-                            invocation_id: INVOCATION_ID,
-                            function_id: expected_function_id.clone(),
-                            metadata_sets: vec![],
-                            caching: true,
-                        },
-                        Invocation {
-                            invocation_id: INVOCATION_ID + 1,
-                            function_id: expected_function_id.clone(),
-                            metadata_sets: vec![],
-                            caching: true,
-                        },
+                        compute_invocation(
+                            INVOCATION_ID,
+                            expected_function_id.clone(),
+                            true,
+                            InvocationId::from_u128(31),
+                        ),
+                        compute_invocation(
+                            INVOCATION_ID + 1,
+                            expected_function_id.clone(),
+                            true,
+                            InvocationId::from_u128(32),
+                        ),
                     ],
                 },
             )),
@@ -368,15 +387,15 @@ fn test_remote_queue_client() {
         Poll::Ready(Some((
             _registry,
             _duration,
-            invocation_id,
+            remote_invocation_id,
             function_id,
-            _inputs,
             caching,
+            _inputs,
             _recorder,
         ))) => {
             assert!(caching);
             assert_eq!(expected_function_id, function_id.as_str());
-            invocation_id
+            remote_invocation_id
         }
         Poll::Pending | Poll::Ready(None) => panic!("Should receive work now"),
     };
@@ -385,20 +404,26 @@ fn test_remote_queue_client() {
         Poll::Ready(Some((
             _registry,
             _duration,
-            invocation_id,
+            remote_invocation_id,
             function_id,
-            _inputs,
             caching,
+            _inputs,
             _recorder,
         ))) => {
             assert!(caching);
             assert_eq!(expected_function_id, function_id.as_str());
-            invocation_id
+            remote_invocation_id
         }
         Poll::Pending | Poll::Ready(None) => panic!("Should receive work now"),
     };
 
-    // expect it to ask for 1 more immediately when receiveing the work and seeing there is still capacity to prefetch
+    // notify that queue state has changed
+    poll_option_sender
+        .try_send(crate::client::PollingOption::IdleChanged)
+        .unwrap();
+
+    // should now send request for more work
+    assert_eq!(Poll::Pending, client_future.poll_unpin(&mut context));
     match remote_message_receiver.try_recv().unwrap() {
         remote_message::RemoteMessage::WorkRequest(engines) => {
             assert!(engines.engines.len() > 0);
@@ -407,30 +432,17 @@ fn test_remote_queue_client() {
         remote_message => panic!("Expected work request not {:?}", remote_message),
     }
 
-    // notify that number of idle cores has changed
-    idle_cores.store(1, SeqCst);
-    poll_option_sender
-        .try_send(crate::client::PollingOption::IdleChanged)
-        .unwrap();
-
-    // should now send request for more work, since it should prefetch one
-    assert_eq!(Poll::Pending, client_future.poll_unpin(&mut context));
-    // should not get another message asking for work, since still waiting for the last
-    remote_message_receiver
-        .try_recv()
-        .expect_err("Should not have another message yet");
-
     // send work
     poll_option_sender
         .try_send(crate::client::PollingOption::Message(
             Ok(queue_message::QueueMessage::Invocations(
                 RepeatedInvocations {
-                    invocations: vec![Invocation {
-                        invocation_id: INVOCATION_ID,
-                        function_id: expected_function_id.clone(),
-                        metadata_sets: vec![],
-                        caching: true,
-                    }],
+                    invocations: vec![compute_invocation(
+                        INVOCATION_ID,
+                        expected_function_id.clone(),
+                        true,
+                        InvocationId::from_u128(33),
+                    )],
                 },
             )),
             None,
@@ -443,52 +455,53 @@ fn test_remote_queue_client() {
         Poll::Ready(Some((
             _registry,
             _duration,
-            invocation_id,
+            remote_invocation_id,
             function_id,
-            _inputs,
             caching,
+            _inputs,
             _recorder,
         ))) => {
             assert!(caching);
             assert_eq!(expected_function_id, function_id.as_str());
-            invocation_id
+            remote_invocation_id
         }
         Poll::Pending | Poll::Ready(None) => panic!("Should receive work now"),
     };
-    // expecting no more message for work, since prefetching is set to 0
-    remote_message_receiver.try_recv().unwrap_err();
-
-    // Notify that no more cores are idle, still should not trigger more work
-    idle_cores.store(0, SeqCst);
+    // notify that queue state has changed, should not trigger asking for more work
     poll_option_sender
         .try_send(crate::client::PollingOption::IdleChanged)
         .unwrap();
+
+    // should not lead to asking for more work
     assert_eq!(Poll::Pending, client_future.poll_unpin(&mut context));
     assert!(dispatcher_receiver.is_empty());
-    remote_message_receiver.try_recv().unwrap_err();
 
     // send back a result, mark the queue as changed and poll to get it processed
     poll_option_sender
         .try_send(crate::client::PollingOption::Results(
+            invocation_id_3,
             remote_message::RemoteMessage::Response(Response {
-                invocation_id: invocation_id_3,
+                remote_invocation_id: invocation_id_3,
                 response: Some(response::Response::ErrorMsg(
                     DandelionError::NotImplemented.to_string(),
                 )),
             }),
         ))
         .unwrap();
-    idle_cores.store(1, SeqCst);
+
+    poll_option_sender
+        .try_send(crate::client::PollingOption::IdleChanged)
+        .unwrap();
 
     assert_eq!(Poll::Pending, client_future.poll_unpin(&mut context));
 
     // check the results has been sent out
     match remote_message_receiver.try_recv().unwrap() {
         remote_message::RemoteMessage::Response(Response {
-            invocation_id,
+            remote_invocation_id,
             response,
         }) => {
-            assert_eq!(INVOCATION_ID, invocation_id);
+            assert_eq!(INVOCATION_ID, remote_invocation_id);
             match response.unwrap() {
                 response::Response::ErrorMsg(error_message) => {
                     assert_eq!(DandelionError::NotImplemented.to_string(), error_message)
@@ -499,7 +512,8 @@ fn test_remote_queue_client() {
         remote_message => panic!("Expected reponse not {:?}", remote_message),
     }
 
-    // check that client send out a request for more, since it should have capacity again
+    // check that client send out a request for more.
+    // (since it got the result and the queue change, should be able to process both)
     match remote_message_receiver.try_recv().unwrap() {
         remote_message::RemoteMessage::WorkRequest(_) => (),
         remote_message => panic!("Expected work request not {:?}", remote_message),
@@ -549,15 +563,15 @@ fn test_remote_queue_client_prefetch() {
     let idle_clone = idle_cores.clone();
 
     let dispatcher_send =
-        |registry, duration, invocation_id, function_id, inputs, caching, recorder| {
+        |registry, duration, remote_invocation_id, function_id, caching, inputs, recorder| {
             dispatcher_sender
                 .blocking_send((
                     registry,
                     duration,
-                    invocation_id,
+                    remote_invocation_id,
                     function_id,
-                    inputs,
                     caching,
+                    inputs,
                     recorder,
                 ))
                 .unwrap();
@@ -583,17 +597,20 @@ fn test_remote_queue_client_prefetch() {
     assert_eq!(Poll::Pending, client_future.poll_unpin(&mut context));
     match remote_message_receiver.try_recv().unwrap() {
         remote_message::RemoteMessage::NodeUpdate(update) => assert_eq!(1, update.num_local_cores),
-        remote_message => panic!("Expected work request not {:?}", remote_message),
+        remote_message => panic!("Expected node update, not {:?}", remote_message),
     }
 
     // expect to ask for work for 1 core
+    poll_option_sender
+        .try_send(crate::client::PollingOption::IdleChanged)
+        .unwrap();
     assert_eq!(Poll::Pending, client_future.poll_unpin(&mut context));
     match remote_message_receiver.try_recv().unwrap() {
         remote_message::RemoteMessage::WorkRequest(engines) => {
-            assert!(engines.engines.len() > 0);
+            assert!(!engines.engines.is_empty());
             assert_eq!(1, engines.engines[0].engine_capacity);
         }
-        remote_message => panic!("Expected work request not {:?}", remote_message),
+        remote_message => panic!("Expected work request, not {:?}", remote_message),
     }
 
     // send back work for 1 core
@@ -601,12 +618,12 @@ fn test_remote_queue_client_prefetch() {
         .try_send(crate::client::PollingOption::Message(
             Ok(queue_message::QueueMessage::Invocations(
                 RepeatedInvocations {
-                    invocations: vec![Invocation {
-                        invocation_id: INVOCATION_ID,
-                        function_id: expected_function_id.clone(),
-                        metadata_sets: vec![],
-                        caching: true,
-                    }],
+                    invocations: vec![compute_invocation(
+                        INVOCATION_ID,
+                        expected_function_id.clone(),
+                        true,
+                        InvocationId::from_u128(42),
+                    )],
                 },
             )),
             None,
@@ -615,22 +632,11 @@ fn test_remote_queue_client_prefetch() {
 
     // poll client and check dispatcher queue for the work that was received
     assert_eq!(Poll::Pending, client_future.poll_unpin(&mut context));
-    let _invocation_id_1 = match dispatcher_receiver.poll_recv(&mut context) {
-        Poll::Ready(Some((
-            _registry,
-            _duration,
-            invocation_id,
-            function_id,
-            _inputs,
-            caching,
-            _recorder,
-        ))) => {
-            assert!(caching);
-            assert_eq!(expected_function_id, function_id.as_str());
-            invocation_id
-        }
-        Poll::Pending | Poll::Ready(None) => panic!("Should receive work now"),
-    };
+    let (_, _, remote_invocation_id, function_id, caching, _, _) =
+        dispatcher_receiver.try_recv().unwrap();
+    assert_eq!(INVOCATION_ID, remote_invocation_id);
+    assert_eq!(expected_function_id, function_id.as_str());
+    assert!(caching);
 
     // notify the client that the number of idle cores went to 0, so should now prefetch one more
     idle_cores.store(0, SeqCst);
@@ -642,9 +648,9 @@ fn test_remote_queue_client_prefetch() {
     // expect it to ask for 1 more work given the prefetch capacity
     match remote_message_receiver.try_recv().unwrap() {
         remote_message::RemoteMessage::WorkRequest(engines) => {
-            assert!(engines.engines.len() > 0);
+            assert!(!engines.engines.is_empty());
             assert_eq!(1, engines.engines[0].engine_capacity);
         }
-        remote_message => panic!("Expected work request not {:?}", remote_message),
+        remote_message => panic!("Expected prefetch work request, not {:?}", remote_message),
     }
 }

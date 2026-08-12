@@ -76,7 +76,11 @@ mod compute_driver_tests {
             min_set_bytes: vec![],
         });
 
-        let recorder = Recorder::new(Arc::new(0.to_string()), Instant::now());
+        let recorder = Recorder::new(
+            dandelion_commons::InvocationId::nil(),
+            Arc::new(0.to_string()),
+            Instant::now(),
+        );
         let function_alternatives = vec![Arc::new(FunctionAlternative::new_unloaded(
             engine_type,
             DEFAULT_CONTEXT_SIZE,
@@ -118,7 +122,11 @@ mod compute_driver_tests {
             min_set_bytes: vec![],
         });
 
-        let recorder = Recorder::new(Arc::new(0.to_string()), Instant::now());
+        let recorder = Recorder::new(
+            dandelion_commons::InvocationId::nil(),
+            Arc::new(0.to_string()),
+            Instant::now(),
+        );
         let function_alternatives = vec![Arc::new(FunctionAlternative::new_loaded(
             engine_type,
             DEFAULT_CONTEXT_SIZE,
@@ -170,7 +178,11 @@ mod compute_driver_tests {
             min_set_bytes: vec![],
         });
 
-        let recorder = Recorder::new(zero_id(), Instant::now());
+        let recorder = Recorder::new(
+            dandelion_commons::InvocationId::nil(),
+            zero_id(),
+            Instant::now(),
+        );
         let function_alternatives = vec![Arc::new(FunctionAlternative::new_unloaded(
             engine_type,
             DEFAULT_CONTEXT_SIZE,
@@ -261,7 +273,11 @@ mod compute_driver_tests {
                 min_set_bytes: vec![],
             });
 
-            let recorder = Recorder::new(zero_id(), Instant::now());
+            let recorder = Recorder::new(
+                dandelion_commons::InvocationId::nil(),
+                zero_id(),
+                Instant::now(),
+            );
             let function_alternatives = vec![Arc::new(FunctionAlternative::new_unloaded(
                 engine_type,
                 DEFAULT_CONTEXT_SIZE,
@@ -367,7 +383,11 @@ mod compute_driver_tests {
             min_set_bytes: vec![],
         });
 
-        let recorder = Recorder::new(zero_id(), Instant::now());
+        let recorder = Recorder::new(
+            dandelion_commons::InvocationId::nil(),
+            zero_id(),
+            Instant::now(),
+        );
         let function_alternatives = vec![Arc::new(FunctionAlternative::new_unloaded(
             engine_type,
             DEFAULT_CONTEXT_SIZE,
@@ -522,7 +542,11 @@ mod compute_driver_tests {
             min_set_bytes: vec![],
         });
 
-        let recorder = Recorder::new(zero_id(), Instant::now());
+        let recorder = Recorder::new(
+            dandelion_commons::InvocationId::nil(),
+            zero_id(),
+            Instant::now(),
+        );
         let function_alternatives = vec![Arc::new(FunctionAlternative::new_unloaded(
             engine_type,
             DEFAULT_CONTEXT_SIZE,

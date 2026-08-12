@@ -160,6 +160,7 @@ pub(crate) fn recorder_add_timestamps(
 pub(crate) fn system_function_ptod(proto_function: i32) -> DandelionResult<SystemFunction> {
     match proto::SystemFunction::try_from(proto_function).unwrap() {
         proto::SystemFunction::Http => Ok(SystemFunction::HTTP),
+        proto::SystemFunction::Memcached => Ok(SystemFunction::MEMCACHED),
     }
 }
 
@@ -168,7 +169,7 @@ pub(crate) fn system_function_dtop(
 ) -> DandelionResult<proto::SystemFunction> {
     match dandelion_function {
         SystemFunction::HTTP => Ok(proto::SystemFunction::Http),
-        _ => unimplemented!(),
+        SystemFunction::MEMCACHED => Ok(proto::SystemFunction::Memcached),
     }
 }
 
@@ -180,23 +181,24 @@ fn remote_data_dtop(remote_data: &RemoteData, size: usize) -> proto::RemoteData 
     }
 }
 
-fn item_data_dtop(
+fn try_item_data_dtop(
     item: &DataItem,
     data: ItemData,
-    export_local_data: &mut impl FnMut(&DataItem, Arc<Context>) -> RemoteData,
-) -> proto::ItemData {
+    exporting_node_id: u64,
+    export_local_data: &mut impl FnMut(&DataItem, Arc<Context>) -> DandelionResult<RemoteData>,
+) -> DandelionResult<proto::ItemData> {
     match data {
         ItemData::LocalData(context) => {
-            let remote_data = export_local_data(item, context);
-            // TODO: send data directly for smaller items
-            proto::ItemData {
+            let remote_data = export_local_data(item, context)?;
+            Ok(proto::ItemData {
                 data: Some(item_data::Data::RemoteData(remote_data_dtop(
                     &remote_data,
                     item.data.size,
                 ))),
-            }
+            })
         }
         ItemData::IoData(io_data) => {
+            // TODO for data we want to send along: fuse with serialization, so we can use the `resolved` without race conditions
             let IoData {
                 original_position,
                 original_data,
@@ -204,30 +206,75 @@ fn item_data_dtop(
                 function,
                 set_index,
             } = io_data;
-            // TODO for data we want to send along: fuse with serialization, so we can use the `resolved` without race conditions
             let mut register_item = item.clone();
             register_item.data = original_position;
-            let data = item_data_dtop(&register_item, *original_data, export_local_data);
-            proto::ItemData {
+            let data = try_item_data_dtop(
+                &register_item,
+                *original_data,
+                exporting_node_id,
+                export_local_data,
+            )?;
+            Ok(proto::ItemData {
                 data: Some(item_data::Data::IoData(Box::new(proto::IoData {
                     set_index: set_index as u64,
-                    function: system_function_dtop(&function).unwrap() as i32,
+                    function: system_function_dtop(&function)? as i32,
                     data: Some(Box::new(data)),
+                    invocation_id: String::new(),
+                    composition_set_id: 0,
+                    item_identifier: String::new(),
+                    item_key: 0,
+                    original_size: original_position.size as u64,
+                    owner_node_id: 0,
                 }))),
-            }
+            })
         }
-        ItemData::RemoteData(remote_data) => proto::ItemData {
+        #[cfg(feature = "at-least-once")]
+        ItemData::CoordinatedIoData(coordinated) => {
+            let coordination = coordinated.coordination;
+            let IoData {
+                original_position,
+                original_data,
+                resolved: _,
+                function,
+                set_index,
+            } = coordinated.request;
+            let mut register_item = item.clone();
+            register_item.data = original_position;
+            let data = try_item_data_dtop(
+                &register_item,
+                *original_data,
+                exporting_node_id,
+                export_local_data,
+            )?;
+            Ok(proto::ItemData {
+                data: Some(item_data::Data::CoordinatedIoData(Box::new(
+                    proto::IoData {
+                        set_index: set_index as u64,
+                        function: system_function_dtop(&function)? as i32,
+                        data: Some(Box::new(data)),
+                        invocation_id: coordination.invocation_id.to_string(),
+                        composition_set_id: coordination.composition_set_id as u64,
+                        item_identifier: coordination.item_identifier,
+                        item_key: coordination.item_key,
+                        original_size: original_position.size as u64,
+                        owner_node_id: coordination.owner_node_id.unwrap_or(exporting_node_id),
+                    },
+                ))),
+            })
+        }
+        ItemData::RemoteData(remote_data) => Ok(proto::ItemData {
             data: Some(item_data::Data::RemoteData(remote_data_dtop(
                 &remote_data,
                 item.data.size,
             ))),
-        },
+        }),
     }
 }
 
 fn item_data_and_ref(
     item: &DataItem,
     data: &ItemData,
+    exporting_node_id: u64,
     export_local_data: &mut impl FnMut(&DataItem, Arc<Context>) -> RemoteData,
 ) -> (proto::ItemData, Option<RemoteData>) {
     match data {
@@ -252,18 +299,65 @@ fn item_data_and_ref(
                 function,
                 set_index,
             } = io_data;
-            // TODO for data we want to send along: fuse with serialization, so we can use the `resolved` without race conditions
             let mut register_item = item.clone();
-            register_item.data = original_position.clone();
-            let (data, remote_data) =
-                item_data_and_ref(&register_item, original_data, export_local_data);
+            register_item.data = *original_position;
+            let (data, remote_data) = item_data_and_ref(
+                &register_item,
+                original_data,
+                exporting_node_id,
+                export_local_data,
+            );
             (
                 proto::ItemData {
                     data: Some(item_data::Data::IoData(Box::new(proto::IoData {
                         set_index: *set_index as u64,
-                        function: system_function_dtop(&function).unwrap() as i32,
+                        function: system_function_dtop(function).unwrap() as i32,
                         data: Some(Box::new(data)),
+                        invocation_id: String::new(),
+                        composition_set_id: 0,
+                        item_identifier: String::new(),
+                        item_key: 0,
+                        original_size: original_position.size as u64,
+                        owner_node_id: 0,
                     }))),
+                },
+                remote_data,
+            )
+        }
+        #[cfg(feature = "at-least-once")]
+        ItemData::CoordinatedIoData(coordinated) => {
+            // TODO for data we want to send along: fuse with serialization, so we can use the `resolved` without race conditions
+            let coordination = &coordinated.coordination;
+            let IoData {
+                original_position,
+                original_data,
+                resolved: _,
+                function,
+                set_index,
+            } = &coordinated.request;
+            let mut register_item = item.clone();
+            register_item.data = *original_position;
+            let (data, remote_data) = item_data_and_ref(
+                &register_item,
+                original_data,
+                exporting_node_id,
+                export_local_data,
+            );
+            (
+                proto::ItemData {
+                    data: Some(item_data::Data::CoordinatedIoData(Box::new(
+                        proto::IoData {
+                            set_index: *set_index as u64,
+                            function: system_function_dtop(function).unwrap() as i32,
+                            data: Some(Box::new(data)),
+                            invocation_id: coordination.invocation_id.to_string(),
+                            composition_set_id: coordination.composition_set_id as u64,
+                            item_identifier: coordination.item_identifier.clone(),
+                            item_key: coordination.item_key,
+                            original_size: original_position.size as u64,
+                            owner_node_id: coordination.owner_node_id.unwrap_or(exporting_node_id),
+                        },
+                    ))),
                 },
                 remote_data,
             )
@@ -298,11 +392,6 @@ fn item_data_ptod(
 ) -> (ItemData, usize) {
     match data.data.unwrap() {
         item_data::Data::IoData(io_data) => {
-            let proto::IoData {
-                function,
-                set_index,
-                data: input_data,
-            } = *io_data;
             // For when the data can be data sent along with the request
             // let end_offset = offset as usize;
             // assert!(last_end_offset < end_offset as usize);
@@ -313,19 +402,80 @@ fn item_data_ptod(
             //     buffer_size,
             // ));
             // let buffer_size = end_offset - last_end_offset;
-
-            (
+            let proto::IoData {
+                function,
+                set_index,
+                data: input_data,
+                invocation_id: _,
+                composition_set_id: _,
+                item_identifier: _,
+                item_key: _,
+                original_size,
+                owner_node_id: _,
+            } = *io_data;
+            let result = (
                 ItemData::IoData(IoData {
-                    original_position: Position { offset: 0, size: 0 },
+                    original_position: Position {
+                        offset: 0,
+                        size: original_size as usize,
+                    },
                     resolved: Arc::new(OnceCell::new()),
                     original_data: Box::new(item_data_ptod(*input_data.unwrap(), delete_sender).0),
                     function: system_function_ptod(function).unwrap(),
                     set_index: set_index as usize,
                 }),
                 0,
-            )
-
+            );
             // last_end_offset = end_offset;
+            result
+        }
+        #[cfg(feature = "at-least-once")]
+        item_data::Data::CoordinatedIoData(io_data) => {
+            let proto::IoData {
+                function,
+                set_index,
+                data: input_data,
+                invocation_id,
+                composition_set_id,
+                item_identifier,
+                item_key,
+                original_size,
+                owner_node_id,
+            } = *io_data;
+            (
+                ItemData::CoordinatedIoData(
+                    machine_interface::function_driver::system_driver::CoordinatedIoData {
+                        coordination:
+                            machine_interface::function_driver::system_driver::IoCoordination {
+                                invocation_id: dandelion_commons::InvocationId::parse_str(
+                                    &invocation_id,
+                                )
+                                .expect("Serialized invocation id should be a valid UUID"),
+                                composition_set_id: composition_set_id as usize,
+                                item_identifier,
+                                item_key,
+                                owner_node_id: Some(owner_node_id),
+                            },
+                        request: IoData {
+                            original_position: Position {
+                                offset: 0,
+                                size: original_size as usize,
+                            },
+                            resolved: Arc::new(OnceCell::new()),
+                            original_data: Box::new(
+                                item_data_ptod(*input_data.unwrap(), delete_sender).0,
+                            ),
+                            function: system_function_ptod(function).unwrap(),
+                            set_index: set_index as usize,
+                        },
+                    },
+                ),
+                0,
+            )
+        }
+        #[cfg(not(feature = "at-least-once"))]
+        item_data::Data::CoordinatedIoData(_) => {
+            unreachable!("recoverable I/O requires at-least-once")
         }
         item_data::Data::RemoteData(remote_data) => (
             ItemData::RemoteData(remote_data_ptod(remote_data, delete_sender)),
@@ -337,24 +487,26 @@ fn item_data_ptod(
 // TODO: find a better interface for exporting data
 /// Takes a (reference to a) vector of optional `CompositionSet` instances and translates each of
 /// them into the corresponding protocol data set.
-pub(crate) fn composition_sets_to_proto(
+/// Fallible variant used when exporting local data requires durable storage.
+pub(crate) fn try_composition_sets_to_proto(
     sets: Vec<Option<CompositionSet>>,
-    mut export_local_data: impl FnMut(&DataItem, Arc<Context>) -> RemoteData,
-) -> Vec<proto::MetadataSet>
-// TODO change to (Vec<(Position, Arc<Context>)>,u64) when we add sending data directly with the request
-    // No need to keep as composition set.
-    // Option<(Vec<Option<CompositionSet>>, u64)>,
-{
+    exporting_node_id: u64,
+    mut export_local_data: impl FnMut(&DataItem, Arc<Context>) -> DandelionResult<RemoteData>,
+) -> DandelionResult<Vec<proto::MetadataSet>> {
     let mut metadata_sets = Vec::with_capacity(sets.len());
-    // let mut offset: u64 = 0;
 
-    for set_option in sets.into_iter() {
+    for set_option in sets {
         if let Some(set) = set_option {
             let mut metadata_items = Vec::with_capacity(set.len());
             let set_name = set.get_name().clone();
             for (item, data) in set {
                 metadata_items.push(proto::MetadataItem {
-                    data: Some(item_data_dtop(&item, data, &mut export_local_data)),
+                    data: Some(try_item_data_dtop(
+                        &item,
+                        data,
+                        exporting_node_id,
+                        &mut export_local_data,
+                    )?),
                     ident: item.ident,
                     key: item.key,
                 });
@@ -365,20 +517,18 @@ pub(crate) fn composition_sets_to_proto(
             });
         } else {
             metadata_sets.push(proto::MetadataSet {
-                ident: format!("empty_set"),
+                ident: "empty_set".to_string(),
                 items: vec![],
             });
         }
     }
-    // if offset > 0 {
-    //     (metadata_sets, Some((sets, offset)))
-    // } else {
-    // }
-    metadata_sets
+
+    Ok(metadata_sets)
 }
 
 pub(crate) fn composition_sets_to_proto_and_refs(
     sets: &Vec<Option<CompositionSet>>,
+    exporting_node_id: u64,
     mut export_local_data: impl FnMut(&DataItem, Arc<Context>) -> RemoteData,
 ) -> (Vec<proto::MetadataSet>, Vec<RemoteData>)
 // TODO change to (Vec<(Position, Arc<Context>)>,u64) when we add sending data directly with the request
@@ -395,7 +545,7 @@ pub(crate) fn composition_sets_to_proto_and_refs(
             let set_name = set.get_name().clone();
             for (item, data) in set {
                 let (proto_item, remote_data_option) =
-                    item_data_and_ref(item, data, &mut export_local_data);
+                    item_data_and_ref(item, data, exporting_node_id, &mut export_local_data);
                 metadata_items.push(proto::MetadataItem {
                     data: Some(proto_item),
                     ident: item.ident.clone(),

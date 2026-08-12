@@ -3,7 +3,7 @@ mod system_driver_tests {
     use crate::{
         composition::CompositionSet,
         function_driver::{
-            system_driver::{convert_to_references, SystemFunction},
+            system_driver::{convert_to_references, SystemFunction, UncoordinatedIo},
             test_queue::TestQueue,
             ComputeResource, WorkToDo,
         },
@@ -85,6 +85,8 @@ mod system_driver_tests {
         let input_sets = convert_to_references(
             SystemFunction::HTTP,
             CompositionSet::from_context(input_context),
+            UncoordinatedIo,
+            0,
         )
         .unwrap();
 
@@ -157,6 +159,8 @@ dolore magna aliquyam erat, sed diam voluptua."#,
         let input_sets = convert_to_references(
             SystemFunction::HTTP,
             CompositionSet::from_context(input_context),
+            UncoordinatedIo,
+            0,
         )
         .unwrap();
 
