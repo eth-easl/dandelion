@@ -10,12 +10,14 @@ message NodeInfo {
 
 enum SystemFunction {
     HTTP = 0;
+    MEMCACHED = 1;
 }
 
 message ItemData {
     oneof data {
         RemoteData remote_data = 1;
         IoData io_data = 2;
+        IoData coordinated_io_data = 3;
     }
 }
 
@@ -23,6 +25,13 @@ message IoData {
     SystemFunction function = 1;
     uint64 set_index = 2;
     ItemData data = 3;
+    // Stable identity and ownership metadata for lazy I/O coordination and recovery.
+    string invocation_id = 4;
+    uint64 composition_set_id = 5;
+    string item_identifier = 6;
+    uint64 item_key = 7;
+    uint64 original_size = 8;
+    uint64 owner_node_id = 9;
 }
 
 message RemoteData {
@@ -43,10 +52,11 @@ message MetadataSet {
 }
 
 message Invocation {
-    uint32 invocation_id = 1;
+    uint32 remote_invocation_id = 1;
     string function_id = 2;
     repeated MetadataSet metadata_sets = 3;
     bool caching = 4;
+    string owner_invocation_id = 5;
 }
 
 message RepeatedInvocations {
@@ -93,7 +103,7 @@ message RepeatedMetadataSet {
 }
 
 message Response {
-    uint32 invocation_id = 1;
+    uint32 remote_invocation_id = 1;
     oneof response {
         string error_msg = 2;
         RepeatedMetadataSet metadata_sets = 3;
@@ -106,6 +116,20 @@ message NodeUpdate {
 
 message CancelAcknowledgement {
     uint32 invocation_id = 1;
+}
+
+message IoCompletionDelivery {
+    string journal_line = 1;
+}
+
+message IoCompletionAcknowledgement {
+    string invocation_id = 1;
+    uint64 composition_set_id = 2;
+    string function = 3;
+    string identifier = 4;
+    uint64 item_key = 5;
+    // False retains the submitted durable outputs; true deletes them as a duplicate or late result.
+    bool delete_outputs = 6;
 }
 
 // Message from remote node to get work or return completed tasks
@@ -121,6 +145,8 @@ message RemoteMessage {
         CancelAcknowledgement cancel_acknowledgement = 4;
         // Message for graceful shutdown 
         bool shutdown = 5;
+        // Durable async IO completion awaiting owner acknowledgement
+        IoCompletionDelivery io_completion = 6;
     }
 }
 
@@ -138,5 +164,7 @@ message QueueMessage {
         uint32 cancel_invocation = 4;
         // Message for graceful shutdown
         bool shutdown = 5;
+        // Owner has durably recorded an async IO completion
+        IoCompletionAcknowledgement io_completion_ack = 6;
    }
 }

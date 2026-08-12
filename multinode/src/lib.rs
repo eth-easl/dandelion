@@ -66,6 +66,7 @@ fn deserialize_queue_message(buf: Bytes) -> DandelionResult<proto::QueueMessage>
 #[test]
 fn test_serialize_invocation_request() {
     use crate::proto::{item_data, queue_message, Invocation, QueueMessage};
+    use dandelion_commons::InvocationId;
     use machine_interface::{composition::ItemData, memory_domain::ContextTrait};
 
     // construct invocation data
@@ -122,20 +123,24 @@ fn test_serialize_invocation_request() {
     // serialize
     let node_id = 42;
     let mut next_data_id = 0;
-    let serialized_metadata_sets = util::composition_sets_to_proto(inputs, |item, context| {
-        let data_id = next_data_id;
-        next_data_id += 1;
-        let data_slice = context
-            .get_chunk_ref(item.data.offset, item.data.size)
-            .unwrap();
-        match data_id {
-            0 => assert_eq!(&item_0_0_data.to_le_bytes(), data_slice),
-            1 => assert_eq!(&item_1_0_data.to_le_bytes(), data_slice),
-            2 => assert_eq!(&item_1_1_data.to_le_bytes(), data_slice),
-            _ => panic!("Unexpected exported data id"),
-        }
-        machine_interface::composition::RemoteData::new(node_id, data_id)
-    });
+    let serialized_metadata_sets =
+        util::try_composition_sets_to_proto(inputs, node_id, |item, context| {
+            let data_id = next_data_id;
+            next_data_id += 1;
+            let data_slice = context
+                .get_chunk_ref(item.data.offset, item.data.size)
+                .unwrap();
+            match data_id {
+                0 => assert_eq!(&item_0_0_data.to_le_bytes(), data_slice),
+                1 => assert_eq!(&item_1_0_data.to_le_bytes(), data_slice),
+                2 => assert_eq!(&item_1_1_data.to_le_bytes(), data_slice),
+                _ => panic!("Unexpected exported data id"),
+            }
+            Ok(machine_interface::composition::RemoteData::new(
+                node_id, data_id,
+            ))
+        })
+        .unwrap();
     // assert!(set_option.is_none());
     assert_eq!(3, next_data_id);
     println!("serialized set: {:?}", serialized_metadata_sets);
@@ -198,8 +203,9 @@ fn test_serialize_invocation_request() {
                 invocations: vec![crate::proto::Invocation {
                     function_id: expected_id.clone(),
                     metadata_sets: serialized_metadata_sets.clone(),
-                    invocation_id: 7,
+                    remote_invocation_id: 7,
                     caching: true,
+                    owner_invocation_id: InvocationId::from_u128(11).to_string(),
                 }],
             },
         )),
@@ -213,10 +219,12 @@ fn test_serialize_invocation_request() {
         .queue_message
         .unwrap();
     let Invocation {
-        invocation_id,
-        function_id: deserialized_id,
+        remote_invocation_id,
+        function_id,
         metadata_sets: deserialized_metadata_sets,
         caching,
+        owner_invocation_id,
+        ..
     } = if let queue_message::QueueMessage::Invocations(proto::RepeatedInvocations {
         invocations,
     }) = message
@@ -226,10 +234,11 @@ fn test_serialize_invocation_request() {
     } else {
         panic!("Should have deserialized an invocation");
     };
-    assert_eq!(expected_id, deserialized_id);
+    assert_eq!(expected_id, function_id);
     assert_eq!(serialized_metadata_sets, deserialized_metadata_sets);
-    assert_eq!(invocation_id, 7);
+    assert_eq!(remote_invocation_id, 7);
     assert!(caching);
+    assert_eq!(owner_invocation_id, InvocationId::from_u128(11).to_string());
 
     // check the composition sets are as expected
     let mut sets = util::proto_data_sets_to_composition_sets(deserialized_metadata_sets, None);

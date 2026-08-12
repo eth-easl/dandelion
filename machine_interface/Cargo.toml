@@ -18,6 +18,8 @@ blocking_queue = []
 timestamp = ["dandelion_commons/timestamp"]
 vendored-ssl = ["dep:openssl"]
 test_export = []
+at-least-once = []
+exactly-once = ["at-least-once"]
 
 [build-dependencies]
 cmake = "0.1"
@@ -57,7 +59,8 @@ http = "1.1"
 reqwest = "0.12"
 memcache = "0.18.0"
 bytes = "1.6"
-# To make sure we can compile everywhere. 
+base64 = "0.22.1"
+# To make sure we can compile everywhere.
 # This sets it for the other dependencies we have that use it.
 openssl = { version = "0.10", features = ["vendored"], optional = true }
 

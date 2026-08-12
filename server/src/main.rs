@@ -19,6 +19,8 @@ use tokio::{
     sync::{mpsc, oneshot, watch},
 };
 
+#[cfg(feature = "at-least-once")]
+mod async_invocation;
 mod frontend;
 
 async fn delete_service_loop(
@@ -80,6 +82,8 @@ async fn remote_queue_client(
     reconnect_interval: std::time::Duration,
     graceful_shutdown_initiate: watch::Receiver<bool>,
     graceful_shotdown_complete: oneshot::Sender<()>,
+    owner_frontend_url: Option<String>,
+    function_cache_path: String,
 ) {
     loop {
         // Keep retrying to (re-)establish the connection to the master node so a transient
@@ -118,6 +122,8 @@ async fn remote_queue_client(
             export_registry.clone(),
             queue.clone(),
             graceful_shutdown_initiate.clone(),
+            owner_frontend_url.clone(),
+            function_cache_path.clone(),
         )
         .await;
 
@@ -159,6 +165,11 @@ fn main() -> () {
 
     // create globally available path to folder for data
     let folder_path: &'static str = Box::leak(config.folder_path.clone().into_boxed_str());
+    #[cfg(feature = "at-least-once")]
+    machine_interface::function_driver::system_driver::recovery_log::set_recovery_log_root(
+        std::path::PathBuf::from(folder_path),
+    )
+    .expect("Should be able to initialize IO recovery log root");
 
     // set the reqwest engine concurrency limit if it is available
     machine_interface::function_driver::system_driver::reqwest::CONCURRENCY_LIMIT
@@ -276,6 +287,20 @@ fn main() -> () {
         )
         .expect("Should be able to start dispatcher"),
     ));
+    #[cfg(feature = "at-least-once")]
+    {
+        let registry_snapshot_path =
+            std::path::PathBuf::from(folder_path).join("registry_snapshot.json");
+        let (restored_functions, restored_compositions) = dispatcher
+            .load_or_enable_registry_persistence(registry_snapshot_path.clone())
+            .expect("Should be able to initialize registry persistence");
+        debug!(
+            "Registry persistence ready at {} (restored {} functions, {} compositions)",
+            registry_snapshot_path.display(),
+            restored_functions,
+            restored_compositions
+        );
+    }
 
     // register preload functions
     let (preload_functions, preload_compositions) = config.get_preload_functions();
@@ -363,12 +388,23 @@ fn main() -> () {
     print!(" kvm");
     #[cfg(feature = "timestamp")]
     print!(" timestamp");
+    #[cfg(all(feature = "at-least-once", not(feature = "exactly-once")))]
+    print!(" at-least-once");
+    #[cfg(feature = "exactly-once")]
+    print!(" exactly-once");
     print!("\n");
 
     let client_shutdown_option = if let Some(multinode_settings) =
         multinode::config::MultinodeConfig::load(config.multinode_config.as_deref())
     {
         let node_id = config.node_id;
+        #[cfg(feature = "at-least-once")]
+        let export_registry = ExportRegistry::with_durable_storage(
+            node_id,
+            std::path::PathBuf::from(folder_path).join("durable_exports"),
+        )
+        .expect("Should be able to initialize durable export storage");
+        #[cfg(not(feature = "at-least-once"))]
         let export_registry = ExportRegistry::new(node_id);
         let client_shutdown_option = if multinode_settings.queue_server.node_id == node_id {
             let (remote_data_deletion_sender, remote_data_deletion_receiver) =
@@ -399,6 +435,8 @@ fn main() -> () {
                 std::time::Duration::from_millis(config.multinode_reconnect_interval_ms),
                 shutdown_receiver,
                 completion_sender,
+                multinode_settings.queue_server.frontend_url.clone(),
+                folder_path.to_string(),
             ));
             Some((shutdown_sender, completion_receiver))
         };
@@ -425,6 +463,34 @@ fn main() -> () {
         None
     };
 
+    // Recoverable I/O also needs durable exports on a standalone node.
+    #[cfg(feature = "at-least-once")]
+    if get_remote_data_client().is_err() {
+        let export_registry = ExportRegistry::with_durable_storage(
+            config.node_id,
+            std::path::PathBuf::from(folder_path).join("durable_exports"),
+        )
+        .expect("Should be able to initialize standalone durable export storage");
+        set_remote_data_client(Arc::new(multinode::data::HttpRemoteDataClient::new(
+            BTreeMap::new(),
+            export_registry,
+        )));
+    }
+
+    #[cfg(feature = "at-least-once")]
+    {
+        system_runtime.spawn(async {
+            // cleanup old Remote data exports on startup
+            if let Err(err) = frontend::release_terminal_invocation_exports().await {
+                warn!("Terminal invocation export cleanup sweep failed: {}", err);
+            }
+        });
+    }
+    #[cfg(feature = "at-least-once")]
+    system_runtime
+        .block_on(frontend::resume_recoverable_invocations(dispatcher))
+        .expect("Should be able to resume recoverable invocations");
+
     // Run this server for... forever... unless I receive a signal!
     system_runtime.block_on(frontend::service_loop(
         dispatcher,
@@ -433,10 +499,20 @@ fn main() -> () {
         client_shutdown_option,
     ));
 
+    #[cfg(feature = "at-least-once")]
+    {
+        debug!(
+            "Preserving registry folder {} because async recovery is compiled in",
+            folder_path
+        );
+    }
     // clean up folder in tmp that is used for function storage
-    let removal_error = std::fs::remove_dir_all(folder_path);
-    if let Err(err) = removal_error {
-        warn!("Removing function folder failed with: {}", err);
+    #[cfg(not(feature = "at-least-once"))]
+    {
+        let removal_error = std::fs::remove_dir_all(folder_path);
+        if let Err(err) = removal_error {
+            warn!("Removing function folder failed with: {}", err);
+        }
     }
     // clean up folder with shared files in case the context backed by shared files left some behind
     for shm_dir_entry in std::fs::read_dir("/dev/shm/").unwrap() {

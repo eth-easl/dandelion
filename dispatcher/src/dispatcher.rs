@@ -1,5 +1,5 @@
 use crate::{
-    function_registry::{FunctionRegistry, FunctionType},
+    function_registry::{ExportedFunctionRegistration, FunctionRegistry, FunctionType},
     queue::{EngineQueue, WorkQueue},
     resource_pool::ResourcePool,
 };
@@ -21,14 +21,15 @@ use machine_interface::memory_domain::ContextTrait;
 use machine_interface::{
     composition::{
         get_sharding, AnyShardingMode, Composition, CompositionSet, InputSetDescriptor,
-        JoinStrategy, LocalCompositionSet, ShardingMode,
+        JoinStrategy, LocalCompositionSet, RemoteData, ShardingMode,
     },
-    function_driver::{Metadata, WorkToDo},
+    function_driver::{system_driver::IoReferencePolicy, Metadata, WorkToDo},
     machine_config::{get_available_domains, DomainType, EngineType, IntoEnumIterator},
     memory_domain::{MemoryDomain, MemoryResource},
 };
 use std::{
     collections::BTreeMap,
+    path::PathBuf,
     sync::{atomic::AtomicUsize, Arc},
 };
 
@@ -108,23 +109,43 @@ impl Dispatcher {
             .insert_compositions(&composition_desc)
     }
 
-    pub async fn queue_function_by_name(
+    pub fn export_function(
+        &self,
+        function_name: String,
+    ) -> DandelionResult<ExportedFunctionRegistration> {
+        self.function_registry
+            .export_function(&Arc::new(function_name))
+    }
+
+    pub fn load_or_enable_registry_persistence(
+        &self,
+        path: PathBuf,
+    ) -> DandelionResult<(usize, usize)> {
+        self.function_registry
+            .load_or_enable_persistence(path, &self.domains)
+    }
+
+    pub async fn queue_function_by_name<P: IoReferencePolicy + Send + 'static>(
         &self,
         function_id: Arc<String>,
         inputs: Vec<Option<CompositionSet>>,
         caching: bool,
+        io_policy: P,
         mut recorder: Recorder,
     ) -> DandelionResult<(Vec<Option<LocalCompositionSet>>, Recorder)> {
         debug!("Queuing function {}", function_id);
         recorder.record(RecordPoint::EnterDispatcher);
         let composition_id = self.get_composition_id();
+
         let results = self
             .queue_function(
                 composition_id,
                 function_id,
                 inputs,
                 caching,
+                io_policy,
                 recorder.clone(),
+                None,
             )
             .await?;
 
@@ -157,11 +178,20 @@ impl Dispatcher {
         Ok((local_results, recorder))
     }
 
-    pub async fn queue_unregistered_composition(
+    pub async fn delete_remote_data(&self, remote_data: RemoteData) -> DandelionResult<()> {
+        let composition_id = self.get_composition_id();
+        self.work_queue
+            .do_work(WorkToDo::RemoteToDelete { remote_data }, composition_id)
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn queue_unregistered_composition<P: IoReferencePolicy + Send + 'static>(
         &self,
         composition_desc: String,
         inputs: Vec<Option<CompositionSet>>,
         caching: bool,
+        io_policy: P,
         mut recorder: Recorder,
     ) -> DandelionResult<(Vec<Option<LocalCompositionSet>>, Recorder)> {
         debug!("Parsing single use composition");
@@ -185,7 +215,7 @@ impl Dispatcher {
         let composition_id = self.get_composition_id();
         debug!(
             "Queuing single use composition {} with id {}",
-            composition_meta_pairs[0].0, composition_id,
+            composition_meta_pairs[0].0, composition_id
         );
         let results = self
             .queue_composition(
@@ -193,6 +223,7 @@ impl Dispatcher {
                 composition_meta_pairs[0].1.clone(),
                 inputs,
                 caching,
+                io_policy,
                 recorder.clone(),
             )
             .await?;
@@ -232,12 +263,13 @@ impl Dispatcher {
     ///
     /// * `composition`
     /// * `inputs` vec of input set options, where the index in the vec is the input set number
-    pub async fn queue_composition(
+    pub async fn queue_composition<P: IoReferencePolicy + Send + 'static>(
         &self,
         composition_id: usize,
         composition: Composition,
         inputs: Vec<Option<CompositionSet>>,
         caching: bool,
+        io_policy: P,
         mut recorder: Recorder,
     ) -> DandelionResult<Vec<Option<CompositionSet>>> {
         // build up ready sets
@@ -341,6 +373,7 @@ impl Dispatcher {
                 args.join_info.1,
                 args.output_mapping,
                 caching,
+                io_policy,
                 recorder.clone(),
             )));
         }
@@ -422,6 +455,7 @@ impl Dispatcher {
                                 args.join_info.1,
                                 args.output_mapping,
                                 caching,
+                                io_policy,
                                 recorder.clone(),
                             )));
                             None
@@ -447,7 +481,7 @@ impl Dispatcher {
     /// Keeps track of the composition set indexes so that when sets are returned to
     /// composition they have the corret index associated without the composition needing to track them.
     /// Also handles sharing of sets.
-    async fn queue_function_sharded<'context>(
+    async fn queue_function_sharded<'context, P: IoReferencePolicy + Send + 'static>(
         &self,
         composition_id: usize,
         function_id: FunctionId,
@@ -458,6 +492,7 @@ impl Dispatcher {
         join_strategies: Vec<JoinStrategy>,
         output_mapping: Vec<Option<usize>>,
         caching: bool,
+        io_policy: P,
         recorder: Recorder,
     ) -> DandelionResult<(Vec<(usize, Option<CompositionSet>)>, usize, Vec<Recorder>)> {
         trace!(
@@ -465,7 +500,7 @@ impl Dispatcher {
             function_id,
             input_sets
         );
-
+        let composition_set_id = output_mapping.iter().flatten().copied().next().unwrap_or(0);
         let (results, recorders) = match self.function_registry.get_function(&function_id)? {
             FunctionType::SystemFunction(sys_function) => {
                 // check if there are no input sets or all of them are none, then don't need sharding,
@@ -479,6 +514,8 @@ impl Dispatcher {
                             .into_iter()
                             .map(|set_option| set_option.map(|(_, set)| set))
                             .collect(),
+                        io_policy,
+                        composition_set_id,
                     )
                 })
                 .await
@@ -599,6 +636,7 @@ impl Dispatcher {
                         .map(|opt| opt.map(|(_, set)| set))
                         .collect(),
                     caching,
+                    io_policy,
                     recorder.clone(),
                 )
                 .await?,
@@ -619,13 +657,15 @@ impl Dispatcher {
 
     /// returns a vector of pairs of a index and a composition set
     /// the index describes which output set the composition belongs to.
-    pub async fn queue_function<'dispatcher>(
+    pub async fn queue_function<'dispatcher, P: IoReferencePolicy + Send + 'static>(
         &'dispatcher self,
         composition_id: usize,
         function_id: FunctionId,
         input_sets: Vec<Option<CompositionSet>>,
         caching: bool,
+        io_policy: P,
         mut recorder: Recorder,
+        composition_set_id: Option<usize>,
     ) -> DandelionResult<Vec<Option<CompositionSet>>> {
         debug!("Queueing function with id: {}", function_id);
         // find an engine capable of running the function
@@ -638,6 +678,8 @@ impl Dispatcher {
                     machine_interface::function_driver::system_driver::convert_to_references(
                         sys_function,
                         input_sets,
+                        io_policy,
+                        composition_set_id.unwrap_or(0),
                     );
                 recorder.record(RecordPoint::EngineEnd);
                 result
@@ -689,6 +731,7 @@ impl Dispatcher {
                     (*comp_info.composition).clone(),
                     input_sets,
                     caching,
+                    io_policy,
                     recorder,
                 )
                 .await
