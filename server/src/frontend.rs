@@ -422,9 +422,32 @@ async fn handle_async_status(path: &str) -> DandelionResult<DandelionBody> {
 }
 
 #[cfg(feature = "at-least-once")]
-async fn handle_async_result(path: &str) -> DandelionResult<(StatusCode, DandelionBody)> {
+fn async_result_should_wait(query: Option<&str>) -> bool {
+    query
+        .map(|query| {
+            query
+                .split('&')
+                .find_map(|parameter| {
+                    let (name, value) = parameter.split_once('=')?;
+                    (name == "wait").then_some(value == "true")
+                })
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "at-least-once")]
+async fn handle_async_result(
+    path: &str,
+    wait: bool,
+) -> DandelionResult<(StatusCode, DandelionBody)> {
     let invocation_id = parse_invocation_id(path)?;
-    match crate::async_invocation::load_result(invocation_id)? {
+    let result = if wait {
+        crate::async_invocation::wait_for_result(invocation_id).await?
+    } else {
+        crate::async_invocation::load_result(invocation_id)?
+    };
+    match result {
         Some(result) => Ok((StatusCode::OK, DandelionBody::from_vec(result))),
         None => {
             let status = crate::async_invocation::load_status(invocation_id)?;
@@ -646,6 +669,7 @@ async fn service(
 ) -> Result<Response<DandelionBody>, Infallible> {
     // handle request
     let path = req.uri().path().to_string();
+    let query = req.uri().query().map(str::to_owned);
     let res = match path.as_str() {
         "/register/function" => handle_function_registration(req, dispatcher, folder_path)
             .await
@@ -689,7 +713,11 @@ async fn service(
                 #[cfg(feature = "at-least-once")]
                 if let Some(invocation_path) = other_uri.strip_prefix("/async/invocation/") {
                     if let Some(invocation_id) = invocation_path.strip_suffix("/result") {
-                        handle_async_result(invocation_id).await
+                        handle_async_result(
+                            invocation_id,
+                            async_result_should_wait(query.as_deref()),
+                        )
+                        .await
                     } else {
                         handle_async_status(invocation_path)
                             .await
@@ -789,5 +817,17 @@ pub async fn service_loop(dispatcher: &'static Dispatcher, folder_path: &'static
             _ = sigint_stream.recv() => return,
             _ = sigquit_stream.recv() => return,
         }
+    }
+}
+
+#[cfg(all(test, feature = "at-least-once"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn async_result_wait_is_opt_in() {
+        assert!(!async_result_should_wait(None));
+        assert!(!async_result_should_wait(Some("wait=false")));
+        assert!(async_result_should_wait(Some("other=1&wait=true")));
     }
 }
