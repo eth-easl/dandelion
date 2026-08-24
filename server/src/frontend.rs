@@ -379,7 +379,7 @@ pub async fn service_loop(
     // remote work has already drained, if there was work submitted to this node directly, wait for that to drain
     loop {
         let remaining_requests = running_checker.strong_count();
-        info!(
+        trace!(
             "finished waiting for remote, {} requests remaining from local frontend",
             remaining_requests
         );
