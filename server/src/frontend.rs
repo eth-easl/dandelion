@@ -18,21 +18,13 @@ use machine_interface::{
 };
 use serde::Deserialize;
 use std::{
-    convert::Infallible,
-    io::Write,
-    net::SocketAddr,
-    path::PathBuf,
-    println,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
+    convert::Infallible, io::Write, net::SocketAddr, path::PathBuf, println, sync::Arc,
     time::Instant,
 };
 use tokio::{
     net::TcpListener,
     signal::unix::SignalKind,
-    sync::{oneshot, watch, Notify},
+    sync::{oneshot, watch},
 };
 
 fn default_path() -> String {
@@ -249,16 +241,16 @@ async fn handle_request(
                 recorder,
             )
             .await
-    }
-    .expect("Should get result from function");
-
-    let response_body = dandelion_server::DandelionBody::new(function_output, &recorder);
+    }?;
 
     debug!("finished creating response body");
     #[cfg(feature = "archive")]
     TRACING_ARCHIVE.get().unwrap().insert_recorder(recorder);
 
-    Ok(response_body)
+    Ok(dandelion_server::DandelionBody::new(
+        function_output,
+        &recorder,
+    ))
 }
 
 //-----------------------
@@ -268,9 +260,19 @@ async fn service(
     req: Request<Incoming>,
     dispatcher: &'static Dispatcher,
     folder_path: &'static str,
-    request_counter: Arc<(AtomicUsize, Notify)>,
+    request_counter: std::sync::Weak<()>,
 ) -> Result<Response<DandelionBody>, Infallible> {
-    request_counter.0.fetch_add(1, Ordering::AcqRel);
+    let _running_guard = match request_counter.upgrade() {
+        Some(guard) => guard,
+        None => {
+            let mut response = Response::new(DandelionBody::from_vec(
+                "Server is shutting down".to_string().into_bytes(),
+            ));
+            *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+            return Ok::<_, Infallible>(response);
+        }
+    };
+
     // handle request
     let res = match req.uri().path() {
         "/register/function" => handle_function_registration(req, dispatcher, folder_path).await,
@@ -300,10 +302,6 @@ async fn service(
         }
     };
 
-    let current_requests = request_counter.0.fetch_sub(1, Ordering::AcqRel);
-    if current_requests - 1 == 0 {
-        request_counter.1.notify_waiters();
-    }
     // create response
     match res {
         Ok(body) => Ok::<_, Infallible>(Response::new(body)),
@@ -334,11 +332,7 @@ pub async fn service_loop(
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await.unwrap();
     println!("Socket ready");
-    // request bookkeeping (there is probably some way to use the arcs accounting instead of a separate atomic,
-    // but seems probably harder to use safely).
-    // TODO: currently aborted requests may not properly decrease count. (Would be fixed by using the arc counter, since it is decremented on drop)
-    // May just implement struct that implements the parts of the arc we need and does notifiy when counter is low
-    let running_requests = Arc::new((AtomicUsize::new(0), Notify::new()));
+    let running_requests = Arc::new(());
 
     // signal handlers for gracefull shutdown
     let mut sigterm_stream = tokio::signal::unix::signal(SignalKind::terminate()).unwrap();
@@ -350,7 +344,7 @@ pub async fn service_loop(
             connection_pair = listener.accept() => {
                 let (stream,_) = connection_pair.unwrap();
                 let io = hyper_util::rt::TokioIo::new(stream);
-                let request_counter = running_requests.clone();
+                let request_counter = Arc::downgrade(&running_requests);
                 tokio::task::spawn(async move {
                     let counter_clone = request_counter.clone();
                     if let Err(err) = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
@@ -370,6 +364,10 @@ pub async fn service_loop(
         }
     }
 
+    drop(listener);
+    let running_checker = Arc::downgrade(&running_requests);
+    drop(running_requests);
+
     info!("Broke frontend loop, startig graceful shutdown");
 
     // if there is a remote client, stop receiving work
@@ -379,13 +377,17 @@ pub async fn service_loop(
         completion_receiver.await.unwrap();
     }
     // remote work has already drained, if there was work submitted to this node directly, wait for that to drain
-    let notifer = running_requests.1.notified();
-    let remaining_requests = running_requests.0.load(Ordering::Acquire);
-    info!(
-        "finished waiting for remote, checking local queue for completion, {} requests remaining",
-        remaining_requests
-    );
-    if remaining_requests != 0 {
-        notifer.await;
+    loop {
+        let remaining_requests = running_checker.strong_count();
+        info!(
+            "finished waiting for remote, {} requests remaining from local frontend",
+            remaining_requests
+        );
+        if remaining_requests == 0 {
+            break;
+        } else {
+            // make sure this does not hog a core that would be necessary to make progress on the shutdown.
+            tokio::task::yield_now().await;
+        }
     }
 }
