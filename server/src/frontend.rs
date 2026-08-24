@@ -9,7 +9,7 @@ use hyper::{
     service::service_fn,
     Request, Response, StatusCode,
 };
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use machine_interface::{
     composition::{CompositionSet, LocalCompositionSet},
     function_driver::Metadata,
