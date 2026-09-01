@@ -15,6 +15,13 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
 };
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+use std::{
+    sync::mpsc::{self, Receiver, Sender},
+    thread,
+};
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+use tokio::sync::oneshot;
 
 #[cfg(feature = "at-least-once")]
 use crate::{
@@ -26,6 +33,8 @@ const IO_LOG_DIR_NAME: &str = "io_logs";
 static RECOVERY_LOG_ROOT: OnceLock<PathBuf> = OnceLock::new();
 static INVOCATION_LOG_LOCKS: OnceLock<Mutex<HashMap<InvocationId, Arc<Mutex<()>>>>> =
     OnceLock::new();
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+static LOCAL_COMPLETION_COMMITTER: OnceLock<Sender<LocalCompletionCommitRequest>> = OnceLock::new();
 #[cfg(feature = "at-least-once")]
 static ACTIVE_ASYNC_INVOCATIONS: OnceLock<Mutex<HashSet<InvocationId>>> = OnceLock::new();
 #[cfg(feature = "at-least-once")]
@@ -49,6 +58,12 @@ pub struct IoCompletionRecord {
 pub enum IoCompletionDisposition {
     Retain,
     Delete,
+}
+
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+struct LocalCompletionCommitRequest {
+    record: IoCompletionRecord,
+    completion: oneshot::Sender<DandelionResult<IoCompletionDisposition>>,
 }
 
 #[cfg(feature = "at-least-once")]
@@ -935,6 +950,128 @@ pub fn accept_delivered_io_completion_record(
     let line = format_io_completion_line(record)?;
     append_invocation_log_line_locked(&log_path, &line)?;
     Ok(IoCompletionDisposition::Retain)
+}
+
+
+// create a new channel and spawn a thread that waits to receive local completion commit requests
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+fn local_completion_committer() -> &'static Sender<LocalCompletionCommitRequest> {
+    LOCAL_COMPLETION_COMMITTER.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel();
+        thread::Builder::new()
+            .name("dandelion-local-completion-committer".to_string())
+            .spawn(move || run_local_completion_committer(receiver))
+            .expect("Failed to start local completion commit thread");
+        sender
+    })
+}
+
+/// Durably accepts a completion produced on its coordination-owner node.
+///
+/// The first pending completion starts a commit immediately. Completions that
+/// arrive while that commit is syncing accumulate in the channel and share the
+/// next append and `sync_data`. Callers are released only after the batch that
+/// contains their record is durable.
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+pub async fn accept_local_io_completion_record(
+    record: IoCompletionRecord,
+) -> DandelionResult<IoCompletionDisposition> {
+    let (completion, committed) = oneshot::channel();
+    local_completion_committer()
+        .send(LocalCompletionCommitRequest { record, completion })
+        .map_err(|_| internal_error("Local completion commit thread stopped"))?;
+    committed
+        .await
+        .map_err(|_| internal_error("Local completion commit thread dropped a request"))?
+}
+
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+fn run_local_completion_committer(receiver: Receiver<LocalCompletionCommitRequest>) {
+    while let Ok(first) = receiver.recv() {
+        let mut batch = vec![first];
+        while let Ok(request) = receiver.try_recv() {
+            batch.push(request);
+        }
+        commit_local_completion_batch(batch);
+    }
+}
+
+// commits a batch of local completion records
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+fn commit_local_completion_batch(batch: Vec<LocalCompletionCommitRequest>) {
+    let mut by_invocation: HashMap<InvocationId, Vec<LocalCompletionCommitRequest>> =
+        HashMap::new();
+    // group requests by invocation id
+    for request in batch {
+        by_invocation
+            .entry(request.record.invocation_id)
+            .or_default()
+            .push(request);
+    }
+    // commit each invocation's completion records
+    for (invocation_id, requests) in by_invocation {
+        commit_invocation_completion_batch(invocation_id, requests);
+    }
+}
+
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+fn commit_invocation_completion_batch(
+    invocation_id: InvocationId,
+    requests: Vec<LocalCompletionCommitRequest>,
+) {
+    let commit = || -> DandelionResult<Vec<IoCompletionDisposition>> {
+        let log_path = invocation_log_path(invocation_id)?;
+        let invocation_lock = invocation_log_lock(invocation_id);
+        let _invocation_lock_guard = invocation_lock
+            .lock()
+            .expect("IO recovery invocation log lock poisoned");
+        let mut existing_log = match fs::read_to_string(&log_path) {
+            Ok(existing_log) => existing_log,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(_) => {
+                return Err(internal_error(format!(
+                    "Failed to read invocation log {}",
+                    log_path.display()
+                )))
+            }
+        };
+
+        let mut appended = String::new();
+        let mut dispositions = Vec::with_capacity(requests.len());
+        for request in &requests {
+            // check if the completion record is already in the log
+            match delivered_io_completion_disposition(&existing_log, &request.record)? {
+                Some(disposition) => dispositions.push(disposition),
+                None => {
+                    let line = format_io_completion_line(&request.record)?;
+                    existing_log.push_str(&line);
+                    appended.push_str(&line);
+                    dispositions.push(IoCompletionDisposition::Retain);
+                }
+            }
+        }
+
+        if !appended.is_empty() {
+            append_invocation_log_line_locked(&log_path, &appended)?;
+        }
+        Ok(dispositions)
+    }();
+
+    match commit {
+        Ok(dispositions) => {
+            for (request, disposition) in requests.into_iter().zip(dispositions) {
+                let _ = request.completion.send(Ok(disposition));
+            }
+        }
+        Err(error) => {
+            let message = error.to_string();
+            for request in requests {
+                let _ = request
+                    .completion
+                    .send(Err(internal_error(message.clone())));
+            }
+        }
+    }
 }
 
 #[cfg(feature = "at-least-once")]

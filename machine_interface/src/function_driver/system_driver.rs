@@ -122,10 +122,10 @@ impl IoReferencePolicy for UncoordinatedIo {
     }
 }
 
-#[cfg(not(feature = "at-least-once"))]
+#[cfg(not(any(feature = "checkpointed-at-least-once", feature = "exactly-once")))]
 pub type AsyncIoPolicy = UncoordinatedIo;
 
-#[cfg(not(feature = "at-least-once"))]
+#[cfg(not(any(feature = "checkpointed-at-least-once", feature = "exactly-once")))]
 pub fn async_io_policy(_invocation_id: InvocationId) -> AsyncIoPolicy {
     UncoordinatedIo
 }
@@ -136,10 +136,10 @@ pub struct RecoverableIo {
     pub invocation_id: InvocationId,
 }
 
-#[cfg(feature = "at-least-once")]
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
 pub type AsyncIoPolicy = RecoverableIo;
 
-#[cfg(feature = "at-least-once")]
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
 pub fn async_io_policy(invocation_id: InvocationId) -> AsyncIoPolicy {
     RecoverableIo { invocation_id }
 }

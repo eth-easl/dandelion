@@ -27,6 +27,7 @@ kvm = ["machine_interface/kvm"]
 timestamp = ["dandelion_commons/timestamp"]
 log_function_stdio = []
 at-least-once = ["machine_interface/at-least-once"]
+checkpointed-at-least-once = ["at-least-once", "machine_interface/checkpointed-at-least-once"]
 exactly-once = ["at-least-once", "machine_interface/exactly-once"]
 
 # Features for queue behaviour

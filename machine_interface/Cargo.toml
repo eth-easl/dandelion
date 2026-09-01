@@ -19,6 +19,7 @@ timestamp = ["dandelion_commons/timestamp"]
 vendored-ssl = ["dep:openssl"]
 test_export = []
 at-least-once = []
+checkpointed-at-least-once = ["at-least-once"]
 exactly-once = ["at-least-once"]
 
 [build-dependencies]
