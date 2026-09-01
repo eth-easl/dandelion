@@ -7,6 +7,8 @@ use hyper::{
     Method, Request, Response, StatusCode,
 };
 use log::{debug, error, trace, warn};
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+use machine_interface::function_driver::system_driver::recovery_log::accept_local_io_completion_record;
 #[cfg(feature = "at-least-once")]
 use machine_interface::{
     composition::{IoCompletionOutcome, IoCoordinationCompletion, IoCoordinationKey},
@@ -1516,6 +1518,20 @@ impl RemoteDataClient for HttpRemoteDataClient {
             }
 
             let record = completion_record(&completion.key, &exported);
+
+            // skip journal entry for local owner
+            #[cfg(feature = "checkpointed-at-least-once")]
+            if completion.owner_node_id == self.local_registry.node_id {
+                let disposition = accept_local_io_completion_record(record.clone()).await?;
+                if disposition == IoCompletionDisposition::Delete {
+                    for output in exported {
+                        self.local_registry
+                            .delete_durable_exported_data(output.data_id)?;
+                    }
+                }
+                return Ok(());
+            }
+
             if !self.local_registry.append_io_completion_record(&record)? {
                 for output in exported {
                     self.local_registry
@@ -1675,9 +1691,29 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 }
             };
 
-            // Every successful coordinated result is journaled until the owner acknowledges it,
-            // so async waiters can reuse the completed reference after a worker restart.
-            let mut delivery_record = match &wire_outcome {
+            if completion.owner_node_id == self.local_registry.node_id {
+                // skip journal entry for local owner
+                if let Ok(outputs) = &wire_outcome {
+                    let record = completion_record(&completion.key, outputs);
+                    if let Err(error) = accept_local_io_completion_record(record).await {
+                        for data_id in &exported_data_ids {
+                            let _ = self.local_registry.delete_durable_exported_data(*data_id);
+                        }
+                        wire_outcome = Err(error.to_string());
+                        completion_error = Some(error);
+                    }
+                }
+                self.local_registry
+                    .publish_io_resolution_inner(completion.key, wire_outcome)?;
+                return match completion_error {
+                    Some(error) => Err(error),
+                    None => Ok(()),
+                };
+            }
+
+            // A remote worker journals every successful result until its owner acknowledges it,
+            // so delivery can resume after a worker or connection restart.
+            let delivery_record = match &wire_outcome {
                 Ok(outputs) => {
                     let record = completion_record(&completion.key, outputs);
                     match self.local_registry.append_io_completion_record(&record) {
@@ -1694,29 +1730,6 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 }
                 Err(_) => None,
             };
-
-            if completion.owner_node_id == self.local_registry.node_id {
-                if let Some(record) = &delivery_record {
-                    if let Err(error) = append_delivered_io_completion_record(record) {
-                        for data_id in &exported_data_ids {
-                            let _ = self.local_registry.delete_durable_exported_data(*data_id);
-                        }
-                        wire_outcome = Err(error.to_string());
-                        completion_error = Some(error);
-                        delivery_record = None;
-                    }
-                }
-                self.local_registry
-                    .publish_io_resolution_inner(completion.key, wire_outcome)?;
-                if let Some(record) = delivery_record {
-                    self.local_registry
-                        .acknowledge_io_completion(&record.completion_key()?)?;
-                }
-                return match completion_error {
-                    Some(error) => Err(error),
-                    None => Ok(()),
-                };
-            }
 
             let url = self.io_url(completion.owner_node_id, "resolved")?;
             let request = IoResolvedWireRequest {
@@ -2629,6 +2642,14 @@ mod tests {
         let registry = ExportRegistry::with_durable_storage(node_id, &test_root).unwrap();
         let client = HttpRemoteDataClient::new(BTreeMap::new(), registry.clone());
         let key = coordination_key();
+        machine_interface::function_driver::system_driver::recovery_log::append_invocation_log_line(
+            key.invocation_id,
+            &format!(
+                "event=invocation_submitted invocation_id={} request_len=0 request_b64= is_cold=false\n",
+                key.invocation_id
+            ),
+        )
+        .unwrap();
         assert!(matches!(
             registry.begin_io_resolution(key.clone(), 0, None).unwrap(),
             RegistryIoResolution::Execute(None)
@@ -2654,6 +2675,18 @@ mod tests {
             })
             .await
             .unwrap();
+
+        assert!(registry.pending_io_completion_records().is_empty());
+        assert!(!test_root
+            .join(node_id.to_string())
+            .join(IO_COMPLETION_JOURNAL_FILE)
+            .exists());
+        let invocation_log =
+            machine_interface::function_driver::system_driver::recovery_log::read_invocation_log(
+                key.invocation_id,
+            )
+            .unwrap();
+        assert!(invocation_log.contains("event=io_function_completed "));
 
         let remote = match registry.begin_io_resolution(key, 0, None).unwrap() {
             RegistryIoResolution::Completed(remote) => remote,
