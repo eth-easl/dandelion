@@ -69,11 +69,17 @@ pub const SYSTEM_FUNCTIONS: &[SystemFunction] = &[SystemFunction::HTTP];
 pub fn io_recorder_id(
     function: SystemFunction,
     composition_set_id: usize,
+    item_identifier: &str,
     item_key: u32,
 ) -> FunctionId {
+    let identifier_hex: String = item_identifier
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     Arc::new(format!(
-        "IO:{}:{}:{:016x}",
-        function, composition_set_id, item_key
+        "IO:{}:{}:{}:{:016x}",
+        function, composition_set_id, identifier_hex, item_key
     ))
 }
 
@@ -234,7 +240,7 @@ pub fn convert_to_references<P: IoReferencePolicy>(
         for (item, data) in input_set {
             let resolved = Arc::new(OnceCell::new());
             let io_recorder = Recorder::new_from_parent(
-                io_recorder_id(function, composition_set_id, item.key),
+                io_recorder_id(function, composition_set_id, &item.ident, item.key),
                 &recorder,
             );
             for (set_index, items) in output_items.iter_mut().enumerate() {
