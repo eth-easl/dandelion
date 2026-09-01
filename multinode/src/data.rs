@@ -2114,6 +2114,8 @@ mod checkpoint_tests {
 mod tests {
     use super::*;
     use dandelion_commons::InvocationId;
+    #[cfg(feature = "timestamp")]
+    use dandelion_commons::records::{RecordPoint, Recorder};
     use machine_interface::composition::IoCompletedOutput;
     use machine_interface::memory_domain::{read_only::ReadOnlyContext, ContextTrait};
     use std::{path::PathBuf, sync::OnceLock, time::Duration};
@@ -2682,15 +2684,44 @@ mod tests {
             },
             context: Arc::new(ReadOnlyContext::new(expected.clone().into_boxed_slice()).unwrap()),
         };
+        #[cfg(feature = "timestamp")]
+        let recorder = Recorder::new(
+            key.invocation_id,
+            Arc::new("IO:HTTP:0:0000000000000000".to_string()),
+            std::time::Instant::now(),
+        );
         client
             .publish_io_resolution(IoCoordinationCompletion {
                 owner_node_id: node_id,
                 key: key.clone(),
                 outcome: IoCompletionOutcome::Completed(vec![output]),
+                #[cfg(feature = "timestamp")]
+                recorder: Some(recorder.clone()),
+                #[cfg(not(feature = "timestamp"))]
                 recorder: None,
             })
             .await
             .unwrap();
+
+        #[cfg(feature = "timestamp")]
+        {
+            assert_ne!(
+                recorder.get_timestamp(RecordPoint::IoOutputExportEnd),
+                Duration::ZERO
+            );
+            assert_ne!(
+                recorder.get_timestamp(RecordPoint::IoPayloadEncodeEnd),
+                Duration::ZERO
+            );
+            assert_ne!(
+                recorder.get_timestamp(RecordPoint::IoJournalEnd),
+                Duration::ZERO
+            );
+            assert_ne!(
+                recorder.get_timestamp(RecordPoint::IoOwnerApprovalEnd),
+                Duration::ZERO
+            );
+        }
 
         assert!(registry.pending_io_completion_records().is_empty());
         assert!(!test_root

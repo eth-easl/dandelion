@@ -314,11 +314,6 @@ impl fmt::Display for Recorder {
                         write!(_f, "[")?;
                         let mut has_prev = false;
                         for r in child_recorders.iter() {
-                            // FIXME: we ignore the (empty) HTTP recorders, ideally we do not create
-                            //        them in the first place
-                            if *r.inner.function_id == "HTTP" {
-                                continue;
-                            }
                             if has_prev {
                                 write!(_f, ",")?;
                             }
