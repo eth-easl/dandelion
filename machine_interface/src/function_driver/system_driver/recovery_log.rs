@@ -63,6 +63,7 @@ pub enum IoCompletionDisposition {
 #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
 struct LocalCompletionCommitRequest {
     record: IoCompletionRecord,
+    recorder: Option<dandelion_commons::records::Recorder>,
     completion: oneshot::Sender<DandelionResult<IoCompletionDisposition>>,
 }
 
@@ -975,10 +976,15 @@ fn local_completion_committer() -> &'static Sender<LocalCompletionCommitRequest>
 #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
 pub async fn accept_local_io_completion_record(
     record: IoCompletionRecord,
+    recorder: Option<dandelion_commons::records::Recorder>,
 ) -> DandelionResult<IoCompletionDisposition> {
     let (completion, committed) = oneshot::channel();
     local_completion_committer()
-        .send(LocalCompletionCommitRequest { record, completion })
+        .send(LocalCompletionCommitRequest {
+            record,
+            recorder,
+            completion,
+        })
         .map_err(|_| internal_error("Local completion commit thread stopped"))?;
     committed
         .await
@@ -1037,13 +1043,22 @@ fn commit_invocation_completion_batch(
         };
 
         let mut appended = String::new();
+        let mut journal_recorders = Vec::new();
         let mut dispositions = Vec::with_capacity(requests.len());
         for request in &requests {
             // check if the completion record is already in the log
             match delivered_io_completion_disposition(&existing_log, &request.record)? {
                 Some(disposition) => dispositions.push(disposition),
                 None => {
+                    let mut recorder = request.recorder.clone();
+                    if let Some(recorder) = recorder.as_mut() {
+                        recorder.record(dandelion_commons::records::RecordPoint::IoPayloadEncodeStart);
+                    }
                     let line = format_io_completion_line(&request.record)?;
+                    if let Some(recorder) = recorder.as_mut() {
+                        recorder.record(dandelion_commons::records::RecordPoint::IoPayloadEncodeEnd);
+                        journal_recorders.push(recorder.clone());
+                    }
                     existing_log.push_str(&line);
                     appended.push_str(&line);
                     dispositions.push(IoCompletionDisposition::Retain);
@@ -1052,7 +1067,13 @@ fn commit_invocation_completion_batch(
         }
 
         if !appended.is_empty() {
+            for recorder in &mut journal_recorders {
+                recorder.record(dandelion_commons::records::RecordPoint::IoJournalStart);
+            }
             append_invocation_log_line_locked(&log_path, &appended)?;
+            for recorder in &mut journal_recorders {
+                recorder.record(dandelion_commons::records::RecordPoint::IoJournalEnd);
+            }
         }
         Ok(dispositions)
     }();

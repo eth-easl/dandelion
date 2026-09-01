@@ -1522,7 +1522,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
             // skip journal entry for local owner
             #[cfg(feature = "checkpointed-at-least-once")]
             if completion.owner_node_id == self.local_registry.node_id {
-                let disposition = accept_local_io_completion_record(record.clone()).await?;
+                let disposition = accept_local_io_completion_record(record.clone(), None).await?;
                 if disposition == IoCompletionDisposition::Delete {
                     for output in exported {
                         self.local_registry
@@ -1659,9 +1659,13 @@ impl RemoteDataClient for HttpRemoteDataClient {
         Box::pin(async move {
             let mut exported_data_ids = Vec::new();
             let mut completion_error = None;
+            let mut recorder = completion.recorder;
             let mut wire_outcome = match completion.outcome {
                 IoCompletionOutcome::Failed(error) => Err(error),
                 IoCompletionOutcome::Completed(outputs) => {
+                    if let Some(recorder) = recorder.as_mut() {
+                        recorder.record(dandelion_commons::records::RecordPoint::IoOutputExportStart);
+                    }
                     let mut remote_outputs = Vec::with_capacity(outputs.len());
                     let mut export_error = None;
                     for output in outputs {
@@ -1684,6 +1688,9 @@ impl RemoteDataClient for HttpRemoteDataClient {
                         exported_data_ids.push(remote.data_id);
                         remote_outputs.push(IoRemoteRef::from_remote(&remote, size));
                     }
+                    if let Some(recorder) = recorder.as_mut() {
+                        recorder.record(dandelion_commons::records::RecordPoint::IoOutputExportEnd);
+                    }
                     match export_error {
                         Some(error) => Err(error),
                         None => Ok(remote_outputs),
@@ -1695,7 +1702,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 // skip journal entry for local owner
                 if let Ok(outputs) = &wire_outcome {
                     let record = completion_record(&completion.key, outputs);
-                    if let Err(error) = accept_local_io_completion_record(record).await {
+                    if let Err(error) = accept_local_io_completion_record(record, recorder.clone()).await {
                         for data_id in &exported_data_ids {
                             let _ = self.local_registry.delete_durable_exported_data(*data_id);
                         }
@@ -2267,6 +2274,7 @@ mod tests {
                     item: output_item,
                     context: output_context,
                 }]),
+                recorder: None,
             })
             .await
             .unwrap();
@@ -2672,6 +2680,7 @@ mod tests {
                 owner_node_id: node_id,
                 key: key.clone(),
                 outcome: IoCompletionOutcome::Completed(vec![output]),
+                recorder: None,
             })
             .await
             .unwrap();
@@ -2731,6 +2740,7 @@ mod tests {
                     },
                     context: Arc::new(ReadOnlyContext::new(bytes.into_boxed_slice()).unwrap()),
                 }]),
+                recorder: None,
             })
             .await
             .unwrap();
