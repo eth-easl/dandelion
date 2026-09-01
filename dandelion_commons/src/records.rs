@@ -8,7 +8,9 @@ use core::cell::{OnceCell, UnsafeCell};
 /// Maximum usize to expect when converting a record point to a usize
 /// By setting the last element to this explicitly, the compiler will throw an error,
 /// if there are more than this, because it enumerates from 0 and won't allow a number to be assigned twice.
-const LAST_RECORD_POINT: usize = 21;
+
+const LAST_EXISTING_RECORD_POINT: usize = 21;
+const LAST_RECORD_POINT: usize = 39;
 /// The first timestamp that should come from the engine running the function
 const FIRST_ENGINE_POINT: usize = 13;
 const LAST_ENGINE_POINT: usize = 20;
@@ -55,7 +57,34 @@ pub enum RecordPoint {
     /// End execution of the function on the engine (sync)
     EngineEnd = LAST_ENGINE_POINT,
     /// Return from execution engine (async)
-    FutureReturn = LAST_RECORD_POINT,
+    FutureReturn = LAST_EXISTING_RECORD_POINT,
+    /// Start resolving the coordination owner for one logical I/O.
+    IoResolveStart,
+    IoResolveEnd,
+    /// Time spent waiting for the winning caller's result.
+    IoDuplicateWaitStart,
+    IoDuplicateWaitEnd,
+    /// External I/O performed by the caller elected as owner.
+    IoExternalStart,
+    IoExternalEnd,
+    /// Exporting the owner result before it is made durable.
+    IoOutputExportStart,
+    IoOutputExportEnd,
+    /// Encoding the exported payload, including Base64.
+    IoPayloadEncodeStart,
+    IoPayloadEncodeEnd,
+    /// Writing and syncing the local durable completion journal.
+    IoJournalStart,
+    IoJournalEnd,
+    /// Delivering the resolved result to the coordination owner, including retries.
+    IoResolvedDeliveryStart,
+    IoResolvedDeliveryEnd,
+    /// Owner-side decoding and durable acceptance of the result.
+    IoOwnerApprovalStart,
+    IoOwnerApprovalEnd,
+    /// Removing the worker's pending durable-journal entry after approval.
+    IoAcknowledgementStart,
+    IoAcknowledgementEnd = LAST_RECORD_POINT,
 }
 
 #[cfg(feature = "timestamp")]
@@ -305,5 +334,18 @@ impl fmt::Display for Recorder {
         }
         #[cfg(not(feature = "timestamp"))]
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RecordPoint, LAST_RECORD_POINT};
+
+    #[test]
+    fn io_record_points_extend_the_existing_positional_schema() {
+        assert_eq!(RecordPoint::FutureReturn as usize, 21);
+        assert_eq!(RecordPoint::IoResolveStart as usize, 22);
+        assert_eq!(RecordPoint::IoAcknowledgementEnd as usize, 39);
+        assert_eq!(RecordPoint::IoAcknowledgementEnd as usize, LAST_RECORD_POINT);
     }
 }
