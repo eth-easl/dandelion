@@ -611,6 +611,7 @@ impl Dispatcher {
                     input_sets,
                     io_policy,
                     composition_set_id.unwrap_or(0),
+                    recorder,
                 )
             }
             FunctionType::Function(func_info) => {

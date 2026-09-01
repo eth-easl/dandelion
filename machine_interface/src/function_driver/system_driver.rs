@@ -7,7 +7,7 @@ use crate::{
     memory_domain::Context,
     DataItem, Position,
 };
-use dandelion_commons::InvocationId;
+use dandelion_commons::{records::Recorder, InvocationId};
 use dandelion_commons::{try_with_capacity, DandelionResult};
 #[cfg(feature = "at-least-once")]
 pub use recovery_log::{
@@ -75,7 +75,9 @@ pub struct IoData {
     pub resolved: Arc<OnceCell<DandelionResult<Vec<Arc<Context>>>>>,
     pub function: SystemFunction,
     pub set_index: usize,
-    // recorder: Recorder,
+    /// The child recorder for this logical I/O. It is absent after crossing a node boundary
+    /// until timestamp transport is added.
+    pub recorder: Option<Recorder>,
 }
 
 #[cfg(feature = "at-least-once")]
@@ -196,7 +198,7 @@ pub fn convert_to_references<P: IoReferencePolicy>(
     mut inputs: Vec<Option<CompositionSet>>,
     io_policy: P,
     composition_set_id: usize,
-    // recorder: Recorder,
+    mut recorder: Recorder,
 ) -> DandelionResult<Vec<Option<CompositionSet>>> {
     // check that the function id contains string correcpsonding to system function
     debug_assert_eq!(
@@ -215,9 +217,17 @@ pub fn convert_to_references<P: IoReferencePolicy>(
         let mut output_items = (0..output_count)
             .map(|_| try_with_capacity!(Vec, input_set.len()))
             .collect::<DandelionResult<Vec<_>>>()?;
+        let mut io_recorders = try_with_capacity!(Vec, input_set.len())?;
 
         for (item, data) in input_set {
             let resolved = Arc::new(OnceCell::new());
+            let io_recorder = Recorder::new_from_parent(
+                Arc::new(format!(
+                    "IO:{}:{}:{:016x}",
+                    function, composition_set_id, item.key
+                )),
+                &recorder,
+            );
             for (set_index, items) in output_items.iter_mut().enumerate() {
                 let (output_data, recovered_size) = io_policy.wrap(
                     IoData {
@@ -226,6 +236,7 @@ pub fn convert_to_references<P: IoReferencePolicy>(
                         resolved: resolved.clone(),
                         function,
                         set_index,
+                        recorder: Some(io_recorder.clone()),
                     },
                     &item,
                     composition_set_id,
@@ -242,11 +253,13 @@ pub fn convert_to_references<P: IoReferencePolicy>(
                     output_data,
                 ));
             }
+            io_recorders.push(io_recorder);
         }
 
         for (set_index, items) in output_items.into_iter().enumerate() {
             output_vec[set_index] = CompositionSet::from_item_list(input_set_name.clone(), items);
         }
+        recorder.add_children(vec![Some(io_recorders)]);
     }
     Ok(output_vec)
 }
