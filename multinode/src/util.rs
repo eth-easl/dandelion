@@ -4,8 +4,6 @@ use crate::proto::{self, item_data};
 use dandelion_commons::{
     err_dandelion, records::Recorder, DandelionError, DandelionResult, MultinodeError,
 };
-#[cfg(feature = "timestamp")]
-use machine_interface::function_driver::system_driver::io_recorder_id;
 use machine_interface::{
     composition::{CompositionSet, ItemData, RemoteData},
     function_driver::{functions::SystemFunction, system_driver::IoData},
@@ -14,8 +12,6 @@ use machine_interface::{
     DataItem, Position,
 };
 use prost::bytes::Bytes;
-#[cfg(feature = "timestamp")]
-use std::time::Instant;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{mpsc, OnceCell};
 
@@ -161,53 +157,6 @@ pub(crate) fn recorder_add_timestamps(
     }
 }
 
-fn io_recorder_timestamps_dtop(_recorder: &Option<Recorder>) -> Vec<u64> {
-    #[cfg(feature = "timestamp")]
-    {
-        return _recorder
-            .as_ref()
-            .map(Recorder::timestamp_values_micros)
-            .unwrap_or_default();
-    }
-
-    #[cfg(not(feature = "timestamp"))]
-    Vec::new()
-}
-
-fn io_recorder_timestamps_ptod(
-    timestamps: Vec<u64>,
-    invocation_id: dandelion_commons::InvocationId,
-    function: SystemFunction,
-    composition_set_id: usize,
-    item_key: u32,
-) -> Option<Recorder> {
-    #[cfg(feature = "timestamp")]
-    {
-        if timestamps.is_empty() {
-            return None;
-        }
-        let mut recorder = Recorder::new(
-            invocation_id,
-            io_recorder_id(function, composition_set_id, item_key),
-            Instant::now(),
-        );
-        recorder.set_timestamp_values_micros(&timestamps);
-        return Some(recorder);
-    }
-
-    #[cfg(not(feature = "timestamp"))]
-    {
-        let _ = (
-            timestamps,
-            invocation_id,
-            function,
-            composition_set_id,
-            item_key,
-        );
-        None
-    }
-}
-
 pub(crate) fn system_function_ptod(proto_function: i32) -> DandelionResult<SystemFunction> {
     match proto::SystemFunction::try_from(proto_function).unwrap() {
         proto::SystemFunction::Http => Ok(SystemFunction::HTTP),
@@ -277,7 +226,6 @@ fn try_item_data_dtop(
                     item_key: 0,
                     original_size: original_position.size as u64,
                     owner_node_id: 0,
-                    recorder_timestamps: Vec::new(),
                 }))),
             })
         }
@@ -290,7 +238,7 @@ fn try_item_data_dtop(
                 resolved: _,
                 function,
                 set_index,
-                recorder,
+                recorder: _,
             } = coordinated.request;
             let mut register_item = item.clone();
             register_item.data = original_position;
@@ -312,7 +260,6 @@ fn try_item_data_dtop(
                         item_key: coordination.item_key,
                         original_size: original_position.size as u64,
                         owner_node_id: coordination.owner_node_id.unwrap_or(exporting_node_id),
-                        recorder_timestamps: io_recorder_timestamps_dtop(&recorder),
                     },
                 ))),
             })
@@ -375,7 +322,6 @@ fn item_data_and_ref(
                         item_key: 0,
                         original_size: original_position.size as u64,
                         owner_node_id: 0,
-                        recorder_timestamps: Vec::new(),
                     }))),
                 },
                 remote_data,
@@ -391,7 +337,7 @@ fn item_data_and_ref(
                 resolved: _,
                 function,
                 set_index,
-                recorder,
+                recorder: _,
             } = &coordinated.request;
             let mut register_item = item.clone();
             register_item.data = *original_position;
@@ -414,7 +360,6 @@ fn item_data_and_ref(
                             item_key: coordination.item_key,
                             original_size: original_position.size as u64,
                             owner_node_id: coordination.owner_node_id.unwrap_or(exporting_node_id),
-                            recorder_timestamps: io_recorder_timestamps_dtop(recorder),
                         },
                     ))),
                 },
@@ -471,7 +416,6 @@ fn item_data_ptod(
                 item_key: _,
                 original_size,
                 owner_node_id: _,
-                recorder_timestamps: _,
             } = *io_data;
             let result = (
                 ItemData::IoData(IoData {
@@ -502,21 +446,19 @@ fn item_data_ptod(
                 item_key,
                 original_size,
                 owner_node_id,
-                recorder_timestamps,
             } = *io_data;
-            let invocation_id = dandelion_commons::InvocationId::parse_str(&invocation_id)
-                .expect("Serialized invocation id should be a valid UUID");
-            let function = system_function_ptod(function).unwrap();
-            let item_key = u32::try_from(item_key).expect("I/O item keys originate as u32");
             (
                 ItemData::CoordinatedIoData(
                     machine_interface::function_driver::system_driver::CoordinatedIoData {
                         coordination:
                             machine_interface::function_driver::system_driver::IoCoordination {
-                                invocation_id,
+                                invocation_id: dandelion_commons::InvocationId::parse_str(
+                                    &invocation_id,
+                                )
+                                .expect("Serialized invocation id should be a valid UUID"),
                                 composition_set_id: composition_set_id as usize,
                                 item_identifier,
-                                item_key: item_key.into(),
+                                item_key,
                                 owner_node_id: Some(owner_node_id),
                             },
                         request: IoData {
@@ -528,15 +470,9 @@ fn item_data_ptod(
                             original_data: Box::new(
                                 item_data_ptod(*input_data.unwrap(), delete_sender).0,
                             ),
-                            function,
+                            function: system_function_ptod(function).unwrap(),
                             set_index: set_index as usize,
-                            recorder: io_recorder_timestamps_ptod(
-                                recorder_timestamps,
-                                invocation_id,
-                                function,
-                                composition_set_id as usize,
-                                item_key,
-                            ),
+                            recorder: None,
                         },
                     },
                 ),
@@ -696,68 +632,6 @@ fn proto_data_sets_to_composition_sets_inner(
     }
 
     sets
-}
-
-#[cfg(all(test, feature = "at-least-once", feature = "timestamp"))]
-mod tests {
-    use super::*;
-    use dandelion_commons::records::RecordPoint;
-    use machine_interface::{
-        composition::ItemData,
-        function_driver::system_driver::{CoordinatedIoData, IoCoordination},
-    };
-
-    fn unexpected_export(_: &DataItem, _: Arc<Context>) -> RemoteData {
-        unreachable!()
-    }
-
-    #[test]
-    fn coordinated_io_recorder_survives_proto_round_trip() {
-        let invocation_id = dandelion_commons::InvocationId::from_u128(1);
-        let mut recorder = Recorder::new(
-            invocation_id,
-            io_recorder_id(SystemFunction::HTTP, 3, 7),
-            Instant::now(),
-        );
-        recorder.record(RecordPoint::IoResolveStart);
-        let item = DataItem {
-            ident: "request".to_string(),
-            data: Position { offset: 0, size: 5 },
-            key: 7,
-        };
-        let data = ItemData::CoordinatedIoData(CoordinatedIoData {
-            coordination: IoCoordination {
-                invocation_id,
-                composition_set_id: 3,
-                item_identifier: item.ident.clone(),
-                item_key: item.key.into(),
-                owner_node_id: Some(1),
-            },
-            request: IoData {
-                original_position: item.data,
-                original_data: Box::new(ItemData::RemoteData(RemoteData::new(1, 2))),
-                resolved: Arc::new(OnceCell::new()),
-                function: SystemFunction::HTTP,
-                set_index: 0,
-                recorder: Some(recorder),
-            },
-        });
-
-        let mut export_local_data = unexpected_export;
-        let (wire_data, _) = item_data_and_ref(&item, &data, 1, &mut export_local_data);
-        let (round_tripped, _) = item_data_ptod(wire_data, None);
-        let ItemData::CoordinatedIoData(round_tripped) = round_tripped else {
-            panic!("expected coordinated I/O after protocol round-trip");
-        };
-        let recorder = round_tripped
-            .request
-            .recorder
-            .expect("coordinated I/O recorder should be restored");
-        assert_ne!(
-            recorder.get_timestamp(RecordPoint::IoResolveStart),
-            Duration::ZERO
-        );
-    }
 }
 
 const METADATA_SIZE_BITS: u32 = 32;

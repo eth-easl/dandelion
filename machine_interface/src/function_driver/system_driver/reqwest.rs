@@ -627,7 +627,7 @@ async fn resolve_io_item_exactly_once(
         resolved,
         function,
         set_index,
-        recorder: _,
+        mut recorder,
     } = request;
     let IoCoordination {
         invocation_id,
@@ -654,16 +654,23 @@ async fn resolve_io_item_exactly_once(
     let coordination_owner =
         owner_node_id.or_else(|| remote_client.as_ref().map(|client| client.local_node_id()));
     let resolution = match (&remote_client, coordination_owner) {
-        (Some(remote_client), Some(owner_node_id)) => Some(
-            remote_client
+        (Some(remote_client), Some(owner_node_id)) => {
+            if let Some(recorder) = recorder.as_mut() {
+                recorder.record(dandelion_commons::records::RecordPoint::IoResolveStart);
+            }
+            let resolution = remote_client
                 .resolve_io(IoResolveRequest {
                     owner_node_id,
                     key: coordination_key.clone(),
                     set_index,
                     original_data: original_remote,
                 })
-                .await?,
-        ),
+                .await;
+            if let Some(recorder) = recorder.as_mut() {
+                recorder.record(dandelion_commons::records::RecordPoint::IoResolveEnd);
+            }
+            Some(resolution?)
+        }
         _ => None,
     };
 
@@ -721,6 +728,11 @@ async fn resolve_io_item_exactly_once(
         }
     };
 
+    if won_coordination {
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(dandelion_commons::records::RecordPoint::IoExternalStart);
+        }
+    }
     let outputs = execute_io(
         function,
         resolved.as_ref(),
@@ -729,6 +741,11 @@ async fn resolve_io_item_exactly_once(
         input_context,
     )
     .await;
+    if won_coordination {
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(dandelion_commons::records::RecordPoint::IoExternalEnd);
+        }
+    }
 
     if won_coordination {
         let (remote_client, owner_node_id) = (
