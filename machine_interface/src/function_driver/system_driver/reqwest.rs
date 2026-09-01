@@ -488,6 +488,7 @@ async fn resolve_io_item(
         resolved,
         function,
         set_index,
+        recorder: _,
     } = io_data;
     let (input_position, input_context) =
         resolve_original_io_data(original_position, *original_data, client.clone()).await?;
@@ -528,6 +529,7 @@ async fn resolve_checkpointed_io_item(
         resolved,
         function,
         set_index,
+        recorder: _,
     } = request;
     let IoCoordination {
         invocation_id,
@@ -625,6 +627,7 @@ async fn resolve_io_item_exactly_once(
         resolved,
         function,
         set_index,
+        recorder: _,
     } = request;
     let IoCoordination {
         invocation_id,

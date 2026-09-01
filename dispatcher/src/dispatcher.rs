@@ -507,6 +507,7 @@ impl Dispatcher {
                 // but still want to run if we queued it.
                 let mut new_recorder = Recorder::new_from_parent(function_id.clone(), &recorder);
                 new_recorder.record(RecordPoint::EngineStart);
+                let io_recorder = new_recorder.clone();
                 let results = tokio::spawn(async move {
                     machine_interface::function_driver::system_driver::convert_to_references(
                         sys_function,
@@ -516,6 +517,7 @@ impl Dispatcher {
                             .collect(),
                         io_policy,
                         composition_set_id,
+                        io_recorder,
                     )
                 })
                 .await
@@ -680,6 +682,7 @@ impl Dispatcher {
                         input_sets,
                         io_policy,
                         composition_set_id.unwrap_or(0),
+                        recorder.clone(),
                     );
                 recorder.record(RecordPoint::EngineEnd);
                 result

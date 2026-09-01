@@ -11,7 +11,20 @@ mod system_driver_tests {
         memory_domain::{read_only::ReadOnlyContext, ContextTrait},
         DataItem, DataSet, Position,
     };
-    use std::process::{Child, Command};
+    use dandelion_commons::{records::Recorder, InvocationId};
+    use std::{
+        process::{Child, Command},
+        sync::Arc,
+        time::Instant,
+    };
+
+    fn test_recorder() -> Recorder {
+        Recorder::new(
+            InvocationId::nil(),
+            Arc::new("HTTP".to_string()),
+            Instant::now(),
+        )
+    }
 
     struct HttpServer {
         proc_child: Child,
@@ -87,6 +100,7 @@ mod system_driver_tests {
             CompositionSet::from_context(input_context),
             UncoordinatedIo,
             0,
+            test_recorder(),
         )
         .unwrap();
 
@@ -161,6 +175,7 @@ dolore magna aliquyam erat, sed diam voluptua."#,
             CompositionSet::from_context(input_context),
             UncoordinatedIo,
             0,
+            test_recorder(),
         )
         .unwrap();
 
