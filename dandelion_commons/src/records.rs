@@ -252,6 +252,31 @@ impl Recorder {
         unsafe { *reference = Duration::from_micros(time_micros) };
     }
 
+    /// Serializes the positional timestamp schema for transport to another node.
+    #[cfg(feature = "timestamp")]
+    pub fn timestamp_values_micros(&self) -> Vec<u64> {
+        self.inner
+            .timestamps
+            .time_points
+            .iter()
+            .map(|cell| unsafe { (*cell.get()).as_micros() as u64 })
+            .collect()
+    }
+
+    /// Restores timestamp values previously produced by `timestamp_values_micros`.
+    #[cfg(feature = "timestamp")]
+    pub fn set_timestamp_values_micros(&mut self, values: &[u64]) {
+        for (cell, value) in self
+            .inner
+            .timestamps
+            .time_points
+            .iter()
+            .zip(values.iter().copied())
+        {
+            unsafe { *cell.get() = std::time::Duration::from_micros(value) };
+        }
+    }
+
     /// Get a slice with the timestamps related to engine execution
     #[cfg(feature = "timestamp")]
     pub fn set_master_fetching(&self) {
@@ -346,6 +371,9 @@ mod tests {
         assert_eq!(RecordPoint::FutureReturn as usize, 21);
         assert_eq!(RecordPoint::IoResolveStart as usize, 22);
         assert_eq!(RecordPoint::IoAcknowledgementEnd as usize, 39);
-        assert_eq!(RecordPoint::IoAcknowledgementEnd as usize, LAST_RECORD_POINT);
+        assert_eq!(
+            RecordPoint::IoAcknowledgementEnd as usize,
+            LAST_RECORD_POINT
+        );
     }
 }

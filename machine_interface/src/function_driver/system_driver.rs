@@ -7,7 +7,7 @@ use crate::{
     memory_domain::Context,
     DataItem, Position,
 };
-use dandelion_commons::{records::Recorder, InvocationId};
+use dandelion_commons::{records::Recorder, FunctionId, InvocationId};
 use dandelion_commons::{try_with_capacity, DandelionResult};
 #[cfg(feature = "at-least-once")]
 pub use recovery_log::{
@@ -64,6 +64,18 @@ pub fn get_system_function_output_sets(function: SystemFunction) -> Vec<String> 
 }
 
 pub const SYSTEM_FUNCTIONS: &[SystemFunction] = &[SystemFunction::HTTP];
+
+/// Stable recorder ID for one logical lazy-I/O coordination key.
+pub fn io_recorder_id(
+    function: SystemFunction,
+    composition_set_id: usize,
+    item_key: u32,
+) -> FunctionId {
+    Arc::new(format!(
+        "IO:{}:{}:{:016x}",
+        function, composition_set_id, item_key
+    ))
+}
 
 #[derive(Debug, Clone)]
 pub struct IoData {
@@ -222,10 +234,7 @@ pub fn convert_to_references<P: IoReferencePolicy>(
         for (item, data) in input_set {
             let resolved = Arc::new(OnceCell::new());
             let io_recorder = Recorder::new_from_parent(
-                Arc::new(format!(
-                    "IO:{}:{}:{:016x}",
-                    function, composition_set_id, item.key
-                )),
+                io_recorder_id(function, composition_set_id, item.key),
                 &recorder,
             );
             for (set_index, items) in output_items.iter_mut().enumerate() {
