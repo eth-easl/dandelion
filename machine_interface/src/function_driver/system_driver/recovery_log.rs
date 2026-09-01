@@ -953,7 +953,6 @@ pub fn accept_delivered_io_completion_record(
     Ok(IoCompletionDisposition::Retain)
 }
 
-
 // create a new channel and spawn a thread that waits to receive local completion commit requests
 #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
 fn local_completion_committer() -> &'static Sender<LocalCompletionCommitRequest> {
@@ -1052,11 +1051,13 @@ fn commit_invocation_completion_batch(
                 None => {
                     let mut recorder = request.recorder.clone();
                     if let Some(recorder) = recorder.as_mut() {
-                        recorder.record(dandelion_commons::records::RecordPoint::IoPayloadEncodeStart);
+                        recorder
+                            .record(dandelion_commons::records::RecordPoint::IoPayloadEncodeStart);
                     }
                     let line = format_io_completion_line(&request.record)?;
                     if let Some(recorder) = recorder.as_mut() {
-                        recorder.record(dandelion_commons::records::RecordPoint::IoPayloadEncodeEnd);
+                        recorder
+                            .record(dandelion_commons::records::RecordPoint::IoPayloadEncodeEnd);
                         journal_recorders.push(recorder.clone());
                     }
                     existing_log.push_str(&line);
