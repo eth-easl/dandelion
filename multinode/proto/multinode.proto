@@ -32,9 +32,6 @@ message IoData {
     uint64 item_key = 7;
     uint64 original_size = 8;
     uint64 owner_node_id = 9;
-    // Positional timestamp values for the per-logical-I/O child recorder. Empty when timestamps
-    // are disabled or no recorder was associated with the reference.
-    repeated uint64 recorder_timestamps = 10;
 }
 
 message RemoteData {
