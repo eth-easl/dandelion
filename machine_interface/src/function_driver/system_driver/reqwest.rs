@@ -583,6 +583,7 @@ async fn resolve_checkpointed_io_item(
                     })
                     .collect(),
             ),
+            recorder: None,
         };
         tokio::spawn(async move {
             if let Err(error) = remote_client.publish_io_completion(completion).await {
@@ -716,6 +717,7 @@ async fn resolve_io_item_exactly_once(
                             owner_node_id,
                             key: coordination_key,
                             outcome: IoCompletionOutcome::Failed(error.to_string()),
+                            recorder: None,
                         })
                         .await?;
                 }
@@ -779,6 +781,7 @@ async fn resolve_io_item_exactly_once(
                 owner_node_id,
                 key: coordination_key,
                 outcome,
+                recorder: recorder.clone(),
             })
             .await?;
     }

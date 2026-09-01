@@ -415,6 +415,7 @@ pub struct IoCoordinationCompletion {
     pub owner_node_id: u64,
     pub key: IoCoordinationKey,
     pub outcome: IoCompletionOutcome,
+    pub recorder: Option<dandelion_commons::records::Recorder>,
 }
 
 static REMOTE_DATA_CLIENT: OnceLock<Arc<dyn RemoteDataClient>> = OnceLock::new();
