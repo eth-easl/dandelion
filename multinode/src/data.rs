@@ -1702,7 +1702,14 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 // skip journal entry for local owner
                 if let Ok(outputs) = &wire_outcome {
                     let record = completion_record(&completion.key, outputs);
-                    if let Err(error) = accept_local_io_completion_record(record, recorder.clone()).await {
+                    if let Some(recorder) = recorder.as_mut() {
+                        recorder.record(dandelion_commons::records::RecordPoint::IoOwnerApprovalStart);
+                    }
+                    let approval = accept_local_io_completion_record(record, recorder.clone()).await;
+                    if let Some(recorder) = recorder.as_mut() {
+                        recorder.record(dandelion_commons::records::RecordPoint::IoOwnerApprovalEnd);
+                    }
+                    if let Err(error) = approval {
                         for data_id in &exported_data_ids {
                             let _ = self.local_registry.delete_durable_exported_data(*data_id);
                         }

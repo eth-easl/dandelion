@@ -676,6 +676,16 @@ async fn resolve_io_item_exactly_once(
     };
 
     if let Some(IoResolveOutcome::Completed { data }) = resolution {
+        if let Some(recorder) = recorder.as_mut() {
+            let wait_start = recorder
+                .get_timestamp(dandelion_commons::records::RecordPoint::IoResolveStart)
+                .as_micros() as u64;
+            recorder.set_timestamp(
+                dandelion_commons::records::RecordPoint::IoDuplicateWaitStart,
+                wait_start,
+            );
+            recorder.record(dandelion_commons::records::RecordPoint::IoDuplicateWaitEnd);
+        }
         let remote_client = remote_client.expect("completed remote I/O requires a data client");
         return remote_client
             .resolve_remote_data(data)
@@ -683,6 +693,16 @@ async fn resolve_io_item_exactly_once(
             .map(|(context, position)| (position, context));
     }
     if let Some(IoResolveOutcome::Failed(error)) = resolution {
+        if let Some(recorder) = recorder.as_mut() {
+            let wait_start = recorder
+                .get_timestamp(dandelion_commons::records::RecordPoint::IoResolveStart)
+                .as_micros() as u64;
+            recorder.set_timestamp(
+                dandelion_commons::records::RecordPoint::IoDuplicateWaitStart,
+                wait_start,
+            );
+            recorder.record(dandelion_commons::records::RecordPoint::IoDuplicateWaitEnd);
+        }
         return Err(coordination_error(error));
     }
 
