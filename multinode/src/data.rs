@@ -11,7 +11,9 @@ use log::{debug, error, trace, warn};
 use machine_interface::function_driver::system_driver::recovery_log::accept_local_io_completion_record;
 #[cfg(feature = "at-least-once")]
 use machine_interface::{
-    composition::{IoCompletionOutcome, IoCoordinationCompletion, IoCoordinationKey},
+    composition::{
+        IoCompletedOutput, IoCompletionOutcome, IoCoordinationCompletion, IoCoordinationKey,
+    },
     function_driver::system_driver::{
         get_system_function_output_sets,
         recovery_log::{
@@ -70,6 +72,7 @@ struct IoRemoteRef {
 
 #[cfg(feature = "at-least-once")]
 impl IoRemoteRef {
+    #[cfg(feature = "exactly-once")]
     fn from_remote(data: &RemoteData, size: usize) -> Self {
         Self {
             node_id: data.node_id,
@@ -457,7 +460,7 @@ fn sync_directory(directory: &Path) -> DandelionResult<()> {
 }
 
 #[cfg(feature = "at-least-once")]
-fn write_atomic_file(path: &Path, contents: &[u8]) -> DandelionResult<()> {
+fn write_atomic_file_without_directory_sync(path: &Path, contents: &[u8]) -> DandelionResult<()> {
     let temporary_path = path.with_extension(format!(
         "{}.tmp",
         path.extension()
@@ -496,7 +499,12 @@ fn write_atomic_file(path: &Path, contents: &[u8]) -> DandelionResult<()> {
             path.display(),
             err
         ))
-    })?;
+    })
+}
+
+#[cfg(feature = "at-least-once")]
+fn write_atomic_file(path: &Path, contents: &[u8]) -> DandelionResult<()> {
+    write_atomic_file_without_directory_sync(path, contents)?;
     sync_directory(
         path.parent()
             .expect("Durable export files always have a parent directory"),
@@ -622,15 +630,84 @@ struct DurableExportStore {
     reserved_until: u64,
 }
 
+#[cfg(feature = "at-least-once")]
+struct PendingDurableExport {
+    #[cfg(feature = "exactly-once")]
+    invocation_id: dandelion_commons::InvocationId,
+    data_ids: Vec<u64>,
+}
+
+#[cfg(feature = "at-least-once")]
+struct PreparedDurableOutput {
+    data_id: u64,
+    size: usize,
+    bytes: Vec<u8>,
+}
+
+#[cfg(feature = "at-least-once")]
+struct CommittedDurableExport {
+    batch_id: u64,
+    references: Vec<IoRemoteRef>,
+}
+
+#[cfg(feature = "at-least-once")]
+fn cleanup_durable_export_files(directory: &Path, data_ids: &[u64]) -> DandelionResult<()> {
+    for data_id in data_ids {
+        let path = durable_data_path(directory, *data_id);
+        let temporary_path = path.with_extension(format!("{DURABLE_DATA_FILE_EXTENSION}.tmp"));
+        for candidate in [&temporary_path, &path] {
+            match fs::remove_file(candidate) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(export_registry_error(format!(
+                        "Failed to clean up durable export {}: {}",
+                        candidate.display(),
+                        error
+                    )))
+                }
+            }
+        }
+    }
+    sync_directory(directory)
+}
+
+#[cfg(feature = "at-least-once")]
+fn write_durable_export_batch(
+    directory: &Path,
+    outputs: &[PreparedDurableOutput],
+) -> DandelionResult<()> {
+    let data_ids = outputs
+        .iter()
+        .map(|output| output.data_id)
+        .collect::<Vec<_>>();
+    for output in outputs {
+        let path = durable_data_path(directory, output.data_id);
+        if let Err(error) = write_atomic_file_without_directory_sync(&path, &output.bytes) {
+            let _ = cleanup_durable_export_files(directory, &data_ids);
+            return Err(error);
+        }
+    }
+    if let Err(error) = sync_directory(directory) {
+        let _ = cleanup_durable_export_files(directory, &data_ids);
+        return Err(error);
+    }
+    Ok(())
+}
+
 struct ExportRegistryInner {
     next_transient_data_id: u64,
     transient_data: BTreeMap<u64, ExportedData>,
     #[cfg(feature = "at-least-once")]
     durable_data: BTreeMap<u64, ExportedData>,
     #[cfg(feature = "at-least-once")]
+    pending_durable_exports: BTreeMap<u64, PendingDurableExport>,
+    #[cfg(feature = "at-least-once")]
     pending_io_completions: Vec<IoCompletionRecord>,
     #[cfg(feature = "exactly-once")]
     io_resolutions: HashMap<IoCoordinationKey, IoResolutionState>,
+    #[cfg(feature = "exactly-once")]
+    cancelled_io_invocations: HashSet<dandelion_commons::InvocationId>,
     #[cfg(feature = "at-least-once")]
     durable_store: Option<DurableExportStore>,
 }
@@ -653,9 +730,13 @@ impl ExportRegistry {
                 #[cfg(feature = "at-least-once")]
                 durable_data: BTreeMap::new(),
                 #[cfg(feature = "at-least-once")]
+                pending_durable_exports: BTreeMap::new(),
+                #[cfg(feature = "at-least-once")]
                 pending_io_completions: Vec::new(),
                 #[cfg(feature = "exactly-once")]
                 io_resolutions: HashMap::new(),
+                #[cfg(feature = "exactly-once")]
+                cancelled_io_invocations: HashSet::new(),
                 #[cfg(feature = "at-least-once")]
                 durable_store: None,
             })),
@@ -688,9 +769,12 @@ impl ExportRegistry {
                 next_transient_data_id: 0,
                 transient_data: BTreeMap::new(),
                 durable_data,
+                pending_durable_exports: BTreeMap::new(),
                 pending_io_completions,
                 #[cfg(feature = "exactly-once")]
                 io_resolutions: HashMap::new(),
+                #[cfg(feature = "exactly-once")]
+                cancelled_io_invocations: HashSet::new(),
                 durable_store: Some(DurableExportStore {
                     directory,
                     next_data_id,
@@ -757,6 +841,11 @@ impl ExportRegistry {
         })
         .transpose()?;
         let mut inner = self.inner.lock().unwrap();
+        if inner.cancelled_io_invocations.contains(&key.invocation_id) {
+            return Ok(RegistryIoResolution::Failed(
+                "I/O invocation was cancelled".to_string(),
+            ));
+        }
         match inner.io_resolutions.entry(key) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 if let Some(outputs) = recovered {
@@ -802,6 +891,11 @@ impl ExportRegistry {
         outcome: Result<Vec<IoRemoteRef>, String>,
     ) -> DandelionResult<()> {
         let mut inner = self.inner.lock().unwrap();
+        if inner.cancelled_io_invocations.contains(&key.invocation_id) {
+            return Err(export_registry_error(
+                "Cannot publish a cancelled I/O invocation",
+            ));
+        }
         let terminal = || match &outcome {
             Ok(outputs) => IoResolutionState::Completed(outputs.clone()),
             Err(error) => IoResolutionState::Failed(error.clone()),
@@ -893,13 +987,14 @@ impl ExportRegistry {
     }
 
     #[cfg(feature = "exactly-once")]
-    pub fn io_coordination_outputs(
+    pub fn cancel_io_coordination(
         &self,
         invocation_id: dandelion_commons::InvocationId,
     ) -> Vec<RemoteData> {
-        let inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap();
+        inner.cancelled_io_invocations.insert(invocation_id);
         let mut seen = HashSet::new();
-        inner
+        let mut outputs = inner
             .io_resolutions
             .iter()
             .filter(|(key, _)| key.invocation_id == invocation_id)
@@ -915,16 +1010,29 @@ impl ExportRegistry {
                     None
                 }
             })
-            .collect()
-    }
-
-    #[cfg(feature = "exactly-once")]
-    pub fn remove_io_coordination(&self, invocation_id: dandelion_commons::InvocationId) {
-        self.inner
-            .lock()
-            .unwrap()
+            .collect::<Vec<_>>();
+        inner
             .io_resolutions
             .retain(|key, _| key.invocation_id != invocation_id);
+        let pending_batch_ids = inner
+            .pending_durable_exports
+            .iter()
+            .filter_map(|(batch_id, pending)| {
+                (pending.invocation_id == invocation_id).then_some(*batch_id)
+            })
+            .collect::<Vec<_>>();
+        for batch_id in pending_batch_ids {
+            if let Some(pending) = inner.pending_durable_exports.remove(&batch_id) {
+                outputs.extend(pending.data_ids.into_iter().filter_map(|data_id| {
+                    if seen.insert((self.node_id, data_id)) {
+                        Some(RemoteData::new(self.node_id, data_id))
+                    } else {
+                        None
+                    }
+                }));
+            }
+        }
+        outputs
     }
 
     pub fn insert_function(
@@ -997,19 +1105,187 @@ impl ExportRegistry {
         Ok(RemoteData::new(self.node_id, data_id))
     }
 
-    /// Persists an exported item without blocking the asynchronous I/O runtime.
     #[cfg(feature = "at-least-once")]
-    async fn insert_durable_function_async(
+    fn reserve_durable_export_batch(
         &self,
-        item: DataItem,
-        context: Arc<Context>,
-    ) -> DandelionResult<RemoteData> {
-        let registry = self.clone();
-        tokio::task::spawn_blocking(move || registry.insert_durable_function(&item, context))
-            .await
-            .map_err(|error| {
-                export_registry_error(format!("Durable output persistence task failed: {error}"))
-            })?
+        _invocation_id: dandelion_commons::InvocationId,
+        output_count: usize,
+    ) -> DandelionResult<(u64, PathBuf, Vec<u64>)> {
+        let output_count = u64::try_from(output_count)
+            .map_err(|_| export_registry_error("Too many durable outputs in one batch"))?;
+        if output_count == 0 {
+            return Err(export_registry_error(
+                "Cannot reserve an empty durable output batch",
+            ));
+        }
+
+        let mut inner = self.inner.lock().unwrap();
+        let store = inner.durable_store.as_mut().ok_or_else(|| {
+            export_registry_error("Cannot reserve durable data without durable storage")
+        })?;
+        let first_data_id = store.next_data_id;
+        let next_data_id = first_data_id
+            .checked_add(output_count)
+            .ok_or_else(|| export_registry_error("Durable export data id space exhausted"))?;
+        if next_data_id > store.reserved_until {
+            let mut reserved_until = store.reserved_until;
+            while reserved_until < next_data_id {
+                let expanded = reserved_until
+                    .checked_add(DURABLE_DATA_ID_BLOCK_SIZE)
+                    .unwrap_or(u64::MAX);
+                if expanded == reserved_until {
+                    return Err(export_registry_error(
+                        "Durable export data id space exhausted",
+                    ));
+                }
+                reserved_until = expanded;
+            }
+            write_atomic_file(
+                &store.directory.join(NEXT_DURABLE_DATA_ID_FILE),
+                reserved_until.to_string().as_bytes(),
+            )?;
+            store.reserved_until = reserved_until;
+        }
+        store.next_data_id = next_data_id;
+        let directory = store.directory.clone();
+        let data_ids = (first_data_id..next_data_id).collect::<Vec<_>>();
+        inner.pending_durable_exports.insert(
+            first_data_id,
+            PendingDurableExport {
+                #[cfg(feature = "exactly-once")]
+                invocation_id: _invocation_id,
+                data_ids: data_ids.clone(),
+            },
+        );
+        Ok((first_data_id, directory, data_ids))
+    }
+
+    #[cfg(feature = "at-least-once")]
+    fn discard_durable_export_batch(&self, batch_id: u64) {
+        self.inner
+            .lock()
+            .unwrap()
+            .pending_durable_exports
+            .remove(&batch_id);
+    }
+
+    #[cfg(feature = "at-least-once")]
+    fn finish_durable_export_batch(&self, batch_id: u64) {
+        self.discard_durable_export_batch(batch_id);
+    }
+
+    #[cfg(feature = "at-least-once")]
+    fn commit_durable_export_batch(
+        &self,
+        batch_id: u64,
+        outputs: Vec<PreparedDurableOutput>,
+    ) -> DandelionResult<CommittedDurableExport> {
+        let mut committed_outputs = Vec::with_capacity(outputs.len());
+        for output in outputs {
+            let context = Arc::new(ReadOnlyContext::new(output.bytes.into_boxed_slice())?);
+            committed_outputs.push((output.data_id, output.size, context));
+        }
+        let mut inner = self.inner.lock().unwrap();
+        let pending = inner
+            .pending_durable_exports
+            .get(&batch_id)
+            .ok_or_else(|| export_registry_error("Durable output reservation disappeared"))?;
+        let output_ids = committed_outputs
+            .iter()
+            .map(|(data_id, _, _)| *data_id)
+            .collect::<Vec<_>>();
+        if output_ids != pending.data_ids {
+            return Err(export_registry_error(
+                "Durable output reservation does not match persisted outputs",
+            ));
+        }
+        let mut references = Vec::with_capacity(committed_outputs.len());
+        for (data_id, size, context) in committed_outputs {
+            inner.durable_data.insert(
+                data_id,
+                ExportedData {
+                    context,
+                    position: Position { offset: 0, size },
+                },
+            );
+            references.push(IoRemoteRef {
+                node_id: self.node_id,
+                data_id,
+                size,
+            });
+        }
+        Ok(CommittedDurableExport {
+            batch_id,
+            references,
+        })
+    }
+
+    /// Persists all outputs of one logical I/O without holding the registry lock during file I/O.
+    #[cfg(feature = "at-least-once")]
+    async fn insert_durable_outputs_async(
+        &self,
+        invocation_id: dandelion_commons::InvocationId,
+        outputs: Vec<IoCompletedOutput>,
+    ) -> DandelionResult<CommittedDurableExport> {
+        let mut output_bytes = Vec::with_capacity(outputs.len());
+        for output in outputs {
+            let size = output.item.data.size;
+            let mut bytes = vec![0; size];
+            output.context.read(output.item.data.offset, &mut bytes)?;
+            output_bytes.push((size, bytes));
+        }
+
+        let (batch_id, directory, data_ids) =
+            self.reserve_durable_export_batch(invocation_id, output_bytes.len())?;
+        let prepared = data_ids
+            .iter()
+            .copied()
+            .zip(output_bytes)
+            .map(|(data_id, (size, bytes))| PreparedDurableOutput {
+                data_id,
+                size,
+                bytes,
+            })
+            .collect::<Vec<_>>();
+
+        let cleanup_directory = directory.clone();
+        let cleanup_ids = data_ids.clone();
+        let persisted = tokio::task::spawn_blocking(move || {
+            write_durable_export_batch(&directory, &prepared)?;
+            Ok::<_, dandelion_commons::DError>(prepared)
+        })
+        .await
+        .map_err(|error| {
+            export_registry_error(format!("Durable output persistence task failed: {error}"))
+        });
+
+        let prepared = match persisted {
+            Ok(Ok(prepared)) => prepared,
+            Ok(Err(error)) => {
+                self.discard_durable_export_batch(batch_id);
+                return Err(error);
+            }
+            Err(error) => {
+                self.discard_durable_export_batch(batch_id);
+                let _ = tokio::task::spawn_blocking(move || {
+                    cleanup_durable_export_files(&cleanup_directory, &cleanup_ids)
+                })
+                .await;
+                return Err(error);
+            }
+        };
+
+        match self.commit_durable_export_batch(batch_id, prepared) {
+            Ok(references) => Ok(references),
+            Err(error) => {
+                self.discard_durable_export_batch(batch_id);
+                let _ = tokio::task::spawn_blocking(move || {
+                    cleanup_durable_export_files(&cleanup_directory, &cleanup_ids)
+                })
+                .await;
+                Err(error)
+            }
+        }
     }
 
     /// Durably records a completion so delivery can be retried after a worker or connection
@@ -1549,36 +1825,19 @@ impl RemoteDataClient for HttpRemoteDataClient {
             let IoCompletionOutcome::Completed(outputs) = completion.outcome else {
                 return Ok(());
             };
-            let mut exported = Vec::with_capacity(outputs.len());
             if let Some(recorder) = recorder.as_mut() {
                 recorder.record(dandelion_commons::records::RecordPoint::IoOutputExportStart);
             }
-            let mut export_error = None;
-            for output in outputs {
-                let size = output.item.data.size;
-                match self
-                    .local_registry
-                    .insert_durable_function_async(output.item, output.context)
-                    .await
-                {
-                    Ok(remote) => exported.push(IoRemoteRef::from_remote(&remote, size)),
-                    Err(error) => {
-                        for output in &exported {
-                            let _ = self
-                                .local_registry
-                                .delete_durable_exported_data(output.data_id);
-                        }
-                        export_error = Some(error);
-                        break;
-                    }
-                }
-            }
+            let committed = self
+                .local_registry
+                .insert_durable_outputs_async(completion.key.invocation_id, outputs)
+                .await;
             if let Some(recorder) = recorder.as_mut() {
                 recorder.record(dandelion_commons::records::RecordPoint::IoOutputExportEnd);
             }
-            if let Some(error) = export_error {
-                return Err(error);
-            }
+            let committed = committed?;
+            let export_batch_id = committed.batch_id;
+            let exported = committed.references;
 
             let record = completion_record(&completion.key, &exported);
 
@@ -1593,7 +1852,21 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 if let Some(recorder) = recorder.as_mut() {
                     recorder.record(dandelion_commons::records::RecordPoint::IoOwnerApprovalEnd);
                 }
-                let disposition = approval?;
+                let disposition = match approval {
+                    Ok(disposition) => disposition,
+                    Err(error) => {
+                        for output in &exported {
+                            let _ = self
+                                .local_registry
+                                .delete_durable_exported_data(output.data_id);
+                        }
+                        self.local_registry
+                            .finish_durable_export_batch(export_batch_id);
+                        return Err(error);
+                    }
+                };
+                self.local_registry
+                    .finish_durable_export_batch(export_batch_id);
                 if disposition == IoCompletionDisposition::Delete {
                     for output in exported {
                         self.local_registry
@@ -1603,10 +1876,25 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 return Ok(());
             }
 
-            if !self
+            let appended = self
                 .local_registry
-                .append_io_completion_record(&record, recorder.clone())?
-            {
+                .append_io_completion_record(&record, recorder.clone());
+            let appended = match appended {
+                Ok(appended) => appended,
+                Err(error) => {
+                    for output in &exported {
+                        let _ = self
+                            .local_registry
+                            .delete_durable_exported_data(output.data_id);
+                    }
+                    self.local_registry
+                        .finish_durable_export_batch(export_batch_id);
+                    return Err(error);
+                }
+            };
+            self.local_registry
+                .finish_durable_export_batch(export_batch_id);
+            if !appended {
                 for output in exported {
                     self.local_registry
                         .delete_durable_exported_data(output.data_id)?;
@@ -1732,6 +2020,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
     ) -> Pin<Box<dyn Future<Output = DandelionResult<()>> + Send + '_>> {
         Box::pin(async move {
             let mut exported_data_ids = Vec::new();
+            let mut export_batch_id = None;
             let mut completion_error = None;
             let mut recorder = completion.recorder;
             let mut wire_outcome = match completion.outcome {
@@ -1741,35 +2030,24 @@ impl RemoteDataClient for HttpRemoteDataClient {
                         recorder
                             .record(dandelion_commons::records::RecordPoint::IoOutputExportStart);
                     }
-                    let mut remote_outputs = Vec::with_capacity(outputs.len());
-                    let mut export_error = None;
-                    for output in outputs {
-                        let size = output.item.data.size;
-                        let remote = match self
-                            .local_registry
-                            .insert_durable_function_async(output.item, output.context)
-                            .await
-                        {
-                            Ok(remote) => remote,
-                            Err(error) => {
-                                for data_id in &exported_data_ids {
-                                    let _ =
-                                        self.local_registry.delete_durable_exported_data(*data_id);
-                                }
-                                export_error = Some(error.to_string());
-                                completion_error = Some(error);
-                                break;
-                            }
-                        };
-                        exported_data_ids.push(remote.data_id);
-                        remote_outputs.push(IoRemoteRef::from_remote(&remote, size));
-                    }
+                    let exported = self
+                        .local_registry
+                        .insert_durable_outputs_async(completion.key.invocation_id, outputs)
+                        .await;
                     if let Some(recorder) = recorder.as_mut() {
                         recorder.record(dandelion_commons::records::RecordPoint::IoOutputExportEnd);
                     }
-                    match export_error {
-                        Some(error) => Err(error),
-                        None => Ok(remote_outputs),
+                    match exported {
+                        Ok(committed) => {
+                            export_batch_id = Some(committed.batch_id);
+                            exported_data_ids
+                                .extend(committed.references.iter().map(|output| output.data_id));
+                            Ok(committed.references)
+                        }
+                        Err(error) => {
+                            completion_error = Some(error.clone());
+                            Err(error.to_string())
+                        }
                     }
                 }
             };
@@ -1796,8 +2074,18 @@ impl RemoteDataClient for HttpRemoteDataClient {
                         completion_error = Some(error);
                     }
                 }
-                self.local_registry
-                    .publish_io_resolution_inner(completion.key, wire_outcome)?;
+                let publish = self
+                    .local_registry
+                    .publish_io_resolution_inner(completion.key, wire_outcome);
+                if let Some(batch_id) = export_batch_id {
+                    self.local_registry.finish_durable_export_batch(batch_id);
+                }
+                if let Err(error) = publish {
+                    for data_id in &exported_data_ids {
+                        let _ = self.local_registry.delete_durable_exported_data(*data_id);
+                    }
+                    return Err(error);
+                }
                 return match completion_error {
                     Some(error) => Err(error),
                     None => Ok(()),
@@ -1813,13 +2101,21 @@ impl RemoteDataClient for HttpRemoteDataClient {
                         .local_registry
                         .append_io_completion_record(&record, recorder.clone())
                     {
-                        Ok(_) => Some(record),
+                        Ok(_) => {
+                            if let Some(batch_id) = export_batch_id.take() {
+                                self.local_registry.finish_durable_export_batch(batch_id);
+                            }
+                            Some(record)
+                        }
                         Err(error) => {
                             for data_id in &exported_data_ids {
                                 let _ = self.local_registry.delete_durable_exported_data(*data_id);
                             }
                             wire_outcome = Err(error.to_string());
                             completion_error = Some(error);
+                            if let Some(batch_id) = export_batch_id.take() {
+                                self.local_registry.finish_durable_export_batch(batch_id);
+                            }
                             None
                         }
                     }
@@ -1863,11 +2159,10 @@ impl RemoteDataClient for HttpRemoteDataClient {
         invocation_id: dandelion_commons::InvocationId,
     ) -> Pin<Box<dyn Future<Output = DandelionResult<()>> + Send + '_>> {
         Box::pin(async move {
-            let outputs = self.local_registry.io_coordination_outputs(invocation_id);
+            let outputs = self.local_registry.cancel_io_coordination(invocation_id);
             for output in outputs {
                 self.delete_remote_data(output).await?;
             }
-            self.local_registry.remove_io_coordination(invocation_id);
             Ok(())
         })
     }
@@ -2139,6 +2434,21 @@ mod checkpoint_tests {
             .unwrap()
     }
 
+    fn completed_test_output(value: u8) -> IoCompletedOutput {
+        let bytes = vec![value];
+        IoCompletedOutput {
+            item: DataItem {
+                ident: "item".to_string(),
+                key: value.into(),
+                data: Position {
+                    offset: 0,
+                    size: bytes.len(),
+                },
+            },
+            context: Arc::new(ReadOnlyContext::new(bytes.into_boxed_slice()).unwrap()),
+        }
+    }
+
     fn persisted_data_id_high_watermark(root: &Path, node_id: u64) -> u64 {
         fs::read_to_string(
             root.join(node_id.to_string())
@@ -2269,6 +2579,76 @@ mod checkpoint_tests {
             second_high_watermark,
             first_high_watermark + DURABLE_DATA_ID_BLOCK_SIZE
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn persisted_batch_is_invisible_until_all_outputs_are_committed() {
+        let (root, registry) = registry_for_test("durable-batch-visibility");
+        let invocation_id = InvocationId::now_v7();
+        let (batch_id, directory, data_ids) = registry
+            .reserve_durable_export_batch(invocation_id, 2)
+            .unwrap();
+        let outputs = data_ids
+            .iter()
+            .enumerate()
+            .map(|(index, data_id)| PreparedDurableOutput {
+                data_id: *data_id,
+                size: 1,
+                bytes: vec![index as u8],
+            })
+            .collect::<Vec<_>>();
+        write_durable_export_batch(&directory, &outputs).unwrap();
+
+        assert!(data_ids
+            .iter()
+            .all(|data_id| registry.fetch_context(*data_id).is_err()));
+        let committed = registry
+            .commit_durable_export_batch(batch_id, outputs)
+            .unwrap();
+
+        assert!(committed
+            .references
+            .iter()
+            .all(|reference| registry.fetch_context(reference.data_id).is_ok()));
+        registry.finish_durable_export_batch(committed.batch_id);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_batches_receive_distinct_durable_outputs() {
+        let (root, registry) = registry_for_test("durable-batch-concurrency");
+        let first_registry = registry.clone();
+        let second_registry = registry.clone();
+        let (first, second) = tokio::join!(
+            first_registry.insert_durable_outputs_async(
+                InvocationId::now_v7(),
+                vec![completed_test_output(1), completed_test_output(2)],
+            ),
+            second_registry.insert_durable_outputs_async(
+                InvocationId::now_v7(),
+                vec![completed_test_output(3), completed_test_output(4)],
+            )
+        );
+        let first = first.unwrap();
+        let second = second.unwrap();
+
+        let mut all_ids = first
+            .references
+            .iter()
+            .map(|reference| reference.data_id)
+            .chain(second.references.iter().map(|reference| reference.data_id))
+            .collect::<Vec<_>>();
+        all_ids.sort_unstable();
+        all_ids.dedup();
+        assert_eq!(all_ids.len(), 4);
+        assert!(first
+            .references
+            .iter()
+            .chain(&second.references)
+            .all(|reference| registry.fetch_context(reference.data_id).is_ok()));
+        registry.finish_durable_export_batch(first.batch_id);
+        registry.finish_durable_export_batch(second.batch_id);
         std::fs::remove_dir_all(root).unwrap();
     }
 }
@@ -2963,6 +3343,46 @@ mod tests {
             .unwrap()
             .io_resolutions
             .contains_key(&key));
+        std::fs::remove_dir_all(test_root).unwrap();
+    }
+
+    #[test]
+    fn cancelled_invocation_rejects_a_late_durable_batch() {
+        let test_root = std::env::temp_dir().join(format!(
+            "dandelion-cancelled-batch-test-{}",
+            InvocationId::now_v7()
+        ));
+        let node_id = 9;
+        let registry = ExportRegistry::with_durable_storage(node_id, &test_root).unwrap();
+        let key = coordination_key();
+        registry.begin_io_resolution(key.clone(), 0, None).unwrap();
+        let (batch_id, directory, data_ids) = registry
+            .reserve_durable_export_batch(key.invocation_id, 2)
+            .unwrap();
+        let outputs = data_ids
+            .iter()
+            .enumerate()
+            .map(|(index, data_id)| PreparedDurableOutput {
+                data_id: *data_id,
+                size: 1,
+                bytes: vec![index as u8],
+            })
+            .collect::<Vec<_>>();
+        write_durable_export_batch(&directory, &outputs).unwrap();
+
+        let cancelled_outputs = registry.cancel_io_coordination(key.invocation_id);
+
+        assert_eq!(cancelled_outputs.len(), 2);
+        assert!(registry
+            .commit_durable_export_batch(batch_id, outputs)
+            .is_err());
+        cleanup_durable_export_files(&directory, &data_ids).unwrap();
+        assert!(registry
+            .publish_io_resolution_inner(key, Ok(Vec::new()))
+            .is_err());
+        assert!(data_ids
+            .iter()
+            .all(|data_id| registry.fetch_context(*data_id).is_err()));
         std::fs::remove_dir_all(test_root).unwrap();
     }
 
