@@ -488,10 +488,13 @@ async fn resolve_io_item(
         resolved,
         function,
         set_index,
-        recorder: _,
+        mut recorder,
     } = io_data;
     let (input_position, input_context) =
         resolve_original_io_data(original_position, *original_data, client.clone()).await?;
+    if let Some(recorder) = recorder.as_mut() {
+        recorder.record(RecordPoint::IoExternalStart);
+    }
     let outputs = execute_io(
         function,
         resolved.as_ref(),
@@ -500,6 +503,9 @@ async fn resolve_io_item(
         input_context,
     )
     .await;
+    if let Some(recorder) = recorder.as_mut() {
+        recorder.record(RecordPoint::IoExternalEnd);
+    }
     let context = match outputs {
         Ok(contexts) => contexts[set_index].clone(),
         Err(error) => return Err(error.clone()),
@@ -529,7 +535,7 @@ async fn resolve_checkpointed_io_item(
         resolved,
         function,
         set_index,
-        recorder: _,
+        mut recorder,
     } = request;
     let IoCoordination {
         invocation_id,
@@ -541,6 +547,9 @@ async fn resolve_checkpointed_io_item(
 
     let (input_position, input_context) =
         resolve_original_io_data(original_position, *original_data, client.clone()).await?;
+    if let Some(recorder) = recorder.as_mut() {
+        recorder.record(RecordPoint::IoExternalStart);
+    }
     let outputs = execute_io(
         function,
         resolved.as_ref(),
@@ -549,6 +558,9 @@ async fn resolve_checkpointed_io_item(
         input_context,
     )
     .await;
+    if let Some(recorder) = recorder.as_mut() {
+        recorder.record(RecordPoint::IoExternalEnd);
+    }
     let contexts = match outputs {
         Ok(contexts) => contexts,
         Err(error) => return Err(error.clone()),
@@ -583,7 +595,7 @@ async fn resolve_checkpointed_io_item(
                     })
                     .collect(),
             ),
-            recorder: None,
+            recorder: recorder.clone(),
         };
         tokio::spawn(async move {
             if let Err(error) = remote_client.publish_io_completion(completion).await {

@@ -983,6 +983,7 @@ impl ExportRegistry {
     pub fn append_io_completion_record(
         &self,
         record: &IoCompletionRecord,
+        mut recorder: Option<dandelion_commons::records::Recorder>,
     ) -> DandelionResult<bool> {
         let mut inner = self.inner.lock().unwrap();
         let store = inner.durable_store.as_ref().ok_or_else(|| {
@@ -999,11 +1000,25 @@ impl ExportRegistry {
         }
         let mut pending_io_completions = inner.pending_io_completions.clone();
         pending_io_completions.push(record.clone());
-        let journal_contents = pending_io_completions
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(dandelion_commons::records::RecordPoint::IoPayloadEncodeStart);
+        }
+        let serialization_result = pending_io_completions
             .iter()
             .map(format_io_completion_line)
-            .collect::<DandelionResult<String>>()?;
-        write_atomic_file(&journal_path, journal_contents.as_bytes())?;
+            .collect::<DandelionResult<String>>();
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(dandelion_commons::records::RecordPoint::IoPayloadEncodeEnd);
+        }
+        let journal_contents = serialization_result?;
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(dandelion_commons::records::RecordPoint::IoJournalStart);
+        }
+        let write_result = write_atomic_file(&journal_path, journal_contents.as_bytes());
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(dandelion_commons::records::RecordPoint::IoJournalEnd);
+        }
+        write_result?;
         inner.pending_io_completions = pending_io_completions;
         drop(inner);
         self.pending_io_completions_changed.notify_one();
@@ -1494,10 +1509,15 @@ impl RemoteDataClient for HttpRemoteDataClient {
         completion: IoCoordinationCompletion,
     ) -> Pin<Box<dyn Future<Output = DandelionResult<()>> + Send + '_>> {
         Box::pin(async move {
+            let mut recorder = completion.recorder;
             let IoCompletionOutcome::Completed(outputs) = completion.outcome else {
                 return Ok(());
             };
             let mut exported = Vec::with_capacity(outputs.len());
+            if let Some(recorder) = recorder.as_mut() {
+                recorder.record(dandelion_commons::records::RecordPoint::IoOutputExportStart);
+            }
+            let mut export_error = None;
             for output in outputs {
                 match self
                     .local_registry
@@ -1512,9 +1532,16 @@ impl RemoteDataClient for HttpRemoteDataClient {
                                 .local_registry
                                 .delete_durable_exported_data(output.data_id);
                         }
-                        return Err(error);
+                        export_error = Some(error);
+                        break;
                     }
                 }
+            }
+            if let Some(recorder) = recorder.as_mut() {
+                recorder.record(dandelion_commons::records::RecordPoint::IoOutputExportEnd);
+            }
+            if let Some(error) = export_error {
+                return Err(error);
             }
 
             let record = completion_record(&completion.key, &exported);
@@ -1522,7 +1549,15 @@ impl RemoteDataClient for HttpRemoteDataClient {
             // skip journal entry for local owner
             #[cfg(feature = "checkpointed-at-least-once")]
             if completion.owner_node_id == self.local_registry.node_id {
-                let disposition = accept_local_io_completion_record(record.clone(), None).await?;
+                if let Some(recorder) = recorder.as_mut() {
+                    recorder.record(dandelion_commons::records::RecordPoint::IoOwnerApprovalStart);
+                }
+                let approval =
+                    accept_local_io_completion_record(record.clone(), recorder.clone()).await;
+                if let Some(recorder) = recorder.as_mut() {
+                    recorder.record(dandelion_commons::records::RecordPoint::IoOwnerApprovalEnd);
+                }
+                let disposition = approval?;
                 if disposition == IoCompletionDisposition::Delete {
                     for output in exported {
                         self.local_registry
@@ -1532,7 +1567,10 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 return Ok(());
             }
 
-            if !self.local_registry.append_io_completion_record(&record)? {
+            if !self
+                .local_registry
+                .append_io_completion_record(&record, recorder.clone())?
+            {
                 for output in exported {
                     self.local_registry
                         .delete_durable_exported_data(output.data_id)?;
@@ -1664,7 +1702,8 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 IoCompletionOutcome::Failed(error) => Err(error),
                 IoCompletionOutcome::Completed(outputs) => {
                     if let Some(recorder) = recorder.as_mut() {
-                        recorder.record(dandelion_commons::records::RecordPoint::IoOutputExportStart);
+                        recorder
+                            .record(dandelion_commons::records::RecordPoint::IoOutputExportStart);
                     }
                     let mut remote_outputs = Vec::with_capacity(outputs.len());
                     let mut export_error = None;
@@ -1703,11 +1742,14 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 if let Ok(outputs) = &wire_outcome {
                     let record = completion_record(&completion.key, outputs);
                     if let Some(recorder) = recorder.as_mut() {
-                        recorder.record(dandelion_commons::records::RecordPoint::IoOwnerApprovalStart);
+                        recorder
+                            .record(dandelion_commons::records::RecordPoint::IoOwnerApprovalStart);
                     }
-                    let approval = accept_local_io_completion_record(record, recorder.clone()).await;
+                    let approval =
+                        accept_local_io_completion_record(record, recorder.clone()).await;
                     if let Some(recorder) = recorder.as_mut() {
-                        recorder.record(dandelion_commons::records::RecordPoint::IoOwnerApprovalEnd);
+                        recorder
+                            .record(dandelion_commons::records::RecordPoint::IoOwnerApprovalEnd);
                     }
                     if let Err(error) = approval {
                         for data_id in &exported_data_ids {
@@ -1730,7 +1772,10 @@ impl RemoteDataClient for HttpRemoteDataClient {
             let delivery_record = match &wire_outcome {
                 Ok(outputs) => {
                     let record = completion_record(&completion.key, outputs);
-                    match self.local_registry.append_io_completion_record(&record) {
+                    match self
+                        .local_registry
+                        .append_io_completion_record(&record, recorder.clone())
+                    {
                         Ok(_) => Some(record),
                         Err(error) => {
                             for data_id in &exported_data_ids {
@@ -2074,7 +2119,7 @@ mod checkpoint_tests {
             }],
         };
         let key = record.completion_key().unwrap();
-        registry.append_io_completion_record(&record).unwrap();
+        registry.append_io_completion_record(&record, None).unwrap();
         (key, remote.data_id)
     }
 
@@ -2113,9 +2158,9 @@ mod checkpoint_tests {
 #[cfg(all(test, feature = "exactly-once"))]
 mod tests {
     use super::*;
-    use dandelion_commons::InvocationId;
     #[cfg(feature = "timestamp")]
     use dandelion_commons::records::{RecordPoint, Recorder};
+    use dandelion_commons::InvocationId;
     use machine_interface::composition::IoCompletedOutput;
     use machine_interface::memory_domain::{read_only::ReadOnlyContext, ContextTrait};
     use std::{path::PathBuf, sync::OnceLock, time::Duration};
