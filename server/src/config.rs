@@ -5,6 +5,9 @@ use clap::Parser;
 use log::{error, warn};
 
 const DEFAULT_CONFIG_PATH: &str = "./dandelion.config";
+#[cfg(feature = "at-least-once")]
+const DEFAULT_FOLDER_PATH: &str = "./.dandelion_recovery";
+#[cfg(not(feature = "at-least-once"))]
 const DEFAULT_FOLDER_PATH: &str = "/tmp/dandelion_server";
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_TIMESTAMP_COUNT: usize = 1000;

@@ -1,10 +1,10 @@
 use super::{check_matrix, setup_dispatcher, zero_id};
-use dandelion_commons::records::Recorder;
+use dandelion_commons::{records::Recorder, InvocationId};
 use machine_interface::{
     composition::{
         Composition, CompositionSet, FunctionDependencies, InputSetDescriptor, ShardingMode,
     },
-    function_driver::{functions::SystemFunction, ComputeResource},
+    function_driver::{functions::SystemFunction, system_driver::UncoordinatedIo, ComputeResource},
     machine_config::{DomainType, EngineType},
     memory_domain::{read_only::ReadOnlyContext, MemoryDomain, MemoryResource},
     DataItem, DataSet, Position,
@@ -43,6 +43,7 @@ impl Drop for HttpServer {
         let _ = self.proc_child.wait();
     }
 }
+
 pub fn fetch_compute<Domain: MemoryDomain>(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
@@ -106,13 +107,19 @@ pub fn fetch_compute<Domain: MemoryDomain>(
         output_map: BTreeMap::from([(2, 0)]),
     };
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
-
+    let recorder = Recorder::new(InvocationId::nil(), zero_id(), Instant::now());
     let inputs = CompositionSet::from_context(in_context);
     let mut result_sets = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(0, composition, inputs, false, recorder))
+        .block_on(dispatcher.queue_composition(
+            0,
+            composition,
+            inputs,
+            false,
+            UncoordinatedIo,
+            recorder,
+        ))
         .unwrap();
     assert_eq!(1, result_sets.len());
 

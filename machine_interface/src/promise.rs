@@ -9,7 +9,7 @@ use core::{
     task::{Poll, Waker},
 };
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, PromiseError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 static WAKER_INDEX: u8 = 0b0000_0001;
 static DEBT_ALIVE: u8 = 0b0001_0000;
@@ -17,11 +17,13 @@ static PROMISE_ALIVE: u8 = 0b0010_0000;
 static CONTENT_SET: u8 = 0b0100_0000;
 static ALIVE: u8 = DEBT_ALIVE | PROMISE_ALIVE;
 
+type AbortHandle = Box<dyn FnOnce() + Send + 'static>;
+
 // TODO replace 2 wakers with a futures::task::AtomicWaker
 struct PromiseData {
     /// Abort handle, only to be called once, as long as this value
     ///non null that means the function has not been aborted or terminated on it's own
-    abort_handle: AtomicPtr<fn() -> ()>,
+    abort_handle: Mutex<Option<AbortHandle>>,
     /// Points to raw box of the results the engine has put in there
     results: Cell<DandelionResult<WorkDone>>,
     /// TODO replace Option<Waker> with only waker when Waker::noop stabilizes,
@@ -118,7 +120,7 @@ impl PromiseBuffer {
         let data_ptr = self.internal.get_promise_data()?;
         let data = unsafe { &mut (&mut *data_ptr).data };
         let default = ManuallyDrop::new(PromiseData {
-            abort_handle: AtomicPtr::new(ptr::null_mut()),
+            abort_handle: Mutex::new(None),
             results: Cell::new(err_dandelion!(DandelionError::PromiseError(
                 PromiseError::Default
             ))),
@@ -151,9 +153,9 @@ impl Promise {
     }
     fn abort_internal(&mut self) {
         let data = unsafe { &(&*self.data).data };
-        let abort_handle = data.abort_handle.swap(ptr::null_mut(), Ordering::SeqCst);
-        if !abort_handle.is_null() {
-            unsafe { (*abort_handle)() }
+        let abort_handle = data.abort_handle.lock().unwrap().take();
+        if let Some(abort_handle) = abort_handle {
+            abort_handle()
         }
     }
 }
@@ -218,7 +220,7 @@ impl Debt {
     pub fn fulfill(self, results: DandelionResult<WorkDone>) {
         let data = unsafe { &(&*self.data).data };
         // make sure we are not aborted by this promise anymore
-        data.abort_handle.store(ptr::null_mut(), Ordering::SeqCst);
+        data.abort_handle.lock().unwrap().take();
         // write a result
         data.results.set(results);
         let flags = data.flags.fetch_or(CONTENT_SET, Ordering::SeqCst);
@@ -227,10 +229,12 @@ impl Debt {
             waker.wake();
         }
     }
-    pub fn install_abort_handle(&self, handle: fn()) {
+    pub fn install_abort_handle<F>(&self, handle: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
         let data = unsafe { &(&*self.data).data };
-        data.abort_handle
-            .store(handle as *mut fn(), Ordering::SeqCst);
+        *data.abort_handle.lock().unwrap() = Some(Box::new(handle));
     }
 }
 
@@ -238,7 +242,7 @@ impl Drop for Debt {
     fn drop(&mut self) {
         let data = unsafe { &(&*self.data).data };
         // make sure we can't get aborted by this handle anymore
-        data.abort_handle.store(ptr::null_mut(), Ordering::SeqCst);
+        data.abort_handle.lock().unwrap().take();
         // if promise is still alive, there is still a promise waiting for a result
         let flags = data.flags.load(Ordering::SeqCst);
         if flags & PROMISE_ALIVE == 1 {

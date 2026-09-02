@@ -8,6 +8,7 @@ mod server_tests {
     use serial_test::serial;
     use std::{
         io::{BufRead, BufReader, Cursor, Read},
+        path::PathBuf,
         process::{Child, Command, Stdio},
     };
 
@@ -39,6 +40,14 @@ mod server_tests {
     struct ServerKiller {
         name: &'static str,
         server: Child,
+        folder_path: PathBuf,
+    }
+
+    fn test_folder(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "dandelion-server-test-{}-{name}",
+            std::process::id()
+        ))
     }
 
     impl ServerKiller {
@@ -116,7 +125,8 @@ mod server_tests {
                 "{} stderr:\n{}",
                 self.name,
                 String::from_utf8(errbuf).expect("Server stderr should be string")
-            )
+            );
+            let _ = std::fs::remove_dir_all(&self.folder_path);
         }
     }
 
@@ -350,6 +360,7 @@ mod server_tests {
     fn start_master() -> ServerKiller {
         let preload_path = multinode_preload_path();
         let multinode_config = multinode_config_path();
+        let folder_path = test_folder("multinode-master");
 
         let mut master_cmd = Command::new(assert_cmd::cargo::cargo_bin!());
         let master_server = master_cmd
@@ -366,11 +377,14 @@ mod server_tests {
             .arg("0")
             .arg("--multinode-config")
             .arg(&multinode_config)
+            .arg("--folder-path")
+            .arg(&folder_path)
             .spawn()
             .unwrap();
         let mut master = ServerKiller {
             name: "Master",
             server: master_server,
+            folder_path,
         };
         master.check_for_start();
         master
@@ -379,6 +393,7 @@ mod server_tests {
     fn start_worker() -> ServerKiller {
         let preload_path = multinode_preload_path();
         let multinode_config = multinode_config_path();
+        let folder_path = test_folder("multinode-worker");
 
         let remote_port = 8081;
         let mut worker_cmd = Command::new(assert_cmd::cargo::cargo_bin!());
@@ -394,11 +409,14 @@ mod server_tests {
             .arg("1")
             .arg("--multinode-config")
             .arg(&multinode_config)
+            .arg("--folder-path")
+            .arg(&folder_path)
             .spawn()
             .unwrap();
         let mut worker = ServerKiller {
             name: "Worker",
             server: worker_server,
+            folder_path,
         };
         worker.check_for_start();
         worker
@@ -422,14 +440,18 @@ mod server_tests {
     #[serial]
     fn serve_matmul_http_2() {
         let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!());
+        let folder_path = test_folder("http2");
         let server = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .arg("--folder-path")
+            .arg(&folder_path)
             .spawn()
             .unwrap();
         let mut server_killer = ServerKiller {
             name: "Server",
             server,
+            folder_path,
         };
         server_killer.check_for_start();
 
@@ -449,14 +471,18 @@ mod server_tests {
     #[serial]
     fn serve_matmul_http_2_local() {
         let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!());
+        let folder_path = test_folder("http2-local");
         let server = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .arg("--folder-path")
+            .arg(&folder_path)
             .spawn()
             .unwrap();
         let mut server_killer = ServerKiller {
             name: "Server",
             server,
+            folder_path,
         };
         server_killer.check_for_start();
 
@@ -476,14 +502,18 @@ mod server_tests {
     #[serial]
     fn serve_matmul_http_1_1() {
         let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!());
+        let folder_path = test_folder("http1");
         let server = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .arg("--folder-path")
+            .arg(&folder_path)
             .spawn()
             .unwrap();
         let mut server_killer = ServerKiller {
             name: "Server",
             server,
+            folder_path,
         };
         server_killer.check_for_start();
 

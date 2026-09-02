@@ -1,3 +1,4 @@
+pub mod recovery_log;
 pub mod reqwest;
 
 use crate::{
@@ -6,7 +7,14 @@ use crate::{
     memory_domain::Context,
     DataItem, Position,
 };
+use dandelion_commons::{records::Recorder, FunctionId, InvocationId};
 use dandelion_commons::{try_with_capacity, DandelionResult};
+#[cfg(feature = "at-least-once")]
+pub use recovery_log::{
+    decode_io_completion_payload, encode_io_completion_payload, IoCompletionData,
+    IoCompletionDisposition, IoCompletionItem, IoCompletionOutputSet, IoCompletionRecord,
+    RecoveredIoOutput,
+};
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 
@@ -57,6 +65,24 @@ pub fn get_system_function_output_sets(function: SystemFunction) -> Vec<String> 
 
 pub const SYSTEM_FUNCTIONS: &[SystemFunction] = &[SystemFunction::HTTP];
 
+/// Stable recorder ID for one logical lazy-I/O coordination key.
+pub fn io_recorder_id(
+    function: SystemFunction,
+    composition_set_id: usize,
+    item_identifier: &str,
+    item_key: u32,
+) -> FunctionId {
+    let identifier_hex: String = item_identifier
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    Arc::new(format!(
+        "IO:{}:{}:{}:{:016x}",
+        function, composition_set_id, identifier_hex, item_key
+    ))
+}
+
 #[derive(Debug, Clone)]
 pub struct IoData {
     pub original_position: Position,
@@ -67,14 +93,130 @@ pub struct IoData {
     pub resolved: Arc<OnceCell<DandelionResult<Vec<Arc<Context>>>>>,
     pub function: SystemFunction,
     pub set_index: usize,
-    // recorder: Recorder,
+    /// The child recorder for this logical I/O. It is absent after crossing a node boundary
+    /// until timestamp transport is added.
+    pub recorder: Option<Recorder>,
+}
+
+#[cfg(feature = "at-least-once")]
+#[derive(Debug, Clone)]
+pub struct IoCoordination {
+    pub invocation_id: InvocationId,
+    pub composition_set_id: usize,
+    pub item_identifier: String,
+    pub item_key: u64,
+    /// Filled when the lazy reference crosses a node boundary; `None` means the current node owns
+    /// the coordination registry.
+    pub owner_node_id: Option<u64>,
+}
+
+#[cfg(feature = "at-least-once")]
+#[derive(Debug, Clone)]
+pub struct CoordinatedIoData {
+    pub coordination: IoCoordination,
+    pub request: IoData,
+}
+
+pub trait IoReferencePolicy: Copy {
+    /// Returns the lazy/reference data and, when recovery substituted a completed output, its
+    /// restored item size.
+    fn wrap(
+        self,
+        request: IoData,
+        item: &DataItem,
+        composition_set_id: usize,
+    ) -> (ItemData, Option<usize>);
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct UncoordinatedIo;
+
+impl IoReferencePolicy for UncoordinatedIo {
+    fn wrap(
+        self,
+        request: IoData,
+        _item: &DataItem,
+        _composition_set_id: usize,
+    ) -> (ItemData, Option<usize>) {
+        (ItemData::IoData(request), None)
+    }
+}
+
+#[cfg(not(any(feature = "checkpointed-at-least-once", feature = "exactly-once")))]
+pub type AsyncIoPolicy = UncoordinatedIo;
+
+#[cfg(not(any(feature = "checkpointed-at-least-once", feature = "exactly-once")))]
+pub fn async_io_policy(_invocation_id: InvocationId) -> AsyncIoPolicy {
+    UncoordinatedIo
+}
+
+#[cfg(feature = "at-least-once")]
+#[derive(Debug, Clone, Copy)]
+pub struct RecoverableIo {
+    pub invocation_id: InvocationId,
+}
+
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+pub type AsyncIoPolicy = RecoverableIo;
+
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+pub fn async_io_policy(invocation_id: InvocationId) -> AsyncIoPolicy {
+    RecoverableIo { invocation_id }
+}
+
+#[cfg(feature = "at-least-once")]
+impl IoReferencePolicy for RecoverableIo {
+    fn wrap(
+        self,
+        request: IoData,
+        item: &DataItem,
+        composition_set_id: usize,
+    ) -> (ItemData, Option<usize>) {
+        #[cfg(not(feature = "exactly-once"))]
+        if let Some(output) = recovery_log::recovered_io_item_location(
+            self.invocation_id,
+            request.function,
+            composition_set_id,
+            request.set_index,
+            &item.ident,
+            item.key.into(),
+        ) {
+            return match output {
+                RecoveredIoOutput::Inline(context) => {
+                    let size = context.size;
+                    (ItemData::LocalData(context), Some(size))
+                }
+                RecoveredIoOutput::Remote { data, size } => {
+                    (ItemData::RemoteData(data), Some(size))
+                }
+            };
+        }
+        (
+            ItemData::CoordinatedIoData(CoordinatedIoData {
+                coordination: IoCoordination {
+                    invocation_id: self.invocation_id,
+                    composition_set_id,
+                    item_identifier: item.ident.clone(),
+                    item_key: item.key.into(),
+                    owner_node_id: None,
+                },
+                request,
+            }),
+            None,
+        )
+    }
 }
 
 /// Currently assumes the HTTP_INPUT_SETS and HTTP_OUTPUT_SETS
-pub fn convert_to_references(
+/// Converts a system-function invocation into lazy output references. Both output references for
+/// an input item share one `OnceCell`, so resolving either header or body executes the operation
+/// once locally. The policy type selects the reference representation at compile time.
+pub fn convert_to_references<P: IoReferencePolicy>(
     function: SystemFunction,
     mut inputs: Vec<Option<CompositionSet>>,
-    // recorder: Recorder,
+    io_policy: P,
+    composition_set_id: usize,
+    mut recorder: Recorder,
 ) -> DandelionResult<Vec<Option<CompositionSet>>> {
     // check that the function id contains string correcpsonding to system function
     debug_assert_eq!(
@@ -84,39 +226,55 @@ pub fn convert_to_references(
     );
 
     // go through all input sets and check if there is already a static one, or on in the input data
-    let mut output_vec = try_with_capacity!(Vec, 2)?;
-    output_vec.resize(2, None);
+    let output_count = get_system_function_output_sets(function).len();
+    let mut output_vec = try_with_capacity!(Vec, output_count)?;
+    output_vec.resize(output_count, None);
 
     if let Some(input_set) = inputs[0].take() {
         let input_set_name = input_set.get_name().clone();
-        let mut out_0_list = try_with_capacity!(Vec, input_set.len())?;
-        let mut out_1_list = try_with_capacity!(Vec, input_set.len())?;
+        let mut output_items = (0..output_count)
+            .map(|_| try_with_capacity!(Vec, input_set.len()))
+            .collect::<DandelionResult<Vec<_>>>()?;
+        let mut io_recorders = try_with_capacity!(Vec, input_set.len())?;
+
         for (item, data) in input_set {
-            let new_item = DataItem {
-                data: crate::Position { offset: 0, size: 0 },
-                ident: item.ident.clone(),
-                key: item.key,
-            };
-            let set_once = Arc::new(OnceCell::new());
-            let header_data = IoData {
-                original_position: item.data,
-                original_data: Box::new(data.clone()),
-                resolved: set_once.clone(),
-                function,
-                set_index: 0,
-            };
-            let body_data = IoData {
-                original_position: item.data,
-                original_data: Box::new(data),
-                resolved: set_once,
-                function,
-                set_index: 1,
-            };
-            out_0_list.push((new_item.clone(), ItemData::IoData(header_data)));
-            out_1_list.push((new_item, ItemData::IoData(body_data)));
+            let resolved = Arc::new(OnceCell::new());
+            let io_recorder = Recorder::new_from_parent(
+                io_recorder_id(function, composition_set_id, &item.ident, item.key),
+                &recorder,
+            );
+            for (set_index, items) in output_items.iter_mut().enumerate() {
+                let (output_data, recovered_size) = io_policy.wrap(
+                    IoData {
+                        original_position: item.data,
+                        original_data: Box::new(data.clone()),
+                        resolved: resolved.clone(),
+                        function,
+                        set_index,
+                        recorder: Some(io_recorder.clone()),
+                    },
+                    &item,
+                    composition_set_id,
+                );
+                items.push((
+                    DataItem {
+                        data: Position {
+                            offset: 0,
+                            size: recovered_size.unwrap_or(0),
+                        },
+                        ident: item.ident.clone(),
+                        key: item.key,
+                    },
+                    output_data,
+                ));
+            }
+            io_recorders.push(io_recorder);
         }
-        output_vec[0] = CompositionSet::from_item_list(input_set_name.clone(), out_0_list);
-        output_vec[1] = CompositionSet::from_item_list(input_set_name, out_1_list);
+
+        for (set_index, items) in output_items.into_iter().enumerate() {
+            output_vec[set_index] = CompositionSet::from_item_list(input_set_name.clone(), items);
+        }
+        recorder.add_children(vec![Some(io_recorders)]);
     }
     Ok(output_vec)
 }

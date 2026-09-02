@@ -1,3 +1,5 @@
+#[cfg(feature = "exactly-once")]
+use crate::composition::{IoResolveInput, IoResolveOutcome, IoResolveRequest};
 use crate::{
     composition::{CompositionSet, ItemData},
     function_driver::{
@@ -10,6 +12,14 @@ use crate::{
     },
     promise::Debt,
     Position,
+};
+#[cfg(feature = "at-least-once")]
+use crate::{
+    composition::{
+        IoCompletedOutput, IoCompletionOutcome, IoCoordinationCompletion, IoCoordinationKey,
+    },
+    function_driver::system_driver::{CoordinatedIoData, IoCoordination},
+    DataItem,
 };
 use bytes::Bytes;
 use dandelion_commons::{
@@ -421,6 +431,53 @@ async fn memcached_request(
     Ok(vec![header_context, body_context])
 }
 
+async fn resolve_original_io_data(
+    original_position: Position,
+    original_data: ItemData,
+    client: HttpClient,
+) -> DandelionResult<(Position, Arc<Context>)> {
+    // first need to check if original data was local or we still need to fetch that.
+    match original_data {
+        ItemData::LocalData(context) => Ok((original_position, context)),
+        ItemData::RemoteData(remote_data) => {
+            let remote_client = crate::composition::get_remote_data_client()?;
+            remote_client
+                .resolve_remote_data(remote_data)
+                .await
+                .map(|(context, position)| (position, context))
+        }
+        ItemData::IoData(nested) => Box::pin(resolve_io_item(nested, client)).await,
+        #[cfg(feature = "at-least-once")]
+        ItemData::CoordinatedIoData(nested) => {
+            Box::pin(resolve_checkpointed_io_item(nested, client)).await
+        }
+    }
+}
+
+async fn execute_io<'a>(
+    function: SystemFunction,
+    resolved: &'a tokio::sync::OnceCell<DandelionResult<Vec<Arc<Context>>>>,
+    client: HttpClient,
+    input_position: Position,
+    input_context: Arc<Context>,
+) -> &'a DandelionResult<Vec<Arc<Context>>> {
+    resolved
+        .get_or_init(move || async move {
+            match function {
+                SystemFunction::HTTP => http_request(client, input_position, input_context).await,
+                SystemFunction::MEMCACHED => memcached_request(input_position, input_context).await,
+            }
+        })
+        .await
+}
+
+#[cfg(feature = "exactly-once")]
+fn coordination_error(message: String) -> dandelion_commons::DError {
+    dandelion_err!(DandelionError::Multinode(
+        dandelion_commons::MultinodeError::RequestFailed(message)
+    ))
+}
+
 async fn resolve_io_item(
     io_data: IoData,
     client: HttpClient,
@@ -431,55 +488,354 @@ async fn resolve_io_item(
         resolved,
         function,
         set_index,
+        mut recorder,
     } = io_data;
-    // first need to check if original data was local or we still need to fetch that.
-    let (input_position, input_context) = match *original_data {
-        ItemData::LocalData(context) => (original_position, context),
-        ItemData::RemoteData(remote_data) => {
-            let client = crate::composition::get_remote_data_client()?;
-            let (context, position) = client.resolve_remote_data(remote_data).await?;
-            (position, context)
+    let (input_position, input_context) =
+        resolve_original_io_data(original_position, *original_data, client.clone()).await?;
+    if let Some(recorder) = recorder.as_mut() {
+        recorder.record(RecordPoint::IoExternalStart);
+    }
+    let outputs = execute_io(
+        function,
+        resolved.as_ref(),
+        client,
+        input_position,
+        input_context,
+    )
+    .await;
+    if let Some(recorder) = recorder.as_mut() {
+        recorder.record(RecordPoint::IoExternalEnd);
+    }
+    let context = match outputs {
+        Ok(contexts) => contexts[set_index].clone(),
+        Err(error) => return Err(error.clone()),
+    };
+    Ok((
+        Position {
+            offset: 0,
+            size: context.size,
+        },
+        context,
+    ))
+}
+
+// store checkpointed I/O completion in the background
+#[cfg(all(feature = "at-least-once", not(feature = "exactly-once")))]
+async fn resolve_checkpointed_io_item(
+    io_data: CoordinatedIoData,
+    client: HttpClient,
+) -> DandelionResult<(Position, Arc<Context>)> {
+    let CoordinatedIoData {
+        coordination,
+        request,
+    } = io_data;
+    let IoData {
+        original_position,
+        original_data,
+        resolved,
+        function,
+        set_index,
+        mut recorder,
+    } = request;
+    let IoCoordination {
+        invocation_id,
+        composition_set_id,
+        item_identifier,
+        item_key,
+        owner_node_id,
+    } = coordination;
+
+    let (input_position, input_context) =
+        resolve_original_io_data(original_position, *original_data, client.clone()).await?;
+    if let Some(recorder) = recorder.as_mut() {
+        recorder.record(RecordPoint::IoExternalStart);
+    }
+    let outputs = execute_io(
+        function,
+        resolved.as_ref(),
+        client,
+        input_position,
+        input_context,
+    )
+    .await;
+    if let Some(recorder) = recorder.as_mut() {
+        recorder.record(RecordPoint::IoExternalEnd);
+    }
+    let contexts = match outputs {
+        Ok(contexts) => contexts,
+        Err(error) => return Err(error.clone()),
+    };
+
+    // Checkpointing is deliberately detached from result consumption in at-least-once mode.
+    // Failure only loses the restart optimization; it never fails the invocation.
+    if let Ok(remote_client) = crate::composition::get_remote_data_client() {
+        let owner_node_id = owner_node_id.unwrap_or_else(|| remote_client.local_node_id());
+        let completion = IoCoordinationCompletion {
+            owner_node_id,
+            key: IoCoordinationKey {
+                invocation_id,
+                composition_set_id,
+                function,
+                identifier: item_identifier.clone(),
+                item_key,
+            },
+            outcome: IoCompletionOutcome::Completed(
+                contexts
+                    .iter()
+                    .map(|context| IoCompletedOutput {
+                        item: DataItem {
+                            ident: item_identifier.clone(),
+                            key: u32::try_from(item_key).expect("I/O item keys originate as u32"),
+                            data: Position {
+                                offset: 0,
+                                size: context.size,
+                            },
+                        },
+                        context: context.clone(),
+                    })
+                    .collect(),
+            ),
+            recorder: recorder.clone(),
+        };
+        tokio::spawn(async move {
+            if let Err(error) = remote_client.publish_io_completion(completion).await {
+                warn!(
+                    "Failed to checkpoint at-least-once I/O completion: {}",
+                    error
+                );
+            }
+        });
+    }
+
+    let context = contexts[set_index].clone();
+    Ok((
+        Position {
+            offset: 0,
+            size: context.size,
+        },
+        context,
+    ))
+}
+
+#[cfg(feature = "exactly-once")]
+async fn resolve_checkpointed_io_item(
+    io_data: CoordinatedIoData,
+    client: HttpClient,
+) -> DandelionResult<(Position, Arc<Context>)> {
+    resolve_io_item_exactly_once(io_data, client).await
+}
+
+/// Ask the owner who should run this I/O; only the winner executes, then publishes the result.
+#[cfg(feature = "exactly-once")]
+async fn resolve_io_item_exactly_once(
+    io_data: CoordinatedIoData,
+    client: HttpClient,
+) -> DandelionResult<(Position, Arc<Context>)> {
+    let CoordinatedIoData {
+        coordination,
+        request,
+    } = io_data;
+    let IoData {
+        original_position,
+        original_data,
+        resolved,
+        function,
+        set_index,
+        mut recorder,
+    } = request;
+    let IoCoordination {
+        invocation_id,
+        composition_set_id,
+        item_identifier,
+        item_key,
+        owner_node_id,
+    } = coordination;
+
+    let remote_client = crate::composition::get_remote_data_client().ok();
+    let coordination_key = IoCoordinationKey {
+        invocation_id,
+        composition_set_id,
+        function,
+        identifier: item_identifier.clone(),
+        item_key,
+    };
+
+    let original_remote = match original_data.as_ref() {
+        ItemData::RemoteData(data) => Some((data.clone(), original_position.size)),
+        _ => None,
+    };
+
+    let coordination_owner =
+        owner_node_id.or_else(|| remote_client.as_ref().map(|client| client.local_node_id()));
+    // Elect a winner (or reuse a finished result). No client means run uncoordinated.
+    let resolution = match (&remote_client, coordination_owner) {
+        (Some(remote_client), Some(owner_node_id)) => {
+            if let Some(recorder) = recorder.as_mut() {
+                recorder.record(dandelion_commons::records::RecordPoint::IoResolveStart);
+            }
+            let resolution = remote_client
+                .resolve_io(IoResolveRequest {
+                    owner_node_id,
+                    key: coordination_key.clone(),
+                    set_index,
+                    original_data: original_remote,
+                })
+                .await;
+            if let Some(recorder) = recorder.as_mut() {
+                recorder.record(dandelion_commons::records::RecordPoint::IoResolveEnd);
+            }
+            Some(resolution?)
         }
-        ItemData::IoData(nested_io_data) => {
-            let (position, context) =
-                Box::pin(resolve_io_item(nested_io_data, client.clone())).await?;
-            (position, context)
+        _ => None,
+    };
+
+    // Duplicate: fetch the winner's output instead of running the I/O.
+    if let Some(IoResolveOutcome::Completed { data }) = resolution {
+        if let Some(recorder) = recorder.as_mut() {
+            let wait_start = recorder
+                .get_timestamp(dandelion_commons::records::RecordPoint::IoResolveStart)
+                .as_micros() as u64;
+            recorder.set_timestamp(
+                dandelion_commons::records::RecordPoint::IoDuplicateWaitStart,
+                wait_start,
+            );
+            recorder.record(dandelion_commons::records::RecordPoint::IoDuplicateWaitEnd);
+        }
+        let remote_client = remote_client.expect("completed remote I/O requires a data client");
+        return remote_client
+            .resolve_remote_data(data)
+            .await
+            .map(|(context, position)| (position, context));
+    }
+    if let Some(IoResolveOutcome::Failed(error)) = resolution {
+        if let Some(recorder) = recorder.as_mut() {
+            let wait_start = recorder
+                .get_timestamp(dandelion_commons::records::RecordPoint::IoResolveStart)
+                .as_micros() as u64;
+            recorder.set_timestamp(
+                dandelion_commons::records::RecordPoint::IoDuplicateWaitStart,
+                wait_start,
+            );
+            recorder.record(dandelion_commons::records::RecordPoint::IoDuplicateWaitEnd);
+        }
+        return Err(coordination_error(error));
+    }
+
+    let (resolved_input, won_coordination) = match resolution {
+        Some(IoResolveOutcome::Execute { input }) => (input, true),
+        None => (None, false),
+        Some(IoResolveOutcome::Completed { .. } | IoResolveOutcome::Failed(_)) => unreachable!(),
+    };
+    // Winner (or uncoordinated): get input bytes, then run the external I/O.
+    let input_result = match resolved_input {
+        Some(IoResolveInput::Inline { context, position }) => Ok((position, context)),
+        Some(IoResolveInput::Remote { data, .. }) => {
+            let remote_client = remote_client
+                .as_ref()
+                .expect("remote resolution input requires a data client");
+            remote_client
+                .resolve_remote_data(data)
+                .await
+                .map(|(context, position)| (position, context))
+        }
+        None => resolve_original_io_data(original_position, *original_data, client.clone()).await,
+    };
+    let (input_position, input_context) = match input_result {
+        Ok(input) => input,
+        Err(error) => {
+            let coordinated_error = coordination_error(error.to_string());
+            if won_coordination {
+                // Waiters must not hang if the winner cannot even load its input.
+                if let (Some(remote_client), Some(owner_node_id)) =
+                    (&remote_client, coordination_owner)
+                {
+                    remote_client
+                        .publish_io_resolution(IoCoordinationCompletion {
+                            owner_node_id,
+                            key: coordination_key,
+                            outcome: IoCompletionOutcome::Failed(error.to_string()),
+                            recorder: None,
+                        })
+                        .await?;
+                }
+            }
+            return if won_coordination {
+                Err(coordinated_error)
+            } else {
+                Err(error)
+            };
         }
     };
-    match function {
-        SystemFunction::HTTP => {
-            let outputs = resolved
-                .get_or_init(move || http_request(client, input_position, input_context))
-                .await;
-            let context = match outputs {
-                Ok(context_vec) => context_vec[set_index].clone(),
-                Err(err) => return Err(err.clone()),
-            };
-            Ok((
-                Position {
-                    offset: 0,
-                    size: context.size,
-                },
-                context,
-            ))
-        }
-        SystemFunction::MEMCACHED => {
-            let outputs = resolved
-                .get_or_init(move || memcached_request(input_position, input_context))
-                .await;
-            let context = match outputs {
-                Ok(context_vec) => context_vec[set_index].clone(),
-                Err(err) => return Err(err.clone()),
-            };
-            Ok((
-                Position {
-                    offset: 0,
-                    size: context.size,
-                },
-                context,
-            ))
+
+    if won_coordination {
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(dandelion_commons::records::RecordPoint::IoExternalStart);
         }
     }
+    let outputs = execute_io(
+        function,
+        resolved.as_ref(),
+        client,
+        input_position,
+        input_context,
+    )
+    .await;
+    if won_coordination {
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(dandelion_commons::records::RecordPoint::IoExternalEnd);
+        }
+    }
+
+    if won_coordination {
+        let (remote_client, owner_node_id) = (
+            remote_client
+                .as_ref()
+                .expect("coordinated I/O requires a data client"),
+            coordination_owner.expect("coordinated I/O requires an owner"),
+        );
+        let outcome = match outputs {
+            Ok(contexts) => IoCompletionOutcome::Completed(
+                contexts
+                    .iter()
+                    .enumerate()
+                    .map(|(_, context)| IoCompletedOutput {
+                        item: DataItem {
+                            ident: item_identifier.clone(),
+                            key: u32::try_from(item_key).expect("I/O item keys originate as u32"),
+                            data: Position {
+                                offset: 0,
+                                size: context.size,
+                            },
+                        },
+                        context: context.clone(),
+                    })
+                    .collect(),
+            ),
+            Err(error) => IoCompletionOutcome::Failed(error.to_string()),
+        };
+        // Publish so the owner can persist the result and unblock waiters.
+        remote_client
+            .publish_io_resolution(IoCoordinationCompletion {
+                owner_node_id,
+                key: coordination_key,
+                outcome,
+                recorder: recorder.clone(),
+            })
+            .await?;
+    }
+
+    let context = match outputs {
+        Ok(contexts) => contexts[set_index].clone(),
+        Err(error) if won_coordination => return Err(coordination_error(error.to_string())),
+        Err(error) => return Err(error.clone()),
+    };
+    Ok((
+        Position {
+            offset: 0,
+            size: context.size,
+        },
+        context,
+    ))
 }
 
 async fn resolve_all_sets(
@@ -524,6 +880,18 @@ async fn resolve_all_sets(
                         io_futures.push(spawn(async move {
                             let (position, context) =
                                 resolve_io_item(io_data, client_clone).await?;
+                            item.data = position;
+                            drop(permit);
+                            Ok((set_index, item, ItemData::LocalData(context)))
+                        }));
+                    }
+                    #[cfg(feature = "at-least-once")]
+                    ItemData::CoordinatedIoData(io_data) => {
+                        let permit = semaphore.clone().acquire_owned().await.unwrap();
+                        let client_clone = client.clone();
+                        io_futures.push(spawn(async move {
+                            let (position, context) =
+                                resolve_checkpointed_io_item(io_data, client_clone).await?;
                             item.data = position;
                             drop(permit);
                             Ok((set_index, item, ItemData::LocalData(context)))
@@ -632,6 +1000,12 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
         debug!("IO engine loop has ticket");
         let (args, debt, id_option) = queue.get_io_engine_args().await;
         debug!("IO engine loop has work");
+
+        if !debt.is_alive() {
+            drop(ticket);
+            continue;
+        }
+
         match args {
             WorkToDo::FunctionArguments {
                 function_id,
@@ -655,7 +1029,7 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
                     move |sets_result| {
                         recorder.record(RecordPoint::FetchingEnd);
                         match sets_result {
-                            // FIXME: this leaks the queue's `fetching_in_progress` count, since
+                            // FIXME: this leaks the queue's `prefetching_in_progress` count, since
                             // that is only decremented in `requeu_engine_args`. Repeated fetch
                             // failures permanently inflate the count and can starve the io queue
                             // of taking any more prefetch work.

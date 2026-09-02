@@ -10,12 +10,14 @@ message NodeInfo {
 
 enum SystemFunction {
     HTTP = 0;
+    MEMCACHED = 1;
 }
 
 message ItemData {
     oneof data {
         RemoteData remote_data = 1;
         IoData io_data = 2;
+        IoData coordinated_io_data = 3;
     }
 }
 
@@ -23,6 +25,13 @@ message IoData {
     SystemFunction function = 1;
     uint64 set_index = 2;
     ItemData data = 3;
+    // Stable identity and ownership metadata for lazy I/O coordination and recovery.
+    string invocation_id = 4;
+    uint64 composition_set_id = 5;
+    string item_identifier = 6;
+    uint64 item_key = 7;
+    uint64 original_size = 8;
+    uint64 owner_node_id = 9;
 }
 
 message RemoteData {
@@ -43,10 +52,11 @@ message MetadataSet {
 }
 
 message Invocation {
-    uint32 invocation_id = 1;
+    uint32 remote_invocation_id = 1;
     string function_id = 2;
     repeated MetadataSet metadata_sets = 3;
     bool caching = 4;
+    string owner_invocation_id = 5;
 }
 
 message RepeatedInvocations {
@@ -93,7 +103,7 @@ message RepeatedMetadataSet {
 }
 
 message Response {
-    uint32 invocation_id = 1;
+    uint32 remote_invocation_id = 1;
     oneof response {
         string error_msg = 2;
         RepeatedMetadataSet metadata_sets = 3;
@@ -102,6 +112,65 @@ message Response {
 
 message NodeUpdate {
     uint64 num_local_cores = 1;
+}
+
+message IoCompletionDelivery {
+    string journal_line = 1;
+}
+
+message IoCompletionAcknowledgement {
+    string invocation_id = 1;
+    uint64 composition_set_id = 2;
+    string function = 3;
+    string identifier = 4;
+    uint64 item_key = 5;
+    // False retains the submitted durable outputs; true deletes them as a duplicate or late result.
+    bool delete_outputs = 6;
+}
+
+message IoCoordinationKey {
+    string invocation_id = 1;
+    uint64 composition_set_id = 2;
+    SystemFunction function = 3;
+    string identifier = 4;
+    uint64 item_key = 5;
+}
+
+// Worker -> owner: elect a winner or wait for / reuse an existing result.
+message IoResolveRequest {
+    IoCoordinationKey key = 1;
+    uint64 set_index = 2;
+    uint64 requester_node_id = 3;
+    RemoteData original_data = 4;
+}
+
+message IoResolveExecuteNone {}
+
+message IoResolveRetry {}
+
+// Owner -> worker: Execute, Completed, Failed, or Retry.
+message IoResolveResponse {
+    oneof response {
+        IoResolveExecuteNone execute_none = 1;
+        bytes execute_inline = 2;
+        RemoteData execute_remote = 3;
+        RemoteData completed = 4;
+        string failed = 5;
+        IoResolveRetry retry = 6;
+    }
+}
+
+message IoResolvedOutputs {
+    repeated RemoteData outputs = 1;
+}
+
+// Winner -> owner: publish the I/O outcome.
+message IoResolvedRequest {
+    IoCoordinationKey key = 1;
+    oneof outcome {
+        IoResolvedOutputs completed = 2;
+        string failed = 3;
+    }
 }
 
 // Message from remote node to get work or return completed tasks
@@ -113,6 +182,8 @@ message RemoteMessage {
         Response response = 2;
         // Update message to the server
         NodeUpdate node_update = 3;
+        // Durable async IO completion awaiting owner acknowledgement
+        IoCompletionDelivery io_completion = 4;
     }
 }
 
@@ -126,6 +197,9 @@ message QueueMessage {
         RepeatedInvocations invocations = 2;
         // Message containing the work for one function, can be refused
         Invocation try_offload = 3;
-        // TODO add message to cancel invocation
+        // Message indicating a previously sent remote invocation should not be scheduled if possible
+        uint32 cancel_invocation = 4;
+        // Owner has durably recorded an async IO completion
+        IoCompletionAcknowledgement io_completion_ack = 5;
    }
 }
