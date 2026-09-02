@@ -1063,6 +1063,7 @@ impl ExportRegistry {
             });
     }
 
+    /// recovery path: retained worker completion so `/io/resolve` waiters wake.
     #[cfg(feature = "exactly-once")]
     pub fn publish_io_resolution_from_record(
         &self,
@@ -1225,6 +1226,8 @@ impl ExportRegistry {
         Ok(RemoteData::new(self.node_id, data_id))
     }
 
+    // Claim consecutive data ids under the mutex. files are written later without the lock
+    // export registry items are only written once and then only read, or deleted
     #[cfg(feature = "at-least-once")]
     fn reserve_durable_export_batch(
         &self,
@@ -1247,6 +1250,7 @@ impl ExportRegistry {
         let next_data_id = first_data_id
             .checked_add(output_count)
             .ok_or_else(|| export_registry_error("Durable export data id space exhausted"))?;
+        // Persist a new range of ids so a crash cannot reuse these ids.
         if next_data_id > store.reserved_until {
             let mut reserved_until = store.reserved_until;
             while reserved_until < next_data_id {
@@ -1280,6 +1284,7 @@ impl ExportRegistry {
         Ok((first_data_id, directory, data_ids))
     }
 
+    /// Drop a reservation after a failed persist; allocated ids are not reused in this process.
     #[cfg(feature = "at-least-once")]
     fn discard_durable_export_batch(&self, batch_id: u64) {
         self.inner
@@ -1289,11 +1294,13 @@ impl ExportRegistry {
             .remove(&batch_id);
     }
 
+    /// Drop a reservation after the batch is fully published or acknowledged.
     #[cfg(feature = "at-least-once")]
     fn finish_durable_export_batch(&self, batch_id: u64) {
         self.discard_durable_export_batch(batch_id);
     }
 
+    /// Install already-written files into `durable_data` so they can be served over `/data/`.
     #[cfg(feature = "at-least-once")]
     fn commit_durable_export_batch(
         &self,
@@ -1340,7 +1347,7 @@ impl ExportRegistry {
         })
     }
 
-    /// Persists all outputs of one logical I/O without holding the registry lock during file I/O.
+    /// Persist all outputs of one logical I/O without holding the registry lock during file I/O.
     #[cfg(feature = "at-least-once")]
     async fn insert_durable_outputs_async(
         &self,
@@ -1355,8 +1362,10 @@ impl ExportRegistry {
             output_bytes.push((size, bytes));
         }
 
+        // reserve a batch of data ids
         let (batch_id, directory, data_ids) =
             self.reserve_durable_export_batch(invocation_id, output_bytes.len())?;
+        // prepare the outputs for writing
         let prepared = data_ids
             .iter()
             .copied()
@@ -1370,6 +1379,7 @@ impl ExportRegistry {
 
         let cleanup_directory = directory.clone();
         let cleanup_ids = data_ids.clone();
+        // Blocking disk I/O on a worker thread so the async runtime can keep serving.
         let persisted = tokio::task::spawn_blocking(move || {
             write_durable_export_batch(&directory, &prepared)?;
             Ok::<_, dandelion_commons::DError>(prepared)
@@ -1395,6 +1405,7 @@ impl ExportRegistry {
             }
         };
 
+        // commit the outputs to the export registry
         match self.commit_durable_export_batch(batch_id, prepared) {
             Ok(references) => Ok(references),
             Err(error) => {
@@ -1425,11 +1436,13 @@ impl ExportRegistry {
         })?;
         let journal_path = store.directory.join(IO_COMPLETION_JOURNAL_FILE);
         let record_key = record.completion_key()?;
+        // Already queued for delivery; caller should drop duplicate exports.
         for pending in &inner.pending_io_completions {
             if pending.completion_key()? == record_key {
                 return Ok(false);
             }
         }
+        // Rewrite the whole journal: append is not crash-safe without rewriting.
         let mut pending_io_completions = inner.pending_io_completions.clone();
         pending_io_completions.push(record.clone());
         if let Some(recorder) = recorder.as_mut() {
@@ -1451,8 +1464,10 @@ impl ExportRegistry {
             recorder.record(dandelion_commons::records::RecordPoint::IoJournalEnd);
         }
         write_result?;
+        // Only update memory after the file is durable.
         inner.pending_io_completions = pending_io_completions;
         drop(inner);
+        // Wake the queue delivery loop so it can send this record to the owner.
         self.pending_io_completions_changed.notify_one();
         Ok(true)
     }
