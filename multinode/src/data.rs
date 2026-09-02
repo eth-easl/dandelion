@@ -60,7 +60,11 @@ use std::{
 use tokio::sync::watch;
 #[cfg(feature = "at-least-once")]
 use tokio::sync::Notify;
-use tokio::{net::TcpListener, signal::unix::SignalKind, sync::Semaphore};
+use tokio::{
+    net::TcpListener,
+    signal::unix::SignalKind,
+    sync::{OwnedSemaphorePermit, Semaphore},
+};
 
 #[cfg(feature = "at-least-once")]
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -2203,105 +2207,102 @@ async fn read_request_body(mut req: Request<Incoming>) -> Result<Vec<u8>, String
     Ok(bytes)
 }
 
-// TODO: make data service handler copy free
-async fn service(
-    req: Request<Incoming>,
-    export_registry: ExportRegistry,
-    semaphore: Arc<Semaphore>,
-) -> Result<Response<ExportedBody>, Infallible> {
-    let permit = semaphore.acquire_owned().await.unwrap();
-    let convert_error_string = |err_string| {
-        warn!("Failed to serve remote data request: {}", err_string);
-        let mut response = Response::new(ExportedBody::new_error(err_string));
-        *response.status_mut() = StatusCode::BAD_REQUEST;
-        Ok(response)
-    };
+fn bad_request(err_string: impl Into<String>) -> Result<Response<ExportedBody>, Infallible> {
+    let err_string = err_string.into();
+    warn!("Failed to serve remote data request: {}", err_string);
+    let mut response = Response::new(ExportedBody::new_error(err_string));
+    *response.status_mut() = StatusCode::BAD_REQUEST;
+    Ok(response)
+}
 
-    // Worker asks: elect a winner or wait for / reuse an existing result.
-    #[cfg(feature = "exactly-once")]
-    if req.uri().path() == "/io/resolve" && req.method() == Method::POST {
-        let body = match read_request_body(req).await {
-            Ok(body) => body,
-            Err(error) => return convert_error_string(error),
-        };
-        let request: IoResolveWireRequest = match serde_json::from_slice(&body) {
-            Ok(request) => request,
-            Err(error) => return convert_error_string(format!("Invalid I/O resolve: {}", error)),
-        };
-        let key = request.key.clone();
-        // First caller for this key is elected; later callers subscribe as waiters.
-        let resolution = match export_registry.begin_io_resolution_from_node(
-            request.key,
-            request.set_index,
-            request.requester_node_id,
-            request.original_data,
-        ) {
-            Ok(resolution) => resolution,
-            Err(error) => return convert_error_string(error.to_string()),
-        };
-        // A waiter may keep this response open for the duration of the winning I/O, and the winner
-        // may receive its original request bytes inline. Neither should retain a bounded data
-        // service permit while waiting or copying from the export registry.
-        drop(permit);
-        let response = match registry_resolution_response(
-            &export_registry,
-            key,
-            resolution,
-            request.set_index,
-        )
-        .await
+/// Worker asks: elect a winner or wait for / reuse an existing result.
+#[cfg(feature = "exactly-once")]
+async fn handle_io_resolve(
+    req: Request<Incoming>,
+    export_registry: &ExportRegistry,
+    permit: OwnedSemaphorePermit,
+) -> Result<Response<ExportedBody>, Infallible> {
+    let body = match read_request_body(req).await {
+        Ok(body) => body,
+        Err(error) => return bad_request(error),
+    };
+    let request: IoResolveWireRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(error) => return bad_request(format!("Invalid I/O resolve: {}", error)),
+    };
+    let key = request.key.clone();
+    // First caller for this key is elected; later callers subscribe as waiters.
+    let resolution = match export_registry.begin_io_resolution_from_node(
+        request.key,
+        request.set_index,
+        request.requester_node_id,
+        request.original_data,
+    ) {
+        Ok(resolution) => resolution,
+        Err(error) => return bad_request(error.to_string()),
+    };
+    // A waiter may keep this response open for the duration of the winning I/O, and the winner
+    // may receive its original request bytes inline. Neither should retain a bounded data
+    // service permit while waiting or copying from the export registry.
+    drop(permit);
+    let response =
+        match registry_resolution_response(export_registry, key, resolution, request.set_index)
+            .await
         {
             Ok(response) => response,
-            Err(error) => return convert_error_string(error.to_string()),
+            Err(error) => return bad_request(error.to_string()),
         };
-        return Ok(Response::new(ExportedBody::from_bytes(
-            encode_io_resolve_response(&response),
-        )));
-    }
+    Ok(Response::new(ExportedBody::from_bytes(
+        encode_io_resolve_response(&response),
+    )))
+}
 
-    // Winner publishes the I/O outcome so the owner can persist it and wake waiters.
-    #[cfg(feature = "exactly-once")]
-    if req.uri().path() == "/io/resolved" && req.method() == Method::POST {
-        let body = match read_request_body(req).await {
-            Ok(body) => body,
-            Err(error) => return convert_error_string(error),
-        };
-        let request: IoResolvedWireRequest = match serde_json::from_slice(&body) {
-            Ok(request) => request,
-            Err(error) => {
-                return convert_error_string(format!("Invalid I/O resolved message: {}", error))
-            }
-        };
-        // Durable log first so a restart can recover Completed instead of re-electing.
-        if let Ok(outputs) = &request.outputs {
-            if let Err(error) =
-                append_delivered_io_completion_record(&completion_record(&request.key, outputs))
-            {
-                return convert_error_string(format!(
-                    "Failed to persist I/O completion: {}",
-                    error
-                ));
-            }
+/// Winner publishes the I/O outcome so the owner can persist it and wake waiters.
+#[cfg(feature = "exactly-once")]
+async fn handle_io_resolved(
+    req: Request<Incoming>,
+    export_registry: &ExportRegistry,
+) -> Result<Response<ExportedBody>, Infallible> {
+    let body = match read_request_body(req).await {
+        Ok(body) => body,
+        Err(error) => return bad_request(error),
+    };
+    let request: IoResolvedWireRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(error) => return bad_request(format!("Invalid I/O resolved message: {}", error)),
+    };
+    // Durable log first so a restart can recover Completed instead of re-electing.
+    if let Ok(outputs) = &request.outputs {
+        if let Err(error) =
+            append_delivered_io_completion_record(&completion_record(&request.key, outputs))
+        {
+            return bad_request(format!("Failed to persist I/O completion: {}", error));
         }
-        return match export_registry.publish_io_resolution_inner(request.key, request.outputs) {
-            Ok(()) => Ok(Response::new(ExportedBody::from_bytes(Vec::new()))),
-            Err(error) => convert_error_string(error.to_string()),
-        };
     }
+    match export_registry.publish_io_resolution_inner(request.key, request.outputs) {
+        Ok(()) => Ok(Response::new(ExportedBody::from_bytes(Vec::new()))),
+        Err(error) => bad_request(error.to_string()),
+    }
+}
 
-    let id_string = match req.uri().path().strip_prefix("/data/") {
-        Some(id_string) => id_string,
-        None => {
-            return convert_error_string(format!("Unknown data server path {}", req.uri().path()))
-        }
+
+// TODO: make data service handler copy free
+async fn handle_exported_data(
+    req: Request<Incoming>,
+    path: &str,
+    export_registry: ExportRegistry,
+    permit: OwnedSemaphorePermit,
+) -> Result<Response<ExportedBody>, Infallible> {
+    let Some(id_string) = path.strip_prefix("/data/") else {
+        return bad_request(format!("Unknown data server path {}", path));
     };
 
     match req.method() {
         &Method::DELETE => match id_string.parse::<u64>() {
-            Err(err) => return convert_error_string(format!("Invalid data id: {}", err)),
+            Err(err) => return bad_request(format!("Invalid data id: {}", err)),
             Ok(data_id) => {
                 return match export_registry.delete_exported_data(data_id) {
-                    Err(err) => convert_error_string(format!("Delete failed with: {}", err)),
+                    Err(err) => bad_request(format!("Delete failed with: {}", err)),
                     Ok(()) => Ok(Response::new(ExportedBody {
                         inner: VecDeque::new(),
                     })),
@@ -2311,19 +2312,17 @@ async fn service(
         &Method::GET => {
             if !id_string.is_empty() {
                 match id_string.parse::<u64>() {
-                    Err(err) => return convert_error_string(format!("Invalid data id: {}", err)),
+                    Err(err) => return bad_request(format!("Invalid data id: {}", err)),
                     Ok(data_id) => {
                         return match export_registry.get_exported_data(data_id) {
-                            Err(err) => convert_error_string(format!("Get failed with: {}", err)),
+                            Err(err) => bad_request(format!("Get failed with: {}", err)),
                             Ok(data) => Ok(Response::new(ExportedBody::new_single(data))),
                         }
                     }
                 }
             }
         }
-        method => {
-            return convert_error_string(format!("Unsupported data server method {}", method))
-        }
+        method => return bad_request(format!("Unsupported data server method {}", method)),
     }
     // arrive here means we had GET method, but no single item
     let mut body = req.into_body();
@@ -2342,7 +2341,7 @@ async fn service(
                 if offset == 0 {
                     break;
                 } else {
-                    return convert_error_string(format!(
+                    return bad_request(format!(
                         "Got trailer frame, but still need: {}, to complete data id",
                         8 - offset,
                     ));
@@ -2355,7 +2354,7 @@ async fn service(
                 ids.push(u64::from_le_bytes(intermediate));
                 offset = 0;
             } else {
-                return convert_error_string(format!(
+                return bad_request(format!(
                     "Body did not contain a full array of indices, need: {}, available {}",
                     8 - offset,
                     frame.remaining()
@@ -2375,7 +2374,7 @@ async fn service(
     }
 
     if offset > 0 {
-        return convert_error_string(format!(
+        return bad_request(format!(
             "Body did not contain a full array of indices, need: {}, with no more frames",
             8 - offset,
         ));
@@ -2385,7 +2384,27 @@ async fn service(
 
     match export_registry.get_multiple_data(ids) {
         Ok(exports) => Ok(Response::new(ExportedBody { inner: exports })),
-        Err(err) => convert_error_string(err.to_string()),
+        Err(err) => bad_request(err.to_string()),
+    }
+}
+
+async fn service(
+    req: Request<Incoming>,
+    export_registry: ExportRegistry,
+    semaphore: Arc<Semaphore>,
+) -> Result<Response<ExportedBody>, Infallible> {
+    let permit = semaphore.acquire_owned().await.unwrap();
+    let path = req.uri().path().to_string();
+    match path.as_str() {
+        #[cfg(feature = "exactly-once")]
+        "/io/resolve" if req.method() == Method::POST => {
+            handle_io_resolve(req, &export_registry, permit).await
+        }
+        #[cfg(feature = "exactly-once")]
+        "/io/resolved" if req.method() == Method::POST => {
+            handle_io_resolved(req, &export_registry).await
+        }
+        path => handle_exported_data(req, path, export_registry, permit).await,
     }
 }
 
