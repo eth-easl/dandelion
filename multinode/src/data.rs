@@ -352,6 +352,7 @@ fn decode_io_resolved_request(bytes: &[u8]) -> Result<IoResolvedWireRequest, Str
     })
 }
 
+/// Turn a registry election into the `/io/resolve` reply, waiting if this caller lost.
 #[cfg(feature = "exactly-once")]
 async fn registry_resolution_response(
     registry: &ExportRegistry,
@@ -360,6 +361,7 @@ async fn registry_resolution_response(
     set_index: usize,
 ) -> DandelionResult<IoResolveWireResponse> {
     Ok(match resolution {
+        // Winner: inline owner-local input bytes, or leave a remote ref.
         RegistryIoResolution::Execute(original_data) => {
             let input = match original_data
                 .map(|data| registry.inline_local_io_input(data))
@@ -367,6 +369,7 @@ async fn registry_resolution_response(
             {
                 Ok(input) => input,
                 Err(error) => {
+                    // Publish failure so waiters are not left hanging.
                     let message = error.to_string();
                     registry.publish_io_resolution_inner(key, Err(message.clone()))?;
                     return Ok(IoResolveWireResponse::Failed(message));
@@ -374,8 +377,10 @@ async fn registry_resolution_response(
             };
             IoResolveWireResponse::Execute { input }
         }
+        // Already finished; reuse the stored output.
         RegistryIoResolution::Completed(data) => IoResolveWireResponse::Completed { data },
         RegistryIoResolution::Failed(error) => IoResolveWireResponse::Failed(error),
+        // hold this request until the winner publishes.
         RegistryIoResolution::Wait(mut receiver) => loop {
             if let Some(outcome) = receiver.borrow().clone() {
                 break match outcome {
