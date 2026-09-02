@@ -41,6 +41,8 @@ use machine_interface::{
 };
 use prost::bytes;
 #[cfg(feature = "exactly-once")]
+use prost::Message;
+#[cfg(feature = "exactly-once")]
 use std::collections::{HashMap, HashSet};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -67,7 +69,7 @@ use tokio::{
 };
 
 #[cfg(feature = "at-least-once")]
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct IoRemoteRef {
     node_id: u64,
     data_id: u64,
@@ -89,10 +91,31 @@ impl IoRemoteRef {
     fn into_remote(self) -> (RemoteData, usize) {
         (RemoteData::new(self.node_id, self.data_id), self.size)
     }
+
+    /// Encode a `(node_id, data_id, size)` remote pointer.
+    #[cfg(feature = "exactly-once")]
+    fn to_proto(&self) -> crate::proto::RemoteData {
+        crate::proto::RemoteData {
+            node_id: self.node_id,
+            data_id: self.data_id,
+            size: self.size as u64,
+        }
+    }
+
+    /// Parse a `(node_id, data_id, size)` remote pointer.
+    #[cfg(feature = "exactly-once")]
+    fn from_proto(data: crate::proto::RemoteData) -> Result<Self, String> {
+        Ok(Self {
+            node_id: data.node_id,
+            data_id: data.data_id,
+            size: usize::try_from(data.size)
+                .map_err(|_| "I/O remote reference size does not fit usize".to_string())?,
+        })
+    }
 }
 
 #[cfg(feature = "exactly-once")]
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug)]
 struct IoResolveWireRequest {
     key: IoCoordinationKey,
     set_index: usize,
@@ -117,7 +140,7 @@ enum IoResolveWireInput {
 }
 
 #[cfg(feature = "exactly-once")]
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug)]
 struct IoResolvedWireRequest {
     key: IoCoordinationKey,
     outputs: Result<Vec<IoRemoteRef>, String>,
@@ -150,115 +173,183 @@ enum RegistryIoResolution {
 }
 
 #[cfg(feature = "exactly-once")]
-const IO_RESOLVE_EXECUTE_NONE: u8 = 0;
-#[cfg(feature = "exactly-once")]
-const IO_RESOLVE_EXECUTE_INLINE: u8 = 1;
-#[cfg(feature = "exactly-once")]
-const IO_RESOLVE_EXECUTE_REMOTE: u8 = 2;
-#[cfg(feature = "exactly-once")]
-const IO_RESOLVE_COMPLETED: u8 = 3;
-#[cfg(feature = "exactly-once")]
-const IO_RESOLVE_FAILED: u8 = 4;
-#[cfg(feature = "exactly-once")]
-const IO_RESOLVE_RETRY: u8 = 5;
-
-/// Append a 24-byte little-endian `(node_id, data_id, size)` remote pointer.
-#[cfg(feature = "exactly-once")]
-fn encode_remote_ref(buffer: &mut Vec<u8>, data: &IoRemoteRef) {
-    buffer.extend_from_slice(&data.node_id.to_le_bytes());
-    buffer.extend_from_slice(&data.data_id.to_le_bytes());
-    buffer.extend_from_slice(&(data.size as u64).to_le_bytes());
+fn proto_coordination_key(
+    key: &IoCoordinationKey,
+) -> Result<crate::proto::IoCoordinationKey, String> {
+    Ok(crate::proto::IoCoordinationKey {
+        invocation_id: key.invocation_id.to_string(),
+        composition_set_id: u64::try_from(key.composition_set_id)
+            .map_err(|_| "I/O coordination composition_set_id does not fit u64".to_string())?,
+        function: crate::util::system_function_dtop(&key.function)
+            .map_err(|error| error.to_string())? as i32,
+        identifier: key.identifier.clone(),
+        item_key: key.item_key,
+    })
 }
 
-/// Parse a 24-byte little-endian `(node_id, data_id, size)` remote pointer.
 #[cfg(feature = "exactly-once")]
-fn decode_remote_ref(bytes: &[u8]) -> Result<IoRemoteRef, String> {
-    if bytes.len() != 24 {
-        return Err(format!(
-            "Invalid I/O resolve remote reference length {}, expected 24",
-            bytes.len()
-        ));
+fn coordination_key_from_proto(
+    key: crate::proto::IoCoordinationKey,
+) -> Result<IoCoordinationKey, String> {
+    let function = match crate::proto::SystemFunction::try_from(key.function) {
+        Ok(crate::proto::SystemFunction::Http) => {
+            machine_interface::function_driver::functions::SystemFunction::HTTP
+        }
+        Ok(crate::proto::SystemFunction::Memcached) => {
+            machine_interface::function_driver::functions::SystemFunction::MEMCACHED
+        }
+        Err(_) => return Err(format!("Unknown I/O system function {}", key.function)),
+    };
+    Ok(IoCoordinationKey {
+        invocation_id: dandelion_commons::InvocationId::parse_str(&key.invocation_id)
+            .map_err(|error| format!("Invalid I/O invocation id: {}", error))?,
+        composition_set_id: usize::try_from(key.composition_set_id)
+            .map_err(|_| "I/O coordination composition_set_id does not fit usize".to_string())?,
+        function,
+        identifier: key.identifier,
+        item_key: key.item_key,
+    })
+}
+
+#[cfg(feature = "exactly-once")]
+fn encode_io_resolve_request(request: &IoResolveWireRequest) -> Result<Vec<u8>, String> {
+    Ok(crate::proto::IoResolveRequest {
+        key: Some(proto_coordination_key(&request.key)?),
+        set_index: u64::try_from(request.set_index)
+            .map_err(|_| "I/O resolve set_index does not fit u64".to_string())?,
+        requester_node_id: request.requester_node_id,
+        original_data: request.original_data.as_ref().map(IoRemoteRef::to_proto),
     }
-    Ok(IoRemoteRef {
-        node_id: u64::from_le_bytes(bytes[0..8].try_into().unwrap()),
-        data_id: u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
-        size: usize::try_from(u64::from_le_bytes(bytes[16..24].try_into().unwrap()))
-            .map_err(|_| "I/O resolve remote reference size does not fit usize".to_string())?,
+    .encode_to_vec())
+}
+
+#[cfg(feature = "exactly-once")]
+fn decode_io_resolve_request(bytes: &[u8]) -> Result<IoResolveWireRequest, String> {
+    let request = crate::proto::IoResolveRequest::decode(bytes)
+        .map_err(|error| format!("Invalid I/O resolve protobuf: {}", error))?;
+    Ok(IoResolveWireRequest {
+        key: coordination_key_from_proto(request.key.ok_or("I/O resolve missing key")?)?,
+        set_index: usize::try_from(request.set_index)
+            .map_err(|_| "I/O resolve set_index does not fit usize".to_string())?,
+        requester_node_id: request.requester_node_id,
+        original_data: request
+            .original_data
+            .map(IoRemoteRef::from_proto)
+            .transpose()?,
     })
 }
 
 /// Owner-side wire encoding of `/io/resolve` replies to a remote worker.
 #[cfg(feature = "exactly-once")]
 fn encode_io_resolve_response(response: &IoResolveWireResponse) -> Vec<u8> {
-    let mut buffer = Vec::new();
-    match response {
+    use crate::proto::{io_resolve_response, IoResolveExecuteNone, IoResolveRetry};
+
+    let response = match response {
         // Winner, no input.
         IoResolveWireResponse::Execute { input: None } => {
-            buffer.push(IO_RESOLVE_EXECUTE_NONE);
+            io_resolve_response::Response::ExecuteNone(IoResolveExecuteNone {})
         }
         // Winner, input bytes inline.
         IoResolveWireResponse::Execute {
             input: Some(IoResolveWireInput::Inline(bytes)),
-        } => {
-            buffer.push(IO_RESOLVE_EXECUTE_INLINE);
-            buffer.extend_from_slice(bytes);
-        }
+        } => io_resolve_response::Response::ExecuteInline(bytes.clone()),
         // Winner, fetch input from a remote ref.
         IoResolveWireResponse::Execute {
             input: Some(IoResolveWireInput::Remote(data)),
-        } => {
-            buffer.push(IO_RESOLVE_EXECUTE_REMOTE);
-            encode_remote_ref(&mut buffer, data);
-        }
+        } => io_resolve_response::Response::ExecuteRemote(data.to_proto()),
         // Already finished; output lives at this remote ref.
         IoResolveWireResponse::Completed { data } => {
-            buffer.push(IO_RESOLVE_COMPLETED);
-            encode_remote_ref(&mut buffer, data);
+            io_resolve_response::Response::Completed(data.to_proto())
         }
         // I/O failed; payload is the error string.
         IoResolveWireResponse::Failed(error) => {
-            buffer.push(IO_RESOLVE_FAILED);
-            buffer.extend_from_slice(error.as_bytes());
+            io_resolve_response::Response::Failed(error.clone())
         }
         // Transient; worker should retry.
-        IoResolveWireResponse::Retry => buffer.push(IO_RESOLVE_RETRY),
+        IoResolveWireResponse::Retry => io_resolve_response::Response::Retry(IoResolveRetry {}),
+    };
+    crate::proto::IoResolveResponse {
+        response: Some(response),
     }
-    buffer
+    .encode_to_vec()
 }
 
 /// Worker-side decode of an owner's `/io/resolve` reply.
 #[cfg(feature = "exactly-once")]
 fn decode_io_resolve_response(bytes: &[u8]) -> Result<IoResolveWireResponse, String> {
-    let Some((&tag, payload)) = bytes.split_first() else {
-        return Err("Empty I/O resolve response".to_string());
-    };
-    match tag {
+    use crate::proto::io_resolve_response;
+
+    let response = crate::proto::IoResolveResponse::decode(bytes)
+        .map_err(|error| format!("Invalid I/O resolve response protobuf: {}", error))?;
+    match response.response {
         // Winner, no input.
-        IO_RESOLVE_EXECUTE_NONE if payload.is_empty() => {
+        Some(io_resolve_response::Response::ExecuteNone(_)) => {
             Ok(IoResolveWireResponse::Execute { input: None })
         }
-        IO_RESOLVE_EXECUTE_NONE => Err("I/O resolve execute-none response had a body".to_string()),
         // Winner, input bytes inline.
-        IO_RESOLVE_EXECUTE_INLINE => Ok(IoResolveWireResponse::Execute {
-            input: Some(IoResolveWireInput::Inline(payload.to_vec())),
-        }),
+        Some(io_resolve_response::Response::ExecuteInline(bytes)) => {
+            Ok(IoResolveWireResponse::Execute {
+                input: Some(IoResolveWireInput::Inline(bytes)),
+            })
+        }
         // Winner, fetch input from a remote ref.
-        IO_RESOLVE_EXECUTE_REMOTE => Ok(IoResolveWireResponse::Execute {
-            input: Some(IoResolveWireInput::Remote(decode_remote_ref(payload)?)),
-        }),
+        Some(io_resolve_response::Response::ExecuteRemote(data)) => {
+            Ok(IoResolveWireResponse::Execute {
+                input: Some(IoResolveWireInput::Remote(IoRemoteRef::from_proto(data)?)),
+            })
+        }
         // Already finished; output lives at this remote ref.
-        IO_RESOLVE_COMPLETED => Ok(IoResolveWireResponse::Completed {
-            data: decode_remote_ref(payload)?,
-        }),
+        Some(io_resolve_response::Response::Completed(data)) => {
+            Ok(IoResolveWireResponse::Completed {
+                data: IoRemoteRef::from_proto(data)?,
+            })
+        }
         // I/O failed; payload is the error string.
-        IO_RESOLVE_FAILED => String::from_utf8(payload.to_vec())
-            .map(IoResolveWireResponse::Failed)
-            .map_err(|_| "I/O resolve failure response was not UTF-8".to_string()),
+        Some(io_resolve_response::Response::Failed(error)) => {
+            Ok(IoResolveWireResponse::Failed(error))
+        }
         // Transient; worker should retry.
-        IO_RESOLVE_RETRY if payload.is_empty() => Ok(IoResolveWireResponse::Retry),
-        IO_RESOLVE_RETRY => Err("I/O resolve retry response had a body".to_string()),
-        tag => Err(format!("Unknown I/O resolve response tag {}", tag)),
+        Some(io_resolve_response::Response::Retry(_)) => Ok(IoResolveWireResponse::Retry),
+        None => Err("I/O resolve response missing oneof".to_string()),
     }
+}
+
+#[cfg(feature = "exactly-once")]
+fn encode_io_resolved_request(request: &IoResolvedWireRequest) -> Result<Vec<u8>, String> {
+    use crate::proto::{io_resolved_request, IoResolvedOutputs};
+
+    let outcome = match &request.outputs {
+        Ok(outputs) => io_resolved_request::Outcome::Completed(IoResolvedOutputs {
+            outputs: outputs.iter().map(IoRemoteRef::to_proto).collect(),
+        }),
+        Err(error) => io_resolved_request::Outcome::Failed(error.clone()),
+    };
+    Ok(crate::proto::IoResolvedRequest {
+        key: Some(proto_coordination_key(&request.key)?),
+        outcome: Some(outcome),
+    }
+    .encode_to_vec())
+}
+
+#[cfg(feature = "exactly-once")]
+fn decode_io_resolved_request(bytes: &[u8]) -> Result<IoResolvedWireRequest, String> {
+    use crate::proto::io_resolved_request;
+
+    let request = crate::proto::IoResolvedRequest::decode(bytes)
+        .map_err(|error| format!("Invalid I/O resolved protobuf: {}", error))?;
+    let outputs = match request.outcome {
+        Some(io_resolved_request::Outcome::Completed(completed)) => Ok(completed
+            .outputs
+            .into_iter()
+            .map(IoRemoteRef::from_proto)
+            .collect::<Result<Vec<_>, _>>()?),
+        Some(io_resolved_request::Outcome::Failed(error)) => Err(error),
+        None => return Err("I/O resolved message missing outcome".to_string()),
+    };
+    Ok(IoResolvedWireRequest {
+        key: coordination_key_from_proto(request.key.ok_or("I/O resolved missing key")?)?,
+        outputs,
+    })
 }
 
 #[cfg(feature = "exactly-once")]
@@ -1965,22 +2056,28 @@ impl RemoteDataClient for HttpRemoteDataClient {
                     .await?
                 } else {
                     let url = self.io_url(request.owner_node_id, "resolve")?;
-                    let response = self
-                        .client
-                        .post(url)
-                        .json(&IoResolveWireRequest {
-                            key: request.key.clone(),
-                            set_index: request.set_index,
-                            requester_node_id: self.local_registry.node_id,
-                            original_data: original_data.clone(),
-                        })
-                        .send()
-                        .await
-                        .map_err(|error| {
-                            dandelion_err!(DandelionError::Multinode(
-                                MultinodeError::ConnectionFailed(error.to_string())
-                            ))
-                        })?;
+                    let body = encode_io_resolve_request(&IoResolveWireRequest {
+                        key: request.key.clone(),
+                        set_index: request.set_index,
+                        requester_node_id: self.local_registry.node_id,
+                        original_data: original_data.clone(),
+                    })
+                    .map_err(|error| {
+                        dandelion_err!(DandelionError::Multinode(MultinodeError::ProtocolError(
+                            error
+                        )))
+                    })?;
+                    let response =
+                        self.client
+                            .post(url)
+                            .body(body)
+                            .send()
+                            .await
+                            .map_err(|error| {
+                                dandelion_err!(DandelionError::Multinode(
+                                    MultinodeError::ConnectionFailed(error.to_string())
+                                ))
+                            })?;
                     if !response.status().is_success() {
                         return err_dandelion!(DandelionError::Multinode(
                             MultinodeError::RequestFailed(response.status().to_string())
@@ -2148,8 +2245,16 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 key: completion.key,
                 outputs: wire_outcome,
             };
+            let body = match encode_io_resolved_request(&request) {
+                Ok(body) => body,
+                Err(error) => {
+                    return err_dandelion!(DandelionError::Multinode(
+                        MultinodeError::ProtocolError(error)
+                    ))
+                }
+            };
             loop {
-                match self.client.post(&url).json(&request).send().await {
+                match self.client.post(&url).body(body.clone()).send().await {
                     Ok(response) if response.status().is_success() => break,
                     Ok(response) => warn!(
                         "Owner rejected coordinated I/O completion with {}, retrying",
@@ -2226,7 +2331,7 @@ async fn handle_io_resolve(
         Ok(body) => body,
         Err(error) => return bad_request(error),
     };
-    let request: IoResolveWireRequest = match serde_json::from_slice(&body) {
+    let request = match decode_io_resolve_request(&body) {
         Ok(request) => request,
         Err(error) => return bad_request(format!("Invalid I/O resolve: {}", error)),
     };
@@ -2267,7 +2372,7 @@ async fn handle_io_resolved(
         Ok(body) => body,
         Err(error) => return bad_request(error),
     };
-    let request: IoResolvedWireRequest = match serde_json::from_slice(&body) {
+    let request = match decode_io_resolved_request(&body) {
         Ok(request) => request,
         Err(error) => return bad_request(format!("Invalid I/O resolved message: {}", error)),
     };
@@ -2964,6 +3069,28 @@ mod tests {
             let encoded = encode_io_resolve_response(&response);
             assert_eq!(response, decode_io_resolve_response(&encoded).unwrap());
         }
+
+        let request = IoResolveWireRequest {
+            key: coordination_key(),
+            set_index: 2,
+            requester_node_id: 9,
+            original_data: Some(remote.clone()),
+        };
+        let encoded = encode_io_resolve_request(&request).unwrap();
+        let decoded = decode_io_resolve_request(&encoded).unwrap();
+        assert_eq!(request.key, decoded.key);
+        assert_eq!(request.set_index, decoded.set_index);
+        assert_eq!(request.requester_node_id, decoded.requester_node_id);
+        assert_eq!(request.original_data, decoded.original_data);
+
+        let resolved = IoResolvedWireRequest {
+            key: coordination_key(),
+            outputs: Ok(vec![remote]),
+        };
+        let encoded = encode_io_resolved_request(&resolved).unwrap();
+        let decoded = decode_io_resolved_request(&encoded).unwrap();
+        assert_eq!(resolved.key, decoded.key);
+        assert_eq!(resolved.outputs, decoded.outputs);
     }
 
     #[tokio::test]

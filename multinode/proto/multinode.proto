@@ -128,6 +128,51 @@ message IoCompletionAcknowledgement {
     bool delete_outputs = 6;
 }
 
+message IoCoordinationKey {
+    string invocation_id = 1;
+    uint64 composition_set_id = 2;
+    SystemFunction function = 3;
+    string identifier = 4;
+    uint64 item_key = 5;
+}
+
+// Worker -> owner: elect a winner or wait for / reuse an existing result.
+message IoResolveRequest {
+    IoCoordinationKey key = 1;
+    uint64 set_index = 2;
+    uint64 requester_node_id = 3;
+    RemoteData original_data = 4;
+}
+
+message IoResolveExecuteNone {}
+
+message IoResolveRetry {}
+
+// Owner -> worker: Execute, Completed, Failed, or Retry.
+message IoResolveResponse {
+    oneof response {
+        IoResolveExecuteNone execute_none = 1;
+        bytes execute_inline = 2;
+        RemoteData execute_remote = 3;
+        RemoteData completed = 4;
+        string failed = 5;
+        IoResolveRetry retry = 6;
+    }
+}
+
+message IoResolvedOutputs {
+    repeated RemoteData outputs = 1;
+}
+
+// Winner -> owner: publish the I/O outcome.
+message IoResolvedRequest {
+    IoCoordinationKey key = 1;
+    oneof outcome {
+        IoResolvedOutputs completed = 2;
+        string failed = 3;
+    }
+}
+
 // Message from remote node to get work or return completed tasks
 message RemoteMessage {
     oneof remote_message {
