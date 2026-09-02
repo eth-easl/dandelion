@@ -915,6 +915,7 @@ impl ExportRegistry {
         self.begin_io_resolution_from_node(key, set_index, self.node_id, original_data)
     }
 
+    /// Elect a winner for this I/O key, or reuse a recovered / already-finished result.
     #[cfg(feature = "exactly-once")]
     fn begin_io_resolution_from_node(
         &self,
@@ -924,6 +925,7 @@ impl ExportRegistry {
         original_data: Option<IoRemoteRef>,
     ) -> DandelionResult<RegistryIoResolution> {
         let output_count = get_system_function_output_sets(key.function).len();
+        // After restart, a durable completion must be reused instead of re-running the I/O.
         let recovered = recovered_io_item_locations(
             key.invocation_id,
             key.function,
@@ -974,6 +976,7 @@ impl ExportRegistry {
                     entry.insert(IoResolutionState::Completed(outputs));
                     return Ok(RegistryIoResolution::Completed(output));
                 }
+                // First live caller for this key wins and later callers wait on this channel.
                 let (result, _) = watch::channel(None);
                 entry.insert(IoResolutionState::Running {
                     worker_node_id: requester_node_id,
@@ -982,6 +985,7 @@ impl ExportRegistry {
                 Ok(RegistryIoResolution::Execute(original_data))
             }
             std::collections::hash_map::Entry::Occupied(entry) => match entry.get() {
+                // Duplicate: subscribe until the winner publishes.
                 IoResolutionState::Running { result, .. } => {
                     Ok(RegistryIoResolution::Wait(result.subscribe()))
                 }
@@ -2341,7 +2345,7 @@ async fn handle_io_resolve(
         Err(error) => return bad_request(format!("Invalid I/O resolve: {}", error)),
     };
     let key = request.key.clone();
-    // First caller for this key is elected; later callers subscribe as waiters.
+    // Registry election: First caller for this key is elected; later callers subscribe as waiters.
     let resolution = match export_registry.begin_io_resolution_from_node(
         request.key,
         request.set_index,
@@ -2355,6 +2359,7 @@ async fn handle_io_resolve(
     // may receive its original request bytes inline. Neither should retain a bounded data
     // service permit while waiting or copying from the export registry.
     drop(permit);
+    // turn registry election into a response to the caller
     let response =
         match registry_resolution_response(export_registry, key, resolution, request.set_index)
             .await
