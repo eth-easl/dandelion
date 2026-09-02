@@ -158,6 +158,7 @@ const IO_RESOLVE_FAILED: u8 = 4;
 #[cfg(feature = "exactly-once")]
 const IO_RESOLVE_RETRY: u8 = 5;
 
+/// Append a 24-byte little-endian `(node_id, data_id, size)` remote pointer.
 #[cfg(feature = "exactly-once")]
 fn encode_remote_ref(buffer: &mut Vec<u8>, data: &IoRemoteRef) {
     buffer.extend_from_slice(&data.node_id.to_le_bytes());
@@ -165,6 +166,7 @@ fn encode_remote_ref(buffer: &mut Vec<u8>, data: &IoRemoteRef) {
     buffer.extend_from_slice(&(data.size as u64).to_le_bytes());
 }
 
+/// Parse a 24-byte little-endian `(node_id, data_id, size)` remote pointer.
 #[cfg(feature = "exactly-once")]
 fn decode_remote_ref(bytes: &[u8]) -> Result<IoRemoteRef, String> {
     if bytes.len() != 24 {
@@ -181,60 +183,74 @@ fn decode_remote_ref(bytes: &[u8]) -> Result<IoRemoteRef, String> {
     })
 }
 
+/// Owner-side wire encoding of `/io/resolve` replies to a remote worker.
 #[cfg(feature = "exactly-once")]
 fn encode_io_resolve_response(response: &IoResolveWireResponse) -> Vec<u8> {
     let mut buffer = Vec::new();
     match response {
+        // Winner, no input.
         IoResolveWireResponse::Execute { input: None } => {
             buffer.push(IO_RESOLVE_EXECUTE_NONE);
         }
+        // Winner, input bytes inline.
         IoResolveWireResponse::Execute {
             input: Some(IoResolveWireInput::Inline(bytes)),
         } => {
             buffer.push(IO_RESOLVE_EXECUTE_INLINE);
             buffer.extend_from_slice(bytes);
         }
+        // Winner, fetch input from a remote ref.
         IoResolveWireResponse::Execute {
             input: Some(IoResolveWireInput::Remote(data)),
         } => {
             buffer.push(IO_RESOLVE_EXECUTE_REMOTE);
             encode_remote_ref(&mut buffer, data);
         }
+        // Already finished; output lives at this remote ref.
         IoResolveWireResponse::Completed { data } => {
             buffer.push(IO_RESOLVE_COMPLETED);
             encode_remote_ref(&mut buffer, data);
         }
+        // I/O failed; payload is the error string.
         IoResolveWireResponse::Failed(error) => {
             buffer.push(IO_RESOLVE_FAILED);
             buffer.extend_from_slice(error.as_bytes());
         }
+        // Transient; worker should retry.
         IoResolveWireResponse::Retry => buffer.push(IO_RESOLVE_RETRY),
     }
     buffer
 }
 
+/// Worker-side decode of an owner's `/io/resolve` reply.
 #[cfg(feature = "exactly-once")]
 fn decode_io_resolve_response(bytes: &[u8]) -> Result<IoResolveWireResponse, String> {
     let Some((&tag, payload)) = bytes.split_first() else {
         return Err("Empty I/O resolve response".to_string());
     };
     match tag {
+        // Winner, no input.
         IO_RESOLVE_EXECUTE_NONE if payload.is_empty() => {
             Ok(IoResolveWireResponse::Execute { input: None })
         }
         IO_RESOLVE_EXECUTE_NONE => Err("I/O resolve execute-none response had a body".to_string()),
+        // Winner, input bytes inline.
         IO_RESOLVE_EXECUTE_INLINE => Ok(IoResolveWireResponse::Execute {
             input: Some(IoResolveWireInput::Inline(payload.to_vec())),
         }),
+        // Winner, fetch input from a remote ref.
         IO_RESOLVE_EXECUTE_REMOTE => Ok(IoResolveWireResponse::Execute {
             input: Some(IoResolveWireInput::Remote(decode_remote_ref(payload)?)),
         }),
+        // Already finished; output lives at this remote ref.
         IO_RESOLVE_COMPLETED => Ok(IoResolveWireResponse::Completed {
             data: decode_remote_ref(payload)?,
         }),
+        // I/O failed; payload is the error string.
         IO_RESOLVE_FAILED => String::from_utf8(payload.to_vec())
             .map(IoResolveWireResponse::Failed)
             .map_err(|_| "I/O resolve failure response was not UTF-8".to_string()),
+        // Transient; worker should retry.
         IO_RESOLVE_RETRY if payload.is_empty() => Ok(IoResolveWireResponse::Retry),
         IO_RESOLVE_RETRY => Err("I/O resolve retry response had a body".to_string()),
         tag => Err(format!("Unknown I/O resolve response tag {}", tag)),
@@ -2201,6 +2217,7 @@ async fn service(
         Ok(response)
     };
 
+    // Worker asks: elect a winner or wait for / reuse an existing result.
     #[cfg(feature = "exactly-once")]
     if req.uri().path() == "/io/resolve" && req.method() == Method::POST {
         let body = match read_request_body(req).await {
@@ -2212,6 +2229,7 @@ async fn service(
             Err(error) => return convert_error_string(format!("Invalid I/O resolve: {}", error)),
         };
         let key = request.key.clone();
+        // First caller for this key is elected; later callers subscribe as waiters.
         let resolution = match export_registry.begin_io_resolution_from_node(
             request.key,
             request.set_index,
@@ -2241,6 +2259,7 @@ async fn service(
         )));
     }
 
+    // Winner publishes the I/O outcome so the owner can persist it and wake waiters.
     #[cfg(feature = "exactly-once")]
     if req.uri().path() == "/io/resolved" && req.method() == Method::POST {
         let body = match read_request_body(req).await {
@@ -2253,6 +2272,7 @@ async fn service(
                 return convert_error_string(format!("Invalid I/O resolved message: {}", error))
             }
         };
+        // Durable log first so a restart can recover Completed instead of re-electing.
         if let Ok(outputs) = &request.outputs {
             if let Err(error) =
                 append_delivered_io_completion_record(&completion_record(&request.key, outputs))
