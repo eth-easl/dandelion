@@ -625,6 +625,7 @@ async fn resolve_checkpointed_io_item(
     resolve_io_item_exactly_once(io_data, client).await
 }
 
+/// Ask the owner who should run this I/O; only the winner executes, then publishes the result.
 #[cfg(feature = "exactly-once")]
 async fn resolve_io_item_exactly_once(
     io_data: CoordinatedIoData,
@@ -666,6 +667,7 @@ async fn resolve_io_item_exactly_once(
 
     let coordination_owner =
         owner_node_id.or_else(|| remote_client.as_ref().map(|client| client.local_node_id()));
+    // Elect a winner (or reuse a finished result). No client means run uncoordinated.
     let resolution = match (&remote_client, coordination_owner) {
         (Some(remote_client), Some(owner_node_id)) => {
             if let Some(recorder) = recorder.as_mut() {
@@ -687,6 +689,7 @@ async fn resolve_io_item_exactly_once(
         _ => None,
     };
 
+    // Duplicate: fetch the winner's output instead of running the I/O.
     if let Some(IoResolveOutcome::Completed { data }) = resolution {
         if let Some(recorder) = recorder.as_mut() {
             let wait_start = recorder
@@ -723,6 +726,7 @@ async fn resolve_io_item_exactly_once(
         None => (None, false),
         Some(IoResolveOutcome::Completed { .. } | IoResolveOutcome::Failed(_)) => unreachable!(),
     };
+    // Winner (or uncoordinated): get input bytes, then run the external I/O.
     let input_result = match resolved_input {
         Some(IoResolveInput::Inline { context, position }) => Ok((position, context)),
         Some(IoResolveInput::Remote { data, .. }) => {
@@ -741,6 +745,7 @@ async fn resolve_io_item_exactly_once(
         Err(error) => {
             let coordinated_error = coordination_error(error.to_string());
             if won_coordination {
+                // Waiters must not hang if the winner cannot even load its input.
                 if let (Some(remote_client), Some(owner_node_id)) =
                     (&remote_client, coordination_owner)
                 {
@@ -808,6 +813,7 @@ async fn resolve_io_item_exactly_once(
             ),
             Err(error) => IoCompletionOutcome::Failed(error.to_string()),
         };
+        // Publish so the owner can persist the result and unblock waiters.
         remote_client
             .publish_io_resolution(IoCoordinationCompletion {
                 owner_node_id,
