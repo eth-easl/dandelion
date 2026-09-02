@@ -2438,7 +2438,7 @@ async fn handle_exported_data(
         }
         method => return bad_request(format!("Unsupported data server method {}", method)),
     }
-    // arrive here means we had GET method, but no single item
+    // arrive here means we had GET method, but no single item, multiple data ids stored in the body expected
     let mut body = req.into_body();
     let mut body_pin = Pin::new(&mut body);
     let mut ids = Vec::new();
