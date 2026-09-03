@@ -512,13 +512,14 @@ impl WorkQueue {
     /// Assumes all the work is uniform, i.e the flags for all invocations are the same.
     pub async fn do_work_many(
         &self,
-        work_vec: Vec<WorkToDo>,
+        work_iter: impl ExactSizeIterator<Item = WorkToDo>,
         composition_id: usize,
     ) -> DandelionResult<Vec<WorkDone>> {
-        let mut debts = Vec::with_capacity(work_vec.len());
+        let size_hint = work_iter.len();
+        let mut debts = Vec::with_capacity(size_hint);
         let mut promises = FuturesUnordered::new();
-        let mut results = Vec::with_capacity(work_vec.len());
-        for _ in 0..work_vec.len() {
+        let mut results = Vec::with_capacity(size_hint);
+        for _ in 0..size_hint {
             let (promise, debt) = self.promise_buffer.get_promise()?;
             debts.push(debt);
             promises.push(promise);
@@ -528,7 +529,7 @@ impl WorkQueue {
         let mut io_elements = LinkedList::new();
         // first transforming all then pushing to not hold lock while evaluating policy
         let mut global_flags = 0;
-        for mut work in work_vec.into_iter() {
+        for mut work in work_iter {
             // determine if local and figure out flags
             let (flags, local) = get_flags(&work);
             global_flags = flags;
