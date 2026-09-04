@@ -584,6 +584,7 @@ impl WorkQueue {
             let mut queue_guard = self.inner.lock().unwrap();
 
             if !compute_elements.is_empty() {
+                let num_compute_elements = compute_elements.len();
                 if queue_guard.compute_queue.is_empty()
                     || queue_guard.compute_queue.back().unwrap().composition_id <= composition_id
                 {
@@ -606,20 +607,22 @@ impl WorkQueue {
                     queue_guard.compute_queue.append(&mut tail);
                 }
 
-                // call first waker with matching flags if there are any
-                if let Some(waker_to_call) = queue_guard
+                // wake up to one idle compute core per element we just queued, since each
+                // one can only be picked up by a core that gets polled again.
+                let wakers_to_call: Vec<_> = queue_guard
                     .compute_waker_list
                     .extract_if(|queue_element| queue_element.flags & global_flags == global_flags)
-                    .next()
-                {
-                    log::trace!("Notifying one waker");
+                    .take(num_compute_elements)
+                    .collect();
+                log::trace!("Notifying {} waker(s)", wakers_to_call.len());
+                for waker_to_call in wakers_to_call {
                     waker_to_call.waker.wake();
-                } else {
                 }
                 self.queuing_notifier.notify_waiters();
             }
 
             if !io_elements.is_empty() {
+                let num_io_elements = io_elements.len();
                 // check if an io core would take the element or not;
                 // if not, no reason to call waker
                 if queue_guard.io_queue.is_empty()
@@ -642,12 +645,15 @@ impl WorkQueue {
                     queue_guard.io_queue.append(&mut tail);
                 }
 
-                // call first waker with matching flags if there are any
-                // only call waker if we know the core wants to take this element
+                // wake up to one idle io core per element we just queued, for the same reason
+                // as for the compute queue above.
                 // TODO: have removed check for multiple wakeups / queueing notifications, need to consider if we need to reintroduce it or not
                 // and have a good way to decide when to notify the remotes, since this may add an amount of work where parts of it can be done locally,
                 // and parts should be done remotely (or all)
-                if let Some(waker) = queue_guard.io_waker_list.pop_front() {
+                for _ in 0..num_io_elements {
+                    let Some(waker) = queue_guard.io_waker_list.pop_front() else {
+                        break;
+                    };
                     waker.wake();
                 }
                 self.queuing_notifier.notify_waiters();
