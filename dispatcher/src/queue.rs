@@ -2,6 +2,7 @@ mod policy;
 
 pub use policy::PREFETCH_PER_CORE;
 
+use core::num;
 use dandelion_commons::{
     err_dandelion, records::RecordPoint, DandelionError, DandelionResult, DispatcherError,
 };
@@ -609,13 +610,11 @@ impl WorkQueue {
 
                 // wake up to one idle compute core per element we just queued, since each
                 // one can only be picked up by a core that gets polled again.
-                let wakers_to_call: Vec<_> = queue_guard
+                for waker_to_call in queue_guard
                     .compute_waker_list
                     .extract_if(|queue_element| queue_element.flags & global_flags == global_flags)
                     .take(num_compute_elements)
-                    .collect();
-                log::trace!("Notifying {} waker(s)", wakers_to_call.len());
-                for waker_to_call in wakers_to_call {
+                {
                     waker_to_call.waker.wake();
                 }
                 self.queuing_notifier.notify_waiters();
@@ -650,10 +649,11 @@ impl WorkQueue {
                 // TODO: have removed check for multiple wakeups / queueing notifications, need to consider if we need to reintroduce it or not
                 // and have a good way to decide when to notify the remotes, since this may add an amount of work where parts of it can be done locally,
                 // and parts should be done remotely (or all)
-                for _ in 0..num_io_elements {
-                    let Some(waker) = queue_guard.io_waker_list.pop_front() else {
-                        break;
-                    };
+                for waker in queue_guard
+                    .io_waker_list
+                    .extract_if(|_| true)
+                    .take(num_io_elements)
+                {
                     waker.wake();
                 }
                 self.queuing_notifier.notify_waiters();
