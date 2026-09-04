@@ -9,7 +9,7 @@ use dandelion_commons::{
     DandelionError, DandelionResult, DispatcherError, FunctionId,
 };
 use futures::{
-    future::{join_all, ready, Either},
+    future::{ready, Either},
     stream::{FuturesUnordered, StreamExt},
 };
 use itertools::Itertools;
@@ -162,13 +162,16 @@ impl Dispatcher {
         composition_desc: String,
         inputs: Vec<Option<CompositionSet>>,
         caching: bool,
-        recorder: Recorder,
+        mut recorder: Recorder,
     ) -> DandelionResult<(Vec<Option<LocalCompositionSet>>, Recorder)> {
         debug!("Parsing single use composition");
+        recorder.record(RecordPoint::EnterDispatcher);
 
         let composition_meta_pairs = self
             .function_registry
             .parse_compositions(&composition_desc.as_str())?;
+        recorder.record(RecordPoint::DynamicParsingEnd);
+
         if composition_meta_pairs.len() != 1 {
             debug!(
                 "Expected exactly one composition got {}",
@@ -436,14 +439,14 @@ impl Dispatcher {
         }
 
         recorder.add_children(recorders);
-
+        recorder.record(RecordPoint::FutureReturn);
         return Ok(output_sets);
     }
 
     /// Adapter between compositions and functions
     /// Keeps track of the composition set indexes so that when sets are returned to
     /// composition they have the corret index associated without the composition needing to track them.
-    /// Also handles sharing of sets
+    /// Also handles sharing of sets.
     async fn queue_function_sharded<'context>(
         &self,
         composition_id: usize,
@@ -462,83 +465,152 @@ impl Dispatcher {
             function_id,
             input_sets
         );
-        let mut recorders;
 
-        // check if there are no input sets or all of them are none, then don't need sharding,
-        // but still want to run if we queued it.
-        let is_sharded = input_sets.len() != 0 && input_sets.iter().any(|opt| opt.is_some());
-        let composition_results: DandelionResult<Vec<_>> = if is_sharded {
-            let min_set_bytes = self.function_registry.get_min_set_bytes(&function_id)?;
-            let sharded = get_sharding(
-                input_sets,
-                join_order,
-                join_strategies,
-                &self.any_sharding_mode,
-                min_set_bytes,
-            );
-            let size_hint = sharded.len();
-            recorders = Vec::with_capacity(size_hint);
-            let resutls: Vec<_> = sharded
-                .into_iter()
-                .map(|ins| {
-                    let new_recorder = Recorder::new_from_parent(function_id.clone(), &recorder);
-                    let future_box = Box::pin(self.queue_function(
-                        composition_id,
-                        function_id.clone(),
-                        ins,
-                        caching,
-                        new_recorder.clone(),
-                    ));
-                    recorders.push(new_recorder);
-                    future_box
+        let (results, recorders) = match self.function_registry.get_function(&function_id)? {
+            FunctionType::SystemFunction(sys_function) => {
+                // check if there are no input sets or all of them are none, then don't need sharding,
+                // but still want to run if we queued it.
+                let mut new_recorder = Recorder::new_from_parent(function_id.clone(), &recorder);
+                new_recorder.record(RecordPoint::EngineStart);
+                let results = tokio::spawn(async move {
+                    machine_interface::function_driver::system_driver::convert_to_references(
+                        sys_function,
+                        input_sets
+                            .into_iter()
+                            .map(|set_option| set_option.map(|(_, set)| set))
+                            .collect(),
+                    )
                 })
-                .collect();
-            join_all(resutls).await.into_iter().collect()
-            // TODO this is added to support functions with all functions defined as static sets
-            // might want to differentiate between those that have static sets and those that did not get input from predecessors
-        } else {
-            let new_recorder = Recorder::new_from_parent(function_id.clone(), &recorder);
-            let future_box = self
-                .queue_function(
-                    composition_id,
-                    function_id,
-                    vec![],
-                    caching,
-                    new_recorder.clone(),
-                )
                 .await
-                .and_then(|result| Ok(vec![result]));
-            recorders = vec![new_recorder];
-            future_box
-        };
+                .unwrap()?;
 
-        // collect vec of vec of shards into vec of sets
-        let mut composition_set_vecs = Vec::with_capacity(output_mapping.len());
-        composition_set_vecs.resize(output_mapping.len(), Vec::new());
-        let mut set_names = Vec::with_capacity(output_mapping.len());
-        set_names.resize(output_mapping.len(), None);
-        for sets in composition_results? {
-            for (index, set_option) in sets.into_iter().enumerate() {
-                if let Some(set) = set_option {
-                    set_names[index].get_or_insert_with(|| set.get_name().clone());
-                    composition_set_vecs[index].extend(set.into_iter());
+                new_recorder.record(RecordPoint::EngineEnd);
+
+                (results, vec![new_recorder])
+            }
+            FunctionType::Function(func_info) => {
+                let function_alternatives = func_info
+                    .alternatives
+                    .read()
+                    .expect("Function registry lock is poisoned!")
+                    .clone();
+                let metadata = func_info.metadata;
+
+                // check if there are no input sets or all of them are none, then don't need sharding,
+                // but still want to run if we queued it.
+                let sharding_start = std::time::Instant::now();
+                let mut recorders;
+                let is_sharded =
+                    input_sets.len() != 0 && input_sets.iter().any(|opt| opt.is_some());
+                if is_sharded {
+                    let min_set_bytes = self.function_registry.get_min_set_bytes(&function_id)?;
+                    let sharded = get_sharding(
+                        input_sets,
+                        join_order,
+                        join_strategies,
+                        &self.any_sharding_mode,
+                        min_set_bytes,
+                    );
+                    let size_hint = sharded.len();
+                    recorders = Vec::with_capacity(size_hint);
+
+                    let work_vec = sharded.into_iter().map(|input_sets| {
+                        let mut new_recorder =
+                            Recorder::new_from_parent(function_id.clone(), &recorder);
+                        new_recorder.prerecorded(RecordPoint::ShardingStart, sharding_start);
+
+                        let work_to_do = WorkToDo::FunctionArguments {
+                            function_id: function_id.clone(),
+                            function_alternatives: function_alternatives.clone(),
+                            input_sets,
+                            metadata: metadata.clone(),
+                            caching,
+                            recorder: new_recorder.clone(),
+                        };
+                        recorders.push(new_recorder);
+                        work_to_do
+                    });
+
+                    let done_vec = self
+                        .work_queue
+                        .do_work_many(work_vec, composition_id)
+                        .await?;
+
+                    for new_recorder in recorders.iter_mut() {
+                        new_recorder.record(RecordPoint::FutureReturn);
+                    }
+
+                    let mut composition_set_vecs = Vec::with_capacity(output_mapping.len());
+                    composition_set_vecs.resize(output_mapping.len(), Vec::new());
+                    for done_work in done_vec.into_iter() {
+                        let sets = done_work.get_composition();
+                        #[cfg(feature = "log_function_stdio")]
+                        log_io_sets(&sets, &function_id)?;
+
+                        for (index, set_option) in sets.into_iter().enumerate() {
+                            if let Some(set) = set_option {
+                                composition_set_vecs[index].extend(set.into_iter());
+                            }
+                        }
+                    }
+
+                    let sets = composition_set_vecs
+                        .into_iter()
+                        .zip(metadata.output_sets.iter())
+                        .map(|(sets, name)| CompositionSet::from_item_list(name.clone(), sets))
+                        .collect();
+
+                    (sets, recorders)
+                } else {
+                    // TODO this is added to support functions with all functions defined as static sets
+                    // might want to differentiate between those that have static sets and those that did not get input from predecessors
+                    let mut new_recorder =
+                        Recorder::new_from_parent(function_id.clone(), &recorder);
+                    new_recorder.prerecorded(RecordPoint::ShardingStart, sharding_start);
+
+                    let args = WorkToDo::FunctionArguments {
+                        function_id: function_id.clone(),
+                        function_alternatives,
+                        input_sets: vec![],
+                        metadata,
+                        caching,
+                        recorder: new_recorder.clone(),
+                    };
+
+                    let sets = self
+                        .work_queue
+                        .do_work(args, composition_id)
+                        .await?
+                        .get_composition();
+                    new_recorder.record(RecordPoint::FutureReturn);
+
+                    #[cfg(feature = "log_function_stdio")]
+                    log_io_sets(&sets, &function_id)?;
+
+                    (sets, vec![new_recorder])
                 }
             }
-        }
-        // assiociated sets with composition ids
+            FunctionType::Composition(comp_info) => (
+                self.queue_composition(
+                    composition_id,
+                    (*comp_info.composition).clone(),
+                    input_sets
+                        .into_iter()
+                        .map(|opt| opt.map(|(_, set)| set))
+                        .collect(),
+                    caching,
+                    recorder.clone(),
+                )
+                .await?,
+                vec![recorder],
+            ),
+        };
+
         Ok((
             output_mapping
                 .into_iter()
-                .zip(composition_set_vecs.into_iter())
-                .zip(set_names)
-                .filter_map(|((index_option, sets), name)| {
-                    index_option.map(|index| {
-                        (
-                            index,
-                            name.and_then(|name| CompositionSet::from_item_list(name, sets)),
-                        )
-                    })
-                })
+                .zip(results.into_iter())
+                .filter_map(|(index_option, sets)| index_option.map(|index| (index, sets)))
                 .collect(),
             function_index,
             recorders,
@@ -561,10 +633,14 @@ impl Dispatcher {
             // Defer actual execution of system functions (i.e. fetching),
             // by calling the system function to produce a composition set containing the reference to be resolved later
             FunctionType::SystemFunction(sys_function) => {
-                machine_interface::function_driver::system_driver::convert_to_references(
-                    sys_function,
-                    input_sets,
-                )
+                recorder.record(RecordPoint::EngineStart);
+                let result =
+                    machine_interface::function_driver::system_driver::convert_to_references(
+                        sys_function,
+                        input_sets,
+                    );
+                recorder.record(RecordPoint::EngineEnd);
+                result
             }
             FunctionType::Function(func_info) => {
                 let function_alternatives = func_info
@@ -603,42 +679,7 @@ impl Dispatcher {
                 recorder.record(RecordPoint::FutureReturn);
 
                 #[cfg(feature = "log_function_stdio")]
-                if let Some(io_set) = sets
-                    .iter()
-                    .filter_map(|set_option| set_option.as_ref())
-                    .find(|set| set.get_name() == "stdio")
-                {
-                    for (item, data) in io_set {
-                        use machine_interface::composition::ItemData;
-                        let context = match data {
-                            ItemData::LocalData(context) => context,
-                            _ => {
-                                debug!("Cannot print stdio data for non local items");
-                                continue;
-                            }
-                        };
-                        if item.ident == "stderr" && item.data.size > 0 {
-                            let mut stderr_output: Vec<u8> = vec![0; item.data.size];
-                            context.context.read(item.data.offset, &mut stderr_output)?;
-                            warn!(
-                                "Function '{}' result contains stderr output:\n{}",
-                                function_id,
-                                std::str::from_utf8(stderr_output.as_slice())
-                                    .expect("Invalid stderr buffer")
-                            );
-                        }
-                        if item.ident == "stdout" && item.data.size > 0 {
-                            let mut stdout_output: Vec<u8> = vec![0; item.data.size];
-                            context.context.read(item.data.offset, &mut stdout_output)?;
-                            debug!(
-                                "Function '{}' output:\n{}",
-                                function_id,
-                                std::str::from_utf8(stdout_output.as_slice())
-                                    .expect("Invalid stdout buffer")
-                            );
-                        }
-                    }
-                }
+                log_io_sets(&sets, &function_id)?;
 
                 Ok(sets)
             }
@@ -654,4 +695,46 @@ impl Dispatcher {
             }
         }
     }
+}
+
+#[cfg(feature = "log_function_stdio")]
+fn log_io_sets(
+    sets: &Vec<Option<CompositionSet>>,
+    function_id: &FunctionId,
+) -> DandelionResult<()> {
+    if let Some(io_set) = sets
+        .iter()
+        .filter_map(|set_option| set_option.as_ref())
+        .find(|set| set.get_name() == "stdio")
+    {
+        for (item, data) in io_set {
+            use machine_interface::composition::ItemData;
+            let context = match data {
+                ItemData::LocalData(context) => context,
+                _ => {
+                    debug!("Cannot print stdio data for non local items");
+                    continue;
+                }
+            };
+            if item.ident == "stderr" && item.data.size > 0 {
+                let mut stderr_output: Vec<u8> = vec![0; item.data.size];
+                context.context.read(item.data.offset, &mut stderr_output)?;
+                warn!(
+                    "Function '{}' result contains stderr output:\n{}",
+                    function_id,
+                    std::str::from_utf8(stderr_output.as_slice()).expect("Invalid stderr buffer")
+                );
+            }
+            if item.ident == "stdout" && item.data.size > 0 {
+                let mut stdout_output: Vec<u8> = vec![0; item.data.size];
+                context.context.read(item.data.offset, &mut stdout_output)?;
+                debug!(
+                    "Function '{}' output:\n{}",
+                    function_id,
+                    std::str::from_utf8(stdout_output.as_slice()).expect("Invalid stdout buffer")
+                );
+            }
+        }
+    }
+    Ok(())
 }

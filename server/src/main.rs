@@ -13,7 +13,11 @@ use machine_interface::{
 use multinode::data::ExportRegistry;
 use nix::sched::CpuSet;
 use std::{collections::BTreeMap, fs::read_to_string, sync::Arc};
-use tokio::{runtime::Builder, spawn, sync::mpsc};
+use tokio::{
+    runtime::Builder,
+    spawn,
+    sync::{mpsc, oneshot, watch},
+};
 
 mod frontend;
 
@@ -74,6 +78,8 @@ async fn remote_queue_client(
     export_registry: ExportRegistry,
     queue: WorkQueue,
     reconnect_interval: std::time::Duration,
+    graceful_shutdown_initiate: watch::Receiver<bool>,
+    graceful_shotdown_complete: oneshot::Sender<()>,
 ) {
     loop {
         // Keep retrying to (re-)establish the connection to the master node so a transient
@@ -81,6 +87,9 @@ async fn remote_queue_client(
         let connection = match tokio::net::TcpStream::connect(&remote_url).await {
             Ok(connection) => connection,
             Err(err) => {
+                if *graceful_shutdown_initiate.borrow() {
+                    break;
+                }
                 debug!(
                     "Failed to connect to master node at {}: {}. Retrying in {:?}",
                     remote_url, err, reconnect_interval
@@ -103,26 +112,35 @@ async fn remote_queue_client(
         }
         info!("Established connection to master node at {}", remote_url);
 
-        multinode::client::remote_queue_client(
+        let graceful_shutdown = multinode::client::remote_queue_client(
             connection,
             dispatcher,
             export_registry.clone(),
             queue.clone(),
+            graceful_shutdown_initiate.clone(),
         )
         .await;
 
-        // The connection was lost. Drop all contexts we were holding for the master node,
-        // since it will no longer fetch or delete them, then retry connecting.
-        info!(
-            "Lost connection to master node at {}, retrying in {:?}",
-            remote_url, reconnect_interval
-        );
-        // NOTE: we currently assume a centralized scheduler that owns the data. If this assumption
-        //       changes we need to update this function to only clear the exported data belonging
-        //       to this node.
-        export_registry.clear_exported_data();
-        tokio::time::sleep(reconnect_interval).await;
+        if graceful_shutdown {
+            info!("Remote client exited for graceful shutdown, await export registry being empty");
+            export_registry.empty().await;
+            break;
+        } else {
+            // The exit was not due to graceful shutdown, that means the connection was lost.
+            // Drop all contexts we were holding for the master node, since it will no longer fetch or delete them.
+            // Then retry connecting.
+            info!(
+                "Lost connection to master node at {}, retrying in {:?}",
+                remote_url, reconnect_interval
+            );
+            // NOTE: we currently assume a centralized scheduler that owns the data. If this assumption
+            //       changes we need to update this function to only clear the exported data belonging
+            //       to this node.
+            export_registry.clear_exported_data();
+            tokio::time::sleep(reconnect_interval).await;
+        }
     }
+    graceful_shotdown_complete.send(()).unwrap();
 }
 
 fn main() -> () {
@@ -347,12 +365,12 @@ fn main() -> () {
     print!(" timestamp");
     print!("\n");
 
-    if let Some(multinode_settings) =
+    let client_shutdown_option = if let Some(multinode_settings) =
         multinode::config::MultinodeConfig::load(config.multinode_config.as_deref())
     {
         let node_id = config.node_id;
         let export_registry = ExportRegistry::new(node_id);
-        if multinode_settings.queue_server.node_id == node_id {
+        let client_shutdown_option = if multinode_settings.queue_server.node_id == node_id {
             let (remote_data_deletion_sender, remote_data_deletion_receiver) =
                 mpsc::unbounded_channel();
             system_runtime.spawn(delete_service_loop(remote_data_deletion_receiver));
@@ -367,16 +385,23 @@ fn main() -> () {
                 export_registry.clone(),
                 remote_data_deletion_sender.clone(),
             ));
+            None
         } else {
             // start a thread to check if we should be checking remote queues
+            let (shutdown_sender, shutdown_receiver) = watch::channel(false);
+            let (completion_sender, completion_receiver) = oneshot::channel();
+            let registry_clone = export_registry.clone();
             system_runtime.spawn(remote_queue_client(
                 multinode::config::tcp_address(&multinode_settings.queue_server.url),
                 dispatcher,
-                export_registry.clone(),
+                registry_clone,
                 work_queue,
                 std::time::Duration::from_millis(config.multinode_reconnect_interval_ms),
+                shutdown_receiver,
+                completion_sender,
             ));
-        }
+            Some((shutdown_sender, completion_receiver))
+        };
 
         let data_server_urls = multinode_settings.data_server_urls();
         let data_server_address = data_server_urls
@@ -394,10 +419,19 @@ fn main() -> () {
             data_server_urls,
             export_registry,
         )));
-    }
+
+        client_shutdown_option
+    } else {
+        None
+    };
 
     // Run this server for... forever... unless I receive a signal!
-    system_runtime.block_on(frontend::service_loop(dispatcher, folder_path, config.port));
+    system_runtime.block_on(frontend::service_loop(
+        dispatcher,
+        folder_path,
+        config.port,
+        client_shutdown_option,
+    ));
 
     // clean up folder in tmp that is used for function storage
     let removal_error = std::fs::remove_dir_all(folder_path);

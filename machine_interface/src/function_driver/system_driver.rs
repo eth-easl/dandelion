@@ -91,22 +91,27 @@ pub fn convert_to_references(
         let input_set_name = input_set.get_name().clone();
         let mut out_0_list = try_with_capacity!(Vec, input_set.len())?;
         let mut out_1_list = try_with_capacity!(Vec, input_set.len())?;
-        for (item, data) in input_set {
+        for (item, data) in input_set.into_iter() {
+            let DataItem {
+                ident,
+                data: position,
+                key,
+            } = item;
             let new_item = DataItem {
                 data: crate::Position { offset: 0, size: 0 },
-                ident: item.ident.clone(),
-                key: item.key,
+                ident,
+                key: key,
             };
             let set_once = Arc::new(OnceCell::new());
             let header_data = IoData {
-                original_position: item.data,
+                original_position: position,
                 original_data: Box::new(data.clone()),
                 resolved: set_once.clone(),
                 function,
                 set_index: 0,
             };
             let body_data = IoData {
-                original_position: item.data,
+                original_position: position,
                 original_data: Box::new(data),
                 resolved: set_once,
                 function,
@@ -115,8 +120,12 @@ pub fn convert_to_references(
             out_0_list.push((new_item.clone(), ItemData::IoData(header_data)));
             out_1_list.push((new_item, ItemData::IoData(body_data)));
         }
-        output_vec[0] = CompositionSet::from_item_list(input_set_name.clone(), out_0_list);
-        output_vec[1] = CompositionSet::from_item_list(input_set_name, out_1_list);
+        // can assume the items are already sorted by key, since they come from a set and the key are just reused
+        let item_number = out_0_list.len();
+        output_vec[0] =
+            CompositionSet::from_sorted_items(input_set_name.clone(), out_0_list, 0, item_number);
+        output_vec[1] =
+            CompositionSet::from_sorted_items(input_set_name, out_1_list, 0, item_number);
     }
     Ok(output_vec)
 }

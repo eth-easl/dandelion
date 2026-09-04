@@ -8,10 +8,10 @@ use core::cell::{OnceCell, UnsafeCell};
 /// Maximum usize to expect when converting a record point to a usize
 /// By setting the last element to this explicitly, the compiler will throw an error,
 /// if there are more than this, because it enumerates from 0 and won't allow a number to be assigned twice.
-const LAST_RECORD_POINT: usize = 21;
+const LAST_RECORD_POINT: usize = 23;
 /// The first timestamp that should come from the engine running the function
-const FIRST_ENGINE_POINT: usize = 13;
-const LAST_ENGINE_POINT: usize = 20;
+const FIRST_ENGINE_POINT: usize = 15;
+const LAST_ENGINE_POINT: usize = 22;
 
 pub const ENGINE_RECORD_POINTS: usize = LAST_ENGINE_POINT - FIRST_ENGINE_POINT + 1;
 
@@ -22,6 +22,10 @@ pub enum RecordPoint {
     DeserializationEnd,
     /// When the request first enters the dispatcher
     EnterDispatcher,
+    /// For requests with dynamic compositions
+    DynamicParsingEnd,
+    /// Start sharding the function
+    ShardingStart,
     /// Queue to get the function executed on the engine (async)
     IOQueueStart,
     IOQueueEnd,
@@ -80,6 +84,14 @@ impl FunctionTimestamp {
 
     fn record(self: &Self, current_point: RecordPoint) {
         let new_duration = self.start_time.elapsed();
+        // each point is only present once in the code, so we can be sure we can write there safely,
+        // and sice it is in arc know the memory exists and will not be dropped during writing
+        let reference = UnsafeCell::raw_get(&self.time_points[current_point as usize]);
+        unsafe { *reference = new_duration };
+    }
+
+    fn prerecorded(self: &Self, current_point: RecordPoint, time: Instant) {
+        let new_duration = time.duration_since(self.start_time);
         // each point is only present once in the code, so we can be sure we can write there safely,
         // and sice it is in arc know the memory exists and will not be dropped during writing
         let reference = UnsafeCell::raw_get(&self.time_points[current_point as usize]);
@@ -178,6 +190,11 @@ impl Recorder {
         self.inner.timestamps.record(_current_point);
     }
 
+    pub fn prerecorded(&mut self, _current_point: RecordPoint, _time: Instant) {
+        #[cfg(feature = "timestamp")]
+        self.inner.timestamps.prerecorded(_current_point, _time);
+    }
+
     pub fn add_children(&mut self, _children: Vec<Option<Vec<Recorder>>>) {
         #[cfg(feature = "timestamp")]
         let _ = self.inner.children.set(_children);
@@ -272,11 +289,6 @@ impl fmt::Display for Recorder {
                         write!(_f, "[")?;
                         let mut has_prev = false;
                         for r in child_recorders.iter() {
-                            // FIXME: we ignore the (empty) HTTP recorders, ideally we do not create
-                            //        them in the first place
-                            if *r.inner.function_id == "HTTP" {
-                                continue;
-                            }
                             if has_prev {
                                 write!(_f, ",")?;
                             }
