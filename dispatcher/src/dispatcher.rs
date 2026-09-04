@@ -458,7 +458,7 @@ impl Dispatcher {
         join_strategies: Vec<JoinStrategy>,
         output_mapping: Vec<Option<usize>>,
         caching: bool,
-        mut recorder: Recorder,
+        recorder: Recorder,
     ) -> DandelionResult<(Vec<(usize, Option<CompositionSet>)>, usize, Vec<Recorder>)> {
         trace!(
             "queue function {} sharded and input sets: {:?}",
@@ -574,7 +574,7 @@ impl Dispatcher {
                         input_sets: vec![],
                         metadata,
                         caching,
-                        recorder: recorder.clone(),
+                        recorder: new_recorder.clone(),
                     };
 
                     let sets = self
@@ -582,7 +582,7 @@ impl Dispatcher {
                         .do_work(args, composition_id)
                         .await?
                         .get_composition();
-                    recorder.record(RecordPoint::FutureReturn);
+                    new_recorder.record(RecordPoint::FutureReturn);
 
                     #[cfg(feature = "log_function_stdio")]
                     log_io_sets(&sets, &function_id)?;

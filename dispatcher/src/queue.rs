@@ -2,7 +2,6 @@ mod policy;
 
 pub use policy::PREFETCH_PER_CORE;
 
-use core::num;
 use dandelion_commons::{
     err_dandelion, records::RecordPoint, DandelionError, DandelionResult, DispatcherError,
 };
@@ -258,7 +257,7 @@ impl Future for IoWaitFuture<'_> {
     }
 }
 
-fn get_flags(work: &WorkToDo) -> (u32, bool) {
+fn get_flags_and_local(work: &WorkToDo) -> (u32, bool) {
     match &work {
         WorkToDo::Shutdown(engine_type) => (get_engine_flag(*engine_type), true),
         WorkToDo::SetsToResolve { .. } => (0, false),
@@ -483,7 +482,7 @@ impl WorkQueue {
     }
 
     fn push(&self, work: WorkToDo, debt: Debt, composition_id: usize, try_offload: bool) {
-        let (flags, local) = get_flags(&work);
+        let (flags, local) = get_flags_and_local(&work);
         log::trace!(
             "Enqueueing function with all local data {}, with engine flags: {}",
             local,
@@ -532,7 +531,7 @@ impl WorkQueue {
         let mut global_flags = 0;
         for mut work in work_iter {
             // determine if local and figure out flags
-            let (flags, local) = get_flags(&work);
+            let (flags, local) = get_flags_and_local(&work);
             global_flags = flags;
             if local {
                 #[cfg(feature = "timestamp")]

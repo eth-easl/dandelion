@@ -124,7 +124,7 @@ struct ExportRegistryInner {
 #[derive(Clone)]
 pub struct ExportRegistry {
     node_id: u64,
-    empty: Arc<Notify>,
+    empty_notifier: Arc<Notify>,
     inner: Arc<Mutex<ExportRegistryInner>>,
 }
 
@@ -132,7 +132,7 @@ impl ExportRegistry {
     pub fn new(node_id: u64) -> Self {
         Self {
             node_id,
-            empty: Arc::new(Notify::new()),
+            empty_notifier: Arc::new(Notify::new()),
             inner: Arc::new(Mutex::new(ExportRegistryInner {
                 next_data_id: 0,
                 data: BTreeMap::new(),
@@ -218,7 +218,7 @@ impl ExportRegistry {
             )));
         };
         if inner.data.is_empty() {
-            self.empty.notify_waiters();
+            self.empty_notifier.notify_waiters();
         }
         Ok(())
     }
@@ -235,6 +235,7 @@ impl ExportRegistry {
         if cleared > 0 {
             debug!("Cleared {} exported data contexts", cleared);
         }
+        self.empty_notifier.notify_waiters();
     }
 
     pub fn fetch_context(&self, data_id: u64) -> DandelionResult<(Arc<Context>, Position)> {
@@ -245,7 +246,7 @@ impl ExportRegistry {
     /// A future that completes the next time the export registry has no items in it.
     pub async fn empty(&self) {
         // First take the notified, so we cannot miss any wakeups between release of the mutex and awaiting.
-        let notified = self.empty.notified();
+        let notified = self.empty_notifier.notified();
         // Check first if already empty, only need to wait if not.
         if self.inner.lock().unwrap().data.is_empty() {
             return;
