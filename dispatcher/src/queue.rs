@@ -548,6 +548,7 @@ impl WorkQueue {
                                     .map(|set| (number + set.len(), size + set.size()))
                                     .unwrap_or((number, size))
                             });
+                        // Record queue start here, as we want do to it before taking the lock.
                         recorder.record_input(total_items as u64, total_size as u64);
                         recorder.record(RecordPoint::ComputeQueueStart);
                     }
@@ -559,6 +560,7 @@ impl WorkQueue {
                     debt: debts.pop().unwrap(),
                 });
             } else {
+                // Record queue start here, as we want do to it before taking the lock.
                 if let WorkToDo::FunctionArguments { recorder, .. } = &mut work {
                     recorder.record(RecordPoint::IOQueueStart);
                 }
