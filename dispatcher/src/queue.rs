@@ -136,8 +136,10 @@ impl Future for ComputeWaitFuture<'_> {
         // check if there is any work with the flags we are looking for
         let result = lock_guard
             .compute_queue
-            .extract_if(|queue_element| queue_element.flags & self.flags != 0)
-            .next()
+            .extract_if(|queue_element| {
+                !queue_element.debt.is_alive() || queue_element.flags & self.flags != 0
+            })
+            .find(|queue_element| queue_element.debt.is_alive())
             .map(|queue_element| (queue_element.work, queue_element.debt));
         // Poke the IO queue in case they were waiting either for more space in the compute queue or an idle compute core
         if let Some(waker) = lock_guard.io_waker_list.pop_front() {
@@ -203,17 +205,20 @@ impl Future for IoWaitFuture<'_> {
         let idle_compute_cores = lock_guard.compute_waker_list.len();
         let extracted = lock_guard
             .io_queue
-            .extract_if(|queue_element| match &queue_element.work {
-                WorkToDo::FunctionArguments { .. } => policy::should_io_take(
-                    &queue_element.policy_data,
-                    compute_pending,
-                    active_fetch_count,
-                    local_cores,
-                    idle_compute_cores,
-                ),
-                _ => true,
+            .extract_if(|queue_element| {
+                !queue_element.debt.is_alive()
+                    || match &queue_element.work {
+                        WorkToDo::FunctionArguments { .. } => policy::should_io_take(
+                            &queue_element.policy_data,
+                            compute_pending,
+                            active_fetch_count,
+                            local_cores,
+                            idle_compute_cores,
+                        ),
+                        _ => true,
+                    }
             })
-            .next();
+            .find(|queue_element| queue_element.debt.is_alive());
         let result = extracted.map(|queue_element| {
             (
                 queue_element.work,
