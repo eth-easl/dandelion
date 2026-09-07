@@ -969,7 +969,6 @@ async fn remote_queue_client_logic(
                             "Queue Client received cancellation for invocation {}",
                             invocation_id
                         );
-                        cancelled_remote_invocations.insert(invocation_id);
                         if let Some(exported_data_ids) =
                             completed_remote_invocation_exports.remove(&invocation_id)
                         {
@@ -984,13 +983,14 @@ async fn remote_queue_client_logic(
                                 );
                                 break;
                             }
-                            cancelled_remote_invocations.remove(&invocation_id);
                             if send_cancel_acknowledgement(&message_sender, invocation_id)
                                 .await
                                 .is_err()
                             {
                                 break;
                             }
+                        } else {
+                            cancelled_remote_invocations.insert(invocation_id);
                         }
                     }
                     // TODO for try offload decide when to refuse work
