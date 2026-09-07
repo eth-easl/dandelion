@@ -29,4 +29,4 @@ jobs:
         sudo apt-get install protobuf-compiler
     # run the actual checks
     - name: run tests
-      run: cargo test -F ${{matrix.compute_driver}},${{matrix.additional_features}}
+      run: cargo clippy --all-targets -F ${{matrix.compute_driver}},${{matrix.additional_features}}
