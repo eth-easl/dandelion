@@ -158,7 +158,7 @@ unsafe impl Sync for Recorder {}
 
 impl Recorder {
     pub fn new(_function_id: FunctionId, _start: Instant) -> Self {
-        return Self {
+        Self {
             #[cfg(feature = "timestamp")]
             inner: std::sync::Arc::new(InnerRecorder {
                 function_id: _function_id,
@@ -168,11 +168,11 @@ impl Recorder {
                 input_items: UnsafeCell::new(0),
                 input_size: UnsafeCell::new(0),
             }),
-        };
+        }
     }
 
     pub fn new_from_parent(_function_id: FunctionId, _parent: &Self) -> Self {
-        return Self {
+        Self {
             #[cfg(feature = "timestamp")]
             inner: std::sync::Arc::new(InnerRecorder {
                 function_id: _function_id,
@@ -182,7 +182,7 @@ impl Recorder {
                 input_items: UnsafeCell::new(0),
                 input_size: UnsafeCell::new(0),
             }),
-        };
+        }
     }
 
     pub fn record(&mut self, _current_point: RecordPoint) {
