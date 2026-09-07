@@ -28,6 +28,8 @@ pub struct Metadata {
     /// prioritized and any other input for that set is ignored.
     pub input_sets: Vec<(String, Option<LocalCompositionSet>)>,
     /// The output set names.
+    /// TODO these strings need to be clone around a few times, should think about also putting them in arcs.
+    /// May be worth a general consireations, if that should be the default for Strings, also may want to check we only propagate them when they are actually necessary.
     pub output_sets: Vec<String>,
     /// The minimum size in bytes the largest set of a group of any sets should have. If given (i.e.
     /// has a value of > 0) the JoinIterator will combine any sets to achieve this size best-effort.

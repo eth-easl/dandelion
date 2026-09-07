@@ -91,9 +91,18 @@ fn check_sharding(actual: Vec<Vec<Option<CompositionSet>>>, expected: Vec<SetGro
             let mut expected_set = expected_set_opt.unwrap();
             let mut actual_set = actual_set_opt.unwrap();
             assert_eq!(expected_set.len(), actual_set.item_list.len());
-            // sort both lists by item index, since that one should be unique, since we only have a single context
-            expected_set.sort_by_key(|item| item.1.clone());
-            actual_set.item_list.sort_by_key(|item| item.0.key);
+            assert!(actual_set
+                .item_list
+                .iter()
+                .is_sorted_by_key(|item| item.0.key));
+            // sort both lists by key and index (identifier), so we can easily check they are the same
+            expected_set.sort();
+            actual_set.item_list.sort_by_key(|item| {
+                (
+                    item.0.key,
+                    usize::from_str_radix(&item.0.ident, 10).unwrap(),
+                )
+            });
             // have two sorted lists, check that each item index is the expected one and that it has the correct key
             for ((expected_key, expected_ident), (actual_item, _)) in
                 expected_set.into_iter().zip(actual_set.item_list)
