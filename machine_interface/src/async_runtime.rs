@@ -44,7 +44,7 @@ impl AsyncRuntime {
             log::debug!("starting a new thread");
             // register all the worker threads to the thread set
             let thread_index = static_cores
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |previous| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |previous| {
                     Some(previous.saturating_sub(1))
                 })
                 .unwrap();

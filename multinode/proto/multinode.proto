@@ -119,6 +119,8 @@ message RemoteMessage {
         NodeUpdate node_update = 3;
         // Confirms that a canceled invocation completed its local cleanup
         CancelAcknowledgement cancel_acknowledgement = 4;
+        // Message for graceful shutdown 
+        bool shutdown = 5;
     }
 }
 
@@ -134,5 +136,7 @@ message QueueMessage {
         Invocation try_offload = 3;
         // Message indicating remote invocation should not be scheduled
         uint32 cancel_invocation = 4;
+        // Message for graceful shutdown
+        bool shutdown = 5;
    }
 }
