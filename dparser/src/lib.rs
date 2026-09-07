@@ -348,12 +348,12 @@ fn parser() -> impl Parser<char, Module, Error = Simple<char>> {
         .map_with_span(aspanned);
 
     (function_decl
-        .map(|f| Item::FunctionDecl(f))
-        .or(composition.map(|c| Item::Composition(c))))
+        .map(Item::FunctionDecl)
+        .or(composition.map(Item::Composition)))
     .repeated()
     .padded()
     .then_ignore(end())
-    .map(|i| Module(i))
+    .map(Module)
 }
 
 pub fn parse(src: &str) -> Result<Module, Vec<Simple<char>>> {
@@ -571,7 +571,7 @@ pub fn print_errors(src: &str, errs: Vec<Simple<char>>) {
                                 .filter_map(|e| e.as_ref().map(|e| format!("{:?}", e))),
                         );
                         if let Some(l) = e.label() {
-                            expected = Box::new(expected.chain(std::iter::once(format!("{}", l))));
+                            expected = Box::new(expected.chain(std::iter::once(l.to_string())));
                         }
                         let expected = expected
                             .map(|e| e.fg(Color::White).to_string())
