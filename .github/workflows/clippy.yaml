@@ -22,6 +22,11 @@ jobs:
     steps:
     # check out the code
     - uses: actions/checkout@v3
+    # install protobuff to be able to build the workspace
+    - name: setup protobuf
+      run: |
+        sudo apt-get update
+        sudo apt-get install protobuf-compiler
     # run the actual checks
     - name: run tests
       run: cargo test -F ${{matrix.compute_driver}},${{matrix.additional_features}}
