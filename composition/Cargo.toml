@@ -1,0 +1,8 @@
+[package]
+name = "composition"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dandelion_commons = {path = "../dandelion_commons"}
+log = "0.4.21"

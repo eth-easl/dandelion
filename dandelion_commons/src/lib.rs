@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+pub mod data;
 pub mod range_pool;
 pub mod records;
 

@@ -373,6 +373,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
+name = "composition"
+version = "0.1.0"
+dependencies = [
+ "dandelion_commons",
+ "log",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -489,6 +497,7 @@ dependencies = [
  "byteorder",
  "bytes",
  "clap 4.6.1",
+ "composition",
  "dandelion_commons",
  "dispatcher",
  "env_logger 0.10.2",
