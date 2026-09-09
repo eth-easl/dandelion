@@ -10,7 +10,8 @@ use crate::{sharding::AnyShardingMode, Function};
 enum State {
     Pending(DataSetAccumulator),
     Complete(DataSet),
-    Transitioning, // TODO: can we get rid of this state?
+    /// State while collecting the accumulator and putting the dataset into the Complete state.
+    Transitioning,
 }
 
 struct Inner {
@@ -22,7 +23,7 @@ struct Inner {
 pub struct CompositionSet {
     requires_sorting: bool,
     requires_retention: bool,
-    inner: Mutex<Inner>, // TODO: better to use a read-write-lock here?
+    inner: Mutex<Inner>,
 }
 
 impl CompositionSet {
@@ -62,13 +63,13 @@ impl CompositionSet {
 
     pub fn push_items(
         &self,
-        items: Vec<Arc<DataItem>>,
+        items: Arc<Vec<Arc<DataItem>>>,
         complete: bool,
         any_sharding_mode: &AnyShardingMode,
     ) -> Vec<Invocation> {
         let mut inner = self.inner.lock().expect("CompositionSet lock poisoned!");
         assert!(
-            !self.is_complete(),
+            !matches!(inner.state, State::Complete(_)),
             "Tried adding an item to a complete CompositionSet!"
         );
 
@@ -87,7 +88,7 @@ impl CompositionSet {
             }
         }
 
-        if complete {
+        let blocking_consumers = if complete {
             if let State::Pending(acc) = mem::replace(&mut inner.state, State::Transitioning) {
                 if self.requires_sorting {
                     inner.state = State::Complete(acc.collect());
@@ -95,9 +96,15 @@ impl CompositionSet {
                     inner.state = State::Complete(acc.collect_unsorted());
                 }
             }
-            for (f, _) in inner.consumers_blocking.iter() {
-                invocations.extend(f.upgrade().unwrap().in_set_complete(any_sharding_mode));
-            }
+            inner.consumers_blocking.clone()
+        } else {
+            Vec::new()
+        };
+        // Drop the inner lock so any consumer trying to call get_set on this set doesn't deadlock.
+        drop(inner);
+
+        for (f, _) in blocking_consumers.iter() {
+            invocations.extend(f.upgrade().unwrap().in_set_complete(any_sharding_mode));
         }
         invocations
     }

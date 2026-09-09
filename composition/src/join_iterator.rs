@@ -72,7 +72,7 @@ impl JoinIterator for SetAllIterator {
 /// Implements the JoinIterator for the `each` sharding.
 pub(super) struct SetEachIterator {
     left: Option<Box<dyn JoinIterator>>,
-    items: Vec<Arc<DataItem>>,
+    items: Arc<Vec<Arc<DataItem>>>,
     item_idx: usize,
     write_idx: usize,
 }
@@ -112,7 +112,7 @@ impl JoinIterator for SetEachIterator {
         let num_unresolved = if item.is_local() { 0 } else { 1 };
         let total_size = item.data.size;
         to_fill[self.write_idx] = DataSet {
-            items: vec![item],
+            items: Arc::new(vec![item]),
             num_unresolved,
             total_size,
         };
@@ -148,7 +148,7 @@ impl JoinIterator for SetEachIterator {
 ///       the left instead of a more general `JoinIterator`.
 pub(super) struct SetKeyIterator {
     left: Option<Box<SetKeyIterator>>,
-    items: Vec<Arc<DataItem>>,
+    items: Arc<Vec<Arc<DataItem>>>,
     key_groups: Vec<(u32, Range<usize>)>,
     key_groups_idx: usize,
     key: u32,
@@ -326,7 +326,7 @@ impl JoinIterator for SetKeyIterator {
                 total_size += item.data.size;
             }
             to_fill[self.write_idx] = DataSet {
-                items: item_list,
+                items: Arc::new(item_list),
                 num_unresolved,
                 total_size,
             };

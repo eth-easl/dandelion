@@ -23,13 +23,15 @@ impl DataItem {
 
 #[derive(Clone, Debug, Default)]
 pub struct DataSet {
-    pub items: Vec<Arc<DataItem>>,
+    /// Share items among DataSet clones so sets that are frequently read by multiple consumers
+    /// (e.g. streaming consumers) are efficient.
+    pub items: Arc<Vec<Arc<DataItem>>>,
     pub num_unresolved: usize,
     pub total_size: usize,
 }
 
 impl DataSet {
-    pub fn from_items(items: Vec<Arc<DataItem>>) -> DataSet {
+    pub fn from_items(items: Arc<Vec<Arc<DataItem>>>) -> DataSet {
         let mut num_unresolved = 0;
         let mut total_size = 0;
         for item in items.iter() {
@@ -39,7 +41,7 @@ impl DataSet {
             total_size += item.data.size;
         }
         DataSet {
-            items: items,
+            items,
             num_unresolved,
             total_size,
         }
@@ -50,76 +52,79 @@ impl DataSet {
     }
 
     pub fn combine(mut sets: Vec<DataSet>) -> DataSet {
-        // TODO: can this be written more efficiently?
         let mut out_set = match sets.pop() {
             Some(set) => set,
             None => return DataSet::default(),
         };
+        let mut items = (*out_set.items).clone();
         while let Some(next_set) = sets.pop() {
-            let DataSet {
-                items,
-                num_unresolved,
-                total_size,
-            } = next_set;
-            out_set.items.extend(items);
-            out_set.num_unresolved += num_unresolved;
-            out_set.total_size += total_size;
+            items.extend(next_set.items.iter().cloned());
+            out_set.num_unresolved += next_set.num_unresolved;
+            out_set.total_size += next_set.total_size;
         }
-        out_set.items.sort_by_key(|a| a.key);
+        items.sort_by_key(|a| a.key);
+        out_set.items = Arc::new(items);
         out_set
     }
 }
 
 pub struct DataSetAccumulator {
-    set: DataSet,
+    items: Vec<Arc<DataItem>>,
+    num_unresolved: usize,
+    total_size: usize,
 }
 
 impl DataSetAccumulator {
     pub fn new() -> Self {
         DataSetAccumulator {
-            set: DataSet::default(),
+            items: Vec::new(),
+            num_unresolved: 0,
+            total_size: 0,
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.set.is_empty()
+        self.items.is_empty()
     }
 
     pub fn push_items(&mut self, items: &[Arc<DataItem>]) {
         for item in items.iter() {
             if !item.is_local() {
-                self.set.num_unresolved += 1;
+                self.num_unresolved += 1;
             }
-            self.set.total_size += item.data.size;
-            self.set.items.push(item.clone());
+            self.total_size += item.data.size;
+            self.items.push(item.clone());
         }
     }
 
     pub fn push_set(&mut self, set: DataSet) {
-        let DataSet {
-            items,
-            num_unresolved,
-            total_size,
-        } = set;
-        self.set.items.extend(items);
-        self.set.num_unresolved += num_unresolved;
-        self.set.total_size += total_size;
+        self.items.extend(set.items.iter().cloned());
+        self.num_unresolved += set.num_unresolved;
+        self.total_size += set.total_size;
     }
 
     /// Returns the current (unsorted) set.
     pub fn clone_set(&self) -> DataSet {
-        self.set.clone()
+        DataSet {
+            items: Arc::new(self.items.clone()),
+            num_unresolved: self.num_unresolved,
+            total_size: self.total_size,
+        }
     }
 
     /// Consumes the accumulator returning the set sorted by key.
     pub fn collect(mut self) -> DataSet {
-        self.set.items.sort_by_key(|itm| itm.key);
-        self.set
+        self.items.sort_by_key(|itm| itm.key);
+        self.collect_unsorted()
     }
 
     /// Consumes the accumulator returning the (unsorted) set.
     pub fn collect_unsorted(self) -> DataSet {
-        self.set
+        DataSet {
+            items: Arc::new(self.items),
+            num_unresolved: self.num_unresolved,
+            total_size: self.total_size,
+        }
     }
 }
 

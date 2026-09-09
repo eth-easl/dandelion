@@ -31,7 +31,7 @@ pub struct Function {
     num_outstanding: AtomicUsize,
     outputs: Vec<Weak<CompositionSet>>,
 
-    inner: Mutex<Inner>, // TODO: better to use a read-write-lock here?
+    inner: Mutex<Inner>,
 
     function_id: FunctionId,
     join_order: Vec<usize>,
@@ -44,10 +44,11 @@ impl Function {
         function_id: FunctionId,
         inputs: Vec<(Arc<CompositionSet>, Sharding)>,
         join_order: Vec<usize>,
-        min_set_bytes: Vec<usize>,
+        mut min_set_bytes: Vec<usize>,
         outputs: Vec<Weak<CompositionSet>>,
     ) -> Function {
         let blocking = inputs.iter().any(|(_, sharding)| sharding.is_blocking());
+        min_set_bytes.resize(inputs.len(), 0);
         Function {
             composition_idx: idx,
             num_outstanding: AtomicUsize::new(0),
@@ -86,12 +87,12 @@ impl Function {
         );
 
         let mut blocking = false;
-        let mut complete = false;
+        let mut complete = true;
         for (set, sharding) in &inner.inputs {
             let set_complete = set.is_complete();
             blocking |= sharding.is_blocking() && !set_complete;
-            complete |= set_complete;
-            if complete && blocking {
+            complete &= set_complete;
+            if !complete && blocking {
                 break;
             }
         }
@@ -116,7 +117,7 @@ impl Function {
     pub fn push_streaming_items(
         self: &Arc<Self>,
         set_idx: usize,
-        mut items: Vec<Arc<DataItem>>,
+        mut items: Arc<Vec<Arc<DataItem>>>,
         complete: bool,
         any_sharding_mode: &AnyShardingMode,
     ) -> Vec<Invocation> {
@@ -155,9 +156,9 @@ impl Function {
 
         let sharding_iter = create_sharding_iter(
             sets,
-            self.join_order.clone(), // TODO: can we do this better so we do not need to clone here?
+            &self.join_order,
             any_sharding_mode,
-            self.min_set_bytes.clone(), // TODO: can we do this better so we do not need to clone here?
+            &self.min_set_bytes,
         );
 
         let mut invocations = Vec::new();

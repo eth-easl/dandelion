@@ -127,13 +127,12 @@ impl AnySetGroup {
 /// set to 0.
 pub fn create_sharding_iter(
     mut sets: Vec<(DataSet, Sharding)>,
-    join_order: Vec<usize>,
+    join_order: &[usize],
     any_sharding_mode: &AnyShardingMode,
-    mut min_set_bytes: Vec<usize>,
+    min_set_bytes: &[usize],
 ) -> Option<Box<dyn JoinIterator>> {
     let set_num = sets.len();
     debug_assert_eq!(join_order.len(), set_num);
-    min_set_bytes.resize(set_num, 0);
 
     trace!(
         "Computing sharding using sets: {:?}, join_order: {:?}.",
@@ -168,14 +167,14 @@ pub fn create_sharding_iter(
                     &mut join_group_key_set,
                 );
             } else {
-                if join_group_key_set.len() > 0 {
-                    fixed_partitions *= join_group_key_set.len();
-                    join_group_key_set.clear();
-                }
                 break; // continue building all other iterators in the second loop
             }
         }
         i += 1;
+    }
+    if join_group_key_set.len() > 0 {
+        fixed_partitions *= join_group_key_set.len();
+        join_group_key_set.clear();
     }
 
     // second create the iterators for all remaining shardings
