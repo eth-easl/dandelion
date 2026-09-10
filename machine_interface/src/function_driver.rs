@@ -63,10 +63,10 @@ pub enum WorkDone {
 
 impl WorkDone {
     pub fn get_composition(self) -> Vec<Option<CompositionSet>> {
-        return match self {
+        match self {
             WorkDone::CompositionSet(sets) => sets,
             _ => panic!("WorkDone is not context when context was expected"),
-        };
+        }
     }
 }
 
@@ -100,6 +100,6 @@ pub trait Driver: Send + Sync {
     fn parse_function(
         &self,
         function_path: String,
-        static_domain: &Box<dyn MemoryDomain>,
+        static_domain: &dyn MemoryDomain,
     ) -> DandelionResult<functions::Function>;
 }

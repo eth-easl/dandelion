@@ -183,6 +183,10 @@ impl LocalCompositionSet {
         self.item_list.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.item_list.is_empty()
+    }
+
     pub fn get_name(&self) -> &String {
         &self.set_name
     }
@@ -204,7 +208,7 @@ impl LocalCompositionSet {
                             key: 0,
                         },
                         Arc::new(
-                            crate::memory_domain::read_only::ReadOnlyContext::new(
+                            crate::memory_domain::read_only::ReadOnlyContext::from_boxed(
                                 data.into_boxed_slice(),
                             )
                             .unwrap(),
@@ -369,6 +373,10 @@ impl CompositionSet {
         self.item_list.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.item_list.is_empty()
+    }
+
     pub fn size(&self) -> usize {
         self.total_size
     }
@@ -397,7 +405,7 @@ impl CompositionSet {
                     _ => panic!("Converting CompositionSet with non local items"),
                 })
                 .collect(),
-            set_name: set_name,
+            set_name,
         }
     }
 
@@ -409,7 +417,7 @@ impl CompositionSet {
             .map(|set_option| {
                 if let Some(set) = set_option {
                     let DataSet { ident, buffers } = set;
-                    if buffers.len() == 0 {
+                    if buffers.is_empty() {
                         None
                     } else {
                         let mut item_list = Vec::with_capacity(buffers.len());
@@ -494,7 +502,7 @@ impl CompositionSet {
                 total_size,
                 ..
             } = new_set;
-            set.item_list.extend(item_list.into_iter());
+            set.item_list.extend(item_list);
             set.non_local_items += non_local_items;
             set.total_size += total_size;
         }
@@ -588,7 +596,7 @@ pub fn get_sharding(
         let set_idx = join_order[i];
         if let Some((sharding, set)) = sets[set_idx].take() {
             if sharding != ShardingMode::Key {
-                if join_group_key_set.len() > 0 {
+                if !join_group_key_set.is_empty() {
                     fixed_partitions *= join_group_key_set.len();
                     join_group_key_set.clear();
                 }
@@ -602,11 +610,9 @@ pub fn get_sharding(
                 JoinStrategy::Cross
             };
 
-            if strategy == JoinStrategy::Cross {
-                if join_group_key_set.len() > 0 {
-                    fixed_partitions *= join_group_key_set.len();
-                    join_group_key_set.clear();
-                }
+            if strategy == JoinStrategy::Cross && !join_group_key_set.is_empty() {
+                fixed_partitions *= join_group_key_set.len();
+                join_group_key_set.clear();
             }
 
             key_join_iter = join_iterator::SetKeyIterator::new(
@@ -628,17 +634,18 @@ pub fn get_sharding(
         if let Some((sharding, set)) = sets[set_idx].take() {
             match sharding {
                 ShardingMode::All => {
-                    join_iter = join_iterator::SetAllIterator::new(join_iter, set, set_idx);
+                    join_iter =
+                        join_iterator::SetAllIterator::new_join_iter(join_iter, set, set_idx);
                 }
                 ShardingMode::Each => {
                     let partitions;
                     (join_iter, partitions) =
-                        join_iterator::SetEachIterator::new(join_iter, set, set_idx);
+                        join_iterator::SetEachIterator::new_join_iter(join_iter, set, set_idx);
                     fixed_partitions *= partitions;
                 }
                 ShardingMode::AnyEach => {
                     let (any_join_iter, largest_set_size, min_set_size, max_partitions) =
-                        join_iterator::AnyIterator::new(
+                        join_iterator::AnyIterator::new_join_iter(
                             join_iter,
                             vec![set],
                             vec![],
@@ -679,7 +686,7 @@ pub fn get_sharding(
                     }
 
                     let (any_join_iter, largest_set_size, min_set_size, max_partitions) =
-                        join_iterator::AnyIterator::new(
+                        join_iterator::AnyIterator::new_join_iter(
                             join_iter,
                             joined_sets,
                             joined_strategies,

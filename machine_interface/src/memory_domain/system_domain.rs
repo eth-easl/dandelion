@@ -54,7 +54,7 @@ impl ContextTrait for SystemContext {
     /// This could be changed but would be difficult to use in practice anyway
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         let mut total_bytes_read = 0;
-        let read_buffer_size = core::mem::size_of::<T>() * read_buffer.len();
+        let read_buffer_size = core::mem::size_of_val(read_buffer);
         let byte_buffer = unsafe {
             core::slice::from_raw_parts_mut(read_buffer.as_ptr() as *mut u8, read_buffer_size)
         };
@@ -96,7 +96,7 @@ impl ContextTrait for SystemContext {
                 break;
             }
         }
-        return Ok(());
+        Ok(())
     }
 
     fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
@@ -119,7 +119,7 @@ impl ContextTrait for SystemContext {
             "Read offset not stored in SystemContext (get_chunk_ref). Offset: {}",
             offset
         );
-        return err_dandelion!(DandelionError::InvalidRead);
+        err_dandelion!(DandelionError::InvalidRead)
     }
 }
 

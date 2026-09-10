@@ -26,7 +26,7 @@ mod compute_driver_tests {
         let elf_path = String::new();
         let domain = Dom::init(dom_init).expect("Should be able to get domain");
         engine_type
-            .parse_function(elf_path, &domain)
+            .parse_function(elf_path, domain.as_ref())
             .expect("Empty string should return error");
     }
 
@@ -108,7 +108,7 @@ mod compute_driver_tests {
 
         let function = Arc::new(
             engine_type
-                .parse_function(filename.to_string(), &domain)
+                .parse_function(filename.to_string(), domain.as_ref().as_ref())
                 .expect("Should be able to parse function"),
         );
 
@@ -150,7 +150,7 @@ mod compute_driver_tests {
         let (domain, queue) = prepare_engine_and_domain::<Dom>(dom_init, engine_type, drv_init);
         // add inputs
         let in_data = vec![1i64, 2i64];
-        let mut input_context = ReadOnlyContext::new(in_data.into_boxed_slice()).unwrap();
+        let mut input_context = ReadOnlyContext::from_boxed(in_data.into_boxed_slice()).unwrap();
         input_context.content.push(Some(DataSet {
             ident: "".to_string(),
             buffers: vec![DataItem {
@@ -241,7 +241,8 @@ mod compute_driver_tests {
                 mat_vec.push(i as i64);
             }
             let item_size = mat_vec.len() * core::mem::size_of::<i64>();
-            let mut input_context = ReadOnlyContext::new(mat_vec.into_boxed_slice()).unwrap();
+            let mut input_context =
+                ReadOnlyContext::from_boxed(mat_vec.into_boxed_slice()).unwrap();
             input_context.content = vec![Some(DataSet {
                 ident: "".to_string(),
                 buffers: vec![DataItem {
@@ -356,7 +357,7 @@ mod compute_driver_tests {
         }));
 
         let mut input_context =
-            ReadOnlyContext::new(unsafe { in_data.as_mut_vec() }.clone().into_boxed_slice())
+            ReadOnlyContext::from_boxed(unsafe { in_data.as_mut_vec() }.clone().into_boxed_slice())
                 .unwrap();
         input_context.content = content;
         let input_sets = CompositionSet::from_context(input_context);
@@ -507,7 +508,7 @@ mod compute_driver_tests {
         }));
 
         let mut input_context =
-            ReadOnlyContext::new(unsafe { in_data.as_mut_vec() }.clone().into_boxed_slice())
+            ReadOnlyContext::from_boxed(unsafe { in_data.as_mut_vec() }.clone().into_boxed_slice())
                 .unwrap();
         input_context.content = content;
         let input_sets = CompositionSet::from_context(input_context);

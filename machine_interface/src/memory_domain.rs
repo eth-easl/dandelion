@@ -118,10 +118,10 @@ impl ContextTrait for Context {
 
 impl Context {
     pub fn new(con: ContextType, size: usize) -> Self {
-        return Context {
+        Context {
             context: con,
             content: vec![],
-            size: size,
+            size,
             state: ContextState::InPreparation,
             occupation: vec![
                 Position { offset: 0, size: 0 },
@@ -130,7 +130,7 @@ impl Context {
                     size: 0,
                 },
             ],
-        };
+        }
     }
     /// Mark area between offset and offset + size as occupied
     /// Start search on index and merge occupation with any overlapping occupation
@@ -142,13 +142,7 @@ impl Context {
         if (self.occupation[index].offset + self.occupation[index].size) == offset {
             self.occupation[index].size = offset - self.occupation[index].offset + size;
         } else {
-            self.occupation.insert(
-                index + 1,
-                Position {
-                    offset: offset,
-                    size,
-                },
-            );
+            self.occupation.insert(index + 1, Position { offset, size });
             check_index = index + 1;
         }
         while self.occupation.len() > check_index + 1
@@ -172,15 +166,15 @@ impl Context {
             .enumerate()
             .find_map(|(index, pos)| {
                 if offset >= pos[0].offset && offset < pos[1].offset {
-                    return Some(index);
+                    Some(index)
                 } else {
-                    return None;
+                    None
                 }
             });
         if let Some(index) = insertion_index {
             self.insert(index, offset, size);
         }
-        return Ok(());
+        Ok(())
     }
     pub fn get_free_space(&mut self, size: usize, alignment: usize) -> DandelionResult<usize> {
         // search for smallest space that is bigger than size
@@ -203,19 +197,19 @@ impl Context {
             return err_dandelion!(DandelionError::ContextFull);
         }
         self.insert(index, start_address, size);
-        return Ok(start_address);
+        Ok(start_address)
     }
     pub fn get_free_space_and_write_slice<T>(&mut self, data: &[T]) -> DandelionResult<*const T> {
-        let alloc_size = data.len() * core::mem::size_of::<T>();
+        let alloc_size = core::mem::size_of_val(data);
         let offset = self.get_free_space(alloc_size, core::mem::align_of::<T>())?;
         self.write(offset, data)?;
         Ok(offset as *const T)
     }
     pub fn get_last_item_end(&self) -> usize {
         let last_item = self.occupation[self.occupation.len() - 2];
-        return last_item.offset + last_item.size;
+        last_item.offset + last_item.size
     }
-    pub fn clear_metadata(&mut self) -> () {
+    pub fn clear_metadata(&mut self) {
         self.content = vec![];
         self.occupation = vec![
             Position { offset: 0, size: 0 },
@@ -251,11 +245,11 @@ pub fn transfer_memory(
     source_offset: usize,
     size: usize,
 ) -> DandelionResult<()> {
-    return match (&mut destination.context, &source.context) {
+    match (&mut destination.context, &source.context) {
         (ContextType::Malloc(destination_ctxt), ContextType::Malloc(source_ctxt)) => {
             malloc::malloc_transfer(
                 destination_ctxt,
-                &source_ctxt,
+                source_ctxt,
                 destination_offset,
                 source_offset,
                 size,
@@ -274,7 +268,7 @@ pub fn transfer_memory(
         #[cfg(feature = "mmu")]
         (ContextType::Mmu(destination_ctxt), ContextType::Mmu(source_ctxt)) => mmu::mmu_transfer(
             destination_ctxt,
-            &source_ctxt,
+            source_ctxt,
             destination_offset,
             source_offset,
             size,
@@ -283,7 +277,7 @@ pub fn transfer_memory(
         (ContextType::Mmu(destination_ctxt), ContextType::Bytes(source_ctxt)) => {
             mmu::bytest_to_mmu_transfer(
                 destination_ctxt,
-                &source_ctxt,
+                source_ctxt,
                 destination_offset,
                 source_offset,
                 size,
@@ -292,7 +286,7 @@ pub fn transfer_memory(
         (ContextType::System(destination_ctxt), ContextType::System(source_ctxt)) => {
             system_domain::system_context_transfer(
                 destination_ctxt,
-                &source_ctxt,
+                source_ctxt,
                 destination_offset,
                 source_offset,
                 size,
@@ -315,7 +309,7 @@ pub fn transfer_memory(
         ),
         (_, ContextType::System(source_ctxt)) => system_domain::out_of_system_context_transfer(
             destination,
-            &source_ctxt,
+            source_ctxt,
             destination_offset,
             source_offset,
             size,
@@ -326,7 +320,7 @@ pub fn transfer_memory(
             source.read(source_offset, &mut read_buffer)?;
             destination.write(destination_offset, &read_buffer)
         }
-    };
+    }
 }
 
 /// Transfer a data item from one context to another.
@@ -345,7 +339,11 @@ pub fn transfer_data_item(
         source_item.data,
         destination.occupation,
     );
-    if source_item.data.offset % destination_allignment != 0 {
+    if !source_item
+        .data
+        .offset
+        .is_multiple_of(destination_allignment)
+    {
         log::debug!("source item offset is not aligned with destination alignment requirement");
     }
 
@@ -355,7 +353,10 @@ pub fn transfer_data_item(
         // if we have more than 2 PAGE sizes, there is a least one page that can be zero copied
         ContextType::Kvm(_)
             if source_item.data.size > 2 * kvm::PAGE_SIZE
-                && source_item.data.offset % destination_allignment == 0 =>
+                && source_item
+                    .data
+                    .offset
+                    .is_multiple_of(destination_allignment) =>
         {
             let (index, start_address) = kvm::get_transfer_offset(
                 &destination.occupation,

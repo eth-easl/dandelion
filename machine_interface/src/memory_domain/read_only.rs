@@ -28,63 +28,59 @@ impl std::fmt::Debug for ReadOnlyContext {
 impl ContextTrait for ReadOnlyContext {
     fn write<T>(&mut self, _offset: usize, _data: &[T]) -> DandelionResult<()> {
         error!("Tried to write to read only context");
-        return err_dandelion!(DandelionError::InvalidWrite);
+        err_dandelion!(DandelionError::InvalidWrite)
     }
 
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
-        if offset % core::mem::align_of::<T>() != 0 {
+        if !offset.is_multiple_of(core::mem::align_of::<T>()) {
             return err_dandelion!(DandelionError::ReadMisaligned);
         }
 
-        let read_size = core::mem::size_of::<T>() * read_buffer.len();
+        let read_size = core::mem::size_of_val(read_buffer);
         if offset + read_size > self.storage.len() {
             return err_dandelion!(DandelionError::InvalidRead);
         }
-        let byte_buffer = unsafe {
-            core::slice::from_raw_parts_mut(
-                read_buffer.as_ptr() as *mut u8,
-                read_buffer.len() * core::mem::size_of::<T>(),
-            )
-        };
+        let byte_buffer =
+            unsafe { core::slice::from_raw_parts_mut(read_buffer.as_ptr() as *mut u8, read_size) };
         byte_buffer.copy_from_slice(&self.storage[offset..offset + read_size]);
-        return Ok(());
+        Ok(())
     }
 
     fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
         if offset + length > self.storage.len() {
             return err_dandelion!(DandelionError::InvalidRead);
         }
-        return Ok(&self.storage[offset..offset + length]);
+        Ok(&self.storage[offset..offset + length])
     }
 }
 
 impl ReadOnlyContext {
-    pub fn new<T>(reference: Box<[T]>) -> DandelionResult<Context> {
-        let ref_len = core::mem::size_of::<T>() * reference.len();
+    pub fn from_boxed<T>(reference: Box<[T]>) -> DandelionResult<Context> {
+        let ref_len = core::mem::size_of_val(reference.as_ref());
         let layout = core::alloc::Layout::from_size_align(ref_len, core::mem::align_of::<T>())
             .or(err_dandelion!(DandelionError::ContextReadOnlyLayout))?;
         let new_ref = unsafe {
             core::slice::from_raw_parts_mut(Box::leak(reference).as_mut_ptr() as *mut u8, ref_len)
         };
-        return Ok(Context::new(
+        Ok(Context::new(
             super::ContextType::ReadOnly(Box::new(ReadOnlyContext {
                 storage: new_ref,
                 layout: Some(layout),
             })),
             ref_len,
-        ));
+        ))
     }
     pub fn new_static<T>(reference: &'static mut [T]) -> Context {
-        let ref_len = core::mem::size_of::<T>() * reference.len();
+        let ref_len = core::mem::size_of_val(reference);
         let new_ref =
             unsafe { core::slice::from_raw_parts_mut(reference.as_mut_ptr() as *mut u8, ref_len) };
-        return Context::new(
+        Context::new(
             super::ContextType::ReadOnly(Box::new(ReadOnlyContext {
                 storage: new_ref,
                 layout: None,
             })),
             ref_len,
-        );
+        )
     }
 }
 
@@ -100,7 +96,7 @@ impl Drop for ReadOnlyContext {
 fn read_test() {
     let expected_data = -0x123456789ABCDEFi64;
     let test_data = vec![expected_data];
-    let read_context = ReadOnlyContext::new(test_data.into_boxed_slice())
+    let read_context = ReadOnlyContext::from_boxed(test_data.into_boxed_slice())
         .expect("should be able to create allocation");
     let mut all_read_vec = Vec::<u8>::new();
     all_read_vec.resize(8, 0);

@@ -27,7 +27,7 @@ pub(super) struct SetAllIterator {
 }
 
 impl SetAllIterator {
-    pub(super) fn new(
+    pub(super) fn new_join_iter(
         left: Option<Box<dyn JoinIterator>>,
         set: CompositionSet,
         write_idx: usize,
@@ -48,7 +48,7 @@ impl JoinIterator for SetAllIterator {
         if let Some(left) = self.left.as_mut() {
             left.reduce_any_partitions(any_parallelisms);
         } else {
-            debug_assert!(any_parallelisms.len() == 0);
+            debug_assert!(any_parallelisms.is_empty());
         }
     }
 
@@ -77,7 +77,7 @@ pub(super) struct SetEachIterator {
 }
 
 impl SetEachIterator {
-    pub(super) fn new(
+    pub(super) fn new_join_iter(
         left: Option<Box<dyn JoinIterator>>,
         set: CompositionSet,
         write_idx: usize,
@@ -101,7 +101,7 @@ impl JoinIterator for SetEachIterator {
         if let Some(left) = self.left.as_mut() {
             left.reduce_any_partitions(any_parallelisms);
         } else {
-            debug_assert!(any_parallelisms.len() == 0);
+            debug_assert!(any_parallelisms.is_empty());
         }
     }
 
@@ -161,7 +161,7 @@ pub(super) struct SetKeyIterator {
     write_idx: usize,
 }
 
-fn key_set_intersect(curr_keys: &mut Vec<u32>, new_key_groups: &Vec<(u32, Range<usize>)>) {
+fn key_set_intersect(curr_keys: &mut Vec<u32>, new_key_groups: &[(u32, Range<usize>)]) {
     let mut write_idx = 0;
     let mut j = 0;
 
@@ -181,10 +181,10 @@ fn key_set_intersect(curr_keys: &mut Vec<u32>, new_key_groups: &Vec<(u32, Range<
     curr_keys.truncate(write_idx);
 }
 
-fn key_set_union(curr_keys: &mut Vec<u32>, new_key_groups: &Vec<(u32, Range<usize>)>) {
-    if new_key_groups.len() == 0 {
+fn key_set_union(curr_keys: &mut Vec<u32>, new_key_groups: &[(u32, Range<usize>)]) {
+    if new_key_groups.is_empty() {
         return;
-    } else if curr_keys.len() == 0 {
+    } else if curr_keys.is_empty() {
         return *curr_keys = new_key_groups.iter().map(|(k, _)| *k).collect();
     }
 
@@ -311,7 +311,7 @@ impl SetKeyIterator {
 
 impl JoinIterator for SetKeyIterator {
     fn reduce_any_partitions(&mut self, any_parallelisms: Vec<AnySetGroup>) {
-        debug_assert!(any_parallelisms.len() == 0);
+        debug_assert!(any_parallelisms.is_empty());
     }
 
     fn fill_in(&mut self, to_fill: &mut Vec<Option<CompositionSet>>) {
@@ -571,7 +571,7 @@ impl AnyIterator {
     /// joining), the corresponding minimum set size, and the maximum possible number of partitions.
     /// If the iterator is empty, i.e. won't produce any sets, it returns the left `JoinIterator`
     /// (and zeros for the other values).
-    pub(super) fn new(
+    pub(super) fn new_join_iter(
         left: Option<Box<dyn JoinIterator>>,
         sets: Vec<CompositionSet>,
         strategies: Vec<JoinStrategy>,
@@ -587,7 +587,7 @@ impl AnyIterator {
         if sharding == ShardingMode::AnyEach {
             debug_assert_eq!(num_sets, 1);
             (inner_join_it, _) =
-                SetEachIterator::new(inner_join_it, sets.into_iter().next().unwrap(), 0);
+                SetEachIterator::new_join_iter(inner_join_it, sets.into_iter().next().unwrap(), 0);
         } else {
             debug_assert_eq!(sharding, ShardingMode::AnyKey);
             let mut inner_key_it = None;
@@ -604,8 +604,7 @@ impl AnyIterator {
         }
 
         if let Some(mut it) = inner_join_it {
-            let mut total_sizes = Vec::new();
-            total_sizes.reserve(num_sets);
+            let mut total_sizes = Vec::with_capacity(num_sets);
             let mut inner_sharding = Vec::new();
 
             // generate all sets
@@ -703,8 +702,8 @@ impl JoinIterator for AnyIterator {
                     let extra = if group_idx < remainder { 1 } else { 0 };
                     min_end_idx = min_end_idx + base_size + extra;
 
-                    let mut set_group = Vec::with_capacity(num_sets);
-                    set_group.resize(num_sets, None);
+                    let mut set_groups = Vec::with_capacity(num_sets);
+                    set_groups.resize(num_sets, None);
 
                     // iterate through largest set until we have reached at least the min_end_idx and the
                     // set is at least self.min_set_bytes big
@@ -722,23 +721,23 @@ impl JoinIterator for AnyIterator {
                             }
                             curr_idx += 1;
                         }
-                        set_group[self.largest_set_idx] =
+                        set_groups[self.largest_set_idx] =
                             CompositionSet::combine(&mut combine_sets);
                     }
 
                     // create the set group for all other sets
-                    for set_idx in 0..num_sets {
-                        if set_idx == self.largest_set_idx {
+                    for (set_index, set_group) in set_groups.iter_mut().enumerate() {
+                        if set_index == self.largest_set_idx {
                             continue;
                         }
                         for i in start_idx..curr_idx {
-                            if let Some(next_set) = self.set_groups[i][set_idx].take() {
+                            if let Some(next_set) = self.set_groups[i][set_index].take() {
                                 combine_sets.push(next_set);
                             }
                         }
-                        set_group[set_idx] = CompositionSet::combine(&mut combine_sets);
+                        *set_group = CompositionSet::combine(&mut combine_sets);
                     }
-                    new_set_groups.push(set_group);
+                    new_set_groups.push(set_groups);
                 }
             } else {
                 // If no min_set_bytes is given we create even groups based on the number of items per set
@@ -772,7 +771,7 @@ impl JoinIterator for AnyIterator {
         if let Some(left) = self.left.as_mut() {
             left.reduce_any_partitions(any_parallelisms);
         } else {
-            debug_assert!(any_parallelisms.len() == 0);
+            debug_assert!(any_parallelisms.is_empty());
         }
     }
 

@@ -38,9 +38,9 @@ impl From<&str> for SystemFunction {
     }
 }
 
-impl Into<&str> for &SystemFunction {
-    fn into(self) -> &'static str {
-        match self {
+impl From<&SystemFunction> for &str {
+    fn from(function: &SystemFunction) -> Self {
+        match function {
             SystemFunction::HTTP => "HTTP",
             SystemFunction::MEMCACHED => "MEMCACHED",
         }
@@ -66,17 +66,13 @@ pub struct Function {
 }
 
 impl Function {
-    pub fn load(
-        &self,
-        domain: &Box<dyn MemoryDomain>,
-        ctx_size: usize,
-    ) -> DandelionResult<Context> {
-        return match &self.config {
+    pub fn load(&self, domain: &dyn MemoryDomain, ctx_size: usize) -> DandelionResult<Context> {
+        match &self.config {
             FunctionConfig::ElfConfig(_) => {
                 load_static(domain, &self.context, &self.requirements, ctx_size)
             }
             FunctionConfig::SysConfig(_) => domain.acquire_context(ctx_size),
-        };
+        }
     }
 }
 
@@ -146,7 +142,7 @@ impl FunctionAlternative {
         recorder.record(dandelion_commons::records::RecordPoint::ParsingStart);
         let function = Arc::new(
             self.engine
-                .parse_function(self.path.clone(), &self.domain)?,
+                .parse_function(self.path.clone(), self.domain.as_ref().as_ref())?,
         );
         recorder.record(dandelion_commons::records::RecordPoint::ParsingEnd);
         if caching {
