@@ -3,6 +3,9 @@ name = "dandelion_server"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [package.metadata.cargo-machete]
 ignored = ["openssl", "serde_bytes"]
 
