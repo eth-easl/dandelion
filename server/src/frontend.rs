@@ -336,7 +336,7 @@ async fn parse_async_invocation_request(
     parse_persisted_async_invocation_request_bytes(raw_request_bytes, invocation_id).await
 }
 
-async fn dispatch_invocation<P: IoReferencePolicy>(
+async fn dispatch_invocation<P: IoReferencePolicy + Send + 'static>(
     is_cold: bool,
     parsed: ParsedInvocationRequest,
     dispatcher: &'static Dispatcher,

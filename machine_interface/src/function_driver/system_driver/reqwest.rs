@@ -691,6 +691,7 @@ async fn resolve_io_item_exactly_once(
 
     // Duplicate: fetch the winner's output instead of running the I/O.
     if let Some(IoResolveOutcome::Completed { data }) = resolution {
+        #[cfg(feature = "timestamp")]
         if let Some(recorder) = recorder.as_mut() {
             let wait_start = recorder
                 .get_timestamp(dandelion_commons::records::RecordPoint::IoResolveStart)
@@ -708,6 +709,7 @@ async fn resolve_io_item_exactly_once(
             .map(|(context, position)| (position, context));
     }
     if let Some(IoResolveOutcome::Failed(error)) = resolution {
+        #[cfg(feature = "timestamp")]
         if let Some(recorder) = recorder.as_mut() {
             let wait_start = recorder
                 .get_timestamp(dandelion_commons::records::RecordPoint::IoResolveStart)

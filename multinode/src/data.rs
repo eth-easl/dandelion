@@ -881,6 +881,7 @@ impl ExportRegistry {
         let pending_io_completions = load_io_completion_journal(&directory)?;
         Ok(Self {
             node_id,
+            empty_notifier: Arc::new(Notify::new()),
             inner: Arc::new(Mutex::new(ExportRegistryInner {
                 next_transient_data_id: 0,
                 transient_data: BTreeMap::new(),
