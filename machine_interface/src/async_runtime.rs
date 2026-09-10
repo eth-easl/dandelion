@@ -17,7 +17,7 @@ pub static MIN_SYS_CORESET: OnceLock<CpuSet> = OnceLock::new();
 /// At that point it will also check if the number of MAX_ASYNC_CORES has been set.
 /// If no limit has been set, it will initialize itself to possibly use all cores on the server.
 /// This means it spawns threads and pins them to each core, but blocks them from running until they are specifically enabled.
-pub static GLOBAL_RUNTIME: LazyLock<AsyncRuntime> = LazyLock::new(|| AsyncRuntime::new());
+pub static GLOBAL_RUNTIME: LazyLock<AsyncRuntime> = LazyLock::new(AsyncRuntime::new);
 
 /// The single async runtime for dandelion
 pub struct AsyncRuntime {
@@ -29,7 +29,7 @@ pub struct AsyncRuntime {
 
 impl AsyncRuntime {
     pub fn new() -> Self {
-        let max_io_cores = *MAX_SYS_CORES.get_or_init(|| num_cpus::get_physical());
+        let max_io_cores = *MAX_SYS_CORES.get_or_init(num_cpus::get_physical);
         // TODO: should document the defaults better / think if these are sensible
         let min_core_set = *MIN_SYS_CORESET.get_or_init(|| {
             let mut set = CpuSet::new();

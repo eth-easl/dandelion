@@ -46,8 +46,8 @@ struct HttpRequest {
 }
 
 enum MemcachedMethod {
-    SET,
-    GET,
+    Set,
+    Get,
 }
 
 /// Stores requestInformation for memcached request
@@ -92,11 +92,11 @@ impl Request for HttpRequest {
         ))?);
 
         let version = match request_iter.next() {
-            Some(version_string) if version_string == "HTTP/0.9" => HttpVersion::HTTP_09,
-            Some(version_string) if version_string == "HTTP/1.0" => HttpVersion::HTTP_10,
-            Some(version_string) if version_string == "HTTP/1.1" => HttpVersion::HTTP_11,
-            Some(version_string) if version_string == "HTTP/2.0" => HttpVersion::HTTP_2,
-            Some(version_string) if version_string == "HTTP/3.0" => HttpVersion::HTTP_3,
+            Some("HTTP/0.9") => HttpVersion::HTTP_09,
+            Some("HTTP/1.0") => HttpVersion::HTTP_10,
+            Some("HTTP/1.1") => HttpVersion::HTTP_11,
+            Some("HTTP/2.0") => HttpVersion::HTTP_2,
+            Some("HTTP/3.0") => HttpVersion::HTTP_3,
             Some(version_string) => {
                 return err_dandelion!(DandelionError::InvalidSystemFuncArg(format!(
                     "Unkown http version: {}",
@@ -117,13 +117,13 @@ impl Request for HttpRequest {
             let header_line = raw_request[header_index..]
                 .iter()
                 .position(|character| *character == b'\n')
-                .and_then(|header_end| Some(&raw_request[header_index..header_index + header_end]))
+                .map(|header_end| &raw_request[header_index..header_index + header_end])
                 .unwrap_or(&raw_request[header_index..]);
             // skip the \n at the index itself
             header_index += header_line.len() + 1;
             // if the header line is empty there are two consequtive new lines which means the headers are finished
             // or the request is at the end which also means there are not more lines to read
-            if header_line.len() == 0 {
+            if header_line.is_empty() {
                 break;
             }
             let split_index = header_line
@@ -187,8 +187,8 @@ impl Request for MemcachedRequest {
 
         let method_item = request_iter.next();
         let method = match method_item {
-            Some(method_string) if method_string == "MEMCACHED_GET" => MemcachedMethod::GET,
-            Some(method_string) if method_string == "MEMCACHED_SET" => MemcachedMethod::SET,
+            Some("MEMCACHED_GET") => MemcachedMethod::Get,
+            Some("MEMCACHED_SET") => MemcachedMethod::Set,
             Some(method_string) => {
                 return err_dandelion!(DandelionError::InvalidSystemFuncArg(format!(
                     "Unsupported Method: {}",
@@ -222,12 +222,12 @@ impl Request for MemcachedRequest {
         };
         trace!("Reqwest body: {:?}", body);
 
-        return Ok(Self {
+        Ok(Self {
             method,
             uri,
             memcached_identifier,
             body,
-        });
+        })
     }
 }
 
@@ -322,7 +322,7 @@ async fn http_request(
         }
     }
 
-    let header_context = Arc::new(ReadOnlyContext::new(
+    let header_context = Arc::new(ReadOnlyContext::from_boxed(
         preamble.into_bytes().into_boxed_slice(),
     )?);
 
@@ -359,7 +359,7 @@ async fn memcached_request(
     // Preamble is SUCCESS for success. For non successfull functions, error message will be stored there
     // Default item size limit is 1MB. If item is larger, we ignore it
     let (preamble, response_body) = match method {
-        MemcachedMethod::SET => {
+        MemcachedMethod::Set => {
             // Assemble value to set
             // TODO Make timeout a parameter
 
@@ -381,7 +381,7 @@ async fn memcached_request(
                 }
             }
         }
-        MemcachedMethod::GET => {
+        MemcachedMethod::Get => {
             // Result<Option<Vec<u8>>, tokio_memcached::Error>
             let debug_identifier = memcached_identifier.clone();
             let result = tokio::task::spawn_blocking(move || {
@@ -409,7 +409,7 @@ async fn memcached_request(
 
     let body_length = response_body.len();
 
-    let header_context = Arc::new(ReadOnlyContext::new(
+    let header_context = Arc::new(ReadOnlyContext::from_boxed(
         preamble.into_bytes().into_boxed_slice(),
     )?);
 
@@ -595,10 +595,9 @@ async fn resolve_all_sets(
             }
         }
 
-        for (set_index, (output_set, item_vec)) in
-            output_sets.iter_mut().zip(sets_vec.into_iter()).enumerate()
+        for (set_index, (output_set, item_vec)) in output_sets.iter_mut().zip(sets_vec).enumerate()
         {
-            if let Some(_) = output_set {
+            if output_set.is_some() {
                 debug_assert!(item_vec.is_empty());
             } else {
                 if !item_vec.is_empty() {
@@ -738,24 +737,25 @@ impl Driver for ReqwestDriver {
         debug!("spawned task on global runtiome");
         global_runtime.add_core(core_id.into());
         debug!("sent wake up to core {}", core_id);
-        return Ok(());
+        Ok(())
     }
 
     fn parse_function(
         &self,
         function_path: String,
-        static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
+        static_domain: &dyn crate::memory_domain::MemoryDomain,
     ) -> DandelionResult<Function> {
-        if function_path.len() != 0 {
-            return err_dandelion!(DandelionError::CalledSystemFuncParser);
+        if !function_path.is_empty() {
+            err_dandelion!(DandelionError::CalledSystemFuncParser)
+        } else {
+            Ok(Function {
+                requirements: crate::DataRequirementList {
+                    input_requirements: vec![],
+                    static_requirements: vec![],
+                },
+                context: Arc::new(static_domain.acquire_context(0)?),
+                config: FunctionConfig::SysConfig(SystemFunction::HTTP),
+            })
         }
-        return Ok(Function {
-            requirements: crate::DataRequirementList {
-                input_requirements: vec![],
-                static_requirements: vec![],
-            },
-            context: Arc::new(static_domain.acquire_context(0)?),
-            config: FunctionConfig::SysConfig(SystemFunction::HTTP),
-        });
     }
 }

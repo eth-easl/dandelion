@@ -80,7 +80,7 @@ impl ExportedBody {
         let string_size = string.len();
         inner.push_back(ExportedData {
             context: Arc::new(
-                ReadOnlyContext::new(string.into_bytes().into_boxed_slice()).unwrap(),
+                ReadOnlyContext::from_boxed(string.into_bytes().into_boxed_slice()).unwrap(),
             ),
             position: Position {
                 offset: 0,

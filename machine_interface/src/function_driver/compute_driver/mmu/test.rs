@@ -24,7 +24,7 @@ fn test_loader_basic() {
         context,
         config,
     } = driver
-        .parse_function(elf_path, &mmu_domain)
+        .parse_function(elf_path, mmu_domain.as_ref())
         .expect("Should correctly parse elf file");
     // check requirement list
     #[cfg(target_arch = "x86_64")]

@@ -161,13 +161,13 @@ impl Debug for KvmContext {
 impl ContextTrait for KvmContext {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
         // check alignment
-        if offset % core::mem::align_of::<T>() != 0 {
+        if !offset.is_multiple_of(core::mem::align_of::<T>()) {
             debug!("Misaligned write at offset {}", offset);
             return err_dandelion!(DandelionError::WriteMisaligned);
         }
 
         // check if the write is within bounds
-        let bytes_to_write = data.len() * size_of::<T>();
+        let bytes_to_write = size_of_val(data);
         let write_end = offset + bytes_to_write;
         if write_end > self.storage.len() {
             debug!(
@@ -300,12 +300,12 @@ impl ContextTrait for KvmContext {
 
     fn read<T>(&self, mut offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         // check that buffer has proper allighment
-        if offset % core::mem::align_of::<T>() != 0 {
+        if !offset.is_multiple_of(core::mem::align_of::<T>()) {
             log::debug!("Misaligned write at offset {}", offset);
             return err_dandelion!(DandelionError::ReadMisaligned);
         }
 
-        let read_size = core::mem::size_of::<T>() * read_buffer.len();
+        let read_size = core::mem::size_of_val(read_buffer);
         if offset + read_size > self.storage.len() {
             log::debug!("Read out of bounds at offset {}", offset);
             return err_dandelion!(DandelionError::InvalidRead);
@@ -325,8 +325,8 @@ impl ContextTrait for KvmContext {
             return Ok(());
         }
 
-        let mut overlay_range = self.overlay.range(offset..);
-        while let Some((overlay_end, (overlay_start, overlay_option))) = overlay_range.next() {
+        let overlay_range = self.overlay.range(offset..);
+        for (overlay_end, (overlay_start, overlay_option)) in overlay_range {
             if *overlay_start > offset {
                 return err_dandelion!(DandelionError::InvalidRead);
             }
@@ -354,7 +354,7 @@ impl ContextTrait for KvmContext {
                 return Ok(());
             }
         }
-        return err_dandelion!(DandelionError::InvalidRead);
+        err_dandelion!(DandelionError::InvalidRead)
     }
 
     fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
@@ -449,7 +449,7 @@ impl MemoryDomain for KvmMemoryDomain {
             ));
         }
 
-        let number_of_pages = u32::try_from((size + PAGE_SIZE - 1) / PAGE_SIZE).unwrap();
+        let number_of_pages = u32::try_from(size.div_ceil(PAGE_SIZE)).unwrap();
         size = (number_of_pages as usize) * PAGE_SIZE;
         let page = self
             .occupation
@@ -493,7 +493,7 @@ impl MemoryDomain for KvmMemoryDomain {
 /// Function to find a destination offset, which allows to zero copy pages in the transfer
 /// Return the index after which to insert the new occupation and the destination address
 pub fn get_transfer_offset(
-    occupation: &Vec<crate::Position>,
+    occupation: &[crate::Position],
     source_offset: usize,
     context_size: usize,
     size: usize,
@@ -528,7 +528,7 @@ pub fn get_transfer_offset(
     if context_size + 1 == space_size {
         return err_dandelion!(DandelionError::ContextFull);
     }
-    return Ok((index, start_address));
+    Ok((index, start_address))
 }
 
 pub fn transfer_into(

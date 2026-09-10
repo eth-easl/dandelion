@@ -96,14 +96,11 @@ impl MmapMemPool {
             };
 
             let filename_string = format!("/shm_{:X}", id);
-            match ftruncate(&fd, size as _) {
-                Err(err) => {
-                    close(fd).unwrap();
-                    shm_unlink(filename_string.as_str()).unwrap();
-                    error!("Error creating shared memory file: {}", err);
-                    return err_dandelion!(DandelionError::DomainError(DomainError::SharedTrunc));
-                }
-                _ => {}
+            if let Err(err) = ftruncate(&fd, size as _) {
+                close(fd).unwrap();
+                shm_unlink(filename_string.as_str()).unwrap();
+                error!("Error creating shared memory file: {}", err);
+                return err_dandelion!(DandelionError::DomainError(DomainError::SharedTrunc));
             };
             // Map the memory.
             let ptr = unsafe {
@@ -164,7 +161,7 @@ impl MmapMemPool {
             return err_dandelion!(DandelionError::DomainError(DomainError::InvalidMemorySize));
         }
         // check if space is available
-        let occupation_size = u32::try_from((requested_size + SLAB_SIZE - 1) / SLAB_SIZE)
+        let occupation_size = u32::try_from(requested_size.div_ceil(SLAB_SIZE))
             .expect("Allocation size should be within representable sizes");
         let lenght = usize::try_from(occupation_size).unwrap() * SLAB_SIZE;
         let start_slab = usize::try_from({
@@ -188,14 +185,14 @@ impl MmapMemPool {
         .or(err_dandelion!(DandelionError::DomainError(
             DomainError::CleaningFailure,
         )))?;
-        return Ok((
+        Ok((
             MmapMem {
                 ptr: start_address,
                 size: lenght,
                 origin: self.internal.clone(),
             },
             lenght,
-        ));
+        ))
     }
 }
 
@@ -240,13 +237,13 @@ impl MmapMem {
 
     pub fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
         // check alignment
-        if offset % core::mem::align_of::<T>() != 0 {
+        if !offset.is_multiple_of(core::mem::align_of::<T>()) {
             debug!("Misaligned write at offset {}", offset);
             return err_dandelion!(DandelionError::WriteMisaligned);
         }
 
         // check if the write is within bounds
-        let write_length = data.len() * core::mem::size_of::<T>();
+        let write_length = core::mem::size_of_val(data);
         if offset + write_length > self.size() {
             debug!("Write out of bounds at offset {}", offset);
             return err_dandelion!(DandelionError::InvalidWrite);
@@ -255,7 +252,7 @@ impl MmapMem {
         // write values
         unsafe {
             let buffer = core::slice::from_raw_parts(data.as_ptr() as *const u8, write_length);
-            self.as_slice_mut()[offset..offset + buffer.len()].copy_from_slice(&buffer);
+            self.as_slice_mut()[offset..offset + buffer.len()].copy_from_slice(buffer);
         }
 
         Ok(())
@@ -263,12 +260,12 @@ impl MmapMem {
 
     pub fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         // check that buffer has proper allighment
-        if offset % core::mem::align_of::<T>() != 0 {
+        if !offset.is_multiple_of(core::mem::align_of::<T>()) {
             debug!("Misaligned write at offset {}", offset);
             return err_dandelion!(DandelionError::ReadMisaligned);
         }
 
-        let read_size = core::mem::size_of::<T>() * read_buffer.len();
+        let read_size = core::mem::size_of_val(read_buffer);
         if offset + read_size > self.size() {
             debug!("Read out of bounds at offset {}", offset);
             return err_dandelion!(DandelionError::InvalidRead);
@@ -286,9 +283,10 @@ impl MmapMem {
 
     pub fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
         if offset + length > self.size() {
-            return err_dandelion!(DandelionError::InvalidRead);
+            err_dandelion!(DandelionError::InvalidRead)
+        } else {
+            Ok(unsafe { &self.as_slice()[offset..offset + length] })
         }
-        return Ok(unsafe { &self.as_slice()[offset..offset + length] });
     }
 }
 

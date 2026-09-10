@@ -67,7 +67,7 @@ impl EngineType {
     pub fn parse_function(
         &self,
         function_path: String,
-        static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
+        static_domain: &dyn crate::memory_domain::MemoryDomain,
     ) -> DandelionResult<Function> {
         match self {
             EngineType::System => crate::function_driver::system_driver::reqwest::ReqwestDriver {}
@@ -100,7 +100,7 @@ pub fn get_available_domains(
     for (dom, resource) in resources {
         default_resources.insert(dom, resource);
     }
-    return default_resources
+    default_resources
         .into_iter()
         .map(|(dom_type, resource)| match dom_type {
             DomainType::System => Arc::new(
@@ -119,7 +119,7 @@ pub fn get_available_domains(
                 Arc::new(crate::memory_domain::mmu::MmuMemoryDomain::init(resource).unwrap())
             }
         })
-        .collect();
+        .collect()
 }
 
 pub fn create_engine_resource_map(

@@ -27,7 +27,7 @@ mod x86_64_asm;
 #[cfg(target_arch = "x86_64")]
 pub use x86_64::PAGE_SIZE;
 #[cfg(target_arch = "x86_64")]
-pub(self) use x86_64::*;
+use x86_64::*;
 
 #[cfg(target_arch = "aarch64")]
 mod aarch64;
@@ -88,7 +88,7 @@ impl EngineLoop for KvmLoop {
 
         let state = ResetState::new(&vm, &vcpu);
 
-        return Ok(Box::new(KvmLoop { vm, vcpu, state }));
+        Ok(Box::new(KvmLoop { vm, vcpu, state }))
     }
 
     fn get_engine_type(&self) -> crate::machine_config::EngineType {
@@ -99,13 +99,13 @@ impl EngineLoop for KvmLoop {
         &mut self,
         config: FunctionConfig,
         mut context: Context,
-        output_sets: &Vec<String>,
+        output_sets: &[String],
     ) -> DandelionResult<Context> {
         let elf_config = match config {
             FunctionConfig::ElfConfig(conf) => conf,
             _ => return err_dandelion!(DandelionError::ConfigMissmatch),
         };
-        setup_input_structs::<u64, u64>(&mut context, elf_config.system_data_offset, &output_sets)?;
+        setup_input_structs::<u64, u64>(&mut context, elf_config.system_data_offset, output_sets)?;
         let min_stack_start = context.get_last_item_end();
         let kvm_context = match &mut context.context {
             ContextType::Kvm(kvm_context) => kvm_context,
@@ -190,7 +190,7 @@ impl EngineLoop for KvmLoop {
         }
 
         #[cfg(target_arch = "x86_64")]
-        self.vm.set_clock(&mut kvm_clock_data::default()).unwrap();
+        self.vm.set_clock(&kvm_clock_data::default()).unwrap();
 
         // initialize vCPU
         let page_fault_metadata = self.state.init_vcpu(
@@ -287,11 +287,11 @@ impl EngineLoop for KvmLoop {
                 }
                 while trailing_zeros < 64 {
                     // can always do this, sice if the last one is not a zero it will simply shift by 0
-                    local_dirty = local_dirty >> trailing_zeros;
+                    local_dirty >>= trailing_zeros;
                     bits_processed += trailing_zeros;
                     let trailing_ones = local_dirty.trailing_ones() as usize;
                     contiguous_pages += trailing_ones;
-                    local_dirty = local_dirty >> trailing_ones;
+                    local_dirty >>= trailing_ones;
                     bits_processed += trailing_ones;
                     // if the trailing ones were until the end of the u64, break and continue with the next u64
                     if bits_processed >= 64 {
@@ -346,7 +346,7 @@ impl EngineLoop for KvmLoop {
                 false
             });
 
-        return Ok(context);
+        Ok(context)
     }
 }
 
@@ -374,7 +374,7 @@ impl Driver for KvmDriver {
             return err_dandelion!(DandelionError::EngineResourceError);
         }
         start_thread::<KvmLoop>(cpu_slot, queue);
-        return Ok(());
+        Ok(())
     }
 
     // parses an executable,
@@ -383,7 +383,7 @@ impl Driver for KvmDriver {
     fn parse_function(
         &self,
         function_path: String,
-        static_domain: &Box<dyn MemoryDomain>,
+        static_domain: &dyn MemoryDomain,
     ) -> DandelionResult<Function> {
         let function = load_u8_from_file(function_path)?;
         let elf = elf_parser::ParsedElf::new(&function)?;
@@ -435,13 +435,13 @@ impl Driver for KvmDriver {
 
         let requirements = DataRequirementList {
             input_requirements: Vec::<DataRequirement>::new(),
-            static_requirements: static_requirements,
+            static_requirements,
         };
 
-        return Ok(Function {
+        Ok(Function {
             requirements,
             context: Arc::new(context),
             config,
-        });
+        })
     }
 }

@@ -18,11 +18,11 @@ pub fn load_u8_from_file(full_path: String) -> DandelionResult<Vec<u8>> {
         Ok(s) => s,
         Err(_) => return err_dandelion!(DandelionError::FileError),
     };
-    return Ok(buffer);
+    Ok(buffer)
 }
 
 pub fn load_static(
-    domain: &Box<dyn MemoryDomain>,
+    domain: &dyn MemoryDomain,
     static_context: &Arc<Context>,
     requirement_list: &DataRequirementList,
     ctx_size: usize,
@@ -59,7 +59,7 @@ pub fn load_static(
         max_end = core::cmp::max(max_end, requirement.offset + requirement.size);
     }
     // round up to next page
-    max_end = ((max_end + 4095) / 4096) * 4096;
+    max_end = max_end.div_ceil(4096) * 4096;
     function_context.occupy_space(0, max_end)?;
-    return Ok(function_context);
+    Ok(function_context)
 }

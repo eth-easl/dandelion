@@ -69,7 +69,7 @@ mod system_driver_tests {
 
         let request = format!("GET {} HTTP/1.1", uri).as_bytes().to_vec();
         let request_length = request.len();
-        let mut input_context = ReadOnlyContext::new(request.into_boxed_slice()).unwrap();
+        let mut input_context = ReadOnlyContext::from_boxed(request.into_boxed_slice()).unwrap();
         input_context.content.push(Some(DataSet {
             ident: "request".to_string(),
             buffers: vec![DataItem {
@@ -141,7 +141,7 @@ dolore magna aliquyam erat, sed diam voluptua."#,
         .as_bytes()
         .to_vec();
         let request_length = request.len();
-        let mut input_context = ReadOnlyContext::new(request.into_boxed_slice()).unwrap();
+        let mut input_context = ReadOnlyContext::from_boxed(request.into_boxed_slice()).unwrap();
         input_context.content.push(Some(DataSet {
             ident: "request".to_string(),
             buffers: vec![DataItem {
