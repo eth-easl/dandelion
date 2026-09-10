@@ -1,4 +1,4 @@
-use crate::FunctionId;
+use crate::{FunctionId, InvocationId};
 use core::fmt;
 use std::time::Instant;
 
@@ -8,7 +8,8 @@ use core::cell::{OnceCell, UnsafeCell};
 /// Maximum usize to expect when converting a record point to a usize
 /// By setting the last element to this explicitly, the compiler will throw an error,
 /// if there are more than this, because it enumerates from 0 and won't allow a number to be assigned twice.
-const LAST_RECORD_POINT: usize = 23;
+const LAST_EXISTING_RECORD_POINT: usize = 23;
+const LAST_RECORD_POINT: usize = 41;
 /// The first timestamp that should come from the engine running the function
 const FIRST_ENGINE_POINT: usize = 15;
 const LAST_ENGINE_POINT: usize = 22;
@@ -59,7 +60,34 @@ pub enum RecordPoint {
     /// End execution of the function on the engine (sync)
     EngineEnd = LAST_ENGINE_POINT,
     /// Return from execution engine (async)
-    FutureReturn = LAST_RECORD_POINT,
+    FutureReturn = LAST_EXISTING_RECORD_POINT,
+    /// Start resolving the coordination owner for one logical I/O.
+    IoResolveStart,
+    IoResolveEnd,
+    /// Time spent waiting for the winning caller's result.
+    IoDuplicateWaitStart,
+    IoDuplicateWaitEnd,
+    /// External I/O performed by the caller elected as owner.
+    IoExternalStart,
+    IoExternalEnd,
+    /// Exporting the owner result before it is made durable.
+    IoOutputExportStart,
+    IoOutputExportEnd,
+    /// Encoding the exported payload, including Base64.
+    IoPayloadEncodeStart,
+    IoPayloadEncodeEnd,
+    /// Writing and syncing the local durable completion journal.
+    IoJournalStart,
+    IoJournalEnd,
+    /// Delivering the resolved result to the coordination owner, including retries.
+    IoResolvedDeliveryStart,
+    IoResolvedDeliveryEnd,
+    /// Owner-side decoding and durable acceptance of the result.
+    IoOwnerApprovalStart,
+    IoOwnerApprovalEnd,
+    /// Removing the worker's pending durable-journal entry after approval.
+    IoAcknowledgementStart,
+    IoAcknowledgementEnd = LAST_RECORD_POINT,
 }
 
 #[cfg(feature = "timestamp")]
@@ -147,6 +175,7 @@ struct InnerRecorder {
 /// All time is relative to the given global start time of the request
 #[derive(Clone)]
 pub struct Recorder {
+    invocation_id: InvocationId,
     #[cfg(feature = "timestamp")]
     inner: std::sync::Arc<InnerRecorder>,
 }
@@ -157,8 +186,9 @@ unsafe impl Send for Recorder {}
 unsafe impl Sync for Recorder {}
 
 impl Recorder {
-    pub fn new(_function_id: FunctionId, _start: Instant) -> Self {
+    pub fn new(_invocation_id: InvocationId, _function_id: FunctionId, _start: Instant) -> Self {
         return Self {
+            invocation_id: _invocation_id,
             #[cfg(feature = "timestamp")]
             inner: std::sync::Arc::new(InnerRecorder {
                 function_id: _function_id,
@@ -173,6 +203,7 @@ impl Recorder {
 
     pub fn new_from_parent(_function_id: FunctionId, _parent: &Self) -> Self {
         return Self {
+            invocation_id: _parent.invocation_id,
             #[cfg(feature = "timestamp")]
             inner: std::sync::Arc::new(InnerRecorder {
                 function_id: _function_id,
@@ -193,6 +224,10 @@ impl Recorder {
     pub fn prerecorded(&mut self, _current_point: RecordPoint, _time: Instant) {
         #[cfg(feature = "timestamp")]
         self.inner.timestamps.prerecorded(_current_point, _time);
+    }
+
+    pub fn invocation_id(&self) -> InvocationId {
+        self.invocation_id
     }
 
     pub fn add_children(&mut self, _children: Vec<Option<Vec<Recorder>>>) {
@@ -254,6 +289,7 @@ impl fmt::Debug for Recorder {
                 write!(_f, "Formatting Recorder with more than 1 references:\n")?;
             };
             _f.debug_struct("Recorder")
+                .field("Invocation ID", &self.invocation_id)
                 .field("Function ID", &self.inner.function_id)
                 .field("Timestamps", &self.inner.timestamps)
                 .field("Children", &self.inner.children)
@@ -276,8 +312,13 @@ impl fmt::Display for Recorder {
             let input_size = unsafe { *self.inner.input_size.get() };
             write!(
                 _f,
-                "{{\"id\": \"{}\", \"ts\": {}, \"node id\": {}, \"items\": {}, \"input size\": {}, \"children\": [",
-                self.inner.function_id, self.inner.timestamps, node_id, input_items, input_size,
+                "{{\"invocation_id\": \"{}\", \"id\": \"{}\", \"ts\": {}, \"node id\": {}, \"items\": {}, \"input size\": {}, \"children\": [",
+                self.invocation_id,
+                self.inner.function_id,
+                self.inner.timestamps,
+                node_id,
+                input_items,
+                input_size,
             )?;
             let mut need_comma = false;
             if let Some(children) = self.inner.children.get() {
@@ -304,5 +345,21 @@ impl fmt::Display for Recorder {
         }
         #[cfg(not(feature = "timestamp"))]
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RecordPoint, LAST_RECORD_POINT};
+
+    #[test]
+    fn io_record_points_extend_the_existing_positional_schema() {
+        assert_eq!(RecordPoint::FutureReturn as usize, 23);
+        assert_eq!(RecordPoint::IoResolveStart as usize, 24);
+        assert_eq!(RecordPoint::IoAcknowledgementEnd as usize, 41);
+        assert_eq!(
+            RecordPoint::IoAcknowledgementEnd as usize,
+            LAST_RECORD_POINT
+        );
     }
 }

@@ -7,7 +7,7 @@ use machine_interface::{
         Composition, CompositionSet, FunctionDependencies, InputSetDescriptor, JoinStrategy,
         ShardingMode,
     },
-    function_driver::ComputeResource,
+    function_driver::{system_driver::UncoordinatedIo, ComputeResource},
     machine_config::{DomainType, EngineType},
     memory_domain::{read_only::ReadOnlyContext, MemoryDomain, MemoryResource},
     DataItem, DataSet, Position,
@@ -30,11 +30,23 @@ pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
         memory_resource,
     );
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
+    let recorder = Recorder::new(
+        dandelion_commons::InvocationId::nil(),
+        zero_id(),
+        Instant::now(),
+    );
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_function(0, function_id, Vec::new(), false, recorder));
+        .block_on(dispatcher.queue_function(
+            0,
+            function_id,
+            Vec::new(),
+            false,
+            UncoordinatedIo,
+            recorder,
+            None,
+        ));
     match result {
         Ok(_) => (),
         Err(err) => panic!("Failed with: {:?}", err),
@@ -75,12 +87,24 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
 
     let inputs = CompositionSet::from_context(in_context);
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
+    let recorder = Recorder::new(
+        dandelion_commons::InvocationId::nil(),
+        zero_id(),
+        Instant::now(),
+    );
 
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_function(0, function_id, inputs, false, recorder));
+        .block_on(dispatcher.queue_function(
+            0,
+            function_id,
+            inputs,
+            false,
+            UncoordinatedIo,
+            recorder,
+            None,
+        ));
     let out_sets = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -141,12 +165,23 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
     };
     let inputs = CompositionSet::from_context(in_context);
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
+    let recorder = Recorder::new(
+        dandelion_commons::InvocationId::nil(),
+        zero_id(),
+        Instant::now(),
+    );
 
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(0, composition, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(
+            0,
+            composition,
+            inputs,
+            false,
+            UncoordinatedIo,
+            recorder,
+        ));
     let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -166,12 +201,23 @@ fn composition_option_helper(
     inputs: Vec<Option<CompositionSet>>,
     dispatcher: &mut Dispatcher,
 ) -> Vec<Option<CompositionSet>> {
-    let recorder = Recorder::new(zero_id(), Instant::now());
+    let recorder = Recorder::new(
+        dandelion_commons::InvocationId::nil(),
+        zero_id(),
+        Instant::now(),
+    );
 
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(0, composition, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(
+            0,
+            composition,
+            inputs,
+            false,
+            UncoordinatedIo,
+            recorder,
+        ));
     let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -350,12 +396,23 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
     };
     let inputs = CompositionSet::from_context(in_context);
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
+    let recorder = Recorder::new(
+        dandelion_commons::InvocationId::nil(),
+        zero_id(),
+        Instant::now(),
+    );
 
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(0, composition, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(
+            0,
+            composition,
+            inputs,
+            false,
+            UncoordinatedIo,
+            recorder,
+        ));
     let out_vec = match result {
         Ok(v) => v,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -429,13 +486,24 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
         output_map: BTreeMap::from([(2, 0)]),
     };
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
+    let recorder = Recorder::new(
+        dandelion_commons::InvocationId::nil(),
+        zero_id(),
+        Instant::now(),
+    );
 
     let inputs = CompositionSet::from_context(in_context);
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(0, composition, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(
+            0,
+            composition,
+            inputs,
+            false,
+            UncoordinatedIo,
+            recorder,
+        ));
     let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -636,13 +704,24 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
         output_map: BTreeMap::from([(7, 0)]),
     };
 
-    let recorder = Recorder::new(zero_id(), Instant::now());
+    let recorder = Recorder::new(
+        dandelion_commons::InvocationId::nil(),
+        zero_id(),
+        Instant::now(),
+    );
 
     let inputs = CompositionSet::from_context(in_context);
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(0, composition, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(
+            0,
+            composition,
+            inputs,
+            false,
+            UncoordinatedIo,
+            recorder,
+        ));
     let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),
@@ -777,13 +856,24 @@ pub fn composition_chain_large_matmac<Domain: MemoryDomain>(
         output_map: BTreeMap::from([(chain_length + 2, 0)]),
     };
 
-    let recorder = Recorder::new(Arc::new(0.to_string()), Instant::now());
+    let recorder = Recorder::new(
+        dandelion_commons::InvocationId::nil(),
+        Arc::new(0.to_string()),
+        Instant::now(),
+    );
 
     let inputs = CompositionSet::from_context(in_context);
     let result = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
-        .block_on(dispatcher.queue_composition(0, composition, inputs, false, recorder));
+        .block_on(dispatcher.queue_composition(
+            0,
+            composition,
+            inputs,
+            false,
+            UncoordinatedIo,
+            recorder,
+        ));
     let out_contexts = match result {
         Ok(context) => context,
         Err(err) => panic!("Failed with: {:?}", err),

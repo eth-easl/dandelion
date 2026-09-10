@@ -1,3 +1,5 @@
+#[cfg(feature = "at-least-once")]
+use crate::proto::{IoCompletionAcknowledgement, IoCompletionDelivery};
 use crate::{
     data::ExportRegistry,
     deserialize_node_info, deserialize_queue_message, deserialize_remote_message,
@@ -7,29 +9,44 @@ use crate::{
     },
     serialize_node_info, serialize_queue_message, serialize_remote_message,
     util::{
-        composition_sets_to_proto, composition_sets_to_proto_and_refs, engine_type_dtop,
-        engine_type_ptod, pack_metadata_size_and_flags, proto_data_sets_to_composition_sets,
+        composition_sets_to_proto_and_refs, engine_type_dtop, engine_type_ptod,
+        pack_metadata_size_and_flags, proto_data_sets_to_composition_sets,
         proto_data_sets_to_composition_sets_with_delete_on_drop, recorder_add_timestamps,
-        recorder_dtop, unpack_metadata_size_and_flags, ADDITIONAL_DATA_BUFFER, NO_FLAGS,
+        recorder_dtop, try_composition_sets_to_proto, unpack_metadata_size_and_flags,
+        ADDITIONAL_DATA_BUFFER, NO_FLAGS,
     },
 };
 use dandelion_commons::{
-    err_dandelion, records::Recorder, DandelionError, DandelionResult, MultinodeError,
+    err_dandelion, records::Recorder, DandelionError, DandelionResult, FunctionRegistryError,
+    InvocationId, MultinodeError,
 };
 use dispatcher::{
     dispatcher::Dispatcher,
+    function_registry::ExportedFunctionRegistration,
     queue::{get_engine_flag, WorkQueue},
 };
 use log::{debug, error, info, trace, warn};
+#[cfg(feature = "at-least-once")]
+use machine_interface::function_driver::{
+    functions::SystemFunction,
+    system_driver::recovery_log::{
+        format_io_completion_line, parse_io_completion_line, IoCompletionDisposition,
+        IoCompletionKey,
+    },
+};
 use machine_interface::{
     composition::{CompositionSet, RemoteData},
-    function_driver::{WorkDone, WorkToDo},
+    function_driver::{system_driver::UncoordinatedIo, WorkDone, WorkToDo},
     machine_config::{EngineType, IntoEnumIterator},
     promise::Debt,
 };
 use prost::bytes::{Bytes, BytesMut};
+#[cfg(feature = "at-least-once")]
+use std::collections::HashSet;
 use std::{
     collections::{BTreeMap, BTreeSet, BinaryHeap},
+    fs,
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant, SystemTime},
 };
@@ -54,6 +71,45 @@ const _: () = assert!(size_of::<u64>() == size_of::<usize>());
 // TODO ADDITIONAL_DATA_BUFFER and data_buffer are currently used only to carry IoData
 // We should consider removing this when recursive resolution of IoData is implemented,
 // as then all sets will be exchanged via the remote data server.
+fn invocation_from_work(
+    work: &WorkToDo,
+    remote_invocation_id: u32,
+    metadata_sets: Vec<proto::MetadataSet>,
+    owner_invocation_id: InvocationId,
+) -> DandelionResult<Invocation> {
+    match work {
+        WorkToDo::FunctionArguments {
+            function_id,
+            caching,
+            ..
+        } => Ok(Invocation {
+            remote_invocation_id,
+            function_id: (**function_id).clone(),
+            metadata_sets,
+            caching: *caching,
+            owner_invocation_id: owner_invocation_id.to_string(),
+        }),
+        WorkToDo::SetsToResolve { .. }
+        | WorkToDo::RemoteToDelete { .. }
+        | WorkToDo::Shutdown(_) => {
+            err_dandelion!(DandelionError::Multinode(MultinodeError::ConfigError(
+                "Only executable function work can be offloaded".to_string(),
+            )))
+        }
+    }
+}
+
+fn queue_function_args_from_invocation(
+    invocation: &Invocation,
+) -> DandelionResult<(Arc<String>, bool)> {
+    if invocation.function_id.is_empty() {
+        return err_dandelion!(DandelionError::Multinode(
+            MultinodeError::DeserializationError("Invocation missing function id".to_string())
+        ));
+    }
+    Ok((Arc::new(invocation.function_id.clone()), invocation.caching))
+}
+
 /// To send a message between nodes, always first send the length of the message,
 /// then the message, so the other side knows when one message ends.
 /// Returns an error if the underlying connection failed, so the caller can tear down
@@ -124,7 +180,6 @@ async fn receive_message(
 ) -> std::io::Result<(Bytes, Option<Bytes>)> {
     let packed_metadata = receiver.read_u64().await?;
     let (metadata_size, _) = unpack_metadata_size_and_flags(packed_metadata);
-
     // new buffer with size of message
     let mut metadata_buffer = BytesMut::with_capacity(metadata_size as usize);
     while metadata_buffer.len() < metadata_size as usize {
@@ -134,7 +189,6 @@ async fn receive_message(
             return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
         }
     }
-
     // Keep for when we want to send additional data long with requests
     // if (flags & ADDITIONAL_DATA_BUFFER) != 0 {
     //     let total_data_size = receiver.read_u64().await.unwrap();
@@ -237,8 +291,8 @@ async fn remote_queue_server_try_offload(
     // can't send anymore so make sure the channel does not have things added to it.
     queue_receiver.close();
     // drain the channel, reqenque all the work
-    while let Some((work, debt, id)) = queue_receiver.recv().await {
-        queue.reenqueue(work, debt, id);
+    while let Some((work, debt, composition_id)) = queue_receiver.recv().await {
+        queue.reenqueue(work, debt, composition_id);
     }
 }
 
@@ -254,7 +308,6 @@ async fn remote_queue_server_logic(
     mut remote_num_cores: u64,
 ) {
     let mut waiting_for_work = false;
-
     let mut debt_map = BTreeMap::new();
     let mut cancelled_debt_ids = BTreeSet::new();
     let mut free_debt_ids = BinaryHeap::new();
@@ -320,16 +373,13 @@ async fn remote_queue_server_logic(
                                     max_debt_id += 1;
                                     promise_id
                                 };
-                                let (function_id, data_sets, recorder, &caching) = match &work {
+                                let (data_sets, recorder) = match &work {
                                     // Todo send along relevant information, like caching bool and recorder start time
                                     WorkToDo::FunctionArguments {
-                                        function_id,
-                                        function_alternatives: _,
                                         input_sets,
-                                        metadata: _,
-                                        caching,
                                         recorder,
-                                    } => (function_id, input_sets, recorder, caching),
+                                        ..
+                                    } => (input_sets, recorder),
                                     WorkToDo::SetsToResolve { input_sets: _ }
                                     | WorkToDo::RemoteToDelete { remote_data: _ }
                                     | WorkToDo::Shutdown(_) => {
@@ -345,6 +395,7 @@ async fn remote_queue_server_logic(
                                 let (metadata_sets, remote_data_references) =
                                     composition_sets_to_proto_and_refs(
                                         data_sets,
+                                        export_registry.get_node_id(),
                                         |item, context| {
                                             export_registry.insert_function(
                                                 item,
@@ -353,10 +404,13 @@ async fn remote_queue_server_logic(
                                             )
                                         },
                                     );
-                                let caching = caching;
-                                let function_id = function_id.to_string();
+                                let owner_invocation_id = recorder.invocation_id();
                                 let cancel_sender = local_sender.clone();
                                 debt.install_abort_handle(move || {
+                                    trace!(
+                                        "Abort callback fired for remote invocation {}",
+                                        promise_id
+                                    );
                                     if cancel_sender
                                         .try_send(QueueOption::CancelRemote(promise_id))
                                         .is_err()
@@ -367,6 +421,13 @@ async fn remote_queue_server_logic(
                                         );
                                     }
                                 });
+                                let invocation = invocation_from_work(
+                                    &work,
+                                    promise_id,
+                                    metadata_sets,
+                                    owner_invocation_id,
+                                )
+                                .expect("Work already validated before remote packaging");
                                 debt_map.insert(
                                     promise_id,
                                     (
@@ -378,12 +439,7 @@ async fn remote_queue_server_logic(
                                         work,
                                     ),
                                 );
-                                Invocation {
-                                    metadata_sets,
-                                    function_id,
-                                    invocation_id: promise_id,
-                                    caching,
-                                }
+                                invocation
                             },
                             ));
                         }
@@ -412,20 +468,17 @@ async fn remote_queue_server_logic(
                     }
                     remote_message::RemoteMessage::Response(response) => {
                         debug_assert!(data_option.is_none());
-                        trace!(
-                            "Queue Server received response, outstanding: {}",
-                            debt_map.len()
-                        );
+                        trace!("Queue Server received response");
                         let Response {
-                            invocation_id,
+                            remote_invocation_id,
                             response,
                         } = response;
-                        if cancelled_debt_ids.contains(&invocation_id) {
+                        if cancelled_debt_ids.contains(&remote_invocation_id) {
                             // A result and its cancellation can cross in flight. Only an explicit
                             // cancellation acknowledgement permits this id to be reused.
                             trace!(
                                 "Ignoring crossed result for canceled remote invocation {}",
-                                invocation_id
+                                remote_invocation_id
                             );
                             continue;
                         }
@@ -437,15 +490,15 @@ async fn remote_queue_server_logic(
                             start_epoch,
                             remote_data_references,
                             work,
-                        )) = debt_map.remove(&invocation_id)
+                        )) = debt_map.remove(&remote_invocation_id)
                         else {
                             warn!(
                                 "Received response for unknown remote invocation {}",
-                                invocation_id
+                                remote_invocation_id
                             );
                             continue;
                         };
-                        free_debt_ids.push(invocation_id);
+                        free_debt_ids.push(remote_invocation_id);
                         drop(remote_data_references);
                         // remote did not do work, was a try offload request, reenqueu the work
                         if let Some(response) = response {
@@ -520,6 +573,70 @@ async fn remote_queue_server_logic(
                             error!("Failed to update remote core count: Total number of remote cores underflows.");
                         }
                     }
+                    remote_message::RemoteMessage::IoCompletion(delivery) => {
+                        #[cfg(not(feature = "at-least-once"))]
+                        {
+                            let _ = delivery;
+                            warn!("Ignoring exactly-once I/O completion in this build");
+                            continue;
+                        }
+                        #[cfg(feature = "at-least-once")]
+                        {
+                            debug_assert!(data_option.is_none());
+                            let record = match parse_io_completion_line(&delivery.journal_line) {
+                                Ok(Some(record)) => record,
+                                Ok(None) => {
+                                    warn!("Worker sent a non-completion journal record");
+                                    continue;
+                                }
+                                Err(err) => {
+                                    warn!("Worker sent an invalid IO completion: {}", err);
+                                    continue;
+                                }
+                            };
+                            let disposition = match machine_interface::function_driver::system_driver::recovery_log::accept_delivered_io_completion_record(&record) {
+                                Ok(disposition) => disposition,
+                                Err(err) => {
+                                    error!("Failed to persist worker IO completion: {}", err);
+                                    continue;
+                                }
+                            };
+                            #[cfg(feature = "exactly-once")]
+                            if disposition == IoCompletionDisposition::Retain {
+                                if let Err(err) =
+                                    export_registry.publish_io_resolution_from_record(&record)
+                                {
+                                    error!("Failed to complete coordinated worker IO: {}", err);
+                                    continue;
+                                }
+                            }
+                            let completion_key = match record.completion_key() {
+                                Ok(completion_key) => completion_key,
+                                Err(err) => {
+                                    warn!("Worker sent an invalid IO completion identity: {}", err);
+                                    continue;
+                                }
+                            };
+                            if message_sender
+                                .send(queue_message::QueueMessage::IoCompletionAck(
+                                    IoCompletionAcknowledgement {
+                                        invocation_id: completion_key.invocation_id.to_string(),
+                                        composition_set_id: completion_key.composition_set_id
+                                            as u64,
+                                        function: completion_key.function.to_string(),
+                                        identifier: completion_key.identifier,
+                                        item_key: completion_key.item_key,
+                                        delete_outputs: disposition
+                                            == IoCompletionDisposition::Delete,
+                                    },
+                                ))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    }
                 }
             }
             QueueOption::TryOffload(work, debt, composition_id) => {
@@ -539,18 +656,15 @@ async fn remote_queue_server_logic(
                     max_debt_id += 1;
                     promise_id
                 };
-                let (function_id, data_sets, recorder, &caching) = match &work {
-                    // Todo send along relevant information, like caching bool and recorder start time
+                // Todo send along relevant information, like caching bool and recorder start time
+                let (data_sets, recorder) = match &work {
                     WorkToDo::FunctionArguments {
-                        function_id,
-                        function_alternatives: _,
                         input_sets,
-                        metadata: _,
-                        caching,
                         recorder,
-                    } => (function_id, input_sets, recorder, caching),
-                    WorkToDo::SetsToResolve { input_sets: _ }
-                    | WorkToDo::RemoteToDelete { remote_data: _ }
+                        ..
+                    } => (input_sets, recorder),
+                    WorkToDo::SetsToResolve { .. }
+                    | WorkToDo::RemoteToDelete { .. }
                     | WorkToDo::Shutdown(_) => {
                         panic!("Should only get function arguments when polling for remote queue")
                     }
@@ -560,18 +674,21 @@ async fn remote_queue_server_logic(
                 let start_reference = SystemTime::elapsed(&std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_micros();
-                let (metadata_sets, remote_data_references) =
-                    composition_sets_to_proto_and_refs(data_sets, |item, context| {
+                let (metadata_sets, remote_data_references) = composition_sets_to_proto_and_refs(
+                    data_sets,
+                    export_registry.get_node_id(),
+                    |item, context| {
                         export_registry.insert_function(
                             item,
                             context,
                             Some(remote_data_deletion_sender.clone()),
                         )
-                    });
-                let caching = caching;
-                let function_id = function_id.to_string();
+                    },
+                );
+                let owner_invocation_id = recorder.invocation_id();
                 let cancel_sender = local_sender.clone();
                 debt.install_abort_handle(move || {
+                    trace!("Abort callback fired for remote invocation {}", promise_id);
                     if cancel_sender
                         .try_send(QueueOption::CancelRemote(promise_id))
                         .is_err()
@@ -582,6 +699,9 @@ async fn remote_queue_server_logic(
                         );
                     }
                 });
+                let invocation =
+                    invocation_from_work(&work, promise_id, metadata_sets, owner_invocation_id)
+                        .expect("Work already validated before remote packaging");
                 debt_map.insert(
                     promise_id,
                     (
@@ -594,14 +714,37 @@ async fn remote_queue_server_logic(
                     ),
                 );
                 trace!("Prepared work, sending out now");
-                let try_offload_message = queue_message::QueueMessage::TryOffload(Invocation {
-                    invocation_id: promise_id,
-                    function_id,
-                    metadata_sets,
-                    caching,
-                });
+                let try_offload_message = queue_message::QueueMessage::TryOffload(invocation);
                 if message_sender.send(try_offload_message).await.is_err() {
                     break;
+                }
+            }
+            QueueOption::CancelRemote(remote_invocation_id) => {
+                if let Some((
+                    _composition_id,
+                    _debt,
+                    _recorder,
+                    _start_epoch,
+                    remote_data_references,
+                    _work,
+                )) = debt_map.remove(&remote_invocation_id)
+                {
+                    trace!(
+                        "Locally canceled remote invocation {}, removing from in-flight map",
+                        remote_invocation_id
+                    );
+                    drop(remote_data_references);
+                    cancelled_debt_ids.insert(remote_invocation_id);
+                    // ask the remote to cancel the invocation
+                    if message_sender
+                        .send(queue_message::QueueMessage::CancelInvocation(
+                            remote_invocation_id,
+                        ))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
             }
             QueueOption::WorkAvailable => {
@@ -610,21 +753,6 @@ async fn remote_queue_server_logic(
                     waiting_for_work = false;
                     if message_sender
                         .send(queue_message::QueueMessage::NoWork(false))
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            }
-            QueueOption::CancelRemote(invocation_id) => {
-                if let Some((_, _, _, _, remote_data_references, _)) =
-                    debt_map.remove(&invocation_id)
-                {
-                    drop(remote_data_references);
-                    cancelled_debt_ids.insert(invocation_id);
-                    if message_sender
-                        .send(queue_message::QueueMessage::CancelInvocation(invocation_id))
                         .await
                         .is_err()
                     {
@@ -744,7 +872,7 @@ pub async fn remote_queue_server(
     // spawn loop to check for queue trying to offload
     let (offload_sender, offload_receiver) = mpsc::unbounded_channel();
     queue.add_remote_channel(node_id, offload_sender);
-    spawn(remote_queue_server_try_offload(
+    let offload_handle = spawn(remote_queue_server_try_offload(
         offload_receiver,
         queue_option_sender.clone(),
         queue.clone(),
@@ -755,18 +883,24 @@ pub async fn remote_queue_server(
         queue_option_sender.clone(),
         queue_message_sender,
         queue,
-        export_registry,
+        export_registry.clone(),
         remote_data_deletion_sender,
         node_id,
         num_local_cores,
     )
     .await;
 
+    // Work that completed durably remains reusable after the worker restarts. Only unfinished
+    // claims need to be released so requeued attempts can elect a replacement winner.
+    #[cfg(feature = "exactly-once")]
+    export_registry.invalidate_running_io_for_node(node_id);
+
     // The logic loop returned because the connection was lost, stop the helper tasks so they do not
     // linger waiting on a dead socket or closed channels.
     sender_handle.abort();
     receiver_handle.abort();
     notification_handle.abort();
+    offload_handle.abort();
 }
 
 pub enum PollingOption {
@@ -827,6 +961,46 @@ async fn remote_queue_client_sender(
     }
 }
 
+#[cfg(feature = "at-least-once")]
+async fn io_completion_delivery_loop(
+    export_registry: ExportRegistry,
+    sender: mpsc::Sender<remote_message::RemoteMessage>,
+) {
+    let mut sent_on_this_connection = HashSet::new();
+    loop {
+        for record in export_registry.pending_io_completion_records() {
+            let key = match record.completion_key() {
+                Ok(key) => key,
+                Err(err) => {
+                    error!("Invalid pending IO completion identity: {}", err);
+                    return;
+                }
+            };
+            if sent_on_this_connection.contains(&key) {
+                continue;
+            }
+            let journal_line = match format_io_completion_line(&record) {
+                Ok(journal_line) => journal_line,
+                Err(err) => {
+                    error!("Failed to encode pending IO completion: {}", err);
+                    return;
+                }
+            };
+            if sender
+                .send(remote_message::RemoteMessage::IoCompletion(
+                    IoCompletionDelivery { journal_line },
+                ))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            sent_on_this_connection.insert(key);
+        }
+        export_registry.wait_for_pending_io_completions().await;
+    }
+}
+
 // TODO: think about limiting number of notification, to make sure we are not adding
 // additional load when the queue is filled / emptied in big strides
 async fn remote_queue_client_queue_state(
@@ -835,10 +1009,12 @@ async fn remote_queue_client_queue_state(
 ) {
     // Send a initial idle changed message, to make sure it always asks once.
     // An idle machine otherwise would never start asking for work
-    sender.send(PollingOption::IdleChanged).await.unwrap();
+    if sender.send(PollingOption::IdleChanged).await.is_err() {
+        return;
+    }
     loop {
         receiver.notified().await;
-        trace!("received capacity notification");
+        trace!("received local idle-core change");
         if sender.send(PollingOption::IdleChanged).await.is_err() {
             break;
         }
@@ -850,7 +1026,9 @@ async fn remote_queue_client_core_count(
     sender: mpsc::Sender<PollingOption>,
 ) {
     loop {
-        receiver.changed().await.unwrap();
+        if receiver.changed().await.is_err() {
+            break;
+        }
         let num_local_cores = *receiver.borrow_and_update();
         if sender
             .send(PollingOption::LocalCoreCountChanged(num_local_cores))
@@ -880,38 +1058,103 @@ async fn dispatcher_call(
     dispatcher: &'static Dispatcher,
     sender: mpsc::Sender<PollingOption>,
     export_registry: ExportRegistry,
+    owner_frontend_url: Option<Arc<String>>,
+    function_cache_path: Arc<String>,
     start_time: Duration,
-    invocation_id: u32,
+    remote_invocation_id: u32,
     function_id: Arc<String>,
-    input_sets: Vec<Option<CompositionSet>>,
     caching: bool,
+    input_sets: Vec<Option<CompositionSet>>,
     recorder: Recorder,
 ) {
     let composition_id = dispatcher.get_composition_id();
-    let function_result = dispatcher
-        .queue_function(
-            composition_id,
-            function_id,
-            input_sets,
-            caching,
-            recorder.clone(),
+    let retry_input_sets = input_sets.clone();
+    let retry_function_id = function_id.clone();
+    let retry_caching = caching;
+    let queue_remote_invocation = |function_id: Arc<String>,
+                                   caching: bool,
+                                   input_sets: Vec<Option<CompositionSet>>,
+                                   recorder: Recorder| async move {
+        dispatcher
+            .queue_function(
+                composition_id,
+                function_id,
+                input_sets,
+                caching,
+                UncoordinatedIo,
+                recorder,
+                None,
+            )
+            .await
+    };
+    let mut function_result =
+        queue_remote_invocation(function_id.clone(), caching, input_sets, recorder.clone()).await;
+    if matches!(
+        &function_result,
+        Err(err) if matches!(
+            err.error,
+            DandelionError::FunctionRegistry(FunctionRegistryError::UnknownFunction(_))
         )
-        .await;
+    ) {
+        if let Some(owner_frontend_url) = owner_frontend_url {
+            warn!(
+                "Lazy-loading missing function {} from owner {}",
+                retry_function_id, owner_frontend_url
+            );
+            match lazy_load_function(
+                dispatcher,
+                owner_frontend_url.as_ref(),
+                function_cache_path.as_ref(),
+                retry_function_id.as_ref(),
+            )
+            .await
+            {
+                Ok(true) => {
+                    warn!(
+                        "Lazy-loaded function {} successfully, retrying invocation",
+                        retry_function_id
+                    );
+                    function_result = queue_remote_invocation(
+                        retry_function_id,
+                        retry_caching,
+                        retry_input_sets,
+                        recorder.clone(),
+                    )
+                    .await;
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    warn!(
+                        "Lazy-loading function {} failed: {}",
+                        retry_function_id, err
+                    );
+                    function_result = Err(err);
+                }
+            }
+        }
+    }
     let (response_message, exported_data_ids) = match function_result {
         Ok(sets) => {
             let mut exported_data_ids = Vec::new();
-            let metadata_sets = composition_sets_to_proto(sets, |item, context| {
-                let remote_data = export_registry.insert_function(item, context, None);
-                exported_data_ids.push(remote_data.data_id);
-                remote_data
-            });
-            (
-                proto::response::Response::MetadataSets(proto::RepeatedMetadataSet {
-                    metadata_sets,
-                    timestamps: recorder_dtop(recorder, start_time),
-                }),
-                exported_data_ids,
-            )
+            let exported = try_composition_sets_to_proto(
+                sets,
+                export_registry.get_node_id(),
+                |item, context| {
+                    let remote_data = export_registry.insert_function(item, context, None);
+                    exported_data_ids.push(remote_data.data_id);
+                    Ok(remote_data)
+                },
+            );
+            let response = match exported {
+                Ok(metadata_sets) => {
+                    proto::response::Response::MetadataSets(proto::RepeatedMetadataSet {
+                        metadata_sets,
+                        timestamps: recorder_dtop(recorder, start_time),
+                    })
+                }
+                Err(err) => proto::response::Response::ErrorMsg(err.error.to_string()),
+            };
+            (response, exported_data_ids)
         }
         Err(err) => (
             proto::response::Response::ErrorMsg(err.error.to_string()),
@@ -922,9 +1165,9 @@ async fn dispatcher_call(
     // fine, the master will reenqueue the work after detecting the disconnect.
     let _ = sender
         .send(PollingOption::Results {
-            invocation_id,
+            invocation_id: remote_invocation_id,
             message: remote_message::RemoteMessage::Response(Response {
-                invocation_id,
+                remote_invocation_id,
                 response: Some(response_message),
             }),
             exported_data_ids,
@@ -949,6 +1192,92 @@ fn delete_invocation_exports(
     Ok(())
 }
 
+fn sanitize_identifier(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn parse_engine_type(engine_type: &str) -> DandelionResult<EngineType> {
+    match engine_type {
+        #[cfg(feature = "mmu")]
+        "Process" => Ok(EngineType::Process),
+        #[cfg(feature = "kvm")]
+        "Kvm" => Ok(EngineType::Kvm),
+        #[cfg(feature = "cheri")]
+        "Cheri" => Ok(EngineType::Cheri),
+        _ => err_dandelion!(DandelionError::Multinode(MultinodeError::ConfigError(
+            format!("Unknown engine type {engine_type} in lazy-loaded function"),
+        ))),
+    }
+}
+
+fn register_exported_function(
+    dispatcher: &'static Dispatcher,
+    function_cache_path: &str,
+    exported: ExportedFunctionRegistration,
+) -> DandelionResult<()> {
+    let remote_function_dir = PathBuf::from(function_cache_path).join("remote_functions");
+    fs::create_dir_all(&remote_function_dir).map_err(|err| {
+        dandelion_commons::dandelion_err!(DandelionError::Multinode(MultinodeError::RequestFailed(
+            format!("Failed to create lazy-load cache directory: {}", err)
+        ),))
+    })?;
+    let function_name = exported.name.clone();
+    for (index, alternative) in exported.alternatives.into_iter().enumerate() {
+        let engine_type = parse_engine_type(&alternative.engine_type)?;
+        let file_name = format!(
+            "{}_{}_{}.bin",
+            sanitize_identifier(&function_name),
+            alternative.engine_type.to_lowercase(),
+            index,
+        );
+        let path = remote_function_dir.join(file_name);
+        fs::write(&path, &alternative.binary).map_err(|err| {
+            dandelion_commons::dandelion_err!(DandelionError::Multinode(
+                MultinodeError::RequestFailed(format!(
+                    "Failed to write lazy-loaded function binary: {}",
+                    err
+                )),
+            ))
+        })?;
+        let metadata = machine_interface::function_driver::Metadata {
+            input_sets: exported
+                .metadata
+                .input_sets
+                .iter()
+                .cloned()
+                .map(|name| (name, None))
+                .collect(),
+            output_sets: exported.metadata.output_sets.clone(),
+            min_set_bytes: exported.metadata.min_set_bytes.clone(),
+        };
+        match dispatcher.insert_function(
+            function_name.clone(),
+            engine_type,
+            alternative.context_size,
+            path.to_string_lossy().to_string(),
+            metadata,
+        ) {
+            Ok(()) => {}
+            Err(err)
+                if matches!(
+                    err.error,
+                    DandelionError::FunctionRegistry(FunctionRegistryError::DuplicateInsert(_))
+                ) => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
 async fn send_cancel_acknowledgement(
     message_sender: &mpsc::Sender<remote_message::RemoteMessage>,
     invocation_id: u32,
@@ -960,6 +1289,67 @@ async fn send_cancel_acknowledgement(
         .await
 }
 
+async fn lazy_load_function(
+    dispatcher: &'static Dispatcher,
+    owner_frontend_url: &str,
+    function_cache_path: &str,
+    function_name: &str,
+) -> DandelionResult<bool> {
+    let base_url = reqwest::Url::parse(owner_frontend_url).map_err(|err| {
+        dandelion_commons::dandelion_err!(DandelionError::Multinode(MultinodeError::ConfigError(
+            format!("Invalid owner frontend url {}: {}", owner_frontend_url, err)
+        ),))
+    })?;
+    let mut url = base_url.clone();
+    url.path_segments_mut()
+        .map_err(|_| {
+            dandelion_commons::dandelion_err!(DandelionError::Multinode(
+                MultinodeError::ConfigError(format!(
+                    "Owner frontend url {} cannot accept path segments",
+                    owner_frontend_url
+                )),
+            ))
+        })?
+        .extend(["internal", "function", function_name]);
+
+    let response = reqwest::get(url).await.map_err(|err| {
+        dandelion_commons::dandelion_err!(DandelionError::Multinode(
+            MultinodeError::ConnectionFailed(format!(
+                "Failed to fetch function {} from owner: {}",
+                function_name, err
+            )),
+        ))
+    })?;
+    if !response.status().is_success() {
+        return err_dandelion!(DandelionError::Multinode(MultinodeError::RequestFailed(
+            format!(
+                "Owner returned {} when fetching function {}",
+                response.status(),
+                function_name
+            ),
+        )));
+    }
+    let response_bytes = response.bytes().await.map_err(|err| {
+        dandelion_commons::dandelion_err!(DandelionError::Multinode(MultinodeError::RequestFailed(
+            format!(
+                "Failed to read lazy-loaded function {} response: {}",
+                function_name, err
+            )
+        ),))
+    })?;
+    let exported = serde_json::from_slice::<ExportedFunctionRegistration>(&response_bytes)
+        .map_err(|err| {
+            dandelion_commons::dandelion_err!(DandelionError::Multinode(
+                MultinodeError::DeserializationError(format!(
+                    "Failed to deserialize lazy-loaded function {}: {}",
+                    function_name, err
+                )),
+            ))
+        })?;
+    register_exported_function(dispatcher, function_cache_path, exported)?;
+    Ok(true)
+}
+
 async fn remote_queue_client_logic(
     mut receiver: mpsc::Receiver<PollingOption>,
     message_sender: mpsc::Sender<remote_message::RemoteMessage>,
@@ -968,8 +1358,8 @@ async fn remote_queue_client_logic(
         Duration,
         u32,
         Arc<String>,
-        Vec<Option<CompositionSet>>,
         bool,
+        Vec<Option<CompositionSet>>,
         Recorder,
     ),
     idle_cores: impl Fn() -> usize,
@@ -1016,35 +1406,95 @@ async fn remote_queue_client_logic(
                     queue_message::QueueMessage::NoWork(false) => {
                         trace!("Queue Client recieved NoWork(false)");
                         debug_assert!(data_option.is_none());
+
                         remote_had_work = true;
                     }
-                    queue_message::QueueMessage::CancelInvocation(invocation_id) => {
+                    queue_message::QueueMessage::CancelInvocation(remote_invocation_id) => {
                         trace!(
                             "Queue Client received cancellation for invocation {}",
-                            invocation_id
+                            remote_invocation_id
                         );
                         if let Some(exported_data_ids) =
-                            completed_remote_invocation_exports.remove(&invocation_id)
+                            completed_remote_invocation_exports.remove(&remote_invocation_id)
                         {
                             if let Err(error) = delete_invocation_exports(
                                 &export_registry,
-                                invocation_id,
+                                remote_invocation_id,
                                 exported_data_ids,
                             ) {
                                 error!(
                                     "Failed to clean exports for canceled remote invocation {}: {}",
-                                    invocation_id, error
+                                    remote_invocation_id, error
                                 );
                                 break;
                             }
-                            if send_cancel_acknowledgement(&message_sender, invocation_id)
+                            if send_cancel_acknowledgement(&message_sender, remote_invocation_id)
                                 .await
                                 .is_err()
                             {
                                 break;
                             }
                         } else {
-                            cancelled_remote_invocations.insert(invocation_id);
+                            cancelled_remote_invocations.insert(remote_invocation_id);
+                        }
+                    }
+                    queue_message::QueueMessage::IoCompletionAck(acknowledgement) => {
+                        #[cfg(not(feature = "at-least-once"))]
+                        {
+                            let _ = acknowledgement;
+                            warn!("Ignoring exactly-once I/O acknowledgement in this build");
+                            continue;
+                        }
+                        #[cfg(feature = "at-least-once")]
+                        {
+                            let invocation_id = match acknowledgement.invocation_id.parse() {
+                                Ok(invocation_id) => invocation_id,
+                                Err(_) => {
+                                    error!("Owner sent an invalid IO completion acknowledgement");
+                                    break;
+                                }
+                            };
+                            let composition_set_id = match usize::try_from(
+                                acknowledgement.composition_set_id,
+                            ) {
+                                Ok(composition_set_id) => composition_set_id,
+                                Err(_) => {
+                                    error!(
+                                        "Owner sent an IO completion acknowledgement with an invalid composition set id"
+                                    );
+                                    break;
+                                }
+                            };
+                            let function = match acknowledgement.function.as_str() {
+                                "HTTP" => SystemFunction::HTTP,
+                                "MEMCACHED" => SystemFunction::MEMCACHED,
+                                _ => {
+                                    error!(
+                                    "Owner sent an IO completion acknowledgement with an invalid function"
+                                );
+                                    break;
+                                }
+                            };
+                            let completion_key = IoCompletionKey {
+                                invocation_id,
+                                composition_set_id,
+                                function,
+                                identifier: acknowledgement.identifier,
+                                item_key: acknowledgement.item_key,
+                            };
+                            let disposition = if acknowledgement.delete_outputs {
+                                IoCompletionDisposition::Delete
+                            } else {
+                                IoCompletionDisposition::Retain
+                            };
+                            if let Err(err) = export_registry
+                                .apply_io_completion_ack(&completion_key, disposition)
+                            {
+                                // Reconnect so the delivery loop retries the record instead of treating
+                                // an acknowledgement that was not persisted locally as complete.
+                                error!("Failed to acknowledge delivered IO completion: {}", err);
+                                break;
+                            }
                         }
                     }
                     // TODO for try offload decide when to refuse work
@@ -1053,45 +1503,53 @@ async fn remote_queue_client_logic(
                         // should not received them after a moment, since we only get them from data locality.
                         // Should still add message to reject them or more generally message to tell master we are shutting down.
                         trace!("Queue Client recieved try offload");
-
                         if remote_shutdown {
                             debug!("Should not get offload invocations after remote indicates shutdown");
+                        }
+                        let Invocation {
+                            remote_invocation_id,
+                            metadata_sets,
+                            owner_invocation_id,
+                            ..
+                        } = &invocation;
+                        let remote_invocation_id = *remote_invocation_id;
+                        completed_remote_invocation_exports.remove(&remote_invocation_id);
+                        if cancelled_remote_invocations.remove(&remote_invocation_id) {
+                            trace!(
+                                "Discarding stale cancellation before reused try-offload invocation {}",
+                                remote_invocation_id
+                            );
                         }
                         work_from_remote += 1;
 
                         // mark remote as having work, so we ask for more as idle cores change
+                        remote_had_work = true;
                         let start_instance = Instant::now();
                         let start_time =
                             std::time::SystemTime::elapsed(&std::time::SystemTime::UNIX_EPOCH)
                                 .unwrap();
-                        let Invocation {
-                            invocation_id,
-                            function_id,
-                            metadata_sets,
-                            caching,
-                        } = invocation;
-                        completed_remote_invocation_exports.remove(&invocation_id);
-                        if cancelled_remote_invocations.remove(&invocation_id) {
-                            trace!(
-                                "Cleared stale cancellation before reusing invocation {}",
-                                invocation_id
-                            );
-                        }
-                        work_from_remote += 1;
-                        let function_arc = Arc::new(function_id);
-                        let recorder = Recorder::new(function_arc.clone(), start_instance);
+                        let (function_id, caching) = queue_function_args_from_invocation(
+                            &invocation,
+                        )
+                        .expect(
+                            "Remote try-offload message should always contain invocation details",
+                        );
+                        let owner_invocation_id = owner_invocation_id
+                            .parse::<InvocationId>()
+                            .expect("Owner invocation id should be a valid UUID");
+                        let recorder =
+                            Recorder::new(owner_invocation_id, function_id.clone(), start_instance);
                         let inputs =
-                            proto_data_sets_to_composition_sets(metadata_sets, data_option);
+                            proto_data_sets_to_composition_sets(metadata_sets.clone(), data_option);
                         dispatcher_sender(
                             export_registry.clone(),
                             start_time,
-                            invocation_id,
-                            function_arc,
-                            inputs,
+                            remote_invocation_id,
+                            function_id,
                             caching,
+                            inputs,
                             recorder,
                         );
-                        remote_had_work = true;
                     }
                     queue_message::QueueMessage::Invocations(invocations) => {
                         trace!(
@@ -1105,42 +1563,53 @@ async fn remote_queue_client_logic(
                         invocation_request_in_flight = false;
 
                         // mark remote as having work, so we ask for more as idle cores change
+                        remote_had_work = true;
                         let start_instance = Instant::now();
                         let start_time =
                             std::time::SystemTime::elapsed(&std::time::SystemTime::UNIX_EPOCH)
                                 .unwrap();
                         for invocation in invocations.invocations {
                             let Invocation {
-                                invocation_id,
-                                function_id,
+                                remote_invocation_id,
                                 metadata_sets,
-                                caching,
-                            } = invocation;
-                            completed_remote_invocation_exports.remove(&invocation_id);
-                            if cancelled_remote_invocations.remove(&invocation_id) {
+                                owner_invocation_id,
+                                ..
+                            } = &invocation;
+                            let remote_invocation_id = *remote_invocation_id;
+                            completed_remote_invocation_exports.remove(&remote_invocation_id);
+                            if cancelled_remote_invocations.remove(&remote_invocation_id) {
                                 trace!(
-                                    "Cleared stale cancellation before reusing invocation {}",
-                                    invocation_id
+                                    "Discarding stale cancellation before reused invocation {}",
+                                    remote_invocation_id
                                 );
                             }
                             work_from_remote += 1;
-                            let function_arc = Arc::new(function_id);
-                            let recorder = Recorder::new(function_arc.clone(), start_instance);
+                            let (function_id, caching) =
+                                queue_function_args_from_invocation(&invocation).expect(
+                                "Remote invocation message should always contain invocation details",
+                            );
+                            let owner_invocation_id = owner_invocation_id
+                                .parse::<InvocationId>()
+                                .expect("Owner invocation id should be a valid UUID");
+                            let recorder = Recorder::new(
+                                owner_invocation_id,
+                                function_id.clone(),
+                                start_instance,
+                            );
                             let inputs = proto_data_sets_to_composition_sets(
-                                metadata_sets,
+                                metadata_sets.clone(),
                                 data_option.clone(),
                             );
                             dispatcher_sender(
                                 export_registry.clone(),
                                 start_time,
-                                invocation_id,
-                                function_arc,
-                                inputs,
+                                remote_invocation_id,
+                                function_id,
                                 caching,
+                                inputs,
                                 recorder,
                             )
                         }
-                        remote_had_work = true;
                     }
                 }
             }
@@ -1199,7 +1668,7 @@ async fn remote_queue_client_logic(
             // getting a notification so should poll the queue
             PollingOption::IdleChanged => {
                 trace!(
-                    "Queue Client checking updated queue state, remote_had_work {}",
+                    "Queue Client checking updated idle-core state, remote_had_work {}",
                     remote_had_work,
                 );
             }
@@ -1301,6 +1770,8 @@ pub async fn remote_queue_client(
     export_registry: ExportRegistry,
     queue: WorkQueue,
     shutdown_receiver: watch::Receiver<bool>,
+    owner_frontend_url: Option<String>,
+    function_cache_path: String,
 ) -> bool {
     // set up the connection by sending a single node info
     let mut local_core_watcher = queue.system_info.num_local_cores_watcher.clone();
@@ -1329,6 +1800,11 @@ pub async fn remote_queue_client(
         write_socket,
         remote_message_reciever,
     ));
+    #[cfg(feature = "at-least-once")]
+    let io_completion_delivery_handle = spawn(io_completion_delivery_loop(
+        export_registry.clone(),
+        remote_message_sender.clone(),
+    ));
     // start receiver loop
     let (poll_option_sender, poll_option_receiver) = mpsc::channel(64);
     let receiver_handle = spawn(remote_queue_client_receiver(
@@ -1341,9 +1817,8 @@ pub async fn remote_queue_client(
         poll_option_sender.clone(),
     ));
     // spawn queue state loop
-    let local_idle_notifier = queue.idle_notifier();
     let queue_state_handle = spawn(remote_queue_client_queue_state(
-        local_idle_notifier,
+        queue.idle_notifier(),
         poll_option_sender.clone(),
     ));
     // spawn watcher to translate shutdown into appropriate type
@@ -1352,19 +1827,32 @@ pub async fn remote_queue_client(
         poll_option_sender.clone(),
     ));
 
+    let owner_frontend_url = owner_frontend_url.map(Arc::new);
+    let function_cache_path = Arc::new(function_cache_path);
     let graceful_shutdown = remote_queue_client_logic(
         poll_option_receiver,
         remote_message_sender,
-        move |registry, start_time, invocation_id, function_id, input_sets, caching, recorder| {
+        move |registry,
+              start_time,
+              remote_invocation_id,
+              function_id,
+              caching,
+              input_sets,
+              recorder| {
+            let sender_clone = poll_option_sender.clone();
+            let owner_frontend_url = owner_frontend_url.clone();
+            let function_cache_path = function_cache_path.clone();
             spawn(dispatcher_call(
                 dispatcher,
-                poll_option_sender.clone(),
+                sender_clone,
                 registry,
+                owner_frontend_url,
+                function_cache_path,
                 start_time,
-                invocation_id,
+                remote_invocation_id,
                 function_id,
-                input_sets,
                 caching,
+                input_sets,
                 recorder,
             ));
         },
@@ -1378,6 +1866,8 @@ pub async fn remote_queue_client(
     // The logic loop returned because the connection was lost or shutdown on purpose, stop the helper tasks so they do not
     // linger waiting on a dead socket or closed channels.
     sender_handle.abort();
+    #[cfg(feature = "at-least-once")]
+    io_completion_delivery_handle.abort();
     receiver_handle.abort();
     core_count_handle.abort();
     queue_state_handle.abort();
