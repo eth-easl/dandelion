@@ -14,7 +14,7 @@ const DEFAULT_CONTEXT_SIZE: usize = 0x800_0000; // 128MiB
 fn create_context(matrix: Box<[u64]>) -> Context {
     let mat_len = matrix.len();
     let mut fixed =
-        ReadOnlyContext::new(matrix).expect("Should be able to make context from boxed array");
+        ReadOnlyContext::from_boxed(matrix).expect("Should be able to make context from boxed array");
     fixed.content.push(Some(DataSet {
         ident: String::from(""),
         buffers: vec![DataItem {

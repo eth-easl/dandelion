@@ -466,7 +466,7 @@ fn test_dandelion_body_serialization() {
     };
     let expected_response = bson::to_vec(&expected_response_struct).unwrap();
 
-    let mut new_context = ReadOnlyContext::new(data_box).unwrap();
+    let mut new_context = ReadOnlyContext::from_boxed(data_box).unwrap();
     new_context.content = vec![Some(DataSet {
         ident: String::from("set_ident"),
         buffers: vec![DataItem {
