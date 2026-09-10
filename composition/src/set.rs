@@ -1,12 +1,14 @@
 use std::{
-    mem,
+    debug_assert_matches, mem,
     sync::{Arc, Mutex, Weak},
 };
 
 use dandelion_commons::data::{DataItem, DataSet, DataSetAccumulator, Invocation};
+use log::error;
 
 use crate::{sharding::AnyShardingMode, Function};
 
+#[derive(Debug)]
 enum State {
     Pending(DataSetAccumulator),
     Complete(DataSet),
@@ -61,6 +63,9 @@ impl CompositionSet {
         }
     }
 
+    /// Pushes new items to the set.
+    /// The items are forwarded immediately to all streaming consumers and retained for blocking
+    /// consumers that are only informed when the set is complete.
     pub fn push_items(
         &self,
         items: Arc<Vec<Arc<DataItem>>>,
@@ -68,7 +73,7 @@ impl CompositionSet {
         any_sharding_mode: &AnyShardingMode,
     ) -> Vec<Invocation> {
         let mut inner = self.inner.lock().expect("CompositionSet lock poisoned!");
-        assert!(
+        debug_assert!(
             !matches!(inner.state, State::Complete(_)),
             "Tried adding an item to a complete CompositionSet!"
         );
@@ -85,6 +90,10 @@ impl CompositionSet {
         if self.requires_retention {
             if let State::Pending(acc) = &mut inner.state {
                 acc.push_items(&items);
+            } else {
+                error!(
+                    "CompositionSet requires retention but does not have a pending accumulator."
+                );
             }
         }
 
@@ -109,16 +118,34 @@ impl CompositionSet {
         invocations
     }
 
-    pub fn get_set(&self, blocking_caller: &Arc<Function>) -> DataSet {
+    /// Sets the composition set to the given set.
+    /// Assumes the set is ordered if the input requires ordering (unchecked) and does not notify
+    /// consumers that the set is now complete.
+    pub fn set_composition_input(&self, set: DataSet) {
+        let mut inner = self.inner.lock().expect("CompositionSet lock poisoned!");
+        debug_assert!(
+            !matches!(inner.state, State::Complete(_)),
+            "CompositionSet is alreay complete!"
+        );
+        let prev_state = mem::replace(&mut inner.state, State::Complete(set));
+        debug_assert_matches!(prev_state, State::Pending(_));
+    }
+
+    /// Returns the current set.
+    /// If a caller is given that is currently listed as a blocking caller, it will be automatically
+    ///  turned into a streaming consumer.
+    pub fn get_set(&self, caller_opt: Option<Arc<Function>>) -> DataSet {
         let mut inner = self.inner.lock().expect("CompositionSet lock poisoned!");
 
-        if let Some(pos) = inner
-            .consumers_blocking
-            .iter()
-            .position(|(c, _)| Arc::ptr_eq(&c.upgrade().unwrap(), blocking_caller))
-        {
-            let consumer = inner.consumers_blocking.swap_remove(pos);
-            inner.consumers_streaming.push(consumer);
+        if let Some(caller) = caller_opt {
+            if let Some(pos) = inner
+                .consumers_blocking
+                .iter()
+                .position(|(c, _)| Arc::ptr_eq(&c.upgrade().unwrap(), &caller))
+            {
+                let consumer = inner.consumers_blocking.swap_remove(pos);
+                inner.consumers_streaming.push(consumer);
+            }
         }
 
         match inner.state {

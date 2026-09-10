@@ -68,6 +68,7 @@ impl DataSet {
     }
 }
 
+#[derive(Debug)]
 pub struct DataSetAccumulator {
     items: Vec<Arc<DataItem>>,
     num_unresolved: usize,
