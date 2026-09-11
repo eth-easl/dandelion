@@ -24,6 +24,8 @@ pub enum DandelionError {
     UserError(UserError),
     /// Error in inter communication to other nodes
     Multinode(MultinodeError),
+    /// Error while parsing a composition.
+    Parsing(String),
     /// trying to use a feature that is not yet implemented
     NotImplemented,
     // errors in configurations

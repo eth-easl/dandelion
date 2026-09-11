@@ -1,4 +1,4 @@
-use std::{cmp, mem, sync::Arc};
+use std::{cmp, sync::Arc};
 
 use dandelion_commons::data::DataSet;
 use log::{debug, trace};
@@ -126,7 +126,7 @@ impl AnySetGroup {
 /// The `min_set_size` is used to create `any` set shards of at least that size and is ignored if
 /// set to 0.
 pub fn create_sharding_iter(
-    mut sets: Vec<(DataSet, Sharding)>,
+    mut sets: Vec<Option<(DataSet, Sharding)>>,
     join_order: &[usize],
     any_sharding_mode: &AnyShardingMode,
     min_set_bytes: &[usize],
@@ -151,8 +151,8 @@ pub fn create_sharding_iter(
     let mut i = 0;
     while i < set_num {
         let set_idx = join_order[i];
-        if !sets[set_idx].0.is_empty() {
-            if let Sharding::Keyed(strategy) = sets[set_idx].1 {
+        if let Some((set, sharding)) = sets[set_idx].take() {
+            if let Sharding::Keyed(strategy) = sharding {
                 if strategy == JoinStrategy::Cross {
                     if join_group_key_set.len() > 0 {
                         fixed_partitions *= join_group_key_set.len();
@@ -161,12 +161,13 @@ pub fn create_sharding_iter(
                 }
                 key_join_iter = SetKeyIterator::new(
                     key_join_iter,
-                    mem::take(&mut sets[set_idx].0),
+                    set,
                     strategy,
                     set_idx,
                     &mut join_group_key_set,
                 );
             } else {
+                sets[set_idx] = Some((set, sharding)); // put back into sets
                 break; // continue building all other iterators in the second loop
             }
         }
@@ -182,9 +183,7 @@ pub fn create_sharding_iter(
     let mut join_iter = key_join_iter.map(|i| i as Box<dyn JoinIterator>);
     while i < set_num {
         let set_idx = join_order[i];
-        if !sets[set_idx].0.is_empty() {
-            let set = mem::take(&mut sets[set_idx].0);
-            let sharding = sets[set_idx].1.clone();
+        if let Some((set, sharding)) = sets[set_idx].take() {
             match sharding {
                 Sharding::All => {
                     join_iter = SetAllIterator::new(join_iter, set, set_idx);
@@ -223,18 +222,15 @@ pub fn create_sharding_iter(
                     let start_idx = i;
                     while i + 1 < join_order.len() {
                         let next_set_idx = join_order[i + 1];
-                        if let Sharding::AnyKeyed(next_strategy) = sets[next_set_idx].1 {
+                        if let Some((_, Sharding::AnyKeyed(next_strategy))) = sets[next_set_idx] {
                             if next_strategy == JoinStrategy::Cross {
                                 // a cross join breaks the chain
                                 break;
                             }
-
-                            // if the set is none we just skip it -> this allows for empty optional sets
-                            if !sets[next_set_idx].0.is_empty() {
-                                joined_sets.push(mem::take(&mut sets[next_set_idx].0));
-                                joined_set_idcs.push(next_set_idx);
-                                joined_strategies.push(next_strategy);
-                            }
+                            let (next_set, _) = sets[next_set_idx].take().unwrap();
+                            joined_sets.push(next_set);
+                            joined_set_idcs.push(next_set_idx);
+                            joined_strategies.push(next_strategy);
                             i += 1;
                         } else {
                             break;

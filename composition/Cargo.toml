@@ -6,3 +6,5 @@ edition = "2021"
 [dependencies]
 dandelion_commons = {path = "../dandelion_commons"}
 log = "0.4.21"
+chumsky = "0.13"
+ariadne = "0.6"

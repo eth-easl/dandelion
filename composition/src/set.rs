@@ -1,6 +1,6 @@
 use std::{
     debug_assert_matches, mem,
-    sync::{Arc, Mutex, Weak},
+    sync::{Arc, Mutex},
 };
 
 use dandelion_commons::data::{DataItem, DataSet, DataSetAccumulator, Invocation};
@@ -18,31 +18,46 @@ enum State {
 
 struct Inner {
     state: State,
-    consumers_blocking: Vec<(Weak<Function>, usize)>,
-    consumers_streaming: Vec<(Weak<Function>, usize)>,
+    consumers_blocking: Vec<(Arc<Function>, usize)>,
+    consumers_streaming: Vec<(Arc<Function>, usize)>,
+    requires_sorting: bool,
 }
 
 pub struct CompositionSet {
-    requires_sorting: bool,
     requires_retention: bool,
     inner: Mutex<Inner>,
 }
 
 impl CompositionSet {
-    pub fn new(
-        consumers_blocking: Vec<(Weak<Function>, usize)>,
-        consumers_streaming: Vec<(Weak<Function>, usize)>,
-        requires_sorting: bool,
-        requires_retention: bool,
-    ) -> CompositionSet {
+    pub fn new() -> CompositionSet {
         CompositionSet {
-            requires_sorting,
-            requires_retention,
+            requires_retention: false,
             inner: Mutex::new(Inner {
                 state: State::Pending(DataSetAccumulator::new()),
-                consumers_blocking,
-                consumers_streaming,
+                consumers_blocking: Vec::new(),
+                consumers_streaming: Vec::new(),
+                requires_sorting: false,
             }),
+        }
+    }
+
+    pub fn add_consumer(
+        &self,
+        consumer: Arc<Function>,
+        consumer_in_set_idx: usize,
+        blocking: bool,
+        requires_sorting: bool,
+    ) {
+        let mut inner = self.inner.lock().expect("CompositionSet lock poisoned!");
+        inner.requires_sorting |= requires_sorting;
+        if blocking {
+            inner
+                .consumers_blocking
+                .push((consumer, consumer_in_set_idx));
+        } else {
+            inner
+                .consumers_streaming
+                .push((consumer, consumer_in_set_idx));
         }
     }
 
@@ -80,7 +95,7 @@ impl CompositionSet {
 
         let mut invocations = Vec::new();
         for (f, set_idx) in inner.consumers_streaming.iter() {
-            invocations.extend(f.upgrade().unwrap().push_streaming_items(
+            invocations.extend(f.push_streaming_items(
                 *set_idx,
                 items.clone(),
                 complete,
@@ -99,7 +114,7 @@ impl CompositionSet {
 
         let blocking_consumers = if complete {
             if let State::Pending(acc) = mem::replace(&mut inner.state, State::Transitioning) {
-                if self.requires_sorting {
+                if inner.requires_sorting {
                     inner.state = State::Complete(acc.collect());
                 } else {
                     inner.state = State::Complete(acc.collect_unsorted());
@@ -113,7 +128,7 @@ impl CompositionSet {
         drop(inner);
 
         for (f, _) in blocking_consumers.iter() {
-            invocations.extend(f.upgrade().unwrap().in_set_complete(any_sharding_mode));
+            invocations.extend(f.in_set_complete(any_sharding_mode));
         }
         invocations
     }
@@ -141,7 +156,7 @@ impl CompositionSet {
             if let Some(pos) = inner
                 .consumers_blocking
                 .iter()
-                .position(|(c, _)| Arc::ptr_eq(&c.upgrade().unwrap(), &caller))
+                .position(|(c, _)| Arc::ptr_eq(&c, &caller))
             {
                 let consumer = inner.consumers_blocking.swap_remove(pos);
                 inner.consumers_streaming.push(consumer);
