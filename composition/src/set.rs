@@ -72,15 +72,6 @@ impl CompositionSet {
             .requires_retention = true;
     }
 
-    pub fn is_empty(&self) -> bool {
-        let inner = self.inner.lock().expect("CompositionSet lock poisoned!");
-        match inner.state {
-            State::Pending(ref acc) => acc.is_empty(),
-            State::Complete(ref set) => set.is_empty(),
-            _ => panic!("Unexpected CompositionSet state"),
-        }
-    }
-
     pub fn is_complete(&self) -> bool {
         let inner = self.inner.lock().expect("CompositionSet lock poisoned!");
         match inner.state {
@@ -204,7 +195,7 @@ mod tests {
     fn fresh_set_is_pending_and_empty() {
         let set = CompositionSet::new();
         assert!(!set.is_complete());
-        assert!(set.is_empty());
+        assert!(set.get_set(None).is_empty());
     }
 
     #[test]
@@ -222,7 +213,7 @@ mod tests {
         );
         assert!(set.is_complete());
         assert!(
-            !set.is_empty(),
+            !set.get_set(None).is_empty(),
             "a blocking consumer must retain the pushed items so it can read them once complete"
         );
         assert!(
@@ -247,7 +238,7 @@ mod tests {
         assert!(set.is_complete());
         // A lone single-param streaming consumer already received the items directly through
         // `push_streaming_items`, so the set itself doesn't need to retain a copy.
-        assert!(set.is_empty());
+        assert!(set.get_set(None).is_empty());
         assert!(consumer.is_complete());
     }
 

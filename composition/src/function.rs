@@ -109,9 +109,14 @@ impl Function {
             for in_opt in inner.inputs.iter() {
                 if let Some((set, sharding, optional)) = in_opt {
                     let data_set = set.get_set(Some(self.clone()));
-                    if !optional && data_set.is_empty() {
-                        runnable = false;
-                        break;
+                    if data_set.is_empty() {
+                        if *optional {
+                            sets.push(None);
+                            continue;
+                        } else {
+                            runnable = false;
+                            break;
+                        }
                     }
                     sets.push(Some((data_set, sharding.clone())));
                 } else {
@@ -152,24 +157,36 @@ impl Function {
             "Function.push_streaming_items called before in_set_complete resolved this function."
         );
 
-        let sets = inner
-            .inputs
-            .iter()
-            .enumerate()
-            .map(|(idx, in_opt)| {
-                in_opt.as_ref().map(|(set, sharding, _)| {
-                    // TODO: handle weird streaming
-                    if idx == set_idx {
-                        // this is the case once so we can pass ownership with a mem::take
-                        (DataSet::from_items(mem::take(&mut items)), sharding.clone())
+        let mut runnable = true;
+        let mut sets = Vec::with_capacity(inner.inputs.len());
+        for (idx, in_opt) in inner.inputs.iter().enumerate() {
+            if let Some((set, sharding, optional)) = in_opt {
+                let data_set = if idx == set_idx {
+                    // this is the case once so we can pass ownership with a mem::take
+                    DataSet::from_items(mem::take(&mut items))
+                } else {
+                    set.get_set(Some(self.clone()))
+                };
+                if data_set.is_empty() {
+                    if *optional {
+                        sets.push(None);
+                        continue;
                     } else {
-                        (set.get_set(Some(self.clone())), sharding.clone())
+                        runnable = false;
+                        break;
                     }
-                })
-            })
-            .collect();
+                }
+                sets.push(Some((data_set, sharding.clone())));
+            } else {
+                sets.push(None);
+            }
+        }
 
-        let invocations = self.create_invocations(sets, any_sharding_mode, &inner.min_set_bytes);
+        let invocations = if runnable {
+            self.create_invocations(sets, any_sharding_mode, &inner.min_set_bytes)
+        } else {
+            vec![]
+        };
 
         self.num_outstanding
             .fetch_add(invocations.len(), Ordering::AcqRel);
@@ -409,5 +426,78 @@ mod tests {
             "a non-optional empty input must not produce an invocation"
         );
         assert!(function.is_complete());
+    }
+
+    #[test]
+    fn two_each_inputs_only_combine_once_both_have_items() {
+        let function = Arc::new(Function::new(0, fid("F"), vec![0, 1]));
+        let set_a = Arc::new(CompositionSet::new());
+        let set_b = Arc::new(CompositionSet::new());
+        set_a.add_consumer(function.clone(), 0, false, false, 2);
+        set_b.add_consumer(function.clone(), 1, false, false, 2);
+        function.update_io(
+            vec![
+                Some((set_a.clone(), Sharding::Each, false)),
+                Some((set_b.clone(), Sharding::Each, false)),
+            ],
+            vec![None],
+            vec![0, 0],
+        );
+        // Both inputs are purely streaming (non-blocking), so resolve the function first, as
+        // `Composition::start_execution` would.
+        function.in_set_complete(&AnyShardingMode::MaxSharding);
+
+        // B is still completely untouched: pushing to A alone must not create an invocation
+        // (previously this would panic trying to shard an empty `each` set for B).
+        let invocations = set_a.push_items(items(&[1]), false, &AnyShardingMode::MaxSharding);
+        assert!(
+            invocations.is_empty(),
+            "B has no items yet, so nothing should fire"
+        );
+
+        // Now B gets an item too: the pending combination fires.
+        let invocations = set_b.push_items(items(&[10]), false, &AnyShardingMode::MaxSharding);
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].input[0].items.len(), 1);
+        assert_eq!(invocations[0].input[0].items[0].key, 1);
+        assert_eq!(invocations[0].input[1].items.len(), 1);
+        assert_eq!(invocations[0].input[1].items[0].key, 10);
+    }
+
+    /// Same as `two_each_inputs_only_combine_once_both_have_items`, but pushes to the *second*
+    /// input while the *first* is still untouched. `push_streaming_items` walks inputs in order
+    /// and bails out as soon as it finds a non-optional empty one - here that's input 0 (A),
+    /// which comes *before* input 1 (B, the one actually being pushed to), so the loop returns
+    /// without ever reaching the `idx == set_idx` branch that would `mem::take` the pushed item.
+    /// That must not lose the item: since a multi-param function requires retention on every one
+    /// of its inputs (`consumer_num_params > 1` in `add_consumer`), `set_b` has already durably
+    /// retained it in its own accumulator regardless, and a later `get_set` picks it back up.
+    #[test]
+    fn each_each_second_input_arriving_first_is_not_lost() {
+        let function = Arc::new(Function::new(0, fid("F"), vec![0, 1]));
+        let set_a = Arc::new(CompositionSet::new());
+        let set_b = Arc::new(CompositionSet::new());
+        set_a.add_consumer(function.clone(), 0, false, false, 2);
+        set_b.add_consumer(function.clone(), 1, false, false, 2);
+        function.update_io(
+            vec![
+                Some((set_a.clone(), Sharding::Each, false)),
+                Some((set_b.clone(), Sharding::Each, false)),
+            ],
+            vec![None],
+            vec![0, 0],
+        );
+        function.in_set_complete(&AnyShardingMode::MaxSharding);
+
+        // B (input 1) arrives first, while A (input 0) is still completely empty.
+        let invocations = set_b.push_items(items(&[10]), false, &AnyShardingMode::MaxSharding);
+        assert!(invocations.is_empty(), "A has no items yet, so nothing should fire");
+
+        // A arrives: B's earlier item must still be there, not silently dropped.
+        let invocations = set_a.push_items(items(&[1]), false, &AnyShardingMode::MaxSharding);
+        assert_eq!(invocations.len(), 1);
+        assert_eq!(invocations[0].input[0].items[0].key, 1);
+        assert_eq!(invocations[0].input[1].items.len(), 1, "B's earlier item must not be lost");
+        assert_eq!(invocations[0].input[1].items[0].key, 10);
     }
 }
