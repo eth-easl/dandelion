@@ -351,3 +351,174 @@ pub fn create_sharding_iter(
 
     join_iter
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dandelion_commons::data::{DataItem, Position};
+
+    fn item(key: u32) -> Arc<DataItem> {
+        Arc::new(DataItem {
+            ident: format!("item-{key}"),
+            data: Position { offset: 0, size: 0 },
+            key,
+        })
+    }
+
+    /// Builds a `DataSet` with one item per given key, sorted ascending (as
+    /// `SetKeyIterator::new` requires: it groups by scanning for runs of equal keys).
+    fn keyed_set(keys: &[u32]) -> DataSet {
+        let mut keys = keys.to_vec();
+        keys.sort();
+        DataSet::from_items(Arc::new(keys.into_iter().map(item).collect()))
+    }
+
+    /// Like `keyed_set`, but with a non-zero item size. A size of 0 is a sentinel for "unknown
+    /// size" (see `AnySetGroup::new`) that always forces max sharding, so any/fixed-sharding tests
+    /// need sized items to actually exercise partition capping.
+    fn sized_keyed_set(keys: &[u32], size: usize) -> DataSet {
+        let mut keys = keys.to_vec();
+        keys.sort();
+        DataSet::from_items(Arc::new(
+            keys.into_iter()
+                .map(|key| {
+                    Arc::new(DataItem {
+                        ident: format!("item-{key}"),
+                        data: Position { offset: 0, size },
+                        key,
+                    })
+                })
+                .collect(),
+        ))
+    }
+
+    /// Runs a sharding iterator to completion and returns one `Vec<DataSet>` per produced group.
+    fn collect_all(
+        sets: Vec<Option<(DataSet, Sharding)>>,
+        join_order: &[usize],
+        any_sharding_mode: &AnyShardingMode,
+        min_set_bytes: &[usize],
+    ) -> Vec<Vec<DataSet>> {
+        let num_sets = sets.len();
+        let Some(mut iter) = create_sharding_iter(sets, join_order, any_sharding_mode, min_set_bytes)
+        else {
+            return vec![];
+        };
+        let mut result = Vec::new();
+        loop {
+            let mut buf = vec![DataSet::default(); num_sets];
+            iter.fill_in(&mut buf);
+            result.push(buf);
+            if !iter.advance() {
+                break;
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn keyed_inner_join_keeps_only_matching_keys() {
+        let a = keyed_set(&[1, 2, 3]);
+        let b = keyed_set(&[2, 3, 4]);
+        let sets = vec![
+            // The first set's own strategy only matters in that it must allow standalone
+            // advancing (Cross/Right/Outer); the actual join semantics come from the strategy
+            // attached to the set(s) joined onto it.
+            Some((a, Sharding::Keyed(JoinStrategy::Cross))),
+            Some((b, Sharding::Keyed(JoinStrategy::Inner))),
+        ];
+        let result = collect_all(sets, &[0, 1], &AnyShardingMode::MaxSharding, &[0, 0]);
+
+        let mut keys: Vec<_> = result
+            .iter()
+            .map(|group| {
+                assert_eq!(group[0].items.len(), 1);
+                assert_eq!(group[1].items.len(), 1);
+                let key = group[0].items[0].key;
+                assert_eq!(key, group[1].items[0].key, "inner join must match keys");
+                key
+            })
+            .collect();
+        keys.sort();
+        assert_eq!(keys, vec![2, 3], "only keys present on both sides survive an inner join");
+    }
+
+    #[test]
+    fn keyed_left_join_keeps_every_left_key_even_without_a_match() {
+        let a = keyed_set(&[1, 2, 3]);
+        let b = keyed_set(&[2, 3]);
+        let sets = vec![
+            Some((a, Sharding::Keyed(JoinStrategy::Cross))),
+            Some((b, Sharding::Keyed(JoinStrategy::Left))),
+        ];
+        let result = collect_all(sets, &[0, 1], &AnyShardingMode::MaxSharding, &[0, 0]);
+
+        assert_eq!(result.len(), 3, "one group per key on the left side");
+        let mut left_keys: Vec<_> = result.iter().map(|g| g[0].items[0].key).collect();
+        left_keys.sort();
+        assert_eq!(left_keys, vec![1, 2, 3]);
+        for group in &result {
+            let left_key = group[0].items[0].key;
+            if left_key == 1 {
+                assert!(group[1].items.is_empty(), "key 1 has no match on the right");
+            } else {
+                assert_eq!(group[1].items[0].key, left_key);
+            }
+        }
+    }
+
+    #[test]
+    fn keyed_outer_join_keeps_the_union_of_keys() {
+        let a = keyed_set(&[1, 2]);
+        let b = keyed_set(&[2, 3]);
+        let sets = vec![
+            Some((a, Sharding::Keyed(JoinStrategy::Cross))),
+            Some((b, Sharding::Keyed(JoinStrategy::Outer))),
+        ];
+        let result = collect_all(sets, &[0, 1], &AnyShardingMode::MaxSharding, &[0, 0]);
+
+        let mut seen_keys = std::collections::BTreeSet::new();
+        for group in &result {
+            let a_key = group[0].items.first().map(|i| i.key);
+            let b_key = group[1].items.first().map(|i| i.key);
+            if let (Some(ak), Some(bk)) = (a_key, b_key) {
+                assert_eq!(ak, bk, "when both sides are present they must agree on the key");
+            }
+            seen_keys.insert(a_key.or(b_key).expect("at least one side must be present"));
+        }
+        assert_eq!(
+            seen_keys,
+            std::collections::BTreeSet::from([1, 2, 3]),
+            "outer join must cover the union of both sides' keys"
+        );
+    }
+
+    #[test]
+    fn each_each_produces_the_cartesian_product() {
+        let a = DataSet::from_items(Arc::new((0..2).map(item).collect()));
+        let b = DataSet::from_items(Arc::new((10..13).map(item).collect()));
+        let sets = vec![Some((a, Sharding::Each)), Some((b, Sharding::Each))];
+        let result = collect_all(sets, &[0, 1], &AnyShardingMode::MaxSharding, &[0, 0]);
+
+        assert_eq!(result.len(), 6, "2 x 3 items => 6 invocations");
+        let mut pairs: Vec<_> = result
+            .iter()
+            .map(|g| (g[0].items[0].key, g[1].items[0].key))
+            .collect();
+        pairs.sort();
+        let mut expected: Vec<_> = (0..2).flat_map(|x| (10..13).map(move |y| (x, y))).collect();
+        expected.sort();
+        assert_eq!(pairs, expected);
+    }
+
+    #[test]
+    fn any_keyed_is_capped_to_the_requested_partition_count() {
+        let a = sized_keyed_set(&[1, 2, 3, 4], 10);
+        let sets = vec![Some((a, Sharding::AnyKeyed(JoinStrategy::Cross)))];
+        let result = collect_all(sets, &[0], &AnyShardingMode::FixedSharding(2), &[0]);
+
+        assert_eq!(result.len(), 2, "FixedSharding(2) should cap the 4 key groups into 2");
+        let total_items: usize = result.iter().map(|g| g[0].items.len()).sum();
+        assert_eq!(total_items, 4, "no items should be lost while regrouping");
+    }
+}

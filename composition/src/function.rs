@@ -19,7 +19,8 @@ use log::trace;
 struct Inner {
     inputs: Vec<Option<(Arc<CompositionSet>, Sharding, bool)>>,
     outputs: Vec<Option<Arc<CompositionSet>>>,
-    blocking: bool,
+    min_set_bytes: Vec<usize>, // TODO: might want a metadata reference here?
+    resolved: bool,
     all_started: bool,
 }
 
@@ -31,28 +32,22 @@ pub struct Function {
 
     function_id: FunctionId,
     join_order: Vec<usize>,
-    min_set_bytes: Vec<usize>, // TODO: currently broken -> fix with metadata reference
 }
 
 impl Function {
-    pub fn new(
-        idx: usize,
-        function_id: FunctionId,
-        join_order: Vec<usize>,
-        min_set_bytes: Vec<usize>,
-    ) -> Function {
+    pub fn new(idx: usize, function_id: FunctionId, join_order: Vec<usize>) -> Function {
         Function {
             composition_idx: idx,
             num_outstanding: AtomicUsize::new(0),
             inner: Mutex::new(Inner {
                 inputs: vec![],
                 outputs: vec![],
-                blocking: true,
+                min_set_bytes: vec![],
+                resolved: false,
                 all_started: false,
             }),
             function_id,
             join_order,
-            min_set_bytes,
         }
     }
 
@@ -60,16 +55,14 @@ impl Function {
         &self,
         inputs: Vec<Option<(Arc<CompositionSet>, Sharding, bool)>>,
         outputs: Vec<Option<Arc<CompositionSet>>>,
+        mut min_set_bytes: Vec<usize>,
     ) {
         let mut inner = self.inner.lock().expect("Function lock poisoned!");
-        inner.blocking = inputs.iter().any(|in_opt| {
-            in_opt
-                .as_ref()
-                .map_or(false, |(_, sharding, _)| sharding.is_blocking())
-        });
-        // min_set_bytes.resize(inputs.len(), 0);
+        min_set_bytes.resize(inputs.len(), 0);
+
         inner.inputs = inputs;
         inner.outputs = outputs;
+        inner.min_set_bytes = min_set_bytes
     }
 
     pub fn is_complete(&self) -> bool {
@@ -106,10 +99,10 @@ impl Function {
         let mut invocations = Vec::new();
         if !blocking {
             debug_assert!(
-                inner.blocking,
-                "Function.in_set_complete can only transition once from blocking to non-blocking!"
+                !inner.resolved,
+                "Function.in_set_complete can only run its one-time transition once!"
             );
-            inner.blocking = false;
+            inner.resolved = true;
 
             let mut sets = Vec::with_capacity(inner.inputs.len());
             let mut runnable = true;
@@ -126,7 +119,8 @@ impl Function {
                 }
             }
             if runnable {
-                invocations = self.create_invocations(sets, any_sharding_mode);
+                invocations =
+                    self.create_invocations(sets, any_sharding_mode, &inner.min_set_bytes);
             }
         }
 
@@ -154,8 +148,8 @@ impl Function {
     ) -> Vec<Invocation> {
         let mut inner = self.inner.lock().expect("Function lock poisoned!");
         debug_assert!(
-            !inner.blocking,
-            "Function.push_streaming_item called on blocking function."
+            inner.resolved,
+            "Function.push_streaming_items called before in_set_complete resolved this function."
         );
 
         let sets = inner
@@ -175,15 +169,15 @@ impl Function {
             })
             .collect();
 
-        let invocations = self.create_invocations(sets, any_sharding_mode);
+        let invocations = self.create_invocations(sets, any_sharding_mode, &inner.min_set_bytes);
 
         self.num_outstanding
             .fetch_add(invocations.len(), Ordering::AcqRel);
         if complete {
-            inner.all_started = inner.inputs.iter().all(|in_opt| {
+            inner.all_started = inner.inputs.iter().enumerate().all(|(idx, in_opt)| {
                 in_opt
                     .as_ref()
-                    .map_or(true, |(set, _, _)| set.is_complete())
+                    .map_or(true, |(set, _, _)| idx == set_idx || set.is_complete())
             });
         }
         invocations
@@ -193,15 +187,12 @@ impl Function {
         &self,
         sets: Vec<Option<(DataSet, Sharding)>>,
         any_sharding_mode: &AnyShardingMode,
+        min_set_bytes: &Vec<usize>,
     ) -> Vec<Invocation> {
         let num_sets = sets.len();
 
-        let sharding_iter = create_sharding_iter(
-            sets,
-            &self.join_order,
-            any_sharding_mode,
-            &self.min_set_bytes,
-        );
+        let sharding_iter =
+            create_sharding_iter(sets, &self.join_order, any_sharding_mode, min_set_bytes);
 
         let mut invocations = Vec::new();
         if let Some(mut iter) = sharding_iter {
@@ -275,5 +266,148 @@ impl Function {
         }
 
         invocations
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dandelion_commons::data::Position;
+
+    fn fid(name: &str) -> FunctionId {
+        Arc::new(name.to_string())
+    }
+
+    fn item(key: u32) -> Arc<DataItem> {
+        Arc::new(DataItem {
+            ident: format!("item-{key}"),
+            data: Position { offset: 0, size: 0 },
+            key,
+        })
+    }
+
+    fn items(keys: &[u32]) -> Arc<Vec<Arc<DataItem>>> {
+        Arc::new(keys.iter().copied().map(item).collect())
+    }
+
+    #[test]
+    fn blocking_input_defers_invocation_until_complete() {
+        let function = Arc::new(Function::new(0, fid("F"), vec![0]));
+        let input_set = Arc::new(CompositionSet::new());
+        input_set.add_consumer(function.clone(), 0, true, false, 1);
+        function.update_io(
+            vec![Some((input_set.clone(), Sharding::All, false))],
+            vec![None],
+            vec![0],
+        );
+
+        // The input hasn't arrived yet, so checking completion produces nothing.
+        let invocations = function.in_set_complete(&AnyShardingMode::MaxSharding);
+        assert!(invocations.is_empty());
+        assert!(!function.is_complete());
+
+        let invocations = input_set.push_items(items(&[1, 2]), true, &AnyShardingMode::MaxSharding);
+        assert_eq!(
+            invocations.len(),
+            1,
+            "an `all`-sharded input runs exactly once"
+        );
+        assert_eq!(invocations[0].input[0].items.len(), 2);
+    }
+
+    #[test]
+    fn all_input_combines_with_each_input_producing_one_invocation_per_each_item() {
+        let function = Arc::new(Function::new(0, fid("F"), vec![0, 1]));
+        let all_set = Arc::new(CompositionSet::new());
+        let each_set = Arc::new(CompositionSet::new());
+        all_set.add_consumer(function.clone(), 0, true, false, 2);
+        each_set.add_consumer(function.clone(), 1, false, false, 2);
+        function.update_io(
+            vec![
+                Some((all_set.clone(), Sharding::All, false)),
+                Some((each_set.clone(), Sharding::Each, false)),
+            ],
+            vec![None],
+            vec![0, 0],
+        );
+
+        // As `Composition::start_execution` does for composition-level inputs: both arrive
+        // "instantly complete", the `each` input first so it's already there once the blocking
+        // `all` input fires.
+        each_set.set_composition_input(DataSet::from_items(items(&[10, 11])));
+        let invocations = all_set.push_items(items(&[1]), true, &AnyShardingMode::MaxSharding);
+
+        assert_eq!(
+            invocations.len(),
+            2,
+            "one invocation per item in the `each` input"
+        );
+        for invocation in &invocations {
+            assert_eq!(
+                invocation.input[0].items.len(),
+                1,
+                "the whole `all` set every time"
+            );
+            assert_eq!(
+                invocation.input[1].items.len(),
+                1,
+                "one `each` item per invocation"
+            );
+        }
+        let mut each_keys: Vec<_> = invocations
+            .iter()
+            .map(|inv| inv.input[1].items[0].key)
+            .collect();
+        each_keys.sort();
+        assert_eq!(each_keys, vec![10, 11]);
+    }
+
+    #[test]
+    fn add_invocation_output_completes_function_and_forwards_downstream() {
+        let function = Arc::new(Function::new(0, fid("F"), vec![0]));
+        let input_set = Arc::new(CompositionSet::new());
+        let output_set = Arc::new(CompositionSet::new());
+        output_set.mark_retained();
+        input_set.add_consumer(function.clone(), 0, true, false, 1);
+        function.update_io(
+            vec![Some((input_set.clone(), Sharding::All, false))],
+            vec![Some(output_set.clone())],
+            vec![0],
+        );
+
+        let invocations = input_set.push_items(items(&[1, 2]), true, &AnyShardingMode::MaxSharding);
+        assert_eq!(invocations.len(), 1);
+        assert!(
+            !function.is_complete(),
+            "the single invocation is still outstanding"
+        );
+
+        function.add_invocation_output(
+            vec![DataSet::from_items(items(&[100]))],
+            &AnyShardingMode::MaxSharding,
+        );
+
+        assert!(function.is_complete());
+        assert_eq!(output_set.get_set(None).items.len(), 1);
+    }
+
+    #[test]
+    fn non_optional_empty_input_skips_invocation_but_still_completes() {
+        let function = Arc::new(Function::new(0, fid("F"), vec![0]));
+        let input_set = Arc::new(CompositionSet::new());
+        input_set.add_consumer(function.clone(), 0, true, false, 1);
+        function.update_io(
+            vec![Some((input_set.clone(), Sharding::All, false))],
+            vec![None],
+            vec![0],
+        );
+
+        let invocations =
+            input_set.push_items(Arc::new(vec![]), true, &AnyShardingMode::MaxSharding);
+        assert!(
+            invocations.is_empty(),
+            "a non-optional empty input must not produce an invocation"
+        );
+        assert!(function.is_complete());
     }
 }

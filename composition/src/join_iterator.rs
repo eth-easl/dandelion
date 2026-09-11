@@ -782,3 +782,82 @@ impl JoinIterator for AnyIterator {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dandelion_commons::data::Position;
+
+    fn item(key: u32) -> Arc<DataItem> {
+        Arc::new(DataItem {
+            ident: format!("item-{key}"),
+            data: Position { offset: 0, size: 0 },
+            key,
+        })
+    }
+
+    fn sized_item(key: u32, size: usize) -> Arc<DataItem> {
+        Arc::new(DataItem {
+            ident: format!("item-{key}"),
+            data: Position { offset: 0, size },
+            key,
+        })
+    }
+
+    #[test]
+    fn set_all_iterator_yields_the_whole_set_exactly_once() {
+        let set = DataSet::from_items(Arc::new(vec![item(1), item(2)]));
+        let mut iter = SetAllIterator::new(None, set, 0).unwrap();
+
+        let mut out = vec![DataSet::default()];
+        iter.fill_in(&mut out);
+        assert_eq!(out[0].items.len(), 2);
+        assert!(!iter.advance(), "an `all` set only ever produces one group");
+    }
+
+    #[test]
+    fn set_each_iterator_yields_one_item_per_advance() {
+        let set = DataSet::from_items(Arc::new(vec![item(1), item(2), item(3)]));
+        let (iter_opt, partitions) = SetEachIterator::new(None, set, 0);
+        assert_eq!(partitions, 3);
+        let mut iter = iter_opt.unwrap();
+
+        let mut seen = Vec::new();
+        loop {
+            let mut out = vec![DataSet::default()];
+            iter.fill_in(&mut out);
+            assert_eq!(out[0].items.len(), 1, "each group holds exactly one item");
+            seen.push(out[0].items[0].key);
+            if !iter.advance() {
+                break;
+            }
+        }
+        assert_eq!(seen, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn any_iterator_reduces_to_the_requested_partition_count() {
+        let items: Vec<_> = (0..4).map(|k| sized_item(k, 10)).collect();
+        let total_size: usize = items.iter().map(|i| i.data.size).sum();
+        let set = DataSet::from_items(Arc::new(items));
+
+        let (iter_opt, largest_set_size, _min_set_size, max_partitions) =
+            AnyIterator::new(None, vec![set], vec![], vec![0], Sharding::AnyEach, &[0]);
+        assert_eq!(max_partitions, 4);
+        assert_eq!(largest_set_size, total_size);
+
+        let mut iter = iter_opt.unwrap();
+        // A non-zero-size group starts out wanting exactly 1 partition (see `AnySetGroup::new`),
+        // so this collapses all 4 original groups into one.
+        iter.reduce_any_partitions(vec![AnySetGroup::new(largest_set_size, 0, max_partitions)]);
+
+        let mut out = vec![DataSet::default()];
+        iter.fill_in(&mut out);
+        assert_eq!(
+            out[0].items.len(),
+            4,
+            "all 4 items should have been merged into one group"
+        );
+        assert!(!iter.advance());
+    }
+}

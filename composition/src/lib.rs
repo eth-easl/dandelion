@@ -8,16 +8,35 @@ use std::sync::Arc;
 
 use crate::{
     function::Function,
-    parser::{render_diagnostics, Parser, Registry},
+    parser::{render_diagnostics, Parser},
     set::CompositionSet,
-    sharding::{AnyShardingMode, Sharding},
+    sharding::Sharding,
 };
+
+/// Re-exported so callers of [`Composition::from_template`] can name the sharding mode without
+/// needing access to the (otherwise crate-private) `sharding` module.
+pub use crate::sharding::AnyShardingMode;
 use dandelion_commons::{
     dandelion_err,
     data::{DataSet, Invocation},
     DandelionError, DandelionResult, FunctionId,
 };
 use log::warn;
+
+/// Functions from the function registry side required build compositions.
+pub trait Registry {
+    /// Confirms the declared function is registered with matching params and returns.
+    fn check_declaration(
+        &self,
+        id: &str,
+        params: &Vec<&str>,
+        rets: &Vec<&str>,
+    ) -> DandelionResult<()>;
+    /// Simple lookup whether an identifier is already registered.
+    fn id_exists(&self, id: &str) -> bool;
+    /// Get min_set_bytes for a function.
+    fn get_min_set_bytes(&self, id: &FunctionId) -> Vec<usize>;
+}
 
 #[derive(Clone)]
 pub struct InputSetTemplate {
@@ -59,9 +78,10 @@ pub struct Composition {
 }
 
 impl Composition {
-    pub fn from_template(
+    pub fn from_template<R: Registry>(
         template: &CompositionTemplate,
         any_sharding_mode: AnyShardingMode,
+        registry: &R,
     ) -> Self {
         let sets: Vec<_> = (0..template.num_sets)
             .map(|_| Arc::new(CompositionSet::new()))
@@ -72,22 +92,20 @@ impl Composition {
             .iter()
             .map(|set_idx| sets[*set_idx].clone())
             .collect();
-        let output_sets = template
+        let output_sets: Vec<_> = template
             .returns
             .iter()
-            .map(|set_idx| sets[*set_idx].clone())
+            .map(|set_idx| {
+                let out_set = sets[*set_idx].clone();
+                // composition output sets always need to be retained
+                out_set.mark_retained();
+                out_set
+            })
             .collect();
 
         let mut functions = Vec::with_capacity(template.functions.len());
         for (i, f) in template.functions.iter().enumerate() {
-            // TODO: get min_set_bytes from registry
-            let min_set_bytes = vec![];
-            let function = Arc::new(Function::new(
-                i,
-                f.id.clone(),
-                f.join_order.clone(),
-                min_set_bytes,
-            ));
+            let function = Arc::new(Function::new(i, f.id.clone(), f.join_order.clone()));
 
             let mut inputs = Vec::with_capacity(f.params.len());
             for (in_idx, in_opt) in f.params.iter().enumerate() {
@@ -98,6 +116,7 @@ impl Composition {
                         in_idx,
                         in_templ.sharding.is_blocking(),
                         in_templ.sharding.requires_sorting(),
+                        f.params.len(),
                     );
                     inputs.push(Some((
                         comp_set,
@@ -113,7 +132,7 @@ impl Composition {
                 .iter()
                 .map(|set_idx_opt| set_idx_opt.map(|i| sets[i].clone()))
                 .collect();
-            function.update_io(inputs, outputs);
+            function.update_io(inputs, outputs, registry.get_min_set_bytes(&f.id));
 
             functions.push(function);
         }

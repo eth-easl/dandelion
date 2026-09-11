@@ -16,8 +16,11 @@ pub struct DataItem {
 }
 
 impl DataItem {
+    // TODO(remote-data): `DataItem`/`Position` don't yet carry enough information to distinguish
+    // local from remote/unresolved items. Always reporting `true` is a placeholder until that
+    // lands; replace once remote/IO data items are modeled.
     pub fn is_local(&self) -> bool {
-        todo!("implement");
+        true
     }
 }
 
