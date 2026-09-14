@@ -1,5 +1,5 @@
 use std::{
-    mem,
+    iter, mem,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
@@ -80,7 +80,8 @@ impl Function {
     pub fn in_set_complete(
         self: &Arc<Self>,
         any_sharding_mode: &AnyShardingMode,
-    ) -> Vec<Invocation> {
+        out: &mut impl Extend<Invocation>,
+    ) {
         let mut inner = self.inner.lock().expect("Function lock poisoned!");
 
         let mut blocking = false;
@@ -96,7 +97,7 @@ impl Function {
             }
         }
 
-        let mut invocations = Vec::new();
+        let mut num_created = 0;
         if !blocking {
             debug_assert!(
                 !inner.resolved,
@@ -124,24 +125,22 @@ impl Function {
                 }
             }
             if runnable {
-                invocations =
-                    self.create_invocations(sets, any_sharding_mode, &inner.min_set_bytes);
+                num_created =
+                    self.create_invocations(sets, any_sharding_mode, &inner.min_set_bytes, out);
             }
         }
 
         self.num_outstanding
-            .fetch_add(invocations.len(), Ordering::AcqRel);
+            .fetch_add(num_created, Ordering::AcqRel);
         inner.all_started = complete;
         drop(inner);
 
-        if complete && invocations.is_empty() {
+        if complete && num_created == 0 {
             // If this function ever created invocations it became non-blocking after which the
             // push_streaming_item function is called instead of this one. Therefore, we can
-            // assume that if invocations is empty there are also no outstanding invocations.
-            invocations = self.push_output_sets(vec![], true, any_sharding_mode);
+            // assume that if no invocations were created there are also no outstanding invocations.
+            self.push_output_sets(vec![], true, any_sharding_mode, out);
         }
-
-        invocations
     }
 
     pub fn push_streaming_items(
@@ -150,7 +149,8 @@ impl Function {
         mut items: Arc<Vec<Arc<DataItem>>>,
         complete: bool,
         any_sharding_mode: &AnyShardingMode,
-    ) -> Vec<Invocation> {
+        out: &mut impl Extend<Invocation>,
+    ) {
         let mut inner = self.inner.lock().expect("Function lock poisoned!");
         debug_assert!(
             inner.resolved,
@@ -182,14 +182,14 @@ impl Function {
             }
         }
 
-        let invocations = if runnable {
-            self.create_invocations(sets, any_sharding_mode, &inner.min_set_bytes)
+        let num_created = if runnable {
+            self.create_invocations(sets, any_sharding_mode, &inner.min_set_bytes, out)
         } else {
-            vec![]
+            0
         };
 
         self.num_outstanding
-            .fetch_add(invocations.len(), Ordering::AcqRel);
+            .fetch_add(num_created, Ordering::AcqRel);
         if complete {
             inner.all_started = inner.inputs.iter().enumerate().all(|(idx, in_opt)| {
                 in_opt
@@ -197,53 +197,54 @@ impl Function {
                     .map_or(true, |(set, _, _)| idx == set_idx || set.is_complete())
             });
         }
-        invocations
     }
 
+    /// Extends `out` with the invocations for the given sets and returns how many were created.
     fn create_invocations(
         &self,
         sets: Vec<Option<(DataSet, Sharding)>>,
         any_sharding_mode: &AnyShardingMode,
-        min_set_bytes: &Vec<usize>,
-    ) -> Vec<Invocation> {
+        min_set_bytes: &[usize],
+        out: &mut impl Extend<Invocation>,
+    ) -> usize {
         let num_sets = sets.len();
 
-        let sharding_iter =
-            create_sharding_iter(sets, &self.join_order, any_sharding_mode, min_set_bytes);
+        let Some(mut iter) =
+            create_sharding_iter(sets, &self.join_order, any_sharding_mode, min_set_bytes)
+        else {
+            return 0;
+        };
 
-        let mut invocations = Vec::new();
-        if let Some(mut iter) = sharding_iter {
-            let mut new_sets = Vec::with_capacity(num_sets);
-            new_sets.resize(num_sets, DataSet::default());
-            iter.fill_in(&mut new_sets);
-            invocations.push(Invocation {
+        let mut num_created = 0;
+        out.extend(iter::from_fn(|| {
+            // The sharding iterator starts out on its first element, so only advance after that.
+            // Once `advance` returned false it keeps doing so, making the iterator fused.
+            if num_created > 0 && !iter.advance() {
+                return None;
+            }
+            let mut input = vec![DataSet::default(); num_sets];
+            iter.fill_in(&mut input);
+            let invocation = Invocation {
                 function_id: self.function_id.clone(),
                 composition_idx: self.composition_idx,
-                input: new_sets,
-            });
-            while iter.advance() {
-                let mut advance_sets = Vec::with_capacity(num_sets);
-                advance_sets.resize(num_sets, DataSet::default());
-                iter.fill_in(&mut advance_sets);
-                invocations.push(Invocation {
-                    function_id: self.function_id.clone(),
-                    composition_idx: self.composition_idx,
-                    input: advance_sets,
-                });
-            }
-        }
-        trace!("Computed sharding: {:?}", invocations);
-        invocations
+                input,
+            };
+            trace!("Computed sharding invocation: {:?}", invocation);
+            num_created += 1;
+            Some(invocation)
+        }));
+        num_created
     }
 
     pub fn add_invocation_output(
         &self,
         sets: Vec<DataSet>,
         any_sharding_mode: &AnyShardingMode,
-    ) -> Vec<Invocation> {
+        out: &mut impl Extend<Invocation>,
+    ) {
         self.num_outstanding.fetch_sub(1, Ordering::AcqRel);
         let complete = self.is_complete();
-        self.push_output_sets(sets, complete, any_sharding_mode)
+        self.push_output_sets(sets, complete, any_sharding_mode, out);
     }
 
     fn push_output_sets(
@@ -251,29 +252,25 @@ impl Function {
         sets: Vec<DataSet>,
         complete: bool,
         any_sharding_mode: &AnyShardingMode,
-    ) -> Vec<Invocation> {
+        out: &mut impl Extend<Invocation>,
+    ) {
         let mut inner = self.inner.lock().expect("Function lock poisoned!");
         if complete {
             inner.inputs.clear();
         }
 
-        let mut invocations = Vec::new();
         if sets.is_empty() {
             let empty_items = Arc::new(vec![]);
             for out_set_opt in inner.outputs.iter() {
                 if let Some(out_set) = out_set_opt {
-                    invocations.extend(out_set.push_items(
-                        empty_items.clone(),
-                        complete,
-                        any_sharding_mode,
-                    ));
+                    out_set.push_items(empty_items.clone(), complete, any_sharding_mode, out);
                 }
             }
         } else {
             debug_assert_eq!(sets.len(), inner.outputs.len());
             for (data, out_set_opt) in sets.into_iter().zip(inner.outputs.iter()) {
                 if let Some(out_set) = out_set_opt {
-                    invocations.extend(out_set.push_items(data.items, complete, any_sharding_mode));
+                    out_set.push_items(data.items, complete, any_sharding_mode, out);
                 }
             }
         }
@@ -281,8 +278,6 @@ impl Function {
         if complete {
             inner.outputs.clear()
         }
-
-        invocations
     }
 }
 
@@ -307,6 +302,17 @@ mod tests {
         Arc::new(keys.iter().copied().map(item).collect())
     }
 
+    fn push(set: &CompositionSet, keys: &[u32], complete: bool) -> Vec<Invocation> {
+        let mut invocations = Vec::new();
+        set.push_items(
+            items(keys),
+            complete,
+            &AnyShardingMode::MaxSharding,
+            &mut invocations,
+        );
+        invocations
+    }
+
     #[test]
     fn blocking_input_defers_invocation_until_complete() {
         let function = Arc::new(Function::new(0, fid("F"), vec![0].into()));
@@ -319,11 +325,12 @@ mod tests {
         );
 
         // The input hasn't arrived yet, so checking completion produces nothing.
-        let invocations = function.in_set_complete(&AnyShardingMode::MaxSharding);
+        let mut invocations = Vec::new();
+        function.in_set_complete(&AnyShardingMode::MaxSharding, &mut invocations);
         assert!(invocations.is_empty());
         assert!(!function.is_complete());
 
-        let invocations = input_set.push_items(items(&[1, 2]), true, &AnyShardingMode::MaxSharding);
+        let invocations = push(&input_set, &[1, 2], true);
         assert_eq!(
             invocations.len(),
             1,
@@ -352,7 +359,7 @@ mod tests {
         // "instantly complete", the `each` input first so it's already there once the blocking
         // `all` input fires.
         each_set.set_composition_input(DataSet::from_items(items(&[10, 11])));
-        let invocations = all_set.push_items(items(&[1]), true, &AnyShardingMode::MaxSharding);
+        let invocations = push(&all_set, &[1], true);
 
         assert_eq!(
             invocations.len(),
@@ -392,7 +399,7 @@ mod tests {
             vec![0],
         );
 
-        let invocations = input_set.push_items(items(&[1, 2]), true, &AnyShardingMode::MaxSharding);
+        let invocations = push(&input_set, &[1, 2], true);
         assert_eq!(invocations.len(), 1);
         assert!(
             !function.is_complete(),
@@ -402,6 +409,7 @@ mod tests {
         function.add_invocation_output(
             vec![DataSet::from_items(items(&[100]))],
             &AnyShardingMode::MaxSharding,
+            &mut Vec::new(),
         );
 
         assert!(function.is_complete());
@@ -419,8 +427,7 @@ mod tests {
             vec![0],
         );
 
-        let invocations =
-            input_set.push_items(Arc::new(vec![]), true, &AnyShardingMode::MaxSharding);
+        let invocations = push(&input_set, &[], true);
         assert!(
             invocations.is_empty(),
             "a non-optional empty input must not produce an invocation"
@@ -445,18 +452,18 @@ mod tests {
         );
         // Both inputs are purely streaming (non-blocking), so resolve the function first, as
         // `Composition::start_execution` would.
-        function.in_set_complete(&AnyShardingMode::MaxSharding);
+        function.in_set_complete(&AnyShardingMode::MaxSharding, &mut Vec::new());
 
         // B is still completely untouched: pushing to A alone must not create an invocation
         // (previously this would panic trying to shard an empty `each` set for B).
-        let invocations = set_a.push_items(items(&[1]), false, &AnyShardingMode::MaxSharding);
+        let invocations = push(&set_a, &[1], false);
         assert!(
             invocations.is_empty(),
             "B has no items yet, so nothing should fire"
         );
 
         // Now B gets an item too: the pending combination fires.
-        let invocations = set_b.push_items(items(&[10]), false, &AnyShardingMode::MaxSharding);
+        let invocations = push(&set_b, &[10], false);
         assert_eq!(invocations.len(), 1);
         assert_eq!(invocations[0].input[0].items.len(), 1);
         assert_eq!(invocations[0].input[0].items[0].key, 1);
@@ -487,17 +494,17 @@ mod tests {
             vec![None],
             vec![0, 0],
         );
-        function.in_set_complete(&AnyShardingMode::MaxSharding);
+        function.in_set_complete(&AnyShardingMode::MaxSharding, &mut Vec::new());
 
         // B (input 1) arrives first, while A (input 0) is still completely empty.
-        let invocations = set_b.push_items(items(&[10]), false, &AnyShardingMode::MaxSharding);
+        let invocations = push(&set_b, &[10], false);
         assert!(
             invocations.is_empty(),
             "A has no items yet, so nothing should fire"
         );
 
         // A arrives: B's earlier item must still be there, not silently dropped.
-        let invocations = set_a.push_items(items(&[1]), false, &AnyShardingMode::MaxSharding);
+        let invocations = push(&set_a, &[1], false);
         assert_eq!(invocations.len(), 1);
         assert_eq!(invocations[0].input[0].items[0].key, 1);
         assert_eq!(

@@ -112,10 +112,11 @@ pub fn run_to_completion(
     inputs: Vec<DataSet>,
     mut respond: impl FnMut(&dandelion_commons::data::Invocation) -> Vec<DataSet>,
 ) -> Vec<DataSet> {
-    let mut pending = composition.start_execution(inputs);
+    let mut pending = Vec::new();
+    composition.start_execution(inputs, &mut pending);
     while let Some(invocation) = pending.pop() {
         let output = respond(&invocation);
-        pending.extend(composition.push_invocation_output(output, invocation.composition_idx));
+        composition.push_invocation_output(output, invocation.composition_idx, &mut pending);
     }
     composition.collect()
 }

@@ -83,32 +83,22 @@ impl CompositionSet {
     /// Pushes new items to the set.
     /// The items are forwarded immediately to all streaming consumers and retained for blocking
     /// consumers that are only informed when the set is complete.
-    // TODO: it seems we build up multiple vec as we pass down and back up this chain of function calls.
-    // I did a quick check and it seems all functions bellow this one could return an interator instead of a vec.
-    // (Reffering to the push_streaming_items call that builds the result for this function)
-    // Then we don't need to materialize all the vecs bellow just to throw them away again immediately here when we transfer to the current return vec.
-    // The same seems to be true for the return value of this vec, as it also is immediately fed into another vec.
-    // Might want to check if we need to actually materialize the vec or if in the end we just iterate over the result anyway.
+    /// All resulting invocations are added to `out`.
     pub fn push_items(
         &self,
         items: Arc<Vec<Arc<DataItem>>>,
         complete: bool,
         any_sharding_mode: &AnyShardingMode,
-    ) -> Vec<Invocation> {
+        out: &mut impl Extend<Invocation>,
+    ) {
         let mut inner = self.inner.lock().expect("CompositionSet lock poisoned!");
         debug_assert!(
             !matches!(inner.state, State::Complete(_)),
             "Tried adding an item to a complete CompositionSet!"
         );
 
-        let mut invocations = Vec::new();
         for (f, set_idx) in inner.consumers_streaming.iter() {
-            invocations.extend(f.push_streaming_items(
-                *set_idx,
-                items.clone(),
-                complete,
-                any_sharding_mode,
-            ));
+            f.push_streaming_items(*set_idx, items.clone(), complete, any_sharding_mode, out);
         }
         if inner.requires_retention {
             if let State::Pending(acc) = &mut inner.state {
@@ -136,9 +126,8 @@ impl CompositionSet {
         drop(inner);
 
         for (f, _) in blocking_consumers.iter() {
-            invocations.extend(f.in_set_complete(any_sharding_mode));
+            f.in_set_complete(any_sharding_mode, out);
         }
-        invocations
     }
 
     /// Sets the composition set to the given set.
@@ -216,7 +205,13 @@ mod tests {
         ));
         set.add_consumer(consumer.clone(), 0, /* blocking */ true, false, 1);
 
-        let invocations = set.push_items(items(&[1, 2]), true, &AnyShardingMode::MaxSharding);
+        let mut invocations = Vec::new();
+        set.push_items(
+            items(&[1, 2]),
+            true,
+            &AnyShardingMode::MaxSharding,
+            &mut invocations,
+        );
         assert!(
             invocations.is_empty(),
             "the consumer has no configured inputs/outputs of its own, so it produces nothing"
@@ -245,9 +240,14 @@ mod tests {
         // A function must be resolved by `in_set_complete` at least once (as
         // `Composition::start_execution` does for every function) before it's valid to receive a
         // streaming push.
-        consumer.in_set_complete(&AnyShardingMode::MaxSharding);
+        consumer.in_set_complete(&AnyShardingMode::MaxSharding, &mut Vec::new());
 
-        set.push_items(items(&[1]), true, &AnyShardingMode::MaxSharding);
+        set.push_items(
+            items(&[1]),
+            true,
+            &AnyShardingMode::MaxSharding,
+            &mut Vec::new(),
+        );
 
         assert!(set.is_complete());
         // A lone single-param streaming consumer already received the items directly through
@@ -261,7 +261,12 @@ mod tests {
         let set = CompositionSet::new();
         set.mark_retained();
 
-        set.push_items(items(&[1, 2, 3]), true, &AnyShardingMode::MaxSharding);
+        set.push_items(
+            items(&[1, 2, 3]),
+            true,
+            &AnyShardingMode::MaxSharding,
+            &mut Vec::new(),
+        );
 
         let result = set.get_set(None);
         assert_eq!(result.items.len(), 3);

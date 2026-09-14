@@ -136,7 +136,12 @@ impl Composition {
         }
     }
 
-    pub fn start_execution(&mut self, composition_inputs: Vec<DataSet>) -> Vec<Invocation> {
+    /// Starts the composition with the given inputs and adds all initial invocations to `out`.
+    pub fn start_execution(
+        &mut self,
+        composition_inputs: Vec<DataSet>,
+        out: &mut impl Extend<Invocation>,
+    ) {
         debug_assert_eq!(composition_inputs.len(), self.input_sets.len());
 
         for (i, in_set) in composition_inputs.into_iter().enumerate() {
@@ -144,19 +149,19 @@ impl Composition {
         }
         self.input_sets.clear();
 
-        let mut initial_invocations = Vec::new();
         for f in self.functions.iter() {
-            initial_invocations.extend(f.in_set_complete(&self.any_sharding_mode));
+            f.in_set_complete(&self.any_sharding_mode, out);
         }
-        initial_invocations
     }
 
+    /// Pushes the output of a finished invocation and adds all resulting invocations to `out`.
     pub fn push_invocation_output(
         &self,
         output: Vec<DataSet>,
         composition_idx: usize,
-    ) -> Vec<Invocation> {
-        self.functions[composition_idx].add_invocation_output(output, &self.any_sharding_mode)
+        out: &mut impl Extend<Invocation>,
+    ) {
+        self.functions[composition_idx].add_invocation_output(output, &self.any_sharding_mode, out)
     }
 
     pub fn collect(self) -> Vec<DataSet> {
