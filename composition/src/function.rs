@@ -31,11 +31,11 @@ pub struct Function {
     inner: Mutex<Inner>,
 
     function_id: FunctionId,
-    join_order: Vec<usize>,
+    join_order: Arc<Vec<usize>>,
 }
 
 impl Function {
-    pub fn new(idx: usize, function_id: FunctionId, join_order: Vec<usize>) -> Function {
+    pub fn new(idx: usize, function_id: FunctionId, join_order: Arc<Vec<usize>>) -> Function {
         Function {
             composition_idx: idx,
             num_outstanding: AtomicUsize::new(0),
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn blocking_input_defers_invocation_until_complete() {
-        let function = Arc::new(Function::new(0, fid("F"), vec![0]));
+        let function = Arc::new(Function::new(0, fid("F"), vec![0].into()));
         let input_set = Arc::new(CompositionSet::new());
         input_set.add_consumer(function.clone(), 0, true, false, 1);
         function.update_io(
@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn all_input_combines_with_each_input_producing_one_invocation_per_each_item() {
-        let function = Arc::new(Function::new(0, fid("F"), vec![0, 1]));
+        let function = Arc::new(Function::new(0, fid("F"), vec![0, 1].into()));
         let all_set = Arc::new(CompositionSet::new());
         let each_set = Arc::new(CompositionSet::new());
         all_set.add_consumer(function.clone(), 0, true, false, 2);
@@ -381,7 +381,7 @@ mod tests {
 
     #[test]
     fn add_invocation_output_completes_function_and_forwards_downstream() {
-        let function = Arc::new(Function::new(0, fid("F"), vec![0]));
+        let function = Arc::new(Function::new(0, fid("F"), vec![0].into()));
         let input_set = Arc::new(CompositionSet::new());
         let output_set = Arc::new(CompositionSet::new());
         output_set.mark_retained();
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn non_optional_empty_input_skips_invocation_but_still_completes() {
-        let function = Arc::new(Function::new(0, fid("F"), vec![0]));
+        let function = Arc::new(Function::new(0, fid("F"), vec![0].into()));
         let input_set = Arc::new(CompositionSet::new());
         input_set.add_consumer(function.clone(), 0, true, false, 1);
         function.update_io(
@@ -430,7 +430,7 @@ mod tests {
 
     #[test]
     fn two_each_inputs_only_combine_once_both_have_items() {
-        let function = Arc::new(Function::new(0, fid("F"), vec![0, 1]));
+        let function = Arc::new(Function::new(0, fid("F"), vec![0, 1].into()));
         let set_a = Arc::new(CompositionSet::new());
         let set_b = Arc::new(CompositionSet::new());
         set_a.add_consumer(function.clone(), 0, false, false, 2);
@@ -474,7 +474,7 @@ mod tests {
     /// retained it in its own accumulator regardless, and a later `get_set` picks it back up.
     #[test]
     fn each_each_second_input_arriving_first_is_not_lost() {
-        let function = Arc::new(Function::new(0, fid("F"), vec![0, 1]));
+        let function = Arc::new(Function::new(0, fid("F"), vec![0, 1].into()));
         let set_a = Arc::new(CompositionSet::new());
         let set_b = Arc::new(CompositionSet::new());
         set_a.add_consumer(function.clone(), 0, false, false, 2);
@@ -491,13 +491,20 @@ mod tests {
 
         // B (input 1) arrives first, while A (input 0) is still completely empty.
         let invocations = set_b.push_items(items(&[10]), false, &AnyShardingMode::MaxSharding);
-        assert!(invocations.is_empty(), "A has no items yet, so nothing should fire");
+        assert!(
+            invocations.is_empty(),
+            "A has no items yet, so nothing should fire"
+        );
 
         // A arrives: B's earlier item must still be there, not silently dropped.
         let invocations = set_a.push_items(items(&[1]), false, &AnyShardingMode::MaxSharding);
         assert_eq!(invocations.len(), 1);
         assert_eq!(invocations[0].input[0].items[0].key, 1);
-        assert_eq!(invocations[0].input[1].items.len(), 1, "B's earlier item must not be lost");
+        assert_eq!(
+            invocations[0].input[1].items.len(),
+            1,
+            "B's earlier item must not be lost"
+        );
         assert_eq!(invocations[0].input[1].items[0].key, 10);
     }
 }

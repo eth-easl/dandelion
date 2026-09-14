@@ -16,7 +16,7 @@ pub enum JoinStrategy {
     Cross,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Sharding {
     All,
     Each,
@@ -400,7 +400,8 @@ mod tests {
         min_set_bytes: &[usize],
     ) -> Vec<Vec<DataSet>> {
         let num_sets = sets.len();
-        let Some(mut iter) = create_sharding_iter(sets, join_order, any_sharding_mode, min_set_bytes)
+        let Some(mut iter) =
+            create_sharding_iter(sets, join_order, any_sharding_mode, min_set_bytes)
         else {
             return vec![];
         };
@@ -440,7 +441,11 @@ mod tests {
             })
             .collect();
         keys.sort();
-        assert_eq!(keys, vec![2, 3], "only keys present on both sides survive an inner join");
+        assert_eq!(
+            keys,
+            vec![2, 3],
+            "only keys present on both sides survive an inner join"
+        );
     }
 
     #[test]
@@ -482,7 +487,10 @@ mod tests {
             let a_key = group[0].items.first().map(|i| i.key);
             let b_key = group[1].items.first().map(|i| i.key);
             if let (Some(ak), Some(bk)) = (a_key, b_key) {
-                assert_eq!(ak, bk, "when both sides are present they must agree on the key");
+                assert_eq!(
+                    ak, bk,
+                    "when both sides are present they must agree on the key"
+                );
             }
             seen_keys.insert(a_key.or(b_key).expect("at least one side must be present"));
         }
@@ -517,7 +525,11 @@ mod tests {
         let sets = vec![Some((a, Sharding::AnyKeyed(JoinStrategy::Cross)))];
         let result = collect_all(sets, &[0], &AnyShardingMode::FixedSharding(2), &[0]);
 
-        assert_eq!(result.len(), 2, "FixedSharding(2) should cap the 4 key groups into 2");
+        assert_eq!(
+            result.len(),
+            2,
+            "FixedSharding(2) should cap the 4 key groups into 2"
+        );
         let total_items: usize = result.iter().map(|g| g[0].items.len()).sum();
         assert_eq!(total_items, 4, "no items should be lost while regrouping");
     }

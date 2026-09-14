@@ -249,7 +249,7 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
         Ok(FunctionTemplate {
             id: Arc::new(fdecl.name.to_string()),
             params: input_templates,
-            join_order,
+            join_order: Arc::new(join_order),
             returns: outputs,
         })
     }

@@ -43,12 +43,7 @@ impl TestRegistry {
 }
 
 impl Registry for TestRegistry {
-    fn check_declaration(
-        &self,
-        id: &str,
-        params: &Vec<&str>,
-        rets: &Vec<&str>,
-    ) -> DandelionResult<()> {
+    fn check_declaration(&self, id: &str, params: &[&str], rets: &[&str]) -> DandelionResult<()> {
         let (reg_params, reg_rets) = self.functions.get(id).ok_or_else(|| {
             dandelion_err!(DandelionError::Parsing(format!(
                 "unknown function '{id}' in test registry"
@@ -58,10 +53,7 @@ impl Registry for TestRegistry {
             .iter()
             .map(String::as_str)
             .eq(params.iter().copied());
-        let rets_match = reg_rets
-            .iter()
-            .map(String::as_str)
-            .eq(rets.iter().copied());
+        let rets_match = reg_rets.iter().map(String::as_str).eq(rets.iter().copied());
         if params_match && rets_match {
             Ok(())
         } else {

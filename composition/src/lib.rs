@@ -26,19 +26,14 @@ use log::warn;
 /// Functions from the function registry side required build compositions.
 pub trait Registry {
     /// Confirms the declared function is registered with matching params and returns.
-    fn check_declaration(
-        &self,
-        id: &str,
-        params: &Vec<&str>,
-        rets: &Vec<&str>,
-    ) -> DandelionResult<()>;
+    fn check_declaration(&self, id: &str, params: &[&str], rets: &[&str]) -> DandelionResult<()>;
     /// Simple lookup whether an identifier is already registered.
     fn id_exists(&self, id: &str) -> bool;
     /// Get min_set_bytes for a function.
     fn get_min_set_bytes(&self, id: &FunctionId) -> Vec<usize>;
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct InputSetTemplate {
     set_idx: usize,
     sharding: Sharding,
@@ -48,7 +43,7 @@ pub struct InputSetTemplate {
 pub struct FunctionTemplate {
     id: FunctionId,
     params: Vec<Option<InputSetTemplate>>,
-    join_order: Vec<usize>,
+    join_order: Arc<Vec<usize>>,
     returns: Vec<Option<usize>>,
 }
 
@@ -118,11 +113,7 @@ impl Composition {
                         in_templ.sharding.requires_sorting(),
                         f.params.len(),
                     );
-                    inputs.push(Some((
-                        comp_set,
-                        in_templ.sharding.clone(),
-                        in_templ.optional,
-                    )));
+                    inputs.push(Some((comp_set, in_templ.sharding, in_templ.optional)));
                 } else {
                     inputs.push(None);
                 }

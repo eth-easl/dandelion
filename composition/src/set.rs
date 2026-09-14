@@ -83,6 +83,12 @@ impl CompositionSet {
     /// Pushes new items to the set.
     /// The items are forwarded immediately to all streaming consumers and retained for blocking
     /// consumers that are only informed when the set is complete.
+    // TODO: it seems we build up multiple vec as we pass down and back up this chain of function calls.
+    // I did a quick check and it seems all functions bellow this one could return an interator instead of a vec.
+    // (Reffering to the push_streaming_items call that builds the result for this function)
+    // Then we don't need to materialize all the vecs bellow just to throw them away again immediately here when we transfer to the current return vec.
+    // The same seems to be true for the return value of this vec, as it also is immediately fed into another vec.
+    // Might want to check if we need to actually materialize the vec or if in the end we just iterate over the result anyway.
     pub fn push_items(
         &self,
         items: Arc<Vec<Arc<DataItem>>>,
@@ -203,7 +209,11 @@ mod tests {
         let set = CompositionSet::new();
         // A freshly constructed Function hasn't been resolved by `in_set_complete` yet; `set`
         // notifying it as a blocking consumer below is exactly what resolves it.
-        let consumer = Arc::new(Function::new(0, Arc::new("Consumer".to_string()), vec![]));
+        let consumer = Arc::new(Function::new(
+            0,
+            Arc::new("Consumer".to_string()),
+            vec![].into(),
+        ));
         set.add_consumer(consumer.clone(), 0, /* blocking */ true, false, 1);
 
         let invocations = set.push_items(items(&[1, 2]), true, &AnyShardingMode::MaxSharding);
@@ -225,7 +235,11 @@ mod tests {
     #[test]
     fn streaming_only_single_param_consumer_is_not_retained_but_still_completes() {
         let set = CompositionSet::new();
-        let consumer = Arc::new(Function::new(0, Arc::new("Consumer".to_string()), vec![]));
+        let consumer = Arc::new(Function::new(
+            0,
+            Arc::new("Consumer".to_string()),
+            vec![].into(),
+        ));
         consumer.update_io(vec![], vec![], vec![]);
         set.add_consumer(consumer.clone(), 0, /* blocking */ false, false, 1);
         // A function must be resolved by `in_set_complete` at least once (as
