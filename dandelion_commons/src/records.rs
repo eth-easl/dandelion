@@ -9,7 +9,7 @@ use core::cell::{OnceCell, UnsafeCell};
 /// By setting the last element to this explicitly, the compiler will throw an error,
 /// if there are more than this, because it enumerates from 0 and won't allow a number to be assigned twice.
 const LAST_EXISTING_RECORD_POINT: usize = 23;
-const LAST_RECORD_POINT: usize = 41;
+const LAST_RECORD_POINT: usize = 71;
 /// The first timestamp that should come from the engine running the function
 const FIRST_ENGINE_POINT: usize = 15;
 const LAST_ENGINE_POINT: usize = 22;
@@ -87,7 +87,51 @@ pub enum RecordPoint {
     IoOwnerApprovalEnd,
     /// Removing the worker's pending durable-journal entry after approval.
     IoAcknowledgementStart,
-    IoAcknowledgementEnd = LAST_RECORD_POINT,
+    IoAcknowledgementEnd,
+    /// Resolving or fetching the input consumed by one logical I/O.
+    IoInputResolveStart,
+    IoInputResolveEnd,
+    /// Entire wait on the shared external-I/O result, including execution by the winner.
+    IoExternalWaitStart,
+    IoExternalWaitEnd,
+    /// Foreground work needed to construct and enqueue a background checkpoint.
+    IoCheckpointEnqueueStart,
+    IoCheckpointEnqueueEnd,
+    /// Scheduling and concurrency-limiter delay for a background checkpoint.
+    IoCheckpointTaskStart,
+    IoCheckpointPermitWaitStart,
+    IoCheckpointPermitWaitEnd,
+    IoCheckpointTaskEnd,
+    /// Copying output contexts into owned buffers for persistence.
+    IoOutputCopyStart,
+    IoOutputCopyEnd,
+    /// Waiting for the export registry while reserving durable identifiers.
+    IoExportRegistryLockWaitStart,
+    IoExportRegistryLockWaitEnd,
+    /// Waiting for a Tokio blocking worker before file persistence begins.
+    IoBlockingPoolWaitStart,
+    IoBlockingPoolWaitEnd,
+    /// File persistence, including any durability operations required by the mode.
+    IoFilePersistenceStart,
+    IoFilePersistenceEnd,
+    /// Publishing persisted output references in the in-memory registry.
+    IoRegistryCommitStart,
+    IoRegistryCommitEnd,
+    /// Waiting in the local completion-committer channel.
+    IoCommitQueueWaitStart,
+    IoCommitQueueWaitEnd,
+    /// Waiting to acquire the per-invocation journal lock.
+    IoJournalLockWaitStart,
+    IoJournalLockWaitEnd,
+    /// Reading the existing invocation journal.
+    IoJournalReadStart,
+    IoJournalReadEnd,
+    /// Scanning existing journal entries for a duplicate completion.
+    IoJournalScanStart,
+    IoJournalScanEnd,
+    /// Writing journal bytes, including durability operations required by the mode.
+    IoJournalWriteStart,
+    IoJournalWriteEnd = LAST_RECORD_POINT,
 }
 
 #[cfg(feature = "timestamp")]
@@ -357,9 +401,6 @@ mod tests {
         assert_eq!(RecordPoint::FutureReturn as usize, 23);
         assert_eq!(RecordPoint::IoResolveStart as usize, 24);
         assert_eq!(RecordPoint::IoAcknowledgementEnd as usize, 41);
-        assert_eq!(
-            RecordPoint::IoAcknowledgementEnd as usize,
-            LAST_RECORD_POINT
-        );
+        assert_eq!(RecordPoint::IoJournalWriteEnd as usize, LAST_RECORD_POINT);
     }
 }

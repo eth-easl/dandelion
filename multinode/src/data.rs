@@ -914,6 +914,8 @@ struct ExportRegistryInner {
     pending_durable_exports: BTreeMap<u64, PendingDurableExport>,
     #[cfg(feature = "at-least-once")]
     pending_io_completions: Vec<IoCompletionRecord>,
+    #[cfg(all(feature = "at-least-once", feature = "timestamp"))]
+    pending_io_completion_recorders: HashMap<IoCompletionKey, dandelion_commons::records::Recorder>,
     #[cfg(feature = "exactly-once")]
     io_resolutions: HashMap<IoCoordinationKey, IoResolutionState>,
     #[cfg(feature = "exactly-once")]
@@ -945,6 +947,8 @@ impl ExportRegistry {
                 pending_durable_exports: BTreeMap::new(),
                 #[cfg(feature = "at-least-once")]
                 pending_io_completions: Vec::new(),
+                #[cfg(all(feature = "at-least-once", feature = "timestamp"))]
+                pending_io_completion_recorders: HashMap::new(),
                 #[cfg(feature = "exactly-once")]
                 io_resolutions: HashMap::new(),
                 #[cfg(feature = "exactly-once")]
@@ -984,6 +988,8 @@ impl ExportRegistry {
                 durable_data,
                 pending_durable_exports: BTreeMap::new(),
                 pending_io_completions,
+                #[cfg(feature = "timestamp")]
+                pending_io_completion_recorders: HashMap::new(),
                 #[cfg(feature = "exactly-once")]
                 io_resolutions: HashMap::new(),
                 #[cfg(feature = "exactly-once")]
@@ -1451,20 +1457,21 @@ impl ExportRegistry {
         &self,
         invocation_id: dandelion_commons::InvocationId,
         outputs: Vec<IoCompletedOutput>,
+        recorder: Option<dandelion_commons::records::Recorder>,
     ) -> DandelionResult<CommittedDurableExport> {
-        self.insert_outputs_async(invocation_id, outputs).await
+        self.insert_outputs_async(invocation_id, outputs, recorder)
+            .await
     }
 
-    #[cfg(all(
-        feature = "checkpointed-at-least-once",
-        not(feature = "exactly-once")
-    ))]
+    #[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
     async fn insert_checkpoint_outputs_async(
         &self,
         invocation_id: dandelion_commons::InvocationId,
         outputs: Vec<IoCompletedOutput>,
+        recorder: Option<dandelion_commons::records::Recorder>,
     ) -> DandelionResult<CommittedDurableExport> {
-        self.insert_outputs_async(invocation_id, outputs).await
+        self.insert_outputs_async(invocation_id, outputs, recorder)
+            .await
     }
 
     #[cfg(feature = "at-least-once")]
@@ -1472,7 +1479,11 @@ impl ExportRegistry {
         &self,
         invocation_id: dandelion_commons::InvocationId,
         outputs: Vec<IoCompletedOutput>,
+        mut recorder: Option<dandelion_commons::records::Recorder>,
     ) -> DandelionResult<CommittedDurableExport> {
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(dandelion_commons::records::RecordPoint::IoOutputCopyStart);
+        }
         let mut output_bytes = Vec::with_capacity(outputs.len());
         for output in outputs {
             let size = output.item.data.size;
@@ -1480,10 +1491,17 @@ impl ExportRegistry {
             output.context.read(output.item.data.offset, &mut bytes)?;
             output_bytes.push((size, bytes));
         }
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(dandelion_commons::records::RecordPoint::IoOutputCopyEnd);
+            recorder.record(dandelion_commons::records::RecordPoint::IoExportRegistryLockWaitStart);
+        }
 
         // reserve a batch of data ids
         let (batch_id, directory, data_ids) =
             self.reserve_durable_export_batch(invocation_id, output_bytes.len())?;
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(dandelion_commons::records::RecordPoint::IoExportRegistryLockWaitEnd);
+        }
         // prepare the outputs for writing
         let prepared = data_ids
             .iter()
@@ -1499,8 +1517,20 @@ impl ExportRegistry {
         let cleanup_directory = directory.clone();
         let cleanup_ids = data_ids.clone();
         // Blocking disk I/O on a worker thread so the async runtime can keep serving.
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(dandelion_commons::records::RecordPoint::IoBlockingPoolWaitStart);
+        }
+        let mut persistence_recorder = recorder.clone();
         let persisted = tokio::task::spawn_blocking(move || {
-            write_checkpoint_export_batch(&directory, &prepared)?;
+            if let Some(recorder) = persistence_recorder.as_mut() {
+                recorder.record(dandelion_commons::records::RecordPoint::IoBlockingPoolWaitEnd);
+                recorder.record(dandelion_commons::records::RecordPoint::IoFilePersistenceStart);
+            }
+            let write_result = write_checkpoint_export_batch(&directory, &prepared);
+            if let Some(recorder) = persistence_recorder.as_mut() {
+                recorder.record(dandelion_commons::records::RecordPoint::IoFilePersistenceEnd);
+            }
+            write_result?;
             Ok::<_, dandelion_commons::DError>(prepared)
         })
         .await
@@ -1525,7 +1555,14 @@ impl ExportRegistry {
         };
 
         // commit the outputs to the export registry
-        match self.commit_durable_export_batch(batch_id, prepared) {
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(dandelion_commons::records::RecordPoint::IoRegistryCommitStart);
+        }
+        let committed = self.commit_durable_export_batch(batch_id, prepared);
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(dandelion_commons::records::RecordPoint::IoRegistryCommitEnd);
+        }
+        match committed {
             Ok(references) => Ok(references),
             Err(error) => {
                 self.discard_durable_export_batch(batch_id);
@@ -1546,7 +1583,13 @@ impl ExportRegistry {
         record: &IoCompletionRecord,
         mut recorder: Option<dandelion_commons::records::Recorder>,
     ) -> DandelionResult<bool> {
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(dandelion_commons::records::RecordPoint::IoJournalLockWaitStart);
+        }
         let mut inner = self.inner.lock().unwrap();
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(dandelion_commons::records::RecordPoint::IoJournalLockWaitEnd);
+        }
         let store = inner.durable_store.as_ref().ok_or_else(|| {
             export_registry_error(
                 "Cannot journal an IO completion in an in-memory-only export registry",
@@ -1554,11 +1597,20 @@ impl ExportRegistry {
         })?;
         let journal_path = store.directory.join(IO_COMPLETION_JOURNAL_FILE);
         let record_key = record.completion_key()?;
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(dandelion_commons::records::RecordPoint::IoJournalScanStart);
+        }
         // Already queued for delivery; caller should drop duplicate exports.
         for pending in &inner.pending_io_completions {
             if pending.completion_key()? == record_key {
+                if let Some(recorder) = recorder.as_mut() {
+                    recorder.record(dandelion_commons::records::RecordPoint::IoJournalScanEnd);
+                }
                 return Ok(false);
             }
+        }
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(dandelion_commons::records::RecordPoint::IoJournalScanEnd);
         }
         // Rewrite the whole journal: append is not crash-safe without rewriting.
         let mut pending_io_completions = inner.pending_io_completions.clone();
@@ -1576,15 +1628,22 @@ impl ExportRegistry {
         let journal_contents = serialization_result?;
         if let Some(recorder) = recorder.as_mut() {
             recorder.record(dandelion_commons::records::RecordPoint::IoJournalStart);
+            recorder.record(dandelion_commons::records::RecordPoint::IoJournalWriteStart);
         }
-        let write_result =
-            write_checkpoint_atomic_file(&journal_path, journal_contents.as_bytes());
+        let write_result = write_checkpoint_atomic_file(&journal_path, journal_contents.as_bytes());
         if let Some(recorder) = recorder.as_mut() {
+            recorder.record(dandelion_commons::records::RecordPoint::IoJournalWriteEnd);
             recorder.record(dandelion_commons::records::RecordPoint::IoJournalEnd);
         }
         write_result?;
         // Only update memory after the replacement journal is installed.
         inner.pending_io_completions = pending_io_completions;
+        #[cfg(feature = "timestamp")]
+        if let Some(recorder) = recorder {
+            inner
+                .pending_io_completion_recorders
+                .insert(record_key, recorder);
+        }
         drop(inner);
         // Wake the queue delivery loop so it can send this record to the owner.
         self.pending_io_completions_changed.notify_one();
@@ -1594,6 +1653,19 @@ impl ExportRegistry {
     #[cfg(feature = "at-least-once")]
     pub fn pending_io_completion_records(&self) -> Vec<IoCompletionRecord> {
         self.inner.lock().unwrap().pending_io_completions.clone()
+    }
+
+    #[cfg(all(feature = "at-least-once", feature = "timestamp"))]
+    pub fn pending_io_completion_recorder(
+        &self,
+        completion_key: &IoCompletionKey,
+    ) -> Option<dandelion_commons::records::Recorder> {
+        self.inner
+            .lock()
+            .unwrap()
+            .pending_io_completion_recorders
+            .get(completion_key)
+            .cloned()
     }
 
     #[cfg(feature = "at-least-once")]
@@ -1633,6 +1705,8 @@ impl ExportRegistry {
             .collect::<DandelionResult<String>>()?;
         write_checkpoint_atomic_file(&journal_path, journal_contents.as_bytes())?;
         inner.pending_io_completions = pending_io_completions;
+        #[cfg(feature = "timestamp")]
+        inner.pending_io_completion_recorders.remove(completion_key);
         Ok(true)
     }
 
@@ -2115,13 +2189,14 @@ impl RemoteDataClient for HttpRemoteDataClient {
             if let Some(recorder) = recorder.as_mut() {
                 recorder.record(dandelion_commons::records::RecordPoint::IoOutputExportStart);
             }
-            #[cfg(all(
-                feature = "checkpointed-at-least-once",
-                not(feature = "exactly-once")
-            ))]
+            #[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
             let committed = self
                 .local_registry
-                .insert_checkpoint_outputs_async(completion.key.invocation_id, outputs)
+                .insert_checkpoint_outputs_async(
+                    completion.key.invocation_id,
+                    outputs,
+                    recorder.clone(),
+                )
                 .await;
             #[cfg(not(all(
                 feature = "checkpointed-at-least-once",
@@ -2129,7 +2204,11 @@ impl RemoteDataClient for HttpRemoteDataClient {
             )))]
             let committed = self
                 .local_registry
-                .insert_durable_outputs_async(completion.key.invocation_id, outputs)
+                .insert_durable_outputs_async(
+                    completion.key.invocation_id,
+                    outputs,
+                    recorder.clone(),
+                )
                 .await;
             if let Some(recorder) = recorder.as_mut() {
                 recorder.record(dandelion_commons::records::RecordPoint::IoOutputExportEnd);
@@ -2337,7 +2416,11 @@ impl RemoteDataClient for HttpRemoteDataClient {
                     }
                     let exported = self
                         .local_registry
-                        .insert_durable_outputs_async(completion.key.invocation_id, outputs)
+                        .insert_durable_outputs_async(
+                            completion.key.invocation_id,
+                            outputs,
+                            recorder.clone(),
+                        )
                         .await;
                     if let Some(recorder) = recorder.as_mut() {
                         recorder.record(dandelion_commons::records::RecordPoint::IoOutputExportEnd);
@@ -2428,6 +2511,9 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 Err(_) => None,
             };
 
+            if let Some(recorder) = recorder.as_mut() {
+                recorder.record(dandelion_commons::records::RecordPoint::IoResolvedDeliveryStart);
+            }
             let url = self.io_url(completion.owner_node_id, "resolved")?;
             let request = IoResolvedWireRequest {
                 key: completion.key,
@@ -2455,9 +2541,19 @@ impl RemoteDataClient for HttpRemoteDataClient {
                 }
                 tokio::time::sleep(DURABLE_FETCH_RETRY_INTERVAL).await;
             }
+            if let Some(recorder) = recorder.as_mut() {
+                recorder.record(dandelion_commons::records::RecordPoint::IoResolvedDeliveryEnd);
+            }
             if let Some(record) = delivery_record {
+                if let Some(recorder) = recorder.as_mut() {
+                    recorder
+                        .record(dandelion_commons::records::RecordPoint::IoAcknowledgementStart);
+                }
                 self.local_registry
                     .acknowledge_io_completion(&record.completion_key()?)?;
+                if let Some(recorder) = recorder.as_mut() {
+                    recorder.record(dandelion_commons::records::RecordPoint::IoAcknowledgementEnd);
+                }
             }
             match completion_error {
                 Some(error) => Err(error),
@@ -2956,10 +3052,12 @@ mod checkpoint_tests {
             first_registry.insert_durable_outputs_async(
                 InvocationId::now_v7(),
                 vec![completed_test_output(1), completed_test_output(2)],
+                None,
             ),
             second_registry.insert_durable_outputs_async(
                 InvocationId::now_v7(),
                 vec![completed_test_output(3), completed_test_output(4)],
+                None,
             )
         );
         let first = first.unwrap();

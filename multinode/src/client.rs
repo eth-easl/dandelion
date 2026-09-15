@@ -986,6 +986,10 @@ async fn io_completion_delivery_loop(
                     return;
                 }
             };
+            #[cfg(feature = "timestamp")]
+            if let Some(mut recorder) = export_registry.pending_io_completion_recorder(&key) {
+                recorder.record(dandelion_commons::records::RecordPoint::IoResolvedDeliveryStart);
+            }
             if sender
                 .send(remote_message::RemoteMessage::IoCompletion(
                     IoCompletionDelivery { journal_line },
@@ -1487,6 +1491,18 @@ async fn remote_queue_client_logic(
                             } else {
                                 IoCompletionDisposition::Retain
                             };
+                            #[cfg(feature = "timestamp")]
+                            let mut completion_recorder =
+                                export_registry.pending_io_completion_recorder(&completion_key);
+                            #[cfg(feature = "timestamp")]
+                            if let Some(recorder) = completion_recorder.as_mut() {
+                                recorder.record(
+                                    dandelion_commons::records::RecordPoint::IoResolvedDeliveryEnd,
+                                );
+                                recorder.record(
+                                    dandelion_commons::records::RecordPoint::IoAcknowledgementStart,
+                                );
+                            }
                             if let Err(err) = export_registry
                                 .apply_io_completion_ack(&completion_key, disposition)
                             {
@@ -1494,6 +1510,13 @@ async fn remote_queue_client_logic(
                                 // an acknowledgement that was not persisted locally as complete.
                                 error!("Failed to acknowledge delivered IO completion: {}", err);
                                 break;
+                            }
+                            #[cfg(feature = "timestamp")]
+                            if let Some(recorder) = completion_recorder.as_mut() {
+                                recorder.record(
+                                    dandelion_commons::records::RecordPoint::IoAcknowledgementEnd,
+                                );
+                                log::debug!("completed delivered I/O checkpoint: {}", recorder);
                             }
                         }
                     }

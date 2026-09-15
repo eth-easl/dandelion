@@ -299,10 +299,7 @@ fn append_io_completion_log_line_locked(log_path: &Path, line: &str) -> Dandelio
     append_log_line_buffered(log_path, line).map(drop)
 }
 
-fn append_log_line_buffered(
-    log_path: &Path,
-    line: &str,
-) -> DandelionResult<std::fs::File> {
+fn append_log_line_buffered(log_path: &Path, line: &str) -> DandelionResult<std::fs::File> {
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -997,13 +994,16 @@ fn local_completion_committer() -> &'static Sender<LocalCompletionCommitRequest>
 #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
 pub async fn accept_local_io_completion_record(
     record: IoCompletionRecord,
-    recorder: Option<dandelion_commons::records::Recorder>,
+    mut recorder: Option<dandelion_commons::records::Recorder>,
 ) -> DandelionResult<IoCompletionDisposition> {
     let (completion, committed) = oneshot::channel();
+    if let Some(recorder) = recorder.as_mut() {
+        recorder.record(dandelion_commons::records::RecordPoint::IoCommitQueueWaitStart);
+    }
     local_completion_committer()
         .send(LocalCompletionCommitRequest {
             record,
-            recorder,
+            recorder: recorder.clone(),
             completion,
         })
         .map_err(|_| internal_error("Local completion commit thread stopped"))?;
@@ -1019,6 +1019,10 @@ fn run_local_completion_committer(receiver: Receiver<LocalCompletionCommitReques
         while let Ok(request) = receiver.try_recv() {
             batch.push(request);
         }
+        record_completion_requests(
+            &batch,
+            dandelion_commons::records::RecordPoint::IoCommitQueueWaitEnd,
+        );
         commit_local_completion_batch(batch);
     }
 }
@@ -1042,6 +1046,18 @@ fn commit_local_completion_batch(batch: Vec<LocalCompletionCommitRequest>) {
 }
 
 #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
+fn record_completion_requests(
+    requests: &[LocalCompletionCommitRequest],
+    point: dandelion_commons::records::RecordPoint,
+) {
+    for request in requests {
+        if let Some(mut recorder) = request.recorder.clone() {
+            recorder.record(point);
+        }
+    }
+}
+
+#[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
 fn commit_invocation_completion_batch(
     invocation_id: InvocationId,
     requests: Vec<LocalCompletionCommitRequest>,
@@ -1049,9 +1065,21 @@ fn commit_invocation_completion_batch(
     let commit = || -> DandelionResult<Vec<IoCompletionDisposition>> {
         let log_path = invocation_log_path(invocation_id)?;
         let invocation_lock = invocation_log_lock(invocation_id);
+        record_completion_requests(
+            &requests,
+            dandelion_commons::records::RecordPoint::IoJournalLockWaitStart,
+        );
         let _invocation_lock_guard = invocation_lock
             .lock()
             .expect("IO recovery invocation log lock poisoned");
+        record_completion_requests(
+            &requests,
+            dandelion_commons::records::RecordPoint::IoJournalLockWaitEnd,
+        );
+        record_completion_requests(
+            &requests,
+            dandelion_commons::records::RecordPoint::IoJournalReadStart,
+        );
         let mut existing_log = match fs::read_to_string(&log_path) {
             Ok(existing_log) => existing_log,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -1062,10 +1090,18 @@ fn commit_invocation_completion_batch(
                 )))
             }
         };
+        record_completion_requests(
+            &requests,
+            dandelion_commons::records::RecordPoint::IoJournalReadEnd,
+        );
 
         let mut appended = String::new();
         let mut journal_recorders = Vec::new();
         let mut dispositions = Vec::with_capacity(requests.len());
+        record_completion_requests(
+            &requests,
+            dandelion_commons::records::RecordPoint::IoJournalScanStart,
+        );
         for request in &requests {
             // check if the completion record is already in the log
             match delivered_io_completion_disposition(&existing_log, &request.record)? {
@@ -1088,13 +1124,19 @@ fn commit_invocation_completion_batch(
                 }
             }
         }
+        record_completion_requests(
+            &requests,
+            dandelion_commons::records::RecordPoint::IoJournalScanEnd,
+        );
 
         if !appended.is_empty() {
             for recorder in &mut journal_recorders {
                 recorder.record(dandelion_commons::records::RecordPoint::IoJournalStart);
+                recorder.record(dandelion_commons::records::RecordPoint::IoJournalWriteStart);
             }
             append_io_completion_log_line_locked(&log_path, &appended)?;
             for recorder in &mut journal_recorders {
+                recorder.record(dandelion_commons::records::RecordPoint::IoJournalWriteEnd);
                 recorder.record(dandelion_commons::records::RecordPoint::IoJournalEnd);
             }
         }
