@@ -388,8 +388,14 @@ fn main() -> () {
     print!(" kvm");
     #[cfg(feature = "timestamp")]
     print!(" timestamp");
-    #[cfg(all(feature = "at-least-once", not(feature = "exactly-once")))]
+    #[cfg(all(
+        feature = "at-least-once",
+        not(feature = "checkpointed-at-least-once"),
+        not(feature = "exactly-once")
+    ))]
     print!(" at-least-once");
+    #[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
+    print!(" checkpointed-at-least-once");
     #[cfg(feature = "exactly-once")]
     print!(" exactly-once");
     print!("\n");
