@@ -280,6 +280,29 @@ pub fn complete_log_lines(content: &str) -> impl Iterator<Item = &str> {
 }
 
 fn append_invocation_log_line_locked(log_path: &Path, line: &str) -> DandelionResult<()> {
+    let file = append_log_line_buffered(log_path, line)?;
+    file.sync_data().map_err(|_| {
+        internal_error(format!(
+            "Failed to sync invocation log {}",
+            log_path.display()
+        ))
+    })
+}
+
+#[cfg(feature = "exactly-once")]
+fn append_io_completion_log_line_locked(log_path: &Path, line: &str) -> DandelionResult<()> {
+    append_invocation_log_line_locked(log_path, line)
+}
+
+#[cfg(all(feature = "at-least-once", not(feature = "exactly-once")))]
+fn append_io_completion_log_line_locked(log_path: &Path, line: &str) -> DandelionResult<()> {
+    append_log_line_buffered(log_path, line).map(drop)
+}
+
+fn append_log_line_buffered(
+    log_path: &Path,
+    line: &str,
+) -> DandelionResult<std::fs::File> {
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -314,13 +337,7 @@ fn append_invocation_log_line_locked(log_path: &Path, line: &str) -> DandelionRe
             log_path.display()
         ))
     })?;
-    file.sync_data().map_err(|_| {
-        internal_error(format!(
-            "Failed to sync invocation log {}",
-            log_path.display()
-        ))
-    })?;
-    Ok(())
+    Ok(file)
 }
 
 pub fn read_invocation_log(invocation_id: InvocationId) -> DandelionResult<String> {
@@ -921,12 +938,17 @@ pub fn append_io_completion_record(record: &IoCompletionRecord) -> DandelionResu
         return Ok(());
     }
     let line = format_io_completion_line(record)?;
-    append_invocation_log_line(record.invocation_id, &line)
+    let log_path = invocation_log_path(record.invocation_id)?;
+    let invocation_lock = invocation_log_lock(record.invocation_id);
+    let _invocation_lock_guard = invocation_lock
+        .lock()
+        .expect("IO recovery invocation log lock poisoned");
+    append_io_completion_log_line_locked(&log_path, &line)
 }
 
 #[cfg(feature = "at-least-once")]
-/// Durably accepts the first successful completion for a logical I/O key. Redelivery of that
-/// exact winner is retained; a different duplicate or a completion for terminal work is deleted.
+/// Accepts the first successful completion for a logical I/O key. Redelivery of that exact winner
+/// is retained; a different duplicate or a completion for terminal work is deleted.
 pub fn accept_delivered_io_completion_record(
     record: &IoCompletionRecord,
 ) -> DandelionResult<IoCompletionDisposition> {
@@ -949,7 +971,7 @@ pub fn accept_delivered_io_completion_record(
         return Ok(disposition);
     }
     let line = format_io_completion_line(record)?;
-    append_invocation_log_line_locked(&log_path, &line)?;
+    append_io_completion_log_line_locked(&log_path, &line)?;
     Ok(IoCompletionDisposition::Retain)
 }
 
@@ -1071,7 +1093,7 @@ fn commit_invocation_completion_batch(
             for recorder in &mut journal_recorders {
                 recorder.record(dandelion_commons::records::RecordPoint::IoJournalStart);
             }
-            append_invocation_log_line_locked(&log_path, &appended)?;
+            append_io_completion_log_line_locked(&log_path, &appended)?;
             for recorder in &mut journal_recorders {
                 recorder.record(dandelion_commons::records::RecordPoint::IoJournalEnd);
             }
