@@ -534,26 +534,6 @@ async fn resolve_io_item(
     ))
 }
 
-// store checkpointed I/O completion in the background
-pub const DEFAULT_CHECKPOINT_CONCURRENCY_LIMIT: usize = 2;
-
-#[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
-pub static CHECKPOINT_CONCURRENCY_LIMIT: OnceLock<usize> = OnceLock::new();
-
-#[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
-static CHECKPOINT_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
-
-#[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
-fn checkpoint_semaphore() -> Arc<Semaphore> {
-    CHECKPOINT_SEMAPHORE
-        .get_or_init(|| {
-            let concurrency_limit =
-                CHECKPOINT_CONCURRENCY_LIMIT.get_or_init(|| DEFAULT_CHECKPOINT_CONCURRENCY_LIMIT);
-            Arc::new(Semaphore::new(*concurrency_limit))
-        })
-        .clone()
-}
-
 #[cfg(all(feature = "at-least-once", not(feature = "exactly-once")))]
 async fn resolve_checkpointed_io_item(
     io_data: CoordinatedIoData,
@@ -644,15 +624,6 @@ async fn resolve_checkpointed_io_item(
         tokio::spawn(async move {
             if let Some(recorder) = checkpoint_recorder.as_mut() {
                 recorder.record(RecordPoint::IoCheckpointTaskStart);
-                recorder.record(RecordPoint::IoCheckpointPermitWaitStart);
-            }
-            #[cfg(feature = "checkpointed-at-least-once")]
-            let _checkpoint_permit = checkpoint_semaphore()
-                .acquire_owned()
-                .await
-                .expect("Checkpoint semaphore cannot be closed");
-            if let Some(recorder) = checkpoint_recorder.as_mut() {
-                recorder.record(RecordPoint::IoCheckpointPermitWaitEnd);
             }
             if let Err(error) = remote_client.publish_io_completion(completion).await {
                 warn!(

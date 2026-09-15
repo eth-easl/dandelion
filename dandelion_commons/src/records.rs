@@ -9,7 +9,7 @@ use core::cell::{OnceCell, UnsafeCell};
 /// By setting the last element to this explicitly, the compiler will throw an error,
 /// if there are more than this, because it enumerates from 0 and won't allow a number to be assigned twice.
 const LAST_EXISTING_RECORD_POINT: usize = 23;
-const LAST_RECORD_POINT: usize = 71;
+const LAST_RECORD_POINT: usize = 69;
 /// The first timestamp that should come from the engine running the function
 const FIRST_ENGINE_POINT: usize = 15;
 const LAST_ENGINE_POINT: usize = 22;
@@ -97,10 +97,8 @@ pub enum RecordPoint {
     /// Foreground work needed to construct and enqueue a background checkpoint.
     IoCheckpointEnqueueStart,
     IoCheckpointEnqueueEnd,
-    /// Scheduling and concurrency-limiter delay for a background checkpoint.
+    /// Start and end of a background checkpoint task.
     IoCheckpointTaskStart,
-    IoCheckpointPermitWaitStart,
-    IoCheckpointPermitWaitEnd,
     IoCheckpointTaskEnd,
     /// Copying output contexts into owned buffers for persistence.
     IoOutputCopyStart,

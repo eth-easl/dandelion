@@ -15,13 +15,7 @@ const DEFAULT_MIN_SYS_CORES: usize = 1;
 const DEFAULT_VIRTUAL_MAX_RAM_MULTIPLIER: usize = 2;
 const DEFAULT_MULTINODE_RECONNECT_INTERVAL: u64 = 1000;
 use machine_interface::composition::DEFAULT_AUTOSHARDING_OFFLOAD_CONST;
-use machine_interface::function_driver::system_driver::reqwest::{
-    DEFAULT_CHECKPOINT_CONCURRENCY_LIMIT, DEFAULT_CONCURRENCY_LIMIT,
-};
-
-fn default_checkpoint_concurrency() -> usize {
-    DEFAULT_CHECKPOINT_CONCURRENCY_LIMIT
-}
+use machine_interface::function_driver::system_driver::reqwest::DEFAULT_CONCURRENCY_LIMIT;
 
 /// Expand a leading `~` (or `~/...`) in a path to the current user's home directory,
 /// same as a shell would. Paths that don't start with `~` are returned unchanged.
@@ -169,10 +163,6 @@ pub struct DandelionConfig {
     #[arg(long, env, default_value_t = DEFAULT_CONCURRENCY_LIMIT)]
     #[serde(default)]
     pub io_concurrency: usize,
-    /// Maximum number of checkpoint persistence tasks running concurrently.
-    #[arg(long, env, default_value_t = DEFAULT_CHECKPOINT_CONCURRENCY_LIMIT)]
-    #[serde(default = "default_checkpoint_concurrency")]
-    pub checkpoint_concurrency: usize,
     #[arg(long, env)]
     #[serde(default)]
     pub data_concurrency: Option<usize>,
@@ -256,7 +246,6 @@ impl DandelionConfig {
         merge!(min_sys_cores, DEFAULT_MIN_SYS_CORES);
         merge_option!(max_sys_cores);
         merge!(io_concurrency, DEFAULT_CONCURRENCY_LIMIT);
-        merge!(checkpoint_concurrency, DEFAULT_CHECKPOINT_CONCURRENCY_LIMIT);
         merge_option!(data_concurrency);
         merge!(timestamp_count, DEFAULT_TIMESTAMP_COUNT);
         merge!(
