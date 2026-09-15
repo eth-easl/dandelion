@@ -117,8 +117,7 @@ impl CompositionSet {
     }
 
     /// Sets the composition set to the given set.
-    /// Assumes the set is ordered if the input requires ordering (unchecked) and does not notify
-    /// consumers that the set is now complete.
+    /// Assumes the set is ordered if the input requires ordering (unchecked).
     pub fn set_composition_input(
         &self,
         set: DataSet,
@@ -221,12 +220,19 @@ mod tests {
             &AnyShardingMode::MaxSharding,
             &mut invocations,
         );
-        assert_eq!(invocations.len(), 1, "one invocation for the single streamed item");
+        assert_eq!(
+            invocations.len(),
+            1,
+            "one invocation for the single streamed item"
+        );
 
         // A lone single-param streaming consumer already received the items directly through
         // `push_streaming_items`, so the set itself doesn't need to retain a copy.
         assert!(set.get_set().is_empty());
-        assert!(!consumer.is_complete(), "its invocation is still outstanding");
+        assert!(
+            !consumer.is_complete(),
+            "its invocation is still outstanding"
+        );
         consumer.add_invocation_output(vec![], &AnyShardingMode::MaxSharding, &mut Vec::new());
         assert!(consumer.is_complete());
     }
