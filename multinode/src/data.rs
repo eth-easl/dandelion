@@ -104,11 +104,11 @@ impl hyper::body::Body for ExportedBody {
         mut self: std::pin::Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
-        return std::task::Poll::Ready(
+        std::task::Poll::Ready(
             self.inner
                 .pop_front()
                 .map(|data| Ok(hyper::body::Frame::data(data))),
-        );
+        )
     }
 }
 
@@ -278,7 +278,7 @@ impl HttpRemoteDataClient {
     pub fn new(node_map: BTreeMap<u64, String>, local_registry: ExportRegistry) -> Self {
         Self {
             node_map,
-            local_registry: local_registry,
+            local_registry,
             client: reqwest::Client::new(),
         }
     }

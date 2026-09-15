@@ -18,26 +18,26 @@ use tokio::sync::{mpsc, OnceCell};
 /// Translates dandelion engine types to protocol engine types.
 pub(crate) fn engine_type_dtop(t: machine_config::EngineType) -> proto::EngineType {
     match t {
-        machine_config::EngineType::System => proto::EngineType::EngineReqwest,
+        machine_config::EngineType::System => proto::EngineType::Reqwest,
         #[cfg(feature = "cheri")]
-        machine_config::EngineType::Cheri => proto::EngineType::EngineCheri,
+        machine_config::EngineType::Cheri => proto::EngineType::Cheri,
         #[cfg(feature = "mmu")]
-        machine_config::EngineType::Process => proto::EngineType::EngineProcess,
+        machine_config::EngineType::Process => proto::EngineType::Process,
         #[cfg(feature = "kvm")]
-        machine_config::EngineType::Kvm => proto::EngineType::EngineKvm,
+        machine_config::EngineType::Kvm => proto::EngineType::Kvm,
     }
 }
 
 /// Translates protocol engine types to dandelion engine types.
 pub(crate) fn engine_type_ptod(t: i32) -> DandelionResult<machine_config::EngineType> {
     match proto::EngineType::try_from(t).unwrap() {
-        proto::EngineType::EngineReqwest => Ok(machine_config::EngineType::System),
+        proto::EngineType::Reqwest => Ok(machine_config::EngineType::System),
         #[cfg(feature = "cheri")]
-        proto::EngineType::EngineCheri => Ok(machine_config::EngineType::Cheri),
+        proto::EngineType::Cheri => Ok(machine_config::EngineType::Cheri),
         #[cfg(feature = "mmu")]
-        proto::EngineType::EngineProcess => Ok(machine_config::EngineType::Process),
+        proto::EngineType::Process => Ok(machine_config::EngineType::Process),
         #[cfg(feature = "kvm")]
-        proto::EngineType::EngineKvm => Ok(machine_config::EngineType::Kvm),
+        proto::EngineType::Kvm => Ok(machine_config::EngineType::Kvm),
         _ => err_dandelion!(DandelionError::Multinode(MultinodeError::ConfigError(
             "Unknown engine type!".to_string(),
         ))),
@@ -254,14 +254,14 @@ fn item_data_and_ref(
             } = io_data;
             // TODO for data we want to send along: fuse with serialization, so we can use the `resolved` without race conditions
             let mut register_item = item.clone();
-            register_item.data = original_position.clone();
+            register_item.data = *original_position;
             let (data, remote_data) =
                 item_data_and_ref(&register_item, original_data, export_local_data);
             (
                 proto::ItemData {
                     data: Some(item_data::Data::IoData(Box::new(proto::IoData {
                         set_index: *set_index as u64,
-                        function: system_function_dtop(&function).unwrap() as i32,
+                        function: system_function_dtop(function).unwrap() as i32,
                         data: Some(Box::new(data)),
                     }))),
                 },
@@ -271,7 +271,7 @@ fn item_data_and_ref(
         ItemData::RemoteData(remote_data) => (
             proto::ItemData {
                 data: Some(item_data::Data::RemoteData(remote_data_dtop(
-                    &remote_data,
+                    remote_data,
                     item.data.size,
                 ))),
             },
@@ -365,7 +365,7 @@ pub(crate) fn composition_sets_to_proto(
             });
         } else {
             metadata_sets.push(proto::MetadataSet {
-                ident: format!("empty_set"),
+                ident: "empty_set".to_string(),
                 items: vec![],
             });
         }
@@ -378,7 +378,7 @@ pub(crate) fn composition_sets_to_proto(
 }
 
 pub(crate) fn composition_sets_to_proto_and_refs(
-    sets: &Vec<Option<CompositionSet>>,
+    sets: &[Option<CompositionSet>],
     mut export_local_data: impl FnMut(&DataItem, Arc<Context>) -> RemoteData,
 ) -> (Vec<proto::MetadataSet>, Vec<RemoteData>)
 // TODO change to (Vec<(Position, Arc<Context>)>,u64) when we add sending data directly with the request
@@ -389,7 +389,7 @@ pub(crate) fn composition_sets_to_proto_and_refs(
     let mut remote_references = Vec::new();
     // let mut offset: u64 = 0;
 
-    for set_option in sets.into_iter() {
+    for set_option in sets.iter() {
         if let Some(set) = set_option {
             let mut metadata_items = Vec::with_capacity(set.len());
             let set_name = set.get_name().clone();
@@ -411,7 +411,7 @@ pub(crate) fn composition_sets_to_proto_and_refs(
             });
         } else {
             metadata_sets.push(proto::MetadataSet {
-                ident: format!("empty_set"),
+                ident: "empty_set".to_string(),
                 items: vec![],
             });
         }
@@ -460,10 +460,7 @@ fn proto_data_sets_to_composition_sets_inner(
             item_list.push((
                 machine_interface::DataItem {
                     ident: protobuf_item.ident,
-                    data: Position {
-                        offset: 0,
-                        size: size,
-                    },
+                    data: Position { offset: 0, size },
                     key: protobuf_item.key,
                 },
                 data,
