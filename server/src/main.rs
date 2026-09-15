@@ -175,6 +175,16 @@ fn main() -> () {
     machine_interface::function_driver::system_driver::reqwest::CONCURRENCY_LIMIT
         .set(config.io_concurrency)
         .unwrap();
+    #[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
+    {
+        assert!(
+            config.checkpoint_concurrency > 0,
+            "checkpoint concurrency must be greater than zero"
+        );
+        machine_interface::function_driver::system_driver::reqwest::CHECKPOINT_CONCURRENCY_LIMIT
+            .set(config.checkpoint_concurrency)
+            .unwrap();
+    }
     // set the limit for concurrent requests to the local data registry
     multinode::data::CONCURRENCY_LIMIT
         .set(config.get_data_concurrency())

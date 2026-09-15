@@ -535,8 +535,10 @@ async fn resolve_io_item(
 }
 
 // store checkpointed I/O completion in the background
+pub const DEFAULT_CHECKPOINT_CONCURRENCY_LIMIT: usize = 2;
+
 #[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
-const CHECKPOINT_CONCURRENCY_LIMIT: usize = 2;
+pub static CHECKPOINT_CONCURRENCY_LIMIT: OnceLock<usize> = OnceLock::new();
 
 #[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
 static CHECKPOINT_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
@@ -544,7 +546,11 @@ static CHECKPOINT_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
 #[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
 fn checkpoint_semaphore() -> Arc<Semaphore> {
     CHECKPOINT_SEMAPHORE
-        .get_or_init(|| Arc::new(Semaphore::new(CHECKPOINT_CONCURRENCY_LIMIT)))
+        .get_or_init(|| {
+            let concurrency_limit =
+                CHECKPOINT_CONCURRENCY_LIMIT.get_or_init(|| DEFAULT_CHECKPOINT_CONCURRENCY_LIMIT);
+            Arc::new(Semaphore::new(*concurrency_limit))
+        })
         .clone()
 }
 
