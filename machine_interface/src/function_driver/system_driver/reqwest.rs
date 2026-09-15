@@ -520,6 +520,19 @@ async fn resolve_io_item(
 }
 
 // store checkpointed I/O completion in the background
+#[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
+const CHECKPOINT_CONCURRENCY_LIMIT: usize = 2;
+
+#[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
+static CHECKPOINT_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+#[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
+fn checkpoint_semaphore() -> Arc<Semaphore> {
+    CHECKPOINT_SEMAPHORE
+        .get_or_init(|| Arc::new(Semaphore::new(CHECKPOINT_CONCURRENCY_LIMIT)))
+        .clone()
+}
+
 #[cfg(all(feature = "at-least-once", not(feature = "exactly-once")))]
 async fn resolve_checkpointed_io_item(
     io_data: CoordinatedIoData,
@@ -598,6 +611,11 @@ async fn resolve_checkpointed_io_item(
             recorder: recorder.clone(),
         };
         tokio::spawn(async move {
+            #[cfg(feature = "checkpointed-at-least-once")]
+            let _checkpoint_permit = checkpoint_semaphore()
+                .acquire_owned()
+                .await
+                .expect("Checkpoint semaphore cannot be closed");
             if let Err(error) = remote_client.publish_io_completion(completion).await {
                 warn!(
                     "Failed to checkpoint at-least-once I/O completion: {}",
