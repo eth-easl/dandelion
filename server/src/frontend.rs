@@ -109,18 +109,11 @@ async fn handle_function_registration(
     let input_sets = request_map
         .input_sets
         .into_iter()
-        .map(|(name, data)| {
-            (
-                name,
-                data.and_then(|static_data| {
-                    Some(LocalCompositionSet::from_byte_items(static_data))
-                }),
-            )
-        })
+        .map(|(name, data)| (name, data.map(LocalCompositionSet::from_byte_items)))
         .collect();
 
     let metadata = Metadata {
-        input_sets: input_sets,
+        input_sets,
         output_sets: request_map.output_sets,
         min_set_bytes: request_map.min_set_bytes,
     };
@@ -133,9 +126,9 @@ async fn handle_function_registration(
             metadata,
         )
         .expect("Should be able to insert function");
-    return Ok(DandelionBody::from_vec(
+    Ok(DandelionBody::from_vec(
         "Function registered".as_bytes().to_vec(),
-    ));
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -297,7 +290,7 @@ async fn service(
         other_uri => {
             debug!("Received request on {}", other_uri);
             Ok(DandelionBody::from_vec(
-                format!("Hello, World\n").into_bytes(),
+                "Hello, World\n".to_string().into_bytes(),
             ))
         }
     };

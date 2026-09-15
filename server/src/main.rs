@@ -143,7 +143,7 @@ async fn remote_queue_client(
     graceful_shotdown_complete.send(()).unwrap();
 }
 
-fn main() -> () {
+fn main() {
     let default_warn_level = if cfg!(debug_assertions) {
         "debug"
     } else {
@@ -204,7 +204,7 @@ fn main() -> () {
     let compute_cores = config
         .get_computation_cores()
         .into_iter()
-        .map(|core| resource_conversion(core))
+        .map(resource_conversion)
         .collect();
 
     println!("core allocation:");
@@ -227,7 +227,7 @@ fn main() -> () {
         .find_map(|line| {
             line.strip_prefix("MemTotal:")
                 .and_then(|line| line.strip_suffix("kB"))
-                .and_then(|line| Some(line.trim().parse::<usize>()))
+                .map(|line| line.trim().parse::<usize>())
         })
         .unwrap()
         .unwrap()
@@ -284,7 +284,7 @@ fn main() -> () {
         preload_functions.len(),
         preload_compositions.len()
     );
-    if preload_functions.len() > 0 {
+    if !preload_functions.is_empty() {
         Builder::new_current_thread()
             .build()
             .unwrap()
@@ -339,7 +339,7 @@ fn main() -> () {
                 }
             });
     }
-    if preload_compositions.len() > 0 {
+    if !preload_compositions.is_empty() {
         Builder::new_current_thread()
             .build()
             .unwrap()
@@ -363,7 +363,7 @@ fn main() -> () {
     print!(" kvm");
     #[cfg(feature = "timestamp")]
     print!(" timestamp");
-    print!("\n");
+    println!();
 
     let client_shutdown_option = if let Some(multinode_settings) =
         multinode::config::MultinodeConfig::load(config.multinode_config.as_deref())
@@ -439,21 +439,19 @@ fn main() -> () {
         warn!("Removing function folder failed with: {}", err);
     }
     // clean up folder with shared files in case the context backed by shared files left some behind
-    for shm_dir_entry in std::fs::read_dir("/dev/shm/").unwrap() {
-        if let Ok(shm_file) = shm_dir_entry {
-            if shm_file
-                .file_name()
-                .into_string()
-                .unwrap()
-                .starts_with("shm_")
-            {
-                warn!(
-                    "Found left over shared memory file: {:?}",
-                    shm_file.file_name()
-                );
-                if std::fs::remove_file(shm_file.path()).is_err() {
-                    warn!("Failed to remove shared memory file {:?}", shm_file.path());
-                }
+    for shm_file in std::fs::read_dir("/dev/shm/").unwrap().flatten() {
+        if shm_file
+            .file_name()
+            .into_string()
+            .unwrap()
+            .starts_with("shm_")
+        {
+            warn!(
+                "Found left over shared memory file: {:?}",
+                shm_file.file_name()
+            );
+            if std::fs::remove_file(shm_file.path()).is_err() {
+                warn!("Failed to remove shared memory file {:?}", shm_file.path());
             }
         }
     }
