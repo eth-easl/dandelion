@@ -42,8 +42,13 @@ use machine_interface::{
 use prost::bytes;
 #[cfg(feature = "exactly-once")]
 use prost::Message;
+#[cfg(any(
+    feature = "exactly-once",
+    all(feature = "at-least-once", feature = "timestamp")
+))]
+use std::collections::HashMap;
 #[cfg(feature = "exactly-once")]
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::{
     collections::{BTreeMap, VecDeque},
     convert::Infallible,
