@@ -161,6 +161,10 @@ unsafe impl Send for Recorder {}
 #[cfg(feature = "timestamp")]
 unsafe impl Sync for Recorder {}
 
+impl Drop for Recorder {
+    fn drop(&mut self) {}
+}
+
 impl Recorder {
     pub fn new(_function_id: FunctionId, _start: Instant) -> Self {
         Self {

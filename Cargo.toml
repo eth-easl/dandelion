@@ -6,3 +6,4 @@ resolver = "2"
 [workspace.lints.clippy]
 new_without_default = "allow"
 type_complexity = "allow"
+too_many_arguments = "allow"
