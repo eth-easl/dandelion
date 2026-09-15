@@ -100,20 +100,11 @@ impl Composition {
 
         let mut functions = Vec::with_capacity(template.functions.len());
         for (i, f) in template.functions.iter().enumerate() {
-            let function = Arc::new(Function::new(i, f.id.clone(), f.join_order.clone()));
-
+            let mut function = Function::new(i, f.id.clone(), f.join_order.clone());
             let mut inputs = Vec::with_capacity(f.params.len());
-            for (in_idx, in_opt) in f.params.iter().enumerate() {
+            for in_opt in f.params.iter() {
                 if let Some(in_templ) = in_opt {
-                    let comp_set = sets[in_templ.set_idx].clone();
-                    comp_set.add_consumer(
-                        function.clone(),
-                        in_idx,
-                        in_templ.sharding.is_blocking(),
-                        in_templ.sharding.requires_sorting(),
-                        f.params.len(),
-                    );
-                    inputs.push(Some((comp_set, in_templ.sharding, in_templ.optional)));
+                    inputs.push(Some((in_templ.sharding, in_templ.optional)));
                 } else {
                     inputs.push(None);
                 }
@@ -123,9 +114,26 @@ impl Composition {
                 .iter()
                 .map(|set_idx_opt| set_idx_opt.map(|i| sets[i].clone()))
                 .collect();
-            function.update_io(inputs, outputs, registry.get_min_set_bytes(&f.id));
+            function.update_io(&inputs, outputs, registry.get_min_set_bytes(&f.id));
 
-            functions.push(function);
+            let function_arc = Arc::new(function);
+
+            for (in_idx, in_opt) in f.params.iter().enumerate() {
+                if let Some(in_templ) = in_opt {
+                    if in_templ.sharding.is_blocking() {
+                        sets[in_templ.set_idx].add_blocking_consumer(
+                            function_arc.clone(),
+                            in_idx,
+                            in_templ.sharding.requires_sorting(),
+                        );
+                    } else {
+                        sets[in_templ.set_idx]
+                            .add_non_blocking_consumer(function_arc.clone(), in_idx);
+                    }
+                }
+            }
+
+            functions.push(function_arc);
         }
 
         Composition {
@@ -145,13 +153,9 @@ impl Composition {
         debug_assert_eq!(composition_inputs.len(), self.input_sets.len());
 
         for (i, in_set) in composition_inputs.into_iter().enumerate() {
-            self.input_sets[i].set_composition_input(in_set);
+            self.input_sets[i].set_composition_input(in_set, &self.any_sharding_mode, out);
         }
         self.input_sets.clear();
-
-        for f in self.functions.iter() {
-            f.in_set_complete(&self.any_sharding_mode, out);
-        }
     }
 
     /// Pushes the output of a finished invocation and adds all resulting invocations to `out`.
@@ -167,7 +171,7 @@ impl Composition {
     pub fn collect(self) -> Vec<DataSet> {
         self.output_sets
             .iter()
-            .map(|out_set| out_set.get_set(None))
+            .map(|out_set| out_set.get_set())
             .collect()
     }
 }

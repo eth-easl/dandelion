@@ -91,3 +91,27 @@ fn multiple_compositions_in_one_module_all_parse() {
     names.sort();
     assert_eq!(names, vec!["First", "Second"]);
 }
+
+/// Functions may consume sets produced by later statements, and multiple paths may lead to the
+/// same function, neither of which is a cycle.
+#[test]
+fn acyclic_composition_with_statements_out_of_order_and_a_diamond_parses() {
+    let src = r#"
+        function Emit(X) => (Y);
+        function Combine(A, B) => (C);
+
+        composition Diamond(In) => (Out) {
+            Combine(A = each Left, B = each Right) => (Out = C);
+            Emit(X = each Top) => (Left = Y);
+            Emit(X = each Top) => (Right = Y);
+            Emit(X = each In) => (Top = Y);
+        }
+    "#;
+    let registry = TestRegistry::new()
+        .with_function("Emit", &["X"], &["Y"])
+        .with_function("Combine", &["A", "B"], &["C"]);
+
+    let compositions = CompositionTemplate::parse(src, &registry)
+        .unwrap_or_else(|e| panic!("expected the composition to parse:\n{e}"));
+    assert_eq!(compositions.len(), 1);
+}

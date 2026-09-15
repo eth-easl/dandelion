@@ -123,3 +123,47 @@ fn joining_a_non_keyed_sharding_is_rejected() {
     let registry = TestRegistry::new().with_function("FunA", &["A", "B"], &["C"]);
     expect_parse_error(src, &registry, "Joining set with non-keyed sharding");
 }
+
+#[test]
+fn function_consuming_its_own_output_is_rejected() {
+    let src = r#"
+        function Emit(X) => (Y);
+        composition Test(In) => (Out) {
+            Emit(X = each Loop) => (Loop = Y);
+        }
+    "#;
+    let registry = TestRegistry::new().with_function("Emit", &["X"], &["Y"]);
+    expect_parse_error(src, &registry, "Composition 'Test' contains a cycle: Emit -> Emit");
+}
+
+#[test]
+fn cycle_across_multiple_functions_is_rejected() {
+    let src = r#"
+        function Start(X) => (Y);
+        function Middle(X, Z) => (Y);
+        function End(X) => (Y);
+        composition Test(In) => (Out) {
+            Start(X = all In) => (A = Y);
+            Middle(X = each A, Z = each C) => (B = Y);
+            End(X = each B) => (C = Y);
+        }
+    "#;
+    let registry = TestRegistry::new()
+        .with_function("Start", &["X"], &["Y"])
+        .with_function("Middle", &["X", "Z"], &["Y"])
+        .with_function("End", &["X"], &["Y"]);
+    expect_parse_error(src, &registry, "contains a cycle: Middle -> End -> Middle");
+}
+
+#[test]
+fn cycle_through_a_composition_output_set_is_rejected() {
+    let src = r#"
+        function Emit(X) => (Y);
+        composition Test(In) => (Out) {
+            Emit(X = all In) => (Out = Y);
+            Emit(X = each Out) => (Out = Y);
+        }
+    "#;
+    let registry = TestRegistry::new().with_function("Emit", &["X"], &["Y"]);
+    expect_parse_error(src, &registry, "contains a cycle");
+}

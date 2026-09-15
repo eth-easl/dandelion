@@ -332,7 +332,7 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
         }
 
         // have enumerated all set that are available so can start putting the composition together
-        let functions = comp
+        let functions: Vec<_> = comp
             .v
             .statements
             .iter()
@@ -346,6 +346,13 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
             })
             .collect::<Result<_, _>>()?;
 
+        Self::check_acyclic(
+            comp.v.name,
+            &functions,
+            &comp.v.statements,
+            data_set_counter,
+        )?;
+
         self.compositions.push((
             Arc::new(comp.v.name.to_string()),
             CompositionTemplate {
@@ -356,6 +363,91 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
             },
         ));
 
+        Ok(())
+    }
+
+    /// Checks that no function of a composition (transitively) consumes one of its own outputs,
+    /// using a depth-first search over the functions in O(functions + edges).
+    fn check_acyclic(
+        composition_name: &str,
+        functions: &[FunctionTemplate],
+        function_spans: &[Statement],
+        num_sets: usize,
+    ) -> Result<(), ErrorDiagnostic> {
+        #[derive(Clone, Copy, PartialEq)]
+        enum Visit {
+            Unvisited,
+            OnPath,
+            Done,
+        }
+
+        let mut set_consumers = vec![vec![]; num_sets];
+        for (f_idx, f) in functions.iter().enumerate() {
+            for in_templ in f.params.iter().flatten() {
+                set_consumers[in_templ.set_idx].push(f_idx);
+            }
+        }
+        // a function's successors are all functions consuming one of its return sets
+        let successors: Vec<Vec<usize>> = functions
+            .iter()
+            .map(|f| {
+                f.returns
+                    .iter()
+                    .flatten()
+                    .flat_map(|set_idx| set_consumers[*set_idx].iter().copied())
+                    .collect()
+            })
+            .collect();
+
+        let mut visits = vec![Visit::Unvisited; functions.len()];
+        for root in 0..functions.len() {
+            if visits[root] != Visit::Unvisited {
+                continue;
+            }
+            // the current path holds each function with the index of the next successor to visit
+            visits[root] = Visit::OnPath;
+            let mut path = vec![(root, 0)];
+            while let Some(&(f_idx, next)) = path.last() {
+                let Some(&succ) = successors[f_idx].get(next) else {
+                    visits[f_idx] = Visit::Done;
+                    path.pop();
+                    continue;
+                };
+                path.last_mut().expect("path is not empty").1 += 1;
+                match visits[succ] {
+                    Visit::Unvisited => {
+                        visits[succ] = Visit::OnPath;
+                        path.push((succ, 0));
+                    }
+                    Visit::OnPath => {
+                        let cycle_start = path
+                            .iter()
+                            .position(|(f, _)| *f == succ)
+                            .expect("functions on the path are part of it");
+                        let cycle: Vec<_> = path[cycle_start..]
+                            .iter()
+                            .map(|(f, _)| functions[*f].id.as_str())
+                            .chain(std::iter::once(functions[succ].id.as_str()))
+                            .collect();
+                        let span = match &function_spans[succ] {
+                            Statement::FunctionApplication(fappl) => fappl.span.clone(),
+                            Statement::Loop(_) => {
+                                todo!("Need to implement loop support in compositions")
+                            }
+                        };
+                        return Err(ErrorDiagnostic::new(
+                            span,
+                            format!(
+                                "Composition '{}' contains a cycle: {}.",
+                                composition_name,
+                                cycle.join(" -> ")
+                            ),
+                        ));
+                    }
+                    Visit::Done => {}
+                }
+            }
+        }
         Ok(())
     }
 

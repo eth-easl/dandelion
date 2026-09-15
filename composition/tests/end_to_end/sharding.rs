@@ -159,3 +159,140 @@ fn optional_each_input_that_stays_empty_does_not_block_or_appear() {
     assert_eq!(invocation_count, 2, "one invocation per InA item, B just came through empty");
     assert_eq!(outputs[0].items.len(), 2);
 }
+
+/// Regression test: items streaming into an `each` input while the function's `all` input is still
+/// incomplete must wait for the `all` input instead of being combined with a partial set.
+#[test]
+fn each_items_arriving_before_blocking_all_input_wait_for_it() {
+    let src = r#"
+        function Emit(X) => (Y);
+        function Combine(A, B) => (C);
+
+        composition Pipe(InA, InB) => (Out) {
+            Emit(X = each InB) => (MidB = Y);
+            Emit(X = each InA) => (MidA = Y);
+            Combine(A = each MidA, B = all MidB) => (Out = C);
+        }
+    "#;
+    let registry = TestRegistry::new()
+        .with_function("Emit", &["X"], &["Y"])
+        .with_function("Combine", &["A", "B"], &["C"]);
+    let template = parse_composition(src, "Pipe", &registry);
+    let composition = Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
+
+    let in_a = data_set(vec![item("a1", 1), item("a2", 2)]);
+    let in_b = data_set(vec![item("b1", 1), item("b2", 2)]);
+
+    // LIFO order: all of MidA arrives before any of MidB
+    let mut combine_inputs = Vec::new();
+    run_to_completion(composition, vec![in_a, in_b], |invocation| {
+        match invocation.function_id.as_str() {
+            "Emit" => vec![data_set(vec![invocation.input[0].items[0].clone()])],
+            _ => {
+                combine_inputs.push((invocation.input[0].items[0].key, invocation.input[1].items.len()));
+                vec![data_set(vec![item("out", 0)])]
+            }
+        }
+    });
+
+    combine_inputs.sort();
+    assert_eq!(combine_inputs, vec![(1, 2), (2, 2)], "each A item combined once with the complete B set");
+}
+
+/// Regression test: an empty push into an optional `each` input must not create the invocations
+/// without that input a second time.
+#[test]
+fn empty_push_into_optional_each_input_does_not_duplicate_invocations() {
+    let src = r#"
+        function Emit(X) => (Y);
+        function Combine(A, B) => (C);
+
+        composition Pipe(InA, InB) => (Out) {
+            Emit(X = each InB) => (MidB = Y);
+            Emit(X = each InA) => (MidA = Y);
+            Combine(A = each MidA, B = optional each MidB) => (Out = C);
+        }
+    "#;
+    let registry = TestRegistry::new()
+        .with_function("Emit", &["X"], &["Y"])
+        .with_function("Combine", &["A", "B"], &["C"]);
+    let template = parse_composition(src, "Pipe", &registry);
+    let composition = Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
+
+    // LIFO order: Emit(a1) -> Combine(a1) -> Emit(b1), which produces nothing and completes MidB
+    let mut combine_count = 0;
+    run_to_completion(composition, vec![data_set(vec![item("a1", 1)]), data_set(vec![item("b1", 1)])], |invocation| {
+        match invocation.function_id.as_str() {
+            "Emit" if invocation.input[0].items[0].ident == "b1" => vec![data_set(vec![])],
+            "Emit" => vec![data_set(vec![invocation.input[0].items[0].clone()])],
+            _ => {
+                combine_count += 1;
+                vec![data_set(vec![item("out", 0)])]
+            }
+        }
+    });
+
+    assert_eq!(combine_count, 1);
+}
+
+/// Regression test: an optional `each` input that already received items and then gets an empty
+/// completing push is not absent, so the other input must not additionally run without it.
+#[test]
+fn empty_final_push_into_optional_each_input_that_had_items_does_not_run_without_it() {
+    let src = r#"
+        function Emit(X) => (Y);
+        function Combine(A, B) => (C);
+
+        composition Pipe(InA, InB) => (Out) {
+            Emit(X = each InB) => (MidB = Y);
+            Combine(A = each InA, B = optional each MidB) => (Out = C);
+        }
+    "#;
+    let registry = TestRegistry::new()
+        .with_function("Emit", &["X"], &["Y"])
+        .with_function("Combine", &["A", "B"], &["C"]);
+    let template = parse_composition(src, "Pipe", &registry);
+    let composition = Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
+
+    // LIFO order: Emit(b1) -> Combine(a1, b1) -> Emit(b0), which produces nothing and completes MidB
+    let in_a = data_set(vec![item("a1", 1)]);
+    let in_b = data_set(vec![item("b0", 0), item("b1", 1)]);
+    let mut combine_b_sizes = Vec::new();
+    run_to_completion(composition, vec![in_a, in_b], |invocation| {
+        match invocation.function_id.as_str() {
+            "Emit" if invocation.input[0].items[0].ident == "b0" => vec![data_set(vec![])],
+            "Emit" => vec![data_set(vec![invocation.input[0].items[0].clone()])],
+            _ => {
+                combine_b_sizes.push(invocation.input[1].items.len());
+                vec![data_set(vec![item("out", 0)])]
+            }
+        }
+    });
+
+    assert_eq!(combine_b_sizes, vec![1], "a1 is only combined with b1");
+}
+
+/// Regression test: an optional `all` input that stays empty is absent, the function still runs.
+#[test]
+fn empty_optional_all_input_is_treated_as_absent() {
+    let src = r#"
+        function Combine(A, B) => (C);
+
+        composition Pipe(InA, InB) => (Out) {
+            Combine(A = all InA, B = optional all InB) => (Out = C);
+        }
+    "#;
+    let registry = TestRegistry::new().with_function("Combine", &["A", "B"], &["C"]);
+    let template = parse_composition(src, "Pipe", &registry);
+    let composition = Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
+
+    let mut invocation_count = 0;
+    let outputs = run_to_completion(composition, vec![data_set(vec![item("a1", 1)]), data_set(vec![])], |invocation| {
+        invocation_count += 1;
+        assert!(invocation.input[1].items.is_empty(), "B is optional and stayed empty");
+        vec![data_set(vec![item("out", 0)])]
+    });
+
+    assert_eq!(invocation_count, 1);
+    assert_eq!(outputs[0].items.len(), 1);
+}
