@@ -59,8 +59,8 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
     // matrix with first eleemnt inidicating number of rows
     let mat_a = vec![2u64, 1, 2, 3, 4];
     let mat_len = mat_a.len();
-    let mut in_context =
-        ReadOnlyContext::from_boxed(mat_a.into()).expect("Should be able to create read only context");
+    let mut in_context = ReadOnlyContext::from_boxed(mat_a.into())
+        .expect("Should be able to create read only context");
     in_context.content = vec![Some(DataSet {
         ident: String::from(""),
         buffers: vec![DataItem {
