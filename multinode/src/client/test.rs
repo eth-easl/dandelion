@@ -332,7 +332,7 @@ fn test_remote_queue_client() {
     // Should also send a work request for idle cores with the node update
     match remote_message_receiver.try_recv().unwrap() {
         remote_message::RemoteMessage::WorkRequest(engines) => {
-            assert!(engines.engines.len() > 0);
+            assert!(!engines.engines.is_empty());
             assert_eq!(3, engines.engines[0].engine_capacity);
         }
         remote_message => panic!("Expected work request not {:?}", remote_message),
@@ -402,7 +402,7 @@ fn test_remote_queue_client() {
     // expect it to ask for 1 more immediately when receiveing the work and seeing there is still capacity to prefetch
     match remote_message_receiver.try_recv().unwrap() {
         remote_message::RemoteMessage::WorkRequest(engines) => {
-            assert!(engines.engines.len() > 0);
+            assert!(!engines.engines.is_empty());
             assert_eq!(1, engines.engines[0].engine_capacity);
         }
         remote_message => panic!("Expected work request not {:?}", remote_message),
@@ -593,7 +593,7 @@ fn test_remote_queue_client_prefetch() {
     assert_eq!(Poll::Pending, client_future.poll_unpin(&mut context));
     match remote_message_receiver.try_recv().unwrap() {
         remote_message::RemoteMessage::WorkRequest(engines) => {
-            assert!(engines.engines.len() > 0);
+            assert!(!engines.engines.is_empty());
             assert_eq!(1, engines.engines[0].engine_capacity);
         }
         remote_message => panic!("Expected work request not {:?}", remote_message),
@@ -645,7 +645,7 @@ fn test_remote_queue_client_prefetch() {
     // expect it to ask for 1 more work given the prefetch capacity
     match remote_message_receiver.try_recv().unwrap() {
         remote_message::RemoteMessage::WorkRequest(engines) => {
-            assert!(engines.engines.len() > 0);
+            assert!(!engines.engines.is_empty());
             assert_eq!(1, engines.engines[0].engine_capacity);
         }
         remote_message => panic!("Expected work request not {:?}", remote_message),

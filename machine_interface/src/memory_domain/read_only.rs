@@ -98,14 +98,12 @@ fn read_test() {
     let test_data = vec![expected_data];
     let read_context = ReadOnlyContext::from_boxed(test_data.into_boxed_slice())
         .expect("should be able to create allocation");
-    let mut all_read_vec = Vec::<u8>::new();
-    all_read_vec.resize(8, 0);
+    let mut all_read_vec = vec![0u8; 8];
     read_context
         .read(0, &mut all_read_vec)
         .expect("read should succeed");
     assert_eq!(expected_data.to_ne_bytes(), all_read_vec.as_slice());
-    let mut partial_read_vec = Vec::<u8>::new();
-    partial_read_vec.resize(4, 0);
+    let mut partial_read_vec = vec![0u8; 4];
     read_context
         .read(2, &mut partial_read_vec)
         .expect("Partial read should succeed");

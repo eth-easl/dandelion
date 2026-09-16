@@ -6,7 +6,7 @@ use machine_interface::{
     },
     function_driver::{functions::SystemFunction, ComputeResource},
     machine_config::{DomainType, EngineType},
-    memory_domain::{read_only::ReadOnlyContext, MemoryDomain, MemoryResource},
+    memory_domain::{read_only::ReadOnlyContext, MemoryResource},
     DataItem, DataSet, Position,
 };
 use std::sync::Arc;
@@ -43,13 +43,13 @@ impl Drop for HttpServer {
         let _ = self.proc_child.wait();
     }
 }
-pub fn fetch_compute<Domain: MemoryDomain>(
+pub fn fetch_compute(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     compute_engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, function_id) = setup_dispatcher::<Domain>(
+    let (dispatcher, function_id) = setup_dispatcher(
         relative_path,
         vec![(String::from(""), None)],
         vec![String::from("")],

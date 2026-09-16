@@ -72,11 +72,3 @@ bench = false
 [[bin]]
 name = "mmu_worker"
 required-features = ["mmu"]
-
-[[bench]]
-name = "cheri_benchmark"
-harness = false
-
-[[bench]]
-name = "mmu_benchmark"
-harness = false

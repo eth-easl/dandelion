@@ -29,13 +29,8 @@ fn try_acquire<D: MemoryDomain>(
             );
         }
     } else {
-        if context_result.is_ok() {
-            panic!(
-                "Encountered unexpected error when acquireing context: {:?}",
-                context_result.unwrap_err()
-            );
-        } else {
-            match context_result.unwrap_err().error {
+        if let Err(composition_error) = context_result {
+            match composition_error.error {
                 DandelionError::OutOfMemory
                 | DandelionError::DomainError(DomainError::InvalidMemorySize)
                 | DandelionError::MemoryAllocationError => (),
@@ -44,6 +39,11 @@ fn try_acquire<D: MemoryDomain>(
                     err
                 ),
             }
+        } else {
+            panic!(
+                "Encountered unexpected error when acquireing context: {:?}",
+                context_result.unwrap_err()
+            );
         }
     }
 }
@@ -52,16 +52,14 @@ fn try_acquire<D: MemoryDomain>(
 /// context cannot be acquired.
 fn acquire<D: MemoryDomain>(arg: MemoryResource, size: usize) -> Context {
     let domain = init_domain::<D>(arg);
-    let context = domain
+    domain
         .acquire_context(size)
-        .expect("Context should be allocatable");
-    return context;
+        .expect("Context should be allocatable")
 }
 
 fn init_domain<D: MemoryDomain>(arg: MemoryResource) -> Box<dyn MemoryDomain> {
     let init_result = D::init(arg);
-    let domain = init_result.expect("memory domain should have been initialized");
-    return domain;
+    init_result.expect("memory domain should have been initialized")
 }
 
 fn write(ctx: &mut Context, offset: usize, size: usize, expect_success: bool) {
@@ -202,11 +200,11 @@ fn transfer(mut source: Context, mut destination: Context) {
     destination
         .read(0, &mut read_buffer)
         .expect("Context should return single value vector in range");
-    for index in 0..size {
+    for (index, actual) in read_buffer[0..size].iter().enumerate() {
         assert_eq!(
-            BYTEPATTERN, read_buffer[index],
+            BYTEPATTERN, *actual,
             "Read not equal for first time at {}, expected: {}, actual: {}",
-            index, BYTEPATTERN, read_buffer[index]
+            index, BYTEPATTERN, *actual
         );
     }
 }
@@ -238,7 +236,7 @@ fn transfer_item(
         &crate::DataItem {
             ident: String::from(""),
             data: crate::Position {
-                offset: offset,
+                offset,
                 size: item_size,
             },
             key: 0,
@@ -310,7 +308,7 @@ fn write_after_transfer(mut source: Context, mut destination: Context, chunck_si
     destination
         .read(0, &mut read_buffer)
         .expect("Context should return single value vector in range");
-    for index in 0..3 * chunck_size {
+    for (index, actual) in read_buffer[0..3 * chunck_size].iter().enumerate() {
         let expected = if index < chunck_size / 2 {
             0
         } else if index < chunck_size + chunck_size / 2 {
@@ -319,9 +317,9 @@ fn write_after_transfer(mut source: Context, mut destination: Context, chunck_si
             BYTEPATTERN
         };
         assert_eq!(
-            expected, read_buffer[index],
+            expected, *actual,
             "Read not equal for first time at {}, expected: {}, actual: {}",
-            index, expected, read_buffer[index]
+            index, expected, *actual
         );
     }
 
@@ -343,7 +341,7 @@ fn write_after_transfer(mut source: Context, mut destination: Context, chunck_si
     destination
         .read(test_offset, &mut read_buffer)
         .expect("Context should return single value vector in range");
-    for index in 0..3 * chunck_size {
+    for (index, actual) in read_buffer[0..3 * chunck_size].iter().enumerate() {
         let expected = if index < chunck_size + chunck_size / 2 {
             BYTEPATTERN
         } else if index < 2 * chunck_size + chunck_size / 2 {
@@ -352,9 +350,9 @@ fn write_after_transfer(mut source: Context, mut destination: Context, chunck_si
             0
         };
         assert_eq!(
-            expected, read_buffer[index],
+            expected, *actual,
             "Read not equal for first time at {}, expected: {}, actual: {}",
-            index, expected, read_buffer[index]
+            index, expected, *actual
         );
     }
     test_offset += 3 * chunck_size;
@@ -376,7 +374,7 @@ fn write_after_transfer(mut source: Context, mut destination: Context, chunck_si
     destination
         .read(test_offset, &mut read_buffer)
         .expect("Context should return single value vector in range");
-    for index in 0..3 * chunck_size {
+    for (index, actual) in read_buffer[0..3 * chunck_size].iter().enumerate() {
         let expected = if chunck_size + chunck_size / 4 - 1 < index
             && index < chunck_size + 3 * chunck_size / 4
         {
@@ -385,9 +383,9 @@ fn write_after_transfer(mut source: Context, mut destination: Context, chunck_si
             BYTEPATTERN
         };
         assert_eq!(
-            expected, read_buffer[index],
+            expected, *actual,
             "Read not equal for first time at {}, expected: {}, actual: {}",
-            index, expected, read_buffer[index]
+            index, expected, *actual
         );
     }
     test_offset += 3 * chunck_size;
@@ -409,7 +407,7 @@ fn write_after_transfer(mut source: Context, mut destination: Context, chunck_si
     destination
         .read(test_offset, &mut read_buffer)
         .expect("Context should return single value vector in range");
-    for index in 0..2 * chunck_size {
+    for (index, actual) in read_buffer[0..2 * chunck_size].iter().enumerate() {
         let expected = if chunck_size < index && index < (chunck_size / 2) * 3 + 1 {
             !BYTEPATTERN
         } else if chunck_size <= index {
@@ -418,9 +416,9 @@ fn write_after_transfer(mut source: Context, mut destination: Context, chunck_si
             BYTEPATTERN
         };
         assert_eq!(
-            expected, read_buffer[index],
+            expected, *actual,
             "Read not equal for first time at {}, expected: {}, actual: {}",
-            index, expected, read_buffer[index]
+            index, expected, *actual
         );
     }
 }

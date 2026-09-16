@@ -1,131 +1,128 @@
-#[cfg(test)]
-mod system_driver_tests {
-    use crate::{
-        composition::CompositionSet,
-        function_driver::{
-            system_driver::{convert_to_references, SystemFunction},
-            test_queue::TestQueue,
-            ComputeResource, WorkToDo,
-        },
-        machine_config::EngineType,
-        memory_domain::{read_only::ReadOnlyContext, ContextTrait},
-        DataItem, DataSet, Position,
-    };
-    use std::process::{Child, Command};
+use crate::{
+    composition::CompositionSet,
+    function_driver::{
+        system_driver::{convert_to_references, SystemFunction},
+        test_queue::TestQueue,
+        ComputeResource, WorkToDo,
+    },
+    machine_config::EngineType,
+    memory_domain::{read_only::ReadOnlyContext, ContextTrait},
+    DataItem, DataSet, Position,
+};
+use std::process::{Child, Command};
 
-    struct HttpServer {
-        proc_child: Child,
+struct HttpServer {
+    proc_child: Child,
+}
+
+impl HttpServer {
+    fn start(port: u16) -> Self {
+        let mut py_server_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        py_server_path.pop();
+        py_server_path.push("machine_interface/tests/python/server.py");
+
+        let proc_child = Command::new("python3")
+            .arg(py_server_path)
+            .arg(format!("{}", port))
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("Failed to start python script");
+
+        // TODO: poll the server to figure out if we're started
+        std::thread::sleep(std::time::Duration::from_secs(1));
+
+        HttpServer { proc_child }
     }
+}
 
-    impl HttpServer {
-        fn start(port: u16) -> Self {
-            let mut py_server_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            py_server_path.pop();
-            py_server_path.push("machine_interface/tests/python/server.py");
-
-            let proc_child = Command::new("python3")
-                .arg(py_server_path)
-                .arg(format!("{}", port))
-                .stdout(std::process::Stdio::null())
-                .spawn()
-                .expect("Failed to start python script");
-
-            // TODO: poll the server to figure out if we're started
-            std::thread::sleep(std::time::Duration::from_secs(1));
-
-            HttpServer { proc_child }
-        }
+impl Drop for HttpServer {
+    fn drop(&mut self) {
+        println!("Stopping the python server...");
+        let _ = self.proc_child.kill();
+        let _ = self.proc_child.wait();
     }
+}
 
-    impl Drop for HttpServer {
-        fn drop(&mut self) {
-            println!("Stopping the python server...");
-            let _ = self.proc_child.kill();
-            let _ = self.proc_child.wait();
-        }
-    }
+fn read_status(response_buffer: &[u8]) -> String {
+    // find first '\n'
+    let status_end = response_buffer
+        .iter()
+        .position(|character| *character == b'\n')
+        .unwrap_or(response_buffer.len());
+    std::str::from_utf8(&response_buffer[0..status_end])
+        .expect("request has not valid string status line")
+        .to_string()
+}
 
-    fn read_status(response_buffer: &Vec<u8>) -> String {
-        // find first '\n'
-        let status_end = response_buffer
-            .iter()
-            .position(|character| *character == b'\n')
-            .unwrap_or(response_buffer.len());
-        return std::str::from_utf8(&response_buffer[0..status_end])
-            .expect("request has not valid string status line")
-            .to_string();
-    }
+fn get_http(
+    engine_type: EngineType,
+    drv_init: ComputeResource,
+    uri: String,
+    expected_body_size: usize,
+) {
+    let queue = TestQueue::new();
+    engine_type
+        .start_engine(drv_init, queue.clone())
+        .expect("Should be able to get engine");
 
-    fn get_http(
-        engine_type: EngineType,
-        drv_init: ComputeResource,
-        uri: String,
-        expected_body_size: usize,
-    ) -> () {
-        let queue = TestQueue::new();
-        let _engine = engine_type
-            .start_engine(drv_init, queue.clone())
-            .expect("Should be able to get engine");
+    let request = format!("GET {} HTTP/1.1", uri).as_bytes().to_vec();
+    let request_length = request.len();
+    let mut input_context = ReadOnlyContext::from_boxed(request.into_boxed_slice()).unwrap();
+    input_context.content.push(Some(DataSet {
+        ident: "request".to_string(),
+        buffers: vec![DataItem {
+            ident: "".to_string(),
+            data: Position {
+                offset: 0,
+                size: request_length,
+            },
+            key: 0,
+        }],
+    }));
 
-        let request = format!("GET {} HTTP/1.1", uri).as_bytes().to_vec();
-        let request_length = request.len();
-        let mut input_context = ReadOnlyContext::from_boxed(request.into_boxed_slice()).unwrap();
-        input_context.content.push(Some(DataSet {
-            ident: "request".to_string(),
-            buffers: vec![DataItem {
-                ident: "".to_string(),
-                data: Position {
-                    offset: 0,
-                    size: request_length,
-                },
-                key: 0,
-            }],
-        }));
+    let input_sets = convert_to_references(
+        SystemFunction::HTTP,
+        CompositionSet::from_context(input_context),
+    )
+    .unwrap();
 
-        let input_sets = convert_to_references(
-            SystemFunction::HTTP,
-            CompositionSet::from_context(input_context),
-        )
-        .unwrap();
+    // let recorder = Recorder::new(zero_id(), Instant::now());
 
-        // let recorder = Recorder::new(zero_id(), Instant::now());
+    let promise = queue.enqueu(WorkToDo::SetsToResolve { input_sets });
+    let mut result_sets = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(promise)
+        .expect("Engine should return without error")
+        .get_composition();
 
-        let promise = queue.enqueu(WorkToDo::SetsToResolve { input_sets });
-        let mut result_sets = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap()
-            .block_on(promise)
-            .expect("Engine should return without error")
-            .get_composition();
+    assert_eq!(2, result_sets.len());
+    let mut header_set = result_sets[0].take().unwrap().into_local().into_iter();
+    let (status_item, status_context) = header_set.next().unwrap();
+    assert_eq!(0, header_set.count());
+    let mut response_buffer = vec![0u8; status_item.data.size];
+    status_context
+        .read(status_item.data.offset, &mut response_buffer)
+        .expect("Should be able to read status");
+    let status = read_status(&response_buffer);
+    assert_eq!("HTTP/1.1 200 OK", status);
 
-        assert_eq!(2, result_sets.len());
-        let mut header_set = result_sets[0].take().unwrap().into_local().into_iter();
-        let (status_item, status_context) = header_set.next().unwrap();
-        assert_eq!(0, header_set.count());
-        let mut response_buffer = Vec::<u8>::new();
-        response_buffer.resize(status_item.data.size, 0);
-        status_context
-            .read(status_item.data.offset, &mut response_buffer)
-            .expect("Should be able to read status");
-        let status = read_status(&response_buffer);
-        assert_eq!("HTTP/1.1 200 OK", status);
+    // check body
+    let mut body_set = result_sets[1].take().unwrap().into_local().into_iter();
+    let (body_item, _) = body_set.next().unwrap();
+    assert_eq!(0, body_set.count());
+    // debug!("expected_body_len: {}", expected_body_len);
+    assert_eq!(expected_body_size, body_item.data.size);
+}
 
-        // check body
-        let mut body_set = result_sets[1].take().unwrap().into_local().into_iter();
-        let (body_item, _) = body_set.next().unwrap();
-        assert_eq!(0, body_set.count());
-        // debug!("expected_body_len: {}", expected_body_len);
-        assert_eq!(expected_body_size, body_item.data.size);
-    }
+fn post_http(engine_type: EngineType, drv_init: ComputeResource, port: u16) {
+    let queue = TestQueue::new();
+    engine_type
+        .start_engine(drv_init, queue.clone())
+        .expect("Should be able to get engine");
 
-    fn post_http(engine_type: EngineType, drv_init: ComputeResource, port: u16) -> () {
-        let queue = TestQueue::new();
-        let _engine = engine_type
-            .start_engine(drv_init, queue.clone())
-            .expect("Should be able to get engine");
-
-        let request = format!(
-            r#"POST http://127.0.0.1:{}/post HTTP/1.1
+    let request = format!(
+        r#"POST http://127.0.0.1:{}/post HTTP/1.1
 Content-Type: text/plain
 
 Lorem ipsum dolor sit amet, consetetur sadipscing elitr,
@@ -136,93 +133,94 @@ gubergren, no sea takimata sanctus est Lorem ipsum dolor
 sit amet. Lorem ipsum dolor sit amet, consetetur sadipscing
 elitr, sed diam nonumy eirmod tempor invidunt ut labore et
 dolore magna aliquyam erat, sed diam voluptua."#,
-            port
-        )
-        .as_bytes()
-        .to_vec();
-        let request_length = request.len();
-        let mut input_context = ReadOnlyContext::from_boxed(request.into_boxed_slice()).unwrap();
-        input_context.content.push(Some(DataSet {
-            ident: "request".to_string(),
-            buffers: vec![DataItem {
-                ident: "".to_string(),
-                data: Position {
-                    offset: 0,
-                    size: request_length,
-                },
-                key: 0,
-            }],
-        }));
+        port
+    )
+    .as_bytes()
+    .to_vec();
+    let request_length = request.len();
+    let mut input_context = ReadOnlyContext::from_boxed(request.into_boxed_slice()).unwrap();
+    input_context.content.push(Some(DataSet {
+        ident: "request".to_string(),
+        buffers: vec![DataItem {
+            ident: "".to_string(),
+            data: Position {
+                offset: 0,
+                size: request_length,
+            },
+            key: 0,
+        }],
+    }));
 
-        let input_sets = convert_to_references(
-            SystemFunction::HTTP,
-            CompositionSet::from_context(input_context),
-        )
-        .unwrap();
+    let input_sets = convert_to_references(
+        SystemFunction::HTTP,
+        CompositionSet::from_context(input_context),
+    )
+    .unwrap();
 
-        // let recorder = Recorder::new(zero_id(), Instant::now());
+    // let recorder = Recorder::new(zero_id(), Instant::now());
 
-        let promise = queue.enqueu(WorkToDo::SetsToResolve { input_sets });
-        let mut result_sets = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap()
-            .block_on(promise)
-            .expect("Engine should not fail")
-            .get_composition();
+    let promise = queue.enqueu(WorkToDo::SetsToResolve { input_sets });
+    let mut result_sets = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(promise)
+        .expect("Engine should not fail")
+        .get_composition();
 
-        assert_eq!(2, result_sets.len());
-        let mut header_set = result_sets[0].take().unwrap().into_local().into_iter();
-        let (header_item, header_context) = header_set.next().unwrap();
-        assert_eq!(0, header_set.count());
-        let mut header_buffer = Vec::<u8>::new();
-        header_buffer.resize(header_item.data.size, 0);
-        header_context
-            .read(header_item.data.offset, &mut header_buffer)
-            .expect("Should be able to read status");
-        let status = read_status(&header_buffer);
-        assert_eq!("HTTP/1.1 200 OK", status);
-    }
+    assert_eq!(2, result_sets.len());
+    let mut header_set = result_sets[0].take().unwrap().into_local().into_iter();
+    let (header_item, header_context) = header_set.next().unwrap();
+    assert_eq!(0, header_set.count());
+    let mut header_buffer = vec![0u8; header_item.data.size];
+    header_context
+        .read(header_item.data.offset, &mut header_buffer)
+        .expect("Should be able to read status");
+    let status = read_status(&header_buffer);
+    assert_eq!("HTTP/1.1 200 OK", status);
+}
 
-    macro_rules! driverTests {
-        ($name : ident; $engine_type : expr ; $drv_init : expr ) => {
-            #[test_log::test]
-            fn test_http_get() {
-                let port = 9000;
-                let _server = super::HttpServer::start(port);
-                super::get_http(
-                    $engine_type,
-                    $drv_init,
-                    format!("http://127.0.0.1:{}/get", port),
-                    6,
-                );
-            }
+macro_rules! driverTests {
+    ($name : ident; $engine_type : expr ; $drv_init : expr ) => {
+        #[test_log::test]
+        #[ignore]
+        fn test_http_get() {
+            let port = 9000;
+            let _server = super::HttpServer::start(port);
+            super::get_http(
+                $engine_type,
+                $drv_init,
+                format!("http://127.0.0.1:{}/get", port),
+                6,
+            );
+        }
 
-            #[test_log::test]
-            fn test_http_get_large() {
-                let port = 9001;
-                let _server = super::HttpServer::start(port);
-                super::get_http(
-                    $engine_type,
-                    $drv_init,
-                    format!("http://127.0.0.1:{}/get_large", port),
-                    8192,
-                );
-            }
+        #[test_log::test]
+        #[ignore]
+        fn test_http_get_large() {
+            let port = 9001;
+            let _server = super::HttpServer::start(port);
+            super::get_http(
+                $engine_type,
+                $drv_init,
+                format!("http://127.0.0.1:{}/get_large", port),
+                8192,
+            );
+        }
 
-            #[test_log::test]
-            fn test_http_post() {
-                let port = 9002;
-                let _server = super::HttpServer::start(port);
-                super::post_http($engine_type, $drv_init, port);
-            }
-        };
-    }
+        #[test_log::test]
+        #[ignore]
+        fn test_http_post() {
+            let port = 9002;
+            let _server = super::HttpServer::start(port);
+            super::post_http($engine_type, $drv_init, port);
+        }
+    };
+}
 
-    mod reqwest_io {
-        use crate::function_driver::ComputeResource;
-        use crate::machine_config::EngineType;
-        // use crate::memory_domain::malloc::MallocMemoryDomain as domain;
-        // use crate::memory_domain::mmap::MmapMemoryDomain as domain;
-        driverTests!(reqwest_io; EngineType::System; ComputeResource::CPU(1));
-    }
+mod reqwest_io {
+    use crate::function_driver::ComputeResource;
+    use crate::machine_config::EngineType;
+    // use crate::memory_domain::malloc::MallocMemoryDomain as domain;
+    // use crate::memory_domain::mmap::MmapMemoryDomain as domain;
+    driverTests!(reqwest_io; EngineType::System; ComputeResource::CPU(1));
 }

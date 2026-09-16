@@ -428,8 +428,7 @@ async fn test_dandelion_body_serialization_async(mut body: DandelionBody, expect
         .into_data()
         .expect("Should be able to get data from dandelion body frame");
     let data_length = context_data.remaining();
-    let mut data_buf = Vec::with_capacity(data_length);
-    data_buf.resize(data_length, 0u8);
+    let mut data_buf = vec![0; data_length];
     context_data.copy_to_slice(&mut data_buf);
     assert_eq!(expected, data_buf);
 }

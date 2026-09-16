@@ -474,18 +474,16 @@ fn read_test() {
     let fourth = vec![8u8];
     let frames = vec![first, second, third, fourth]
         .into_iter()
-        .map(|vec| Bytes::from(vec))
+        .map(Bytes::from)
         .collect();
     let read_context = BytesContext { frames };
     let expected_data = vec![1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8];
-    let mut all_read_vec = Vec::<u8>::new();
-    all_read_vec.resize(8, 0);
+    let mut all_read_vec = vec![0u8; 8];
     read_context
         .read(0, &mut all_read_vec)
         .expect("read should succeed");
     assert_eq!(expected_data, all_read_vec.as_slice());
-    let mut partial_read_vec = Vec::<u8>::new();
-    partial_read_vec.resize(4, 0);
+    let mut partial_read_vec = vec![0u8; 4];
     read_context
         .read(2, &mut partial_read_vec)
         .expect("Partial read should succeed");
