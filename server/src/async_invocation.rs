@@ -3,6 +3,7 @@ use dandelion_commons::{
     dandelion_err, err_dandelion, DandelionError, DandelionResult, FrontendError, InvocationId,
 };
 use dandelion_server::{AsyncInvocationState, AsyncInvocationStatusResponse};
+use log::info;
 use machine_interface::function_driver::system_driver::recovery_log::{
     append_invocation_log_line, complete_log_lines, list_invocation_log_ids, read_invocation_log,
 };
@@ -191,6 +192,7 @@ pub fn persist_completed(invocation_id: InvocationId, result_bytes: &[u8]) -> Da
             encode_base64(result_bytes)
         ),
     )?;
+    info!("Async invocation {} entered completed state", invocation_id);
     notify_terminal(invocation_id);
     Ok(())
 }
@@ -205,6 +207,7 @@ pub fn persist_failed(invocation_id: InvocationId, error: String) -> DandelionRe
             encode_base64(error.as_bytes())
         ),
     )?;
+    info!("Async invocation {} entered failed state", invocation_id);
     notify_terminal(invocation_id);
     Ok(())
 }
@@ -258,7 +261,12 @@ async fn wait_for_result_with<F>(
 where
     F: FnMut() -> DandelionResult<Option<Vec<u8>>>,
 {
+    info!("Async invocation {} result wait requested", invocation_id);
     if let Some(result) = load()? {
+        info!(
+            "Async invocation {} result was already available",
+            invocation_id
+        );
         notify_terminal(invocation_id);
         return Ok(Some(result));
     }
@@ -267,6 +275,10 @@ where
     // registration, either the second load observes it or the retained watch
     // value wakes us; no completion notification can fall into the gap.
     let mut terminal = terminal_receiver(invocation_id);
+    info!(
+        "Async invocation {} result waiter registered",
+        invocation_id
+    );
     if let Some(result) = load()? {
         // Completion may have happened just before registration, when there was
         // no sender to notify. Remove the newly-created entry and wake any other
@@ -276,6 +288,7 @@ where
     }
 
     let _ = terminal.wait_for(|is_terminal| *is_terminal).await;
+    info!("Async invocation {} result waiter notified", invocation_id);
     load()
 }
 

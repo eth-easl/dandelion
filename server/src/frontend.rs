@@ -399,7 +399,14 @@ async fn handle_async_request(
     let invocation_id = parsed.recorder.invocation_id();
 
     #[cfg(feature = "at-least-once")]
-    crate::async_invocation::persist_submitted(invocation_id, &parsed.raw_request_bytes, is_cold)?;
+    {
+        crate::async_invocation::persist_submitted(
+            invocation_id,
+            &parsed.raw_request_bytes,
+            is_cold,
+        )?;
+        info!("Async invocation {} accepted and persisted", invocation_id);
+    }
     spawn_async_invocation(dispatcher, is_cold, parsed);
 
     Ok(DandelionBody::from_vec(serialize_bson_response(
@@ -499,9 +506,11 @@ fn spawn_async_invocation(
         invocation_id,
     );
     tokio::spawn(async move {
+        info!("Async invocation {} dispatch started", invocation_id);
         let dispatch_result = dispatch_async_invocation(is_cold, parsed, dispatcher).await;
         let terminal_persisted = match dispatch_result {
             Ok((function_output, recorder)) => {
+                info!("Async invocation {} dispatch completed", invocation_id);
                 let response_bytes =
                     dandelion_server::DandelionBody::new(function_output, &recorder).into_bytes();
                 match crate::async_invocation::persist_completed(invocation_id, &response_bytes) {
@@ -528,6 +537,10 @@ fn spawn_async_invocation(
                 }
             }
             Err(err) => {
+                warn!(
+                    "Async invocation {} dispatch failed: {}",
+                    invocation_id, err
+                );
                 match crate::async_invocation::persist_failed(invocation_id, format!("{}", err)) {
                     Ok(()) => true,
                     Err(persist_err) => {
@@ -649,6 +662,7 @@ pub async fn resume_recoverable_invocations(
 ) -> DandelionResult<()> {
     for recoverable in crate::async_invocation::list_recoverable_invocations()? {
         let invocation_id = recoverable.invocation_id;
+        info!("Async invocation {} recovery started", invocation_id);
         let parsed = parse_persisted_async_invocation_request_bytes(
             recoverable.request_bytes,
             invocation_id,
