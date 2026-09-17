@@ -1,9 +1,11 @@
 use std::sync::Arc;
+use uuid::Uuid;
 
 pub mod range_pool;
 pub mod records;
 
 pub type FunctionId = Arc<String>;
+pub type InvocationId = Uuid;
 
 // TODO define error types, possibly better printing than debug
 // TODO make naming consistent and move groups to subtypes, e.g. DomainError -> Domain in main enum

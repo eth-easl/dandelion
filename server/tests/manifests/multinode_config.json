@@ -1,7 +1,8 @@
 {
   "queue_server": {
     "node_id": 0,
-    "url": "localhost:8082"
+    "url": "localhost:8082",
+    "frontend_url": "http://localhost:8080"
   },
   "data_servers": [
     {

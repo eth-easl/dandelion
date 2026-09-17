@@ -2,7 +2,7 @@ use crate::dispatcher_tests::{check_matrix, setup_dispatcher};
 use dandelion_commons::records::Recorder;
 use machine_interface::{
     composition::CompositionSet,
-    function_driver::{ComputeResource, Metadata},
+    function_driver::{system_driver::UncoordinatedIo, ComputeResource, Metadata},
     machine_config::{DomainType, EngineType},
     memory_domain::{read_only::ReadOnlyContext, Context, MemoryDomain, MemoryResource},
     DataItem, DataSet, Position,
@@ -111,12 +111,28 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         let mut overwrite_inputs = inputs.clone();
         overwrite_inputs[i] = Some(mat_fault_composition_set.clone());
 
-        let mut recorder = Recorder::new(function_id.clone(), Instant::now());
+        let mut recorder = Recorder::new(
+            dandelion_commons::InvocationId::nil(),
+            function_id.clone(),
+            Instant::now(),
+        );
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(0, function_id.clone(), inputs, false, recorder));
-        recorder = Recorder::new(function_id.clone(), Instant::now());
+            .block_on(dispatcher.queue_function(
+                0,
+                function_id.clone(),
+                inputs,
+                false,
+                UncoordinatedIo,
+                recorder,
+                None,
+            ));
+        recorder = Recorder::new(
+            dandelion_commons::InvocationId::nil(),
+            function_id.clone(),
+            Instant::now(),
+        );
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -125,7 +141,9 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
                 function_id.clone(),
                 overwrite_inputs,
                 false,
+                UncoordinatedIo,
                 recorder,
+                None,
             ));
         let out_sets = match result {
             Ok(composition_sets) => composition_sets,
@@ -232,12 +250,28 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         overwrite_inputs[fixed_sets[0]] = Some(mat_fault_composition_set.clone());
         overwrite_inputs[fixed_sets[1]] = Some(mat_fault_composition_set.clone());
 
-        let mut recorder = Recorder::new(function_id.clone(), Instant::now());
+        let mut recorder = Recorder::new(
+            dandelion_commons::InvocationId::nil(),
+            function_id.clone(),
+            Instant::now(),
+        );
         let result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(dispatcher.queue_function(0, function_id.clone(), inputs, false, recorder));
-        recorder = Recorder::new(function_id.clone(), Instant::now());
+            .block_on(dispatcher.queue_function(
+                0,
+                function_id.clone(),
+                inputs,
+                false,
+                UncoordinatedIo,
+                recorder,
+                None,
+            ));
+        recorder = Recorder::new(
+            dandelion_commons::InvocationId::nil(),
+            function_id.clone(),
+            Instant::now(),
+        );
         let overwrite_result = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
@@ -246,7 +280,9 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
                 function_id.clone(),
                 overwrite_inputs,
                 false,
+                UncoordinatedIo,
                 recorder,
+                None,
             ));
         let out_sets = match result {
             Ok(composition_sets) => composition_sets,

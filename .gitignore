@@ -28,3 +28,15 @@ Cargo.lock
 # misc ignores
 misc/
 .vscode/
+
+.agents/
+.dandelion_recovery/
+.venv/
+logs/
+programs/
+.cursor/
+
+*.log
+.dandelion_recovery/
+.dandelion_minimal/registry_snapshot.json
+docs/io-execution-flow.md
