@@ -6,9 +6,8 @@ use crate::{
         ComputeResource, Driver, EngineWorkQueue,
     },
     interface::{read_output_structs, setup_input_structs, write_heap_end},
-    memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
-    DataItem, DataRequirement, DataRequirementList, DataSet, Position,
+    DataRequirement, DataRequirementList, Position,
 };
 use core_affinity;
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, UserError};
@@ -17,6 +16,9 @@ use kvm_bindings::{
 };
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use log::debug;
+use memory::context::{
+    Context, ContextDataItem, ContextDataSet, ContextTrait, ContextType, MemoryDomain,
+};
 use nix::sys::mman::{mmap, MapFlags, ProtFlags};
 use std::{num::NonZeroUsize, sync::Arc};
 
@@ -316,7 +318,7 @@ impl EngineLoop for KvmLoop {
         // go through the content and only keep overlay segments that are still used
         let mut overlay_keep = Vec::new();
         for set in context.content.iter().filter_map(|set| set.as_ref()) {
-            for item in &set.buffers {
+            for item in &set.items {
                 let Position { offset, size } = item.data;
                 overlay_keep.push((offset, (offset + size).saturating_sub(1)));
             }
@@ -404,11 +406,11 @@ impl Driver for KvmDriver {
 
         let mut context = static_domain.acquire_context(size)?;
         // copy all
-        let mut new_content = DataSet {
-            ident: String::from("static"),
-            buffers: vec![],
+        let mut new_content = ContextDataSet {
+            items: vec![],
+            total_size: 0,
         };
-        let buffers = &mut new_content.buffers;
+        let buffers = &mut new_content.items;
         for (required_position, source_position) in
             static_requirements.iter().zip(source_layout.iter())
         {
@@ -422,7 +424,7 @@ impl Driver for KvmDriver {
                 let zeros = vec![0u8; required_position.size - source_position.size];
                 context.write(required_position.offset + source_position.size, &zeros)?
             }
-            buffers.push(DataItem {
+            buffers.push(ContextDataItem {
                 ident: String::from(""),
                 data: Position {
                     offset: required_position.offset,

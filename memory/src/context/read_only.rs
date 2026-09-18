@@ -1,5 +1,5 @@
 extern crate alloc;
-use crate::memory_domain::{Context, ContextTrait};
+use crate::context::{Context, ContextTrait};
 use alloc::alloc::Layout;
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult};
 use log::error;

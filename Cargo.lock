@@ -404,6 +404,7 @@ dependencies = [
  "chumsky 0.13.0",
  "dandelion_commons",
  "log",
+ "memory",
 ]
 
 [[package]]
@@ -533,6 +534,7 @@ dependencies = [
  "hyper-util",
  "log",
  "machine_interface",
+ "memory",
  "multinode",
  "nix",
  "num_cpus",
@@ -561,12 +563,13 @@ checksum = "6184e33543162437515c2e2b48714794e37845ec9851711914eec9d308f6ebe8"
 name = "dispatcher"
 version = "0.1.0"
 dependencies = [
+ "composition",
  "dandelion_commons",
- "dparser",
  "futures",
  "itertools 0.11.0",
  "log",
  "machine_interface",
+ "memory",
  "test-log",
  "tokio",
 ]
@@ -1344,6 +1347,7 @@ dependencies = [
  "libc",
  "log",
  "memcache",
+ "memory",
  "nix",
  "num_cpus",
  "openssl",
@@ -1386,6 +1390,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
 
 [[package]]
+name = "memory"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "dandelion_commons",
+ "libc",
+ "log",
+ "nix",
+ "test-log",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1419,6 +1435,7 @@ dependencies = [
  "hyper-util",
  "log",
  "machine_interface",
+ "memory",
  "prost",
  "prost-build",
  "reqwest",

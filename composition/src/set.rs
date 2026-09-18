@@ -3,8 +3,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use dandelion_commons::data::{DataItem, DataSet, DataSetAccumulator, Invocation};
 use log::error;
+use memory::data::{DataItem, DataSet, DataSetAccumulator, Invocation};
 
 use crate::{sharding::AnyShardingMode, Function};
 
@@ -23,12 +23,12 @@ struct Inner {
     requires_retention: bool,
 }
 
-pub struct CompositionSet {
+pub(crate) struct CompositionSet {
     inner: Mutex<Inner>,
 }
 
 impl CompositionSet {
-    pub fn new() -> CompositionSet {
+    pub(crate) fn new() -> CompositionSet {
         CompositionSet {
             inner: Mutex::new(Inner {
                 state: State::Empty,
@@ -40,7 +40,7 @@ impl CompositionSet {
         }
     }
 
-    pub fn add_blocking_consumer(
+    pub(crate) fn add_blocking_consumer(
         &self,
         consumer: Arc<Function>,
         consumer_in_set_idx: usize,
@@ -57,14 +57,18 @@ impl CompositionSet {
         }
     }
 
-    pub fn add_non_blocking_consumer(&self, consumer: Arc<Function>, consumer_in_set_idx: usize) {
+    pub(crate) fn add_non_blocking_consumer(
+        &self,
+        consumer: Arc<Function>,
+        consumer_in_set_idx: usize,
+    ) {
         let mut inner = self.inner.lock().expect("CompositionSet lock poisoned!");
         inner
             .consumers_streaming
             .push((consumer, consumer_in_set_idx));
     }
 
-    pub fn mark_retained(&self) {
+    pub(crate) fn mark_retained(&self) {
         let mut inner = self.inner.lock().expect("CompositionSet lock poisoned!");
         inner.requires_retention = true;
         if matches!(inner.state, State::Empty) {
@@ -75,7 +79,7 @@ impl CompositionSet {
     /// Pushes new items to the set.
     /// The items are forwarded immediately to all streaming consumers and retained if there are
     /// any other (blocking or non-blocking) consumers.
-    pub fn push_items(
+    pub(crate) fn push_items(
         &self,
         items: Arc<Vec<Arc<DataItem>>>,
         complete: bool,
@@ -118,7 +122,7 @@ impl CompositionSet {
 
     /// Sets the composition set to the given set.
     /// Assumes the set is ordered if the input requires ordering (unchecked).
-    pub fn set_composition_input(
+    pub(crate) fn set_composition_input(
         &self,
         set: DataSet,
         any_sharding_mode: &AnyShardingMode,
@@ -138,7 +142,7 @@ impl CompositionSet {
         }
     }
 
-    pub fn get_set(&self) -> DataSet {
+    pub(crate) fn get_set(&self) -> DataSet {
         let inner = self.inner.lock().expect("CompositionSet lock poisoned!");
         match inner.state {
             State::Pending(ref acc) => acc.clone_set(),
@@ -152,14 +156,23 @@ impl CompositionSet {
 mod tests {
     use super::*;
     use crate::{function::Function, sharding::Sharding};
-    use dandelion_commons::data::Position;
+    use memory::{data::Position, Context};
+
+    /// A small real context for tests; the composition layer only tracks items, it never reads
+    /// their bytes, so any context of sufficient size will do.
+    fn test_context() -> Arc<Context> {
+        use memory::context::{malloc::MallocMemoryDomain, MemoryDomain, MemoryResource};
+        let domain = MallocMemoryDomain::init(MemoryResource::None).expect("malloc domain");
+        Arc::new(domain.acquire_context(4096).expect("context"))
+    }
 
     fn item(key: u32) -> Arc<DataItem> {
-        Arc::new(DataItem {
-            ident: format!("item-{key}"),
-            data: Position { offset: 0, size: 0 },
+        Arc::new(DataItem::new_local(
+            format!("item-{key}"),
             key,
-        })
+            test_context(),
+            Position { offset: 0, size: 0 },
+        ))
     }
 
     fn items(keys: &[u32]) -> Arc<Vec<Arc<DataItem>>> {

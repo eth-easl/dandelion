@@ -1,3 +1,7 @@
+use memory::context::{cheri::CheriMemoryDomain, MemoryResource};
+use memory::context::{kvm::KvmMemoryDomain, MemoryResource};
+use memory::context::{mmu::MmuMemoryDomain, MemoryResource};
+use memory::context::{read_only::ReadOnlyContext, ContextTrait, MemoryDomain, MemoryResource};
 #[cfg(all(test, any(feature = "cheri", feature = "mmu", feature = "kvm")))]
 mod compute_driver_tests {
     use crate::{
@@ -7,7 +11,6 @@ mod compute_driver_tests {
             WorkToDo,
         },
         machine_config::EngineType,
-        memory_domain::{read_only::ReadOnlyContext, ContextTrait, MemoryDomain, MemoryResource},
         DataItem, DataSet, Position,
     };
     use core::panic;
@@ -661,11 +664,7 @@ mod compute_driver_tests {
 
     #[cfg(feature = "cheri")]
     mod cheri {
-        use crate::{
-            function_driver::ComputeResource,
-            machine_config::EngineType,
-            memory_domain::{cheri::CheriMemoryDomain, MemoryResource},
-        };
+        use crate::{function_driver::ComputeResource, machine_config::EngineType};
         driverTests!(elf_cheri; CheriMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; EngineType::Cheri;
         core_affinity::get_core_ids()
            .and_then(
@@ -682,11 +681,7 @@ mod compute_driver_tests {
 
     #[cfg(feature = "mmu")]
     mod mmu {
-        use crate::{
-            function_driver::ComputeResource,
-            machine_config::EngineType,
-            memory_domain::{mmu::MmuMemoryDomain, MemoryResource},
-        };
+        use crate::{function_driver::ComputeResource, machine_config::EngineType};
         #[cfg(target_arch = "x86_64")]
         driverTests!(elf_mmu_x86_64; MmuMemoryDomain; MemoryResource::Shared { size: (1<<30) }; EngineType::Process;
         core_affinity::get_core_ids()
@@ -717,11 +712,7 @@ mod compute_driver_tests {
 
     #[cfg(feature = "kvm")]
     mod kvm {
-        use crate::{
-            function_driver::ComputeResource,
-            machine_config::EngineType,
-            memory_domain::{kvm::KvmMemoryDomain, MemoryResource},
-        };
+        use crate::{function_driver::ComputeResource, machine_config::EngineType};
         #[cfg(target_arch = "x86_64")]
         driverTests!(elf_kvm_x86_64; KvmMemoryDomain; MemoryResource::Anonymous { size: (1<<30) }; EngineType::Kvm;
         core_affinity::get_core_ids()

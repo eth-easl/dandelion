@@ -1,11 +1,11 @@
 use std::{mem, ops::Range, sync::Arc, vec};
 
-use dandelion_commons::data::{DataItem, DataSet, DataSetAccumulator};
 use log::debug;
+use memory::data::{DataItem, DataSet, DataSetAccumulator};
 
 use crate::sharding::{AnySetGroup, JoinStrategy, Sharding};
 
-pub(super) trait JoinIterator {
+pub(crate) trait JoinIterator {
     /// Reduces the parallelism of all `AnyIterators` in the iterator chain by combining some sets.
     /// We expect this function is only called once, otherwise, we could end up with unevenly
     /// distributed or completely messed up groups.
@@ -22,14 +22,14 @@ pub(super) trait JoinIterator {
 }
 
 /// Implements the JoinIterator for the `all` sharding.
-pub(super) struct SetAllIterator {
+pub(crate) struct SetAllIterator {
     left: Option<Box<dyn JoinIterator>>,
     set: DataSet,
     write_idx: usize,
 }
 
 impl SetAllIterator {
-    pub(super) fn new(
+    pub(crate) fn new(
         left: Option<Box<dyn JoinIterator>>,
         set: DataSet,
         write_idx: usize,
@@ -70,7 +70,7 @@ impl JoinIterator for SetAllIterator {
 }
 
 /// Implements the JoinIterator for the `each` sharding.
-pub(super) struct SetEachIterator {
+pub(crate) struct SetEachIterator {
     left: Option<Box<dyn JoinIterator>>,
     items: Arc<Vec<Arc<DataItem>>>,
     item_idx: usize,
@@ -78,7 +78,7 @@ pub(super) struct SetEachIterator {
 }
 
 impl SetEachIterator {
-    pub(super) fn new(
+    pub(crate) fn new(
         left: Option<Box<dyn JoinIterator>>,
         set: DataSet,
         write_idx: usize,
@@ -110,7 +110,7 @@ impl JoinIterator for SetEachIterator {
         debug_assert!(self.item_idx < self.items.len());
         let item = self.items[self.item_idx].clone();
         let num_unresolved = if item.is_local() { 0 } else { 1 };
-        let total_size = item.data.size;
+        let total_size = item.data.size();
         to_fill[self.write_idx] = DataSet {
             items: Arc::new(vec![item]),
             num_unresolved,
@@ -146,7 +146,7 @@ impl JoinIterator for SetEachIterator {
 /// NOTE: We assume all `key`/`anyKey` sharded sets to precede all other sharded sets in the join
 ///       order. As a result, the `SetKeyIterator` takes a reference another `SetKeyIterator` for
 ///       the left instead of a more general `JoinIterator`.
-pub(super) struct SetKeyIterator {
+pub(crate) struct SetKeyIterator {
     left: Option<Box<SetKeyIterator>>,
     items: Arc<Vec<Arc<DataItem>>>,
     key_groups: Vec<(u32, Range<usize>)>,
@@ -211,7 +211,7 @@ fn key_set_union(curr_keys: &mut Vec<u32>, new_key_groups: &Vec<(u32, Range<usiz
 impl SetKeyIterator {
     /// Computes the key_groups (index ranges) that combine all items with the same key and sets the
     /// index to the first valid element based on the join strategy.
-    pub(super) fn new(
+    pub(crate) fn new(
         mut left: Option<Box<SetKeyIterator>>,
         set: DataSet,
         strategy: JoinStrategy,
@@ -323,7 +323,7 @@ impl JoinIterator for SetKeyIterator {
                 if !item.is_local() {
                     num_unresolved += 1;
                 }
-                total_size += item.data.size;
+                total_size += item.data.size();
             }
             to_fill[self.write_idx] = DataSet {
                 items: Arc::new(item_list),
@@ -541,7 +541,7 @@ impl JoinIterator for SetKeyIterator {
 ///
 /// NOTE: The `AnyIterator` assumes none of its sets that are cross-joined. For two cross-joined
 ///       `any` sets create two separate `AnyIterator` instances, one for each of the sets.
-pub(super) struct AnyIterator {
+pub(crate) struct AnyIterator {
     left: Option<Box<dyn JoinIterator>>,
     set_groups: Vec<Vec<DataSet>>,
     set_groups_idx: usize,
@@ -561,7 +561,7 @@ impl AnyIterator {
     /// joining), the corresponding minimum set size, and the maximum possible number of partitions.
     /// If the iterator is empty, i.e. won't produce any sets, it returns the left `JoinIterator`
     /// (and zeros for the other values).
-    pub(super) fn new(
+    pub(crate) fn new(
         left: Option<Box<dyn JoinIterator>>,
         sets: Vec<DataSet>,
         strategies: Vec<JoinStrategy>,
@@ -786,22 +786,32 @@ impl JoinIterator for AnyIterator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dandelion_commons::data::Position;
+    use memory::{data::Position, Context};
+
+    /// A small real context for tests; the composition layer only tracks items, it never reads
+    /// their bytes, so any context of sufficient size will do.
+    fn test_context() -> Arc<Context> {
+        use memory::context::{malloc::MallocMemoryDomain, MemoryDomain, MemoryResource};
+        let domain = MallocMemoryDomain::init(MemoryResource::None).expect("malloc domain");
+        Arc::new(domain.acquire_context(4096).expect("context"))
+    }
 
     fn item(key: u32) -> Arc<DataItem> {
-        Arc::new(DataItem {
-            ident: format!("item-{key}"),
-            data: Position { offset: 0, size: 0 },
+        Arc::new(DataItem::new_local(
+            format!("item-{key}"),
             key,
-        })
+            test_context(),
+            Position { offset: 0, size: 0 },
+        ))
     }
 
     fn sized_item(key: u32, size: usize) -> Arc<DataItem> {
-        Arc::new(DataItem {
-            ident: format!("item-{key}"),
-            data: Position { offset: 0, size },
+        Arc::new(DataItem::new_local(
+            format!("item-{key}"),
             key,
-        })
+            test_context(),
+            Position { offset: 0, size },
+        ))
     }
 
     #[test]
@@ -838,7 +848,7 @@ mod tests {
     #[test]
     fn any_iterator_reduces_to_the_requested_partition_count() {
         let items: Vec<_> = (0..4).map(|k| sized_item(k, 10)).collect();
-        let total_size: usize = items.iter().map(|i| i.data.size).sum();
+        let total_size: usize = items.iter().map(|i| i.data.size()).sum();
         let set = DataSet::from_items(Arc::new(items));
 
         let (iter_opt, largest_set_size, _min_set_size, max_partitions) =

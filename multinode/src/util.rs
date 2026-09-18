@@ -8,7 +8,7 @@ use machine_interface::{
     composition::{CompositionSet, ItemData, RemoteData},
     function_driver::{functions::SystemFunction, system_driver::IoData},
     machine_config,
-    memory_domain::Context,
+    context::Context,
     DataItem, Position,
 };
 use prost::bytes::Bytes;

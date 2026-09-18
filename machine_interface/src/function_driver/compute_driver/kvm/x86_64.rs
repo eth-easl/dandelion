@@ -82,8 +82,10 @@ pub(super) const PDE64_IS_PAGE: u64 = 1 << 7;
 // The direcotry pointer table entries are either 1GB pages or directory table pointers
 // Directory table entries are either 2MB pages or tables
 // Table entries are always 4KB pages
-pub(super) const PAGE_SHIFT: usize = 12;
-pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
+// Single definition lives with the kvm memory domain, so the guest page size cannot drift between
+// the context layout and the guest page tables set up here.
+pub use memory::context::kvm::PAGE_SIZE;
+pub(super) use memory::context::kvm::PAGE_SHIFT;
 pub(super) const PAGE_MASK: u64 = (PAGE_SIZE - 1) as u64;
 const LARGE_PAGE_SHIFT: usize = 21;
 pub const LARGE_PAGE: usize = 1 << LARGE_PAGE_SHIFT;

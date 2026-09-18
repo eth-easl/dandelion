@@ -1,7 +1,8 @@
+pub use memory::context::{ContextDataItem, ContextDataSet};
+pub use memory::{DataItem, DataSet, Position};
+
 pub mod async_runtime;
-pub mod composition;
 pub mod function_driver;
-pub mod memory_domain;
 pub mod promise;
 
 /// Module contains all the information needed about available engines,
@@ -12,7 +13,7 @@ pub mod machine_config;
 mod interface;
 pub mod util;
 
-use serde::{Deserialize, Serialize};
+// use serde::{Deserialize, Serialize};
 
 #[derive(PartialEq, Debug)]
 pub enum OffsetOrAlignment {
@@ -38,23 +39,4 @@ pub struct DataRequirementList {
     // domain_id: i32,
     pub input_requirements: Vec<DataRequirement>,
     pub static_requirements: Vec<Position>,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct Position {
-    pub offset: usize,
-    pub size: usize,
-}
-
-#[derive(Debug)]
-pub struct DataSet {
-    pub ident: String,
-    pub buffers: Vec<DataItem>,
-}
-
-#[derive(Debug, Clone)]
-pub struct DataItem {
-    pub ident: String,
-    pub data: Position,
-    pub key: u32,
 }

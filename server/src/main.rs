@@ -8,7 +8,7 @@ use machine_interface::{
     },
     function_driver::{ComputeResource, Metadata},
     machine_config::{create_engine_resource_map, DomainType, EngineType},
-    memory_domain::MemoryResource,
+    context::MemoryResource,
 };
 use multinode::data::ExportRegistry;
 use nix::sched::CpuSet;

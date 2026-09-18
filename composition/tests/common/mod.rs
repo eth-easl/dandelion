@@ -12,10 +12,21 @@ use std::sync::Arc;
 
 use composition::{Composition, CompositionTemplate, Registry};
 use dandelion_commons::{
-    dandelion_err,
-    data::{DataItem, DataSet, Position},
-    DandelionError, DandelionResult, FunctionId,
+    dandelion_err, err_dandelion, DandelionError, DandelionResult, FunctionId,
+    FunctionRegistryError,
 };
+use memory::{
+    data::{DataItem, DataSet, Position},
+    Context,
+};
+
+/// A small real context for tests; the composition layer only tracks items, it never reads their
+/// bytes, so any context of sufficient size will do.
+pub fn test_context() -> Arc<Context> {
+    use memory::context::{malloc::MallocMemoryDomain, MemoryDomain, MemoryResource};
+    let domain = MallocMemoryDomain::init(MemoryResource::None).expect("malloc domain");
+    Arc::new(domain.acquire_context(4096).expect("context"))
+}
 
 /// A hand-rolled [`Registry`] for tests: a function must be registered with
 /// [`TestRegistry::with_function`] before composition source referencing it can be parsed.
@@ -67,11 +78,17 @@ impl Registry for TestRegistry {
         self.functions.contains_key(id)
     }
 
-    fn get_min_set_bytes(&self, id: &FunctionId) -> Vec<usize> {
-        self.functions
+    fn get_min_set_bytes(&self, id: &FunctionId) -> DandelionResult<Vec<usize>> {
+        match self
+            .functions
             .get(id.as_str())
             .map(|(params, _)| vec![0; params.len()])
-            .unwrap_or_default()
+        {
+            Some(x) => Ok(x),
+            None => err_dandelion!(DandelionError::FunctionRegistry(
+                FunctionRegistryError::UnknownFunction(id.to_string())
+            )),
+        }
     }
 }
 
@@ -82,7 +99,7 @@ pub fn parse_composition(src: &str, name: &str, registry: &TestRegistry) -> Comp
         .unwrap_or_else(|e| panic!("failed to parse composition source:\n{e}"));
     compositions
         .into_iter()
-        .find(|(id, _)| id.as_str() == name)
+        .find(|(id, _, _)| id.as_str() == name)
         .unwrap_or_else(|| panic!("composition '{name}' not found in parsed source"))
         .1
 }
@@ -90,11 +107,12 @@ pub fn parse_composition(src: &str, name: &str, registry: &TestRegistry) -> Comp
 /// Builds a [`DataItem`] with the given key and a made-up (zero-sized) position; good enough for
 /// tests that only care about item identity/ordering, not actual data contents.
 pub fn item(ident: &str, key: u32) -> Arc<DataItem> {
-    Arc::new(DataItem {
-        ident: ident.to_string(),
-        data: Position { offset: 0, size: 0 },
+    Arc::new(DataItem::new_local(
+        ident.to_string(),
         key,
-    })
+        test_context(),
+        Position { offset: 0, size: 0 },
+    ))
 }
 
 /// Builds a [`DataSet`] out of the given items.
@@ -103,14 +121,14 @@ pub fn data_set(items: Vec<Arc<DataItem>>) -> DataSet {
 }
 
 /// Runs a composition to completion given its composition-level inputs, driving every produced
-/// [`dandelion_commons::data::Invocation`] through `respond` (which stands in for actually running
+/// [`memory::data::Invocation`] through `respond` (which stands in for actually running
 /// the invoked function) until nothing is left outstanding, then returns the composition outputs.
 ///
 /// `respond` receives each invocation and returns the output sets it produced.
 pub fn run_to_completion(
     mut composition: Composition,
     inputs: Vec<DataSet>,
-    mut respond: impl FnMut(&dandelion_commons::data::Invocation) -> Vec<DataSet>,
+    mut respond: impl FnMut(&memory::data::Invocation) -> Vec<DataSet>,
 ) -> Vec<DataSet> {
     let mut pending = Vec::new();
     composition.start_execution(inputs, &mut pending);

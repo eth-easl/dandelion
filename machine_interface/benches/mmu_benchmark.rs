@@ -4,9 +4,9 @@ mod mmu_bench {
     use dandelion_commons::records::{Archive, RecordPoint, Recorder};
     use machine_interface::{
         function_driver::{compute_driver::mmu::MmuDriver, util::load_static, Driver, Function},
-        memory_domain::{mmu::MmuMemoryDomain, MemoryDomain},
         DataItem, DataSet, Position,
     };
+    use memory::context::{mmu::MmuMemoryDomain, MemoryDomain};
     use std::sync::{Arc, Mutex};
 
     fn context_benchmark(c: &mut Criterion) {

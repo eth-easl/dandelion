@@ -6,9 +6,9 @@ mod cheri_bench {
         function_driver::{
             compute_driver::cheri::CheriDriver, load_utils::load_static, Driver, Function,
         },
-        memory_domain::{cheri::CheriMemoryDomain, MemoryDomain},
         DataItem, DataSet, Position,
     };
+    use memory::context::{cheri::CheriMemoryDomain, MemoryDomain};
     use std::sync::{Arc, Mutex};
 
     fn context_benchmark(c: &mut Criterion) {

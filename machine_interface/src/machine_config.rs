@@ -1,8 +1,6 @@
-use crate::{
-    function_driver::{functions::Function, ComputeResource, Driver, EngineWorkQueue},
-    memory_domain::{MemoryDomain, MemoryResource},
-};
+use crate::function_driver::{functions::Function, ComputeResource, Driver, EngineWorkQueue};
 use dandelion_commons::DandelionResult;
+use memory::context::{MemoryDomain, MemoryResource};
 use std::{collections::BTreeMap, sync::Arc};
 pub use strum::IntoEnumIterator;
 pub use strum::{EnumCount, EnumIter};
@@ -67,7 +65,7 @@ impl EngineType {
     pub fn parse_function(
         &self,
         function_path: String,
-        static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
+        static_domain: &Box<dyn memory::context::MemoryDomain>,
     ) -> DandelionResult<Function> {
         match self {
             EngineType::System => crate::function_driver::system_driver::reqwest::ReqwestDriver {}
@@ -103,20 +101,20 @@ pub fn get_available_domains(
     return default_resources
         .into_iter()
         .map(|(dom_type, resource)| match dom_type {
-            DomainType::System => Arc::new(
-                crate::memory_domain::system_domain::SystemMemoryDomain::init(resource).unwrap(),
-            ),
+            DomainType::System => {
+                Arc::new(memory::context::system::SystemMemoryDomain::init(resource).unwrap())
+            }
             #[cfg(feature = "cheri")]
             DomainType::Cheri => {
-                Arc::new(crate::memory_domain::cheri::CheriMemoryDomain::init(resource).unwrap())
+                Arc::new(memory::context::cheri::CheriMemoryDomain::init(resource).unwrap())
             }
             #[cfg(feature = "kvm")]
             DomainType::Kvm => {
-                Arc::new(crate::memory_domain::kvm::KvmMemoryDomain::init(resource).unwrap())
+                Arc::new(memory::context::kvm::KvmMemoryDomain::init(resource).unwrap())
             }
             #[cfg(feature = "mmu")]
             DomainType::Process => {
-                Arc::new(crate::memory_domain::mmu::MmuMemoryDomain::init(resource).unwrap())
+                Arc::new(memory::context::mmu::MmuMemoryDomain::init(resource).unwrap())
             }
         })
         .collect();

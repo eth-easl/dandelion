@@ -6,6 +6,6 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-mod simple;
-mod sharding;
 mod concurrency;
+mod sharding;
+mod simple;

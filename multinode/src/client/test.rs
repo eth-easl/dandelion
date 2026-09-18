@@ -24,7 +24,7 @@ use futures::{
 use machine_interface::{
     function_driver::{functions::FunctionAlternative, Metadata},
     machine_config::{self, IntoEnumIterator},
-    memory_domain::malloc::MallocMemoryDomain,
+    context::malloc::MallocMemoryDomain,
 };
 use tokio::sync::mpsc;
 

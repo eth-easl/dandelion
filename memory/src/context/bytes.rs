@@ -1,11 +1,8 @@
-use crate::{
-    memory_domain::{Context, ContextTrait},
-    DataItem, DataSet,
-};
+use crate::context::{Context, ContextDataItem, ContextDataSet, ContextTrait};
 use bytes::{Buf, Bytes};
 use core::mem::size_of;
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult, FrontendError};
-use log::{debug, error};
+use log::{debug, error, warn};
 
 pub struct BytesContext {
     frames: Vec<Bytes>,
@@ -203,7 +200,7 @@ fn read_string(buf: &mut impl bytes::Buf) -> DandelionResult<String> {
 fn read_data_item(
     buf: &mut impl bytes::Buf,
     total_length: usize,
-) -> DandelionResult<Option<DataItem>> {
+) -> DandelionResult<Option<ContextDataItem>> {
     // check item doc type
     let item_doc_type = read_type_byte(buf)?;
     match item_doc_type {
@@ -283,7 +280,7 @@ fn read_data_item(
         ));
     }
 
-    return Ok(Some(DataItem {
+    return Ok(Some(ContextDataItem {
         ident,
         key,
         data: crate::Position { offset, size },
@@ -293,7 +290,7 @@ fn read_data_item(
 fn read_data_set(
     buf: &mut impl bytes::Buf,
     total_length: usize,
-) -> DandelionResult<Option<DataSet>> {
+) -> DandelionResult<Option<ContextDataSet>> {
     // check item doc type
     let item_doc_type = read_type_byte(buf)?;
     match item_doc_type {
@@ -310,17 +307,17 @@ fn read_data_set(
     let _doc_lenght = read_length(buf)?;
 
     // allow for arbitrary ordering of data set fields
-    let mut ident = "".to_string();
     let mut items = Vec::new();
-    let mut check: u8 = 0;
+    let mut total_size = 0;
+    let mut check = false;
     for _ in 0..2 {
         let next_type = read_type_byte(buf)?;
         match next_type {
             2 => {
                 // -> expect the identifier part
                 read_and_check_cstring(buf, "identifier\0")?;
-                ident = read_string(buf)?;
-                check |= 1;
+                let _ = read_string(buf)?;
+                warn!("Set identifiers are deprecated!");
             }
             4 => {
                 // -> expect the items part
@@ -330,13 +327,14 @@ fn read_data_set(
                 // reads all items
                 while buf.remaining() > array_end {
                     if let Some(item) = read_data_item(buf, total_length)? {
+                        total_size += item.data.size;
                         items.push(item);
                     } else {
                         break;
                     }
                 }
 
-                check |= 2;
+                check = true;
             }
             x => {
                 debug!("Got type {}, expected either 2 (string), 4 (array)", x);
@@ -351,16 +349,16 @@ fn read_data_set(
     read_and_check_termination(buf)?;
 
     // check that both fields have been read
-    if check != 3 {
+    if !check {
         debug!("Some set field is missing.");
         return err_dandelion!(DandelionError::RequestError(
             FrontendError::MalformedMessage,
         ));
     }
 
-    return Ok(Some(DataSet {
-        ident: ident,
-        buffers: items,
+    return Ok(Some(ContextDataSet {
+        items: items,
+        total_size,
     }));
 }
 
@@ -458,7 +456,7 @@ impl BytesContext {
 
         // create context
         let mut context = Context::new(
-            crate::memory_domain::ContextType::Bytes(Box::new(BytesContext { frames: frame_data })),
+            crate::context::ContextType::Bytes(Box::new(BytesContext { frames: frame_data })),
             bson_dict_length,
         );
         context.occupy_space(0, bson_dict_length)?;

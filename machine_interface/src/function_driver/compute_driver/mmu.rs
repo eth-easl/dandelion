@@ -1,3 +1,4 @@
+use memory::context::{Context, ContextTrait, ContextType, MemoryDomain};
 use crate::{
     function_driver::{
         functions::{ElfConfig, Function, FunctionConfig},
@@ -6,7 +7,6 @@ use crate::{
         ComputeResource, Driver, EngineWorkQueue,
     },
     interface::{read_output_structs, setup_input_structs},
-    memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
     util::elf_parser,
     DataItem, DataRequirement, DataRequirementList, DataSet, Position,
 };

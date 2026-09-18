@@ -1,14 +1,16 @@
 use crate::{
-    composition::CompositionSet,
     function_driver::{
         functions::FunctionConfig, ComputeResource, EngineWorkQueue, WorkDone, WorkToDo,
     },
     machine_config::EngineType,
-    memory_domain::{self, Context},
 };
 use core::marker::Send;
 use dandelion_commons::{
     err_dandelion, records::RecordPoint, DandelionError, DandelionResult, FunctionRegistryError,
+};
+use memory::{
+    context::{self, Context},
+    DataSet,
 };
 use std::thread::spawn;
 
@@ -199,29 +201,37 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
 
                 function_context.content.reserve(metadata.input_sets.len());
 
-                for (set_index, (input_set_name, static_set)) in
-                    metadata.input_sets.iter().enumerate()
-                {
+                for (set_index, (_, static_set)) in metadata.input_sets.iter().enumerate() {
                     // need to add each input set to the content
                     // the input_sets vec can have less entries than the functions defined sets (not all sets need to be used in composition)
-                    let input_option = input_sets
-                        .get_mut(set_index)
-                        .map(|set_opt| set_opt.take().map(|set| set.into_local()))
-                        .flatten();
+                    let input_option = input_sets[set_index].take();
                     let transfer_option = static_set.as_ref().or(input_option.as_ref());
                     // Always push the content set, even if it is empty / not present, so keep numbering consistent
                     if let Some(transfer_set) = transfer_option {
-                        function_context.content.push(Some(crate::DataSet {
-                            ident: input_set_name.clone(),
-                            buffers: Vec::with_capacity(transfer_set.len()),
+                        function_context.content.push(Some(crate::ContextDataSet {
+                            items: Vec::with_capacity(transfer_set.len()),
+                            total_size: 0,
                         }));
-                        for (source_item, source_context) in transfer_set {
-                            let transfer_result = memory_domain::transfer_data_item(
+                        for source_item in transfer_set.items.iter() {
+                            let (src_ctx, src_pos) = match source_item.data.data() {
+                                Ok(data) => data,
+                                Err(err) => {
+                                    drop(recorder);
+                                    debt.fulfill(Err(err));
+                                    continue 'engine;
+                                }
+                            };
+                            let local_source_item = crate::ContextDataItem {
+                                ident: source_item.ident.clone(),
+                                key: source_item.key,
+                                data: src_pos,
+                            };
+                            let transfer_result = context::transfer_data_item(
                                 &mut function_context,
-                                source_context,
+                                &src_ctx,
                                 set_index,
                                 128,
-                                source_item,
+                                &local_source_item,
                             );
 
                             if let Err(transfer_error) = transfer_result {
@@ -255,9 +265,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                 drop(recorder);
 
                 let results = result.and_then(|context| {
-                    Ok(WorkDone::CompositionSet(CompositionSet::from_context(
-                        context,
-                    )))
+                    Ok(WorkDone::CompositionSet(DataSet::from_context(context)))
                 });
                 debt.fulfill(results);
             }

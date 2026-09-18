@@ -77,7 +77,11 @@ fn unknown_argument_name_is_rejected() {
         }
     "#;
     let registry = TestRegistry::new().with_function("FunA", &["A", "B"], &["C"]);
-    expect_parse_error(src, &registry, "does not match any of the declared arguments");
+    expect_parse_error(
+        src,
+        &registry,
+        "does not match any of the declared arguments",
+    );
 }
 
 #[test]
@@ -133,7 +137,11 @@ fn function_consuming_its_own_output_is_rejected() {
         }
     "#;
     let registry = TestRegistry::new().with_function("Emit", &["X"], &["Y"]);
-    expect_parse_error(src, &registry, "Composition 'Test' contains a cycle: Emit -> Emit");
+    expect_parse_error(
+        src,
+        &registry,
+        "Composition 'Test' contains a cycle: Emit -> Emit",
+    );
 }
 
 #[test]

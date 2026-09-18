@@ -33,7 +33,8 @@ fn keyed_and_any_sharding_combination_parses() {
         .with_function("FunB", &["A", "B", "C"], &["D"])
         .with_function("FunC", &["D"], &["E"]);
 
-    CompositionTemplate::parse(src, &registry).unwrap_or_else(|e| panic!("expected to parse:\n{e}"));
+    CompositionTemplate::parse(src, &registry)
+        .unwrap_or_else(|e| panic!("expected to parse:\n{e}"));
 }
 
 #[test]
@@ -52,7 +53,8 @@ fn explicit_join_order_with_multiple_strategies_parses() {
     "#;
     let registry = TestRegistry::new().with_function("FunA", &["A", "B", "C"], &["D"]);
 
-    CompositionTemplate::parse(src, &registry).unwrap_or_else(|e| panic!("expected to parse:\n{e}"));
+    CompositionTemplate::parse(src, &registry)
+        .unwrap_or_else(|e| panic!("expected to parse:\n{e}"));
 }
 
 #[test]
@@ -72,5 +74,6 @@ fn cross_join_resets_the_join_group_and_parses() {
     "#;
     let registry = TestRegistry::new().with_function("FunA", &["A", "B", "C", "D"], &["E"]);
 
-    CompositionTemplate::parse(src, &registry).unwrap_or_else(|e| panic!("expected to parse:\n{e}"));
+    CompositionTemplate::parse(src, &registry)
+        .unwrap_or_else(|e| panic!("expected to parse:\n{e}"));
 }

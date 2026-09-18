@@ -7,11 +7,9 @@ use crate::{
     set::CompositionSet,
     sharding::{create_sharding_iter, AnyShardingMode, Sharding},
 };
-use dandelion_commons::{
-    data::{DataItem, DataSet, DataSetAccumulator, Invocation},
-    FunctionId,
-};
+use dandelion_commons::FunctionId;
 use log::trace;
+use memory::data::{DataItem, DataSet, DataSetAccumulator, Invocation};
 
 enum InputSet {
     /// This set is blocking and only set to complete once complete.
@@ -48,7 +46,7 @@ struct Inner {
     all_started: bool,
 }
 
-pub struct Function {
+pub(crate) struct Function {
     composition_idx: usize,
 
     inner: Mutex<Inner>,
@@ -60,7 +58,11 @@ pub struct Function {
 }
 
 impl Function {
-    pub fn new(idx: usize, function_id: FunctionId, join_order: Arc<Vec<usize>>) -> Function {
+    pub(crate) fn new(
+        idx: usize,
+        function_id: FunctionId,
+        join_order: Arc<Vec<usize>>,
+    ) -> Function {
         Function {
             composition_idx: idx,
             inner: Mutex::new(Inner {
@@ -77,7 +79,7 @@ impl Function {
         }
     }
 
-    pub fn update_io(
+    pub(crate) fn update_io(
         &mut self,
         inputs: &[Option<(Sharding, bool)>],
         outputs: Vec<Option<Arc<CompositionSet>>>,
@@ -112,7 +114,7 @@ impl Function {
         inner.outputs = outputs;
     }
 
-    pub fn in_set_complete(
+    pub(crate) fn in_set_complete(
         &self,
         data_set: DataSet,
         set_idx: usize,
@@ -189,7 +191,7 @@ impl Function {
         }
     }
 
-    pub fn push_streaming_items(
+    pub(crate) fn push_streaming_items(
         &self,
         set_idx: usize,
         mut items: Arc<Vec<Arc<DataItem>>>,
@@ -318,7 +320,7 @@ impl Function {
         num_created
     }
 
-    pub fn add_invocation_output(
+    pub(crate) fn add_invocation_output(
         &self,
         sets: Vec<DataSet>,
         any_sharding_mode: &AnyShardingMode,
@@ -357,11 +359,19 @@ impl Function {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dandelion_commons::data::Position;
+    use memory::{data::Position, Context};
+
+    /// A small real context for tests; the composition layer only tracks items, it never reads
+    /// their bytes, so any context of sufficient size will do.
+    fn test_context() -> Arc<Context> {
+        use memory::context::{malloc::MallocMemoryDomain, MemoryDomain, MemoryResource};
+        let domain = MallocMemoryDomain::init(MemoryResource::None).expect("malloc domain");
+        Arc::new(domain.acquire_context(4096).expect("context"))
+    }
 
     impl Function {
         /// Whether all invocations were started and have finished.
-        pub fn is_complete(&self) -> bool {
+        pub(crate) fn is_complete(&self) -> bool {
             let inner = self.inner.lock().expect("Function lock poisoned!");
             inner.all_started && inner.num_outstanding == 0
         }
@@ -372,11 +382,12 @@ mod tests {
     }
 
     fn item(key: u32) -> Arc<DataItem> {
-        Arc::new(DataItem {
-            ident: format!("item-{key}"),
-            data: Position { offset: 0, size: 0 },
+        Arc::new(DataItem::new_local(
+            format!("item-{key}"),
             key,
-        })
+            test_context(),
+            Position { offset: 0, size: 0 },
+        ))
     }
 
     fn items(keys: &[u32]) -> Arc<Vec<Arc<DataItem>>> {

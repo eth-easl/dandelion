@@ -6,7 +6,7 @@ use std::{
 
 use crate::common::{data_set, item, parse_composition, TestRegistry};
 use composition::{AnyShardingMode, Composition};
-use dandelion_commons::data::{DataSet, Invocation};
+use memory::data::{DataSet, Invocation};
 
 /// How long a round may take before it is considered deadlocked.
 const DEADLOCK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -30,7 +30,11 @@ fn run_groups_concurrently(
                 let mut follow_ups = Vec::new();
                 for invocation in group {
                     let output = respond(&invocation);
-                    composition.push_invocation_output(output, invocation.composition_idx, &mut follow_ups);
+                    composition.push_invocation_output(
+                        output,
+                        invocation.composition_idx,
+                        &mut follow_ups,
+                    );
                 }
                 follow_ups
             }));
@@ -76,7 +80,8 @@ fn concurrent_streams_into_two_each_inputs_neither_deadlock_nor_duplicate() {
     let n = 100;
 
     for _ in 0..50 {
-        let mut composition = Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
+        let mut composition =
+            Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
         let in_a = data_set((0..n).map(|i| item(&format!("a{i}"), i)).collect());
         let in_b = data_set((0..n).map(|i| item(&format!("b{i}"), i)).collect());
         let mut initial = Vec::new();
@@ -92,7 +97,10 @@ fn concurrent_streams_into_two_each_inputs_neither_deadlock_nor_duplicate() {
             .iter()
             .map(|invocation| {
                 assert_eq!(invocation.function_id.as_str(), "Combine");
-                (invocation.input[0].items[0].key, invocation.input[1].items[0].key)
+                (
+                    invocation.input[0].items[0].key,
+                    invocation.input[1].items[0].key,
+                )
             })
             .collect();
         pairs.sort();
@@ -117,16 +125,27 @@ fn concurrent_last_invocations_of_a_function_keep_all_output() {
     let template = parse_composition(src, "Pipe", &registry);
 
     for _ in 0..2000 {
-        let mut composition = Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
+        let mut composition =
+            Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
         let mut initial = Vec::new();
-        composition.start_execution(vec![data_set(vec![item("a0", 0), item("a1", 1)])], &mut initial);
-        let groups = initial.into_iter().map(|invocation| vec![invocation]).collect();
+        composition.start_execution(
+            vec![data_set(vec![item("a0", 0), item("a1", 1)])],
+            &mut initial,
+        );
+        let groups = initial
+            .into_iter()
+            .map(|invocation| vec![invocation])
+            .collect();
 
         let composition = Arc::new(composition);
         let follow_ups = run_groups_concurrently(&composition, groups, pass_through);
         assert!(follow_ups.is_empty());
 
         let composition = Arc::into_inner(composition).expect("all threads are done");
-        assert_eq!(composition.collect()[0].items.len(), 2, "both outputs must arrive");
+        assert_eq!(
+            composition.collect()[0].items.len(),
+            2,
+            "both outputs must arrive"
+        );
     }
 }

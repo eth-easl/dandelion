@@ -1,14 +1,15 @@
+use memory::context::{read_only::ReadOnlyContext, ContextTrait};
 #[cfg(test)]
 mod system_driver_tests {
+    use memory::context::{ContextDataItem, ContextDataSet};
+
     use crate::{
-        composition::CompositionSet,
         function_driver::{
             system_driver::{convert_to_references, SystemFunction},
             test_queue::TestQueue,
             ComputeResource, WorkToDo,
         },
         machine_config::EngineType,
-        memory_domain::{read_only::ReadOnlyContext, ContextTrait},
         DataItem, DataSet, Position,
     };
     use std::process::{Child, Command};
@@ -70,9 +71,8 @@ mod system_driver_tests {
         let request = format!("GET {} HTTP/1.1", uri).as_bytes().to_vec();
         let request_length = request.len();
         let mut input_context = ReadOnlyContext::new(request.into_boxed_slice()).unwrap();
-        input_context.content.push(Some(DataSet {
-            ident: "request".to_string(),
-            buffers: vec![DataItem {
+        input_context.content.push(Some(ContextDataSet {
+            items: vec![ContextDataItem {
                 ident: "".to_string(),
                 data: Position {
                     offset: 0,
@@ -80,13 +80,12 @@ mod system_driver_tests {
                 },
                 key: 0,
             }],
+            total_size: request_length,
         }));
 
-        let input_sets = convert_to_references(
-            SystemFunction::HTTP,
-            CompositionSet::from_context(input_context),
-        )
-        .unwrap();
+        let input_sets =
+            convert_to_references(SystemFunction::HTTP, DataSet::from_context(input_context))
+                .unwrap();
 
         // let recorder = Recorder::new(zero_id(), Instant::now());
 
@@ -142,9 +141,8 @@ dolore magna aliquyam erat, sed diam voluptua."#,
         .to_vec();
         let request_length = request.len();
         let mut input_context = ReadOnlyContext::new(request.into_boxed_slice()).unwrap();
-        input_context.content.push(Some(DataSet {
-            ident: "request".to_string(),
-            buffers: vec![DataItem {
+        input_context.content.push(Some(ContextDataSet {
+            items: vec![ContextDataItem {
                 ident: "".to_string(),
                 data: Position {
                     offset: 0,
@@ -152,13 +150,12 @@ dolore magna aliquyam erat, sed diam voluptua."#,
                 },
                 key: 0,
             }],
+            total_size: request_length,
         }));
 
-        let input_sets = convert_to_references(
-            SystemFunction::HTTP,
-            CompositionSet::from_context(input_context),
-        )
-        .unwrap();
+        let input_sets =
+            convert_to_references(SystemFunction::HTTP, DataSet::from_context(input_context))
+                .unwrap();
 
         // let recorder = Recorder::new(zero_id(), Instant::now());
 
@@ -221,8 +218,8 @@ dolore magna aliquyam erat, sed diam voluptua."#,
     mod reqwest_io {
         use crate::function_driver::ComputeResource;
         use crate::machine_config::EngineType;
-        // use crate::memory_domain::malloc::MallocMemoryDomain as domain;
-        // use crate::memory_domain::mmap::MmapMemoryDomain as domain;
+        // use memory::context::malloc::MallocMemoryDomain as domain;
+        // use memory::context::mmap::MmapMemoryDomain as domain;
         driverTests!(reqwest_io; EngineType::System; ComputeResource::CPU(1));
     }
 }

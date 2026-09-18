@@ -1,10 +1,10 @@
+use memory::context::{malloc::MallocMemoryDomain, MemoryDomain};
 use crate::{
     function_driver::{
         compute_driver::cheri::CheriDriver,
         functions::{Function, FunctionConfig},
         Driver,
     },
-    memory_domain::{malloc::MallocMemoryDomain, MemoryDomain},
     Position,
 };
 
@@ -14,7 +14,7 @@ fn test_loader_basic() {
         "{}/tests/data/test_elf_cheri_basic",
         env!("CARGO_MANIFEST_DIR")
     );
-    let malloc_domain = MallocMemoryDomain::init(crate::memory_domain::MemoryResource::None)
+    let malloc_domain = MallocMemoryDomain::init(memory::context::MemoryResource::None)
         .expect("Should be able to get malloc domain");
     let driver = CheriDriver {};
     let Function {

@@ -1,12 +1,13 @@
-use crate::memory_domain::{
+use crate::context::{
     transfer_data_item, transfer_memory, Context, ContextTrait, ContextType, MemoryDomain,
     MemoryResource,
 };
+use crate::context::{ContextDataItem, ContextDataSet};
 use dandelion_commons::{DError, DandelionError, DandelionResult, DomainError};
 use std::sync::Arc;
 
 #[cfg(any(feature = "cheri", feature = "kvm", feature = "mmu"))]
-use crate::memory_domain::system_domain::SystemMemoryDomain;
+use crate::context::system::SystemMemoryDomain;
 
 // produces binary pattern 0b0101_01010 or 0x55
 const BYTEPATTERN: u8 = 85;
@@ -225,9 +226,9 @@ fn transfer_item(
 
     // make sure the destination set exists
     destination.content.resize_with(destination_index + 1, || {
-        Some(crate::DataSet {
-            ident: String::from(""),
-            buffers: vec![],
+        Some(ContextDataSet {
+            items: vec![],
+            total_size: 0,
         })
     });
     let transfer_error = transfer_data_item(
@@ -235,7 +236,7 @@ fn transfer_item(
         &Arc::new(source),
         destination_index,
         8,
-        &crate::DataItem {
+        &ContextDataItem {
             ident: String::from(""),
             data: crate::Position {
                 offset: offset,
@@ -250,14 +251,13 @@ fn transfer_item(
     }
     // check transfer success
     assert!(destination_index < destination.content.len());
-    let destination_item = destination.content[destination_index]
+    let destination_set = destination.content[destination_index]
         .as_ref()
         .expect("Set should be present");
-    assert_eq!("", destination_item.ident);
-    assert_eq!(1, destination_item.buffers.len());
-    assert_eq!("", destination_item.buffers[0].ident);
-    assert_eq!(item_size, destination_item.buffers[0].data.size);
-    let read_offset = destination_item.buffers[0].data.offset;
+    assert_eq!(1, destination_set.items.len());
+    assert_eq!("", destination_set.items[0].ident);
+    assert_eq!(item_size, destination_set.items[0].data.size);
+    let read_offset = destination_set.items[0].data.offset;
     let mut read_buffer = vec![0; item_size];
     destination
         .read(read_offset, &mut read_buffer)

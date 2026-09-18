@@ -9,13 +9,13 @@ ignored = ["openssl"]
 [features]
 # TODO remove as default feature and check everyting also works with no default feature
 default = ["std"]
-std = []
-cheri = ["std"]
-mmu = ["std"]
-kvm = ["std", "dep:kvm-bindings", "dep:kvm-ioctls"]
+std = ["memory/std"]
+cheri = ["std", "memory/cheri"]
+mmu = ["std", "memory/mmu"]
+kvm = ["std", "memory/kvm", "dep:kvm-bindings", "dep:kvm-ioctls"]
 backend_debug = []
 blocking_queue = []
-timestamp = ["dandelion_commons/timestamp"]
+timestamp = ["dandelion_commons/timestamp", "memory/timestamp"]
 vendored-ssl = ["dep:openssl"]
 test_export = []
 
@@ -31,6 +31,7 @@ test-log = "0.2.16"
 [dependencies]
 # project internal dependencies
 dandelion_commons = { path = "../dandelion_commons" }
+memory = { path = "../memory" }
 dparser = {path = "../dparser"}
 
 # FFI dependencies

@@ -1,5 +1,5 @@
 use crate::{
-    memory_domain::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource},
+    context::{Context, ContextTrait, ContextType, MemoryDomain, MemoryResource},
     util::mmapmem::{self, MmapMem, MmapMemPool},
 };
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult};

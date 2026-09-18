@@ -16,7 +16,8 @@ fn keyed_inner_join_pairs_matching_composition_inputs() {
     "#;
     let registry = TestRegistry::new().with_function("Combine", &["A", "B"], &["C"]);
     let template = parse_composition(src, "Join", &registry);
-    let composition = Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
+    let composition =
+        Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
 
     let input_a = data_set(vec![item("a1", 1), item("a2", 2), item("a3", 3)]);
     let input_b = data_set(vec![item("b2", 2), item("b3", 3), item("b4", 4)]);
@@ -26,13 +27,20 @@ fn keyed_inner_join_pairs_matching_composition_inputs() {
         assert_eq!(invocation.input.len(), 2);
         let a_item = &invocation.input[0].items[0];
         let b_item = &invocation.input[1].items[0];
-        assert_eq!(a_item.key, b_item.key, "an inner join must only ever see matching keys");
+        assert_eq!(
+            a_item.key, b_item.key,
+            "an inner join must only ever see matching keys"
+        );
         seen_keys.push(a_item.key);
         vec![data_set(vec![item("combined", a_item.key)])]
     });
 
     seen_keys.sort();
-    assert_eq!(seen_keys, vec![2, 3], "keys 1 and 4 have no match on the other side");
+    assert_eq!(
+        seen_keys,
+        vec![2, 3],
+        "keys 1 and 4 have no match on the other side"
+    );
     assert_eq!(outputs.len(), 1);
     assert_eq!(outputs[0].items.len(), 2);
 }
@@ -52,7 +60,8 @@ fn two_stage_pipeline_aggregates_streamed_outputs() {
         .with_function("Square", &["In"], &["Out"])
         .with_function("Sum", &["All"], &["Total"]);
     let template = parse_composition(src, "SumOfSquares", &registry);
-    let composition = Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
+    let composition =
+        Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
 
     let numbers = data_set(vec![item("2", 0), item("3", 0), item("4", 0)]);
     let outputs = run_to_completion(composition, vec![numbers], |invocation| {
@@ -98,7 +107,8 @@ fn two_each_inputs_wait_for_both_sides_before_combining() {
         .with_function("Emit", &["X"], &["Y"])
         .with_function("Combine", &["A", "B"], &["C"]);
     let template = parse_composition(src, "Pipe", &registry);
-    let composition = Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
+    let composition =
+        Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
 
     let in_a = data_set(vec![item("a1", 1), item("a2", 2)]);
     let in_b = data_set(vec![item("b1", 1), item("b2", 2)]);
@@ -109,8 +119,16 @@ fn two_each_inputs_wait_for_both_sides_before_combining() {
             // Pass the item through unchanged, preserving its key, so Combine can be checked below.
             "Emit" => vec![data_set(vec![invocation.input[0].items[0].clone()])],
             "Combine" => {
-                assert_eq!(invocation.input[0].items.len(), 1, "never combine against an empty side");
-                assert_eq!(invocation.input[1].items.len(), 1, "never combine against an empty side");
+                assert_eq!(
+                    invocation.input[0].items.len(),
+                    1,
+                    "never combine against an empty side"
+                );
+                assert_eq!(
+                    invocation.input[1].items.len(),
+                    1,
+                    "never combine against an empty side"
+                );
                 combine_pairs.push((
                     invocation.input[0].items[0].key,
                     invocation.input[1].items[0].key,
@@ -143,7 +161,8 @@ fn optional_each_input_that_stays_empty_does_not_block_or_appear() {
     "#;
     let registry = TestRegistry::new().with_function("Combine", &["A", "B"], &["C"]);
     let template = parse_composition(src, "Pipe", &registry);
-    let composition = Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
+    let composition =
+        Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
 
     let in_a = data_set(vec![item("a1", 1), item("a2", 2)]);
     let in_b = data_set(vec![]); // a real composition input, but genuinely empty
@@ -151,12 +170,22 @@ fn optional_each_input_that_stays_empty_does_not_block_or_appear() {
     let mut invocation_count = 0;
     let outputs = run_to_completion(composition, vec![in_a, in_b], |invocation| {
         invocation_count += 1;
-        assert_eq!(invocation.input[0].items.len(), 1, "one A item per invocation");
-        assert!(invocation.input[1].items.is_empty(), "B is optional and stayed empty");
+        assert_eq!(
+            invocation.input[0].items.len(),
+            1,
+            "one A item per invocation"
+        );
+        assert!(
+            invocation.input[1].items.is_empty(),
+            "B is optional and stayed empty"
+        );
         vec![data_set(vec![item("out", 0)])]
     });
 
-    assert_eq!(invocation_count, 2, "one invocation per InA item, B just came through empty");
+    assert_eq!(
+        invocation_count, 2,
+        "one invocation per InA item, B just came through empty"
+    );
     assert_eq!(outputs[0].items.len(), 2);
 }
 
@@ -178,25 +207,34 @@ fn each_items_arriving_before_blocking_all_input_wait_for_it() {
         .with_function("Emit", &["X"], &["Y"])
         .with_function("Combine", &["A", "B"], &["C"]);
     let template = parse_composition(src, "Pipe", &registry);
-    let composition = Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
+    let composition =
+        Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
 
     let in_a = data_set(vec![item("a1", 1), item("a2", 2)]);
     let in_b = data_set(vec![item("b1", 1), item("b2", 2)]);
 
     // LIFO order: all of MidA arrives before any of MidB
     let mut combine_inputs = Vec::new();
-    run_to_completion(composition, vec![in_a, in_b], |invocation| {
-        match invocation.function_id.as_str() {
-            "Emit" => vec![data_set(vec![invocation.input[0].items[0].clone()])],
-            _ => {
-                combine_inputs.push((invocation.input[0].items[0].key, invocation.input[1].items.len()));
-                vec![data_set(vec![item("out", 0)])]
-            }
+    run_to_completion(composition, vec![in_a, in_b], |invocation| match invocation
+        .function_id
+        .as_str()
+    {
+        "Emit" => vec![data_set(vec![invocation.input[0].items[0].clone()])],
+        _ => {
+            combine_inputs.push((
+                invocation.input[0].items[0].key,
+                invocation.input[1].items.len(),
+            ));
+            vec![data_set(vec![item("out", 0)])]
         }
     });
 
     combine_inputs.sort();
-    assert_eq!(combine_inputs, vec![(1, 2), (2, 2)], "each A item combined once with the complete B set");
+    assert_eq!(
+        combine_inputs,
+        vec![(1, 2), (2, 2)],
+        "each A item combined once with the complete B set"
+    );
 }
 
 /// Regression test: an empty push into an optional `each` input must not create the invocations
@@ -217,20 +255,23 @@ fn empty_push_into_optional_each_input_does_not_duplicate_invocations() {
         .with_function("Emit", &["X"], &["Y"])
         .with_function("Combine", &["A", "B"], &["C"]);
     let template = parse_composition(src, "Pipe", &registry);
-    let composition = Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
+    let composition =
+        Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
 
     // LIFO order: Emit(a1) -> Combine(a1) -> Emit(b1), which produces nothing and completes MidB
     let mut combine_count = 0;
-    run_to_completion(composition, vec![data_set(vec![item("a1", 1)]), data_set(vec![item("b1", 1)])], |invocation| {
-        match invocation.function_id.as_str() {
+    run_to_completion(
+        composition,
+        vec![data_set(vec![item("a1", 1)]), data_set(vec![item("b1", 1)])],
+        |invocation| match invocation.function_id.as_str() {
             "Emit" if invocation.input[0].items[0].ident == "b1" => vec![data_set(vec![])],
             "Emit" => vec![data_set(vec![invocation.input[0].items[0].clone()])],
             _ => {
                 combine_count += 1;
                 vec![data_set(vec![item("out", 0)])]
             }
-        }
-    });
+        },
+    );
 
     assert_eq!(combine_count, 1);
 }
@@ -252,20 +293,22 @@ fn empty_final_push_into_optional_each_input_that_had_items_does_not_run_without
         .with_function("Emit", &["X"], &["Y"])
         .with_function("Combine", &["A", "B"], &["C"]);
     let template = parse_composition(src, "Pipe", &registry);
-    let composition = Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
+    let composition =
+        Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
 
     // LIFO order: Emit(b1) -> Combine(a1, b1) -> Emit(b0), which produces nothing and completes MidB
     let in_a = data_set(vec![item("a1", 1)]);
     let in_b = data_set(vec![item("b0", 0), item("b1", 1)]);
     let mut combine_b_sizes = Vec::new();
-    run_to_completion(composition, vec![in_a, in_b], |invocation| {
-        match invocation.function_id.as_str() {
-            "Emit" if invocation.input[0].items[0].ident == "b0" => vec![data_set(vec![])],
-            "Emit" => vec![data_set(vec![invocation.input[0].items[0].clone()])],
-            _ => {
-                combine_b_sizes.push(invocation.input[1].items.len());
-                vec![data_set(vec![item("out", 0)])]
-            }
+    run_to_completion(composition, vec![in_a, in_b], |invocation| match invocation
+        .function_id
+        .as_str()
+    {
+        "Emit" if invocation.input[0].items[0].ident == "b0" => vec![data_set(vec![])],
+        "Emit" => vec![data_set(vec![invocation.input[0].items[0].clone()])],
+        _ => {
+            combine_b_sizes.push(invocation.input[1].items.len());
+            vec![data_set(vec![item("out", 0)])]
         }
     });
 
@@ -284,14 +327,22 @@ fn empty_optional_all_input_is_treated_as_absent() {
     "#;
     let registry = TestRegistry::new().with_function("Combine", &["A", "B"], &["C"]);
     let template = parse_composition(src, "Pipe", &registry);
-    let composition = Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
+    let composition =
+        Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
 
     let mut invocation_count = 0;
-    let outputs = run_to_completion(composition, vec![data_set(vec![item("a1", 1)]), data_set(vec![])], |invocation| {
-        invocation_count += 1;
-        assert!(invocation.input[1].items.is_empty(), "B is optional and stayed empty");
-        vec![data_set(vec![item("out", 0)])]
-    });
+    let outputs = run_to_completion(
+        composition,
+        vec![data_set(vec![item("a1", 1)]), data_set(vec![])],
+        |invocation| {
+            invocation_count += 1;
+            assert!(
+                invocation.input[1].items.is_empty(),
+                "B is optional and stayed empty"
+            );
+            vec![data_set(vec![item("out", 0)])]
+        },
+    );
 
     assert_eq!(invocation_count, 1);
     assert_eq!(outputs[0].items.len(), 1);

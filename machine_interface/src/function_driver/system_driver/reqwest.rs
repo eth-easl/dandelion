@@ -1,12 +1,8 @@
 use crate::{
-    composition::{CompositionSet, ItemData},
     function_driver::{
         functions::{Function, FunctionConfig},
         system_driver::{IoData, SystemFunction},
         ComputeResource, Driver, EngineWorkQueue, WorkDone, WorkToDo,
-    },
-    memory_domain::{
-        bytes_context::BytesContext, read_only::ReadOnlyContext, Context, ContextTrait, ContextType,
     },
     promise::Debt,
     Position,
@@ -19,6 +15,12 @@ use futures::{stream::FuturesUnordered, StreamExt};
 use http::{version::Version as HttpVersion, HeaderName, HeaderValue, Method as HttpMethod};
 use log::{debug, error, trace, warn};
 use memcache::Client as MemcachedClient;
+use memory::Context;
+use memory::{
+    context::{bytes::BytesContext, read_only::ReadOnlyContext, ContextTrait, ContextType},
+    DataSet,
+};
+use memory::{data::LocalItemData, DataSetAccumulator};
 use reqwest::{header::HeaderMap, Client as HttpClient};
 use std::{
     collections::{btree_map::Entry, BTreeMap},
@@ -421,73 +423,40 @@ async fn memcached_request(
     Ok(vec![header_context, body_context])
 }
 
-async fn resolve_io_item(
-    io_data: IoData,
-    client: HttpClient,
-) -> DandelionResult<(Position, Arc<Context>)> {
-    let IoData {
-        original_position,
-        original_data,
-        resolved,
-        function,
-        set_index,
-    } = io_data;
-    // first need to check if original data was local or we still need to fetch that.
-    let (input_position, input_context) = match *original_data {
-        ItemData::LocalData(context) => (original_position, context),
-        ItemData::RemoteData(remote_data) => {
-            let client = crate::composition::get_remote_data_client()?;
-            let (context, position) = client.resolve_remote_data(remote_data).await?;
-            (position, context)
-        }
-        ItemData::IoData(nested_io_data) => {
-            let (position, context) =
-                Box::pin(resolve_io_item(nested_io_data, client.clone())).await?;
-            (position, context)
-        }
+pub(crate) async fn resolve_io_item(io_data: Arc<IoData>) -> DandelionResult<LocalItemData> {
+    let set_idx = io_data.set_index;
+    let init_io = io_data.clone();
+
+    let outputs = io_data
+        .resolved
+        .get_or_init(|| async move {
+            let input = init_io.original_data.clone().resolve().await?;
+            match init_io.function {
+                SystemFunction::HTTP => {
+                    http_request(init_io.client.clone(), input.pos, input.ctx).await
+                }
+                SystemFunction::MEMCACHED => memcached_request(input.pos, input.ctx).await,
+            }
+        })
+        .await;
+
+    let context = match outputs {
+        Ok(contexts) => contexts[set_idx].clone(),
+        Err(err) => return Err(err.clone()),
     };
-    match function {
-        SystemFunction::HTTP => {
-            let outputs = resolved
-                .get_or_init(move || http_request(client, input_position, input_context))
-                .await;
-            let context = match outputs {
-                Ok(context_vec) => context_vec[set_index].clone(),
-                Err(err) => return Err(err.clone()),
-            };
-            Ok((
-                Position {
-                    offset: 0,
-                    size: context.size,
-                },
-                context,
-            ))
-        }
-        SystemFunction::MEMCACHED => {
-            let outputs = resolved
-                .get_or_init(move || memcached_request(input_position, input_context))
-                .await;
-            let context = match outputs {
-                Ok(context_vec) => context_vec[set_index].clone(),
-                Err(err) => return Err(err.clone()),
-            };
-            Ok((
-                Position {
-                    offset: 0,
-                    size: context.size,
-                },
-                context,
-            ))
-        }
-    }
+    let size = context.size();
+    Ok(LocalItemData {
+        ctx: context,
+        pos: Position { offset: 0, size },
+    })
 }
 
 async fn resolve_all_sets(
     client: HttpClient,
-    input_sets: Vec<Option<CompositionSet>>,
+    input_sets: Vec<Option<DataSet>>,
     semaphore: Arc<Semaphore>,
     ticket: OwnedSemaphorePermit,
-    result_sender: impl FnOnce(DandelionResult<Vec<Option<CompositionSet>>>) + 'static + Send,
+    result_sender: impl FnOnce(DandelionResult<Vec<Option<DataSet>>>) + 'static + Send,
 ) {
     // drop ticket so at least one will be available for the new tasks we spawn
     drop(ticket);
@@ -497,8 +466,6 @@ async fn resolve_all_sets(
     output_sets.resize(input_set_number, None);
     let mut sets_vec = Vec::with_capacity(input_set_number);
     sets_vec.resize(input_set_number, Vec::new());
-    let mut set_names = Vec::with_capacity(input_set_number);
-    set_names.resize(input_set_number, None);
     let mut io_futures = FuturesUnordered::new();
     let mut remote_futures = FuturesUnordered::new();
 
@@ -507,41 +474,45 @@ async fn resolve_all_sets(
 
     for (set_index, set_option) in input_sets.into_iter().enumerate() {
         if let Some(set) = set_option {
-            set_names[set_index] = Some(set.get_name().clone());
             if set.is_local() {
                 output_sets[set_index] = Some(set);
                 continue;
             }
-            for (mut item, data) in set.into_iter() {
-                match data {
-                    ItemData::LocalData(_) => {
-                        // a not entirely local set, directly push the items that are already local
-                        sets_vec[set_index].push((item, data));
-                    }
-                    ItemData::IoData(io_data) => {
-                        let permit = semaphore.clone().acquire_owned().await.unwrap();
-                        let client_clone = client.clone();
-                        io_futures.push(spawn(async move {
-                            let (position, context) =
-                                resolve_io_item(io_data, client_clone).await?;
-                            item.data = position;
-                            drop(permit);
-                            Ok((set_index, item, ItemData::LocalData(context)))
-                        }));
-                    }
-                    ItemData::RemoteData(remote_data) => {
-                        let node_id = remote_data.node_id;
-                        match fetching_nodes.entry(node_id) {
-                            Entry::Vacant(vacant) => {
-                                vacant.insert((vec![(set_index, item)], vec![remote_data]));
-                            }
-                            Entry::Occupied(mut occupied) => {
-                                occupied.get_mut().0.push((set_index, item));
-                                occupied.get_mut().1.push(remote_data);
-                            }
-                        };
-                    }
+            let acc = DataSetAccumulator::new();
+            for item in set.into_iter() {
+                if item.is_local() {
+                    acc.push_items(&[item.clone()]);
+                } else {
+                    // TODO: resolve the item, then add it to the accumulator
                 }
+                // old code
+                // match data {
+                //     ItemData::LocalData(_) => {
+                //         // a not entirely local set, directly push the items that are already local
+                //         sets_vec[set_index].push((item, data));
+                //     }
+                //     ItemData::IoData(io_data) => {
+                //         let permit = semaphore.clone().acquire_owned().await.unwrap();
+                //         io_futures.push(spawn(async move {
+                //             let resolved = resolve_io_item(io_data).await?;
+                //             item.data = resolved.pos;
+                //             drop(permit);
+                //             Ok((set_index, item, ItemData::LocalData(resolved.ctx)))
+                //         }));
+                //     }
+                //     ItemData::RemoteData(remote_data) => {
+                //         let node_id = remote_data.node_id;
+                //         match fetching_nodes.entry(node_id) {
+                //             Entry::Vacant(vacant) => {
+                //                 vacant.insert((vec![(set_index, item)], vec![remote_data]));
+                //             }
+                //             Entry::Occupied(mut occupied) => {
+                //                 occupied.get_mut().0.push((set_index, item));
+                //                 occupied.get_mut().1.push(remote_data);
+                //             }
+                //         };
+                //     }
+                // }
             }
         }
     }
@@ -550,7 +521,7 @@ async fn resolve_all_sets(
     for (mut item_metadata, remote_items) in fetching_nodes.into_values() {
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         remote_futures.push(spawn(async move {
-            let client = crate::composition::get_remote_data_client()?;
+            let client = crate::function_driver::system_driver::get_remote_data_client()?;
             let new_context = client
                 .resolve_multiple_data(&mut item_metadata, remote_items)
                 .await?;
@@ -695,7 +666,7 @@ async fn engine_loop(queue: impl EngineWorkQueue + Clone + Send + 'static) -> De
             }
             WorkToDo::RemoteToDelete { remote_data } => {
                 tokio::spawn(async move {
-                    match crate::composition::get_remote_data_client() {
+                    match crate::function_driver::system_driver::get_remote_data_client() {
                         Ok(client) => {
                             let result = client
                                 .delete_remote_data(remote_data)
@@ -744,7 +715,7 @@ impl Driver for ReqwestDriver {
     fn parse_function(
         &self,
         function_path: String,
-        static_domain: &Box<dyn crate::memory_domain::MemoryDomain>,
+        static_domain: &Box<dyn memory::context::MemoryDomain>,
     ) -> DandelionResult<Function> {
         if function_path.len() != 0 {
             return err_dandelion!(DandelionError::CalledSystemFuncParser);

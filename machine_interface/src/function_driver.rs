@@ -1,11 +1,10 @@
-use crate::{
-    composition::{CompositionSet, LocalCompositionSet, RemoteData},
-    machine_config::EngineType,
-    memory_domain::MemoryDomain,
-};
+use crate::function_driver::system_driver::RemoteData;
+use crate::machine_config::EngineType;
+use memory::context::MemoryDomain;
 extern crate alloc;
 use alloc::sync::Arc;
 use dandelion_commons::{records::Recorder, DandelionResult};
+use memory::data::{DataSet, Metadata};
 
 pub mod compute_driver;
 pub mod functions;
@@ -21,33 +20,18 @@ pub enum ComputeResource {
     GPU(u8),
 }
 
-/// Struct holding general function metadata that is true across all drivers.
-#[derive(Debug)]
-pub struct Metadata {
-    /// The input set names with an optional static composition set. If the static set is set it will
-    /// prioritized and any other input for that set is ignored.
-    pub input_sets: Vec<(String, Option<LocalCompositionSet>)>,
-    /// The output set names.
-    /// TODO these strings need to be clone around a few times, should think about also putting them in arcs.
-    /// May be worth a general consireations, if that should be the default for Strings, also may want to check we only propagate them when they are actually necessary.
-    pub output_sets: Vec<String>,
-    /// The minimum size in bytes the largest set of a group of any sets should have. If given (i.e.
-    /// has a value of > 0) the JoinIterator will combine any sets to achieve this size best-effort.
-    pub min_set_bytes: Vec<usize>,
-}
-
 /// Struct holding function data comming from the dispatcher into the queueing.
 pub enum WorkToDo {
     FunctionArguments {
         function_id: Arc<String>,
         function_alternatives: Vec<Arc<functions::FunctionAlternative>>,
-        input_sets: Vec<Option<CompositionSet>>,
+        input_sets: Vec<Option<DataSet>>,
         metadata: Arc<Metadata>,
         caching: bool,
         recorder: Recorder,
     },
     SetsToResolve {
-        input_sets: Vec<Option<CompositionSet>>,
+        input_sets: Vec<Option<DataSet>>,
     },
     RemoteToDelete {
         remote_data: RemoteData,
@@ -56,13 +40,13 @@ pub enum WorkToDo {
 }
 
 pub enum WorkDone {
-    CompositionSet(Vec<Option<CompositionSet>>),
+    CompositionSet(Vec<Option<DataSet>>),
     Resources(Vec<ComputeResource>),
     RemoteDeleted,
 }
 
 impl WorkDone {
-    pub fn get_composition(self) -> Vec<Option<CompositionSet>> {
+    pub fn get_composition(self) -> Vec<Option<DataSet>> {
         return match self {
             WorkDone::CompositionSet(sets) => sets,
             _ => panic!("WorkDone is not context when context was expected"),

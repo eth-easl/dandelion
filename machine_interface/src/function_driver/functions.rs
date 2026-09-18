@@ -1,7 +1,7 @@
+use memory::context::{Context, MemoryDomain};
 use crate::{
     function_driver::load_utils::load_static,
     machine_config::EngineType,
-    memory_domain::{Context, MemoryDomain},
     DataRequirementList,
 };
 use dandelion_commons::{records::Recorder, DandelionResult};

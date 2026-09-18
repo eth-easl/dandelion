@@ -1,10 +1,10 @@
+use memory::context::{mmu::MmuMemoryDomain, MemoryDomain};
 use crate::{
     function_driver::{
         compute_driver::mmu::MmuDriver,
         functions::{Function, FunctionConfig},
         Driver,
     },
-    memory_domain::{mmu::MmuMemoryDomain, MemoryDomain},
     Position,
 };
 
@@ -17,7 +17,7 @@ fn test_loader_basic() {
     );
     let driver = MmuDriver {};
     let mmu_domain =
-        MmuMemoryDomain::init(crate::memory_domain::MemoryResource::Shared { size: (1 << 30) })
+        MmuMemoryDomain::init(memory::context::MemoryResource::Shared { size: (1 << 30) })
             .expect("Should be able to get mmu domain");
     let Function {
         requirements,

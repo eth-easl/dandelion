@@ -1,28 +1,26 @@
+use composition::CompositionTemplate;
 use dandelion_commons::{
-    dandelion_err, err_dandelion, CompositionError, DandelionError, DandelionResult, FunctionId,
+    err_dandelion, CompositionError, DandelionError, DandelionResult, FunctionId,
     FunctionRegistryError,
 };
-use dparser::print_errors;
-use log::error;
+use itertools::Itertools;
+use log::{error, trace};
 use machine_interface::{
-    composition::Composition,
     function_driver::{
         functions::{FunctionAlternative, SystemFunction},
-        system_driver::SYSTEM_FUNCTIONS,
+        system_driver::{
+            get_system_function_input_sets, get_system_function_output_sets, SYSTEM_FUNCTIONS,
+        },
         Metadata,
     },
     machine_config::EngineType,
-    memory_domain::MemoryDomain,
+    context::MemoryDomain,
 };
 use std::{
     collections::BTreeMap,
     path::Path,
     sync::{Arc, RwLock},
 };
-
-use crate::function_registry::composition_builder::CompositionBuilder;
-
-mod composition_builder;
 
 /// Struct holding all engine alternatives to run a function and the constant metadata. This struct
 /// can be cloned cheaply and given to the scheduler for function execution.
@@ -55,7 +53,7 @@ impl FunctionInfo {
 #[derive(Debug, Clone)]
 pub struct CompositionInfo {
     /// The engine alternatives to execute the functions.
-    pub composition: Arc<Composition>,
+    pub composition: Arc<CompositionTemplate>,
     /// The metadata that applies to all function alternatives.
     pub metadata: Arc<Metadata>,
 }
@@ -124,7 +122,7 @@ fn fmap_insert_function(
 fn fmap_insert_composition(
     fmap: &mut FunctionMap,
     key: FunctionId,
-    composition: Composition,
+    composition: CompositionTemplate,
     metadata: Metadata,
 ) -> DandelionResult<()> {
     match fmap.get(&(*key)) {
@@ -197,28 +195,8 @@ impl FunctionRegistry {
         }
     }
 
-    /// Returns an atomic reference to the metadata of the given function identifier.
-    pub fn get_min_set_bytes(&self, function_id: &FunctionId) -> DandelionResult<Vec<usize>> {
-        let lock_guard = self
-            .function_map
-            .read()
-            .expect("Function registry lock poisoned!");
-        match lock_guard.get(&(**function_id)) {
-            Some(func_type) => match func_type {
-                FunctionType::Function(func_info) => Ok(func_info.metadata.min_set_bytes.clone()),
-                FunctionType::Composition(comp_info) => {
-                    Ok(comp_info.metadata.min_set_bytes.clone())
-                }
-                FunctionType::SystemFunction(_) => Ok(vec![]),
-            },
-            None => err_dandelion!(DandelionError::FunctionRegistry(
-                FunctionRegistryError::UnknownFunction((**function_id).clone()),
-            )),
-        }
-    }
-
-    /// Inserts the function into the function registry. If the function identifier is already the
-    /// metadata is expected to match the already existing one.
+    /// Inserts the function into the function registry.
+    /// If the function identifier is already the metadata is expected to match the already existing one.
     pub fn insert_function(
         &self,
         function_id: FunctionId,
@@ -235,7 +213,7 @@ impl FunctionRegistry {
             ));
         }
 
-        log::trace!(
+        trace!(
             "Inserting function with id: {} and path: {}",
             function_id,
             path
@@ -255,73 +233,119 @@ impl FunctionRegistry {
         fmap_insert_function(&mut lock_guard, function_id, func_alt, metadata)
     }
 
-    /// For each composition the composition set indexes start enumerating the input sets from 0.
-    /// The output sets are enumerated starting with the number directly after the highest input set index.
-    /// For internal numbering there are no guarnatees.
-    pub(super) fn composition_from_module(
-        &self,
-        module: dparser::Module,
-    ) -> DandelionResult<Vec<(FunctionId, Composition, Metadata)>> {
-        let mut builder = CompositionBuilder::new(self);
-        for item in module.0.iter() {
-            match item {
-                dparser::Item::FunctionDecl(fdecl) => {
-                    builder.add_declaration(fdecl.clone())?;
-                }
-                dparser::Item::Composition(comp) => {
-                    builder.add_composition(&comp.v)?;
-                }
-            }
-        }
-        Ok(builder.finish())
-    }
-
     /// Inserts the composition into the function registry.
-    pub fn insert_compositions(&self, composition_desc: &str) -> DandelionResult<()> {
-        // TODO: might want to return the parsing issue back to the user in a better way
-        let module = dparser::parse(composition_desc).map_err(|parse_error| {
-            print_errors(composition_desc, parse_error);
-            dandelion_err!(DandelionError::Composition(CompositionError::ParsingError))
-        })?;
-        let comp_vec = self.composition_from_module(module)?;
+    pub fn insert_compositions(
+        &self,
+        compositions: Vec<(FunctionId, CompositionTemplate, Metadata)>,
+    ) -> DandelionResult<()> {
         let mut lock_guard = self
             .function_map
             .write()
             .expect("Function registry lock poisoned!");
-        for (comp_name, composition, metadata) in comp_vec.into_iter() {
-            fmap_insert_composition(&mut lock_guard, comp_name, composition, metadata)?;
+        for (id, templ, meta) in compositions.into_iter() {
+            trace!("Inserting composition with id: {}", id);
+            fmap_insert_composition(&mut lock_guard, id, templ, meta)?;
         }
         Ok(())
     }
+}
 
-    /// Parses the compositions without inserting it into the registry.
-    pub fn parse_compositions(
+impl composition::Registry for FunctionRegistry {
+    /// Confirms the declared function is registered with matching params and returns.
+    fn check_declaration(
         &self,
-        composition_desc: &str,
-    ) -> DandelionResult<Vec<(FunctionId, Composition, Metadata)>> {
-        // TODO: might want to return the parsing issue back to the user in a better way
-        let module = dparser::parse(composition_desc).map_err(|parse_error| {
-            print_errors(composition_desc, parse_error);
-            dandelion_err!(DandelionError::Composition(CompositionError::ParsingError))
-        })?;
-        self.composition_from_module(module)
+        id: &str,
+        params: &[&str],
+        returns: &[&str],
+    ) -> DandelionResult<()> {
+        let lock_guard = self
+            .function_map
+            .read()
+            .expect("Function registry lock poisoned!");
+        let (input_sets, output_sets) = match lock_guard.get(id) {
+            Some(func_type) => match func_type {
+                FunctionType::SystemFunction(sys_function) => (
+                    &get_system_function_input_sets(*sys_function),
+                    &get_system_function_output_sets(*sys_function),
+                ),
+                FunctionType::Function(func_info) => (
+                    &func_info.metadata.input_sets,
+                    &func_info.metadata.output_sets,
+                ),
+                FunctionType::Composition(comp_info) => (
+                    &comp_info.metadata.input_sets,
+                    &comp_info.metadata.output_sets,
+                ),
+            },
+            None => {
+                return err_dandelion!(DandelionError::Composition(
+                    CompositionError::InvalidFunctionDeclaration(format!(
+                        "Unknown function {}",
+                        id
+                    )),
+                ))
+            }
+        };
+
+        // validate function arguments
+        if params.len() != input_sets.len()
+            || params
+                .iter()
+                .zip_eq(input_sets.iter())
+                .any(|(decl_name, (metadata_name, _))| *decl_name != *metadata_name)
+        {
+            return err_dandelion!(DandelionError::Composition(
+                CompositionError::InvalidFunctionDeclaration(format!(
+                    "Function arguments do not match registration for function {}.",
+                    id
+                )),
+            ));
+        }
+
+        // validated function returns
+        if returns.len() != output_sets.len()
+            || returns
+                .iter()
+                .zip_eq(output_sets.iter())
+                .any(|(decl_name, metadata_name)| *decl_name != *metadata_name)
+        {
+            return err_dandelion!(DandelionError::Composition(
+                CompositionError::InvalidFunctionDeclaration(format!(
+                    "Function returns do not match registration for function {}.",
+                    id
+                )),
+            ));
+        }
+
+        Ok(())
     }
 
-    /// Checks if a function identifier is registered in the function registry.
-    pub fn exists_id(&self, function_id: &FunctionId) -> bool {
+    /// Simple lookup whether an identifier is already registered.
+    fn id_exists(&self, id: &str) -> bool {
         let lock_guard = self
             .function_map
             .read()
             .expect("Function registry lock is poisoned!");
-        lock_guard.contains_key(&(**function_id))
+        lock_guard.contains_key(id)
     }
 
-    /// Checks if a function name is registered in the function registry.
-    pub fn exists_name(&self, function_name: &String) -> bool {
+    /// Get min_set_bytes for a function.
+    fn get_min_set_bytes(&self, id: &FunctionId) -> DandelionResult<Vec<usize>> {
         let lock_guard = self
             .function_map
             .read()
-            .expect("Function registry lock is poisoned!");
-        lock_guard.contains_key(function_name)
+            .expect("Function registry lock poisoned!");
+        match lock_guard.get(&(**id)) {
+            Some(func_type) => match func_type {
+                FunctionType::Function(func_info) => Ok(func_info.metadata.min_set_bytes.clone()),
+                FunctionType::Composition(comp_info) => {
+                    Ok(comp_info.metadata.min_set_bytes.clone())
+                }
+                FunctionType::SystemFunction(_) => Ok(vec![]),
+            },
+            None => err_dandelion!(DandelionError::FunctionRegistry(
+                FunctionRegistryError::UnknownFunction(id.to_string()),
+            )),
+        }
     }
 }

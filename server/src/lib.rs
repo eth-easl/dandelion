@@ -4,7 +4,7 @@ use dandelion_commons::{records::Recorder, DandelionError};
 use hyper::body::Frame;
 use machine_interface::{
     composition::LocalCompositionSet,
-    memory_domain::{Context, ContextTrait},
+    context::{Context, ContextTrait},
     DataItem,
 };
 use serde::{Deserialize, Serialize};
@@ -438,7 +438,7 @@ async fn test_dandelion_body_serialization_async(mut body: DandelionBody, expect
 #[test]
 fn test_dandelion_body_serialization() {
     use machine_interface::{
-        composition::CompositionSet, memory_domain::read_only::ReadOnlyContext, DataItem, DataSet,
+        composition::CompositionSet, context::read_only::ReadOnlyContext, DataItem, DataSet,
         Position,
     };
 

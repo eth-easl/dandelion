@@ -12,7 +12,8 @@ fn all_sharded_single_invocation_passes_data_through() {
     "#;
     let registry = TestRegistry::new().with_function("Identity", &["In"], &["Out"]);
     let template = parse_composition(src, "PassThrough", &registry);
-    let composition = Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
+    let composition =
+        Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
 
     let input = data_set(vec![item("a", 0), item("b", 1)]);
     let mut invocation_count = 0;
@@ -28,7 +29,10 @@ fn all_sharded_single_invocation_passes_data_through() {
         vec![data_set(vec![item("out", 0)])]
     });
 
-    assert_eq!(invocation_count, 1, "`all` blocks until complete, then runs exactly once");
+    assert_eq!(
+        invocation_count, 1,
+        "`all` blocks until complete, then runs exactly once"
+    );
     assert_eq!(outputs.len(), 1);
     assert_eq!(outputs[0].items.len(), 1);
     assert_eq!(outputs[0].items[0].ident, "out");
@@ -45,7 +49,8 @@ fn each_sharded_input_runs_one_invocation_per_item() {
     "#;
     let registry = TestRegistry::new().with_function("Double", &["In"], &["Out"]);
     let template = parse_composition(src, "DoubleAll", &registry);
-    let composition = Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
+    let composition =
+        Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
 
     let input = data_set(vec![item("a", 0), item("b", 1), item("c", 2)]);
     let mut invocation_count = 0;
@@ -65,7 +70,10 @@ fn each_sharded_input_runs_one_invocation_per_item() {
     assert_eq!(outputs.len(), 1);
     let mut idents: Vec<_> = outputs[0].items.iter().map(|i| i.ident.clone()).collect();
     idents.sort();
-    assert_eq!(idents, vec!["aa".to_string(), "bb".to_string(), "cc".to_string()]);
+    assert_eq!(
+        idents,
+        vec!["aa".to_string(), "bb".to_string(), "cc".to_string()]
+    );
 }
 
 /// Regression test: a function whose only input is `each`/`anyEach`-sharded and fed purely by
@@ -84,7 +92,8 @@ fn each_to_each_streaming_chain_runs_without_a_composition_level_intermediate() 
     "#;
     let registry = TestRegistry::new().with_function("Increment", &["In"], &["Out"]);
     let template = parse_composition(src, "IncrementTwice", &registry);
-    let composition = Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
+    let composition =
+        Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
 
     let numbers = data_set(vec![item("1", 0), item("2", 0), item("3", 0)]);
     let outputs = run_to_completion(composition, vec![numbers], |invocation| {
@@ -99,7 +108,11 @@ fn each_to_each_streaming_chain_runs_without_a_composition_level_intermediate() 
         .map(|i| i.ident.parse().unwrap())
         .collect();
     values.sort();
-    assert_eq!(values, vec![3, 4, 5], "each number should have been incremented twice");
+    assert_eq!(
+        values,
+        vec![3, 4, 5],
+        "each number should have been incremented twice"
+    );
 }
 
 /// Regression test: when the last push into a streaming input is empty and arrives while the
@@ -118,7 +131,8 @@ fn streaming_consumer_completes_when_final_push_is_empty() {
     "#;
     let registry = TestRegistry::new().with_function("Emit", &["X"], &["Y"]);
     let template = parse_composition(src, "Pipe", &registry);
-    let composition = Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
+    let composition =
+        Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
 
     // run_to_completion works through the invocations in LIFO order, so the chain for "1" finishes
     // completely before the first Emit of "0" (which produces nothing) completes `Once`.
@@ -132,7 +146,11 @@ fn streaming_consumer_completes_when_final_push_is_empty() {
         }
     });
 
-    assert_eq!(outputs[0].items.len(), 1, "the `all` consumer of Twice should have run once");
+    assert_eq!(
+        outputs[0].items.len(),
+        1,
+        "the `all` consumer of Twice should have run once"
+    );
 }
 
 /// Regression test: a function whose only input is an optional `each` input must not run an extra
@@ -149,7 +167,8 @@ fn single_optional_each_input_does_not_run_for_empty_final_push() {
     "#;
     let registry = TestRegistry::new().with_function("Emit", &["X"], &["Y"]);
     let template = parse_composition(src, "Pipe", &registry);
-    let composition = Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
+    let composition =
+        Composition::from_template(&template, AnyShardingMode::MaxSharding, &registry);
 
     // LIFO order: Emit(1) -> second Emit(1) -> Emit(0), which produces nothing and completes `Once`
     let numbers = data_set(vec![item("0", 0), item("1", 1)]);
@@ -166,6 +185,10 @@ fn single_optional_each_input_does_not_run_for_empty_final_push() {
         }
     });
 
-    assert_eq!(second_stage_sizes, vec![1], "only the item of `1` reaches the second stage");
+    assert_eq!(
+        second_stage_sizes,
+        vec![1],
+        "only the item of `1` reaches the second stage"
+    );
     assert_eq!(outputs[0].items.len(), 1);
 }

@@ -1,8 +1,15 @@
-pub(super) use crate::function_driver::compute_driver::kvm::PAGE_SIZE;
-use crate::{
-    function_driver::compute_driver::kvm::round_down_to_page,
-    memory_domain::{Context, ContextTrait, ContextType, MemoryDomain},
-};
+use crate::context::{Context, ContextTrait, ContextType, MemoryDomain};
+
+/// Guest page size. Defined here rather than in the kvm compute driver so that this crate does not
+/// depend back on `machine_interface`; the driver's arch module uses the same value.
+pub const PAGE_SHIFT: usize = 12;
+pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
+
+const _: () = assert!(PAGE_SIZE.is_power_of_two());
+
+pub fn round_down_to_page(address: usize) -> usize {
+    address & !(PAGE_SIZE - 1)
+}
 
 use super::MemoryResource;
 use dandelion_commons::{
@@ -69,7 +76,7 @@ impl KvmContext {
     /// Function that inserts a new item into the overlay.
     /// Expects the start to be page aligned and the end to point to 1 past the last byte in the overlay
     /// (equal to start + size of the overlay)
-    pub(crate) fn insert_into_overlay(
+    pub fn insert_into_overlay(
         &mut self,
         mut new_start: usize,
         new_end: usize,

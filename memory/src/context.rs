@@ -1,5 +1,5 @@
 // list of memory domain implementations
-pub mod bytes_context;
+pub mod bytes;
 #[cfg(feature = "cheri")]
 pub mod cheri;
 #[cfg(feature = "kvm")]
@@ -8,11 +8,24 @@ pub mod malloc;
 #[cfg(feature = "mmu")]
 pub mod mmu;
 pub mod read_only;
-pub(crate) mod system_domain;
+pub mod system;
 
-use crate::{DataItem, DataSet, Position};
+use crate::data::Position;
 use dandelion_commons::{err_dandelion, DandelionError, DandelionResult};
 use std::sync::Arc;
+
+#[derive(Clone, Debug)]
+pub struct ContextDataItem {
+    pub ident: String,
+    pub key: u32,
+    pub data: Position,
+}
+
+#[derive(Clone, Debug)]
+pub struct ContextDataSet {
+    pub items: Vec<ContextDataItem>,
+    pub total_size: usize,
+}
 
 pub trait ContextTrait: Send + Sync {
     /// Write data at the given offset into the context
@@ -34,14 +47,14 @@ pub trait ContextTrait: Send + Sync {
 pub enum ContextType {
     Malloc(Box<malloc::MallocContext>),
     ReadOnly(Box<read_only::ReadOnlyContext>),
-    Bytes(Box<bytes_context::BytesContext>),
+    Bytes(Box<bytes::BytesContext>),
     #[cfg(feature = "cheri")]
     Cheri(Box<cheri::CheriContext>),
     #[cfg(feature = "kvm")]
     Kvm(Box<kvm::KvmContext>),
     #[cfg(feature = "mmu")]
     Mmu(Box<mmu::MmuContext>),
-    System(Box<system_domain::SystemContext>),
+    System(Box<system::SystemContext>),
 }
 
 impl ContextTrait for ContextType {
@@ -98,7 +111,7 @@ pub enum ContextState {
 #[derive(Debug)]
 pub struct Context {
     pub context: ContextType,
-    pub content: Vec<Option<DataSet>>,
+    pub content: Vec<Option<ContextDataSet>>,
     pub size: usize,
     pub state: ContextState,
     occupation: Vec<Position>,
@@ -117,6 +130,11 @@ impl ContextTrait for Context {
 }
 
 impl Context {
+    /// The total size in bytes of the underlying block of memory.
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
     pub fn new(con: ContextType, size: usize) -> Self {
         return Context {
             context: con,
@@ -290,7 +308,7 @@ pub fn transfer_memory(
             )
         }
         (ContextType::System(destination_ctxt), ContextType::System(source_ctxt)) => {
-            system_domain::system_context_transfer(
+            system::system_context_transfer(
                 destination_ctxt,
                 &source_ctxt,
                 destination_offset,
@@ -306,14 +324,14 @@ pub fn transfer_memory(
             source_offset,
             size,
         ),
-        (ContextType::System(destination_ctxt), _) => system_domain::into_system_context_transfer(
+        (ContextType::System(destination_ctxt), _) => system::into_system_context_transfer(
             destination_ctxt,
             source,
             destination_offset,
             source_offset,
             size,
         ),
-        (_, ContextType::System(source_ctxt)) => system_domain::out_of_system_context_transfer(
+        (_, ContextType::System(source_ctxt)) => system::out_of_system_context_transfer(
             destination,
             &source_ctxt,
             destination_offset,
@@ -336,7 +354,7 @@ pub fn transfer_data_item(
     source: &Arc<Context>,
     destination_set_index: usize,
     destination_allignment: usize,
-    source_item: &DataItem,
+    source_item: &ContextDataItem,
 ) -> DandelionResult<()> {
     assert!(destination_set_index < destination.content.len());
 
@@ -376,7 +394,7 @@ pub fn transfer_data_item(
 
     {
         let destination_set = destination.content[destination_set_index].as_mut().unwrap();
-        destination_set.buffers.push(DataItem {
+        destination_set.items.push(ContextDataItem {
             ident: source_item.ident.clone(),
             data: Position {
                 offset: destination_offset,
@@ -385,11 +403,7 @@ pub fn transfer_data_item(
             key: source_item.key,
         });
 
-        log::trace!(
-            "transfering item {} to set {}",
-            source_item.ident,
-            destination_set.ident
-        );
+        log::trace!("transfering item {} to new set", source_item.ident);
     }
 
     let source_offset = source_item.data.offset;
@@ -404,4 +418,4 @@ pub fn transfer_data_item(
 }
 
 #[cfg(test)]
-mod domain_tests;
+mod tests;

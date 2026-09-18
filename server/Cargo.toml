@@ -7,6 +7,7 @@ edition = "2021"
 ignored = ["openssl", "serde_bytes"]
 
 [dependencies]
+memory = { path = "../memory" }
 machine_interface = { path = "../machine_interface" }
 dandelion_commons = { path = "../dandelion_commons" }
 dispatcher = { path = "../dispatcher" }

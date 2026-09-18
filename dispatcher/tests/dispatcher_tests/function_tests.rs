@@ -9,7 +9,7 @@ use machine_interface::{
     },
     function_driver::ComputeResource,
     machine_config::{DomainType, EngineType},
-    memory_domain::{read_only::ReadOnlyContext, MemoryDomain, MemoryResource},
+    context::{read_only::ReadOnlyContext, MemoryDomain, MemoryResource},
     DataItem, DataSet, Position,
 };
 use std::{collections::BTreeMap, time::Instant};

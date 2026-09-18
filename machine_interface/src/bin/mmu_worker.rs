@@ -1,5 +1,5 @@
 use core_affinity::CoreId;
-use machine_interface::{memory_domain::mmu::MMAP_BASE_ADDR, Position};
+use machine_interface::{context::mmu::MMAP_BASE_ADDR, Position};
 use nix::{
     fcntl::OFlag,
     sys::{

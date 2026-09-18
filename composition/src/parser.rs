@@ -8,6 +8,7 @@ use crate::{
 use ariadne::{Color, Config, Label, Report, ReportKind, Source};
 use chumsky::{prelude::*, Parser as ChumskyParser};
 use dandelion_commons::FunctionId;
+use memory::data::Metadata;
 use std::ops::Range;
 
 /// A byte-offset range into the source that produced a node.
@@ -310,7 +311,7 @@ impl<'src, R: Registry> Parser<'src, R> {
     pub(crate) fn parse(
         &self,
         src: &'src str,
-    ) -> Result<Vec<(FunctionId, CompositionTemplate)>, Vec<ErrorDiagnostic>> {
+    ) -> Result<Vec<(FunctionId, CompositionTemplate, Metadata)>, Vec<ErrorDiagnostic>> {
         // parse module
         let module = self.parser.parse(src).into_result().map_err(|errs| {
             errs.into_iter()

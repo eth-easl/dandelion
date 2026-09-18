@@ -14,7 +14,7 @@ use machine_interface::{
     composition::{CompositionSet, LocalCompositionSet},
     function_driver::Metadata,
     machine_config::EngineType,
-    memory_domain::bytes_context::BytesContext,
+    context::bytes::BytesContext,
 };
 use serde::Deserialize;
 use std::{

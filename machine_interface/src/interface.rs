@@ -1,10 +1,8 @@
-use crate::{
-    memory_domain::{Context, ContextState, ContextTrait},
-    DataItem, DataSet, Position,
-};
+use crate::Position;
 use dandelion_commons::{dandelion_err, err_dandelion, DandelionError, DandelionResult};
 use libc::{c_int, size_t, uintptr_t};
 use log::trace;
+use memory::context::{Context, ContextDataItem, ContextDataSet, ContextState, ContextTrait};
 extern crate alloc;
 
 pub trait SizedIntTrait
@@ -134,7 +132,7 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
         .map(|set_opt| {
             set_opt
                 .as_ref()
-                .and_then(|set| Some(set.buffers.len()))
+                .and_then(|set| Some(set.items.len()))
                 .unwrap_or(0)
         })
         .sum();
@@ -159,19 +157,15 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     // start writing input set info structs
     for c in 0..context.content.len() {
         // get name and length
-        let (name, buffer_len) = context.content[c]
+        let buffer_len = context.content[c]
             .as_ref()
-            .and_then(|set| Some((set.ident.clone(), set.buffers.len())))
-            .unwrap_or((String::from(""), 0));
-        let name_length = name.len();
-        // find space and write string
-        let mut string_offset = 0;
-        if name_length != 0 {
-            string_offset = context.get_free_space_and_write_slice(name.as_bytes())? as usize;
-        }
+            .and_then(|set| Some(set.items.len()))
+            .unwrap_or(0);
+        // TODO: removed the set identifier -> to completely remove it here we might need to change
+        //       the dlibc?
         input_sets.push(IoSetInfo::<PtrT, SizeT> {
-            ident: ptr_t!(string_offset),
-            ident_len: size_t!(name_length),
+            ident: ptr_t!(0),
+            ident_len: size_t!(0),
             offset: size_t!(input_buffers.len()),
         });
         // find buffers
@@ -179,7 +173,7 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
             let (name, offset, size, key) = context.content[c]
                 .as_ref()
                 .and_then(|set| {
-                    let buffer = &set.buffers[b];
+                    let buffer = &set.items[b];
                     return Some((
                         buffer.ident.clone(),
                         buffer.data.offset,
@@ -359,22 +353,13 @@ pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
             continue;
         }
 
-        let ident_offset = usize_ptr!(output_set_info[output_set].ident);
         let ident_length = usize!(output_set_info[output_set].ident_len);
-        let set_ident_string = if ident_length > 0 {
-            let mut set_ident = vec![0u8; ident_length];
-            context.read(ident_offset, &mut set_ident)?;
-            String::from_utf8(set_ident).or(err_dandelion!(DandelionError::UserError(
-                dandelion_commons::UserError::InvalidIdentifier,
-            )))?
-        } else {
-            "".to_string()
-        };
         let buffer_number = one_past_last_buffer - first_buffer;
         let mut buffers = Vec::new();
         if buffers.try_reserve(buffer_number).is_err() {
             return err_dandelion!(DandelionError::OutOfMemory);
         }
+        let mut total_size = 0;
         for buffer_index in first_buffer..one_past_last_buffer {
             let buffer_ident_offset = usize_ptr!(output_buffers[buffer_index].ident);
             let buffer_ident_length = usize!(output_buffers[buffer_index].ident_len);
@@ -397,20 +382,21 @@ pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
                 data_length,
                 key
             );
-            buffers.push(DataItem {
+            buffers.push(ContextDataItem {
                 ident: ident_string,
+                key: key as u32,
                 data: Position {
                     offset: data_offset,
                     size: data_length,
                 },
-                key: key as u32,
             });
             context.occupy_space(data_offset, data_length)?;
+            total_size += data_length;
         }
         // always need to push the set, to keep the numbering
-        output_sets.push(Some(DataSet {
-            ident: set_ident_string,
-            buffers: buffers,
+        output_sets.push(Some(ContextDataSet {
+            items: buffers,
+            total_size,
         }));
     }
     context.content = output_sets;

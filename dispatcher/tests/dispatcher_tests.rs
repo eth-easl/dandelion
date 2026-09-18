@@ -11,7 +11,7 @@ mod dispatcher_tests {
         composition::{AnyShardingMode, CompositionSet, ItemData},
         function_driver::{ComputeResource, Metadata},
         machine_config::{DomainType, EngineType},
-        memory_domain::{ContextTrait, MemoryDomain, MemoryResource},
+        context::{ContextTrait, MemoryDomain, MemoryResource},
         DataItem,
     };
     use std::{collections::BTreeMap, sync::Arc};
@@ -209,7 +209,7 @@ mod dispatcher_tests {
         use machine_interface::{
             function_driver::ComputeResource,
             machine_config::{DomainType, EngineType},
-            memory_domain::{cheri::CheriMemoryDomain, MemoryResource},
+            context::{cheri::CheriMemoryDomain, MemoryResource},
         };
         dispatcherTests!(elf_cheri; CheriMemoryDomain; (DomainType::Cheri, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Cheri; vec![ComputeResource::CPU(1)]);
     }
@@ -219,7 +219,7 @@ mod dispatcher_tests {
         use machine_interface::{
             function_driver::ComputeResource,
             machine_config::{DomainType, EngineType},
-            memory_domain::{mmu::MmuMemoryDomain, MemoryResource},
+            context::{mmu::MmuMemoryDomain, MemoryResource},
         };
         #[cfg(target_arch = "x86_64")]
         dispatcherTests!(elf_mmu_x86_64; MmuMemoryDomain; (DomainType::Process ,MemoryResource::Shared { size: (1<<30) }); EngineType::Process; vec![ComputeResource::CPU(1)]);
@@ -232,7 +232,7 @@ mod dispatcher_tests {
         use machine_interface::{
             function_driver::ComputeResource,
             machine_config::{DomainType, EngineType},
-            memory_domain::{kvm::KvmMemoryDomain, MemoryResource},
+            context::{kvm::KvmMemoryDomain, MemoryResource},
         };
         #[cfg(target_arch = "x86_64")]
         dispatcherTests!(elf_kvm_x86_64; KvmMemoryDomain; (DomainType::Kvm, MemoryResource::Anonymous { size: (1<<30) }); EngineType::Kvm; vec![ComputeResource::CPU(1)]);

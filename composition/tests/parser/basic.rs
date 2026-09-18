@@ -17,7 +17,10 @@ fn function_declarations_without_a_composition_parse() {
 
     let compositions = CompositionTemplate::parse(src, &registry)
         .unwrap_or_else(|e| panic!("expected the module to parse:\n{e}"));
-    assert!(compositions.is_empty(), "the module declares no compositions");
+    assert!(
+        compositions.is_empty(),
+        "the module declares no compositions"
+    );
 }
 
 #[test]
@@ -87,7 +90,7 @@ fn multiple_compositions_in_one_module_all_parse() {
 
     let compositions = CompositionTemplate::parse(src, &registry)
         .unwrap_or_else(|e| panic!("expected both compositions to parse:\n{e}"));
-    let mut names: Vec<_> = compositions.iter().map(|(id, _)| id.as_str()).collect();
+    let mut names: Vec<_> = compositions.iter().map(|(id, _, _)| id.as_str()).collect();
     names.sort();
     assert_eq!(names, vec!["First", "Second"]);
 }

@@ -4,7 +4,7 @@ use machine_interface::{
     composition::CompositionSet,
     function_driver::{ComputeResource, Metadata},
     machine_config::{DomainType, EngineType},
-    memory_domain::{read_only::ReadOnlyContext, Context, MemoryDomain, MemoryResource},
+    context::{read_only::ReadOnlyContext, Context, MemoryDomain, MemoryResource},
     DataItem, DataSet, Position,
 };
 use std::{sync::Arc, time::Instant, vec};

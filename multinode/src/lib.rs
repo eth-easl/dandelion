@@ -66,7 +66,7 @@ fn deserialize_queue_message(buf: Bytes) -> DandelionResult<proto::QueueMessage>
 #[test]
 fn test_serialize_invocation_request() {
     use crate::proto::{item_data, queue_message, Invocation, QueueMessage};
-    use machine_interface::{composition::ItemData, memory_domain::ContextTrait};
+    use machine_interface::{composition::ItemData, context::ContextTrait};
 
     // construct invocation data
     let expected_id = String::from("TestName");
@@ -81,7 +81,7 @@ fn test_serialize_invocation_request() {
     data.extend_from_slice(&item_1_0_data.to_le_bytes());
     data.extend_from_slice(&item_1_1_data.to_le_bytes());
     let mut in_context =
-        machine_interface::memory_domain::read_only::ReadOnlyContext::new(data.into_boxed_slice())
+        memory::context::read_only::ReadOnlyContext::new(data.into_boxed_slice())
             .expect("Should be able to create read only context");
     in_context.content = vec![
         Some(machine_interface::DataSet {

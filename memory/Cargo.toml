@@ -1,0 +1,23 @@
+[package]
+name = "memory"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["std"]
+std = []
+cheri = ["std"]
+mmu = ["std"]
+kvm = ["std"]
+timestamp = ["dandelion_commons/timestamp"]
+
+[dev-dependencies]
+test-log = "0.2.16"
+
+[dependencies]
+dandelion_commons = { path = "../dandelion_commons" }
+
+bytes = "1.6"
+libc = "0.2"
+log = "0.4.20"
+nix = { version = "0.31", features = ["mman", "fs", "ptrace", "sched"] }

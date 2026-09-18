@@ -9,8 +9,8 @@ use hyper::{
 use log::{debug, error, trace, warn};
 use machine_interface::{
     composition::{RemoteData, RemoteDataClient},
-    memory_domain::{
-        bytes_context::BytesContext, read_only::ReadOnlyContext, Context, ContextTrait, ContextType,
+    context::{
+        bytes::BytesContext, read_only::ReadOnlyContext, Context, ContextTrait, ContextType,
     },
     DataItem, Position,
 };

@@ -4,6 +4,7 @@ use std::{
 };
 
 use dandelion_commons::FunctionId;
+use memory::data::Metadata;
 
 use crate::{
     parser::{
@@ -20,11 +21,11 @@ pub(super) struct CompositionBuilder<'src, R: Registry> {
     registry: &'src R,
     declared_functions: HashMap<&'src str, &'src FunctionDecl<'src>>,
     composition_ids: HashSet<&'src str>,
-    compositions: Vec<(FunctionId, CompositionTemplate)>,
+    compositions: Vec<(FunctionId, CompositionTemplate, Metadata)>,
 }
 
 impl<'src, R: Registry> CompositionBuilder<'src, R> {
-    pub fn new(registry: &'src R) -> Self {
+    pub(super) fn new(registry: &'src R) -> Self {
         CompositionBuilder {
             registry,
             declared_functions: HashMap::new(),
@@ -33,7 +34,7 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
         }
     }
 
-    pub fn add_declaration(
+    pub(super) fn add_declaration(
         &mut self,
         decl: &'src SpannedFunctionDecl<'src>,
     ) -> Result<(), ErrorDiagnostic> {
@@ -254,7 +255,7 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
         })
     }
 
-    pub fn add_composition(
+    pub(super) fn add_composition(
         &mut self,
         comp: &'src SpannedCompositionDecl<'src>,
     ) -> Result<(), ErrorDiagnostic> {
@@ -353,6 +354,16 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
             data_set_counter,
         )?;
 
+        let metadata = Metadata {
+            input_sets: comp
+                .v
+                .params
+                .iter()
+                .map(|name| (name.to_string(), None))
+                .collect(),
+            output_sets: comp.v.returns.iter().map(|name| name.to_string()).collect(),
+            min_set_bytes: vec![],
+        };
         self.compositions.push((
             Arc::new(comp.v.name.to_string()),
             CompositionTemplate {
@@ -361,6 +372,7 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
                 returns: (inputs_end_idx..output_end_idx).collect(),
                 num_sets: data_set_counter,
             },
+            metadata,
         ));
 
         Ok(())
@@ -451,7 +463,7 @@ impl<'src, R: Registry> CompositionBuilder<'src, R> {
         Ok(())
     }
 
-    pub fn collect(self) -> Vec<(FunctionId, CompositionTemplate)> {
+    pub(super) fn collect(self) -> Vec<(FunctionId, CompositionTemplate, Metadata)> {
         self.compositions
     }
 }

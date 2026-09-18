@@ -3,6 +3,7 @@ use crate::{
     queue::{EngineQueue, WorkQueue},
     resource_pool::ResourcePool,
 };
+use composition::CompositionTemplate;
 use dandelion_commons::{
     err_dandelion,
     records::{RecordPoint, Recorder},
@@ -17,7 +18,7 @@ use itertools::Itertools;
 use log::warn;
 use log::{debug, trace};
 #[cfg(feature = "log_function_stdio")]
-use machine_interface::memory_domain::ContextTrait;
+use memory::context::ContextTrait;
 use machine_interface::{
     composition::{
         get_sharding, AnyShardingMode, Composition, CompositionSet, InputSetDescriptor,
@@ -25,7 +26,7 @@ use machine_interface::{
     },
     function_driver::{Metadata, WorkToDo},
     machine_config::{get_available_domains, DomainType, EngineType, IntoEnumIterator},
-    memory_domain::{MemoryDomain, MemoryResource},
+    context::{MemoryDomain, MemoryResource},
 };
 use std::{
     collections::BTreeMap,
@@ -104,8 +105,8 @@ impl Dispatcher {
     }
 
     pub fn insert_compositions(&self, composition_desc: String) -> DandelionResult<()> {
-        self.function_registry
-            .insert_compositions(&composition_desc)
+        let templates = CompositionTemplate::parse(&composition_desc, &self.function_registry)?;
+        self.function_registry.insert_compositions(templates)
     }
 
     pub async fn queue_function_by_name(

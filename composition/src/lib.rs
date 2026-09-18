@@ -13,15 +13,10 @@ use crate::{
     sharding::Sharding,
 };
 
-/// Re-exported so callers of [`Composition::from_template`] can name the sharding mode without
-/// needing access to the (otherwise crate-private) `sharding` module.
-pub use crate::sharding::AnyShardingMode;
-use dandelion_commons::{
-    dandelion_err,
-    data::{DataSet, Invocation},
-    DandelionError, DandelionResult, FunctionId,
-};
+pub use crate::sharding::{AnyShardingMode, AnyShardingParams, SystemInfo};
+use dandelion_commons::{dandelion_err, DandelionError, DandelionResult, FunctionId};
 use log::warn;
+use memory::data::{DataSet, Invocation, Metadata};
 
 /// Functions from the function registry side required build compositions.
 pub trait Registry {
@@ -30,23 +25,25 @@ pub trait Registry {
     /// Simple lookup whether an identifier is already registered.
     fn id_exists(&self, id: &str) -> bool;
     /// Get min_set_bytes for a function.
-    fn get_min_set_bytes(&self, id: &FunctionId) -> Vec<usize>;
+    fn get_min_set_bytes(&self, id: &FunctionId) -> DandelionResult<Vec<usize>>;
 }
 
-#[derive(Clone, Copy)]
-pub struct InputSetTemplate {
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct InputSetTemplate {
     set_idx: usize,
     sharding: Sharding,
     optional: bool,
 }
 
-pub struct FunctionTemplate {
+#[derive(Debug)]
+pub(crate) struct FunctionTemplate {
     id: FunctionId,
     params: Vec<Option<InputSetTemplate>>,
     join_order: Arc<Vec<usize>>,
     returns: Vec<Option<usize>>,
 }
 
+#[derive(Debug)]
 pub struct CompositionTemplate {
     functions: Vec<FunctionTemplate>,
     params: Vec<usize>,
@@ -55,7 +52,10 @@ pub struct CompositionTemplate {
 }
 
 impl CompositionTemplate {
-    pub fn parse<R: Registry>(raw: &str, registry: &R) -> DandelionResult<Vec<(FunctionId, Self)>> {
+    pub fn parse<R: Registry>(
+        raw: &str,
+        registry: &R,
+    ) -> DandelionResult<Vec<(FunctionId, Self, Metadata)>> {
         let parser = Parser::new(registry);
         parser.parse(raw).map_err(|diagnostics| {
             let err_str = render_diagnostics(raw, &diagnostics);
@@ -114,7 +114,8 @@ impl Composition {
                 .iter()
                 .map(|set_idx_opt| set_idx_opt.map(|i| sets[i].clone()))
                 .collect();
-            function.update_io(&inputs, outputs, registry.get_min_set_bytes(&f.id));
+            let min_set_bytes = registry.get_min_set_bytes(&f.id).unwrap(); // TODO
+            function.update_io(&inputs, outputs, min_set_bytes);
 
             let function_arc = Arc::new(function);
 

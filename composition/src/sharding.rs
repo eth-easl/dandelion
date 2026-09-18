@@ -1,14 +1,14 @@
 use std::{cmp, sync::Arc};
 
-use dandelion_commons::data::DataSet;
 use log::{debug, trace};
+use memory::data::DataSet;
 
 use crate::join_iterator::{
     AnyIterator, JoinIterator, SetAllIterator, SetEachIterator, SetKeyIterator,
 };
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
-pub enum JoinStrategy {
+pub(crate) enum JoinStrategy {
     Inner,
     Left,
     Right,
@@ -17,7 +17,7 @@ pub enum JoinStrategy {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Sharding {
+pub(crate) enum Sharding {
     All,
     Each,
     Keyed(JoinStrategy),
@@ -26,14 +26,14 @@ pub enum Sharding {
 }
 
 impl Sharding {
-    pub fn is_blocking(&self) -> bool {
+    pub(crate) fn is_blocking(&self) -> bool {
         match self {
             Sharding::Each | Sharding::AnyEach => false,
             _ => true,
         }
     }
 
-    pub fn requires_sorting(&self) -> bool {
+    pub(crate) fn requires_sorting(&self) -> bool {
         match self {
             Sharding::Keyed(_) | Sharding::AnyKeyed(_) => true,
             _ => false,
@@ -53,10 +53,10 @@ pub struct SystemInfo {
 }
 
 impl SystemInfo {
-    pub fn local_cores(&self) -> usize {
+    pub(crate) fn local_cores(&self) -> usize {
         todo!("implement")
     }
-    pub fn remote_cores(&self) -> usize {
+    pub(crate) fn remote_cores(&self) -> usize {
         todo!("implement")
     }
 }
@@ -87,7 +87,11 @@ pub(crate) struct AnySetGroup {
 }
 
 impl AnySetGroup {
-    pub fn new(largest_set_size: usize, min_set_bytes: usize, max_partitions: usize) -> Self {
+    pub(crate) fn new(
+        largest_set_size: usize,
+        min_set_bytes: usize,
+        max_partitions: usize,
+    ) -> Self {
         // if the largest set size is zero it is considered unknown (e.g. contains system function
         // reference items) -> setting a target_partitions value of 0 leads to max sharding
         if largest_set_size == 0 {
@@ -109,7 +113,7 @@ impl AnySetGroup {
         }
     }
 
-    pub fn target_partitions(&self) -> usize {
+    pub(crate) fn target_partitions(&self) -> usize {
         self.target_partitions
     }
 }
@@ -125,7 +129,7 @@ impl AnySetGroup {
 ///
 /// The `min_set_size` is used to create `any` set shards of at least that size and is ignored if
 /// set to 0.
-pub fn create_sharding_iter(
+pub(crate) fn create_sharding_iter(
     mut sets: Vec<Option<(DataSet, Sharding)>>,
     join_order: &[usize],
     any_sharding_mode: &AnyShardingMode,
@@ -355,14 +359,26 @@ pub fn create_sharding_iter(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dandelion_commons::data::{DataItem, Position};
+    use memory::{
+        data::{DataItem, Position},
+        Context,
+    };
+
+    /// A small real context for tests; the composition layer only tracks items, it never reads
+    /// their bytes, so any context of sufficient size will do.
+    fn test_context() -> Arc<Context> {
+        use memory::context::{malloc::MallocMemoryDomain, MemoryDomain, MemoryResource};
+        let domain = MallocMemoryDomain::init(MemoryResource::None).expect("malloc domain");
+        Arc::new(domain.acquire_context(4096).expect("context"))
+    }
 
     fn item(key: u32) -> Arc<DataItem> {
-        Arc::new(DataItem {
-            ident: format!("item-{key}"),
-            data: Position { offset: 0, size: 0 },
+        Arc::new(DataItem::new_local(
+            format!("item-{key}"),
             key,
-        })
+            test_context(),
+            Position { offset: 0, size: 0 },
+        ))
     }
 
     /// Builds a `DataSet` with one item per given key, sorted ascending (as
@@ -382,11 +398,12 @@ mod tests {
         DataSet::from_items(Arc::new(
             keys.into_iter()
                 .map(|key| {
-                    Arc::new(DataItem {
-                        ident: format!("item-{key}"),
-                        data: Position { offset: 0, size },
+                    Arc::new(DataItem::new_local(
+                        format!("item-{key}"),
                         key,
-                    })
+                        test_context(),
+                        Position { offset: 0, size },
+                    ))
                 })
                 .collect(),
         ))
