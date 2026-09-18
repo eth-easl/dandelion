@@ -353,7 +353,6 @@ async fn remote_queue_server_logic(
                                             )
                                         },
                                     );
-                                let caching = caching;
                                 let function_id = function_id.to_string();
                                 let cancel_sender = local_sender.clone();
                                 debt.install_abort_handle(move || {
@@ -568,7 +567,6 @@ async fn remote_queue_server_logic(
                             Some(remote_data_deletion_sender.clone()),
                         )
                     });
-                let caching = caching;
                 let function_id = function_id.to_string();
                 let cancel_sender = local_sender.clone();
                 debt.install_abort_handle(move || {
@@ -797,8 +795,8 @@ async fn remote_queue_client_receiver(
                 break;
             }
         };
-        let message = deserialize_queue_message(message_buffer)
-            .and_then(|message| Ok(message.queue_message.unwrap()));
+        let message =
+            deserialize_queue_message(message_buffer).map(|message| message.queue_message.unwrap());
         if sender
             .send(PollingOption::Message(message, None))
             .await
@@ -952,12 +950,13 @@ fn delete_invocation_exports(
 async fn send_cancel_acknowledgement(
     message_sender: &mpsc::Sender<remote_message::RemoteMessage>,
     invocation_id: u32,
-) -> Result<(), SendError<remote_message::RemoteMessage>> {
+) -> bool {
     message_sender
         .send(remote_message::RemoteMessage::CancelAcknowledgement(
             CancelAcknowledgement { invocation_id },
         ))
         .await
+        .is_ok()
 }
 
 async fn remote_queue_client_logic(
@@ -1037,10 +1036,7 @@ async fn remote_queue_client_logic(
                                 );
                                 break;
                             }
-                            if send_cancel_acknowledgement(&message_sender, invocation_id)
-                                .await
-                                .is_err()
-                            {
+                            if !send_cancel_acknowledgement(&message_sender, invocation_id).await {
                                 break;
                             }
                         } else {
@@ -1176,10 +1172,7 @@ async fn remote_queue_client_logic(
                         );
                         break;
                     }
-                    if send_cancel_acknowledgement(&message_sender, invocation_id)
-                        .await
-                        .is_err()
-                    {
+                    if !send_cancel_acknowledgement(&message_sender, invocation_id).await {
                         break;
                     }
                 } else {

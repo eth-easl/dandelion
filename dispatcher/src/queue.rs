@@ -273,7 +273,7 @@ fn get_flags_and_local(work: &WorkToDo) -> (u32, bool) {
             ..
         } => {
             // check if all the sets are already fully locally available
-            let local = input_sets.into_iter().all(|set_option| {
+            let local = input_sets.iter().all(|set_option| {
                 if let Some(set) = set_option {
                     set.is_local()
                 } else {
@@ -703,12 +703,12 @@ impl WorkQueue {
     /// Spins on the queue until it manages to acquire some work that matches the given flags.
     pub async fn get_compute_work(&self, engine_flags: u32) -> (WorkToDo, Debt) {
         // try to get work, if there is none, insert self into waker and try again
-        ComputeWaitFuture::new(engine_flags, &self).await
+        ComputeWaitFuture::new(engine_flags, self).await
     }
 
     pub async fn get_io_work(&self) -> (WorkToDo, Debt, Option<usize>) {
         // try to get work, if there is none, insert self into waker and try again
-        IoWaitFuture::new(&self).await
+        IoWaitFuture::new(self).await
     }
 
     /// Increases the number of local cores.

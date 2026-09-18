@@ -85,6 +85,7 @@ pub mod _native {
             Ok(ptr as uintptr_t)
         }
         fn to_native(self) -> DandelionResult<usize> {
+            #[allow(clippy::unnecessary_cast)]
             Ok(self as usize)
         }
     }
@@ -125,18 +126,13 @@ struct IoBufferDescriptor<PtrT: SizedIntTrait, SizeT: SizedIntTrait> {
 pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
     context: &mut Context,
     system_data_offset: usize,
-    output_set_names: &Vec<String>,
+    output_set_names: &[String],
 ) -> DandelionResult<()> {
     // prepare information to set up input sets, output sets and input buffers
     let input_buffer_number = context
         .content
         .iter()
-        .map(|set_opt| {
-            set_opt
-                .as_ref()
-                .and_then(|set| Some(set.buffers.len()))
-                .unwrap_or(0)
-        })
+        .map(|set_opt| set_opt.as_ref().map(|set| set.buffers.len()).unwrap_or(0))
         .sum();
     let input_set_number = context.content.len();
     let output_set_number = output_set_names.len();
@@ -161,7 +157,7 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
         // get name and length
         let (name, buffer_len) = context.content[c]
             .as_ref()
-            .and_then(|set| Some((set.ident.clone(), set.buffers.len())))
+            .map(|set| (set.ident.clone(), set.buffers.len()))
             .unwrap_or((String::from(""), 0));
         let name_length = name.len();
         // find space and write string
@@ -178,14 +174,14 @@ pub fn setup_input_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
         for b in 0..buffer_len {
             let (name, offset, size, key) = context.content[c]
                 .as_ref()
-                .and_then(|set| {
+                .map(|set| {
                     let buffer = &set.buffers[b];
-                    return Some((
+                    (
                         buffer.ident.clone(),
                         buffer.data.offset,
                         buffer.data.size,
                         buffer.key,
-                    ));
+                    )
                 })
                 .unwrap_or((String::from(""), 0, 0, 0));
             let name_length = name.len();
@@ -375,12 +371,12 @@ pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
         if buffers.try_reserve(buffer_number).is_err() {
             return err_dandelion!(DandelionError::OutOfMemory);
         }
-        for buffer_index in first_buffer..one_past_last_buffer {
-            let buffer_ident_offset = usize_ptr!(output_buffers[buffer_index].ident);
-            let buffer_ident_length = usize!(output_buffers[buffer_index].ident_len);
-            let data_offset = usize_ptr!(output_buffers[buffer_index].data);
-            let data_length = usize!(output_buffers[buffer_index].data_len);
-            let key = usize!(output_buffers[buffer_index].key);
+        for output_buffer in output_buffers[first_buffer..one_past_last_buffer].iter() {
+            let buffer_ident_offset = usize_ptr!(output_buffer.ident);
+            let buffer_ident_length = usize!(output_buffer.ident_len);
+            let data_offset = usize_ptr!(output_buffer.data);
+            let data_length = usize!(output_buffer.data_len);
+            let key = usize!(output_buffer.key);
             let ident_string = if ident_length > 0 {
                 let mut buffer_ident = vec![0u8; buffer_ident_length];
                 context.read(buffer_ident_offset, &mut buffer_ident)?;
@@ -410,7 +406,7 @@ pub fn read_output_structs<PtrT: SizedIntTrait, SizeT: SizedIntTrait>(
         // always need to push the set, to keep the numbering
         output_sets.push(Some(DataSet {
             ident: set_ident_string,
-            buffers: buffers,
+            buffers,
         }));
     }
     context.content = output_sets;

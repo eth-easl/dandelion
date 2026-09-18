@@ -69,13 +69,13 @@ impl Dispatcher {
         // create the function registry
         let function_registry = FunctionRegistry::new();
 
-        return Ok(Dispatcher {
+        Ok(Dispatcher {
             function_registry,
             work_queue,
             domains,
             any_sharding_mode,
             composition_id: AtomicUsize::new(0),
-        });
+        })
     }
 
     pub fn get_composition_id(&self) -> usize {
@@ -129,7 +129,7 @@ impl Dispatcher {
             .await?;
 
         // if any set is not local send them trough reference resolution
-        let resolved_sets = if !(&results).into_iter().all(|set_option| {
+        let resolved_sets = if !(results).iter().all(|set_option| {
             if let Some(set) = set_option {
                 set.is_local()
             } else {
@@ -169,7 +169,7 @@ impl Dispatcher {
 
         let composition_meta_pairs = self
             .function_registry
-            .parse_compositions(&composition_desc.as_str())?;
+            .parse_compositions(composition_desc.as_str())?;
         recorder.record(RecordPoint::DynamicParsingEnd);
 
         if composition_meta_pairs.len() != 1 {
@@ -198,7 +198,7 @@ impl Dispatcher {
             .await?;
 
         // if any set is not local send them trough reference resolution
-        let resolved_sets = if !(&results).into_iter().all(|set_option| {
+        let resolved_sets = if !(results).iter().all(|set_option| {
             if let Some(set) = set_option {
                 set.is_local()
             } else {
@@ -360,7 +360,7 @@ impl Dispatcher {
                     composition_set_index,
                     composition_set_option.is_some()
                 );
-                if let Some(output_index) = composition.output_map.get(&composition_set_index) {
+                if let Some(output_index) = composition.output_map.get(composition_set_index) {
                     output_sets[*output_index] = composition_set_option.clone();
                 }
                 non_ready_functions = non_ready_functions
@@ -392,13 +392,13 @@ impl Dispatcher {
                                     None
                                 } else {
                                     args.input_sets[*function_index] =
-                                        composition_set_option.clone().and_then(|set| {
+                                        composition_set_option.clone().map(|set| {
                                             debug_assert_ne!(
                                                 0,
                                                 set.len(),
                                                 "Expect at least 1 item in composition set"
                                             );
-                                            Some((*mode, set))
+                                            (*mode, set)
                                         });
                                     Some((*comp_index, *function_index))
                                 }
@@ -406,11 +406,8 @@ impl Dispatcher {
                             .collect::<Vec<_>>();
                         // need to cancel the function if one of the non optional sets is empty
                         for key_opt in to_remove {
-                            if let Some(key) = key_opt {
-                                args.missing_sets.remove(&key);
-                            } else {
-                                return None;
-                            }
+                            let key = key_opt?;
+                            args.missing_sets.remove(&key);
                         }
                         if args.missing_sets.is_empty() {
                             awaited_sets.push(Either::Right(self.queue_function_sharded(
@@ -440,14 +437,14 @@ impl Dispatcher {
 
         recorder.add_children(recorders);
         recorder.record(RecordPoint::FutureReturn);
-        return Ok(output_sets);
+        Ok(output_sets)
     }
 
     /// Adapter between compositions and functions
     /// Keeps track of the composition set indexes so that when sets are returned to
     /// composition they have the corret index associated without the composition needing to track them.
     /// Also handles sharing of sets.
-    async fn queue_function_sharded<'context>(
+    async fn queue_function_sharded(
         &self,
         composition_id: usize,
         function_id: FunctionId,
@@ -501,7 +498,7 @@ impl Dispatcher {
                 let sharding_start = std::time::Instant::now();
                 let mut recorders;
                 let is_sharded =
-                    input_sets.len() != 0 && input_sets.iter().any(|opt| opt.is_some());
+                    !input_sets.is_empty() && input_sets.iter().any(|opt| opt.is_some());
                 if is_sharded {
                     let min_set_bytes = self.function_registry.get_min_set_bytes(&function_id)?;
                     let sharded = get_sharding(
@@ -549,7 +546,7 @@ impl Dispatcher {
 
                         for (index, set_option) in sets.into_iter().enumerate() {
                             if let Some(set) = set_option {
-                                composition_set_vecs[index].extend(set.into_iter());
+                                composition_set_vecs[index].extend(set);
                             }
                         }
                     }
@@ -609,7 +606,7 @@ impl Dispatcher {
         Ok((
             output_mapping
                 .into_iter()
-                .zip(results.into_iter())
+                .zip(results)
                 .filter_map(|(index_option, sets)| index_option.map(|index| (index, sets)))
                 .collect(),
             function_index,
@@ -619,8 +616,8 @@ impl Dispatcher {
 
     /// returns a vector of pairs of a index and a composition set
     /// the index describes which output set the composition belongs to.
-    pub async fn queue_function<'dispatcher>(
-        &'dispatcher self,
+    pub async fn queue_function(
+        &self,
         composition_id: usize,
         function_id: FunctionId,
         input_sets: Vec<Option<CompositionSet>>,

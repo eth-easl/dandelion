@@ -176,9 +176,9 @@ impl FunctionRegistry {
             }
         }
 
-        return FunctionRegistry {
+        FunctionRegistry {
             function_map: RwLock::new(function_map),
-        };
+        }
     }
 
     /// Returns the function corresponding to the given function identifier. The returned FunctionType

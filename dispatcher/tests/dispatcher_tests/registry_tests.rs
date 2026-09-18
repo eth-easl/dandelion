@@ -4,7 +4,7 @@ use machine_interface::{
     composition::CompositionSet,
     function_driver::{ComputeResource, Metadata},
     machine_config::{DomainType, EngineType},
-    memory_domain::{read_only::ReadOnlyContext, Context, MemoryDomain, MemoryResource},
+    memory_domain::{read_only::ReadOnlyContext, Context, MemoryResource},
     DataItem, DataSet, Position,
 };
 use std::{sync::Arc, time::Instant, vec};
@@ -13,8 +13,8 @@ const DEFAULT_CONTEXT_SIZE: usize = 0x800_0000; // 128MiB
 
 fn create_context(matrix: Box<[u64]>) -> Context {
     let mat_len = matrix.len();
-    let mut fixed =
-        ReadOnlyContext::new(matrix).expect("Should be able to make context from boxed array");
+    let mut fixed = ReadOnlyContext::from_boxed(matrix)
+        .expect("Should be able to make context from boxed array");
     fixed.content.push(Some(DataSet {
         ident: String::from(""),
         buffers: vec![DataItem {
@@ -26,13 +26,13 @@ fn create_context(matrix: Box<[u64]>) -> Context {
             key: 0,
         }],
     }));
-    return fixed;
+    fixed
 }
 
 /// tests with a single set fixed in the metadata
 /// check once for the ouput being correct in absence of an input set for the fixed one,
 /// and once for correct behavior if there is a set provided for the fixed one
-pub fn single_input_fixed<Domain: MemoryDomain>(
+pub fn single_input_fixed(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
@@ -62,7 +62,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         (String::from(""), None),
     ];
     let out_set_names = vec![String::from("")];
-    let (dispatcher, _) = setup_dispatcher::<Domain>(
+    let (dispatcher, _) = setup_dispatcher(
         relative_path,
         in_set_names.clone(),
         out_set_names.clone(),
@@ -145,13 +145,13 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         assert!(overwrite_iter.next().is_none());
         assert_eq!(0, result_item.key);
         assert_eq!(0, overwrite_item.key);
-        check_matrix(&result_set, result_item, 1, vec![expected[i]]);
-        check_matrix(&overwrite_set, overwrite_item, 1, vec![expected[i]]);
+        check_matrix(result_set, result_item, 1, vec![expected[i]]);
+        check_matrix(overwrite_set, overwrite_item, 1, vec![expected[i]]);
     }
 }
 
 /// check functionallity with multiple fixed inputs with and without input provided for the fixed sets
-pub fn multiple_input_fixed<Domain: MemoryDomain>(
+pub fn multiple_input_fixed(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
@@ -182,7 +182,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         (String::from(""), None),
     ];
     let out_set_names = vec![String::from("")];
-    let (dispatcher, _) = setup_dispatcher::<Domain>(
+    let (dispatcher, _) = setup_dispatcher(
         relative_path,
         in_set_names.clone(),
         out_set_names.clone(),
@@ -266,8 +266,8 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         assert!(overwrite_iter.next().is_none());
         assert_eq!(0, result_item.key);
         assert_eq!(0, overwrite_item.key);
-        check_matrix(&result_set, result_item, 1, vec![expected[i]]);
-        check_matrix(&overwrite_set, overwrite_item, 1, vec![expected[i]]);
+        check_matrix(result_set, result_item, 1, vec![expected[i]]);
+        check_matrix(overwrite_set, overwrite_item, 1, vec![expected[i]]);
     }
 }
 

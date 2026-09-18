@@ -9,19 +9,19 @@ use machine_interface::{
     },
     function_driver::ComputeResource,
     machine_config::{DomainType, EngineType},
-    memory_domain::{read_only::ReadOnlyContext, MemoryDomain, MemoryResource},
+    memory_domain::{read_only::ReadOnlyContext, MemoryResource},
     DataItem, DataSet, Position,
 };
 use std::{collections::BTreeMap, time::Instant};
 use std::{iter, sync::Arc};
 
-pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
+pub fn single_domain_and_engine_basic(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, function_id) = setup_dispatcher::<Domain>(
+    let (dispatcher, function_id) = setup_dispatcher(
         relative_path,
         vec![],
         vec![],
@@ -41,13 +41,13 @@ pub fn single_domain_and_engine_basic<Domain: MemoryDomain>(
     }
 }
 
-pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
+pub fn single_domain_and_engine_matmul(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, function_id) = setup_dispatcher::<Domain>(
+    let (dispatcher, function_id) = setup_dispatcher(
         relative_path,
         vec![(String::from(""), None)],
         vec![String::from("")],
@@ -59,8 +59,8 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
     // matrix with first eleemnt inidicating number of rows
     let mat_a = vec![2u64, 1, 2, 3, 4];
     let mat_len = mat_a.len();
-    let mut in_context =
-        ReadOnlyContext::new(mat_a.into()).expect("Should be able to create read only context");
+    let mut in_context = ReadOnlyContext::from_boxed(mat_a.into())
+        .expect("Should be able to create read only context");
     in_context.content = vec![Some(DataSet {
         ident: String::from(""),
         buffers: vec![DataItem {
@@ -94,13 +94,13 @@ pub fn single_domain_and_engine_matmul<Domain: MemoryDomain>(
     check_matrix(out_context, item, 2, vec![5, 11, 11, 25])
 }
 
-pub fn composition_single_matmul<Domain: MemoryDomain>(
+pub fn composition_single_matmul(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, function_id) = setup_dispatcher::<Domain>(
+    let (dispatcher, function_id) = setup_dispatcher(
         relative_path,
         vec![(String::from(""), None)],
         vec![String::from("")],
@@ -112,7 +112,7 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
     // matrix with first eleemnt inidicating number of rows
     let mat_a = vec![2u64, 1, 2, 3, 4];
     let mat_len = mat_a.len();
-    let mut in_context = ReadOnlyContext::new(mat_a.into_boxed_slice())
+    let mut in_context = ReadOnlyContext::from_boxed(mat_a.into_boxed_slice())
         .expect("Should be able to create read only context");
     in_context.content = vec![Some(DataSet {
         ident: String::from(""),
@@ -158,7 +158,7 @@ pub fn composition_single_matmul<Domain: MemoryDomain>(
     let (item, out_context) = out_context_iter.next().unwrap();
     assert!(out_context_iter.next().is_none());
     assert_eq!(0, item.key);
-    check_matrix(&out_context, item, 2, vec![5, 11, 11, 25])
+    check_matrix(out_context, item, 2, vec![5, 11, 11, 25])
 }
 
 fn composition_option_helper(
@@ -177,16 +177,16 @@ fn composition_option_helper(
         Err(err) => panic!("Failed with: {:?}", err),
     };
 
-    return out_contexts;
+    out_contexts
 }
 
-pub fn composition_optional<Domain: MemoryDomain>(
+pub fn composition_optional(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (mut dispatcher, function_id) = setup_dispatcher::<Domain>(
+    let (mut dispatcher, function_id) = setup_dispatcher(
         relative_path,
         vec![(String::from(""), None)],
         vec![String::from(""), String::from("")],
@@ -290,13 +290,13 @@ pub fn composition_optional<Domain: MemoryDomain>(
     assert!(out_contexts[0].is_some());
 }
 
-pub fn composition_parallel_matmul<Domain: MemoryDomain>(
+pub fn composition_parallel_matmul(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, function_id) = setup_dispatcher::<Domain>(
+    let (dispatcher, function_id) = setup_dispatcher(
         relative_path,
         vec![(String::from(""), None)],
         vec![String::from("")],
@@ -311,7 +311,7 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
     let mut data = vec![];
     data.extend_from_slice(&mat_a);
     data.extend_from_slice(&mat_b);
-    let mut in_context = ReadOnlyContext::new(data.into_boxed_slice())
+    let mut in_context = ReadOnlyContext::from_boxed(data.into_boxed_slice())
         .expect("Should be able to create read only context");
     in_context.content = vec![Some(DataSet {
         ident: String::from(""),
@@ -367,17 +367,17 @@ pub fn composition_parallel_matmul<Domain: MemoryDomain>(
     assert_eq!(2, out_set.len());
     for (item, matrix_context) in out_set.into_iter() {
         assert!(item.key == 1 || item.key == 0);
-        check_matrix(&matrix_context, item, 2, vec![5, 11, 11, 25]);
+        check_matrix(matrix_context, item, 2, vec![5, 11, 11, 25]);
     }
 }
 
-pub fn composition_chain_matmul<Domain: MemoryDomain>(
+pub fn composition_chain_matmul(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, function_id) = setup_dispatcher::<Domain>(
+    let (dispatcher, function_id) = setup_dispatcher(
         relative_path,
         vec![(String::from(""), None)],
         vec![String::from("")],
@@ -389,7 +389,7 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
     // matrix with the first number indicating the number of rows
     let data = vec![2u64, 1, 2, 3, 4];
     let data_len = data.len();
-    let mut in_context = ReadOnlyContext::new(data.into_boxed_slice())
+    let mut in_context = ReadOnlyContext::from_boxed(data.into_boxed_slice())
         .expect("Should be able to create read only context");
     in_context.content = vec![Some(DataSet {
         ident: String::from(""),
@@ -446,16 +446,16 @@ pub fn composition_chain_matmul<Domain: MemoryDomain>(
     let (item, out_context) = out_context_iter.next().unwrap();
     assert!(out_context_iter.next().is_none());
     assert_eq!(0, item.key);
-    check_matrix(&out_context, item, 2, vec![146, 330, 330, 746]);
+    check_matrix(out_context, item, 2, vec![146, 330, 330, 746]);
 }
 
-pub fn composition_diamond_matmac<Domain: MemoryDomain>(
+pub fn composition_diamond_matmac(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, function_id) = self::setup_dispatcher::<Domain>(
+    let (dispatcher, function_id) = self::setup_dispatcher(
         relative_path,
         vec![
             (String::from(""), None),
@@ -478,7 +478,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
     data.extend_from_slice(&mat_a);
     data.extend_from_slice(&mat_b);
     data.extend_from_slice(&mat_bt);
-    let mut in_context = ReadOnlyContext::new(data.into_boxed_slice())
+    let mut in_context = ReadOnlyContext::from_boxed(data.into_boxed_slice())
         .expect("Should be able to create read only context");
     in_context.content = vec![
         Some(DataSet {
@@ -654,7 +654,7 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
     assert!(out_context_iter.next().is_none());
     assert_eq!(0, item.key);
     check_matrix(
-        &out_context,
+        out_context,
         item,
         4,
         vec![
@@ -663,13 +663,13 @@ pub fn composition_diamond_matmac<Domain: MemoryDomain>(
     );
 }
 
-pub fn composition_chain_large_matmac<Domain: MemoryDomain>(
+pub fn composition_chain_large_matmac(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, function_id) = self::setup_dispatcher::<Domain>(
+    let (dispatcher, function_id) = self::setup_dispatcher(
         relative_path,
         vec![
             (String::from(""), None),
@@ -691,7 +691,7 @@ pub fn composition_chain_large_matmac<Domain: MemoryDomain>(
     let mut data = vec![];
     data.extend_from_slice(&mat_a);
     data.extend_from_slice(&mat_b);
-    let mut in_context = ReadOnlyContext::new(data.into_boxed_slice())
+    let mut in_context = ReadOnlyContext::from_boxed(data.into_boxed_slice())
         .expect("Should be able to create read only context");
     in_context.content = vec![
         Some(DataSet {
@@ -796,5 +796,5 @@ pub fn composition_chain_large_matmac<Domain: MemoryDomain>(
     let expected =
         (1 + 2 * chain_length as u64..matrix_size + 1 + 2 * chain_length as u64).collect();
     assert_eq!(0, out_item.key);
-    check_matrix(&out_context, out_item, matrix_width, expected);
+    check_matrix(out_context, out_item, matrix_width, expected);
 }

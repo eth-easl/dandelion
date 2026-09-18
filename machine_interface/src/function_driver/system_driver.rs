@@ -37,22 +37,22 @@ const HTTP_OUTPUT_SETS: [&str; 2] = ["headers", "bodies"];
 pub fn get_system_function_input_sets(
     function: SystemFunction,
 ) -> Vec<(String, Option<LocalCompositionSet>)> {
-    return match function {
+    match function {
         SystemFunction::HTTP => HTTP_INPUT_SETS,
         SystemFunction::MEMCACHED => HTTP_INPUT_SETS,
     }
     .map(|name| (name.to_string(), None))
-    .to_vec();
+    .to_vec()
 }
 
 /// Provies the output set names for a given system function
 pub fn get_system_function_output_sets(function: SystemFunction) -> Vec<String> {
-    return match function {
+    match function {
         SystemFunction::HTTP => &HTTP_OUTPUT_SETS,
         SystemFunction::MEMCACHED => &HTTP_OUTPUT_SETS,
     }
     .map(|name| name.to_string())
-    .to_vec();
+    .to_vec()
 }
 
 pub const SYSTEM_FUNCTIONS: &[SystemFunction] = &[SystemFunction::HTTP];
@@ -100,7 +100,7 @@ pub fn convert_to_references(
             let new_item = DataItem {
                 data: crate::Position { offset: 0, size: 0 },
                 ident,
-                key: key,
+                key,
             };
             let set_once = Arc::new(OnceCell::new());
             let header_data = IoData {

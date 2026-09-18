@@ -40,7 +40,7 @@ fn create_dummy_set(keys: Vec<u32>) -> CompositionSet {
     }
 }
 
-fn set_item_sizes(sets: &mut Vec<Option<(ShardingMode, CompositionSet)>>, sizes: &[&[usize]]) {
+fn set_item_sizes(sets: &mut [Option<(ShardingMode, CompositionSet)>], sizes: &[&[usize]]) {
     debug_assert_eq!(sets.len(), sizes.len());
     for (set_idx, set) in sets.iter_mut().enumerate() {
         if let Some((_, inner)) = set {
@@ -67,7 +67,7 @@ fn check_sharding(actual: Vec<Vec<Option<CompositionSet>>>, expected: Vec<SetGro
         "Not the number of set groups that were expected"
     );
     for (set_group_index, (actual_sets, expected_sets)) in
-        actual.into_iter().zip(expected.into_iter()).enumerate()
+        actual.into_iter().zip(expected).enumerate()
     {
         assert_eq!(
             expected_sets.len(),
@@ -75,10 +75,8 @@ fn check_sharding(actual: Vec<Vec<Option<CompositionSet>>>, expected: Vec<SetGro
             "Sets not matching for index {}, ",
             set_group_index
         );
-        for (set_index, (expected_set_opt, actual_set_opt)) in expected_sets
-            .into_iter()
-            .zip(actual_sets.into_iter())
-            .enumerate()
+        for (set_index, (expected_set_opt, actual_set_opt)) in
+            expected_sets.into_iter().zip(actual_sets).enumerate()
         {
             if expected_set_opt.is_none() {
                 assert!(
@@ -97,12 +95,9 @@ fn check_sharding(actual: Vec<Vec<Option<CompositionSet>>>, expected: Vec<SetGro
                 .is_sorted_by_key(|item| item.0.key));
             // sort both lists by key and index (identifier), so we can easily check they are the same
             expected_set.sort();
-            actual_set.item_list.sort_by_key(|item| {
-                (
-                    item.0.key,
-                    usize::from_str_radix(&item.0.ident, 10).unwrap(),
-                )
-            });
+            actual_set
+                .item_list
+                .sort_by_key(|item| (item.0.key, item.0.ident.parse::<usize>().unwrap()));
             // have two sorted lists, check that each item index is the expected one and that it has the correct key
             for ((expected_key, expected_ident), (actual_item, _)) in
                 expected_set.into_iter().zip(actual_set.item_list)
@@ -121,7 +116,7 @@ fn check_sharding(actual: Vec<Vec<Option<CompositionSet>>>, expected: Vec<SetGro
 }
 
 #[cfg(test)]
-fn print_sharding(actual: &Vec<Vec<Option<CompositionSet>>>) {
+fn print_sharding(actual: &[Vec<Option<CompositionSet>>]) {
     println!("Got sharding:");
     for inv_sets in actual.iter() {
         println!("[");

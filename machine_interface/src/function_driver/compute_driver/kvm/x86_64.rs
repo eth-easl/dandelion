@@ -94,12 +94,12 @@ const TABLE_SIZE: usize = 512;
 
 fn u8_slice_to_u64_slice(input: &mut [u8]) -> &mut [u64] {
     assert!(
-        input.len() % 8 == 0,
+        input.len().is_multiple_of(8),
         "Input slice length must be a multiple of 8, but has length: {}",
         input.len()
     );
     assert!(
-        input.as_ptr() as usize % 8 == 0,
+        (input.as_ptr() as usize).is_multiple_of(8),
         "Input slice must be 8-byte aligned, but got {:?}",
         input.as_ptr()
     );
@@ -147,7 +147,7 @@ impl ResetState {
         let mut sregs = vcpu.get_sregs().unwrap();
         let mut xregs = vcpu.get_xcrs().unwrap();
         setup_long_mode(&mut sregs, &mut xregs);
-        return Self { sregs, xregs };
+        Self { sregs, xregs }
     }
 
     /// initialized_pages: Vec with all pages that do not need to be zeroed on first access
@@ -164,8 +164,8 @@ impl ResetState {
         mut stack_pointer: usize,
         last_address: usize,
     ) -> DandelionResult<PageFaultMetadata> {
-        let mut sregs = self.sregs.clone();
-        let xregs = self.xregs.clone();
+        let mut sregs = self.sregs;
+        let xregs = self.xregs;
         let interrupt_end = stack_pointer;
         set_interrupt_table(&mut sregs, guest_mem, &mut stack_pointer);
         let interrupt_start = stack_pointer;
@@ -257,13 +257,13 @@ fn setup_interrupt_gate(mem_location: &mut [u8], selector: u16, address: u64) {
 /// - Entries are 16-byte descriptors (in protected mode)
 /// - Base address should be alligned to 8-byte boundry (for cache alignment)
 /// - First 32 entries are reserved for intel interrupts rest (32-255) are user defined
-///     (so we don't need to hanlde them if we don't plan to use them)
+///   (so we don't need to hanlde them if we don't plan to use them)
 /// - Entry 13 is for handling general protection faults (the default fallback fault)
 /// - Entry 14 is for handling page faults
 /// - Not all entries need to be filled, for empty slots should have the present flag in the descriptor set to 0
 /// - Address of the IDT is held in the IDTR which holds both a 32-bit base address as well as a 16-bit limit,
-///     the limit should always be one less than an integral multiple of eight (adding it to the base address,
-///     should give the address of the last valid byte in the IDT so, it should be 8N -1, with N entries)
+///   the limit should always be one less than an integral multiple of eight (adding it to the base address,
+///   should give the address of the last valid byte in the IDT so, it should be 8N -1, with N entries)
 fn set_interrupt_table(sregs: &mut kvm_sregs, guest_mem: &mut [u8], stack_start: &mut usize) {
     // constants given by the manuals or how we set it up
     const GDT_SIZE: u16 = 80;
@@ -346,7 +346,7 @@ fn set_interrupt_table(sregs: &mut kvm_sregs, guest_mem: &mut [u8], stack_start:
     // let idt_general_protection = &mut guest_mem[GDT + 13 * 16..GDT + 14 * 16];
 
     // use selector 2, as in 64 bit mode, all the entries in the GDT use two entries (because entry size is determined by 32 bit mode)
-    let segment_selector: u16 = 2 << 3 | 0;
+    let segment_selector: u16 = 2 << 3;
 
     let idt_base = tss_end;
     for i in 0..33 {
@@ -445,7 +445,7 @@ fn set_range(
     // which is the case if the previous last page rounded up to the next large page end is not smaller
     // or if we won't set it up in the loop anyway, <= since the previous last page is set to 1 past_last_page
     if previous_past_last_page.next_multiple_of(TABLE_SIZE) <= current_page_entry
-        && current_page_entry % TABLE_SIZE != 0
+        && !current_page_entry.is_multiple_of(TABLE_SIZE)
     {
         let (p2_base, p2_entry) = get_p2(current_page_entry);
         let p1_offset = p2_base + (1 + p2_entry) * TABLE_SIZE;
@@ -479,7 +479,7 @@ fn set_range(
     // need to make sure that any p1 table that was started is filled with 0 to the end
     // current page entry is now at past_last_page, need to check before accessing, in case it is at the end of the
     // table array
-    if current_page_entry % TABLE_SIZE != 0 {
+    if !current_page_entry.is_multiple_of(TABLE_SIZE) {
         let last_index =
             current_page_entry + TABLE_SIZE * (1 + current_page_entry / (TABLE_SIZE * TABLE_SIZE));
         table_array[last_index..last_index.next_multiple_of(TABLE_SIZE)].fill(0);
@@ -542,9 +542,9 @@ fn set_page_table(
     // point the p3 table to all p2 tables
     {
         let mut p2_address = table_base;
-        for p3_entry in 0..p2_table_number {
-            p3_table[p3_entry] = PDE64_ALL_ALLOWED | (p2_address) as u64;
-            let start_index = p3_entry * (TABLE_SIZE + 1) * TABLE_SIZE;
+        for (p3_index, p3_entry) in p3_table[0..p2_table_number].iter_mut().enumerate() {
+            *p3_entry = PDE64_ALL_ALLOWED | (p2_address) as u64;
+            let start_index = p3_index * (TABLE_SIZE + 1) * TABLE_SIZE;
             table_array[start_index..start_index + TABLE_SIZE].fill(0);
             p2_address += (TABLE_SIZE + 1) * PAGE_SIZE;
         }
@@ -555,7 +555,7 @@ fn set_page_table(
     // start installing entries for all already present pages
     let mut previous_past_last_page = 0;
     // the page starting at address 0 is expected to never be written
-    if present_pages.len() > 0 {
+    if !present_pages.is_empty() {
         debug_assert_ne!(0, present_pages[0].0 >> PAGE_SHIFT);
         if let Some((_, virtual_end, _)) = present_pages.last() {
             if stack_start <= *virtual_end {

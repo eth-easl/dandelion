@@ -11,12 +11,12 @@ pub struct MallocContext {
 impl ContextTrait for MallocContext {
     fn write<T>(&mut self, offset: usize, data: &[T]) -> DandelionResult<()> {
         // check alignment
-        if offset % core::mem::align_of::<T>() != 0 {
+        if !offset.is_multiple_of(core::mem::align_of::<T>()) {
             return err_dandelion!(DandelionError::WriteMisaligned);
         }
 
         // check if the write is within bounds
-        let write_length = data.len() * core::mem::size_of::<T>();
+        let write_length = core::mem::size_of_val(data);
         let length = self.layout.size();
         if write_length + offset > length {
             return err_dandelion!(DandelionError::InvalidWrite);
@@ -33,12 +33,12 @@ impl ContextTrait for MallocContext {
     }
     fn read<T>(&self, offset: usize, read_buffer: &mut [T]) -> DandelionResult<()> {
         // check that buffer has proper allighment
-        if offset % core::mem::align_of::<T>() != 0 {
+        if !offset.is_multiple_of(core::mem::align_of::<T>()) {
             return err_dandelion!(DandelionError::ReadMisaligned);
         }
 
         let length = self.layout.size();
-        let read_size = core::mem::size_of::<T>() * read_buffer.len();
+        let read_size = core::mem::size_of_val(read_buffer);
         if offset + read_size > length {
             return err_dandelion!(DandelionError::InvalidRead);
         }
@@ -49,19 +49,17 @@ impl ContextTrait for MallocContext {
         let storage_slice = unsafe { std::slice::from_raw_parts(self.storage.as_ref(), length) };
 
         // read values, sanitize if necessary
-        for index in 0..read_size {
-            read_memory[index] = storage_slice[offset + index];
-        }
-        return Ok(());
+        read_memory[..read_size].copy_from_slice(&storage_slice[offset..offset + read_size]);
+        Ok(())
     }
     fn get_chunk_ref(&self, offset: usize, length: usize) -> DandelionResult<&[u8]> {
         if offset + length > self.layout.size() {
             return err_dandelion!(DandelionError::InvalidRead);
         }
-        return Ok(unsafe {
+        Ok(unsafe {
             &core::slice::from_raw_parts(self.storage.as_ref(), self.layout.size())
                 [offset..offset + length]
-        });
+        })
     }
 }
 
@@ -82,13 +80,13 @@ impl MemoryDomain for MallocMemoryDomain {
         if mem_space.is_null() {
             return err_dandelion!(DandelionError::MemoryAllocationError);
         }
-        return Ok(Context::new(
+        Ok(Context::new(
             ContextType::Malloc(Box::new(MallocContext {
                 layout,
                 storage: unsafe { Box::from_raw(mem_space) },
             })),
             size,
-        ));
+        ))
     }
 }
 

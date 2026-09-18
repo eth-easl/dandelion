@@ -6,7 +6,7 @@ use machine_interface::{
     },
     function_driver::{functions::SystemFunction, ComputeResource},
     machine_config::{DomainType, EngineType},
-    memory_domain::{read_only::ReadOnlyContext, MemoryDomain, MemoryResource},
+    memory_domain::{read_only::ReadOnlyContext, MemoryResource},
     DataItem, DataSet, Position,
 };
 use std::sync::Arc;
@@ -43,13 +43,13 @@ impl Drop for HttpServer {
         let _ = self.proc_child.wait();
     }
 }
-pub fn fetch_compute<Domain: MemoryDomain>(
+pub fn fetch_compute(
     memory_resource: (DomainType, MemoryResource),
     relative_path: &str,
     compute_engine_type: EngineType,
     engine_resource: Vec<ComputeResource>,
 ) {
-    let (dispatcher, function_id) = setup_dispatcher::<Domain>(
+    let (dispatcher, function_id) = setup_dispatcher(
         relative_path,
         vec![(String::from(""), None)],
         vec![String::from("")],
@@ -66,7 +66,7 @@ pub fn fetch_compute<Domain: MemoryDomain>(
     // matrix with the first number indicating the number of rows
     let data = format!("GET http://127.0.0.1:{}/matrix HTTP/1.1", port);
     let data_len = data.len();
-    let mut in_context = ReadOnlyContext::new(data.into_bytes().into_boxed_slice())
+    let mut in_context = ReadOnlyContext::from_boxed(data.into_bytes().into_boxed_slice())
         .expect("Should be able to create read only context");
     in_context.content = vec![Some(DataSet {
         ident: String::from("request"),

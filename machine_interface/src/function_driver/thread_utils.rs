@@ -20,7 +20,7 @@ pub trait EngineLoop {
         &mut self,
         config: FunctionConfig,
         context: Context,
-        output_sets: &Vec<String>,
+        output_sets: &[String],
     ) -> DandelionResult<Context>;
     fn get_engine_type(&self) -> EngineType;
 }
@@ -185,15 +185,17 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                 };
 
                 recorder.record(RecordPoint::LoadStart);
-                let mut function_context =
-                    match function.load(&alternative.domain, alternative.context_size) {
-                        Ok(con) => con,
-                        Err(err) => {
-                            drop(recorder);
-                            debt.fulfill(Err(err));
-                            continue;
-                        }
-                    };
+                let mut function_context = match function.load(
+                    alternative.domain.as_ref().as_ref(),
+                    alternative.context_size,
+                ) {
+                    Ok(con) => con,
+                    Err(err) => {
+                        drop(recorder);
+                        debt.fulfill(Err(err));
+                        continue;
+                    }
+                };
 
                 recorder.record(RecordPoint::TransferStart);
 
@@ -206,8 +208,7 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                     // the input_sets vec can have less entries than the functions defined sets (not all sets need to be used in composition)
                     let input_option = input_sets
                         .get_mut(set_index)
-                        .map(|set_opt| set_opt.take().map(|set| set.into_local()))
-                        .flatten();
+                        .and_then(|set_opt| set_opt.take().map(|set| set.into_local()));
                     let transfer_option = static_set.as_ref().or(input_option.as_ref());
                     // Always push the content set, even if it is empty / not present, so keep numbering consistent
                     if let Some(transfer_set) = transfer_option {
@@ -254,11 +255,8 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
                 recorder.record(RecordPoint::EngineEnd);
                 drop(recorder);
 
-                let results = result.and_then(|context| {
-                    Ok(WorkDone::CompositionSet(CompositionSet::from_context(
-                        context,
-                    )))
-                });
+                let results = result
+                    .map(|context| WorkDone::CompositionSet(CompositionSet::from_context(context)));
                 debt.fulfill(results);
             }
             WorkToDo::SetsToResolve { .. } => {
@@ -276,9 +274,6 @@ fn run_thread<E: EngineLoop>(core_id: u8, mut queue: impl EngineWorkQueue) {
     }
 }
 
-pub fn start_thread<E: EngineLoop>(
-    cpu_slot: u8,
-    queue: impl EngineWorkQueue + Send + 'static,
-) -> () {
+pub fn start_thread<E: EngineLoop>(cpu_slot: u8, queue: impl EngineWorkQueue + Send + 'static) {
     spawn(move || run_thread::<E>(cpu_slot, queue));
 }

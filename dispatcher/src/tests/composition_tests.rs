@@ -11,10 +11,10 @@ use machine_interface::{
 use std::{collections::BTreeMap, ops::Range, sync::Arc, vec};
 
 fn get_module(comp_string: &str) -> Module {
-    return dparser::parse(comp_string).unwrap_or_else(|err| {
+    dparser::parse(comp_string).unwrap_or_else(|err| {
         dparser::print_errors(comp_string, err);
         panic!("parsing failed");
-    });
+    })
 }
 
 #[allow(unreachable_code)]
@@ -86,7 +86,7 @@ fn check_metadata(actual_meta: &Metadata, expected_meta: &Metadata) -> bool {
             return false;
         }
     }
-    return true;
+    true
 }
 
 fn check_composition(
@@ -157,7 +157,7 @@ fn check_composition(
                         }
                     };
                 }
-                return Some(0);
+                Some(0)
             })
             .count();
         if matches > 1 {
@@ -172,7 +172,7 @@ fn check_composition(
             );
         }
     }
-    return true;
+    true
 }
 
 fn check_compositions_and_metadata(
@@ -187,13 +187,13 @@ fn check_compositions_and_metadata(
             .iter()
             .filter_map(|(_, actual_comp, actual_meta)| {
                 if !check_metadata(actual_meta, &expected_meta) {
-                    return None;
+                    None
                 } else {
-                    return Some(actual_comp);
+                    Some(actual_comp)
                 }
             })
             .collect_vec();
-        if meta_matches.len() < 1 {
+        if meta_matches.is_empty() {
             panic!(
                 "Found no metadata match for {:?} with metadata: {:?} in {:?}",
                 expected_comp, expected_meta, actual
@@ -208,9 +208,9 @@ fn check_compositions_and_metadata(
                     &input_set_range,
                     &output_set_range,
                 ) {
-                    return Some(0);
+                    Some(0)
                 } else {
-                    return None;
+                    None
                 }
             })
             .count();

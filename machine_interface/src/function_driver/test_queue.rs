@@ -18,16 +18,16 @@ pub struct TestQueue {
 impl TestQueue {
     pub fn new() -> Self {
         let (sender, reciever) = channel(1);
-        return TestQueue {
+        TestQueue {
             sender,
             reciever: Arc::new(Mutex::new(reciever)),
             promise_buffer: PromiseBuffer::init(128),
-        };
+        }
     }
     pub fn enqueu(&self, args: WorkToDo) -> Promise {
         let (promise, debt) = self.promise_buffer.get_promise().unwrap();
         self.sender.blocking_send((args, debt)).unwrap();
-        return promise;
+        promise
     }
 }
 
