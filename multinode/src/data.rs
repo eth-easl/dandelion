@@ -182,7 +182,7 @@ fn proto_coordination_key(
     key: &IoCoordinationKey,
 ) -> Result<crate::proto::IoCoordinationKey, String> {
     Ok(crate::proto::IoCoordinationKey {
-        invocation_id: key.invocation_id.to_string(),
+        run_id: key.run_id.to_string(),
         composition_set_id: u64::try_from(key.composition_set_id)
             .map_err(|_| "I/O coordination composition_set_id does not fit u64".to_string())?,
         function: crate::util::system_function_dtop(&key.function)
@@ -206,8 +206,8 @@ fn coordination_key_from_proto(
         Err(_) => return Err(format!("Unknown I/O system function {}", key.function)),
     };
     Ok(IoCoordinationKey {
-        invocation_id: dandelion_commons::InvocationId::parse_str(&key.invocation_id)
-            .map_err(|error| format!("Invalid I/O invocation id: {}", error))?,
+        run_id: dandelion_commons::RunId::parse_str(&key.run_id)
+            .map_err(|error| format!("Invalid I/O run id: {}", error))?,
         composition_set_id: usize::try_from(key.composition_set_id)
             .map_err(|_| "I/O coordination composition_set_id does not fit usize".to_string())?,
         function,
@@ -413,7 +413,7 @@ async fn registry_resolution_response(
 fn completion_record(key: &IoCoordinationKey, outputs: &[IoRemoteRef]) -> IoCompletionRecord {
     let set_names = get_system_function_output_sets(key.function);
     IoCompletionRecord {
-        invocation_id: key.invocation_id,
+        run_id: key.run_id,
         composition_set_id: key.composition_set_id,
         function: key.function,
         outputs: outputs
@@ -837,7 +837,7 @@ struct DurableExportStore {
 #[cfg(feature = "at-least-once")]
 struct PendingDurableExport {
     #[cfg(feature = "exactly-once")]
-    invocation_id: dandelion_commons::InvocationId,
+    run_id: dandelion_commons::RunId,
     data_ids: Vec<u64>,
 }
 
@@ -954,7 +954,7 @@ struct ExportRegistryInner {
     #[cfg(feature = "exactly-once")]
     io_resolutions: HashMap<IoCoordinationKey, IoResolutionState>,
     #[cfg(feature = "exactly-once")]
-    cancelled_io_invocations: HashSet<dandelion_commons::InvocationId>,
+    cancelled_io_runs: HashSet<dandelion_commons::RunId>,
     #[cfg(feature = "at-least-once")]
     durable_store: Option<DurableExportStore>,
 }
@@ -989,7 +989,7 @@ impl ExportRegistry {
                 #[cfg(feature = "exactly-once")]
                 io_resolutions: HashMap::new(),
                 #[cfg(feature = "exactly-once")]
-                cancelled_io_invocations: HashSet::new(),
+                cancelled_io_runs: HashSet::new(),
                 #[cfg(feature = "at-least-once")]
                 durable_store: None,
             })),
@@ -1032,7 +1032,7 @@ impl ExportRegistry {
                 #[cfg(feature = "exactly-once")]
                 io_resolutions: HashMap::new(),
                 #[cfg(feature = "exactly-once")]
-                cancelled_io_invocations: HashSet::new(),
+                cancelled_io_runs: HashSet::new(),
                 durable_store: Some(DurableExportStore {
                     directory,
                     next_data_id,
@@ -1070,7 +1070,7 @@ impl ExportRegistry {
         let output_count = get_system_function_output_sets(key.function).len();
         // After restart, a durable completion must be reused instead of re-running the I/O.
         let recovered = recovered_io_item_locations(
-            key.invocation_id,
+            key.run_id,
             key.function,
             key.composition_set_id,
             output_count,
@@ -1102,7 +1102,7 @@ impl ExportRegistry {
         })
         .transpose()?;
         let mut inner = self.inner.lock().unwrap();
-        if inner.cancelled_io_invocations.contains(&key.invocation_id) {
+        if inner.cancelled_io_runs.contains(&key.run_id) {
             return Ok(RegistryIoResolution::Failed(
                 "I/O invocation was cancelled".to_string(),
             ));
@@ -1154,7 +1154,7 @@ impl ExportRegistry {
         outcome: Result<Vec<IoRemoteRef>, String>,
     ) -> DandelionResult<()> {
         let mut inner = self.inner.lock().unwrap();
-        if inner.cancelled_io_invocations.contains(&key.invocation_id) {
+        if inner.cancelled_io_runs.contains(&key.run_id) {
             return Err(export_registry_error(
                 "Cannot publish a cancelled I/O invocation",
             ));
@@ -1214,7 +1214,7 @@ impl ExportRegistry {
     ) -> DandelionResult<()> {
         let key = record.completion_key()?;
         let coordination_key = IoCoordinationKey {
-            invocation_id: key.invocation_id,
+            run_id: key.run_id,
             composition_set_id: key.composition_set_id,
             function: key.function,
             identifier: key.identifier,
@@ -1251,17 +1251,14 @@ impl ExportRegistry {
     }
 
     #[cfg(feature = "exactly-once")]
-    pub fn cancel_io_coordination(
-        &self,
-        invocation_id: dandelion_commons::InvocationId,
-    ) -> Vec<RemoteData> {
+    pub fn cancel_io_coordination(&self, run_id: dandelion_commons::RunId) -> Vec<RemoteData> {
         let mut inner = self.inner.lock().unwrap();
-        inner.cancelled_io_invocations.insert(invocation_id);
+        inner.cancelled_io_runs.insert(run_id);
         let mut seen = HashSet::new();
         let mut outputs = inner
             .io_resolutions
             .iter()
-            .filter(|(key, _)| key.invocation_id == invocation_id)
+            .filter(|(key, _)| key.run_id == run_id)
             .filter_map(|(_, state)| match state {
                 IoResolutionState::Completed(references) => Some(references),
                 _ => None,
@@ -1275,15 +1272,11 @@ impl ExportRegistry {
                 }
             })
             .collect::<Vec<_>>();
-        inner
-            .io_resolutions
-            .retain(|key, _| key.invocation_id != invocation_id);
+        inner.io_resolutions.retain(|key, _| key.run_id != run_id);
         let pending_batch_ids = inner
             .pending_durable_exports
             .iter()
-            .filter_map(|(batch_id, pending)| {
-                (pending.invocation_id == invocation_id).then_some(*batch_id)
-            })
+            .filter_map(|(batch_id, pending)| (pending.run_id == run_id).then_some(*batch_id))
             .collect::<Vec<_>>();
         for batch_id in pending_batch_ids {
             if let Some(pending) = inner.pending_durable_exports.remove(&batch_id) {
@@ -1389,7 +1382,7 @@ impl ExportRegistry {
     #[cfg(feature = "at-least-once")]
     async fn reserve_durable_export_batch(
         &self,
-        _invocation_id: dandelion_commons::InvocationId,
+        _run_id: dandelion_commons::RunId,
         output_count: usize,
     ) -> DandelionResult<(u64, PathBuf, Vec<u64>)> {
         let output_count = u64::try_from(output_count)
@@ -1450,7 +1443,7 @@ impl ExportRegistry {
             first_data_id,
             PendingDurableExport {
                 #[cfg(feature = "exactly-once")]
-                invocation_id: _invocation_id,
+                run_id: _run_id,
                 data_ids: data_ids.clone(),
             },
         );
@@ -1524,29 +1517,27 @@ impl ExportRegistry {
     #[cfg(feature = "at-least-once")]
     async fn insert_durable_outputs_async(
         &self,
-        invocation_id: dandelion_commons::InvocationId,
+        run_id: dandelion_commons::RunId,
         outputs: Vec<IoCompletedOutput>,
         recorder: Option<dandelion_commons::records::Recorder>,
     ) -> DandelionResult<CommittedDurableExport> {
-        self.insert_outputs_async(invocation_id, outputs, recorder)
-            .await
+        self.insert_outputs_async(run_id, outputs, recorder).await
     }
 
     #[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
     async fn insert_checkpoint_outputs_async(
         &self,
-        invocation_id: dandelion_commons::InvocationId,
+        run_id: dandelion_commons::RunId,
         outputs: Vec<IoCompletedOutput>,
         recorder: Option<dandelion_commons::records::Recorder>,
     ) -> DandelionResult<CommittedDurableExport> {
-        self.insert_outputs_async(invocation_id, outputs, recorder)
-            .await
+        self.insert_outputs_async(run_id, outputs, recorder).await
     }
 
     #[cfg(feature = "at-least-once")]
     async fn insert_outputs_async(
         &self,
-        invocation_id: dandelion_commons::InvocationId,
+        run_id: dandelion_commons::RunId,
         outputs: Vec<IoCompletedOutput>,
         mut recorder: Option<dandelion_commons::records::Recorder>,
     ) -> DandelionResult<CommittedDurableExport> {
@@ -1567,7 +1558,7 @@ impl ExportRegistry {
 
         // reserve a batch of data ids
         let (batch_id, directory, data_ids) = self
-            .reserve_durable_export_batch(invocation_id, output_bytes.len())
+            .reserve_durable_export_batch(run_id, output_bytes.len())
             .await?;
         if let Some(recorder) = recorder.as_mut() {
             recorder.record(dandelion_commons::records::RecordPoint::IoExportRegistryLockWaitEnd);
@@ -2254,11 +2245,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
             #[cfg(all(feature = "checkpointed-at-least-once", not(feature = "exactly-once")))]
             let committed = self
                 .local_registry
-                .insert_checkpoint_outputs_async(
-                    completion.key.invocation_id,
-                    outputs,
-                    recorder.clone(),
-                )
+                .insert_checkpoint_outputs_async(completion.key.run_id, outputs, recorder.clone())
                 .await;
             #[cfg(not(all(
                 feature = "checkpointed-at-least-once",
@@ -2266,11 +2253,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
             )))]
             let committed = self
                 .local_registry
-                .insert_durable_outputs_async(
-                    completion.key.invocation_id,
-                    outputs,
-                    recorder.clone(),
-                )
+                .insert_durable_outputs_async(completion.key.run_id, outputs, recorder.clone())
                 .await;
             if let Some(recorder) = recorder.as_mut() {
                 recorder.record(dandelion_commons::records::RecordPoint::IoOutputExportEnd);
@@ -2486,7 +2469,7 @@ impl RemoteDataClient for HttpRemoteDataClient {
                     let exported = self
                         .local_registry
                         .insert_durable_outputs_async(
-                            completion.key.invocation_id,
+                            completion.key.run_id,
                             outputs,
                             recorder.clone(),
                         )
@@ -2645,10 +2628,10 @@ impl RemoteDataClient for HttpRemoteDataClient {
     #[cfg(feature = "exactly-once")]
     fn clear_io_coordination(
         &self,
-        invocation_id: dandelion_commons::InvocationId,
+        run_id: dandelion_commons::RunId,
     ) -> Pin<Box<dyn Future<Output = DandelionResult<()>> + Send + '_>> {
         Box::pin(async move {
-            let outputs = self.local_registry.cancel_io_coordination(invocation_id);
+            let outputs = self.local_registry.cancel_io_coordination(run_id);
             for output in outputs {
                 self.delete_remote_data(output).await?;
             }
@@ -2922,7 +2905,7 @@ pub async fn service_loop(port: u16, export_registry: ExportRegistry) {
 #[cfg(all(test, feature = "at-least-once"))]
 mod checkpoint_tests {
     use super::*;
-    use dandelion_commons::InvocationId;
+    use dandelion_commons::RunId;
 
     async fn insert_test_export(registry: &ExportRegistry, value: u8) -> RemoteData {
         let bytes = vec![value];
@@ -2988,7 +2971,7 @@ mod checkpoint_tests {
             .await
             .unwrap();
         let record = IoCompletionRecord {
-            invocation_id: InvocationId::now_v7(),
+            run_id: RunId::now_v7(),
             composition_set_id: 3,
             function: machine_interface::function_driver::functions::SystemFunction::HTTP,
             outputs: vec![IoCompletionOutputSet {
@@ -3014,8 +2997,7 @@ mod checkpoint_tests {
     }
 
     async fn registry_for_test(name: &str) -> (PathBuf, ExportRegistry) {
-        let root =
-            std::env::temp_dir().join(format!("dandelion-{name}-{}", InvocationId::now_v7()));
+        let root = std::env::temp_dir().join(format!("dandelion-{name}-{}", RunId::now_v7()));
         let registry = ExportRegistry::with_durable_storage(7, &root)
             .await
             .unwrap();
@@ -3109,9 +3091,9 @@ mod checkpoint_tests {
     #[tokio::test]
     async fn persisted_batch_is_invisible_until_all_outputs_are_committed() {
         let (root, registry) = registry_for_test("durable-batch-visibility").await;
-        let invocation_id = InvocationId::now_v7();
+        let run_id = RunId::now_v7();
         let (batch_id, directory, data_ids) = registry
-            .reserve_durable_export_batch(invocation_id, 2)
+            .reserve_durable_export_batch(run_id, 2)
             .await
             .unwrap();
         let outputs = data_ids
@@ -3149,12 +3131,12 @@ mod checkpoint_tests {
         let second_registry = registry.clone();
         let (first, second) = tokio::join!(
             first_registry.insert_durable_outputs_async(
-                InvocationId::now_v7(),
+                RunId::now_v7(),
                 vec![completed_test_output(1), completed_test_output(2)],
                 None,
             ),
             second_registry.insert_durable_outputs_async(
-                InvocationId::now_v7(),
+                RunId::now_v7(),
                 vec![completed_test_output(3), completed_test_output(4)],
                 None,
             )
@@ -3187,7 +3169,7 @@ mod tests {
     use super::*;
     #[cfg(feature = "timestamp")]
     use dandelion_commons::records::{RecordPoint, Recorder};
-    use dandelion_commons::InvocationId;
+    use dandelion_commons::RunId;
     use machine_interface::composition::IoCompletedOutput;
     use machine_interface::memory_domain::{read_only::ReadOnlyContext, ContextTrait};
     use std::{path::PathBuf, sync::OnceLock, time::Duration};
@@ -3246,7 +3228,7 @@ mod tests {
 
     fn coordination_key() -> IoCoordinationKey {
         IoCoordinationKey {
-            invocation_id: InvocationId::now_v7(),
+            run_id: RunId::now_v7(),
             composition_set_id: 17,
             function: machine_interface::function_driver::functions::SystemFunction::HTTP,
             identifier: "request".to_string(),
@@ -3262,7 +3244,7 @@ mod tests {
         let duplicate_node_id = 3;
         let test_root = std::env::temp_dir().join(format!(
             "dandelion-coordinated-http-test-{}",
-            InvocationId::now_v7()
+            RunId::now_v7()
         ));
         let owner_registry = ExportRegistry::new(owner_node_id);
         let winner_registry = ExportRegistry::with_durable_storage(winner_node_id, &test_root)
@@ -3622,7 +3604,7 @@ mod tests {
         let registry = ExportRegistry::new(1);
         let key = coordination_key();
         let recovered_record = IoCompletionRecord {
-            invocation_id: key.invocation_id,
+            run_id: key.run_id,
             composition_set_id: key.composition_set_id,
             function: key.function,
             outputs: vec![
@@ -3655,14 +3637,14 @@ mod tests {
             ],
         };
         machine_interface::function_driver::system_driver::recovery_log::install_recovered_io_records(
-            key.invocation_id,
+            key.run_id,
             vec![recovered_record],
         )
         .unwrap();
 
         let resolution = registry.begin_io_resolution(key.clone(), 1, None).unwrap();
         machine_interface::function_driver::system_driver::recovery_log::clear_recovered_io(
-            key.invocation_id,
+            key.run_id,
         );
 
         assert!(matches!(
@@ -3748,7 +3730,7 @@ mod tests {
         configure_test_recovery_log();
         let test_root = std::env::temp_dir().join(format!(
             "dandelion-coordinated-io-restart-test-{}",
-            InvocationId::now_v7()
+            RunId::now_v7()
         ));
         let node_id = 7;
         let registry = ExportRegistry::with_durable_storage(node_id, &test_root)
@@ -3756,11 +3738,11 @@ mod tests {
             .unwrap();
         let client = HttpRemoteDataClient::new(BTreeMap::new(), registry.clone());
         let key = coordination_key();
-        machine_interface::function_driver::system_driver::recovery_log::append_invocation_log_line(
-            key.invocation_id,
+        machine_interface::function_driver::system_driver::recovery_log::append_run_log_line(
+            key.run_id,
             &format!(
-                "event=invocation_submitted invocation_id={} request_len=0 request_b64= is_cold=false\n",
-                key.invocation_id
+                "event=invocation_submitted run_id={} request_len=0 request_b64= is_cold=false\n",
+                key.run_id
             ),
         )
         .unwrap();
@@ -3783,7 +3765,7 @@ mod tests {
         };
         #[cfg(feature = "timestamp")]
         let recorder = Recorder::new(
-            key.invocation_id,
+            key.run_id,
             Arc::new("IO:HTTP:0:0000000000000000".to_string()),
             std::time::Instant::now(),
         );
@@ -3828,12 +3810,12 @@ mod tests {
         )
         .await
         .unwrap());
-        let invocation_log =
-            machine_interface::function_driver::system_driver::recovery_log::read_invocation_log(
-                key.invocation_id,
+        let run_log =
+            machine_interface::function_driver::system_driver::recovery_log::read_run_log(
+                key.run_id,
             )
             .unwrap();
-        assert!(invocation_log.contains("event=io_function_completed "));
+        assert!(run_log.contains("event=io_function_completed "));
 
         let remote = match registry.begin_io_resolution(key, 0, None).unwrap() {
             RegistryIoResolution::Completed(remote) => remote,
@@ -3856,7 +3838,7 @@ mod tests {
         configure_test_recovery_log();
         let test_root = std::env::temp_dir().join(format!(
             "dandelion-coordinated-cleanup-test-{}",
-            InvocationId::now_v7()
+            RunId::now_v7()
         ));
         let node_id = 8;
         let registry = ExportRegistry::with_durable_storage(node_id, &test_root)
@@ -3893,10 +3875,7 @@ mod tests {
         let path = durable_data_path(&test_root.join(node_id.to_string()), remote.data_id);
         assert!(fs::try_exists(&path).await.unwrap());
 
-        client
-            .clear_io_coordination(key.invocation_id)
-            .await
-            .unwrap();
+        client.clear_io_coordination(key.run_id).await.unwrap();
         assert!(!fs::try_exists(&path).await.unwrap());
         assert!(!registry
             .inner
@@ -3911,7 +3890,7 @@ mod tests {
     async fn cancelled_invocation_rejects_a_late_durable_batch() {
         let test_root = std::env::temp_dir().join(format!(
             "dandelion-cancelled-batch-test-{}",
-            InvocationId::now_v7()
+            RunId::now_v7()
         ));
         let node_id = 9;
         let registry = ExportRegistry::with_durable_storage(node_id, &test_root)
@@ -3920,7 +3899,7 @@ mod tests {
         let key = coordination_key();
         registry.begin_io_resolution(key.clone(), 0, None).unwrap();
         let (batch_id, directory, data_ids) = registry
-            .reserve_durable_export_batch(key.invocation_id, 2)
+            .reserve_durable_export_batch(key.run_id, 2)
             .await
             .unwrap();
         let outputs = data_ids
@@ -3936,7 +3915,7 @@ mod tests {
             .await
             .unwrap();
 
-        let cancelled_outputs = registry.cancel_io_coordination(key.invocation_id);
+        let cancelled_outputs = registry.cancel_io_coordination(key.run_id);
 
         assert_eq!(cancelled_outputs.len(), 2);
         assert!(registry
@@ -3956,10 +3935,8 @@ mod tests {
 
     #[tokio::test]
     async fn durable_export_survives_registry_restart() {
-        let test_root = std::env::temp_dir().join(format!(
-            "dandelion-durable-export-test-{}",
-            InvocationId::now_v7()
-        ));
+        let test_root =
+            std::env::temp_dir().join(format!("dandelion-durable-export-test-{}", RunId::now_v7()));
         let node_id = 7;
         let expected = b"durable remote result".to_vec();
         let item = DataItem {
@@ -3995,10 +3972,8 @@ mod tests {
 
     #[tokio::test]
     async fn ordinary_delete_releases_durable_export_idempotently() {
-        let test_root = std::env::temp_dir().join(format!(
-            "dandelion-durable-delete-test-{}",
-            InvocationId::now_v7()
-        ));
+        let test_root =
+            std::env::temp_dir().join(format!("dandelion-durable-delete-test-{}", RunId::now_v7()));
         let node_id = 8;
         let expected = b"delete durable remote result".to_vec();
         let item = DataItem {

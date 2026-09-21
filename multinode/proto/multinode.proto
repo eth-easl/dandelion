@@ -26,7 +26,7 @@ message IoData {
     uint64 set_index = 2;
     ItemData data = 3;
     // Stable identity and ownership metadata for lazy I/O coordination and recovery.
-    string invocation_id = 4;
+    string run_id = 4;
     uint64 composition_set_id = 5;
     string item_identifier = 6;
     uint64 item_key = 7;
@@ -52,11 +52,11 @@ message MetadataSet {
 }
 
 message Invocation {
-    uint32 remote_invocation_id = 1;
+    uint32 invocation_id = 1;
     string function_id = 2;
     repeated MetadataSet metadata_sets = 3;
     bool caching = 4;
-    string owner_invocation_id = 5;
+    string run_id = 5;
 }
 
 message RepeatedInvocations {
@@ -103,7 +103,7 @@ message RepeatedMetadataSet {
 }
 
 message Response {
-    uint32 remote_invocation_id = 1;
+    uint32 invocation_id = 1;
     oneof response {
         string error_msg = 2;
         RepeatedMetadataSet metadata_sets = 3;
@@ -123,7 +123,7 @@ message IoCompletionDelivery {
 }
 
 message IoCompletionAcknowledgement {
-    string invocation_id = 1;
+    string run_id = 1;
     uint64 composition_set_id = 2;
     string function = 3;
     string identifier = 4;
@@ -133,7 +133,7 @@ message IoCompletionAcknowledgement {
 }
 
 message IoCoordinationKey {
-    string invocation_id = 1;
+    string run_id = 1;
     uint64 composition_set_id = 2;
     SystemFunction function = 3;
     string identifier = 4;

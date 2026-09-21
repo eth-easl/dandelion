@@ -7,7 +7,7 @@ use crate::{
     memory_domain::Context,
     DataItem, Position,
 };
-use dandelion_commons::{records::Recorder, FunctionId, InvocationId};
+use dandelion_commons::{records::Recorder, FunctionId, RunId};
 use dandelion_commons::{try_with_capacity, DandelionResult};
 #[cfg(feature = "at-least-once")]
 pub use recovery_log::{
@@ -101,7 +101,7 @@ pub struct IoData {
 #[cfg(feature = "at-least-once")]
 #[derive(Debug, Clone)]
 pub struct IoCoordination {
-    pub invocation_id: InvocationId,
+    pub run_id: RunId,
     pub composition_set_id: usize,
     pub item_identifier: String,
     pub item_key: u64,
@@ -146,22 +146,22 @@ impl IoReferencePolicy for UncoordinatedIo {
 pub type AsyncIoPolicy = UncoordinatedIo;
 
 #[cfg(not(any(feature = "checkpointed-at-least-once", feature = "exactly-once")))]
-pub fn async_io_policy(_invocation_id: InvocationId) -> AsyncIoPolicy {
+pub fn async_io_policy(_run_id: RunId) -> AsyncIoPolicy {
     UncoordinatedIo
 }
 
 #[cfg(feature = "at-least-once")]
 #[derive(Debug, Clone, Copy)]
 pub struct RecoverableIo {
-    pub invocation_id: InvocationId,
+    pub run_id: RunId,
 }
 
 #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
 pub type AsyncIoPolicy = RecoverableIo;
 
 #[cfg(any(feature = "checkpointed-at-least-once", feature = "exactly-once"))]
-pub fn async_io_policy(invocation_id: InvocationId) -> AsyncIoPolicy {
-    RecoverableIo { invocation_id }
+pub fn async_io_policy(run_id: RunId) -> AsyncIoPolicy {
+    RecoverableIo { run_id }
 }
 
 #[cfg(feature = "at-least-once")]
@@ -174,7 +174,7 @@ impl IoReferencePolicy for RecoverableIo {
     ) -> (ItemData, Option<usize>) {
         #[cfg(not(feature = "exactly-once"))]
         if let Some(output) = recovery_log::recovered_io_item_location(
-            self.invocation_id,
+            self.run_id,
             request.function,
             composition_set_id,
             request.set_index,
@@ -194,7 +194,7 @@ impl IoReferencePolicy for RecoverableIo {
         (
             ItemData::CoordinatedIoData(CoordinatedIoData {
                 coordination: IoCoordination {
-                    invocation_id: self.invocation_id,
+                    run_id: self.run_id,
                     composition_set_id,
                     item_identifier: item.ident.clone(),
                     item_key: item.key.into(),

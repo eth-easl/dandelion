@@ -112,7 +112,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
         overwrite_inputs[i] = Some(mat_fault_composition_set.clone());
 
         let mut recorder = Recorder::new(
-            dandelion_commons::InvocationId::nil(),
+            dandelion_commons::RunId::nil(),
             function_id.clone(),
             Instant::now(),
         );
@@ -129,7 +129,7 @@ pub fn single_input_fixed<Domain: MemoryDomain>(
                 None,
             ));
         recorder = Recorder::new(
-            dandelion_commons::InvocationId::nil(),
+            dandelion_commons::RunId::nil(),
             function_id.clone(),
             Instant::now(),
         );
@@ -251,7 +251,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
         overwrite_inputs[fixed_sets[1]] = Some(mat_fault_composition_set.clone());
 
         let mut recorder = Recorder::new(
-            dandelion_commons::InvocationId::nil(),
+            dandelion_commons::RunId::nil(),
             function_id.clone(),
             Instant::now(),
         );
@@ -268,7 +268,7 @@ pub fn multiple_input_fixed<Domain: MemoryDomain>(
                 None,
             ));
         recorder = Recorder::new(
-            dandelion_commons::InvocationId::nil(),
+            dandelion_commons::RunId::nil(),
             function_id.clone(),
             Instant::now(),
         );

@@ -1,5 +1,5 @@
 use super::{check_matrix, setup_dispatcher, zero_id};
-use dandelion_commons::{records::Recorder, InvocationId};
+use dandelion_commons::{records::Recorder, RunId};
 use machine_interface::{
     composition::{
         Composition, CompositionSet, FunctionDependencies, InputSetDescriptor, ShardingMode,
@@ -107,7 +107,7 @@ pub fn fetch_compute<Domain: MemoryDomain>(
         output_map: BTreeMap::from([(2, 0)]),
     };
 
-    let recorder = Recorder::new(InvocationId::nil(), zero_id(), Instant::now());
+    let recorder = Recorder::new(RunId::nil(), zero_id(), Instant::now());
     let inputs = CompositionSet::from_context(in_context);
     let mut result_sets = tokio::runtime::Builder::new_current_thread()
         .build()

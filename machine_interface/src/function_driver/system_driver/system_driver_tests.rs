@@ -11,7 +11,7 @@ mod system_driver_tests {
         memory_domain::{read_only::ReadOnlyContext, ContextTrait},
         DataItem, DataSet, Position,
     };
-    use dandelion_commons::{records::Recorder, InvocationId};
+    use dandelion_commons::{records::Recorder, RunId};
     use std::{
         process::{Child, Command},
         sync::Arc,
@@ -19,11 +19,7 @@ mod system_driver_tests {
     };
 
     fn test_recorder() -> Recorder {
-        Recorder::new(
-            InvocationId::nil(),
-            Arc::new("HTTP".to_string()),
-            Instant::now(),
-        )
+        Recorder::new(RunId::nil(), Arc::new("HTTP".to_string()), Instant::now())
     }
 
     struct HttpServer {

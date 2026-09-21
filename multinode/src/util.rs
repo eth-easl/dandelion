@@ -220,7 +220,7 @@ fn try_item_data_dtop(
                     set_index: set_index as u64,
                     function: system_function_dtop(&function)? as i32,
                     data: Some(Box::new(data)),
-                    invocation_id: String::new(),
+                    run_id: String::new(),
                     composition_set_id: 0,
                     item_identifier: String::new(),
                     item_key: 0,
@@ -254,7 +254,7 @@ fn try_item_data_dtop(
                         set_index: set_index as u64,
                         function: system_function_dtop(&function)? as i32,
                         data: Some(Box::new(data)),
-                        invocation_id: coordination.invocation_id.to_string(),
+                        run_id: coordination.run_id.to_string(),
                         composition_set_id: coordination.composition_set_id as u64,
                         item_identifier: coordination.item_identifier,
                         item_key: coordination.item_key,
@@ -316,7 +316,7 @@ fn item_data_and_ref(
                         set_index: *set_index as u64,
                         function: system_function_dtop(function).unwrap() as i32,
                         data: Some(Box::new(data)),
-                        invocation_id: String::new(),
+                        run_id: String::new(),
                         composition_set_id: 0,
                         item_identifier: String::new(),
                         item_key: 0,
@@ -354,7 +354,7 @@ fn item_data_and_ref(
                             set_index: *set_index as u64,
                             function: system_function_dtop(function).unwrap() as i32,
                             data: Some(Box::new(data)),
-                            invocation_id: coordination.invocation_id.to_string(),
+                            run_id: coordination.run_id.to_string(),
                             composition_set_id: coordination.composition_set_id as u64,
                             item_identifier: coordination.item_identifier.clone(),
                             item_key: coordination.item_key,
@@ -410,7 +410,7 @@ fn item_data_ptod(
                 function,
                 set_index,
                 data: input_data,
-                invocation_id: _,
+                run_id: _,
                 composition_set_id: _,
                 item_identifier: _,
                 item_key: _,
@@ -440,7 +440,7 @@ fn item_data_ptod(
                 function,
                 set_index,
                 data: input_data,
-                invocation_id,
+                run_id,
                 composition_set_id,
                 item_identifier,
                 item_key,
@@ -452,10 +452,8 @@ fn item_data_ptod(
                     machine_interface::function_driver::system_driver::CoordinatedIoData {
                         coordination:
                             machine_interface::function_driver::system_driver::IoCoordination {
-                                invocation_id: dandelion_commons::InvocationId::parse_str(
-                                    &invocation_id,
-                                )
-                                .expect("Serialized invocation id should be a valid UUID"),
+                                run_id: dandelion_commons::RunId::parse_str(&run_id)
+                                    .expect("Serialized run id should be a valid UUID"),
                                 composition_set_id: composition_set_id as usize,
                                 item_identifier,
                                 item_key,

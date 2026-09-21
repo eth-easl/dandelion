@@ -1,4 +1,4 @@
-use crate::{FunctionId, InvocationId};
+use crate::{FunctionId, RunId};
 use core::fmt;
 use std::time::Instant;
 
@@ -217,7 +217,7 @@ struct InnerRecorder {
 /// All time is relative to the given global start time of the request
 #[derive(Clone)]
 pub struct Recorder {
-    invocation_id: InvocationId,
+    run_id: RunId,
     #[cfg(feature = "timestamp")]
     inner: std::sync::Arc<InnerRecorder>,
 }
@@ -228,9 +228,9 @@ unsafe impl Send for Recorder {}
 unsafe impl Sync for Recorder {}
 
 impl Recorder {
-    pub fn new(_invocation_id: InvocationId, _function_id: FunctionId, _start: Instant) -> Self {
+    pub fn new(_run_id: RunId, _function_id: FunctionId, _start: Instant) -> Self {
         return Self {
-            invocation_id: _invocation_id,
+            run_id: _run_id,
             #[cfg(feature = "timestamp")]
             inner: std::sync::Arc::new(InnerRecorder {
                 function_id: _function_id,
@@ -245,7 +245,7 @@ impl Recorder {
 
     pub fn new_from_parent(_function_id: FunctionId, _parent: &Self) -> Self {
         return Self {
-            invocation_id: _parent.invocation_id,
+            run_id: _parent.run_id,
             #[cfg(feature = "timestamp")]
             inner: std::sync::Arc::new(InnerRecorder {
                 function_id: _function_id,
@@ -268,8 +268,8 @@ impl Recorder {
         self.inner.timestamps.prerecorded(_current_point, _time);
     }
 
-    pub fn invocation_id(&self) -> InvocationId {
-        self.invocation_id
+    pub fn run_id(&self) -> RunId {
+        self.run_id
     }
 
     pub fn add_children(&mut self, _children: Vec<Option<Vec<Recorder>>>) {
@@ -331,7 +331,7 @@ impl fmt::Debug for Recorder {
                 write!(_f, "Formatting Recorder with more than 1 references:\n")?;
             };
             _f.debug_struct("Recorder")
-                .field("Invocation ID", &self.invocation_id)
+                .field("Run ID", &self.run_id)
                 .field("Function ID", &self.inner.function_id)
                 .field("Timestamps", &self.inner.timestamps)
                 .field("Children", &self.inner.children)
@@ -354,8 +354,8 @@ impl fmt::Display for Recorder {
             let input_size = unsafe { *self.inner.input_size.get() };
             write!(
                 _f,
-                "{{\"invocation_id\": \"{}\", \"id\": \"{}\", \"ts\": {}, \"node id\": {}, \"items\": {}, \"input size\": {}, \"children\": [",
-                self.invocation_id,
+                "{{\"run_id\": \"{}\", \"id\": \"{}\", \"ts\": {}, \"node id\": {}, \"items\": {}, \"input size\": {}, \"children\": [",
+                self.run_id,
                 self.inner.function_id,
                 self.inner.timestamps,
                 node_id,

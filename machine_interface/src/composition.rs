@@ -349,14 +349,14 @@ pub trait RemoteDataClient: Send + Sync {
     #[cfg(feature = "exactly-once")]
     fn clear_io_coordination(
         &self,
-        invocation_id: dandelion_commons::InvocationId,
+        run_id: dandelion_commons::RunId,
     ) -> Pin<Box<dyn Future<Output = DandelionResult<()>> + Send + '_>>;
 }
 
 #[cfg(feature = "at-least-once")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct IoCoordinationKey {
-    pub invocation_id: dandelion_commons::InvocationId,
+    pub run_id: dandelion_commons::RunId,
     pub composition_set_id: usize,
     pub function: SystemFunction,
     pub identifier: String,

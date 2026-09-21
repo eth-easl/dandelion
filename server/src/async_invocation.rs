@@ -1,11 +1,11 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use dandelion_commons::{
-    dandelion_err, err_dandelion, DandelionError, DandelionResult, FrontendError, InvocationId,
+    dandelion_err, err_dandelion, DandelionError, DandelionResult, FrontendError, RunId,
 };
 use dandelion_server::{AsyncInvocationState, AsyncInvocationStatusResponse};
 use log::info;
 use machine_interface::function_driver::system_driver::recovery_log::{
-    append_invocation_log_line, complete_log_lines, list_invocation_log_ids, read_invocation_log,
+    append_run_log_line, complete_log_lines, list_run_log_ids, read_run_log,
 };
 use std::{
     collections::HashMap,
@@ -13,28 +13,27 @@ use std::{
 };
 use tokio::sync::watch;
 
-static TERMINAL_NOTIFIERS: OnceLock<Mutex<HashMap<InvocationId, watch::Sender<bool>>>> =
-    OnceLock::new();
+static TERMINAL_NOTIFIERS: OnceLock<Mutex<HashMap<RunId, watch::Sender<bool>>>> = OnceLock::new();
 
-fn terminal_notifiers() -> &'static Mutex<HashMap<InvocationId, watch::Sender<bool>>> {
+fn terminal_notifiers() -> &'static Mutex<HashMap<RunId, watch::Sender<bool>>> {
     TERMINAL_NOTIFIERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn terminal_receiver(invocation_id: InvocationId) -> watch::Receiver<bool> {
+fn terminal_receiver(run_id: RunId) -> watch::Receiver<bool> {
     let mut notifiers = terminal_notifiers()
         .lock()
         .expect("Async invocation notifier lock poisoned");
     notifiers
-        .entry(invocation_id)
+        .entry(run_id)
         .or_insert_with(|| watch::channel(false).0)
         .subscribe()
 }
 
-fn notify_terminal(invocation_id: InvocationId) {
+fn notify_terminal(run_id: RunId) {
     let sender = terminal_notifiers()
         .lock()
         .expect("Async invocation notifier lock poisoned")
-        .remove(&invocation_id);
+        .remove(&run_id);
     if let Some(sender) = sender {
         sender.send_replace(true);
     }
@@ -59,8 +58,8 @@ fn decode_base64(data: &str, field_name: &str) -> DandelionResult<Vec<u8>> {
     })
 }
 
-fn append_event(invocation_id: InvocationId, event: &str) -> DandelionResult<()> {
-    append_invocation_log_line(invocation_id, event)
+fn append_event(run_id: RunId, event: &str) -> DandelionResult<()> {
+    append_run_log_line(run_id, event)
 }
 
 fn parse_log_fields(line: &str) -> HashMap<&str, &str> {
@@ -94,7 +93,7 @@ struct ParsedInvocationLog<'a> {
     error_b64: Option<&'a str>,
 }
 
-fn parse_invocation_log(content: &str) -> ParsedInvocationLog<'_> {
+fn parse_run_log(content: &str) -> ParsedInvocationLog<'_> {
     let mut parsed = ParsedInvocationLog::default();
     for line in complete_log_lines(content) {
         let fields = parse_log_fields(line);
@@ -142,9 +141,9 @@ fn parse_invocation_log(content: &str) -> ParsedInvocationLog<'_> {
     parsed
 }
 
-fn unknown_invocation_error(invocation_id: InvocationId) -> dandelion_commons::DError {
+fn unknown_invocation_error(run_id: RunId) -> dandelion_commons::DError {
     dandelion_err!(DandelionError::RequestError(FrontendError::InvalidRequest(
-        format!("Unknown async invocation {}", invocation_id.simple())
+        format!("Unknown async invocation {}", run_id.simple())
     )))
 }
 
@@ -160,21 +159,21 @@ fn decode_invocation_error(error_b64: Option<&str>) -> DandelionResult<String> {
 
 #[derive(Debug, Clone)]
 pub struct RecoverableInvocation {
-    pub invocation_id: InvocationId,
+    pub run_id: RunId,
     pub request_bytes: Vec<u8>,
     pub is_cold: bool,
 }
 
 pub fn persist_submitted(
-    invocation_id: InvocationId,
+    run_id: RunId,
     request_bytes: &[u8],
     is_cold: bool,
 ) -> DandelionResult<()> {
     append_event(
-        invocation_id,
+        run_id,
         &format!(
-            "event=invocation_submitted invocation_id={} request_len={} request_b64={} is_cold={}\n",
-            invocation_id,
+            "event=invocation_submitted run_id={} request_len={} request_b64={} is_cold={}\n",
+            run_id,
             request_bytes.len(),
             encode_base64(request_bytes),
             is_cold,
@@ -182,42 +181,42 @@ pub fn persist_submitted(
     )
 }
 
-pub fn persist_completed(invocation_id: InvocationId, result_bytes: &[u8]) -> DandelionResult<()> {
+pub fn persist_completed(run_id: RunId, result_bytes: &[u8]) -> DandelionResult<()> {
     append_event(
-        invocation_id,
+        run_id,
         &format!(
-            "event=invocation_completed invocation_id={} result_len={} result_b64={}\n",
-            invocation_id,
+            "event=invocation_completed run_id={} result_len={} result_b64={}\n",
+            run_id,
             result_bytes.len(),
             encode_base64(result_bytes)
         ),
     )?;
-    info!("Async invocation {} entered completed state", invocation_id);
-    notify_terminal(invocation_id);
+    info!("Async invocation {} entered completed state", run_id);
+    notify_terminal(run_id);
     Ok(())
 }
 
-pub fn persist_failed(invocation_id: InvocationId, error: String) -> DandelionResult<()> {
+pub fn persist_failed(run_id: RunId, error: String) -> DandelionResult<()> {
     append_event(
-        invocation_id,
+        run_id,
         &format!(
-            "event=invocation_failed invocation_id={} error_len={} error_b64={}\n",
-            invocation_id,
+            "event=invocation_failed run_id={} error_len={} error_b64={}\n",
+            run_id,
             error.len(),
             encode_base64(error.as_bytes())
         ),
     )?;
-    info!("Async invocation {} entered failed state", invocation_id);
-    notify_terminal(invocation_id);
+    info!("Async invocation {} entered failed state", run_id);
+    notify_terminal(run_id);
     Ok(())
 }
 
-pub fn load_status(invocation_id: InvocationId) -> DandelionResult<AsyncInvocationStatusResponse> {
-    let content = read_invocation_log(invocation_id)?;
-    let parsed = parse_invocation_log(&content);
+pub fn load_status(run_id: RunId) -> DandelionResult<AsyncInvocationStatusResponse> {
+    let content = read_run_log(run_id)?;
+    let parsed = parse_run_log(&content);
     let state = parsed
         .state
-        .ok_or_else(|| unknown_invocation_error(invocation_id))?;
+        .ok_or_else(|| unknown_invocation_error(run_id))?;
     let error = if state == AsyncInvocationState::Failed {
         Some(decode_invocation_error(parsed.error_b64)?)
     } else {
@@ -225,18 +224,18 @@ pub fn load_status(invocation_id: InvocationId) -> DandelionResult<AsyncInvocati
     };
 
     Ok(AsyncInvocationStatusResponse {
-        invocation_id,
+        run_id,
         state,
         error,
     })
 }
 
-pub fn load_result(invocation_id: InvocationId) -> DandelionResult<Option<Vec<u8>>> {
-    let content = read_invocation_log(invocation_id)?;
-    let parsed = parse_invocation_log(&content);
+pub fn load_result(run_id: RunId) -> DandelionResult<Option<Vec<u8>>> {
+    let content = read_run_log(run_id)?;
+    let parsed = parse_run_log(&content);
     match parsed
         .state
-        .ok_or_else(|| unknown_invocation_error(invocation_id))?
+        .ok_or_else(|| unknown_invocation_error(run_id))?
     {
         AsyncInvocationState::Running => Ok(None),
         AsyncInvocationState::Completed => Ok(Some(decode_base64(
@@ -254,55 +253,46 @@ pub fn load_result(invocation_id: InvocationId) -> DandelionResult<Option<Vec<u8
     }
 }
 
-async fn wait_for_result_with<F>(
-    invocation_id: InvocationId,
-    mut load: F,
-) -> DandelionResult<Option<Vec<u8>>>
+async fn wait_for_result_with<F>(run_id: RunId, mut load: F) -> DandelionResult<Option<Vec<u8>>>
 where
     F: FnMut() -> DandelionResult<Option<Vec<u8>>>,
 {
-    info!("Async invocation {} result wait requested", invocation_id);
+    info!("Async invocation {} result wait requested", run_id);
     if let Some(result) = load()? {
-        info!(
-            "Async invocation {} result was already available",
-            invocation_id
-        );
-        notify_terminal(invocation_id);
+        info!("Async invocation {} result was already available", run_id);
+        notify_terminal(run_id);
         return Ok(Some(result));
     }
 
     // Register before checking durable state again. If completion races with
     // registration, either the second load observes it or the retained watch
     // value wakes us; no completion notification can fall into the gap.
-    let mut terminal = terminal_receiver(invocation_id);
-    info!(
-        "Async invocation {} result waiter registered",
-        invocation_id
-    );
+    let mut terminal = terminal_receiver(run_id);
+    info!("Async invocation {} result waiter registered", run_id);
     if let Some(result) = load()? {
         // Completion may have happened just before registration, when there was
         // no sender to notify. Remove the newly-created entry and wake any other
         // waiter that joined it in the meantime.
-        notify_terminal(invocation_id);
+        notify_terminal(run_id);
         return Ok(Some(result));
     }
 
     let _ = terminal.wait_for(|is_terminal| *is_terminal).await;
-    info!("Async invocation {} result waiter notified", invocation_id);
+    info!("Async invocation {} result waiter notified", run_id);
     load()
 }
 
 /// Wait for an invocation to reach durable terminal state. The caller controls
 /// cancellation by dropping the future, for example when its HTTP connection closes.
-pub async fn wait_for_result(invocation_id: InvocationId) -> DandelionResult<Option<Vec<u8>>> {
-    wait_for_result_with(invocation_id, || load_result(invocation_id)).await
+pub async fn wait_for_result(run_id: RunId) -> DandelionResult<Option<Vec<u8>>> {
+    wait_for_result_with(run_id, || load_result(run_id)).await
 }
 
 pub fn list_recoverable_invocations() -> DandelionResult<Vec<RecoverableInvocation>> {
     let mut recoverable = Vec::new();
-    for invocation_id in list_invocation_log_ids()? {
-        let content = read_invocation_log(invocation_id)?;
-        let parsed = parse_invocation_log(&content);
+    for run_id in list_run_log_ids()? {
+        let content = read_run_log(run_id)?;
+        let parsed = parse_run_log(&content);
         if parsed.state != Some(AsyncInvocationState::Running) {
             continue;
         }
@@ -325,7 +315,7 @@ pub fn list_recoverable_invocations() -> DandelionResult<Vec<RecoverableInvocati
             "request_b64",
         )?;
         recoverable.push(RecoverableInvocation {
-            invocation_id,
+            run_id,
             request_bytes,
             is_cold,
         });
@@ -343,15 +333,15 @@ mod tests {
     use std::time::Duration;
 
     const SUBMISSION: &str =
-        "event=invocation_submitted invocation_id=1 request_len=3 request_b64=cmVx is_cold=false\n";
+        "event=invocation_submitted run_id=1 request_len=3 request_b64=cmVx is_cold=false\n";
 
     #[test]
     fn complete_terminal_record_is_recognized() {
         let content = format!(
-            "{}event=invocation_completed invocation_id=1 result_len=6 result_b64=cmVzdWx0\n",
+            "{}event=invocation_completed run_id=1 result_len=6 result_b64=cmVzdWx0\n",
             SUBMISSION
         );
-        let parsed = parse_invocation_log(&content);
+        let parsed = parse_run_log(&content);
         assert_eq!(parsed.state, Some(AsyncInvocationState::Completed));
         assert_eq!(parsed.result_b64, Some("cmVzdWx0"));
     }
@@ -359,10 +349,10 @@ mod tests {
     #[test]
     fn unterminated_terminal_record_is_ignored() {
         let content = format!(
-            "{}event=invocation_completed invocation_id=1 result_len=6 result_b64=cmVz",
+            "{}event=invocation_completed run_id=1 result_len=6 result_b64=cmVz",
             SUBMISSION
         );
-        let parsed = parse_invocation_log(&content);
+        let parsed = parse_run_log(&content);
         assert_eq!(parsed.state, Some(AsyncInvocationState::Running));
         assert!(parsed.result_b64.is_none());
     }
@@ -370,18 +360,18 @@ mod tests {
     #[test]
     fn valid_base64_with_wrong_length_is_ignored() {
         let content = format!(
-            "{}event=invocation_completed invocation_id=1 result_len=6 result_b64=cmVz\n",
+            "{}event=invocation_completed run_id=1 result_len=6 result_b64=cmVz\n",
             SUBMISSION
         );
-        let parsed = parse_invocation_log(&content);
+        let parsed = parse_run_log(&content);
         assert_eq!(parsed.state, Some(AsyncInvocationState::Running));
         assert!(parsed.result_b64.is_none());
     }
 
     #[tokio::test]
     async fn wait_returns_an_already_available_result_immediately() {
-        let invocation_id = InvocationId::from_u128(1001);
-        let result = wait_for_result_with(invocation_id, || Ok(Some(b"ready".to_vec())))
+        let run_id = RunId::from_u128(1001);
+        let result = wait_for_result_with(run_id, || Ok(Some(b"ready".to_vec())))
             .await
             .unwrap();
 
@@ -390,11 +380,11 @@ mod tests {
 
     #[tokio::test]
     async fn terminal_notification_wakes_a_waiter() {
-        let invocation_id = InvocationId::from_u128(1002);
+        let run_id = RunId::from_u128(1002);
         let completed = Arc::new(AtomicBool::new(false));
         let waiter_state = completed.clone();
         let waiter = tokio::spawn(async move {
-            wait_for_result_with(invocation_id, || {
+            wait_for_result_with(run_id, || {
                 Ok(waiter_state
                     .load(Ordering::Acquire)
                     .then(|| b"completed".to_vec()))
@@ -405,18 +395,18 @@ mod tests {
 
         tokio::task::yield_now().await;
         completed.store(true, Ordering::Release);
-        notify_terminal(invocation_id);
+        notify_terminal(run_id);
 
         assert_eq!(waiter.await.unwrap(), Some(b"completed".to_vec()));
     }
 
     #[tokio::test]
     async fn wait_remains_pending_until_terminal_notification() {
-        let invocation_id = InvocationId::from_u128(1003);
+        let run_id = RunId::from_u128(1003);
         let completed = Arc::new(AtomicBool::new(false));
         let waiter_state = completed.clone();
         let mut waiter = tokio::spawn(async move {
-            wait_for_result_with(invocation_id, || {
+            wait_for_result_with(run_id, || {
                 Ok(waiter_state
                     .load(Ordering::Acquire)
                     .then(|| b"completed".to_vec()))
@@ -430,7 +420,7 @@ mod tests {
             .is_err());
 
         completed.store(true, Ordering::Release);
-        notify_terminal(invocation_id);
+        notify_terminal(run_id);
 
         assert_eq!(waiter.await.unwrap(), Some(b"completed".to_vec()));
     }

@@ -1,6 +1,6 @@
 pub mod config;
 
-use dandelion_commons::{records::Recorder, DandelionError, InvocationId};
+use dandelion_commons::{records::Recorder, DandelionError, RunId};
 use hyper::body::Frame;
 use machine_interface::{
     composition::LocalCompositionSet,
@@ -36,14 +36,14 @@ pub enum AsyncInvocationState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsyncInvocationAcceptedResponse {
     #[serde(with = "uuid::serde::simple")]
-    pub invocation_id: InvocationId,
+    pub run_id: RunId,
     pub state: AsyncInvocationState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsyncInvocationStatusResponse {
     #[serde(with = "uuid::serde::simple")]
-    pub invocation_id: InvocationId,
+    pub run_id: RunId,
     pub state: AsyncInvocationState,
     pub error: Option<String>,
 }
@@ -496,7 +496,7 @@ fn test_dandelion_body_serialization() {
     let data_box = data.clone().into_boxed_slice();
 
     let recorder = Recorder::new(
-        InvocationId::from_u128(7),
+        RunId::from_u128(7),
         Arc::new(0.to_string()),
         std::time::Instant::now(),
     );
